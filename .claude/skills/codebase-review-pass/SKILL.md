@@ -1,6 +1,6 @@
 ---
 name: codebase-review-pass
-description: Run the in-progress codebase review forward (work order in review/plan.md, ledger in review/findings.md) — dispatches each pass to a subagent and keeps going until an attended checkpoint. Use whenever the user says "next", "next pass", "continue", "keep going", or "run the review" while a review is underway, and to run the final triage once the last slice pass is done. If review/plan.md doesn't exist yet the review hasn't been set up — use the codebase-review skill instead. Not for pull-request or working-diff review.
+description: Run the in-progress codebase review forward (work order in review/plan.md, ledger in review/findings.md) — dispatches each pass to a subagent and keeps going until an attended checkpoint. Honours the plan's subagent count (how many slice passes run in parallel; "no subagents" runs passes in this session), which the user can change per request. Use whenever the user says "next", "next pass", "continue", "keep going", or "run the review" while a review is underway, and to run the final triage once the last slice pass is done. If review/plan.md doesn't exist yet the review hasn't been set up — use the codebase-review skill instead. Not for pull-request or working-diff review.
 ---
 
 # Drive the review forward
@@ -8,7 +8,8 @@ description: Run the in-progress codebase review forward (work order in review/p
 The user should have to say **"next" a handful of times per review, not seventy**. Which pass comes
 next, and how to run it, are both on disk. **Never ask the user which pass comes next — read it.**
 
-Each pass runs in its own **subagent**. This session is the orchestrator: it reads the plan row,
+Each pass runs in its own **subagent** unless the plan says otherwise (*How many at once*,
+below). This session is the orchestrator: it reads the plan row,
 dispatches, audits the result, closes the row, and moves on — it does not read findings blocks in
 full, which is what lets it drive a whole segment without drowning. Method and rationale:
 `reference.md` §7.
@@ -31,6 +32,25 @@ skill. If it exists but `review/findings.md` doesn't, the ledger was never creat
 start at Pass 0. Don't
 assume the census ran — with no ledger there's no record either way, and re-running Pass 0 is cheap
 next to a review built on a census nobody has.
+
+## How many at once
+
+Read `Subagents: <n>` from `review/plan.md`. If the user named a number in this request ("next,
+with 3 subagents", "continue without subagents"), that number replaces the plan's line. Write it
+back before dispatching. A plan with no such line means 1.
+
+`n` is how many of the plan's existing passes are in flight together. It never re-cuts a slice,
+adds a pass or merges two. Rules: reference §7, *The `subagents` setting*.
+
+- **1:** the loop below, one pass at a time.
+- **2 or more:** the same loop over waves of up to `n` slice passes. A wave never crosses an
+  attended pass, a triage checkpoint or a **solo** pass. Mark and snapshot every pass in the wave,
+  capture `git status` once, and dispatch all of them in one message. When all have returned,
+  merge each `review/passes/<pass-id>.md` into the ledger in plan order, then run steps 6–7 per
+  pass. Sweeps and triage still run one at a time.
+- **0:** no subagents. Run each pass yourself, in plan order, following the brief below as your
+  own instructions, and write to the ledger directly. Every guard, audit and stop condition still
+  applies.
 
 ## The loop
 
@@ -97,8 +117,8 @@ You are running pass <ID> of an in-progress codebase review of Mastik, a Rust 2D
 - docs/design/foundations.md §3 (layering) and docs/design/invariants.md (§4). L2 is the
   highest-yield lens here. docs/architecture.md indexes the design files; read only the one
   your slice touches, or ask the `design-oracle` subagent.
-- CLAUDE.md — the editing rules, the gates and their known holes, and "Checking the chrome
-  without a window" if your pass needs a measurement.
+- AGENTS.md — the editing rules, the gates and their known holes, and "Running the app" if
+  your pass needs a measurement.
 - review/index.md — every finding raised so far, one line each, plus the rejected candidates.
   Check it before writing anything: if your candidate is already there, it's a duplicate (say so
   in your report instead of re-raising it) or already rejected (don't re-raise it at all).
@@ -123,6 +143,11 @@ Anchor every location on its enclosing item, not on a line number alone — the 
 for this review, so line numbers drift and symbols do not. Write
 `crates/mastik-app/src/canvas.rs:5528 · fn snapped_point`, and do the same for every line ref
 inside Evidence. Where there is no enclosing item, quote the line of code.
+
+<In a wave (Subagents 2 or more), replace this paragraph with: "Write your findings blocks, then
+a `## Rejected` list, to review/passes/<ID>.md with Write. Do not open review/findings.md; other
+passes are running beside you, and the orchestrator merges. Write no probe: the tree is shared.
+A question only a probe could answer goes under Not covered.">
 
 Writing to review/findings.md: append your findings block at the "**Status:** open" / "---" /
 "## Rejected" boundary, using Edit with that anchor. Prefer Edit over a heredoc — heredocs here

@@ -225,7 +225,8 @@ automated runs.
 
 That same fact is what makes delegation correct rather than merely convenient: **each pass runs in
 its own subagent**, started cold with its plan row and this file, instead of in a session carrying
-residue from thirty unrelated slices. The orchestrator (`codebase-review-pass`) never reads a
+residue from thirty unrelated slices. How many run at once, or whether the session runs them
+itself, is the `subagents` setting at the end of this section. The orchestrator (`codebase-review-pass`) never reads a
 findings block in full — only the plan row, the subagent's report, and greps of the ledger — which
 is what lets one session drive a whole segment without drowning.
 
@@ -300,12 +301,52 @@ with one-line claims, "Not covered", and an explicit statement that each finding
 The hard rules — edit no source, no scripted or bulk edits, never mutate the ledger from a shell
 script, cap 12, escalate a Critical in the report — must be restated in the prompt every time.
 
-### Why not in parallel
+### The `subagents` setting — how many passes run at once
 
-Fanning a segment's slices out concurrently is the obvious speed-up and is deliberately not taken.
-The risk ordering is load-bearing: early slices inform how later ones are read, and cross-slice
-duplicates are common enough that the interim triages exist specifically to catch them. If the
-wall-clock ever justifies it, the only defensible shape is fan-out *within* a triage segment
-(segments stay sequential, dedupe still happens at the checkpoint) with each pass writing
-`review/passes/<pass-id>.md` for the orchestrator to merge — never concurrent writers on the
-ledger.
+The user sets it in words: "3 subagents", "two agents in parallel", "no subagents". The plan
+records it as a `Subagents: <n>` line so a resumed session keeps it, and a later invocation that
+names a number replaces that line.
+
+**It never changes the plan.** Slices, passes, split points, order and the invocation count are
+cut exactly as they would be without it. `n` is how many of those passes are in flight at the same
+time, not how many pieces the work is cut into. Five slice passes at `subagents 3` run as a wave of
+three, then a wave of two. One slice pass at `subagents 4` is still one pass.
+
+- **Unset → 1.** One subagent at a time: the loop above as written.
+- **0 → no subagents.** This session runs every pass itself, in plan order, using the subagent
+  brief as its own instructions. That includes Pass 0, the sweeps and triage. It writes findings
+  straight to the ledger, since it is the only writer, and keeps every other rule: snapshot, audit,
+  guards, the cap, "Not covered". Read each pass's inputs afresh and judge it on its own evidence.
+  A conclusion carried over from an earlier pass in the same context is exactly what a cold
+  subagent avoids. The pass log is still the cursor, so a compacted or new session resumes.
+- **2 or more → waves.** Only slice passes share a wave; Pass 0, the sweeps and triage run one at a
+  time. A wave takes the next `n` passes in plan order that are not `done`, and never reaches past
+  a stop: an attended pass, a triage checkpoint, or the last slice pass. A pass the plan flags
+  **solo** runs in a wave of its own. Flag a pass solo when it needs the GPU suite, whose timing
+  tests fail under load, or will answer its questions with a headless probe.
+
+Within a wave:
+
+1. **One writer per file.** Each pass writes its findings blocks, then a `## Rejected` list, to
+   its own `<run-dir>/passes/<pass-id>.md` with `Write`, and never opens the ledger. Once the whole
+   wave has returned, the orchestrator merges the files in plan order: findings at the
+   `## Rejected` boundary and rejected lines into `## Rejected`, each with `Edit`, running the §5
+   checks after each merge. The pass files are kept. Two subagents editing one ledger at once
+   would race, and the ledger has no git behind it.
+2. **No probes.** A probe edits the shared tree, and two passes adding a probe to the same file
+   collide. A question only a probe can answer goes into that pass's "Not covered". Plan the
+   probing passes as solo instead.
+3. **Before dispatch:** mark every pass of the wave `in progress`, snapshot the ledger once per
+   pass (`findings-<pass-id>.md`), and capture `git status --short` once. Then dispatch all of the
+   passes in a single message, so they actually run at the same time.
+4. **On return:** audit each pass on its own, against its pass file. A pass to re-run joins the
+   next wave, still capped at two attempts. A new `git status` entry is reverted, and the pass
+   whose report owns it re-runs.
+5. **A Critical stops the loop once the wave is merged.** The other passes in the wave have
+   already run, so their findings are merged too.
+6. Passes in one wave cannot see each other's findings in the index. Duplicates between them are
+   left to triage, which dedupes anyway.
+
+Waves stay inside a triage segment, so each segment's dedupe still happens at its checkpoint.
+Parallel waves shorten the wall clock, not the token bill. Runs wider than three or four mostly
+add contention for cargo's build lock.

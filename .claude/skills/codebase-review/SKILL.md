@@ -1,6 +1,6 @@
 ---
 name: codebase-review
-description: Set up and start a multi-level review of the Mastik codebase — check the gates, cut the code into review slices, run a mechanical fact sheet, then the repo-wide sweeps. Use when the user asks for a full/deep/multi-level codebase review, a review "by module" or "in different lenses" (bugs, quality, performance, architecture, security), an audit of the whole repo, or says "start the review" / "set up a codebase review". Produces review/plan.md + review/findings.md; individual passes after setup are run by the codebase-review-pass skill. Do NOT use for reviewing a pull request or the working diff — that's /code-review.
+description: Set up and start a multi-level review of the Mastik codebase — check the gates, cut the code into review slices, run a mechanical fact sheet, then the repo-wide sweeps. Takes an optional subagent count, recorded in the plan: how many slice passes run in parallel (the slicing never changes); "no subagents" runs the review in this session. Use when the user asks for a full/deep/multi-level codebase review, a review "by module" or "in different lenses" (bugs, quality, performance, architecture, security), an audit of the whole repo, or says "start the review" / "set up a codebase review". Produces review/plan.md + review/findings.md; individual passes after setup are run by the codebase-review-pass skill. Do NOT use for reviewing a pull request or the working diff — that's /code-review.
 ---
 
 # Start a codebase review
@@ -30,6 +30,7 @@ Everything goes in `review/`, which is gitignored:
 | `review/findings.md` | The ledger: pass log (the cursor), findings, rejected candidates. |
 | `review/index.md` | One line per finding (`ID \| severity \| file:line \| claim`) + the rejected one-liners. What each subagent reads instead of the ledger. |
 | `review/.snapshots/` | Per-pass ledger snapshots (reference §5). Kept, not rotated. |
+| `review/passes/` | One file per pass, written only when passes run in parallel waves (`subagents` 2 or more) and merged into the ledger by the orchestrator. Kept. |
 
 What lives *here* rather than in `plan.md` is everything durable across rounds: the preconditions,
 the A1 evidence set, the reviewer notes, the scope decisions. `plan.md` holds only what is measured
@@ -81,9 +82,10 @@ Before Pass 0, verify in order (these are the project's own gates, in CLAUDE.md'
    the `/review/` line in `.gitignore` go in before Pass 0.
 2. `cargo fmt --all --check` → exit 0.
 3. `cargo clippy --workspace --all-targets` → clean, **then re-run it per package**:
-   `for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do cargo clippy -p $p --all-targets; done`.
-   The workspace form silently drops a member crate's warnings (CLAUDE.md, measured 2026-09-01);
-   a warning only one spelling of the command prints is a warning nobody sees.
+   `for d in crates/*/; do cargo clippy -p "$(basename "$d")" --all-targets; done`.
+   The two spellings compile different code (AGENTS.md, *Build / test*), so a warning only one of
+   them prints is a warning nobody sees. The loop reads the crate list from `crates/`, so a new
+   crate is never left out.
 4. `cargo test --workspace` → green.
 5. `cargo doc --workspace --no-deps --document-private-items` → exit 0. **The flag is not
    optional**: without it rustdoc checks no link on any private item, which here is most of them.
@@ -149,7 +151,12 @@ modules excluded — they are 36% of this tree and would triple the pass count),
 - **Assign lenses per slice, not all lenses to every slice.** Typically 2–4. Most cells in a full
   slice × lens matrix are empty and filling them produces noise.
 - **Flag each pass attended or delegated** (reference §7). Default is delegated. Attended: the plan
-  sign-off, A1, and every triage checkpoint.
+  sign-off, A1, and every triage checkpoint. Also flag a pass **solo** when it needs the GPU suite
+  or will answer a chrome question with a headless probe. A solo pass never shares a parallel wave.
+- **Record `Subagents: <n>`**, the number of slice passes that run at once. Take it from the
+  user's words, and use 1 when they gave none. It sets no part of the slicing above: the slices,
+  passes and invocation count come out the same at any `n`. `0` means no subagents: the session
+  runs every pass itself. Rules: reference §7, *The `subagents` setting*.
 - **Verify coverage mechanically before showing the plan.** List every `.rs` file under `crates/`,
   check each appears in exactly one slice, and state in the plan that it does. Prose like "the
   panels" reads as coverage and isn't — that's how files go missing.
@@ -266,10 +273,11 @@ like they cover.
 | **A5** | Test map | L6 | `llvm-cov` per file against decision functions; logic sitting in `&mut self` app methods where no test can reach it (§15 D269 — the fix is lifting it into a free function, not a harness); modules at zero; and whether the invariant-enforcing tests still enforce — `deps_forbidden.rs`, the SVG/JSON goldens, the round-trip suite, the boolean unwind guard. |
 | **A6** | Doc-comment ownership | L3, L8 | The `///`-run ranking from Pass 0. **Five instances of a doc comment silently reassigned to the wrong item are on record**, all with every gate green; one block had swallowed three. Investigate every run over 54 lines that is not one of the five excused baseline entries, and check the head of the ranking entry by entry rather than against a remembered top. The ranking is blind to short thefts and to deletions — so also spot-check `grep -n -B2 "fn <name>"` around items added in the last ~50 commits. |
 | **A7** | Record integrity | L8 | Every `docs/design/*.md` passage and `docs/decisions.md` line still describes the code as it stands. `docs/roadmap.md` holds open work **only**, and nothing in it is already built or a decided non-goal. Code comments asserting behaviour that does not exist — that has happened here at scale twice (several modules; seven passages about golden files). Doc comments whose prose contradicts the field or function below them. |
-| **A8** | Gate holes | L6, L3 | **Five gates that look like they cover the code and do not are on record**, by five unrelated mechanisms, and CLAUDE.md predicts a sixth. This sweep goes looking on purpose: take each gate, break something it claims to cover, and check it goes red. Known five, to re-confirm rather than rediscover: clippy without `--all-targets` lints no test; `cargo doc` cannot see a `#[cfg(test)]` module; `cargo doc` without `--document-private-items` checks no private item; `cargo clippy --workspace` drops a member crate's warnings; a `pub` item in core is never `dead_code`, and a derived `PartialEq` hides an unread field anywhere. Then: what about the files under `crates/*/tests/`, which are separate crate roots and carry **no `deny`** — their intra-doc links are checked by nothing, and neither is `build.rs`, which is a third target kind (§15 D622, `[A8-L6-01]`). *No numbers here on purpose: this row said "21 files … 11 links" while the tree held 23 and 19, and it was one of seven stale copies of a figure nothing recomputes. Count it during the sweep.* And `.claude/agents/rust-verify.md`'s gate list is itself stale (no `--document-private-items`, no per-package clippy), which is a gate hole one level up. |
+| **A8** | Gate holes | L6, L3 | **Five gates that look like they cover the code and do not are on record**, by five unrelated mechanisms, and CLAUDE.md predicts a sixth. This sweep goes looking on purpose: take each gate, break something it claims to cover, and check it goes red. Known five, to re-confirm rather than rediscover: clippy without `--all-targets` lints no test; `cargo doc` cannot see a `#[cfg(test)]` module; `cargo doc` without `--document-private-items` checks no private item; `cargo clippy --workspace` drops a member crate's warnings; a `pub` item in core is never `dead_code`, and a derived `PartialEq` hides an unread field anywhere. Then: what about the files under `crates/*/tests/`, which are separate crate roots and carry **no `deny`** — their intra-doc links are checked by nothing, and neither is `build.rs`, which is a third target kind (§15 D622, `[A8-L6-01]`). *No numbers here on purpose: this row said "21 files … 11 links" while the tree held 23 and 19, and it was one of seven stale copies of a figure nothing recomputes. Count it during the sweep.* Check too that the gate lists in `.claude/agents/rust-verify.md` and the `commit`, `release` and `release-review` skills still match AGENTS.md's: a stale list is a gate hole one level up. |
 
 A1 is **attended** — a wrong call there is read as settled by every slice pass after it. A2–A8
-delegate. Run them one at a time, appending to the ledger, and pause after A1.
+delegate. Run them one at a time, appending to the ledger, and pause after A1. At `Subagents: 0`,
+this session runs Pass 0 and every sweep itself rather than delegating.
 
 ### A1's evidence set — the 11 invariants and what each governs
 
@@ -286,7 +294,7 @@ delegate. Run them one at a time, appending to the ledger, and pause after A1.
 | 7 | Colour-space discipline — sRGB, straight alpha in the document; "the conversion lives **only** in `mastik-render` (`color.rs`)" | Every premultiply/linearize/gamma site outside `render/color.rs`. |
 | 8 | Operations total & validated — "returns `Result<_, OpError>`; never panic on bad input" | Cross this with Pass 0's panic census: every `unwrap`/`expect`/`panic!`/index in an op handler or on a path reachable from a loaded file. `apply` is atomic — "on any error mutate nothing" — so also: does any handler mutate before the last validation? |
 | 9 | Serialization versioned & deterministic — "saving the same document twice produces identical bytes" | Every `HashMap`/`HashSet` (incl. `rustc-hash`) whose iteration order reaches `save`; every `#[serde(default)]` field added without a version bump where the default changes an old document's meaning; `migrate.rs`'s coverage of every version. |
-| 10 | MCP is a thin adapter | `crates/mastik-mcp/` is 50 lines today; check it holds no logic and stays that way. |
+| 10 | MCP is a thin adapter | Every tool in `crates/mastik-mcp/` and `crates/mastik-app/src/mcp/`: does it translate to a core verb or `Transaction`, or does it hold document logic of its own? |
 | 11 | Renderers behind one shared walk — "the document→scene walk is written exactly once, in `scene.rs`" | Any walk logic duplicated in `gpu.rs`/`cpu.rs`/`fx_gpu.rs`/`export::svg`. Note §15 D2: the original `trait Renderer`/`RenderTarget` design is dead and the doc says so inline — check the prose around it hasn't re-drifted. |
 
 Three more rules recur across many sites and belong in the census even though they sit outside §4:
@@ -346,7 +354,7 @@ a generic one.
   in git (reference §5).
 - **Never launch the GUI.** Chrome questions are answered with a throwaway headless `#[test]`
   (`MastikApp::headless(&ctx)`) or with `mastik export --svg`, and the probe is deleted before the
-  pass returns. CLAUDE.md's "Checking the *chrome* without a window" section lists what `ctx.run_ui`
+  pass returns. AGENTS.md's "Running the app" section lists what `ctx.run_ui`
   will and will not tell you — read it before writing a probe, or the probe will measure the wrong
   thing (a tooltip's ink never arrives; a widget's interaction state is last frame's; `.shapes` is
   already layer-flattened).
@@ -355,8 +363,8 @@ a generic one.
 
 Carried across rounds unless the user changes them:
 
-- **In scope:** everything under `crates/` — source, inline test modules, and the 21 integration
-  test files. Test code is reviewed under L6 and L3; its *prose* is A6/A7's problem.
+- **In scope:** everything under `crates/` — source, inline test modules, and the integration
+  test files under `crates/*/tests/`. Test code is reviewed under L6 and L3; its *prose* is A6/A7's problem.
 - **Out of scope:** `docs/` as documents (A7 reviews them only where they contradict the code),
   `todo.md` (untracked scratchpad), `icons/`,
   `stress.mastik`, `Cargo.lock`, `target/`, and `.claude/agents/*` except where A8 finds a gate list

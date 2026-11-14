@@ -1,6 +1,6 @@
 ---
 name: release-review
-description: Review everything that changed since the last release, autonomously, before tagging — takes the commit range (default last tag..HEAD, or one you name), cuts it into slices, and runs the whole multi-pass subagent review end to end without checkpoints. Use when the user asks to review the changes since the last release/tag, review what's about to ship, "review before I release", "review v0.1.0..HEAD", or asks for a pre-release audit. Produces a triaged ledger under review/ and stops there — it fixes nothing and releases nothing. For the periodic whole-codebase review use codebase-review; for the working diff use /code-review.
+description: Review everything that changed since the last release, autonomously, before tagging — takes the commit range (default last tag..HEAD, or one you name), cuts it into slices, and runs the whole multi-pass subagent review end to end without checkpoints. Takes an optional subagent count: how many slice passes run in parallel (the slicing never changes); "no subagents" runs the review in this session. Use when the user asks to review the changes since the last release/tag, review what's about to ship, "review before I release", "review v0.1.0..HEAD", or asks for a pre-release audit. Produces a triaged ledger under review/ and stops there — it fixes nothing and releases nothing. For the periodic whole-codebase review use codebase-review; for the working diff use /code-review.
 ---
 
 # Review a release range
@@ -34,6 +34,7 @@ One directory per run, under the already-gitignored `review/`:
 | `review/release-<base-tag>/findings.md` | The ledger: header, pass log, findings, `## Rejected`. Final triage prepends `## Triage`. |
 | `review/release-<base-tag>/index.md` | One line per finding — `ID \| severity \| origin \| file:line · item \| claim` — plus the rejected one-liners. What each subagent reads instead of the ledger. |
 | `review/release-<base-tag>/.snapshots/` | Per-pass ledger snapshots (reference §5). Kept. |
+| `review/release-<base-tag>/passes/` | One file per pass, written only when passes run in parallel waves (`subagents` 2 or more) and merged into the ledger by this session. Kept. |
 
 `<base-tag>` is the range's base — `review/release-v0.1.0/` for `v0.1.0..HEAD`. If that directory
 already exists from a run at a **different** head SHA, rename it to
@@ -84,6 +85,13 @@ it and Phase 4 stops if it moves, so a `base..head` naming some other head would
 and check another. If the user gives one, say the head is ignored and review to `HEAD`, or have
 them check that commit out first.
 
+The other argument is **`subagents`**, the number of slice passes that run at once ("review
+v0.14.0..HEAD with 3 subagents"). Its rules are in reference §7, *The `subagents` setting*. In
+short: it never changes how the range is sliced or how many passes there are, only how many of
+them are in flight together. `0` means this session runs every pass itself, with no subagent.
+Unset means 1. Read the number from the user's words, not from the number of slices, and write it
+into `plan.md`.
+
 ⚠️ **If there is no tag yet, there is no release range**, and this skill is the wrong instrument:
 a base of the repository's first commit is the whole codebase, which is `codebase-review`'s job and
 is already done for round 1. Say so and stop, or take an explicit base SHA from the user.
@@ -111,13 +119,14 @@ git diff --numstat <base>..HEAD
 ```
 
 The ground has to be checkable, in this order. **This is the `release` skill's Phase 0 bar — keep
-the two in step, and with CLAUDE.md's gate list, rather than with memory.** With no CI in this
-project, a local bar narrower than the release's own passes a tree the release will reject:
+the two in step, and with AGENTS.md's gate list, rather than with memory.** CI runs only part of
+this bar, and none of the gated suites, so a local bar narrower than the release's own passes a
+tree the release will reject:
 
 1. `git status --short` empty. Reviewing a dirty tree reviews something that isn't shipping.
 2. `cargo fmt --all --check` → exit 0.
 3. `cargo clippy --workspace --all-targets` → clean, **then per package**:
-   `for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do cargo clippy -p $p --all-targets; done`.
+   `for d in crates/*/; do cargo clippy -p "$(basename "$d")" --all-targets; done`.
    The two spellings compile different code, so a warning only one prints is a warning nobody sees.
 4. `cargo test --workspace` → green.
 5. `cargo doc --workspace --no-deps --document-private-items` → exit 0. **The flag is not optional**:
@@ -173,9 +182,12 @@ mechanically checkable, and the plan states the check:
   owns what is left**. Mechanically: `git diff --numstat <base>..HEAD -- <path>` per shared file,
   against the sum its rows claim; a shortfall means a slice needs widening or a row needs adding.
   Say the result in the plan — a file-count line alone is the failure mode this replaces.
-- **State the invocation count** (passes + P0 + sweeps + triage) at the top.
+- **State the invocation count** (passes + P0 + sweeps + triage) at the top, with the
+  `Subagents: <n>` line beneath it. The count does not depend on `n`.
 - Flag any slice needing the **GPU** (`--ignored` suites) or the network. It still delegates; its
-  report must name what it exercised, or say the check was unverified.
+  report must name what it exercised, or say the check was unverified. Mark a pass **solo** when it
+  needs the GPU suite or will answer a chrome question with a probe. A solo pass never shares a
+  wave.
 
 ## Phase 2 — Pass 0, the mechanical fact sheet
 
@@ -270,8 +282,12 @@ The loop from reference §7, with the checkpoints removed. Per iteration:
 **Cap re-runs at two.** A pass that degrades twice is degrading structurally — slice too big, wrong
 split point, wrong lens — so stop and say which you think it is. That is a hard stop.
 
-Passes stay **sequential**, for reference §7's reason: the risk ordering is load-bearing and
-cross-slice duplicates are common.
+That loop is `Subagents: 1`. At **2 or more**, the slice passes run in waves of `n`, in plan
+order, as reference §7 lays out. Each pass writes `<run-dir>/passes/<pass-id>.md`, and steps 5–6
+run per pass once the whole wave has returned, after you merge each pass file into the ledger. The
+sweeps R1–R3 come first, one at a time, because every slice pass reads R1's candidates. At **0**
+this session does every pass itself, sweeps and triage included, with the brief below as its own
+instructions. A HEAD that moves is still a stop in either mode.
 
 ## Phase 5 — final triage
 
@@ -412,6 +428,11 @@ independently rather than inheriting them.
 Answering a question about chrome: NEVER launch the GUI. Write a throwaway headless #[test]
 (`MastikApp::headless(&ctx)`, §15 D303) or use `mastik export`, and DELETE the probe before you
 return — `git status --short` must come back empty.
+
+<In a wave (Subagents 2 or more), replace this paragraph with: "Write your findings blocks, then
+a `## Rejected` list, to <run-dir>/passes/<ID>.md with Write. Do not open findings.md; other
+passes are running beside you, and the orchestrator merges. Write no probe: the tree is shared.
+A question only a probe could answer goes under Not covered.">
 
 Writing to <run-dir>/findings.md: append your block at the "**Status:** open" / "---" /
 "## Rejected" boundary, using Edit with that anchor. NEVER mutate that file with a shell script,

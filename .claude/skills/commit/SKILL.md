@@ -11,13 +11,9 @@ The order is **group → verify → commit**.
 edits earlier in the session is not, and neither is finishing a task — leave the
 work in the tree and say it's ready.
 
-🚨 **This is a reversal, and a session that has read older prose may believe the
-opposite.** Until 2026-09-16 CLAUDE.md said *"commit freely and without asking …
-how commits are grouped and what the messages say does not matter"*, because the
-repository was scaffolding due to be deleted. It was deleted, and the one that
-replaced it is published at `https://github.com/fadion/mastik` and kept. **If you
-find a passage anywhere in this project that licenses a checkpoint commit, it is
-stale — and it is worth correcting rather than working around.**
+Every commit is permanent, published history at `https://github.com/fadion/mastik`.
+**A passage anywhere in this project that licenses a checkpoint commit is stale**:
+correct it rather than work around it.
 
 **Reviews are the user's call, and this skill never makes it.** Don't weigh
 whether a change has earned one, don't offer, don't flag a surface as
@@ -57,17 +53,22 @@ a call rather than an accident.
 **Never `git add -A` while a subagent is running.** `arch-scribe` writes `docs/`
 *and* corrects `crates/` comments when the brief invites it to — which is the
 single most valuable thing it does — so a sweeping stage picks up its
-half-finished work and commits it under an unrelated message. This has happened
-four times across sessions 14 and 19 (CLAUDE.md, *Git*). It used to cost nothing
-because the history was disposable. It now produces a permanent, published commit
-that misdescribes itself.
+half-finished work and commits it under an unrelated message, as a permanent,
+published commit that misdescribes itself.
 
 **Stage the specific paths this change touched**, or wait for the agent to
-return. `git add crates/` is *not* the mitigation — that was the fix that failed.
+return. `git add crates/` is *not* the mitigation: it sweeps just as wide.
 
-The sin is sweeping, not the flag: when Phase 0 established that the whole tree
-is the one change and nothing else is running, `git add -A` is the honest way to
-say so.
+The `edit-guard` hook refuses `git add -A`, `--all`, `-u` and `.` outright. When
+Phase 0 established that the whole tree is the one change and nothing else is
+running, stage every changed path by name instead:
+
+```bash
+git diff --name-only -z | xargs -0 git add --
+```
+
+Then add any new files by name too, since `git diff` does not list untracked
+ones. Check with `git status --short` that nothing is left unstaged.
 
 ## Phase 1 — the bar
 
@@ -100,8 +101,8 @@ Four notes, each of which has cost this project a green run that was not green:
   `cargo clippy -p mastik-core --all-targets`. The workspace spelling and the `-p`
   spelling compile *different code* — workspace feature unification changes a
   dependency's layout, so a lint whose threshold the type straddles fires under
-  one and not the other (CLAUDE.md, measured: `peniko::Gradient` is 168 bytes
-  under `-p` and 160 under `--workspace`).
+  one and not the other (`peniko::Gradient` is 168 bytes under `-p` and 160 under
+  `--workspace`).
 - **Run the per-package clippy *after* the test build, not beside it.** The first
   run in a batch is the one that compiles the test target, so lints on a test
   written minutes earlier land on the *second* invocation.
@@ -128,10 +129,9 @@ Both are about damage that compiles, tests, lints, formats and passes `cargo
 doc`, and that is now permanent once pushed.
 
 - **If this change inserted items into a module, check the neighbours kept their
-  doc comments.** Anchoring an `Edit` on the item below steals its `///` block;
-  twenty-two instances are on CLAUDE.md's list, twelve of them committed by a
-  session that spent the day fixing that exact class. Mechanically, over the
-  items you inserted:
+  doc comments.** Anchoring an `Edit` on the item below steals its `///` block.
+  The `doc-run-guard` hook flags such edits made in Claude Code, but not ones
+  made anywhere else. Mechanically, over the items you inserted:
   `grep -n -B3 "^\(pub \)\?\(fn\|struct\|enum\|const\|type\) <neighbour>"`.
 - **If a flip-check was reverted by hand, `git diff` the file against `HEAD`
   before staging.** Two committed defects came from re-adding a block *beside*

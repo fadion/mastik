@@ -19,7 +19,7 @@ cargo check --release -p mastik-app
 cargo doc --workspace --no-deps --document-private-items
 ```
 
-⚠️ **Two of those flags are load-bearing and were missing from this list until 2026-09-03.**
+⚠️ **Two of those flags are load-bearing.**
 
 `--all-targets` on clippy is why the lint sees a `#[cfg(test)]` module at all; without it every
 test in the workspace goes unlinted (§15 D302). **And `--all-targets` is not sufficient**, for a
@@ -32,7 +32,7 @@ run clippy per package, always — not only on the crates the caller edited** �
 which spelling you ran:
 
 ```bash
-for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do cargo clippy -p $p --all-targets; done
+for d in crates/*/; do cargo clippy -p "$(basename "$d")" --all-targets; done
 ```
 
 `--document-private-items` is why the doc gate reads anything at all here. Without it rustdoc

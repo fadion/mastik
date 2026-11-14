@@ -3,7 +3,7 @@ name: release
 description: Mastik's push-and-release flow — verify the local bar, push main and wait for CI, bump the workspace version, tag, wait for the Release workflow to build and publish every platform, check the assets, and write the notes. Use whenever the user asks to cut, tag, ship, or publish a release, or says anything like "push and bump to 0.2.0", "bump to v1.2.0 and push", "release 0.1", "tag a new version", or "ship this". Also use it when they ask only for part of the flow (just the bump, just the release notes) so the surrounding steps and their gates aren't skipped by accident.
 ---
 
-# Cutting an Mastik release
+# Cutting a Mastik release
 
 The flow is **verify → push → CI → bump+tag → Release workflow → check → notes**.
 
@@ -11,9 +11,7 @@ The flow is **verify → push → CI → bump+tag → Release workflow → check
 D956). The tag fires `.github/workflows/release.yml`, which builds Windows, Linux
 and macOS, packs the Velopack installers and feeds, the portable archives, the
 `.deb` and `.rpm`, attaches them all to the GitHub Release, and then rebuilds the
-apt/dnf repositories on GitHub Pages (`pages.yml`). Until 2026-10-03 this skill
-built `mastik.exe` locally and uploaded it; v0.3.0 was the last release cut that
-way.
+apt/dnf repositories on GitHub Pages (`pages.yml`).
 
 Report the version and what is about to happen before Phase 2: the tag push is
 the first irreversible step.
@@ -40,7 +38,7 @@ cargo clippy --workspace --all-targets
 ```
 
 ```bash
-for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do cargo clippy -p $p --all-targets; done
+for d in crates/*/; do cargo clippy -p "$(basename "$d")" --all-targets; done
 ```
 
 ```bash
