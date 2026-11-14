@@ -1,7 +1,7 @@
-# Ondin — right-click context menus
+# Mastik — right-click context menus
 
 The menus as built, with the conditions that shape them. A peer of `shortcuts.md`. The code is
-`crates/ondin-app/src/menu.rs` (registry, builders), `canvas::canvas_context_menu`,
+`crates/mastik-app/src/menu.rs` (registry, builders), `canvas::canvas_context_menu`,
 `panels/layers.rs` and `pages.rs` (the doors), and `panels/binding.rs` (the inspector field menu, §6.7).
 
 **One registry, two doors.** Every row is an `Item` whose label, glyph, accelerator and group live
@@ -157,7 +157,7 @@ In emitted order. Kind-gated; the component rows are gated by role (`menu::Role`
 | Pixel-fit | — | any selection holding a layer that is not text, frames and groups included; dims on lock only. Puts the selection's edges on the pixel grid, skipping text, turned and locked layers (`app-pen-and-nodes.md`, *Pixel-fit*) |
 | Join paths | — | exactly two `Path` layers (not line-tool lines); dims *"Both paths need an open end"* unless each has an open subpath of two or more anchors, and *"One of these paths is locked"* when either is (`join_layers_subject`); the target's own lock dims with the lock sentence. The nearest pair of open ends splices into one layer (`app-pen-and-nodes.md`) |
 | Warp… | — | the last conversion; any selection but frames alone. Dims with `warp::subjects`' refusal (*"Select layers to warp"*, *"Pictures can't be warped; trace it first"*, *"Frames can't be warped; warp the layers inside"*, *"A layer to warp is locked"*, *"Warp can't work inside a component or an instance"*); dims on lock. Opens the envelope round the selection (`tools.md`, *Warp*) |
-| Align ▸ | — | always; `Item::AlignMenu`, `ALIGN_LEFT` glyph; a submenu of the six aligns (below). Dims *"Select two or more layers, or a layer inside a frame"* when `OndinApp::align_target` has none (a lone top-level layer; `Context::can_align`); dims on lock |
+| Align ▸ | — | always; `Item::AlignMenu`, `ALIGN_LEFT` glyph; a submenu of the six aligns (below). Dims *"Select two or more layers, or a layer inside a frame"* when `MastikApp::align_target` has none (a lone top-level layer; `Context::can_align`); dims on lock |
 | Arrange ▸ | — | always; `Item::Arrange`, `STACK` glyph; a submenu of the four restacks (below); dims on lock |
 | Move to page ▸ | — | always, last of the group: it takes the layers off this page. A submenu of the other pages, each an `Item::MoveTo(page)` row under the page's shown name with the `FILE` glyph (`Context::other_pages`). A page there moves the selection to the top of that page, same place on the canvas, and clears it (`move_selection_to_page`). Dims *"This document has one page"*; dims on lock |
 
@@ -390,7 +390,7 @@ No menu. The ruler claims no right-click region, and the canvas menu must not be
 
 ### 6.7 An inspector field
 
-A separate `Area` (`OndinApp::field_menu_ui`), closed by its act, a press outside or `Escape`.
+A separate `Area` (`MastikApp::field_menu_ui`), closed by its act, a press outside or `Escape`.
 Offered on a **bindable** field: a solid paint row's hex field, a bound field's chip (not a *Mixed*
 capsule), a single layer's corner radius and per-corner fields, the Container card's gap and
 padding fields, the identity card's eye, W and H, a single layer's Item card min/max width and height, opacity, a stroke's width, an effect's numbers,
@@ -420,7 +420,7 @@ Opened on a row of the layers pane's Pages section, without switching to that pa
 
 ### 6.9 A document tab (the tab menu)
 
-A separate `Area` (`OndinApp::tab_menu`, `tabs.rs`), opened by a right-click on a document's tab, at
+A separate `Area` (`MastikApp::tab_menu`, `tabs.rs`), opened by a right-click on a document's tab, at
 the press. The library's tab, `+` and the caret have none. Drawn with §8's row and frame functions,
 190pt wide.
 

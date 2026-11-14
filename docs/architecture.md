@@ -1,8 +1,8 @@
-# Ondin — Architecture
+# Mastik — Architecture
 
-Ondin is a native 2D design tool: a Rust workspace of `ondin-core` (the headless document
-model), `ondin-render` (vello on GPU and CPU), `ondin-export` (SVG, PDF, PNG, HTML/CSS, React, Vue, JSON), `ondin-mcp`
-(the agent adapter), `ondin-ai` (the assistant's agent harnesses) and `ondin-app` (egui + wgpu). This file is the index. The design is in
+Mastik is a native 2D design tool: a Rust workspace of `mastik-core` (the headless document
+model), `mastik-render` (vello on GPU and CPU), `mastik-export` (SVG, PDF, PNG, HTML/CSS, React, Vue, JSON), `mastik-mcp`
+(the agent adapter), `mastik-ai` (the assistant's agent harnesses) and `mastik-app` (egui + wgpu). This file is the index. The design is in
 `docs/design/`, one file per subsystem. **Open only the file you need.** Headings keep the
 old section numbers, so a `§5.3d` cited from code is found by grepping `docs/design/` for
 `5.3d`.
@@ -43,7 +43,7 @@ Read the file for the exact wording before relying on one.
 | `render.md` | 6.1–6.3 | The render boundary, `RenderOverrides`, backends |
 | `export.md` | 7 | SVG, PDF, PNG, ICO and ICNS, code export (HTML/CSS, React, Vue), the Penpot and Sketch files, JSON snapshot, the CLI, export doors |
 | `mcp.md` | 8 | MCP topology, headless mode, concurrency, the tool list (a test parses §8.4), the assistant's tool and grants |
-| `assistant.md` | ai.md 1–7 | The assistant: agent harnesses (`ondin-ai`), sealing, access levels, proposals, the panel, attaching layers, its settings and the agent log |
+| `assistant.md` | ai.md 1–7 | The assistant: agent harnesses (`mastik-ai`), sealing, access levels, proposals, the panel, attaching layers, its settings and the agent log |
 | **App** | | |
 | `app-chrome.md` | 9.1, 9.2 | UI chrome and panel layout, the dark and light themes, the icon font, the title bar and the tab strip, the layers tree, the Pages section and the current page, the History section |
 | `app-dataflow.md` | 9.3 | The one-way valve: gestures, previews, the commit door |

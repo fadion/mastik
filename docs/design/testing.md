@@ -4,15 +4,15 @@ How each layer is tested, what the golden files do and do not cover, and the iso
 
 ## Layers
 
-- **`ondin-core`**: exhaustive unit and property tests, zero GPU. Random op sequences preserve tree invariants (acyclic, parent/child consistency, id uniqueness); undo/redo is exact; `update ≡ rebuild`; serialization is deterministic (save∘load∘save = save).
-- **`ondin-export` and CPU render**: golden files, byte-exact, runnable on any CI box with the bundled font only.
+- **`mastik-core`**: exhaustive unit and property tests, zero GPU. Random op sequences preserve tree invariants (acyclic, parent/child consistency, id uniqueness); undo/redo is exact; `update ≡ rebuild`; serialization is deterministic (save∘load∘save = save).
+- **`mastik-export` and CPU render**: golden files, byte-exact, runnable on any CI box with the bundled font only.
 - **GPU**: feature-gated smoke tests with perceptual tolerance; not in the default CI gate.
 - **Colour choke point**: per-backend pixel verification, re-run on every renderer version bump (invariant 7).
 - **Round-trip gates**: Document → SVG and Document → snapshot cover every NodeKind. `the_fixture_holds_one_node_of_every_kind` walks the golden document and checks the set against `kind_name`'s own arms; the exhaustive `match` makes a new variant a compile error whose repair grows the set.
 
 ## Goldens
 
-`crates/ondin-export/tests/goldens.rs` compares `tests/goldens/every-kind.svg` and `every-kind.json` byte for byte against a fixture holding one node of every `NodeKind` (all four effect kinds, a `Normalized` pivot). Regenerate with `ONDIN_UPDATE_GOLDENS=1 cargo test -p ondin-export --test goldens`; read the diff before committing. The fixture is that file's own, not the shared `common::fixture()` (eight kinds, two dozen substring assertions). Every other export test asserts on substrings and in-process measurements; the goldens complement them by catching a value that merely changed.
+`crates/mastik-export/tests/goldens.rs` compares `tests/goldens/every-kind.svg` and `every-kind.json` byte for byte against a fixture holding one node of every `NodeKind` (all four effect kinds, a `Normalized` pivot). Regenerate with `MASTIK_UPDATE_GOLDENS=1 cargo test -p mastik-export --test goldens`; read the diff before committing. The fixture is that file's own, not the shared `common::fixture()` (eight kinds, two dozen substring assertions). Every other export test asserts on substrings and in-process measurements; the goldens complement them by catching a value that merely changed.
 
 - **Coverage sets are read off the code.** `every_kind` and `every_effect` are read from the arms of the exhaustive `kind_name` and `effect_name` matches, so a new variant is in neither golden until the fixture grows. Hand-kept lists let a one-arm repair pass with the fixture unchanged.
 - **Cross-platform byte stability** requires that no file carries a full-precision float from transcendental arithmetic. The JSON snapshot writes paths through the SVG writer's four-place `path_d`, and rounds `world_bounds` and the transforms to four places. `pivot` is not rounded and is exact in the fixture's one pivot (D968, D972).
@@ -24,7 +24,7 @@ How each layer is tested, what the golden files do and do not cover, and the iso
 
 ## Tests must not touch the machine
 
-`OndinApp::headless` swaps in inert versions of every outside resource, so the rule holds by construction rather than discipline:
+`MastikApp::headless` swaps in inert versions of every outside resource, so the rule holds by construction rather than discipline:
 
 | Resource | Mechanism |
 |---|---|

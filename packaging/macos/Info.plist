@@ -1,24 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Ondin.app's Info.plist, copied in by build-app.sh, which writes both version
+  Mastik.app's Info.plist, copied in by build-app.sh, which writes both version
   keys from the release version. The bundle id is the app id used on every
   platform (`chrome::APP_ID`).
 
-  The document type makes Finder open a .ondin with Ondin, and the app reads the
+  The document type makes Finder open a .mastik with Mastik, and the app reads the
   open event (`open_event`). The type conforms to public.json, as the Linux MIME
   type subclasses application/json, so a text editor stays on offer beside it.
 -->
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>ondin</string>
+  <string>mastik</string>
   <key>CFBundleIdentifier</key>
-  <string>io.github.fadion.Ondin</string>
+  <string>io.github.fadion.Mastik</string>
   <key>CFBundleName</key>
-  <string>Ondin</string>
+  <string>Mastik</string>
   <key>CFBundleDisplayName</key>
-  <string>Ondin</string>
+  <string>Mastik</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -36,7 +36,7 @@
   <array>
     <dict>
       <key>CFBundleTypeName</key>
-      <string>Ondin document</string>
+      <string>Mastik document</string>
       <key>CFBundleTypeRole</key>
       <string>Editor</string>
       <key>LSHandlerRank</key>
@@ -45,7 +45,7 @@
       <string>icon</string>
       <key>LSItemContentTypes</key>
       <array>
-        <string>io.github.fadion.Ondin.document</string>
+        <string>io.github.fadion.Mastik.document</string>
       </array>
     </dict>
   </array>
@@ -54,9 +54,9 @@
   <array>
     <dict>
       <key>UTTypeIdentifier</key>
-      <string>io.github.fadion.Ondin.document</string>
+      <string>io.github.fadion.Mastik.document</string>
       <key>UTTypeDescription</key>
-      <string>Ondin document</string>
+      <string>Mastik document</string>
       <key>UTTypeIconFile</key>
       <string>icon</string>
       <key>UTTypeConformsTo</key>
@@ -67,11 +67,11 @@
       <dict>
         <key>public.filename-extension</key>
         <array>
-          <string>ondin</string>
+          <string>mastik</string>
         </array>
         <key>public.mime-type</key>
         <array>
-          <string>application/x-ondin</string>
+          <string>application/x-mastik</string>
         </array>
       </dict>
     </dict>

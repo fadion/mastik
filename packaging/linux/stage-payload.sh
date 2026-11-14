@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Lay out the files an Ondin Linux package installs, under a given root.
+# Lay out the files an Mastik Linux package installs, under a given root.
 #
 #     packaging/linux/stage-payload.sh <version> <binary> <root>
 #
@@ -21,7 +21,7 @@ ROOT="$3"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
-APP_ID="io.github.fadion.Ondin"
+APP_ID="io.github.fadion.Mastik"
 
 # The one hicolor icon: icons/icon.png, 512x512. A desktop scales down from the
 # largest size it finds, so one large PNG serves every size - Schemaic ships
@@ -42,7 +42,7 @@ required=("$BINARY" \
     "${REPO}/LICENSE" \
     "${REPO}/THIRD-PARTY-NOTICES.md" \
     "${REPO}/README.md" \
-    "${REPO}/crates/ondin-core/assets/fonts/OFL.txt" \
+    "${REPO}/crates/mastik-core/assets/fonts/OFL.txt" \
     "$ICON")
 for l in $LICENSE_FILES; do
     required+=("${REPO}/licenses/${l}")
@@ -62,7 +62,7 @@ for f in "${REPO}"/licenses/*.txt; do
         *" $(basename "$f") "*) ;;
         *)
             echo "licenses/$(basename "$f") is not in stage-payload.sh's LICENSE_FILES" >&2
-            echo "(and so would ship in no package). Add it there and to ondin.spec's %files." >&2
+            echo "(and so would ship in no package). Add it there and to mastik.spec's %files." >&2
             exit 1
             ;;
     esac
@@ -74,11 +74,11 @@ mkdir -p "${ROOT}/usr/bin" \
     "${ROOT}/usr/share/metainfo" \
     "${ROOT}/usr/share/mime/packages" \
     "${ROOT}/usr/share/icons/hicolor/512x512/apps" \
-    "${ROOT}/usr/share/doc/ondin"
+    "${ROOT}/usr/share/doc/mastik"
 
-install -m 0755 "$BINARY" "${ROOT}/usr/bin/ondin"
+install -m 0755 "$BINARY" "${ROOT}/usr/bin/mastik"
 install -m 0644 "${HERE}/${APP_ID}.desktop" "${ROOT}/usr/share/applications/${APP_ID}.desktop"
-# The .ondin type. dpkg's and rpm's shared-mime-info triggers rebuild the database
+# The .mastik type. dpkg's and rpm's shared-mime-info triggers rebuild the database
 # when this directory changes, so neither package carries a scriptlet for it.
 install -m 0644 "${HERE}/${APP_ID}.mime.xml" "${ROOT}/usr/share/mime/packages/${APP_ID}.xml"
 
@@ -99,13 +99,13 @@ chmod 0644 "${ROOT}/usr/share/metainfo/${APP_ID}.metainfo.xml"
 grep -q "<release version=\"${VERSION}\" " "${ROOT}/usr/share/metainfo/${APP_ID}.metainfo.xml" \
     || { echo "the metainfo's <release> line was not rewritten to ${VERSION}" >&2; exit 1; }
 
-install -m 0644 "${REPO}/LICENSE" "${ROOT}/usr/share/doc/ondin/LICENSE"
-install -m 0644 "${REPO}/THIRD-PARTY-NOTICES.md" "${ROOT}/usr/share/doc/ondin/THIRD-PARTY-NOTICES.md"
-install -m 0644 "${REPO}/README.md" "${ROOT}/usr/share/doc/ondin/README.md"
+install -m 0644 "${REPO}/LICENSE" "${ROOT}/usr/share/doc/mastik/LICENSE"
+install -m 0644 "${REPO}/THIRD-PARTY-NOTICES.md" "${ROOT}/usr/share/doc/mastik/THIRD-PARTY-NOTICES.md"
+install -m 0644 "${REPO}/README.md" "${ROOT}/usr/share/doc/mastik/README.md"
 # Renamed on the way in: "OFL.txt" alone does not say whose licence it is once
 # it sits beside four other licence texts.
-install -m 0644 "${REPO}/crates/ondin-core/assets/fonts/OFL.txt" \
-    "${ROOT}/usr/share/doc/ondin/Inter-OFL.txt"
+install -m 0644 "${REPO}/crates/mastik-core/assets/fonts/OFL.txt" \
+    "${ROOT}/usr/share/doc/mastik/Inter-OFL.txt"
 for l in $LICENSE_FILES; do
-    install -m 0644 "${REPO}/licenses/${l}" "${ROOT}/usr/share/doc/ondin/${l}"
+    install -m 0644 "${REPO}/licenses/${l}" "${ROOT}/usr/share/doc/mastik/${l}"
 done

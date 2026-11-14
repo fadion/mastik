@@ -1,0 +1,2453 @@
+//! Variables and modes (§5.3f, §15 D1039): the table's operations and rules, a
+//! binding drawn in the mode in force, the save format, `Resolved`'s bound
+//! corners, the paste rule and an instance's binding as an override.
+
+use mastik_core::Brush;
+use mastik_core::container::{Display, Flex};
+use mastik_core::kurbo::{RoundedRectRadii, Size};
+use mastik_core::peniko::Color;
+use mastik_core::variable::CollectionId;
+use mastik_core::{
+    BrushSource, Cell, Document, Fill, IdSource, Mode, ModeId, NodeId, NodeKind, OpError,
+    Operation, Placement, Resolved, Transaction, Value, VarId, VarKind, Variable,
+    keyed_by_position,
+};
+
+const WHITE: Color = Color::from_rgba8(255, 255, 255, 255);
+const NAVY: Color = Color::from_rgba8(10, 20, 80, 255);
+const RED: Color = Color::from_rgba8(200, 30, 30, 255);
+
+struct F {
+    doc: Document,
+    ids: IdSource,
+    root: NodeId,
+    /// A frame holding a rectangle.
+    frame: NodeId,
+    rect: NodeId,
+    light: ModeId,
+    dark: ModeId,
+    /// `brand`: white in Light, navy in Dark. `radius`: 4 and 12.
+    brand: VarId,
+    radius: VarId,
+}
+
+fn mode(id: ModeId, name: &str) -> Mode {
+    Mode {
+        id,
+        name: name.into(),
+    }
+}
+
+fn var(id: VarId, name: &str, kind: VarKind, cells: [(ModeId, Cell); 2]) -> Variable {
+    Variable {
+        id,
+        name: name.into(),
+        kind,
+        cells: cells.into(),
+        scope: None,
+        origin: None,
+        forked: None,
+        description: String::new(),
+    }
+}
+
+fn fixture() -> F {
+    let mut ids = IdSource::new(0xBE);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let (frame, rect) = (ids.mint(), ids.mint());
+    let (light, dark) = (ids.mint_mode(), ids.mint_mode());
+    let (brand, radius) = (ids.mint_var(), ids.mint_var());
+    doc.apply(&Transaction(vec![
+        Operation::CreateNode {
+            id: frame,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Artboard {
+                size: Size::new(100.0, 100.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        },
+        Operation::CreateNode {
+            id: rect,
+            parent: frame,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(40.0, 20.0),
+                corner_radii: RoundedRectRadii::from_single_radius(2.0),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        },
+        Operation::AddMode {
+            collection: CollectionId::FIRST,
+            mode: mode(light, "Light"),
+            index: 0,
+            cells: vec![],
+        },
+        Operation::AddMode {
+            collection: CollectionId::FIRST,
+            mode: mode(dark, "Dark"),
+            index: 1,
+            cells: vec![],
+        },
+        Operation::AddVariable {
+            var: var(
+                brand,
+                "brand/500",
+                VarKind::Color,
+                [(light, Cell::Color(WHITE)), (dark, Cell::Color(NAVY))],
+            ),
+        },
+        Operation::AddVariable {
+            var: var(
+                radius,
+                "radius/md",
+                VarKind::Number,
+                [(light, Cell::Number(4.0)), (dark, Cell::Number(12.0))],
+            ),
+        },
+    ]))
+    .expect("a frame, a rect and a two-mode table");
+    F {
+        doc,
+        ids,
+        root,
+        frame,
+        rect,
+        light,
+        dark,
+        brand,
+        radius,
+    }
+}
+
+/// `live` against a rebuild, node by node over what a bound corner can move.
+fn assert_matches_rebuild(doc: &Document, live: &Resolved) {
+    let fresh = Resolved::rebuild(doc);
+    for id in mastik_core::subtree_nodes(doc, &[doc.first_page()]) {
+        assert_eq!(live.used_kind(doc, id), fresh.used_kind(doc, id), "{id:?}");
+        assert_eq!(live.world_bounds(id), fresh.world_bounds(id), "{id:?}");
+        assert_eq!(live.ink_bounds(id), fresh.ink_bounds(id), "{id:?}");
+    }
+}
+
+fn bind_fill(doc: &mut Document, id: NodeId, var: VarId, alpha: f32) {
+    doc.apply(&Transaction(vec![Operation::SetFills {
+        id,
+        fills: keyed_by_position([Fill {
+            brush: BrushSource::Bound { var, alpha },
+            visible: true,
+        }]),
+    }]))
+    .expect("a bound fill");
+}
+
+fn drawn(doc: &Document, id: NodeId) -> Brush {
+    let fill = &doc.get(id).unwrap().paint().fills[0];
+    doc.resolve_brush(id, &fill.brush).into_owned()
+}
+
+/// A bound fill reads in the **default mode** — the first — until a frame above
+/// it sets one, then in that frame's; its `%` multiplies the variable's alpha.
+/// Undoing the mode puts the default back.
+#[test]
+fn a_bound_fill_draws_in_the_mode_in_force() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 0.5);
+    assert_eq!(
+        drawn(&f.doc, f.rect),
+        Brush::Solid(WHITE.multiply_alpha(0.5))
+    );
+    let out = f
+        .doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    assert_eq!(f.doc.mode_at(f.rect, CollectionId::FIRST), Some(f.dark));
+    assert_eq!(
+        drawn(&f.doc, f.rect),
+        Brush::Solid(NAVY.multiply_alpha(0.5))
+    );
+    f.doc.apply(&out.inverse).unwrap();
+    assert_eq!(f.doc.mode_at(f.rect, CollectionId::FIRST), Some(f.light));
+}
+
+/// **A group never sets a mode, and a frame only one that exists** — refused at
+/// the commit (`variable::check`), so the document is untouched.
+#[test]
+fn a_mode_is_set_only_on_a_frame_and_only_one_the_document_has() {
+    let mut f = fixture();
+    let before = f.doc.clone();
+    let on_rect = f.doc.apply(&Transaction(vec![Operation::SetModes {
+        id: f.rect,
+        modes: vec![f.dark],
+    }]));
+    assert!(matches!(on_rect, Err(OpError::Variables(_))));
+    let stray = f.doc.apply(&Transaction(vec![Operation::SetModes {
+        id: f.frame,
+        modes: vec![ModeId(f.ids.mint())],
+    }]));
+    assert!(matches!(stray, Err(OpError::Variables(_))));
+    assert_eq!(f.doc, before);
+}
+
+/// **A variable in use cannot be removed alone; with its users detached in the
+/// same transaction it can**, and one undo brings both back (D1038).
+#[test]
+fn removing_a_variable_in_use_needs_its_users_detached() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 1.0);
+    let alone = f.doc.apply(&Transaction(vec![Operation::RemoveVariable {
+        id: f.brand,
+    }]));
+    assert!(matches!(alone, Err(OpError::Variables(_))));
+    let detached = mastik_core::variable::detached(&f.doc, f.doc.get(f.rect).unwrap().clone());
+    let before = f.doc.clone();
+    let out = f
+        .doc
+        .apply(&Transaction(vec![
+            Operation::SetFills {
+                id: f.rect,
+                fills: detached.paint().fills.clone(),
+            },
+            Operation::RemoveVariable { id: f.brand },
+        ]))
+        .expect("detach, then remove");
+    assert_eq!(
+        drawn(&f.doc, f.rect),
+        Brush::Solid(WHITE),
+        "drawn as it was"
+    );
+    assert!(f.doc.variables().get(f.brand).is_none());
+    f.doc.apply(&out.inverse).unwrap();
+    assert_eq!(
+        f.doc, before,
+        "one undo restores the variable and the binding"
+    );
+}
+
+/// **Removing a mode takes its column, and undoing puts the column back** —
+/// the cells travel in the inverse. A frame set to it must be returned to
+/// *Inherit* in the same transaction.
+#[test]
+fn removing_a_mode_carries_its_column_in_the_inverse() {
+    let mut f = fixture();
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    let alone = f
+        .doc
+        .apply(&Transaction(vec![Operation::RemoveMode { id: f.dark }]));
+    assert!(matches!(alone, Err(OpError::Variables(_))));
+    let before = f.doc.clone();
+    let out = f
+        .doc
+        .apply(&Transaction(vec![
+            Operation::SetModes {
+                id: f.frame,
+                modes: Vec::new(),
+            },
+            Operation::RemoveMode { id: f.dark },
+        ]))
+        .unwrap();
+    assert_eq!(f.doc.variables().modes().count(), 1);
+    assert!(
+        !f.doc
+            .variables()
+            .get(f.brand)
+            .unwrap()
+            .cells
+            .contains_key(&f.dark)
+    );
+    f.doc.apply(&out.inverse).unwrap();
+    assert_eq!(f.doc, before);
+}
+
+/// **Moving a mode first makes it the default**: an unset frame's layers draw
+/// in it, its column is whole, and undo puts the order back.
+///
+/// flip: `move_mode_ops` re-adding at the old index → fails at the order.
+#[test]
+fn moving_a_mode_first_makes_it_the_default() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 1.0);
+    assert_eq!(drawn(&f.doc, f.rect), Brush::Solid(WHITE));
+    let before = f.doc.clone();
+    let ops = mastik_core::variable::move_mode_ops(&f.doc, f.dark, 0);
+    let out = f.doc.apply(&Transaction(ops)).expect("a move");
+    let order: Vec<ModeId> = f.doc.variables().modes().map(|m| m.id).collect();
+    assert_eq!(order, [f.dark, f.light]);
+    assert_eq!(drawn(&f.doc, f.rect), Brush::Solid(NAVY));
+    let brand = f.doc.variables().get(f.brand).unwrap();
+    assert_eq!(brand.cells.get(&f.dark), Some(&Cell::Color(NAVY)));
+    assert!(mastik_core::variable::move_mode_ops(&f.doc, f.dark, 0).is_empty());
+    f.doc.apply(&out.inverse).unwrap();
+    assert_eq!(f.doc, before);
+}
+
+/// An alias reads its target in the same mode, and a loop is refused.
+#[test]
+fn an_alias_follows_its_target_and_a_loop_is_refused() {
+    let mut f = fixture();
+    let accent = f.ids.mint_var();
+    f.doc
+        .apply(&Transaction(vec![Operation::AddVariable {
+            var: var(
+                accent,
+                "accent",
+                VarKind::Color,
+                [(f.light, Cell::Alias(f.brand)), (f.dark, Cell::Color(RED))],
+            ),
+        }]))
+        .unwrap();
+    assert_eq!(
+        f.doc.variables().resolve(accent, f.light),
+        Some(Value::Color(WHITE))
+    );
+    let looped = f.doc.apply(&Transaction(vec![Operation::SetVariableCell {
+        id: f.brand,
+        mode: f.light,
+        cell: Cell::Alias(accent),
+    }]));
+    assert!(matches!(looped, Err(OpError::Variables(_))));
+    // And a colour variable cannot alias a number one.
+    let wrong = f.doc.apply(&Transaction(vec![Operation::SetVariableCell {
+        id: f.brand,
+        mode: f.dark,
+        cell: Cell::Alias(f.radius),
+    }]));
+    assert!(matches!(wrong, Err(OpError::Variables(_))));
+}
+
+/// **A bound corner is drawn from `Resolved`'s used kind**, and a cell edit —
+/// which names no node — reaches it through `update`, equal to a rebuild.
+#[test]
+fn a_bound_corner_is_drawn_from_the_used_kind_and_follows_a_cell_edit() {
+    let mut f = fixture();
+    let ops = mastik_core::bind_corners_ops(&f.doc, f.rect, [Some(f.radius); 4]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let mut res = Resolved::rebuild(&f.doc);
+    let radius_of = |res: &Resolved, doc: &Document| match res.used_kind(doc, f.rect) {
+        Some(NodeKind::Rect { corner_radii, .. }) => corner_radii.top_left,
+        other => panic!("not a rect: {other:?}"),
+    };
+    assert_eq!(radius_of(&res, &f.doc), 4.0, "Light's 4, not the stored 0");
+    match f.doc.get(f.rect).unwrap().kind() {
+        NodeKind::Rect { corner_radii, .. } => {
+            assert_eq!(corner_radii.top_left, 0.0, "the bound literal is written 0")
+        }
+        _ => unreachable!(),
+    }
+    let out = f
+        .doc
+        .apply(&Transaction(vec![Operation::SetVariableCell {
+            id: f.radius,
+            mode: f.light,
+            cell: Cell::Number(9.0),
+        }]))
+        .unwrap();
+    assert!(
+        out.dirty.0.contains(&f.rect),
+        "the cell edit dirties its reader"
+    );
+    res.update(&f.doc, &out.dirty);
+    assert_eq!(radius_of(&res, &f.doc), 9.0);
+    assert_matches_rebuild(&f.doc, &res);
+    // A mode set on the frame dirties only the frame; `update` takes its subtree.
+    let out = f
+        .doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    res.update(&f.doc, &out.dirty);
+    assert_eq!(radius_of(&res, &f.doc), 12.0);
+    assert_matches_rebuild(&f.doc, &res);
+}
+
+/// A smoothed rect with a bound corner keeps its smoothing in the used kind, so
+/// its outline is the smoothed one at the drawn radii.
+///
+/// flip: `with_bound_corners` rebuilding the rect with `corner_smoothing: 0.0` →
+/// fails at "keeps its smoothing".
+#[test]
+fn a_bound_corner_keeps_the_rects_smoothing() {
+    let mut f = fixture();
+    let mut ops = vec![Operation::SetGeometry {
+        id: f.rect,
+        geometry: mastik_core::GeometryPatch::CornerSmoothing(0.6),
+    }];
+    ops.extend(mastik_core::bind_corners_ops(
+        &f.doc,
+        f.rect,
+        [Some(f.radius), None, None, None],
+    ));
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let res = Resolved::rebuild(&f.doc);
+    let used = res.used_kind(&f.doc, f.rect).unwrap().clone();
+    let NodeKind::Rect {
+        size,
+        corner_radii,
+        corner_smoothing,
+    } = used.clone()
+    else {
+        panic!("not a rect: {used:?}");
+    };
+    assert_eq!(
+        [corner_radii.top_left, corner_radii.top_right],
+        [4.0, 2.0],
+        "fixture: the bound corner draws Light's 4"
+    );
+    assert_eq!(corner_smoothing, 0.6, "keeps its smoothing");
+    assert_eq!(
+        mastik_core::geometry::local_path(&used),
+        Some(mastik_core::geometry::smoothed_rect(
+            size,
+            corner_radii,
+            0.6
+        )),
+    );
+}
+
+/// Detaching corners writes the radius they draw, and the binding goes.
+#[test]
+fn detaching_corners_keeps_what_they_draw() {
+    let mut f = fixture();
+    let ops = mastik_core::bind_corners_ops(&f.doc, f.rect, [Some(f.radius), None, None, None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let ops = mastik_core::detach_corners_ops(&f.doc, f.rect);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let node = f.doc.get(f.rect).unwrap();
+    assert_eq!(node.corner_vars(), [None; 4]);
+    match node.kind() {
+        NodeKind::Rect { corner_radii, .. } => {
+            assert_eq!(
+                [corner_radii.top_left, corner_radii.top_right],
+                [4.0, 2.0],
+                "the bound corner its number, the free one untouched"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// **A save holds the table, the bindings and the frame's mode, and reads back
+/// equal**; saving twice gives the same bytes (invariant 9).
+#[test]
+fn the_table_and_its_bindings_round_trip_through_a_save() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 0.25);
+    let ops = mastik_core::bind_corners_ops(&f.doc, f.rect, [Some(f.radius); 4]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    let bytes = mastik_core::io::save(&f.doc).unwrap();
+    let back = mastik_core::io::load(&bytes).unwrap();
+    assert_eq!(back, f.doc);
+    assert_eq!(mastik_core::io::save(&back).unwrap(), bytes);
+    let text = String::from_utf8(bytes).unwrap();
+    let version = format!(
+        "\"schema_version\": {}",
+        mastik_core::io::CURRENT_SCHEMA_VERSION
+    );
+    assert!(text.contains(&version), "written at the current version");
+    assert!(
+        text.contains("\"alpha\": 0.25"),
+        "the `%` rides in the binding"
+    );
+}
+
+/// **A file binding a variable it does not hold is refused on load**, the
+/// commit's rule — a binding to nothing has no value to draw.
+#[test]
+fn a_file_binding_a_missing_variable_is_refused() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 1.0);
+    let bytes = mastik_core::io::save(&f.doc).unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    // Re-id the bound variable in the table and nowhere else.
+    let vars = value["variables"]["vars"].as_array_mut().unwrap();
+    let entry = vars
+        .iter_mut()
+        .find(|v| v["name"] == "brand/500")
+        .expect("the fixture's table entry");
+    entry["id"] = serde_json::Value::from("ff:1");
+    let broken = serde_json::to_vec(&value).unwrap();
+    assert!(mastik_core::io::load(&broken).is_err());
+    assert!(mastik_core::io::load(&bytes).is_ok(), "the control loads");
+}
+
+/// The paste rule (D1038): within the document a binding is kept; into another
+/// document with a variable of the same name and kind it is rebound; into one
+/// without, it detaches to the value drawn at the copy.
+#[test]
+fn a_paste_keeps_rebinds_or_detaches() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 1.0);
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    let copy = vec![f.doc.capture_subtree(f.rect).unwrap()];
+    let carried = mastik_core::variable::carried(&f.doc, &copy);
+
+    // The same document: kept.
+    let same = mastik_core::variable::land(&f.doc, &carried, copy[0].clone());
+    assert_eq!(same[0].paint().fills[0].brush.var(), Some(f.brand));
+
+    // Another document holding a `brand/500` colour of its own: rebound to it.
+    let mut ids = IdSource::new(0xCD);
+    let mut other = Document::new(ids.mint());
+    let (m, theirs) = (ids.mint_mode(), ids.mint_var());
+    other
+        .apply(&Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: mode(m, "Default"),
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: Variable {
+                    id: theirs,
+                    name: "brand/500".into(),
+                    kind: VarKind::Color,
+                    cells: [(m, Cell::Color(RED))].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ]))
+        .unwrap();
+    let rebound = mastik_core::variable::land(&other, &carried, copy[0].clone());
+    assert_eq!(rebound[0].paint().fills[0].brush.var(), Some(theirs));
+
+    // A document with no such variable: detached to the copy's drawn value —
+    // navy, the Dark mode the source frame set.
+    let bare = Document::new(ids.mint());
+    let landed = mastik_core::variable::land(&bare, &carried, copy[0].clone());
+    assert_eq!(
+        landed[0].paint().fills[0].brush,
+        BrushSource::Literal(Brush::Solid(NAVY))
+    );
+    // And it pastes: the commit's check is satisfied.
+    let root = bare.first_page();
+    let (tx, _) = mastik_core::insert_subtrees(
+        &bare,
+        &mut ids,
+        &[Placement {
+            nodes: landed,
+            parent: root,
+            index: None,
+        }],
+        Default::default(),
+    );
+    bare.clone().apply(&tx).expect("a detached paste lands");
+
+    // A document whose `brand/500` is a number: a namesake of another kind is
+    // none (D1038's *"the same name and type"*) — detached, not rebound to it.
+    // flip: `rebind`'s by-name kind check dropped → fails *"a number is no
+    // namesake"*. (Its keep arm's check needs the copy's own id held at
+    // another kind, which no fixture here builds.)
+    let mut numbered = Document::new(ids.mint());
+    let (m, number) = (ids.mint_mode(), ids.mint_var());
+    numbered
+        .apply(&Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: mode(m, "Default"),
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: Variable {
+                    id: number,
+                    name: "brand/500".into(),
+                    kind: VarKind::Number,
+                    cells: [(m, Cell::Number(4.0))].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ]))
+        .unwrap();
+    let landed = mastik_core::variable::land(&numbered, &carried, copy[0].clone());
+    assert_eq!(
+        landed[0].paint().fills[0].brush,
+        BrushSource::Literal(Brush::Solid(NAVY)),
+        "a number is no namesake"
+    );
+}
+
+/// **A property paste follows a paste's rule** (§15 D1047): copied off a fill
+/// bound to *brand/500* at 50% in Dark, it stays bound in the same document,
+/// rebinds to another document's *brand/500*, and detaches to the navy it drew
+/// where there is none — each landing a commit accepts. Until D1047 the binding
+/// was carried verbatim and the commit refused it anywhere but at home.
+///
+/// Flip, run: carrying the bound brush verbatim fails at *"lands rebound"* —
+/// `BadBinding`, the commit's refusal this closes — before the predicted
+/// *"rebound to theirs"* is reached.
+#[test]
+fn a_property_paste_keeps_rebinds_or_detaches() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 0.5);
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    let props = mastik_core::build::properties_of(&f.doc, f.rect).unwrap();
+
+    let target = |doc: &mut Document, ids: &mut IdSource| {
+        let id = ids.mint();
+        let root = doc.first_page();
+        doc.apply(&Transaction(vec![Operation::CreateNode {
+            id,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(10.0, 10.0),
+                corner_radii: RoundedRectRadii::from_single_radius(0.0),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        }]))
+        .unwrap();
+        id
+    };
+    let fill0 = |doc: &Document, id: NodeId| doc.get(id).unwrap().paint().fills[0].brush.clone();
+
+    // The same document: kept, `%` and all.
+    let mut ids = IdSource::new(0xCE);
+    let here = target(&mut f.doc, &mut ids);
+    let tx = mastik_core::build::paste_properties(&f.doc, &[here], &props, &mut ids);
+    f.doc.apply(&tx).expect("lands at home");
+    assert_eq!(
+        fill0(&f.doc, here),
+        BrushSource::Bound {
+            var: f.brand,
+            alpha: 0.5
+        }
+    );
+
+    // Another document holding a `brand/500` colour of its own.
+    let mut other = Document::new(ids.mint());
+    let (m, theirs) = (ids.mint_mode(), ids.mint_var());
+    other
+        .apply(&Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: mode(m, "Default"),
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: Variable {
+                    id: theirs,
+                    name: "brand/500".into(),
+                    kind: VarKind::Color,
+                    cells: [(m, Cell::Color(RED))].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ]))
+        .unwrap();
+    let there = target(&mut other, &mut ids);
+    let tx = mastik_core::build::paste_properties(&other, &[there], &props, &mut ids);
+    other.apply(&tx).expect("lands rebound");
+    assert_eq!(
+        fill0(&other, there),
+        BrushSource::Bound {
+            var: theirs,
+            alpha: 0.5
+        },
+        "rebound to theirs"
+    );
+
+    // A document with none: detached to what it drew — navy at 50%.
+    let mut bare = Document::new(ids.mint());
+    let nowhere = target(&mut bare, &mut ids);
+    let tx = mastik_core::build::paste_properties(&bare, &[nowhere], &props, &mut ids);
+    bare.apply(&tx).expect("lands detached");
+    assert_eq!(
+        fill0(&bare, nowhere),
+        BrushSource::Literal(Brush::Solid(NAVY.multiply_alpha(0.5)))
+    );
+}
+
+/// **An instance's binding is an override compared by the binding** (§5.3d): a
+/// main rebinding *brand* → *accent* reaches a copy still bound to *brand*, and
+/// a copy bound elsewhere keeps its own.
+#[test]
+fn a_main_rebinding_reaches_a_copy_bound_as_it_was() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 1.0);
+    f.doc
+        .apply(&Transaction(vec![Operation::SetComponent {
+            id: f.frame,
+            component: true,
+        }]))
+        .unwrap();
+    let place = || Placement {
+        nodes: f.doc.capture_subtree(f.frame).unwrap(),
+        parent: f.root,
+        index: None,
+    };
+    let (tx, made) =
+        mastik_core::insert_subtrees(&f.doc, &mut f.ids, &[place(), place()], Default::default());
+    f.doc.apply(&tx).unwrap();
+    let copy_rect = |doc: &Document, i: NodeId| doc.get(i).unwrap().children()[0];
+    let (kept, own) = (copy_rect(&f.doc, made[0]), copy_rect(&f.doc, made[1]));
+    let accent = f.ids.mint_var();
+    let red = f.ids.mint_var();
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::AddVariable {
+                var: var(
+                    accent,
+                    "accent",
+                    VarKind::Color,
+                    [(f.light, Cell::Color(RED)), (f.dark, Cell::Color(RED))],
+                ),
+            },
+            Operation::AddVariable {
+                var: var(
+                    red,
+                    "red",
+                    VarKind::Color,
+                    [(f.light, Cell::Color(RED)), (f.dark, Cell::Color(RED))],
+                ),
+            },
+        ]))
+        .unwrap();
+    // The second copy binds elsewhere — its own override.
+    bind_fill(&mut f.doc, own, red, 1.0);
+    // The main rebinds.
+    let mut next = f.doc.get(f.rect).unwrap().paint().fills.clone();
+    next[0].brush = BrushSource::Bound {
+        var: accent,
+        alpha: 1.0,
+    };
+    let mut tx = Transaction(vec![Operation::SetFills {
+        id: f.rect,
+        fills: next,
+    }]);
+    mastik_core::propagate::owed(&f.doc, &mut tx, &mut f.ids);
+    f.doc.apply(&tx).unwrap();
+    let bound = |id| f.doc.get(id).unwrap().paint().fills[0].brush.var();
+    assert_eq!(
+        bound(kept),
+        Some(accent),
+        "the copy bound as the main was follows"
+    );
+    assert_eq!(bound(own), Some(red), "the copy bound elsewhere keeps it");
+}
+
+/// **An instance root's visibility binding is its own, as its visibility is**
+/// (§15 D1059, `propagate::is_placement`): a main's root bound to a boolean
+/// reaches no instance root — which would hide every instance wherever the
+/// variable is false — while a layer inside the main, bound the same way, does
+/// reach its copy; and an instance root's own binding is no override, so *Reset
+/// all* leaves it.
+///
+/// Flip, run: `SetVisibleVar` out of `is_placement` fails *"the main's root
+/// binding stays the main's"*.
+#[test]
+fn an_instance_roots_visibility_binding_is_its_own() {
+    let mut f = fixture();
+    let show = show_var(&mut f);
+    f.doc
+        .apply(&Transaction(vec![Operation::SetComponent {
+            id: f.frame,
+            component: true,
+        }]))
+        .unwrap();
+    let place = Placement {
+        nodes: f.doc.capture_subtree(f.frame).unwrap(),
+        parent: f.root,
+        index: None,
+    };
+    let (tx, made) = mastik_core::insert_subtrees(&f.doc, &mut f.ids, &[place], Default::default());
+    f.doc.apply(&tx).unwrap();
+    let inst = made[0];
+    let copy_rect = f.doc.get(inst).unwrap().children()[0];
+    let mut tx = Transaction(
+        mastik_core::bind_visible_ops(&f.doc, f.frame, show)
+            .into_iter()
+            .chain(mastik_core::bind_visible_ops(&f.doc, f.rect, show))
+            .collect(),
+    );
+    mastik_core::propagate::owed(&f.doc, &mut tx, &mut f.ids);
+    f.doc.apply(&tx).unwrap();
+    assert_eq!(
+        f.doc.get(inst).unwrap().visible_var(),
+        None,
+        "the main's root binding stays the main's"
+    );
+    assert_eq!(
+        f.doc.get(copy_rect).unwrap().visible_var(),
+        Some(show),
+        "a layer inside the main reaches its copy"
+    );
+    let own = Transaction(mastik_core::bind_visible_ops(&f.doc, inst, show));
+    f.doc.apply(&own).unwrap();
+    assert!(
+        !mastik_core::reset::overrides(&f.doc, inst)
+            .iter()
+            .any(|o| matches!(o.reset, Operation::SetVisibleVar { .. })),
+        "an instance root's own binding is no override"
+    );
+}
+
+/// **Deleting a variable detaches every user and every alias to it** — the fill
+/// to the colour it drew, the bound corner to its number, an alias to the value
+/// it resolved to — and one undo restores the lot (`variable::remove_ops`, D1038).
+#[test]
+fn deleting_a_variable_detaches_its_fields_and_its_aliases() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 1.0);
+    let ops = mastik_core::bind_corners_ops(&f.doc, f.rect, [Some(f.radius), None, None, None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let alias = f.ids.mint_var();
+    f.doc
+        .apply(&Transaction(vec![Operation::AddVariable {
+            var: var(
+                alias,
+                "button/bg",
+                VarKind::Color,
+                [(f.light, Cell::Alias(f.brand)), (f.dark, Cell::Color(RED))],
+            ),
+        }]))
+        .unwrap();
+    assert_eq!(mastik_core::variable::users(&f.doc, f.brand), vec![f.rect]);
+    let before = f.doc.clone();
+    let tx = Transaction(mastik_core::variable::remove_ops(
+        &f.doc,
+        &[f.brand, f.radius],
+    ));
+    let out = f.doc.apply(&tx).expect("detach, then remove");
+    assert_eq!(drawn(&f.doc, f.rect), Brush::Solid(WHITE));
+    let node = f.doc.get(f.rect).unwrap();
+    assert_eq!(node.corner_vars(), [None; 4]);
+    assert!(matches!(
+        node.kind(),
+        NodeKind::Rect { corner_radii, .. } if corner_radii.top_left == 4.0 && corner_radii.top_right == 2.0
+    ));
+    assert_eq!(
+        f.doc.variables().get(alias).unwrap().cells[&f.light],
+        Cell::Color(WHITE),
+        "the alias became the value it read"
+    );
+    f.doc.apply(&out.inverse).unwrap();
+    assert_eq!(f.doc, before);
+}
+
+/// **A deleted variable's users detach to what they drew in the mode in force
+/// at each**, not the default's: under a frame set to Dark, navy and 12.
+///
+/// flip: `remove_ops` resolving in the default mode → fails *"Dark's navy"*.
+#[test]
+fn deleting_a_variable_detaches_each_user_in_its_own_mode() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 1.0);
+    let ops = mastik_core::bind_corners_ops(&f.doc, f.rect, [Some(f.radius), None, None, None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    let tx = Transaction(mastik_core::variable::remove_ops(
+        &f.doc,
+        &[f.brand, f.radius],
+    ));
+    f.doc.apply(&tx).expect("detach, then remove");
+    assert_eq!(drawn(&f.doc, f.rect), Brush::Solid(NAVY), "Dark's navy");
+    assert!(matches!(
+        f.doc.get(f.rect).unwrap().kind(),
+        NodeKind::Rect { corner_radii, .. } if corner_radii.top_left == 12.0
+    ));
+}
+
+/// **A duplicated mode copies its source's column cell for cell**, an alias
+/// staying an alias, at the index asked; a mode that is not there copies
+/// nothing.
+#[test]
+fn copying_a_mode_copies_its_column() {
+    let mut f = fixture();
+    let alias = f.ids.mint_var();
+    f.doc
+        .apply(&Transaction(vec![Operation::AddVariable {
+            var: var(
+                alias,
+                "button/bg",
+                VarKind::Color,
+                [(f.light, Cell::Color(RED)), (f.dark, Cell::Alias(f.brand))],
+            ),
+        }]))
+        .unwrap();
+    let dusk = f.ids.mint_mode();
+    let ops = mastik_core::variable::copy_mode_ops(&f.doc, f.dark, dusk, "Dusk", 2);
+    assert!(!ops.is_empty(), "Dark is a mode");
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let t = f.doc.variables();
+    assert_eq!(t.first_collection().modes[2].id, dusk, "at the index asked");
+    for v in [f.brand, f.radius, alias] {
+        let cells = &t.get(v).unwrap().cells;
+        assert_eq!(cells[&dusk], cells[&f.dark], "{v:?}'s Dusk is its Dark");
+    }
+    let nowhere = f.ids.mint_mode();
+    assert!(mastik_core::variable::copy_mode_ops(&f.doc, nowhere, dusk, "x", 0).is_empty());
+}
+
+/// Deleting a mode returns its frames to *Inherit*; renaming a group moves its
+/// members and refuses a name already taken.
+#[test]
+fn deleting_a_mode_and_renaming_a_group() {
+    let mut f = fixture();
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    assert_eq!(mastik_core::variable::frames_set_to(&f.doc, f.dark), 1);
+    let tx = Transaction(mastik_core::variable::remove_mode_ops(&f.doc, f.dark));
+    f.doc.apply(&tx).unwrap();
+    assert!(f.doc.get(f.frame).unwrap().modes().is_empty());
+
+    let ops = mastik_core::variable::rename_group_ops(&f.doc, CollectionId::FIRST, "brand", "ink")
+        .unwrap();
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(f.doc.variables().get(f.brand).unwrap().name, "ink/500");
+    let ops =
+        mastik_core::variable::rename_group_ops(&f.doc, CollectionId::FIRST, "ink", "").unwrap();
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(f.doc.variables().get(f.brand).unwrap().name, "500");
+    // `radius/md` → `md` is free; then `radius` again over a taken `md`.
+    let clash = f.ids.mint_var();
+    f.doc
+        .apply(&Transaction(vec![Operation::AddVariable {
+            // One cell: Dark went above.
+            var: Variable {
+                id: clash,
+                name: "md".into(),
+                kind: VarKind::Number,
+                cells: [(f.light, Cell::Number(1.0))].into(),
+                scope: None,
+                origin: None,
+                forked: None,
+                description: String::new(),
+            },
+        }]))
+        .unwrap();
+    assert_eq!(
+        mastik_core::variable::rename_group_ops(&f.doc, CollectionId::FIRST, "radius", ""),
+        Err("md".to_string())
+    );
+}
+
+/// **A radius written over a bound corner detaches only that corner**
+/// (`build::keep_corner_bindings`, D1038 (2)): written as a field writes it —
+/// every corner as drawn — a click is a no-op and a per-corner edit of one leaves
+/// its bound neighbours bound at their 0 literal; written as the Scale tool
+/// writes it — from the literals — a bound corner keeps its binding rather than
+/// turning square; and a bind, which writes the bindings itself, is left alone.
+///
+/// Flip, run: keeping a binding only for the drawn value — the second cut —
+/// fails *"a literal-built write keeps the binding"*.
+///
+/// Flips, run: the pass answering `tx` untouched, and comparing the written
+/// value with the corner's literal rather than with what it draws — the first
+/// cut — both fail *"a click through a bound field is a no-op"*, the first
+/// assertion either can reach: a click writes the drawn 4 over a literal 0, and
+/// both read that as an edit. (This doc predicted *"the edited corner detaches"*
+/// for the first; it is never reached.)
+#[test]
+fn a_radius_written_over_a_bound_corner_detaches_that_corner() {
+    let mut f = fixture();
+    let bind = Transaction(mastik_core::bind_corners_ops(
+        &f.doc,
+        f.rect,
+        [Some(f.radius); 4],
+    ));
+    let bind = mastik_core::keep_corner_bindings(&f.doc, bind);
+    f.doc.apply(&bind).unwrap();
+    assert_eq!(
+        f.doc.get(f.rect).unwrap().corner_vars(),
+        [Some(f.radius); 4],
+        "a bind is its own"
+    );
+
+    let corners = |doc: &Document| match doc.get(f.rect).unwrap().kind() {
+        NodeKind::Rect { corner_radii, .. } => *corner_radii,
+        _ => unreachable!(),
+    };
+    // **What a field writes**: all four corners as drawn — Light's 4 — with the
+    // edited one changed. A bare click writes all four unchanged.
+    let click = Transaction(vec![Operation::SetGeometry {
+        id: f.rect,
+        geometry: mastik_core::GeometryPatch::CornerRadius(4.0),
+    }]);
+    let click = mastik_core::keep_corner_bindings(&f.doc, click);
+    assert!(
+        click.changes_nothing(&f.doc),
+        "a click through a bound field is a no-op"
+    );
+    let one = Transaction(vec![Operation::SetGeometry {
+        id: f.rect,
+        geometry: mastik_core::GeometryPatch::CornerRadii(RoundedRectRadii {
+            top_left: 9.0,
+            top_right: 4.0,
+            bottom_right: 4.0,
+            bottom_left: 4.0,
+        }),
+    }]);
+    f.doc
+        .apply(&mastik_core::keep_corner_bindings(&f.doc, one))
+        .unwrap();
+    let vars = f.doc.get(f.rect).unwrap().corner_vars();
+    assert_eq!(vars[0], None, "the edited corner detaches");
+    assert_eq!(vars[1..], [Some(f.radius); 3], "its neighbours stay bound");
+    assert_eq!(
+        [corners(&f.doc).top_left, corners(&f.doc).top_right],
+        [9.0, 0.0],
+        "and keep their 0 literal"
+    );
+
+    // **A writer that built the radii from the literals** — the Scale tool's
+    // photographic scale — writes a bound corner its own 0: still bound, not
+    // turned square, while the free corner takes its scaled value.
+    let scaled = Transaction(vec![Operation::SetGeometry {
+        id: f.rect,
+        geometry: mastik_core::GeometryPatch::CornerRadii(RoundedRectRadii {
+            top_left: 18.0,
+            top_right: 0.0,
+            bottom_right: 0.0,
+            bottom_left: 0.0,
+        }),
+    }]);
+    f.doc
+        .apply(&mastik_core::keep_corner_bindings(&f.doc, scaled))
+        .unwrap();
+    let vars = f.doc.get(f.rect).unwrap().corner_vars();
+    assert_eq!(
+        vars[1..],
+        [Some(f.radius); 3],
+        "a literal-built write keeps the binding"
+    );
+    assert_eq!(corners(&f.doc).top_left, 18.0);
+}
+
+/// `f`'s frame made a flex row — gap 5, no padding — holding its rect and a
+/// second one beside it, which is returned.
+fn flex_frame(f: &mut F) -> NodeId {
+    let second = f.ids.mint();
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: second,
+                parent: f.frame,
+                index: 1,
+                kind: NodeKind::Rect {
+                    size: Size::new(40.0, 20.0),
+                    corner_radii: RoundedRectRadii::from_single_radius(0.0),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetDisplay {
+                id: f.frame,
+                display: Some(Display::Flex(Flex {
+                    column_gap: 5.0,
+                    ..Flex::default()
+                })),
+            },
+        ]))
+        .expect("a flex row of two");
+    second
+}
+
+fn spacing(doc: &Document, id: NodeId) -> [f64; 6] {
+    doc.get(id).unwrap().display().unwrap().spacing()
+}
+
+/// **A bound gap and padding are laid out at their variable's number, in the
+/// mode in force** (§15 D1058), never at the 0 their literals hold: bound to
+/// `radius/md` (4 in Light, 12 in Dark), the column gap and the left padding
+/// place the first rect at 4 and the second at 4 + 40 + 4, then at 12 and 64
+/// once the frame sets Dark; a cell's edit moves them again.
+///
+/// Flip, run: `UsedView::display` and `CommittedView::display` answering the
+/// stored layout (`n.display()`) rather than `resolved_display` fails *"the
+/// padding is Light's 4"* at 0 — the literal laid out.
+#[test]
+fn a_bound_gap_and_padding_lay_out_at_the_variables_number() {
+    let mut f = fixture();
+    let second = flex_frame(&mut f);
+    let mut vars = [None; 6];
+    vars[0] = Some(f.radius);
+    vars[5] = Some(f.radius);
+    let ops = mastik_core::bind_spacing_ops(&f.doc, f.frame, vars);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(
+        spacing(&f.doc, f.frame),
+        [0.0; 6],
+        "the bound literals are 0"
+    );
+    let x = |doc: &Document, id| Resolved::rebuild(doc).world_bounds(id).unwrap().min_x();
+    assert_eq!(x(&f.doc, f.rect), 4.0, "the padding is Light's 4");
+    assert_eq!(x(&f.doc, second), 48.0, "and so is the gap");
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    assert_eq!(x(&f.doc, f.rect), 12.0, "Dark's 12");
+    assert_eq!(x(&f.doc, second), 64.0);
+    f.doc
+        .apply(&Transaction(vec![Operation::SetVariableCell {
+            id: f.radius,
+            mode: f.dark,
+            cell: Cell::Number(2.0),
+        }]))
+        .unwrap();
+    assert_eq!(x(&f.doc, second), 44.0, "a cell's edit lays it out again");
+}
+
+/// **A gap or a padding written over a bound slot detaches it, with
+/// `keep_corner_bindings`' two halves** (§15 D1058): written what it lays out
+/// at, or its own 0 literal, it stays bound; written anything else it detaches
+/// to that number; a layout taken away clears every binding.
+///
+/// Flip, run: dropping the literal half (`|| written[k] == literal[k]`) fails
+/// *"a write from the document's own layout keeps the binding"* — the Container
+/// card's `display_tx` changing the row gap carries the bound column gap's 0
+/// forward, which then read as an edit and detached it.
+#[test]
+fn a_spacing_written_over_a_bound_slot_detaches_it() {
+    let mut f = fixture();
+    flex_frame(&mut f);
+    let mut vars = [None; 6];
+    vars[0] = Some(f.radius);
+    vars[2] = Some(f.radius);
+    let bind = Transaction(mastik_core::bind_spacing_ops(&f.doc, f.frame, vars));
+    f.doc
+        .apply(&mastik_core::keep_spacing_bindings(&f.doc, bind))
+        .unwrap();
+    let write = |doc: &Document, s: [f64; 6]| {
+        let mut d = doc.get(f.frame).unwrap().display().unwrap().clone();
+        d.set_spacing(s);
+        mastik_core::keep_spacing_bindings(
+            doc,
+            Transaction(vec![Operation::SetDisplay {
+                id: f.frame,
+                display: Some(d),
+            }]),
+        )
+    };
+    // The document's own layout with the row gap changed: both bound slots
+    // written their 0.
+    let tx = write(&f.doc, [0.0, 7.0, 0.0, 0.0, 0.0, 0.0]);
+    f.doc.apply(&tx).unwrap();
+    assert_eq!(
+        f.doc.get(f.frame).unwrap().spacing_vars(),
+        vars,
+        "a write from the document's own layout keeps the binding"
+    );
+    // A field's write over the layout as drawn: the gap's Light 4 handed back,
+    // the top padding written 9.
+    let tx = write(&f.doc, [4.0, 7.0, 9.0, 0.0, 0.0, 0.0]);
+    f.doc.apply(&tx).unwrap();
+    let now = f.doc.get(f.frame).unwrap().spacing_vars();
+    assert_eq!(
+        now[0],
+        Some(f.radius),
+        "the gap written as drawn stays bound"
+    );
+    assert_eq!(now[2], None, "the padding written 9 detaches");
+    assert_eq!(spacing(&f.doc, f.frame)[..3], [0.0, 7.0, 9.0]);
+    let tx = mastik_core::keep_spacing_bindings(
+        &f.doc,
+        Transaction(vec![Operation::SetDisplay {
+            id: f.frame,
+            display: None,
+        }]),
+    );
+    f.doc.apply(&tx).unwrap();
+    assert_eq!(
+        f.doc.get(f.frame).unwrap().spacing_vars(),
+        [None; 6],
+        "a layout taken away takes its bindings"
+    );
+}
+
+/// Detaching a slot keeps the number it laid out at; deleting the variable
+/// detaches every slot bound to it the same way; and the bindings survive a save.
+#[test]
+fn spacing_bindings_detach_to_what_they_draw_and_round_trip() {
+    let mut f = fixture();
+    flex_frame(&mut f);
+    let mut vars = [None; 6];
+    vars[1] = Some(f.radius);
+    vars[3] = Some(f.radius);
+    let ops = mastik_core::bind_spacing_ops(&f.doc, f.frame, vars);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let bytes = mastik_core::io::save(&f.doc).unwrap();
+    let back = mastik_core::io::load(&bytes).unwrap();
+    assert_eq!(back, f.doc, "the bindings round-trip");
+    let mut which = [false; 6];
+    which[1] = true;
+    let ops = mastik_core::detach_spacing_ops(&f.doc, f.frame, which);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(f.doc.get(f.frame).unwrap().spacing_vars()[1], None);
+    assert_eq!(
+        spacing(&f.doc, f.frame)[1],
+        4.0,
+        "the row gap keeps Light's 4"
+    );
+    let tx = Transaction(mastik_core::variable::remove_ops(&f.doc, &[f.radius]));
+    f.doc.apply(&tx).expect("detach, then remove");
+    assert_eq!(f.doc.get(f.frame).unwrap().spacing_vars(), [None; 6]);
+    assert_eq!(spacing(&f.doc, f.frame)[3], 4.0, "the right padding too");
+}
+
+/// A boolean variable `show`: true in Light, false in Dark.
+fn show_var(f: &mut F) -> VarId {
+    let show = f.ids.mint_var();
+    f.doc
+        .apply(&Transaction(vec![Operation::AddVariable {
+            var: var(
+                show,
+                "state/show",
+                VarKind::Boolean,
+                [
+                    (f.light, Cell::Boolean(true)),
+                    (f.dark, Cell::Boolean(false)),
+                ],
+            ),
+        }]))
+        .expect("a boolean variable");
+    show
+}
+
+/// **A layer's visibility bound to a boolean variable shows by its value in
+/// the mode in force** (§15 D1059) — drawn, picked and laid out by it: in a flex
+/// row, the bound rect hidden in Dark leaves the flow and the second rect takes
+/// its place at the padding's edge; Light brings it back.
+///
+/// Flip, run: `DocView::visible` answering the literal (`n.visible()`) fails
+/// *"hidden in Dark, out of the flow"* — the literal's `true` laying it out.
+#[test]
+fn a_bound_visibility_shows_by_its_variable_in_the_mode_in_force() {
+    let mut f = fixture();
+    let second = flex_frame(&mut f);
+    let show = show_var(&mut f);
+    let ops = mastik_core::bind_visible_ops(&f.doc, f.rect, show);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert!(f.doc.shown(f.rect), "Light's true");
+    let x = |doc: &Document| Resolved::rebuild(doc).world_bounds(second).unwrap().min_x();
+    assert_eq!(x(&f.doc), 45.0, "beside the bound rect, gap 5");
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    assert!(!f.doc.shown(f.rect), "Dark's false");
+    assert!(
+        f.doc.get(f.rect).unwrap().visible(),
+        "its literal untouched"
+    );
+    assert_eq!(x(&f.doc), 0.0, "hidden in Dark, out of the flow");
+}
+
+/// **A visibility written over a bound layer detaches it — and only a write of
+/// what it shows keeps it** (§15 D1059): one half, where corners and spacing
+/// have two. Hidden by Dark, its literal `true`: the eye writing `true` to show
+/// it detaches, landing shown.
+///
+/// Flip, run: the literal half added (`|| *visible == node.visible()`) fails
+/// *"showing a hidden bound layer detaches it"* — the write excused as the
+/// literal, the layer left bound and hidden.
+#[test]
+fn a_visibility_written_over_a_bound_layer_detaches_it() {
+    let mut f = fixture();
+    let show = show_var(&mut f);
+    let ops = mastik_core::bind_visible_ops(&f.doc, f.rect, show);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let write = |doc: &Document, visible| {
+        mastik_core::keep_visible_bindings(
+            doc,
+            Transaction(vec![Operation::SetVisible {
+                id: f.rect,
+                visible,
+            }]),
+        )
+    };
+    let same = write(&f.doc, true);
+    assert!(
+        same.changes_nothing(&f.doc),
+        "a write of what it shows keeps the binding"
+    );
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    let tx = write(&f.doc, true);
+    f.doc.apply(&tx).unwrap();
+    assert_eq!(
+        f.doc.get(f.rect).unwrap().visible_var(),
+        None,
+        "showing a hidden bound layer detaches it"
+    );
+    assert!(f.doc.shown(f.rect), "and it shows");
+}
+
+/// Detaching a visibility keeps what it showed; deleting its variable detaches
+/// it the same way; the binding and a boolean cell round-trip through a save;
+/// and a boolean binding refuses a number variable.
+#[test]
+fn a_visibility_binding_detaches_to_what_it_shows_and_round_trips() {
+    let mut f = fixture();
+    let show = show_var(&mut f);
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    let ops = mastik_core::bind_visible_ops(&f.doc, f.rect, show);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let bytes = mastik_core::io::save(&f.doc).unwrap();
+    let back = mastik_core::io::load(&bytes).unwrap();
+    assert_eq!(back, f.doc, "the binding and the boolean cells round-trip");
+    assert!(
+        String::from_utf8(bytes)
+            .unwrap()
+            .contains("\"boolean\": false"),
+        "a boolean cell is written as one"
+    );
+    let before = f.doc.clone();
+    f.doc
+        .apply(&Transaction(mastik_core::detach_visible_ops(
+            &f.doc, f.rect,
+        )))
+        .unwrap();
+    let node = f.doc.get(f.rect).unwrap();
+    assert_eq!(
+        (node.visible_var(), node.visible()),
+        (None, false),
+        "detached hidden"
+    );
+    f.doc = before;
+    let tx = Transaction(mastik_core::variable::remove_ops(&f.doc, &[show]));
+    f.doc.apply(&tx).expect("detach, then remove");
+    let node = f.doc.get(f.rect).unwrap();
+    assert_eq!(
+        (node.visible_var(), node.visible()),
+        (None, false),
+        "deleted, hidden"
+    );
+    let wrong = f.doc.apply(&Transaction(vec![Operation::SetVisibleVar {
+        id: f.rect,
+        var: Some(f.radius),
+    }]));
+    assert!(wrong.is_err(), "a number variable cannot bind visibility");
+}
+
+/// Binding a paint keeps its `%`; detaching it leaves the colour it drew.
+#[test]
+fn binding_a_paint_keeps_its_percent_and_detaching_keeps_its_colour() {
+    let mut f = fixture();
+    f.doc
+        .apply(&Transaction(vec![Operation::SetFills {
+            id: f.rect,
+            fills: keyed_by_position([Fill {
+                brush: RED.with_alpha(0.5).into(),
+                visible: true,
+            }]),
+        }]))
+        .unwrap();
+    let ids = [f.rect];
+    let tx =
+        mastik_core::bind_brush_at_all(&f.doc, &ids, mastik_core::PaintTarget::Fill, 0, f.brand);
+    f.doc.apply(&tx).unwrap();
+    assert_eq!(
+        f.doc.get(f.rect).unwrap().paint().fills[0].brush,
+        BrushSource::Bound {
+            var: f.brand,
+            alpha: 0.5
+        }
+    );
+    let tx = mastik_core::detach_brush_at_all(&f.doc, &ids, mastik_core::PaintTarget::Fill, 0);
+    f.doc.apply(&tx).unwrap();
+    assert_eq!(
+        f.doc.get(f.rect).unwrap().paint().fills[0].brush,
+        BrushSource::Literal(Brush::Solid(WHITE.multiply_alpha(0.5)))
+    );
+}
+
+/// A small deterministic PRNG — `tests/resolve.rs`'s shape.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0 >> 33
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// **`update` ≡ `rebuild` over random variable and mode edits** (§5.9, D1037
+/// premise (ii)): the operations that name no node — a cell edit, a variable
+/// rewritten, a mode added, removed or renamed, a kit's mapping — and the ones
+/// that change which mode a subtree reads — a frame's mode, a reparent across
+/// frames — authored at random over rectangles whose corners, gaps, sizes,
+/// visibility, stroke widths and shadow blurs are bound to the document's
+/// variables and a kit's, with undos between.
+///
+/// flips: a cell edit dirtying nothing (`op_set_variable_cell` without its
+/// `bound_nodes` extend) fails here with a used-kind mismatch; `SetModeName`
+/// or `SetKitModes` without its extend fails here too, a kit-bound rect a
+/// rename or a mapping behind.
+#[test]
+fn incremental_update_equals_rebuild_over_random_variable_ops() {
+    for seed in 0..40u64 {
+        let mut rng = Lcg(seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(7));
+        let mut f = fixture();
+        let other = f.ids.mint();
+        f.doc
+            .apply(&Transaction(vec![Operation::CreateNode {
+                id: other,
+                parent: f.root,
+                index: 1,
+                kind: NodeKind::Artboard {
+                    size: Size::new(80.0, 80.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            }]))
+            .unwrap();
+        let frames = [f.frame, other];
+        // A flex row, so a bound gap or padding moves its items (§15 D1058).
+        let second = flex_frame(&mut f);
+        // And a boolean, so a bound visibility takes an item out of the flow
+        // (§15 D1059).
+        let show = show_var(&mut f);
+        // And a kit whose modes match the document's by name or not — so a
+        // mode's rename or the kit's mapping moves which column its variable
+        // reads (§15 D1064).
+        const KIT: &str = "5eed0000000000000000000000000011";
+        let (k_light, k_night, kr) = (f.ids.mint_mode(), f.ids.mint_mode(), f.ids.mint_var());
+        let kit_mode = |id, name: &str| mastik_core::variable::KitMode {
+            id,
+            name: name.into(),
+            from: id,
+            collection: String::new(),
+        };
+        f.doc
+            .apply(&Transaction(vec![
+                Operation::SetKitModes {
+                    kit: KIT.into(),
+                    modes: Some(mastik_core::variable::KitModes {
+                        name: None,
+                        modes: vec![kit_mode(k_light, "Light"), kit_mode(k_night, "Night")],
+                        map: Default::default(),
+                    }),
+                },
+                Operation::AddVariable {
+                    var: Variable {
+                        id: kr,
+                        name: "kit/radius".into(),
+                        kind: VarKind::Number,
+                        cells: [(k_light, Cell::Number(3.0)), (k_night, Cell::Number(9.0))].into(),
+                        scope: None,
+                        origin: Some(mastik_core::variable::VarOrigin {
+                            kit: KIT.into(),
+                            var: kr,
+                            version: 1,
+                        }),
+                        forked: None,
+                        description: String::new(),
+                    },
+                },
+            ]))
+            .unwrap();
+        let mut rects = vec![f.rect, second];
+        let mut hist = mastik_core::History::new();
+        let mut res = Resolved::rebuild(&f.doc);
+        for step in 0..50 {
+            let modes: Vec<ModeId> = f.doc.variables().modes().map(|m| m.id).collect();
+            let rect = rects[rng.below(rects.len())];
+            let number = if rng.below(2) == 0 { f.radius } else { kr };
+            let tx = match rng.below(19) {
+                0 => {
+                    let id = f.ids.mint();
+                    rects.push(id);
+                    Transaction(vec![Operation::CreateNode {
+                        id,
+                        parent: frames[rng.below(2)],
+                        index: 0,
+                        kind: NodeKind::Rect {
+                            size: Size::new(10.0, 10.0),
+                            corner_radii: RoundedRectRadii::from_single_radius(1.0),
+                            corner_smoothing: 0.0,
+                        },
+                        transform: None,
+                        name: None,
+                    }])
+                }
+                1 => {
+                    let mut vars = [None; 4];
+                    vars[rng.below(4)] = Some(number);
+                    Transaction(mastik_core::bind_corners_ops(&f.doc, rect, vars))
+                }
+                2 => Transaction(mastik_core::detach_corners_ops(&f.doc, rect)),
+                3 => Transaction(vec![Operation::SetVariableCell {
+                    id: f.radius,
+                    mode: modes[rng.below(modes.len())],
+                    cell: Cell::Number(rng.below(30) as f64),
+                }]),
+                4 => {
+                    let mode = match rng.below(modes.len() + 1) {
+                        0 => None,
+                        k => Some(modes[k - 1]),
+                    };
+                    Transaction(vec![Operation::SetModes {
+                        id: frames[rng.below(2)],
+                        modes: mode.into_iter().collect(),
+                    }])
+                }
+                5 => Transaction(vec![Operation::Reparent {
+                    id: rect,
+                    new_parent: frames[rng.below(2)],
+                    index: 0,
+                }]),
+                // A mode at the front — which moves the default every unset
+                // frame reads in — with a cell for every variable.
+                6 => {
+                    let id = f.ids.mint_mode();
+                    let cells = f
+                        .doc
+                        .variables()
+                        .local()
+                        .map(|v| {
+                            let cell = match v.kind {
+                                VarKind::Color => Cell::Color(RED),
+                                VarKind::Number => Cell::Number(rng.below(20) as f64),
+                                VarKind::Boolean => Cell::Boolean(rng.below(2) == 0),
+                                VarKind::String => Cell::String(format!("s{}", rng.below(20))),
+                            };
+                            (v.id, cell)
+                        })
+                        .collect();
+                    Transaction(vec![Operation::AddMode {
+                        collection: CollectionId::FIRST,
+                        mode: mode(id, &format!("M{step}")),
+                        index: 0,
+                        cells,
+                    }])
+                }
+                // Bind a gap or a padding of the flex frame, or detach one.
+                7 => {
+                    let mut vars = [None; 6];
+                    vars[rng.below(6)] = Some(f.radius);
+                    Transaction(mastik_core::bind_spacing_ops(&f.doc, f.frame, vars))
+                }
+                8 => {
+                    let mut which = [false; 6];
+                    which[rng.below(6)] = true;
+                    Transaction(mastik_core::detach_spacing_ops(&f.doc, f.frame, which))
+                }
+                // Bind a rect's visibility, or detach it.
+                9 => Transaction(mastik_core::bind_visible_ops(&f.doc, rect, show)),
+                10 => Transaction(mastik_core::detach_visible_ops(&f.doc, rect)),
+                // Bind a rect's or a frame's width or height, or detach one
+                // (§15 D1061) — a bound item's size moves its flex neighbours.
+                11 | 12 => {
+                    let id = if rng.below(3) == 0 {
+                        frames[rng.below(2)]
+                    } else {
+                        rect
+                    };
+                    let mut axes = [false; 2];
+                    axes[rng.below(2)] = true;
+                    if step % 2 == 0 {
+                        let vars = axes.map(|a| a.then_some(f.radius));
+                        Transaction(mastik_core::bind_size_ops(&f.doc, id, vars))
+                    } else {
+                        Transaction(mastik_core::detach_size_ops(&f.doc, id, axes))
+                    }
+                }
+                // A stroke whose width is bound — its ink is the width's.
+                13 => Transaction(vec![Operation::SetStrokes {
+                    id: rect,
+                    strokes: mastik_core::keyed_by_position([mastik_core::Stroke {
+                        width: 0.0,
+                        width_var: Some(number),
+                        ..Default::default()
+                    }]),
+                }]),
+                // A drop shadow whose blur is bound — its ink is the blur's.
+                14 => {
+                    let mut e = mastik_core::Effect::new(mastik_core::EffectKind::DropShadow(
+                        mastik_core::Shadow::default(),
+                    ));
+                    e.vars[mastik_core::EFFECT_BLUR] = Some(number);
+                    Transaction(vec![Operation::SetEffects {
+                        id: rect,
+                        effects: mastik_core::keyed_by_position([e]),
+                    }])
+                }
+                // A variable rewritten whole, as a kit update writes one.
+                15 => {
+                    let mut v = f.doc.variables().get(number).unwrap().clone();
+                    for c in v.cells.values_mut() {
+                        *c = Cell::Number(rng.below(25) as f64);
+                    }
+                    Transaction(vec![Operation::SetVariable { var: v }])
+                }
+                // A document mode renamed onto a kit mode's name, or off it.
+                16 => Transaction(vec![Operation::SetModeName {
+                    id: modes[rng.below(modes.len())],
+                    name: ["Light", "Night", "Dusk"][rng.below(3)].into(),
+                }]),
+                // The kit's mapping: a document mode set to a kit mode by hand,
+                // or the entries cleared.
+                17 => {
+                    let mut km = f.doc.variables().kits()[KIT].clone();
+                    if rng.below(2) == 0 {
+                        km.map.clear();
+                    } else {
+                        km.map.insert(
+                            modes[rng.below(modes.len())],
+                            [k_light, k_night][rng.below(2)],
+                        );
+                    }
+                    Transaction(vec![Operation::SetKitModes {
+                        kit: KIT.into(),
+                        modes: Some(km),
+                    }])
+                }
+                // Remove a mode (never the last), returning its frames to Inherit.
+                _ if modes.len() > 1 => {
+                    let gone = modes[rng.below(modes.len())];
+                    let mut ops: Vec<Operation> = frames
+                        .iter()
+                        .filter(|fr| f.doc.get(**fr).unwrap().modes() == [gone])
+                        .map(|fr| Operation::SetModes {
+                            id: *fr,
+                            modes: Vec::new(),
+                        })
+                        .collect();
+                    ops.push(Operation::RemoveMode { id: gone });
+                    Transaction(ops)
+                }
+                _ => continue,
+            };
+            if tx.0.is_empty() {
+                continue;
+            }
+            let dirty = match hist.commit(&mut f.doc, tx) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            res.update(&f.doc, &dirty);
+            assert_matches_rebuild(&f.doc, &res);
+            if rng.below(5) == 0
+                && let Some(d) = hist.undo(&mut f.doc).ok().flatten()
+            {
+                res.update(&f.doc, &d);
+                assert_matches_rebuild(&f.doc, &res);
+            }
+        }
+    }
+}
+
+/// **A `%` on a bound paint keeps its binding; a colour detaches it**
+/// (`build::edited_brush`, D1038).
+#[test]
+fn an_edit_as_drawn_keeps_a_binding_for_a_percent_and_detaches_for_a_colour() {
+    let mut f = fixture();
+    bind_fill(&mut f.doc, f.rect, f.brand, 1.0);
+    let src = f.doc.get(f.rect).unwrap().paint().fills[0].brush.clone();
+    let faded = mastik_core::edited_brush(&f.doc, f.rect, &src, |b| match b {
+        Brush::Solid(c) => Brush::Solid(c.with_alpha(0.4)),
+        other => other.clone(),
+    });
+    match faded {
+        BrushSource::Bound { var, alpha } => {
+            assert_eq!(var, f.brand);
+            assert!((alpha - 0.4).abs() < 1e-6, "alpha {alpha}");
+        }
+        other => panic!("detached: {other:?}"),
+    }
+    let recoloured = mastik_core::edited_brush(&f.doc, f.rect, &src, |_| Brush::Solid(RED));
+    assert_eq!(recoloured, BrushSource::Literal(Brush::Solid(RED)));
+}
+
+/// A number variable `size/w`: 60 in Light, 80 in Dark.
+fn width_var(f: &mut F) -> VarId {
+    let w = f.ids.mint_var();
+    f.doc
+        .apply(&Transaction(vec![Operation::AddVariable {
+            var: var(
+                w,
+                "size/w",
+                VarKind::Number,
+                [(f.light, Cell::Number(60.0)), (f.dark, Cell::Number(80.0))],
+            ),
+        }]))
+        .unwrap();
+    w
+}
+
+/// `id`'s stored size.
+fn stored_size(doc: &Document, id: NodeId) -> Size {
+    doc.get(id).unwrap().kind().box_size().unwrap()
+}
+
+/// **A bound width is drawn and laid out at its variable's number, in the mode
+/// in force** (§15 D1061), never at the 0 its literal holds — on the layer
+/// itself, on a child pinned against a bound frame, and on an item's flex
+/// neighbour; and a live `Resolved` updated by a cell's edit and a mode's
+/// switch agrees with a rebuild.
+///
+/// Flips, run: `DocView::kind` answering the stored kind (`n.kind().clone()`)
+/// fails *"the neighbour sits past the bound width"* at 5 — the first rect laid
+/// at 0 wide, the neighbour one gap in; `with_bound_size` dropped from
+/// `place_node` fails *"the rect is drawn at Light's 60"* at 0; and
+/// `Node::reads_variables` leaving the size out — a cell's edit dirtying no
+/// bound size — fails *"a cell's edit places it again"* at 70, and the random
+/// test below with a frame's used size a cell behind.
+#[test]
+fn a_bound_size_is_drawn_and_laid_out_at_the_variables_number() {
+    let mut f = fixture();
+    let w = width_var(&mut f);
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(
+        stored_size(&f.doc, f.rect),
+        Size::new(0.0, 20.0),
+        "the literal is 0"
+    );
+    let width = |doc: &Document, id| Resolved::rebuild(doc).world_bounds(id).unwrap().width();
+    assert_eq!(
+        width(&f.doc, f.rect),
+        60.0,
+        "the rect is drawn at Light's 60"
+    );
+
+    // A child pinned 10 from the right of a frame whose width is bound.
+    let pinned = f.ids.mint();
+    f.doc
+        .apply(&Transaction(vec![Operation::CreateNode {
+            id: pinned,
+            parent: f.frame,
+            index: 1,
+            kind: NodeKind::Ellipse {
+                size: Size::new(10.0, 10.0),
+                arc: mastik_core::EllipseArc::default(),
+            },
+            transform: None,
+            name: None,
+        }]))
+        .unwrap();
+    f.doc
+        .apply(&Transaction(vec![Operation::SetInsets {
+            id: pinned,
+            insets: mastik_core::Insets {
+                right: Some(mastik_core::LengthPct::Px(10.0)),
+                ..Default::default()
+            },
+        }]))
+        .unwrap();
+    let ops = mastik_core::bind_size_ops(&f.doc, f.frame, [Some(w), None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let mut live = Resolved::rebuild(&f.doc);
+    let right = |live: &Resolved| live.world_bounds(pinned).unwrap().max_x();
+    assert_eq!(right(&live), 50.0, "pinned against the frame's bound 60");
+    let out = f
+        .doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    live.update(&f.doc, &out.dirty);
+    assert_eq!(right(&live), 70.0, "Dark's 80");
+    assert_matches_rebuild(&f.doc, &live);
+    let out = f
+        .doc
+        .apply(&Transaction(vec![Operation::SetVariableCell {
+            id: w,
+            mode: f.dark,
+            cell: Cell::Number(100.0),
+        }]))
+        .unwrap();
+    live.update(&f.doc, &out.dirty);
+    assert_eq!(right(&live), 90.0, "a cell's edit places it again");
+    assert_matches_rebuild(&f.doc, &live);
+
+    // A flex row: the second item follows the first's bound width.
+    let mut g = fixture();
+    let w = width_var(&mut g);
+    let second = flex_frame(&mut g);
+    let ops = mastik_core::bind_size_ops(&g.doc, g.rect, [Some(w), None]);
+    g.doc.apply(&Transaction(ops)).unwrap();
+    let x = Resolved::rebuild(&g.doc)
+        .world_bounds(second)
+        .unwrap()
+        .min_x();
+    assert_eq!(x, 65.0, "the neighbour sits past the bound width");
+}
+
+/// **A size written over a bound axis detaches it, with the corners' two
+/// halves** (§15 D1061): an axis written what it draws, or its own 0 literal,
+/// stays bound with its literal put back; written anything else it detaches to
+/// that size.
+///
+/// Flip, run: dropping the literal half (`|| w[k] == l[k]`) fails *"a write of
+/// the stored size keeps the binding"*.
+#[test]
+fn a_size_written_over_a_bound_axis_detaches_it() {
+    let mut f = fixture();
+    let w = width_var(&mut f);
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), Some(w)]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let write = |doc: &Document, s: Size| {
+        mastik_core::keep_size_bindings(
+            doc,
+            None,
+            Transaction(vec![Operation::SetGeometry {
+                id: f.rect,
+                geometry: mastik_core::GeometryPatch::Size(s),
+            }]),
+        )
+    };
+    f.doc.apply(&write(&f.doc, Size::new(0.0, 0.0))).unwrap();
+    assert_eq!(
+        f.doc.get(f.rect).unwrap().size_vars(),
+        [Some(w), Some(w)],
+        "a write of the stored size keeps the binding"
+    );
+    // A side handle: the width as drawn, the height dragged to 30.
+    f.doc.apply(&write(&f.doc, Size::new(60.0, 30.0))).unwrap();
+    assert_eq!(
+        f.doc.get(f.rect).unwrap().size_vars(),
+        [Some(w), None],
+        "the width written as drawn stays bound, the height detaches"
+    );
+    assert_eq!(stored_size(&f.doc, f.rect), Size::new(0.0, 30.0));
+}
+
+/// **Only a hand-set axis binds, and an axis an edit makes computed is
+/// detached** (§15 D1061): in a flex row the rect's width — its main axis —
+/// binds; given growth it is the line's, so the commit detaches it to the width
+/// it drew; and with growth already set, the bind refuses the width and takes the
+/// height, which `align-self: start` keeps from
+/// the row's stretch.
+///
+/// Flip, run: `keep_size_bindings` without its layout half (the `touched`
+/// block) fails *"growth detaches the width"* — the width still bound.
+#[test]
+fn an_axis_made_computed_detaches_and_a_computed_axis_does_not_bind() {
+    let mut f = fixture();
+    let w = width_var(&mut f);
+    flex_frame(&mut f);
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(f.doc.get(f.rect).unwrap().size_vars(), [Some(w), None]);
+    // Aligned to the start, so its height — stretched under the row's default —
+    // is its own.
+    let grow = mastik_core::container::LayoutItem {
+        grow: 1.0,
+        align_self: Some(mastik_core::container::AlignItems::Start),
+        ..*f.doc.get(f.rect).unwrap().item()
+    };
+    let tx = mastik_core::keep_size_bindings(
+        &f.doc,
+        None,
+        Transaction(vec![Operation::SetLayoutItem {
+            id: f.rect,
+            item: grow,
+        }]),
+    );
+    f.doc.apply(&tx).unwrap();
+    assert_eq!(
+        f.doc.get(f.rect).unwrap().size_vars(),
+        [None, None],
+        "growth detaches the width"
+    );
+    assert_eq!(
+        stored_size(&f.doc, f.rect).width,
+        60.0,
+        "to the width it drew"
+    );
+    assert_eq!(
+        mastik_core::bindable_size_axes(&f.doc, f.rect),
+        [false, true],
+        "a growing item's width is the line's"
+    );
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), Some(w)]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(f.doc.get(f.rect).unwrap().size_vars(), [None, Some(w)]);
+}
+
+/// Detaching an axis keeps the size it drew; deleting the variable detaches
+/// every axis bound to it the same way; the bindings survive a save; and a
+/// path refuses one at the commit.
+#[test]
+fn size_bindings_detach_to_what_they_draw_round_trip_and_fit_their_kind() {
+    let mut f = fixture();
+    let w = width_var(&mut f);
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), Some(w)]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let bytes = mastik_core::io::save(&f.doc).unwrap();
+    let back = mastik_core::io::load(&bytes).unwrap();
+    assert_eq!(back, f.doc, "the bindings round-trip");
+    let ops = mastik_core::detach_size_ops(&f.doc, f.rect, [true, false]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(f.doc.get(f.rect).unwrap().size_vars(), [None, Some(w)]);
+    assert_eq!(stored_size(&f.doc, f.rect), Size::new(60.0, 0.0));
+    let tx = Transaction(mastik_core::variable::remove_ops(&f.doc, &[w]));
+    f.doc.apply(&tx).expect("detach, then remove");
+    assert_eq!(f.doc.get(f.rect).unwrap().size_vars(), [None, None]);
+    assert_eq!(
+        stored_size(&f.doc, f.rect),
+        Size::new(60.0, 60.0),
+        "the height too"
+    );
+
+    let w = width_var(&mut f);
+    let line = f.ids.mint();
+    f.doc
+        .apply(&Transaction(vec![Operation::CreateNode {
+            id: line,
+            parent: f.frame,
+            index: 0,
+            kind: NodeKind::Line {
+                end: mastik_core::kurbo::Point::new(10.0, 0.0),
+            },
+            transform: None,
+            name: None,
+        }]))
+        .unwrap();
+    assert!(
+        mastik_core::bind_size_ops(&f.doc, line, [Some(w), None]).is_empty(),
+        "no stored size, no binding"
+    );
+    assert!(
+        f.doc
+            .apply(&Transaction(vec![Operation::SetSizeVars {
+                id: line,
+                vars: [Some(w), None],
+            }]))
+            .is_err(),
+        "the commit refuses one"
+    );
+}
+
+/// A second frame, a flex column stretching its items' widths, 200 wide.
+fn column(f: &mut F) -> NodeId {
+    let col = f.ids.mint();
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: col,
+                parent: f.root,
+                index: 1,
+                kind: NodeKind::Artboard {
+                    size: Size::new(200.0, 200.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetDisplay {
+                id: col,
+                display: Some(Display::Flex(Flex {
+                    direction: mastik_core::container::FlexDirection::Column,
+                    ..Flex::default()
+                })),
+            },
+        ]))
+        .unwrap();
+    col
+}
+
+/// The commit door's size and visibility passes, then what the components owe,
+/// applied — `EditorSession::commit_inner`'s order for these fields.
+fn commit_sized(f: &mut F, tx: Transaction) {
+    let res = Resolved::rebuild(&f.doc);
+    let tx = mastik_core::keep_visible_bindings(&f.doc, tx);
+    let mut tx = mastik_core::keep_size_bindings(&f.doc, Some(&res), tx);
+    mastik_core::propagate::owed(&f.doc, &mut tx, &mut f.ids);
+    f.doc.apply(&tx).unwrap();
+}
+
+/// The frame made a component and one instance of it, and the instance's copy
+/// of the rect.
+fn instance_of_frame(f: &mut F) -> (NodeId, NodeId) {
+    f.doc
+        .apply(&Transaction(vec![Operation::SetComponent {
+            id: f.frame,
+            component: true,
+        }]))
+        .unwrap();
+    let place = Placement {
+        nodes: f.doc.capture_subtree(f.frame).unwrap(),
+        parent: f.root,
+        index: None,
+    };
+    let (tx, made) = mastik_core::insert_subtrees(&f.doc, &mut f.ids, &[place], Default::default());
+    f.doc.apply(&tx).unwrap();
+    (made[0], f.doc.get(made[0]).unwrap().children()[0])
+}
+
+/// **A copy's own width binding detaches when its main's edit makes the axis
+/// computed** (§15 D1061): the main's growth reaches the copy by a follow, after
+/// the door's size pass, and the size pass runs again over the follows.
+///
+/// flip: `owed`'s size pass after the follows removed → fails *"the copy's
+/// width detaches"*.
+#[test]
+fn a_copys_own_width_binding_detaches_when_its_mains_growth_follows() {
+    let mut f = fixture();
+    let w = width_var(&mut f);
+    flex_frame(&mut f);
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let (_, copy) = instance_of_frame(&mut f);
+    let own = f.radius;
+    let ops = mastik_core::bind_size_ops(&f.doc, copy, [Some(own), None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(f.doc.get(copy).unwrap().size_vars(), [Some(own), None]);
+    let grow = mastik_core::container::LayoutItem {
+        grow: 1.0,
+        align_self: Some(mastik_core::container::AlignItems::Start),
+        ..*f.doc.get(f.rect).unwrap().item()
+    };
+    let tx = Transaction(vec![Operation::SetLayoutItem {
+        id: f.rect,
+        item: grow,
+    }]);
+    commit_sized(&mut f, tx);
+    assert_eq!(f.doc.get(f.rect).unwrap().size_vars(), [None, None]);
+    assert_eq!(f.doc.get(copy).unwrap().item().grow, 1.0, "growth followed");
+    assert_eq!(
+        f.doc.get(copy).unwrap().size_vars(),
+        [None, None],
+        "the copy's width detaches"
+    );
+}
+
+/// **A bound width pasted into a layout that stretches it detaches**, as the
+/// same layer moved there does (§15 D1061): the layer an `InsertSubtree` brings
+/// in is judged by the bindings it arrives with.
+///
+/// flip: the `InsertSubtree` arm of `keep_size_bindings`' layout half removed →
+/// fails *"the pasted width detaches"*.
+#[test]
+fn a_bound_width_pasted_into_a_stretching_column_detaches() {
+    let mut f = fixture();
+    let w = width_var(&mut f);
+    let col = column(&mut f);
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let place = Placement {
+        nodes: f.doc.capture_subtree(f.rect).unwrap(),
+        parent: col,
+        index: None,
+    };
+    let (tx, made) = mastik_core::insert_subtrees(&f.doc, &mut f.ids, &[place], Default::default());
+    commit_sized(&mut f, tx);
+    assert_eq!(
+        f.doc.get(made[0]).unwrap().size_vars(),
+        [None, None],
+        "the pasted width detaches"
+    );
+    assert_eq!(stored_size(&f.doc, made[0]).width, 60.0, "to what it drew");
+}
+
+/// **A hidden bound layer shown into a stretching layout detaches its width**
+/// (§15 D1061): hidden it was out of flow and its width its own.
+///
+/// flip: `SetVisible` out of `keep_size_bindings`' triggers → fails *"shown,
+/// the width detaches"*.
+#[test]
+fn a_hidden_bound_layer_shown_into_a_stretching_column_detaches() {
+    let mut f = fixture();
+    let w = width_var(&mut f);
+    let col = column(&mut f);
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::Reparent {
+                id: f.rect,
+                new_parent: col,
+                index: 0,
+            },
+            Operation::SetVisible {
+                id: f.rect,
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(f.doc.get(f.rect).unwrap().size_vars(), [Some(w), None]);
+    let tx = Transaction(vec![Operation::SetVisible {
+        id: f.rect,
+        visible: true,
+    }]);
+    commit_sized(&mut f, tx);
+    assert_eq!(
+        f.doc.get(f.rect).unwrap().size_vars(),
+        [None, None],
+        "shown, the width detaches"
+    );
+}
+
+/// **An instance member moved out into a stretching layout detaches its bound
+/// width**, as any layer does: the size pass reads the tree the edit leaves
+/// before the commit cuts the member's link.
+///
+/// flip: `keep_size_bindings`' scratch back to the checked `apply` alone stays
+/// green — `owed`'s second size pass, run once the link is cut, catches it;
+/// with that pass removed too → fails *"moved out, the width detaches"*.
+#[test]
+fn an_instance_member_moved_into_a_stretching_column_detaches_its_width() {
+    let mut f = fixture();
+    let w = width_var(&mut f);
+    let col = column(&mut f);
+    let (_, copy) = instance_of_frame(&mut f);
+    let ops = mastik_core::bind_size_ops(&f.doc, copy, [Some(w), None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    commit_sized(
+        &mut f,
+        Transaction(vec![Operation::Reparent {
+            id: copy,
+            new_parent: col,
+            index: 0,
+        }]),
+    );
+    assert_eq!(f.doc.get(copy).unwrap().link(), None, "its link is cut");
+    assert_eq!(
+        f.doc.get(copy).unwrap().size_vars(),
+        [None, None],
+        "moved out, the width detaches"
+    );
+}
+
+/// **A height written beside the width a layout squeezes keeps the width
+/// bound** (§15 D1061): the H field and a top or bottom handle carry the used
+/// width forward, which is what the axis draws.
+///
+/// flip: `kept_size_vars`' used-size arm removed → fails *"the squeezed width
+/// stays bound"*.
+#[test]
+fn a_height_written_beside_a_squeezed_bound_width_keeps_it() {
+    let mut f = fixture();
+    let w = width_var(&mut f);
+    let second = flex_frame(&mut f);
+    // 60 + 5 + 40 in a row 100 wide, nothing kept from shrinking.
+    let loose = |doc: &Document, id: NodeId| mastik_core::container::LayoutItem {
+        min_width: mastik_core::container::Dimension::Px(0.0),
+        ..*doc.get(id).unwrap().item()
+    };
+    let (a, b) = (loose(&f.doc, f.rect), loose(&f.doc, second));
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::SetLayoutItem {
+                id: f.rect,
+                item: a,
+            },
+            Operation::SetLayoutItem {
+                id: second,
+                item: b,
+            },
+        ]))
+        .unwrap();
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let res = Resolved::rebuild(&f.doc);
+    let used = res.used_kind(&f.doc, f.rect).unwrap().box_size().unwrap();
+    assert!(
+        used.width < 60.0,
+        "the fixture squeezes the width: {used:?}"
+    );
+    let tx = Transaction(vec![Operation::SetGeometry {
+        id: f.rect,
+        geometry: mastik_core::GeometryPatch::Size(Size::new(used.width, 30.0)),
+    }]);
+    commit_sized(&mut f, tx);
+    assert_eq!(
+        f.doc.get(f.rect).unwrap().size_vars(),
+        [Some(w), None],
+        "the squeezed width stays bound"
+    );
+    assert_eq!(stored_size(&f.doc, f.rect), Size::new(0.0, 30.0));
+}
+
+/// **A copy holding its own gap binding loses it with the layout its main's
+/// edit takes away**, and the variable can then be deleted (§15 D1058): the
+/// follow lands after the door's spacing pass, and `owed` clears what it left
+/// inert.
+///
+/// flip: `owed`'s `inert_spacing` removed → fails *"the copy's gap binding
+/// goes"*.
+#[test]
+fn a_copys_own_gap_binding_goes_with_the_layout_its_main_loses() {
+    let mut f = fixture();
+    flex_frame(&mut f);
+    let ops = mastik_core::bind_spacing_ops(
+        &f.doc,
+        f.frame,
+        [Some(f.radius), None, None, None, None, None],
+    );
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let (inst, _) = instance_of_frame(&mut f);
+    let own = width_var(&mut f);
+    let ops =
+        mastik_core::bind_spacing_ops(&f.doc, inst, [Some(own), None, None, None, None, None]);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let tx = mastik_core::keep_spacing_bindings(
+        &f.doc,
+        Transaction(vec![Operation::SetDisplay {
+            id: f.frame,
+            display: None,
+        }]),
+    );
+    commit_sized(&mut f, tx);
+    assert!(
+        f.doc.get(inst).unwrap().display().is_none(),
+        "the layout followed"
+    );
+    assert_eq!(
+        f.doc.get(inst).unwrap().spacing_vars(),
+        [None; 6],
+        "the copy's gap binding goes"
+    );
+    let remove = mastik_core::variable::remove_ops(&f.doc, &[own]);
+    f.doc
+        .apply(&Transaction(remove))
+        .expect("the variable deletes");
+}
+
+/// **Deleting a variable a layout-less node's spacing still names clears it**,
+/// rather than leaving the binding dangling and the delete refused — the state
+/// a file can carry.
+///
+/// flip: `remove_ops`' layout-less spacing arm removed → the delete is refused
+/// `BadBinding`.
+#[test]
+fn deleting_a_variable_clears_an_inert_spacing_binding() {
+    let mut f = fixture();
+    flex_frame(&mut f);
+    let ops = mastik_core::bind_spacing_ops(
+        &f.doc,
+        f.frame,
+        [Some(f.radius), None, None, None, None, None],
+    );
+    f.doc.apply(&Transaction(ops)).unwrap();
+    // Taken away raw, past the door's pass: the binding stays, inert.
+    f.doc
+        .apply(&Transaction(vec![Operation::SetDisplay {
+            id: f.frame,
+            display: None,
+        }]))
+        .unwrap();
+    assert!(f.doc.get(f.frame).unwrap().spacing_vars()[0].is_some());
+    let remove = mastik_core::variable::remove_ops(&f.doc, &[f.radius]);
+    f.doc
+        .apply(&Transaction(remove))
+        .expect("the variable deletes");
+    assert_eq!(f.doc.get(f.frame).unwrap().spacing_vars(), [None; 6]);
+}
+
+/// Give `f.rect` (40 × 20) a linear gradient across its width.
+fn gradient_rect(f: &mut F) {
+    let ramp = mastik_core::peniko::Gradient::new_linear((0.0, 0.0), (40.0, 0.0));
+    f.doc
+        .apply(&Transaction(vec![Operation::SetFills {
+            id: f.rect,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Gradient(ramp.into()).into(),
+                visible: true,
+            }]),
+        }]))
+        .unwrap();
+}
+
+/// The transform of `paint`'s first fill, a literal gradient.
+fn gradient_transform(paint: &mastik_core::Paint) -> mastik_core::kurbo::Affine {
+    match paint.fills[0].brush.literal() {
+        Some(Brush::Gradient(g)) => g.transform,
+        other => panic!("a gradient: {other:?}"),
+    }
+}
+
+/// `ops` with the commit door's gradient pass, applied.
+fn commit_carried(f: &mut F, ops: Vec<Operation>) {
+    let tx = mastik_core::paint_box::keep_gradients(&f.doc, Transaction(ops));
+    f.doc.apply(&tx).unwrap();
+}
+
+/// **Binding a width carries its gradient by the box drawn, never onto the
+/// placeholder 0**: bound to a variable reading 60 in the default mode, the
+/// gradient goes 40 → 60; detached in the default mode, it stays.
+///
+/// flip: `keep_gradients` measuring the stored literal (`node.kind().box_size()`
+/// for both boxes) → fails at *"never collapsed onto the 0"*.
+#[test]
+fn binding_a_width_carries_its_gradient_by_the_drawn_box() {
+    let mut f = fixture();
+    gradient_rect(&mut f);
+    let w = width_var(&mut f);
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), None]);
+    commit_carried(&mut f, ops);
+    assert_eq!(stored_size(&f.doc, f.rect).width, 0.0, "fixture: bound");
+    let carried = mastik_core::kurbo::Affine::scale_non_uniform(1.5, 1.0);
+    assert_eq!(
+        gradient_transform(f.doc.get(f.rect).unwrap().paint()),
+        carried,
+        "never collapsed onto the 0"
+    );
+    let ops = mastik_core::detach_size_ops(&f.doc, f.rect, [true, false]);
+    commit_carried(&mut f, ops);
+    assert_eq!(
+        stored_size(&f.doc, f.rect),
+        Size::new(60.0, 20.0),
+        "fixture: detached"
+    );
+    assert_eq!(
+        gradient_transform(f.doc.get(f.rect).unwrap().paint()),
+        carried,
+        "a detach in the default mode moves nothing"
+    );
+}
+
+/// **A bound width read in another mode draws its gradient stretched with it**:
+/// stored against Light's 60, drawn in Dark's 80.
+///
+/// flip: `node_paint` handing `drawn_paint` the stored literal's box → fails at
+/// *"stretched to Dark's 80"* (the 0 box maps nothing).
+#[test]
+fn a_bound_width_in_another_mode_stretches_its_gradient() {
+    let mut f = fixture();
+    gradient_rect(&mut f);
+    let w = width_var(&mut f);
+    let ops = mastik_core::bind_size_ops(&f.doc, f.rect, [Some(w), None]);
+    commit_carried(&mut f, ops);
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    let res = Resolved::rebuild(&f.doc);
+    let paint = mastik_core::paint_box::node_paint(&f.doc, &res, f.rect).unwrap();
+    let got = gradient_transform(&paint).as_coeffs();
+    let want = mastik_core::kurbo::Affine::scale_non_uniform(2.0, 1.0).as_coeffs();
+    assert!(
+        got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-9),
+        "stretched to Dark's 80: {got:?}"
+    );
+}
+
+/// A star's one radius binds as a rect's uniform radius does: the variable in
+/// all four slots, drawn per mode, kept through a save, and detached to what it
+/// draws.
+/// flip: `NodeKind::corner_radii` answering `None` for a star → fails at
+/// "bound".
+#[test]
+fn a_stars_radius_takes_a_variable() {
+    let mut f = fixture();
+    let star = f.ids.mint();
+    f.doc
+        .apply(&Transaction(vec![Operation::CreateNode {
+            id: star,
+            parent: f.frame,
+            index: 1,
+            kind: NodeKind::Star {
+                size: Size::new(60.0, 60.0),
+                points: 5,
+                inner_ratio: 0.5,
+                corner_radius: 3.0,
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        }]))
+        .unwrap();
+    let ops = mastik_core::bind_corners_ops(&f.doc, star, [Some(f.radius); 4]);
+    assert!(!ops.is_empty(), "bound");
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert_eq!(f.doc.get(star).unwrap().corner_vars(), [Some(f.radius); 4]);
+    let drawn = |doc: &Document| {
+        let res = Resolved::rebuild(doc);
+        match res.used_kind(doc, star).unwrap() {
+            NodeKind::Star { corner_radius, .. } => *corner_radius,
+            k => panic!("not a star: {k:?}"),
+        }
+    };
+    assert_eq!(drawn(&f.doc), 4.0, "Light's radius");
+    f.doc
+        .apply(&Transaction(vec![Operation::SetModes {
+            id: f.frame,
+            modes: vec![f.dark],
+        }]))
+        .unwrap();
+    assert_eq!(drawn(&f.doc), 12.0, "Dark's radius");
+
+    let loaded = mastik_core::io::load(&mastik_core::io::save(&f.doc).unwrap())
+        .expect("a bound star's corners pass the load's rules");
+    assert_eq!(loaded.get(star).unwrap().corner_vars(), [Some(f.radius); 4]);
+
+    let ops = mastik_core::detach_corners_ops(&f.doc, star);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    let node = f.doc.get(star).unwrap();
+    assert_eq!(node.corner_vars(), [None; 4]);
+    assert_eq!(node.kind().corner_radii().unwrap().top_left, 12.0);
+}

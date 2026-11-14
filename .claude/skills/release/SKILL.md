@@ -1,9 +1,9 @@
 ---
 name: release
-description: Ondin's push-and-release flow — verify the local bar, push main and wait for CI, bump the workspace version, tag, wait for the Release workflow to build and publish every platform, check the assets, and write the notes. Use whenever the user asks to cut, tag, ship, or publish a release, or says anything like "push and bump to 0.2.0", "bump to v1.2.0 and push", "release 0.1", "tag a new version", or "ship this". Also use it when they ask only for part of the flow (just the bump, just the release notes) so the surrounding steps and their gates aren't skipped by accident.
+description: Mastik's push-and-release flow — verify the local bar, push main and wait for CI, bump the workspace version, tag, wait for the Release workflow to build and publish every platform, check the assets, and write the notes. Use whenever the user asks to cut, tag, ship, or publish a release, or says anything like "push and bump to 0.2.0", "bump to v1.2.0 and push", "release 0.1", "tag a new version", or "ship this". Also use it when they ask only for part of the flow (just the bump, just the release notes) so the surrounding steps and their gates aren't skipped by accident.
 ---
 
-# Cutting an Ondin release
+# Cutting an Mastik release
 
 The flow is **verify → push → CI → bump+tag → Release workflow → check → notes**.
 
@@ -12,7 +12,7 @@ D956). The tag fires `.github/workflows/release.yml`, which builds Windows, Linu
 and macOS, packs the Velopack installers and feeds, the portable archives, the
 `.deb` and `.rpm`, attaches them all to the GitHub Release, and then rebuilds the
 apt/dnf repositories on GitHub Pages (`pages.yml`). Until 2026-10-03 this skill
-built `ondin.exe` locally and uploaded it; v0.3.0 was the last release cut that
+built `mastik.exe` locally and uploaded it; v0.3.0 was the last release cut that
 way.
 
 Report the version and what is about to happen before Phase 2: the tag push is
@@ -40,7 +40,7 @@ cargo clippy --workspace --all-targets
 ```
 
 ```bash
-for p in ondin-core ondin-render ondin-export ondin-mcp ondin-app; do cargo clippy -p $p --all-targets; done
+for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do cargo clippy -p $p --all-targets; done
 ```
 
 ```bash
@@ -52,7 +52,7 @@ cargo doc --workspace --no-deps --document-private-items
 ```
 
 ```bash
-cargo check --release -p ondin-app
+cargo check --release -p mastik-app
 ```
 
 ```bash
@@ -76,11 +76,11 @@ font fetch. This machine has an RTX 4070 Ti; a carried-forward "unverifiable" is
 not evidence:
 
 ```bash
-cargo test -p ondin-render --release -- --ignored
+cargo test -p mastik-render --release -- --ignored
 ```
 
 ```bash
-cargo test -p ondin-app fonts -- --ignored
+cargo test -p mastik-app fonts -- --ignored
 ```
 
 **An unformatted tree is a fix, not a stop**: `cargo fmt --all`, commit as its own
@@ -184,7 +184,7 @@ ever lost. `gh run view --log-failed` prints *"log not found"* for such a job, s
 read the annotations instead:
 
 ```bash
-gh api repos/fadion/ondin/check-runs/<job-id>/annotations --jq ".[].message"
+gh api repos/fadion/mastik/check-runs/<job-id>/annotations --jq ".[].message"
 ```
 
 A job that ran and failed in its steps is usually the signing key
@@ -204,11 +204,11 @@ gh release view vX.Y.Z --json assets --jq ".assets[].name"
 
 Expect, for version `X.Y.Z`:
 
-- `Ondin-win-x64-Setup.exe`, `Ondin-linux-x64.AppImage`, `Ondin-osx-arm64-Setup.pkg`, `Ondin-osx-arm64.dmg`
-- `Ondin-X.Y.Z-win-x64-full.nupkg`, `Ondin-X.Y.Z-linux-x64-full.nupkg`, `Ondin-X.Y.Z-osx-arm64-full.nupkg`
+- `Mastik-win-x64-Setup.exe`, `Mastik-linux-x64.AppImage`, `Mastik-osx-arm64-Setup.pkg`, `Mastik-osx-arm64.dmg`
+- `Mastik-X.Y.Z-win-x64-full.nupkg`, `Mastik-X.Y.Z-linux-x64-full.nupkg`, `Mastik-X.Y.Z-osx-arm64-full.nupkg`
 - `releases.win-x64.json`, `releases.linux-x64.json`, `releases.osx-arm64.json`
-- `ondin-vX.Y.Z-windows-x86_64.zip`, `ondin-vX.Y.Z-linux-x86_64.tar.gz`
-- `ondin_X.Y.Z_amd64.deb`, `ondin-X.Y.Z-1.x86_64.rpm`
+- `mastik-vX.Y.Z-windows-x86_64.zip`, `mastik-vX.Y.Z-linux-x86_64.tar.gz`
+- `mastik_X.Y.Z_amd64.deb`, `mastik-X.Y.Z-1.x86_64.rpm`
 
 A missing feed (`releases.<channel>.json`) means installed copies on that platform
 will never see this release — say so loudly.
@@ -254,7 +254,7 @@ call in this flow.
 
 Format:
 
-- **No title heading.** Open with one sentence: `Ondin vX.Y.Z: **theme one**, **theme two**, and a third thing.`
+- **No title heading.** Open with one sentence: `Mastik vX.Y.Z: **theme one**, **theme two**, and a third thing.`
 - Then `## ` sections, each optional: **Highlights**, **Improvements**, **Performance**, **Fixes**.
 - Bullets lead with a bold phrase: `* **Feature name.** What changed.`
 

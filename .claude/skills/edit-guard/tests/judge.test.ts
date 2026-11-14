@@ -3,24 +3,24 @@ import { judge } from '../hooks/judge.ts'
 
 const refused = [
   // The splices CLAUDE.md records.
-  "sed -i 's/old/new/' crates/ondin-app/src/app.rs",
+  "sed -i 's/old/new/' crates/mastik-app/src/app.rs",
   "sed -i.bak -e 's/a/b/' docs/roadmap.md",
-  'perl -0pi -e "s/a/b/g" crates/ondin-core/src/lib.rs',
+  'perl -0pi -e "s/a/b/g" crates/mastik-core/src/lib.rs',
   "gawk -i inplace '{print}' Cargo.toml",
-  "cat >> crates/ondin-app/src/app.rs <<'EOF'\n#[test]\nfn x() {}\nEOF",
+  "cat >> crates/mastik-app/src/app.rs <<'EOF'\n#[test]\nfn x() {}\nEOF",
   'echo hi > docs/roadmap.md',
   'cargo fmt && echo x | tee CLAUDE.md',
-  "python - <<'EOF'\np='crates/ondin-app/src/app.rs'\ns=open(p).read()\nopen(p,'w').write(s.replace('a','b'))\nEOF",
-  'Set-Content -Path crates\\ondin-app\\src\\app.rs -Value $x',
+  "python - <<'EOF'\np='crates/mastik-app/src/app.rs'\ns=open(p).read()\nopen(p,'w').write(s.replace('a','b'))\nEOF",
+  'Set-Content -Path crates\\mastik-app\\src\\app.rs -Value $x',
   "Get-Content x | Out-File docs\\decisions.md",
-  "[IO.File]::WriteAllText('C:\\Users\\dev\\Projects\\ondin\\docs\\vm.md', $t)",
+  "[IO.File]::WriteAllText('C:\\Users\\dev\\Projects\\mastik\\docs\\vm.md', $t)",
   // The git commands that sweep or discard.
   'git add -A',
   'git add . && git commit -m "x"',
   'git -C C:/repo add --all',
   'git commit -am "wip"',
-  'git checkout -- crates/ondin-app/src/app.rs',
-  'git checkout crates/ondin-app/src/app.rs',
+  'git checkout -- crates/mastik-app/src/app.rs',
+  'git checkout crates/mastik-app/src/app.rs',
   'git checkout .',
   'git restore docs/roadmap.md',
   'git reset --hard HEAD',
@@ -29,8 +29,8 @@ const refused = [
   // [X7-L1-01]: the same harms in their other spellings.
   'git clean --force -d',
   'git clean -xf',
-  'git restore --staged --worktree crates/ondin-app/src/app.rs',
-  'git restore -SW crates/ondin-app/src/app.rs',
+  'git restore --staged --worktree crates/mastik-app/src/app.rs',
+  'git restore -SW crates/mastik-app/src/app.rs',
   'git checkout -f main',
   'git checkout --force main',
   'git switch --discard-changes main',
@@ -44,7 +44,7 @@ const refused = [
   'git add docs crates',
   'git add ..',
   // [X7-L1-02]: an in-place edit inside a loop, a conditional or a wrapper.
-  "for f in crates/ondin-app/src/*.rs; do sed -i 's/a/b/' $f; done",
+  "for f in crates/mastik-app/src/*.rs; do sed -i 's/a/b/' $f; done",
   "find crates -name '*.rs' -exec sed -i 's/a/b/' {} +",
   "find crates -name '*.rs' -execdir perl -pi -e 's/a/b/' {} \\;",
   "find crates -name '*.rs' | xargs sed -i 's/a/b/'",
@@ -57,12 +57,12 @@ const refused = [
   "bash -lc 'git add -A'",
   "pwsh -Command \"Set-Content crates/x.rs -Value 1\"",
   // [X7-L1-05]: whole-file writes with a non-literal target, or by another program.
-  "$p = 'crates/ondin-app/src/app.rs'; (Get-Content $p) -replace 'a','b' | Set-Content $p",
-  'cp C:/scratch/app.rs crates/ondin-app/src/app.rs',
-  'Copy-Item C:/scratch/app.rs -Destination crates/ondin-app/src/app.rs',
-  'Copy-Item C:/scratch/app.rs crates/ondin-app/src/app.rs',
-  'mv /tmp/x.rs crates/ondin-app/src/app.rs',
-  'Move-Item $env:TEMP/x.rs crates/ondin-app/src/app.rs',
+  "$p = 'crates/mastik-app/src/app.rs'; (Get-Content $p) -replace 'a','b' | Set-Content $p",
+  'cp C:/scratch/app.rs crates/mastik-app/src/app.rs',
+  'Copy-Item C:/scratch/app.rs -Destination crates/mastik-app/src/app.rs',
+  'Copy-Item C:/scratch/app.rs crates/mastik-app/src/app.rs',
+  'mv /tmp/x.rs crates/mastik-app/src/app.rs',
+  'Move-Item $env:TEMP/x.rs crates/mastik-app/src/app.rs',
   'New-Item -Force crates/x.rs',
   "ruby -pi -e 'gsub(/a/,\"b\")' crates/x.rs",
   "python -c \"p='crates/x.rs'; s=open(p).read(); open(p,mode='w').write(s)\"",
@@ -74,10 +74,10 @@ const refused = [
 
 const allowed = [
   // Reading is fine, and so is writing scratch.
-  "sed -n '10,40p' crates/ondin-app/src/app.rs",
+  "sed -n '10,40p' crates/mastik-app/src/app.rs",
   'grep -n "fn foo" crates/x.rs | head',
   'cargo test --workspace --release 2>&1 | tee /tmp/release-run.log',
-  'cargo build -p ondin-app > /dev/null 2>&1',
+  'cargo build -p mastik-app > /dev/null 2>&1',
   "cat > C:/Users/dev/AppData/Local/Temp/claude/x/scratchpad/probe.md <<'EOF'\nhi\nEOF",
   'echo $x > $TMPDIR/out.json',
   'git diff --stat > notes.txt',
@@ -85,8 +85,8 @@ const allowed = [
   'git commit -m "fix: stop a sed -i in the release script; never git add -A"',
   "git commit -F - <<'EOF'\ndocs: say why sed -i and git checkout -- are banned\nEOF",
   // The staging the commit skill uses, and the git that changes nothing.
-  'git add crates/ondin-app/src/app.rs docs/decisions.md',
-  'git restore --staged crates/ondin-app/src/app.rs',
+  'git add crates/mastik-app/src/app.rs docs/decisions.md',
+  'git restore --staged crates/mastik-app/src/app.rs',
   'git checkout -b feature',
   'git checkout main',
   'git checkout v0.4.1',
@@ -95,10 +95,10 @@ const allowed = [
   'git stash list',
   "python -c \"print(open('crates/x.rs').read().count('fn'))\"",
   // [X7-L1-04]: Rust syntax in a quoted search pattern is not a redirect.
-  "grep -n '->' crates/ondin-core/src/lib.rs",
-  "rg -c '=>' crates/ondin-core/src/lib.rs",
-  "grep -n 'Option<Node>' crates/ondin-core/src/node.rs",
-  'rg -n "fn x() -> Vec<u8>" crates/ondin-core/src/lib.rs',
+  "grep -n '->' crates/mastik-core/src/lib.rs",
+  "rg -c '=>' crates/mastik-core/src/lib.rs",
+  "grep -n 'Option<Node>' crates/mastik-core/src/node.rs",
+  'rg -n "fn x() -> Vec<u8>" crates/mastik-core/src/lib.rs',
   // [X7-L1-06]: the review method's own append, a script writing scratch, a
   // slashed branch, a dry run.
   'cat C:/Users/dev/AppData/Local/Temp/claude/x/scratchpad/X7.md >> review/release-v0.5.0/passes/X7.md',
@@ -117,9 +117,9 @@ const allowed = [
   'git switch -c feature',
   'git checkout -bfix main',
   'git add LICENSE .gitignore Cargo.lock',
-  'git add crates/ondin-app/src/*.rs',
+  'git add crates/mastik-app/src/*.rs',
   'perl -Ilib -e "print 1"',
-  'cp crates/ondin-app/src/app.rs C:/Users/dev/AppData/Local/Temp/app.rs',
+  'cp crates/mastik-app/src/app.rs C:/Users/dev/AppData/Local/Temp/app.rs',
   'Copy-Item crates/x.rs $env:TEMP/x.rs',
   'mv crates/a.rs crates/b.rs',
   'New-Item -ItemType Directory -Force crates/new',
@@ -127,23 +127,23 @@ const allowed = [
   'for f in crates/*.rs; do grep -c fn $f; done',
   "find crates -name '*.rs' -exec grep -l foo {} +",
   "find crates -name '*.rs' | xargs grep -l foo",
-  'time cargo build -p ondin-app',
-  'bash -c "cargo test -p ondin-app"',
+  'time cargo build -p mastik-app',
+  'bash -c "cargo test -p mastik-app"',
   'git commit -m "docs: never bash -c \'sed -i x\' over crates/x.rs"',
   // Found replaying every command of this project's session transcripts
   // through the new judge: the backup a flip-check takes, a release review's
   // passes copied in, a snapshot of the ledger, and redirections that are not
   // pathspecs.
-  'S="$TEMP/claude/x/scratchpad"; cp crates/ondin-app/src/app.rs "$S/app.rs.bak"',
-  'cp crates/ondin-app/src/app.rs "$SP/app.rs.bak"',
-  'S=/c/Users/dev/AppData/Local/Temp/claude/x/scratchpad; D=/c/Users/dev/Projects/ondin/review/release-v0.4.1; cp $S/X1.md $D/passes/X1.md',
+  'S="$TEMP/claude/x/scratchpad"; cp crates/mastik-app/src/app.rs "$S/app.rs.bak"',
+  'cp crates/mastik-app/src/app.rs "$SP/app.rs.bak"',
+  'S=/c/Users/dev/AppData/Local/Temp/claude/x/scratchpad; D=/c/Users/dev/Projects/mastik/review/release-v0.4.1; cp $S/X1.md $D/passes/X1.md',
   'cp review/findings.md review/.snapshots/findings-S13.1.md',
   // Copying a backup back is that backup's use (CLAUDE.md: copy a file to the
   // scratchpad before an experiment you expect to revert).
-  'S=/c/Users/dev/AppData/Local/Temp/claude/x/scratchpad; cp $S/app.rs crates/ondin-app/src/app.rs',
-  'cp /tmp/boolean.bak crates/ondin-core/src/boolean.rs',
-  'cp /tmp/theme.orig2.rs crates/ondin-app/src/theme.rs',
-  'git add crates/ondin-app/src/app.rs 2>&1 >/dev/null',
+  'S=/c/Users/dev/AppData/Local/Temp/claude/x/scratchpad; cp $S/app.rs crates/mastik-app/src/app.rs',
+  'cp /tmp/boolean.bak crates/mastik-core/src/boolean.rs',
+  'cp /tmp/theme.orig2.rs crates/mastik-app/src/theme.rs',
+  'git add crates/mastik-app/src/app.rs 2>&1 >/dev/null',
   'git checkout -q $(git rev-parse HEAD)',
 ]
 
@@ -176,7 +176,7 @@ test('a path git would read as a file or a directory is told apart from a branch
   // [X7-L1-01], [X7-L1-06]: `git checkout <dir>` discards a directory's work
   // and `git checkout feature/x` switches branch; only the disk knows which.
   const ran: string[] = []
-  const disk: Record<string, 'file' | 'dir'> = { 'crates/ondin-app': 'dir', crates: 'dir', NOTES: 'file' }
+  const disk: Record<string, 'file' | 'dir'> = { 'crates/mastik-app': 'dir', crates: 'dir', NOTES: 'file' }
   // The engine hands the hook the path resolved against the working directory.
   const at = (path: string) => Object.entries(disk).find(([p]) => path.replace(/\\/g, '/').endsWith(`/${p}`))?.[1]
   on('fs.exists', (_$, e) => ({ value: at(e.path) !== undefined }))
@@ -185,7 +185,7 @@ test('a path git would read as a file or a directory is told apart from a branch
     if (e.tool === 'Bash') ran.push(e.command)
     return { result: {} as never }
   })
-  for (const command of ['git checkout crates/ondin-app', 'git add crates', 'git checkout feature/x', 'git add NOTES']) {
+  for (const command of ['git checkout crates/mastik-app', 'git add crates', 'git checkout feature/x', 'git add NOTES']) {
     await $.tool.call({ tool: 'Bash', command })
   }
   expect(ran).toEqual(['git checkout feature/x', 'git add NOTES'])

@@ -15,9 +15,9 @@ designation, the Alt measure overlay, and the layers panel's range selection and
   the same way. An instance is a level whatever its kind, a page-frame instance included (§5.3d).
 - `Ctrl` reaches the leaf; `Ctrl+Alt` the immediate child of the outermost group. Over a selection
   handle band `Ctrl` means skew instead (bands are dispatched before deep-select).
-- Both modifiers also **enter the group**, like a double-click. While `OndinApp::entered_group` is set,
+- Both modifiers also **enter the group**, like a double-click. While `MastikApp::entered_group` is set,
   `group_chain` stops there. A click outside or on empty canvas clears it;
-  `OndinApp::leave_a_scope_the_selection_left` (top of every editor frame, and in `escape`) clears it
+  `MastikApp::leave_a_scope_the_selection_left` (top of every editor frame, and in `escape`) clears it
   once something is selected and none of it is inside, or the group is gone. An empty selection keeps
   it. No on-screen affordance.
 - `pick_for_click` opens the scope **after** asking `pick_preview` what to select.
@@ -31,32 +31,32 @@ The canvas never selects a locked layer by a gesture that describes a **set**:
 
 - Click: `query::hit_test` refuses it.
 - Marquee: `canvas::apply_marquee` picks frame contents plus loose layers, from
-  `OndinApp::marquee_candidates`, filtered by `OndinApp::may_select_in_bulk`
+  `MastikApp::marquee_candidates`, filtered by `MastikApp::may_select_in_bulk`
   (`query::is_effectively_locked`, and never a slice: a slice is picked on its own, by its edge, its
   row or the Slice tool, never swept up with the art; and never a chart's part, as a chart selects
   whole). The visibility filter is `apply_marquee`'s own and uses the
   node's own flag: a layer inside a hidden group *can* be marqueed. A lasso takes the same
   candidates (below).
-- `Ctrl+A` (`OndinApp::select_all`): same candidates (locked and slices excluded, hidden included), all on the
+- `Ctrl+A` (`MastikApp::select_all`): same candidates (locked and slices excluded, hidden included), all on the
   current page. With the candidate range empty it selects the page's frames themselves
   (`root_artboards`), filtered too. Emptiness is
   asked of the range **before** the lock filter (`marquee_range`).
 - `inspector::select_by_color` (the Group Colors and Colour review reticles, §9.2) excludes locked layers and reports
   *"Selected 2 of 3 layers with this colour — 1 locked"*.
-- *Select same fill / stroke / font / effects* (palette only, `OndinApp::select_same`) does the
+- *Select same fill / stroke / font / effects* (palette only, `MastikApp::select_same`) does the
   same over the current page's whole tree, the source included. The source is the key layer, else a
   lone selected layer; without one, or when it lacks the property, the row dims with the reason
   (`select_same_source`). Fills, strokes and effects match on the whole list by value; a font
   matches any text layer whose own family (through a bound one) or any run's equals one of the
   source's, case-insensitively (`text_families`).
-- *Select matching layers* (palette only, `OndinApp::select_matching`) selects the same layer in
+- *Select matching layers* (palette only, `MastikApp::select_matching`) selects the same layer in
   each copy of a repeated block on the current page, the selection included, locked ones left out
   and counted. A layer's place is its chain of kind and name from just below its top-level layer
   down to itself. An ancestor's numbered name is read by its stem, since duplicating a block
   renumbers its root ("Card 2" is "Card"); the layer's own name is read whole, since a copy's
   inner layers keep theirs and a design of generated names holds many unrelated "Rectangle N"s.
   Two layers match when their places agree and the layers hold the same ordinal among their
-  siblings of that whole name (`ondin_core::matching_layers`). Layers whose chains of component
+  siblings of that whole name (`mastik_core::matching_layers`). Layers whose chains of component
   links end at the same layer match too, whatever their names and places, so a main's layer and
   its counterpart in every instance on the page pair even after an instance renamed or moved
   it. The top-level layer's own name is
@@ -64,7 +64,7 @@ The canvas never selects a locked layer by a gesture that describes a **set**:
   matches. A top-level layer has no place; with only those selected the row dims
   (`select_matching_sources`). It matches by place and name, not by look: layers that only
   share a fill or stroke are *Select same*'s.
-- *Select inverse* (palette only, `OndinApp::select_inverse`): the unselected children of each
+- *Select inverse* (palette only, `MastikApp::select_inverse`): the unselected children of each
   selected outermost layer's parent, locked ones and slices skipped; it needs a selection. *Select
   same* skips slices too: every door here asks `may_select_in_bulk`.
 - The page-frame edge (`canvas::frame_edge_at`) checks both lock and visibility.
@@ -94,17 +94,17 @@ The canvas never selects a locked layer by a gesture that describes a **set**:
   back and forth, and a cancel (`cancel_gesture`) restores both.
 - **Box.** Takes a layer by its world bounds (`apply_marquee`), and in the node tool the anchors
   inside it.
-- **Lasso.** `Q` (`ViewSwitch::Lasso`, `OndinApp::lasso`, remembered in `prefs.view`, off by default)
+- **Lasso.** `Q` (`ViewSwitch::Lasso`, `MastikApp::lasso`, remembered in `prefs.view`, off by default)
   makes the marquee a loop; it is a shape for the marquee, not a tool, so it starts wherever a
   marquee would, in Select and the node tool, with the same candidates and modes. A `Tool` would
   need a second switch for the node tool's point marquee. Under a tool that draws no marquee
   (anything but Select, Scale and Node) `Q` also arms Select; `V` arms Select with the lasso off. The loop is
   `Drag::Marquee::lasso`, world points from the press, one taken each time the pointer has moved
-  2 screen pt (`OndinApp::extend_lasso`). A layer is taken when its **shape** touches the loop's
-  area (`ondin_core::touches_loop`, curves flattened at half a screen pt): what a click hits, so a
+  2 screen pt (`MastikApp::extend_lasso`). A layer is taken when its **shape** touches the loop's
+  area (`mastik_core::touches_loop`, curves flattened at half a screen pt): what a click hits, so a
   line by its stroke and a group by its children (`core-ops.md` §5.10). In the node tool it takes
-  the anchors inside the loop (`ondin_core::inside_loop`); a handle is never taken on its own.
-- **Lasso chrome** (`OndinApp::draw_lasso`): a 1pt selection-blue line over a 6% selection-blue fill,
+  the anchors inside the loop (`mastik_core::inside_loop`); a handle is never taken on its own.
+- **Lasso chrome** (`MastikApp::draw_lasso`): a 1pt selection-blue line over a 6% selection-blue fill,
   closed by a dashed (3/3) straight run back to the start. The fill is non-zero scanline spans
   (`lasso::fill_spans`), since egui fills only convex paths. While on, the rail's Select slot shows
   its Lasso member (`icon::LASSO`, tooltip *Lasso select (Q)*; `tools.md`, *The tool rail*); toggling

@@ -1,0 +1,617 @@
+//! Code export: a layer tree written as DOM elements and CSS (§7).
+//!
+//! One core, [`walk`], turns layers into an [`Element`](dom::Element) tree and
+//! style rules; an emitter turns that tree into files: plain HTML/CSS ([`html`]),
+//! React ([`react`]) or Vue ([`vue`]). The two frameworks write an instance as a
+//! use of a component made from its main. The pipeline is separate from
+//! `ExportSpec` -> `plan`: it asks the SVG and PNG writers for what CSS cannot
+//! draw rather than rendering it.
+//!
+//! Each layer goes out in the first of three tiers that draws it exactly: CSS on a
+//! `div` (text holding a `p` per paragraph), inline SVG of the subtree, or a PNG
+//! of the subtree.
+//! [`CodeExport::approximated`] is the contract: whatever is not listed there must
+//! look as the canvas does (`tests/code_fidelity.rs` holds the writer to it).
+//! [`CodeExport::positioned`] lists what draws right but lost its layout.
+
+use mastik_core::{Document, NodeId, Resolved};
+
+mod css;
+mod dom;
+pub mod fidelity;
+pub mod html;
+mod image;
+mod jsx;
+mod merge;
+pub mod react;
+mod states;
+mod tokens;
+pub mod vue;
+mod walk;
+
+/// What a code export is written as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Html,
+    React,
+    Vue,
+}
+
+impl Target {
+    pub const ALL: [Target; 3] = [Target::Html, Target::React, Target::Vue];
+
+    /// The name a person knows it by.
+    pub fn label(self) -> &'static str {
+        match self {
+            Target::Html => "HTML",
+            Target::React => "React",
+            Target::Vue => "Vue",
+        }
+    }
+
+    /// `origins` written as this target, in the order given (later on top).
+    pub fn export(self, doc: &Document, res: &Resolved, origins: &[NodeId]) -> CodeExport {
+        let mut out = match self {
+            Target::Html => html::html_of(doc, res, origins),
+            Target::React => react::react_of(doc, res, origins),
+            Target::Vue => vue::vue_of(doc, res, origins),
+        };
+        self.write_credits(&mut out, doc, origins);
+        out
+    }
+
+    /// The credits of the layers exported (`mastik_core::credit`) as a comment
+    /// block at the top of the page's file, one per line, under the doctype in
+    /// HTML. Nothing when no layer carries one.
+    fn write_credits(self, out: &mut CodeExport, doc: &Document, origins: &[NodeId]) {
+        let lines: Vec<String> = mastik_core::credit::credits_in(doc, origins)
+            .iter()
+            .map(|l| {
+                let c = &l.credit;
+                match c.source_url.is_empty() {
+                    true => c.plain(),
+                    false => format!("{} — {}", c.plain(), c.source_url),
+                }
+            })
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        let (path, block) = match self {
+            Target::React => {
+                let body: String = lines
+                    .iter()
+                    .map(|l| format!(" * {}\n", l.replace("*/", "* /")))
+                    .collect();
+                ("App.tsx", format!("/*\n * Credits\n{body} */\n"))
+            }
+            Target::Html | Target::Vue => {
+                let body: String = lines
+                    .iter()
+                    .map(|l| {
+                        // `--` may not appear in a comment; `---` needs two passes.
+                        let mut l = l.clone();
+                        while l.contains("--") {
+                            l = l.replace("--", "- -");
+                        }
+                        format!("  {l}\n")
+                    })
+                    .collect();
+                let path = match self {
+                    Target::Html => "index.html",
+                    _ => "App.vue",
+                };
+                (path, format!("<!--\n  Credits\n{body}-->\n"))
+            }
+        };
+        let Some(file) = out.files.iter_mut().find(|f| f.path == path) else {
+            return;
+        };
+        let at = match file.bytes.starts_with(b"<!doctype html>\n") {
+            true => "<!doctype html>\n".len(),
+            false => 0,
+        };
+        file.bytes.splice(at..at, block.into_bytes());
+    }
+}
+
+/// *Copy as CSS*: each of `ids` under a comment naming the layer. A leaf layer
+/// (text included) is its bare declarations, to paste into a rule; a layer with
+/// children is the HTML export's rules for its subtree, selectors and all.
+///
+/// The layer's own placement (`position`, `left`, `top`) is left out: each is
+/// written as its own page, so it would always read as the origin. Its
+/// children keep theirs, measured from it, so a container is `position:
+/// relative`. A variable stays a `var(--…)`.
+pub fn css_of(doc: &Document, res: &Resolved, ids: &[NodeId]) -> String {
+    let mut out = String::new();
+    for id in ids {
+        let Some(node) = doc.get(*id) else { continue };
+        let page = walk::page(doc, res, &[*id], false);
+        let Some(dom::Child::Element(el)) = page.root.children.first() else {
+            continue;
+        };
+        let mut el = (**el).clone();
+        // The clipboard carries no `text-styles.css`, so each text keeps its whole face.
+        el.each_mut(&mut |e| e.text_class = None);
+        el.style
+            .retain(|(p, _)| !matches!(*p, "position" | "left" | "top"));
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("/* {} */\n", node.name().replace("*/", "* /")));
+        match node.children().is_empty() {
+            true => {
+                for (prop, value) in &el.style {
+                    out.push_str(&format!("{prop}: {value};\n"));
+                }
+            }
+            // Its children's `left`/`top` are measured from it, so it must be
+            // their containing block.
+            false => {
+                el.style.insert(0, ("position", "relative".into()));
+                el.css(&mut out);
+            }
+        }
+    }
+    out
+}
+
+/// One file of a code export, at its path inside the export's folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeFile {
+    pub path: String,
+    pub bytes: Vec<u8>,
+}
+
+/// A code export and what it could not say exactly.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CodeExport {
+    /// Every file, `report.txt` included, in the order a zip lists them.
+    pub files: Vec<CodeFile>,
+    /// Where the page draws differently from the canvas. Deduplicated, in order met.
+    pub approximated: Vec<String>,
+    /// Where the page draws right but a layer's layout became fixed positions or
+    /// a picture, so it will not respond as the design does.
+    pub positioned: Vec<String>,
+    /// Instances written out as their layers rather than as a use of their
+    /// main's component, and why. Empty for plain HTML, which has no components.
+    pub inlined: Vec<String>,
+    /// One line per set whose interaction states are written as CSS, or, from
+    /// plain HTML, that it writes none.
+    pub states: Vec<String>,
+    /// Layers written as another element than the one they set, and why: an
+    /// element HTML refuses where the layer now sits, or a layer drawn as a
+    /// picture.
+    pub elements: Vec<String>,
+}
+
+impl CodeExport {
+    /// The file at `path`, if the export wrote one.
+    pub fn file(&self, path: &str) -> Option<&[u8]> {
+        self.files
+            .iter()
+            .find(|f| f.path == path)
+            .map(|f| f.bytes.as_slice())
+    }
+
+    /// Every file in one zip, stored under its own path ([`crate::plan::zip`]).
+    pub fn zip(&self) -> std::io::Result<Vec<u8>> {
+        let files: Vec<(String, Vec<u8>)> = self
+            .files
+            .iter()
+            .map(|f| (f.path.clone(), f.bytes.clone()))
+            .collect();
+        crate::plan::zip(&files)
+    }
+}
+
+/// What the walk learns that is not markup: the lists of [`CodeExport`].
+#[derive(Default)]
+pub(crate) struct Report {
+    approximated: Vec<String>,
+    positioned: Vec<String>,
+    inlined: Vec<String>,
+    states: Vec<String>,
+    elements: Vec<String>,
+}
+
+impl Report {
+    /// A layer is written as another element than it sets.
+    pub(crate) fn element(&mut self, what: impl Into<String>) {
+        let what = what.into();
+        if !self.elements.contains(&what) {
+            self.elements.push(what);
+        }
+    }
+
+    /// A set's interaction states, and how they are written.
+    pub(crate) fn state(&mut self, what: impl Into<String>) {
+        let what = what.into();
+        if !self.states.contains(&what) {
+            self.states.push(what);
+        }
+    }
+
+    /// The page draws this differently. Deduplicated by wording.
+    pub(crate) fn approximate(&mut self, what: impl Into<String>) {
+        let what = what.into();
+        if !self.approximated.contains(&what) {
+            self.approximated.push(what);
+        }
+    }
+
+    /// The page draws this right, as fixed positions or a picture.
+    pub(crate) fn position(&mut self, what: impl Into<String>) {
+        let what = what.into();
+        if !self.positioned.contains(&what) {
+            self.positioned.push(what);
+        }
+    }
+
+    /// An instance is written out as its layers.
+    pub(crate) fn inline(&mut self, what: impl Into<String>) {
+        let what = what.into();
+        if !self.inlined.contains(&what) {
+            self.inlined.push(what);
+        }
+    }
+
+    /// The report as `report.txt` holds it: the interaction states written, then
+    /// one line per entry under a heading, or a single line saying there is
+    /// nothing to report.
+    pub(crate) fn text(&self) -> String {
+        let mut out = String::new();
+        for (heading, lines) in [
+            ("Interaction states:", &self.states),
+            ("Drawn differently from the canvas:", &self.approximated),
+            (
+                "Drawn right, with fixed positions or as a picture:",
+                &self.positioned,
+            ),
+            ("Written out as layers, not as a component:", &self.inlined),
+            ("Written as another element than set:", &self.elements),
+        ] {
+            if lines.is_empty() {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(heading);
+            out.push('\n');
+            for line in lines {
+                out.push_str("- ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        let exact = self.approximated.is_empty() && self.positioned.is_empty();
+        if exact && self.inlined.is_empty() && self.elements.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("Everything was written exactly.\n");
+        }
+        out
+    }
+
+    /// The report's lists, for [`CodeExport`]: approximated, positioned,
+    /// inlined, states and elements.
+    pub(crate) fn into_lists(self) -> [Vec<String>; 5] {
+        [
+            self.approximated,
+            self.positioned,
+            self.inlined,
+            self.states,
+            self.elements,
+        ]
+    }
+}
+
+/// `tokens.css`, the pictures and `report.txt`, which every emitter writes the
+/// same way, after its own files.
+pub(crate) fn finish(mut files: Vec<CodeFile>, page: walk::Page) -> CodeExport {
+    if let Some(tokens) = page.tokens {
+        files.push(CodeFile {
+            path: "tokens.css".into(),
+            bytes: tokens.into_bytes(),
+        });
+    }
+    if let Some(css) = page.text_styles {
+        files.push(CodeFile {
+            path: TEXT_STYLES.into(),
+            bytes: css.into_bytes(),
+        });
+    }
+    files.extend(
+        page.assets
+            .into_iter()
+            .map(|(path, bytes)| CodeFile { path, bytes }),
+    );
+    files.push(CodeFile {
+        path: "report.txt".into(),
+        bytes: page.report.text().into_bytes(),
+    });
+    let [approximated, positioned, inlined, states, elements] = page.report.into_lists();
+    CodeExport {
+        files,
+        approximated,
+        positioned,
+        inlined,
+        states,
+        elements,
+    }
+}
+
+/// The rules of `root`'s subtree for a stylesheet whose way to the export's top
+/// folder is `up` (`./`, `../`), its pictures' URLs written from there, as a
+/// bundler resolves them.
+pub(crate) fn stylesheet(root: &dom::Element, up: &str) -> String {
+    let mut css = String::new();
+    root.css(&mut css);
+    root.states_css(&mut css);
+    css.replace("url(\"assets/", &format!("url(\"{up}assets/"))
+}
+
+/// The stylesheet holding a class per text style the export uses. Every file
+/// whose tree wears one imports it before its own rules, so where a text sets
+/// a value of its own, its rule comes later and wins.
+pub(crate) const TEXT_STYLES: &str = "text-styles.css";
+
+/// Whether any element under `roots` wears a text style's class.
+pub(crate) fn wears_text_style<'a>(roots: impl IntoIterator<Item = &'a dom::Element>) -> bool {
+    let mut any = false;
+    for root in roots {
+        root.each(&mut |e| any |= e.text_class.is_some());
+    }
+    any
+}
+
+/// Each component's folder, by name.
+pub(crate) fn dirs(components: &[walk::Component]) -> std::collections::HashMap<&str, &str> {
+    components
+        .iter()
+        .map(|c| (c.name.as_str(), c.dir.as_str()))
+        .collect()
+}
+
+/// The way back to the export's top folder from a file in `dir`: `./`, `../`,
+/// `../../`.
+pub(crate) fn up(dir: &str) -> String {
+    match dir.split('/').filter(|s| !s.is_empty()).count() {
+        0 => "./".into(),
+        n => "../".repeat(n),
+    }
+}
+
+/// `path`, from the export's top folder, as an import in a file in `dir`
+/// writes it.
+pub(crate) fn relative(dir: &str, path: &str) -> String {
+    let from: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
+    let to: Vec<&str> = path.split('/').collect();
+    // The last of `to` is the file, never a folder `from` shares.
+    let shared = from
+        .iter()
+        .zip(&to[..to.len() - 1])
+        .take_while(|(a, b)| a == b)
+        .count();
+    up(&from[shared..].join("/")) + &to[shared..].join("/")
+}
+
+/// The components the trees under `roots` use and the pictures they link, each
+/// once, in document order. A slot's default and a component passed to a swap
+/// property are uses: the file names both.
+pub(crate) fn references<'a>(
+    roots: impl IntoIterator<Item = &'a dom::Element>,
+) -> (Vec<String>, Vec<String>) {
+    let mut uses = Vec::new();
+    let mut images = Vec::new();
+    roots.into_iter().for_each(|root| {
+        root.each(&mut |e| {
+            if let Some(i) = &e.instance {
+                let mut named = vec![&i.component];
+                for (_, a) in &i.args {
+                    let mut a = Some(a);
+                    while let Some(arg) = a {
+                        a = match arg {
+                            dom::Arg::Component(c) => {
+                                named.push(c);
+                                None
+                            }
+                            dom::Arg::Var { fallback, .. } => fallback.as_deref(),
+                            _ => None,
+                        };
+                    }
+                }
+                for c in named {
+                    if !uses.contains(c) {
+                        uses.push(c.clone());
+                    }
+                }
+            }
+            if e.tag == "img"
+                && let Some((_, src)) = e.attrs.iter().find(|(k, _)| *k == "src")
+                && !images.contains(src)
+            {
+                images.push(src.clone());
+            }
+            // An inline SVG's linked pictures.
+            for link in e.markup.iter().flat_map(|m| m.split("href=\"").skip(1)) {
+                if let Some((path, _)) = link.split_once('"')
+                    && path.starts_with("assets/")
+                    && !images.iter().any(|i| i == path)
+                {
+                    images.push(path.to_string());
+                }
+            }
+        })
+    });
+    (uses, images)
+}
+
+/// `uses` with every component a swap property defaults to, which the file
+/// names whether or not a slot of it is drawn.
+pub(crate) fn with_defaults(
+    mut uses: Vec<String>,
+    props: &[(String, walk::Ty, Option<dom::Arg>)],
+) -> Vec<String> {
+    for (_, _, d) in props {
+        if let Some(dom::Arg::Component(c)) = d
+            && !uses.contains(c)
+        {
+            uses.push(c.clone());
+        }
+    }
+    uses
+}
+
+/// Rules every page starts with: no default margins, and sizes that include
+/// padding and borders, which is how the model measures a box.
+pub(crate) const BASE_CSS: &str = "\
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An import between the page, `components` and a kit's folder under it
+    /// climbs only out of the folders the two files do not share.
+    #[test]
+    fn imports_climb_out_of_the_folders_not_shared() {
+        assert_eq!(up(""), "./");
+        assert_eq!(up("components/Kit"), "../../");
+        for (dir, path, import) in [
+            ("", "components/Card", "./components/Card"),
+            ("", "components/Kit/Badge", "./components/Kit/Badge"),
+            ("components", "components/Card", "./Card"),
+            ("components", "components/Kit/Badge", "./Kit/Badge"),
+            ("components/Kit", "components/Kit/Dot", "./Dot"),
+            ("components/Kit", "components/Card", "../Card"),
+            ("components/Kit", "components/Other/Dot", "../Other/Dot"),
+            ("components/Kit", "assets/a.png", "../../assets/a.png"),
+        ] {
+            assert_eq!(relative(dir, path), import, "{dir} -> {path}");
+        }
+    }
+
+    /// *Copy as CSS* names the layer and writes its own box and paint, without
+    /// the placement every one-layer page puts at the origin.
+    #[test]
+    fn css_of_writes_the_layers_own_declarations() {
+        use mastik_core::kurbo::{Affine, Size};
+        use mastik_core::peniko::Color;
+        use mastik_core::{Brush, Fill, IdSource, NodeKind, Operation, Transaction};
+        let mut ids = IdSource::new(0x5C);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let rect = ids.mint();
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: rect,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size: Size::new(120.0, 40.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((300.0, 200.0))),
+                name: Some("Card */ x".into()),
+            },
+            Operation::SetFills {
+                id: rect,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)).into(),
+                    visible: true,
+                }]),
+            },
+        ]))
+        .unwrap();
+        let res = Resolved::rebuild(&doc);
+        let css = css_of(&doc, &res, &[rect]);
+        assert!(css.starts_with("/* Card * / x */\n"), "{css}");
+        assert!(css.contains("width: 120px;"), "{css}");
+        assert!(css.contains("height: 40px;"), "{css}");
+        assert!(css.contains("background: #ff0000;"), "{css}");
+        assert!(
+            !css.contains("position:") && !css.contains("left:"),
+            "{css}"
+        );
+        assert!(!css.contains('{'), "a leaf is bare declarations: {css}");
+    }
+
+    /// A frame copies its subtree's rules: its own without placement but as the
+    /// containing block, its child's with the child's place in it.
+    ///
+    /// flip: `css_of` writing a container as bare declarations → fails at
+    /// "the frame's own rule"; dropping the `position: relative` insert → fails
+    /// at "what the child's left/top measure from".
+    #[test]
+    fn css_of_a_frame_is_the_rules_of_its_subtree() {
+        use mastik_core::kurbo::{Affine, Size};
+        use mastik_core::peniko::Color;
+        use mastik_core::{Brush, Fill, IdSource, NodeKind, Operation, Transaction};
+        let mut ids = IdSource::new(0x5D);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let (frame, rect) = (ids.mint(), ids.mint());
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: frame,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(200.0, 100.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((500.0, 500.0))),
+                name: Some("Card".into()),
+            },
+            Operation::CreateNode {
+                id: rect,
+                parent: frame,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size: Size::new(40.0, 20.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((10.0, 30.0))),
+                name: Some("Badge".into()),
+            },
+            Operation::SetFills {
+                id: rect,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)).into(),
+                    visible: true,
+                }]),
+            },
+        ]))
+        .unwrap();
+        let res = Resolved::rebuild(&doc);
+        let css = css_of(&doc, &res, &[frame]);
+        let (own, rest) = css
+            .split_once("}\n")
+            .unwrap_or_else(|| panic!("the frame's own rule: {css}"));
+        assert!(own.starts_with("/* Card */\n.card {\n"), "{css}");
+        assert!(
+            !own.contains("left:"),
+            "the frame's place is dropped: {css}"
+        );
+        assert!(
+            own.contains("position: relative;"),
+            "the frame is what the child's left/top measure from: {css}"
+        );
+        assert!(rest.contains(".badge {"), "the child's rule: {css}");
+        assert!(rest.contains("left: 10px;"), "{css}");
+        assert!(rest.contains("background: #0000ff;"), "{css}");
+    }
+}

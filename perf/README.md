@@ -1,11 +1,11 @@
 # Performance baselines
 
-`crates/ondin-render/tests/perf_suite.rs` generates a fixed set of documents and times what the
+`crates/mastik-render/tests/perf_suite.rs` generates a fixed set of documents and times what the
 editor does with them. `baselines/<machine>.json` holds the last recorded figures for each machine;
 git history is the record over time. Figures compare only on the same machine, and only between
 runs of the same fixtures version.
 
-A machine's name is the first 12 hex digits of the SHA-256 of `ondin-perf:` followed by the OS
+A machine's name is the first 12 hex digits of the SHA-256 of `mastik-perf:` followed by the OS
 machine id (`MachineGuid` on Windows, `IOPlatformUUID` on macOS, `/etc/machine-id` on Linux).
 The id is random per install, so the name says nothing about the host, its user or its owner,
 and stays the same across clones and host renames. A reinstall gives a new name.
@@ -14,13 +14,13 @@ and stays the same across clones and host renames. A reinstall gives a new name.
 
 ```bash
 # Measure and compare with this machine's baseline (about a minute):
-ONDIN_PERF=1 cargo test -p ondin-render --release --test perf_suite -- --ignored --nocapture measure
+MASTIK_PERF=1 cargo test -p mastik-render --release --test perf_suite -- --ignored --nocapture measure
 
 # The same, and write the results into baselines/<machine>.json:
-ONDIN_PERF=1 ONDIN_PERF_RECORD=1 cargo test -p ondin-render --release --test perf_suite -- --ignored --nocapture measure
+MASTIK_PERF=1 MASTIK_PERF_RECORD=1 cargo test -p mastik-render --release --test perf_suite -- --ignored --nocapture measure
 
-# Write the fixtures to target/perf/*.ondin, to open them in the app:
-ONDIN_PERF=1 cargo test -p ondin-render --release --test perf_suite -- --ignored --nocapture write_fixtures
+# Write the fixtures to target/perf/*.mastik, to open them in the app:
+MASTIK_PERF=1 cargo test -p mastik-render --release --test perf_suite -- --ignored --nocapture write_fixtures
 ```
 
 Run with nothing else busy: the GPU figures move with load and clock state. Recording refuses a
@@ -28,11 +28,11 @@ debug build.
 
 | Variable | Does |
 | --- | --- |
-| `ONDIN_PERF=1` | Run the suite at all. Without it both tests skip, so the on-device suite's `--ignored` command does not run them. |
-| `ONDIN_PERF_RECORD=1` | Write the results into the baseline, replacing those fixtures' entries. |
-| `ONDIN_PERF_ONLY=control,wide` | Run only these fixtures. |
-| `ONDIN_PERF_EXTRA=a.ondin;b.ondin` | Also time local documents, recorded as `local:<stem>`. Use the platform's path separator. For files that cannot be committed, such as imported kits. |
-| `ONDIN_PERF_MACHINE=name` | The baseline's name, in place of the hash. Committed, so pick one that names no one. |
+| `MASTIK_PERF=1` | Run the suite at all. Without it both tests skip, so the on-device suite's `--ignored` command does not run them. |
+| `MASTIK_PERF_RECORD=1` | Write the results into the baseline, replacing those fixtures' entries. |
+| `MASTIK_PERF_ONLY=control,wide` | Run only these fixtures. |
+| `MASTIK_PERF_EXTRA=a.mastik;b.mastik` | Also time local documents, recorded as `local:<stem>`. Use the platform's path separator. For files that cannot be committed, such as imported kits. |
+| `MASTIK_PERF_MACHINE=name` | The baseline's name, in place of the hash. Committed, so pick one that names no one. |
 
 ## Fixtures
 

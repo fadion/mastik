@@ -5,7 +5,7 @@ name: CI
 # last two for the code only they compile.
 #
 # **It is the first time most of this tree is compiled anywhere but Windows.**
-# Until it existed, Ondin was built and tested on one Windows machine, and
+# Until it existed, Mastik was built and tested on one Windows machine, and
 # CLAUDE.md recorded four decision functions behind `cfg(not(windows))` and
 # `cfg(target_os = "macos")` that no gate had ever compiled. The macOS and Linux
 # legs are that gate.
@@ -61,7 +61,7 @@ jobs:
       - name: Clippy per package (warnings = errors)
         run: |
           set -euo pipefail
-          for p in ondin-core ondin-render ondin-export ondin-mcp ondin-app; do
+          for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do
             cargo clippy -p "$p" --all-targets -- -D warnings
           done
       # The gate that checks the record against the code: each crate root denies
@@ -84,7 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `macos-latest` is Apple Silicon, the only macOS target Ondin ships.
+        # `macos-latest` is Apple Silicon, the only macOS target Mastik ships.
         # Nobody developing this has a Mac, so this leg *is* the macOS compiler:
         # without it a break there surfaces first during a tagged release, after
         # the tag is pushed. `fail-fast: false` keeps a macOS failure from

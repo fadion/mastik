@@ -1,0 +1,3093 @@
+//! Batch rename (`docs/design/app-canvas-chrome.md`, *Batch rename*): the box
+//! that renames many layers at once — the selection, the page or every page.
+//!
+//! The text rule is `mastik_core::rename`'s; this module picks the layers, orders
+//! and numbers them ([`plan_into`]), draws the box with its preview, and commits
+//! every new name as one undo step. Nothing changes on the canvas until then.
+//!
+//! What the plan reads of the document is a copy ([`Snapshot`]), taken again
+//! whenever the document, the page or the selection moves under the open box. A
+//! worker plans from the copy each time it or a setting changes, sending the rows
+//! back in parts as it goes.
+
+use crate::app::MastikApp;
+use crate::panels::layers::GlyphInk;
+use crate::theme::{self, color, icon};
+use crate::ui::{self, FieldButton, Prefix, Scrub};
+use eframe::egui;
+use mastik_core::kurbo;
+use mastik_core::rename::{Find, Numbering, Piece, Rule, Span, Template};
+use mastik_core::{Document, NodeId, Operation, Resolved, Transaction};
+use std::collections::HashSet;
+use std::ops::Range;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+
+/// The box's width.
+const W: f32 = 520.0;
+/// The label column, and the gap after it.
+const LABEL_W: f32 = 72.0;
+const GAP: f32 = 10.0;
+/// The card's inset, every canvas card's.
+const PAD: f32 = crate::settings::CANVAS_CARD_PAD;
+/// The fields and the numbering controls, as tall as every other control.
+const FIELD_H: f32 = ui::CONTROL_H;
+const NUM_H: f32 = ui::CONTROL_H;
+/// A preview row: a line of a list, not a control.
+const ROW_H: f32 = 26.0;
+/// The preview scrolls past this many rows.
+const ROWS_SHOWN: f32 = 8.0;
+/// The space before a pill that follows another: 2 of air painted between them,
+/// once each ground has grown by `TextFormat::expand_bg` and been rounded to whole
+/// pixels (`pills_side_by_side_keep_a_gap` measures it).
+const PILL_GAP: f32 = 3.0;
+/// The layers the worker plans between two parts it sends.
+const PART: usize = 500;
+
+/// What the box renames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scope {
+    Selection,
+    Page,
+    Document,
+}
+
+/// Which layer of the run is first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Order {
+    /// The layers tree, top to bottom.
+    Layers,
+    Reversed,
+    /// Rows, top to bottom, each read left to right.
+    LeftToRight,
+    /// Columns, left to right, each read top to bottom.
+    TopToBottom,
+}
+
+impl Order {
+    const ALL: [Order; 4] = [
+        Order::Layers,
+        Order::Reversed,
+        Order::LeftToRight,
+        Order::TopToBottom,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Order::Layers => "Layers order",
+            Order::Reversed => "Layers order, reversed",
+            Order::LeftToRight => "Left to right",
+            Order::TopToBottom => "Top to bottom",
+        }
+    }
+
+    fn glyph(self) -> &'static str {
+        match self {
+            Order::Layers => icon::LIST_NUMBERS,
+            Order::Reversed => icon::ARROWS_DOWN_UP,
+            Order::LeftToRight => icon::ARROW_RIGHT,
+            Order::TopToBottom => icon::ARROW_DOWN,
+        }
+    }
+
+    /// How prefs spell it.
+    fn key(self) -> &'static str {
+        match self {
+            Order::Layers => "layers",
+            Order::Reversed => "reversed",
+            Order::LeftToRight => "left-to-right",
+            Order::TopToBottom => "top-to-bottom",
+        }
+    }
+
+    fn from_key(key: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|o| o.key() == key)
+            .unwrap_or(Order::Layers)
+    }
+}
+
+/// Names the app writes beyond `naming::generated_stem`'s table, which stays
+/// strict because a boolean's relabelling reads it: a placed picture, a blend's
+/// and a trace's group, a combined set's fallback, an imported mask or clip.
+const APP_NAMES: [&str; 6] = [
+    "Image",
+    mastik_core::blend::GROUP_NAME,
+    mastik_core::trace::GROUP_NAME,
+    "Component",
+    "Mask",
+    "Clip",
+];
+
+/// Whether the app wrote `name`, numbered or not: what *Only default names* keeps.
+fn app_named(name: &str) -> bool {
+    use mastik_core::naming::{generated_stem, numbered};
+    generated_stem(name).is_some()
+        || APP_NAMES.contains(&numbered(name).map_or(name, |(stem, _)| stem))
+}
+
+/// One layer as the plan reads it, as of the snapshot.
+#[derive(Clone, Debug)]
+struct Layer {
+    id: NodeId,
+    name: String,
+    /// What a text layer says, on one line, for the `[Text]` token; empty for
+    /// any other layer.
+    content: String,
+    /// A name the app wrote ([`app_named`]), which *Only default names* keeps.
+    default_name: bool,
+    /// A variant in a set, whose name is made from its property values.
+    variant: bool,
+    /// Inside an instance, and not its root.
+    in_instance: bool,
+    /// Selected when the snapshot was taken.
+    selected: bool,
+    /// Under a layer that was.
+    under_selected: bool,
+    bounds: Option<kurbo::Rect>,
+    glyph: &'static str,
+    tint: GlyphInk,
+}
+
+/// One page's layers, in the layers tree's order.
+#[derive(Debug)]
+struct SnapPage {
+    id: NodeId,
+    name: String,
+    layers: Vec<Layer>,
+}
+
+/// What the plan reads of the document, the pages in the Pages list's order: every
+/// page but a draft, which *All pages* leaves out as everything gathered from every
+/// page does, though the current page is kept, draft or not.
+#[derive(Debug)]
+pub(crate) struct Snapshot {
+    pages: Vec<SnapPage>,
+}
+
+impl Snapshot {
+    /// Read the pages of `doc` the box can reach from page `here`, marking
+    /// `selection` and the layers under it.
+    pub(crate) fn take(doc: &Document, res: &Resolved, here: NodeId, selection: &[NodeId]) -> Self {
+        let chosen: HashSet<NodeId> = selection.iter().copied().collect();
+        let pages = doc
+            .pages()
+            .iter()
+            .filter(|p| !p.draft || p.id == here)
+            .map(|p| p.id)
+            .map(|page| {
+                let mut layers = Vec::new();
+                // `(id, under a selected layer)`, pushed in child order so the last
+                // child, the tree's top row, pops first.
+                let mut stack = vec![(page, false)];
+                while let Some((id, under)) = stack.pop() {
+                    let Some(node) = doc.get(id) else { continue };
+                    let selected = chosen.contains(&id);
+                    if id != page {
+                        let (glyph, tint) = crate::panels::layers::node_glyph(node);
+                        layers.push(Layer {
+                            id,
+                            name: node.name().to_string(),
+                            // The drawn content: a bound text's literal is empty.
+                            content: match doc.resolved_kind(id).as_deref() {
+                                Some(mastik_core::NodeKind::Text { content, .. }) => {
+                                    content.split_whitespace().collect::<Vec<_>>().join(" ")
+                                }
+                                _ => String::new(),
+                            },
+                            default_name: app_named(node.name()),
+                            variant: !node.variant().is_empty(),
+                            in_instance: node.parent().is_some_and(|p| {
+                                mastik_core::component::instance_root(doc, p).is_some()
+                            }),
+                            selected,
+                            under_selected: under,
+                            bounds: res.world_bounds(id),
+                            glyph,
+                            tint,
+                        });
+                    }
+                    let under = under || selected;
+                    stack.extend(node.children().iter().map(|c| (*c, under)));
+                }
+                SnapPage {
+                    id: page,
+                    name: doc
+                        .get(page)
+                        .map_or_else(String::new, |n| n.name().to_string()),
+                    layers,
+                }
+            })
+            .collect();
+        Self { pages }
+    }
+}
+
+/// Everything the plan depends on besides the snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Settings {
+    pub(crate) scope: Scope,
+    /// The current page, which *This page* means.
+    page: NodeId,
+    pub(crate) find: String,
+    /// *Rename to*, with its tokens spelled `[Name]`, `[Number]`, `[Group k]`.
+    pub(crate) template: String,
+    pub(crate) match_case: bool,
+    pub(crate) pattern: bool,
+    pub(crate) keep_case: bool,
+    pub(crate) numbering: Numbering,
+    pub(crate) order: Order,
+    /// *Include layers inside*, at Selection.
+    pub(crate) inside: bool,
+    /// *Include layers inside instances*, at page and document scope.
+    pub(crate) inside_instances: bool,
+    /// *Only default names*: leave every layer someone has named alone.
+    pub(crate) default_names: bool,
+}
+
+impl Settings {
+    pub(crate) fn set_scope(&mut self, scope: Scope) {
+        self.scope = scope;
+        // Away from the selection, the case of what matches is out of view.
+        self.keep_case = scope != Scope::Selection;
+    }
+}
+
+/// Where the template field's caret goes on its next frame.
+#[derive(Clone, Copy, Debug)]
+enum Caret {
+    /// Everything selected, so typing replaces it: how the box opens.
+    All,
+    At(usize),
+}
+
+/// The open box.
+pub(crate) struct BatchRename {
+    pub(crate) s: Settings,
+    /// How many layers are selected; zero leaves *Selection* off.
+    selected: usize,
+    matcher: Matcher,
+    /// What the worker plans from, taken again whenever [`Self::seen`] moves.
+    snap: Arc<Snapshot>,
+    /// The document revision, page and selection [`Self::snap`] was taken at.
+    seen: (u64, NodeId, Vec<NodeId>),
+    /// The settings last handed to the worker, `None` once a new snapshot needs
+    /// a plan of its own.
+    asked: Option<Settings>,
+    /// What the preview draws: the newest plan, as far as its parts have come.
+    plan: Plan,
+    /// Whether `plan` has had a part for the newest settings yet; until then it
+    /// still shows the previous plan.
+    fresh: bool,
+    /// Whether `plan` is whole for the newest settings.
+    done: bool,
+    /// Whether any plan has been whole since the box opened: until then an empty
+    /// preview is still matching, after it one says nothing matches, which a
+    /// keystroke's plan in flight must not flicker away.
+    landed: bool,
+    /// The template's caret, in characters, while the field had it: where an
+    /// insert button puts its token.
+    caret: Option<usize>,
+    focus: Option<Caret>,
+}
+
+/// One row of the preview.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Row {
+    /// All pages: the heading over a page's rows.
+    Page {
+        name: String,
+        count: usize,
+    },
+    Layer(LayerRow),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LayerRow {
+    pub(crate) id: NodeId,
+    glyph: &'static str,
+    tint: GlyphInk,
+    pub(crate) old: String,
+    /// The byte ranges of `old` Find matched.
+    pub(crate) matched: Vec<Range<usize>>,
+    pub(crate) new: New,
+}
+
+/// What a listed layer's name becomes.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum New {
+    /// Renamed: the new name's runs, new ones drawn in the accent.
+    Name(Vec<Span>),
+    /// Find matches nothing, or the rule gives back the same name.
+    Unchanged,
+    /// The new name would be empty, so the layer keeps its own.
+    Empty,
+    /// A variant in a set, whose name is made from its property values.
+    Variant,
+}
+
+/// What the box would do with its settings — or one part of it, as the worker
+/// sends it, which [`Plan::absorb`] adds to the whole.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Plan {
+    pub(crate) rows: Vec<Row>,
+    /// The layers searched, past those left out inside instances.
+    pub(crate) searched: usize,
+    /// The layer rows listed.
+    pub(crate) listed: usize,
+    /// The page headings: all pages' pages with a listed row.
+    pub(crate) pages: usize,
+    /// Each layer that changes, and its new name, in the run's order.
+    pub(crate) changes: Vec<(NodeId, String)>,
+    /// Matches inside instances the box leaves out.
+    pub(crate) skipped: usize,
+    /// The pattern's groups, which the template can insert.
+    pub(crate) groups: usize,
+    /// Why Find renames nothing: a pattern that does not parse.
+    pub(crate) error: Option<String>,
+    /// The scope the plan was made for, which labels it while a plan for another
+    /// is in flight; `None` before any plan.
+    pub(crate) scope: Option<Scope>,
+    /// The row of the newest page heading, which the rows after it count into.
+    head: Option<usize>,
+}
+
+impl Plan {
+    /// Add `part`'s rows and counts to this plan.
+    pub(crate) fn absorb(&mut self, part: Plan) {
+        for row in part.rows {
+            match &row {
+                Row::Page { .. } => {
+                    self.pages += 1;
+                    self.head = Some(self.rows.len());
+                }
+                Row::Layer(_) => {
+                    self.listed += 1;
+                    if let Some(Row::Page { count, .. }) =
+                        self.head.and_then(|h| self.rows.get_mut(h))
+                    {
+                        *count += 1;
+                    }
+                }
+            }
+            self.rows.push(row);
+        }
+        self.changes.extend(part.changes);
+        self.searched += part.searched;
+        self.skipped += part.skipped;
+        self.groups = self.groups.max(part.groups);
+        if part.error.is_some() {
+            self.error = part.error;
+        }
+        self.scope = part.scope.or(self.scope);
+    }
+
+    /// Why Rename has nothing to do, when it has not.
+    fn why_not(&self, find: &str) -> Option<String> {
+        if let Some(e) = &self.error {
+            return Some(e.clone());
+        }
+        if !self.changes.is_empty() {
+            return None;
+        }
+        let matched: Vec<&New> = self
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Layer(l) if !l.matched.is_empty() => Some(&l.new),
+                _ => None,
+            })
+            .collect();
+        Some(
+            if matched.is_empty() {
+                if find.is_empty() {
+                    "No layers to rename"
+                } else {
+                    "No layers match Find"
+                }
+            } else if matched.iter().all(|n| **n == New::Empty) {
+                "Every new name would be empty"
+            } else if matched.iter().all(|n| **n == New::Variant) {
+                "Variants are named by their properties"
+            } else {
+                "Nothing would change"
+            }
+            .to_string(),
+        )
+    }
+}
+
+/// Whether `outer` holds `inner` and is the larger, so two equal boxes hold
+/// neither.
+fn holds(outer: kurbo::Rect, inner: kurbo::Rect) -> bool {
+    outer.x0 <= inner.x0
+        && outer.y0 <= inner.y0
+        && inner.x1 <= outer.x1
+        && inner.y1 <= outer.y1
+        && outer.area() > inner.area()
+}
+
+/// Which of `spans` reach across two rows: each one whose span holds the centres
+/// of two spans that do not overlap.
+///
+/// The spans whose centres a span holds are a run of the spans sorted by centre,
+/// so each answer is two range queries — the least end and the greatest start in
+/// that run — over sparse tables.
+fn spanning(spans: &[(f64, f64)]) -> Vec<bool> {
+    let mut by_centre: Vec<usize> = (0..spans.len()).collect();
+    let centre = |k: usize| (spans[k].0 + spans[k].1) / 2.0;
+    by_centre.sort_by(|&a, &b| centre(a).total_cmp(&centre(b)));
+    let centres: Vec<f64> = by_centre.iter().map(|&k| centre(k)).collect();
+    let table = |v: Vec<f64>, f: fn(f64, f64) -> f64| {
+        let mut levels = vec![v];
+        while 2 << (levels.len() - 1) <= centres.len() {
+            let (last, w) = (&levels[levels.len() - 1], 1 << (levels.len() - 1));
+            let next = (0..last.len() - w)
+                .map(|i| f(last[i], last[i + w]))
+                .collect();
+            levels.push(next);
+        }
+        levels
+    };
+    let query = |t: &[Vec<f64>], a: usize, b: usize, f: fn(f64, f64) -> f64| {
+        let level = (b - a).ilog2() as usize;
+        f(t[level][a], t[level][b - (1 << level)])
+    };
+    let ends = table(by_centre.iter().map(|&k| spans[k].1).collect(), f64::min);
+    let starts = table(by_centre.iter().map(|&k| spans[k].0).collect(), f64::max);
+    spans
+        .iter()
+        .map(|&(lo, hi)| {
+            let a = centres.partition_point(|&c| c < lo);
+            let b = centres.partition_point(|&c| c <= hi);
+            b >= a + 2 && query(&ends, a, b, f64::min) < query(&starts, a, b, f64::max)
+        })
+        .collect()
+}
+
+/// `ids` in reading order: rows (or columns, `!rows`) gathered by bands — a layer
+/// joins the first band its centre falls in — then each band read along. A layer
+/// whose box holds another's (a frame round its cards) would stretch a band over
+/// every row it spans, so it forms no band with them: those layers come first,
+/// read among themselves the same way. So does a layer that holds none but reaches
+/// across two rows ([`spanning`]: a sidebar beside them), after the holders. Layers
+/// with no bounds keep their order at the end.
+fn by_bands<'a>(layers: Vec<&'a Layer>, rows: bool) -> Vec<&'a Layer> {
+    /// A row or column: the span of the layer that started it, and its layers
+    /// with where each starts along it.
+    struct Band<'a> {
+        lo: f64,
+        hi: f64,
+        members: Vec<(&'a Layer, f64)>,
+    }
+    let (mut boxed, mut rest) = (Vec::new(), Vec::new());
+    for l in layers {
+        match l.bounds {
+            Some(_) => boxed.push(l),
+            None => rest.push(l),
+        }
+    }
+    // `holds` is strict, so some layer holds no other and each call reads fewer.
+    let (outer, inner): (Vec<&'a Layer>, Vec<&'a Layer>) = boxed.iter().copied().partition(|l| {
+        let r = l.bounds.unwrap_or_default();
+        boxed.iter().any(|o| o.bounds.is_some_and(|o| holds(r, o)))
+    });
+    let mut out = match outer.is_empty() {
+        true => Vec::new(),
+        false => by_bands(outer, rows),
+    };
+    let span = |l: &Layer| {
+        let r = l.bounds.unwrap_or_default();
+        if rows { (r.y0, r.y1) } else { (r.x0, r.x1) }
+    };
+    // The shortest layer never reaches across two rows, so each call reads fewer.
+    let wide = spanning(&inner.iter().map(|l| span(l)).collect::<Vec<_>>());
+    let (wide, inner): (Vec<_>, Vec<_>) = inner.into_iter().zip(wide).partition(|p| p.1);
+    if !wide.is_empty() {
+        out.extend(by_bands(wide.into_iter().map(|p| p.0).collect(), rows));
+    }
+    let mut boxed: Vec<(&'a Layer, (f64, f64), f64)> = inner
+        .into_iter()
+        .map(|p| p.0)
+        .filter_map(|l| {
+            let r = l.bounds?;
+            Some(match rows {
+                true => (l, (r.y0, r.y1), r.x0),
+                false => (l, (r.x0, r.x1), r.y0),
+            })
+        })
+        .collect();
+    boxed.sort_by(|a, b| a.1.0.total_cmp(&b.1.0));
+    let mut bands: Vec<Band<'a>> = Vec::new();
+    for (l, (lo, hi), along) in boxed {
+        let centre = (lo + hi) / 2.0;
+        match bands.iter_mut().find(|b| b.lo <= centre && centre <= b.hi) {
+            Some(band) => band.members.push((l, along)),
+            None => bands.push(Band {
+                lo,
+                hi,
+                members: vec![(l, along)],
+            }),
+        }
+    }
+    for mut band in bands {
+        band.members.sort_by(|a, b| a.1.total_cmp(&b.1));
+        out.extend(band.members.into_iter().map(|m| m.0));
+    }
+    out.extend(rest);
+    out
+}
+
+/// Plan the rename `s` describes over `snap`: the layers in scope, each page's in
+/// the run's order and the pages in the Pages list's, numbered as they change.
+/// The plan goes to `emit` in parts, every [`PART`] layers; `emit` answering false
+/// stops it.
+pub(crate) fn plan_into(snap: &Snapshot, s: &Settings, emit: &mut dyn FnMut(Plan) -> bool) {
+    let blank = || Plan {
+        scope: Some(s.scope),
+        ..Plan::default()
+    };
+    let mut part = blank();
+    let rule = match Find::new(&s.find, s.match_case, s.pattern) {
+        Ok(find) => {
+            part.groups = find.groups();
+            Some(Rule {
+                find,
+                template: Template::parse(&s.template),
+                keep_case: s.keep_case,
+            })
+        }
+        Err(e) => {
+            part.error = Some(e);
+            None
+        }
+    };
+    let matches = |l: &Layer| {
+        rule.as_ref()
+            .is_some_and(|r| r.apply(&l.name, "", &l.content).is_some())
+    };
+
+    // A layer takes a number when Find matches it and its new name is usable, even
+    // when that name is its own: an unmatched layer leaves no gap, and one that
+    // already carries its number keeps it rather than lending it to the next.
+    let mut taken = 0usize;
+    let mut since = 0usize;
+    let every = s.scope == Scope::Selection;
+    for page in &snap.pages {
+        if s.scope == Scope::Page && page.id != s.page {
+            continue;
+        }
+        let mut run = Vec::new();
+        for l in &page.layers {
+            if s.default_names && !l.default_name {
+                continue;
+            }
+            match s.scope {
+                Scope::Selection if l.selected || (s.inside && l.under_selected) => run.push(l),
+                Scope::Selection => {}
+                _ if !s.inside_instances && l.in_instance => {
+                    if matches(l) {
+                        part.skipped += 1;
+                    }
+                }
+                _ => run.push(l),
+            }
+        }
+        let run = match s.order {
+            Order::Layers => run,
+            Order::Reversed => run.into_iter().rev().collect(),
+            Order::LeftToRight => by_bands(run, true),
+            Order::TopToBottom => by_bands(run, false),
+        };
+        let mut headed = false;
+        for l in run {
+            part.searched += 1;
+            let applied = rule
+                .as_ref()
+                .and_then(|r| r.apply(&l.name, &s.numbering.nth(taken), &l.content));
+            let (matched, new) = match applied {
+                None => (Vec::new(), New::Unchanged),
+                Some(r) if l.variant => (r.matched, New::Variant),
+                Some(r) => match mastik_core::naming::usable(&r.text()) {
+                    None => (r.matched, New::Empty),
+                    Some(name) if name == l.name => {
+                        taken += 1;
+                        (r.matched, New::Unchanged)
+                    }
+                    Some(name) => {
+                        taken += 1;
+                        part.changes.push((l.id, name));
+                        (r.matched, New::Name(r.spans))
+                    }
+                },
+            };
+            if every || !matched.is_empty() {
+                if s.scope == Scope::Document && !headed {
+                    headed = true;
+                    part.rows.push(Row::Page {
+                        name: page.name.clone(),
+                        count: 0,
+                    });
+                }
+                part.rows.push(Row::Layer(LayerRow {
+                    id: l.id,
+                    glyph: l.glyph,
+                    tint: l.tint,
+                    old: l.name.clone(),
+                    matched,
+                    new,
+                }));
+            }
+            since += 1;
+            if since == PART {
+                since = 0;
+                if !emit(std::mem::replace(&mut part, blank())) {
+                    return;
+                }
+            }
+        }
+    }
+    emit(part);
+}
+
+/// The whole plan at once.
+pub(crate) fn plan(snap: &Snapshot, s: &Settings) -> Plan {
+    let mut whole = Plan::default();
+    plan_into(snap, s, &mut |part| {
+        whole.absorb(part);
+        true
+    });
+    whole
+}
+
+/// What the worker sends: a part of the plan for one request, or that the
+/// request's plan is whole.
+enum Sent {
+    Part(u64, Plan),
+    Done(u64),
+}
+
+/// One request to the worker: its number, the settings, and the snapshot to plan
+/// from, which is retaken whenever the document moves under the box.
+type Request = (u64, Settings, Arc<Snapshot>);
+
+/// The thread that plans while the box is open. It takes the newest request,
+/// skipping any it was sent while busy, and abandons a plan as soon as a newer
+/// request is made. It ends when the box drops its sender.
+struct Matcher {
+    tx: Sender<Request>,
+    rx: Receiver<Sent>,
+    /// The newest request, which the thread reads between parts.
+    latest: Arc<AtomicU64>,
+    /// No thread could start: plans run on the UI thread.
+    inline: bool,
+}
+
+impl Matcher {
+    fn start(ctx: &egui::Context) -> Self {
+        let (tx, requests) = channel::<Request>();
+        let (sent, rx) = channel();
+        let latest = Arc::new(AtomicU64::new(0));
+        let (ctx, newest) = (ctx.clone(), latest.clone());
+        let spawned = std::thread::Builder::new()
+            .name("batch-rename".into())
+            .spawn(move || {
+                while let Ok(mut req) = requests.recv() {
+                    while let Ok(newer) = requests.try_recv() {
+                        req = newer;
+                    }
+                    let (n, s, snap) = req;
+                    let current = || newest.load(Ordering::Relaxed) == n;
+                    plan_into(&snap, &s, &mut |part| {
+                        let ok = current() && sent.send(Sent::Part(n, part)).is_ok();
+                        ctx.request_repaint();
+                        ok
+                    });
+                    if current() && sent.send(Sent::Done(n)).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        let inline = match spawned {
+            Ok(_) => false,
+            Err(e) => {
+                log::warn!(target: "mastik", "no thread for batch rename: {e}");
+                true
+            }
+        };
+        Self {
+            tx,
+            rx,
+            latest,
+            inline,
+        }
+    }
+
+    /// Ask for the plan of `s` over `snap`; its parts come back through
+    /// [`Self::rx`] under the returned number.
+    fn ask(&mut self, s: Settings, snap: Arc<Snapshot>) -> u64 {
+        let n = self.latest.load(Ordering::Relaxed) + 1;
+        self.latest.store(n, Ordering::Relaxed);
+        if self.inline {
+            let whole = plan(&snap, &s);
+            // Sent to ourselves, so the frame reads it as it would the thread's.
+            let (tx, rx) = channel();
+            let _ = tx.send(Sent::Part(n, whole));
+            let _ = tx.send(Sent::Done(n));
+            self.rx = rx;
+        } else {
+            let _ = self.tx.send((n, s, snap));
+        }
+        n
+    }
+}
+
+impl BatchRename {
+    /// Ask for a plan when the settings or the snapshot changed, and take in what
+    /// the worker sent.
+    fn take_parts(&mut self) {
+        if self.asked.as_ref() != Some(&self.s) {
+            self.matcher.ask(self.s.clone(), self.snap.clone());
+            self.asked = Some(self.s.clone());
+            self.fresh = false;
+            self.done = false;
+        }
+        let newest = self.matcher.latest.load(Ordering::Relaxed);
+        while let Ok(sent) = self.matcher.rx.try_recv() {
+            match sent {
+                Sent::Part(n, part) if n == newest => {
+                    if !self.fresh {
+                        self.fresh = true;
+                        self.plan = Plan::default();
+                    }
+                    self.plan.absorb(part);
+                }
+                Sent::Done(n) if n == newest => {
+                    if !self.fresh {
+                        self.fresh = true;
+                        self.plan = Plan::default();
+                    }
+                    self.done = true;
+                    self.landed = true;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// `n` with thousands separated: `1,204`.
+fn count(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The preview's count: what changes at Selection, what matches elsewhere.
+fn count_label(scope: Scope, plan: &Plan) -> String {
+    match scope {
+        Scope::Selection => format!(
+            "{} of {} change",
+            count(plan.changes.len()),
+            count(plan.searched)
+        ),
+        Scope::Page => format!("{} of {} match", count(plan.listed), count(plan.searched)),
+        Scope::Document => format!(
+            "{} of {} match · {}",
+            count(plan.listed),
+            count(plan.searched),
+            ui::count(plan.pages, "page")
+        ),
+    }
+}
+
+fn layers(n: usize) -> String {
+    match n {
+        1 => "1 layer".to_string(),
+        n => format!("{} layers", count(n)),
+    }
+}
+
+/// The template's token at char index `at` or ending there, as a char range.
+fn token_at(text: &str, at: usize, ending: bool) -> Option<Range<usize>> {
+    mastik_core::rename::tokens(text)
+        .into_iter()
+        .find_map(|(r, _)| {
+            let start = text[..r.start].chars().count();
+            let end = start + text[r.clone()].chars().count();
+            let hit = match ending {
+                true => start < at && at <= end,
+                false => start <= at && at < end,
+            };
+            hit.then_some(start..end)
+        })
+}
+
+/// Where a caret at char index `at`, inside a pill, goes: before the pill when it
+/// was moving `leftward`, else after it (a right arrow, or a click). `None` when it
+/// is not inside one.
+fn out_of_pill(text: &str, at: usize, leftward: bool) -> Option<usize> {
+    let r = token_at(text, at, false).filter(|r| r.start < at)?;
+    Some(if leftward { r.start } else { r.end })
+}
+
+fn char_to_byte(text: &str, at: usize) -> usize {
+    text.char_indices().nth(at).map_or(text.len(), |(b, _)| b)
+}
+
+/// `text` with each typed spelling of a token written as the token, and `caret`
+/// moved with the text before it.
+fn canonical(text: &str, caret: usize) -> (String, usize) {
+    let mut out = String::new();
+    let mut moved = caret;
+    let mut at = 0;
+    for (r, piece) in mastik_core::rename::tokens(text) {
+        out.push_str(&text[at..r.start]);
+        let spelled = Template(vec![piece]).to_string();
+        let end = text[..r.end].chars().count();
+        if caret >= end {
+            moved = moved + spelled.chars().count() - text[r.clone()].chars().count();
+        }
+        out.push_str(&spelled);
+        at = r.end;
+    }
+    out.push_str(&text[at..]);
+    (out, moved)
+}
+
+/// A pill's ground behind a token.
+fn pill_fill() -> egui::Color32 {
+    color::accent_a(66)
+}
+
+/// The template field's text: each token a pill, its brackets drawn as the pill's
+/// padding so the caret still steps through real characters. The pill keeps the
+/// text's size: a smaller font sits on the line's baseline, low against its words.
+fn template_galley(ui: &egui::Ui, text: &str) -> std::sync::Arc<egui::Galley> {
+    let font = egui::FontId::proportional(ui::CONTROL_PT);
+    let plain = egui::TextFormat::simple(font.clone(), color::text());
+    let mut job = egui::text::LayoutJob::default();
+    let mut at = 0;
+    let mut last_end = None;
+    for (i, (r, _)) in mastik_core::rename::tokens(text).into_iter().enumerate() {
+        job.append(&text[at..r.start], 0.0, plain.clone());
+        // Two pills side by side keep a gap, or they read as one pill of two words.
+        let gap = if last_end == Some(r.start) {
+            PILL_GAP
+        } else {
+            0.0
+        };
+        last_end = Some(r.end);
+        // egui paints neighbouring glyphs of one background as one rectangle,
+        // across the gap; every other pill's ground is a unit of alpha lighter,
+        // which no eye sees and which ends the rectangle at each pill.
+        let ground = match i % 2 {
+            0 => pill_fill(),
+            _ => color::accent_a(65),
+        };
+        let pill = |ink| egui::TextFormat {
+            color: ink,
+            background: ground,
+            ..egui::TextFormat::simple(font.clone(), ink)
+        };
+        // The galley must hold exactly the text's characters, or the caret lands
+        // between the wrong ones: the word is the text's own, the brackets hidden.
+        let bracket = pill(egui::Color32::TRANSPARENT);
+        job.append("[", gap, bracket.clone());
+        job.append(
+            &text[r.start + 1..r.end - 1],
+            0.0,
+            pill(color::accent_200()),
+        );
+        job.append("]", 0.0, bracket);
+        at = r.end;
+    }
+    job.append(&text[at..], 0.0, plain);
+    job.wrap.max_width = f32::INFINITY;
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+impl MastikApp {
+    /// *Batch rename…*: open the box over the canvas. It opens on the selection
+    /// when there is one and on the page when not; `search` is the layers tree's
+    /// filter, which opens it on the page finding what the tree shows.
+    pub(crate) fn open_batch_rename(&mut self, ctx: &egui::Context, search: Option<String>) {
+        // Its rows show every name before and after.
+        if crate::private::on() {
+            self.session.info(crate::private::DECLINE_RENAME);
+            return;
+        }
+        self.palette = None;
+        self.context_menu = None;
+        self.open_menu = crate::app::TopMenu::None;
+        self.picker = None;
+        let search = search.filter(|s| !s.trim().is_empty());
+        // Already up: what was typed stays, and only the tree's search is taken.
+        if let Some(b) = self.batch_rename.as_mut() {
+            if let Some(text) = search {
+                b.s.set_scope(Scope::Page);
+                b.s.find = text.trim().to_string();
+                b.s.match_case = false;
+                b.s.pattern = false;
+            }
+            return;
+        }
+        let selection = self.selected_layers();
+        let doc = &self.session.doc;
+        let remembered = self.prefs.batch_rename.clone();
+        // One layer with children: renaming the layer alone is Rename's job.
+        let inside = matches!(selection.as_slice(), [id]
+            if doc.get(*id).is_some_and(|n| !n.children().is_empty()));
+        let mut s = Settings {
+            scope: Scope::Selection,
+            page: self.session.page,
+            find: remembered.find,
+            template: if remembered.template.is_empty() {
+                "[Name]".to_string()
+            } else {
+                remembered.template
+            },
+            match_case: remembered.match_case,
+            pattern: remembered.pattern,
+            keep_case: false,
+            numbering: Numbering {
+                from: remembered.from,
+                step: remembered.step,
+                pad: remembered.pad.min(Numbering::MAX_PAD),
+            },
+            order: Order::from_key(&remembered.order),
+            inside,
+            inside_instances: false,
+            default_names: false,
+        };
+        if selection.is_empty() || search.is_some() {
+            s.set_scope(Scope::Page);
+        }
+        if let Some(text) = search {
+            // The tree's search is plain text, and finds in any case.
+            s.find = text.trim().to_string();
+            s.match_case = false;
+            s.pattern = false;
+        }
+        let snap = Arc::new(Snapshot::take(
+            doc,
+            &self.session.resolved,
+            self.session.page,
+            &selection,
+        ));
+        let seen = (
+            self.session.revision(),
+            self.session.page,
+            selection.clone(),
+        );
+        // One card over the canvas's top at a time.
+        self.close_find();
+        self.colour_review.open = false;
+        self.clean_up = None;
+        self.fill_content = None;
+        self.chart_data = None;
+        self.batch_rename = Some(BatchRename {
+            s,
+            selected: selection.len(),
+            matcher: Matcher::start(ctx),
+            snap,
+            seen,
+            asked: None,
+            plan: Plan::default(),
+            fresh: false,
+            done: false,
+            landed: false,
+            caret: None,
+            focus: Some(Caret::All),
+        });
+    }
+
+    /// Rename every layer the plan changes, as one undo step, and remember the
+    /// box's Find with its switches, template and numbering for next time. Called
+    /// only when the plan is whole and changes something.
+    fn commit_batch_rename(&mut self, b: &BatchRename) {
+        let br = &mut self.prefs.batch_rename;
+        br.find = b.s.find.clone();
+        br.match_case = b.s.match_case;
+        br.pattern = b.s.pattern;
+        br.template = b.s.template.clone();
+        br.from = b.s.numbering.from;
+        br.step = b.s.numbering.step;
+        br.pad = b.s.numbering.pad;
+        br.order = b.s.order.key().to_string();
+        self.prefs.save();
+        let tx = Transaction(
+            b.plan
+                .changes
+                .iter()
+                .map(|(id, name)| Operation::SetName {
+                    id: *id,
+                    name: name.clone(),
+                })
+                .collect(),
+        );
+        self.session.name_step("Rename", icon::CURSOR_TEXT);
+        if self.session.commit(tx) {
+            self.session.info(format!(
+                "Renamed {} · Ctrl+Z to undo",
+                layers(b.plan.changes.len())
+            ));
+        }
+    }
+
+    /// The selected layers, pages left out: what *Selection* means, live, here
+    /// and in the Clean up box.
+    pub(crate) fn selected_layers(&self) -> Vec<NodeId> {
+        let doc = &self.session.doc;
+        self.session
+            .selection
+            .ids()
+            .iter()
+            .copied()
+            .filter(|id| !doc.is_page(*id) && doc.get(*id).is_some())
+            .collect()
+    }
+
+    /// Take the snapshot again when the document, the page or the selection has
+    /// moved since it was taken, as Find searches again: the canvas stays live
+    /// under the box. *Selection* with nothing left selected falls to the page.
+    fn refresh_batch_rename(&self, b: &mut BatchRename) {
+        let selection = self.selected_layers();
+        let seen = (self.session.revision(), self.session.page, selection);
+        if b.seen == seen {
+            return;
+        }
+        let s = &self.session;
+        b.snap = Arc::new(Snapshot::take(&s.doc, &s.resolved, s.page, &seen.2));
+        b.selected = seen.2.len();
+        b.s.page = s.page;
+        if b.selected == 0 && b.s.scope == Scope::Selection {
+            b.s.set_scope(Scope::Page);
+        }
+        b.seen = seen;
+        b.asked = None;
+    }
+
+    /// Draw the open box and answer this frame's keys and clicks. An open card:
+    /// the canvas stays live under it, and Escape reaches it through
+    /// [`MastikApp::escape`] as Find's does.
+    pub(crate) fn batch_rename_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
+        let Some(mut b) = self.batch_rename.take() else {
+            return;
+        };
+        // The order list, open last frame, takes Enter. Enter renames only from
+        // the box's own text fields; anywhere else it is the canvas's.
+        let popup = egui::Popup::is_any_open(ctx);
+        let in_fields = ctx.memory(|m| {
+            m.has_focus(egui::Id::new(FIND_ID)) || m.has_focus(egui::Id::new(TEMPLATE_ID))
+        });
+        let enter = !popup && in_fields && ui::card_enter(ctx);
+        self.refresh_batch_rename(&mut b);
+        b.take_parts();
+
+        let why_not = match b.done {
+            true => b.plan.why_not(&b.s.find),
+            false => Some("Still matching…".to_string()),
+        };
+        let mut act = Act::None;
+        // Before the fields: `value_field` applies a drag's first delta inside the
+        // call that reports it.
+        let numbering = b.s.numbering;
+        let mut scrubbing = false;
+        let hold = crate::settings::CardHold::Open;
+        crate::settings::canvas_card(ctx, "batch-rename", canvas, W, hold, |ui| {
+            if crate::settings::card_head(ui, W, "Batch rename") {
+                act = Act::Cancel;
+            }
+            egui::Frame::NONE
+                .inner_margin(egui::Margin {
+                    left: PAD as i8,
+                    right: PAD as i8,
+                    top: PAD as i8,
+                    bottom: 4,
+                })
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = GAP;
+                    scope_row(ui, &mut b.s, b.selected);
+                    find_row(ui, &mut b.s, b.plan.error.as_deref());
+                    template_row(ui, &mut b);
+                    if Template::parse(&b.s.template).has_number() {
+                        scrubbing = number_row(ui, &mut b.s.numbering);
+                        order_row(ui, &mut b.s.order);
+                    }
+                    checks(ui, &mut b.s, b.plan.skipped);
+                });
+            ui.add_space(8.0);
+            ui::card_rule(ui);
+            // Labelled by the scope it was made for: until the new plan's first
+            // part lands, the shown plan is the previous scope's.
+            preview(ui, b.plan.scope.unwrap_or(b.s.scope), &b.plan, b.landed);
+            ui::card_rule(ui);
+            if let Some(a) = foot(ui, b.plan.changes.len(), why_not.as_deref()) {
+                act = a;
+            }
+        });
+        // Armed after a right-click's cancel is answered, so the frame it lands on
+        // cannot re-arm it.
+        if scrubbing && !self.gesture_cancelled && self.in_flight.rename_scrub.is_none() {
+            self.in_flight.rename_scrub = Some(numbering);
+        }
+        if enter && matches!(act, Act::None) {
+            act = Act::Rename;
+        }
+        match act {
+            Act::Cancel => {}
+            Act::Rename if why_not.is_none() => {
+                self.commit_batch_rename(&b);
+                ctx.request_repaint();
+            }
+            _ => self.batch_rename = Some(b),
+        }
+    }
+}
+
+enum Act {
+    None,
+    Rename,
+    Cancel,
+}
+
+/// A grid row: the label in its column, then `add` in the rest; the Clean up
+/// box's rows too.
+pub(crate) fn row<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    h: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(LABEL_W, h), egui::Sense::hover());
+        // Level with the first line of a row taller than one control.
+        ui.painter().text(
+            egui::pos2(rect.left(), rect.top() + h.min(ui::CONTROL_H) / 2.0),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(ui::CONTROL_PT),
+            theme::text::muted(),
+        );
+        ui.add_space(GAP);
+        add(ui)
+    })
+    .inner
+}
+
+/// The *Selection · This page · All pages* scope, shared by batch rename and Find:
+/// a [`ui::segmented`] with `lit` lit, *Selection* followed by how many layers are
+/// selected and unavailable while none is. Returns the clicked index.
+pub(crate) fn scope_segments(
+    ui: &mut egui::Ui,
+    lit: usize,
+    selected: usize,
+    cell_h: f32,
+) -> Option<usize> {
+    const LABELS: [&str; 3] = ["Selection", "This page", "All pages"];
+    // The air either side of the widest label, and between *Selection* and its count.
+    const CELL_PAD: f32 = 9.0;
+    const COUNT_GAP: f32 = 4.0;
+    let font = egui::FontId::proportional(ui::SEGMENT_LABEL_PT);
+    let count = (selected > 0).then(|| selected.to_string());
+    let width_of = |text: &str| {
+        ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font.clone(), color::text()))
+            .size()
+            .x
+    };
+    let count_w = count.as_deref().map_or(0.0, |n| width_of(n) + COUNT_GAP);
+    let cell_w = LABELS
+        .iter()
+        .enumerate()
+        .map(|(i, l)| width_of(l) + if i == 0 { count_w } else { 0.0 })
+        .fold(0.0, f32::max)
+        + CELL_PAD * 2.0;
+    // The track's own 2-point pad and 1-point hairline each side, and the 2-point gaps.
+    let width = (cell_w * 3.0 + 2.0 * 2.0 + 3.0 * 2.0).ceil();
+    ui::segmented_tipped(
+        ui,
+        width,
+        cell_h,
+        LABELS.len(),
+        lit,
+        |i| i != 0 || selected > 0,
+        |i| match i {
+            0 if selected == 0 => "Nothing is selected",
+            _ => "",
+        },
+        |p, i, rect, on| match (i, &count) {
+            (0, None) => ui::segment_label_disabled(p, rect, LABELS[0]),
+            (0, Some(n)) => {
+                let ink = if on {
+                    color::text()
+                } else {
+                    theme::text::dim()
+                };
+                let word = p.layout_no_wrap(LABELS[0].into(), font.clone(), ink);
+                let num = p.layout_no_wrap(n.clone(), font.clone(), theme::text::faint());
+                let w = word.size().x + COUNT_GAP + num.size().x;
+                let x = rect.center().x - w / 2.0;
+                let y = |g: &egui::Galley| rect.center().y - g.size().y / 2.0;
+                let num_at = egui::pos2(x + word.size().x + COUNT_GAP, y(&num));
+                p.galley(egui::pos2(x, y(&word)), word, ink);
+                p.galley(num_at, num, theme::text::faint());
+            }
+            _ => ui::segment_label(p, rect, LABELS[i], on),
+        },
+    )
+}
+
+fn scope_row(ui: &mut egui::Ui, s: &mut Settings, selected: usize) {
+    const SCOPES: [Scope; 3] = [Scope::Selection, Scope::Page, Scope::Document];
+    row(ui, "In", FIELD_H, |ui| {
+        let lit = SCOPES.iter().position(|x| *x == s.scope).unwrap_or(1);
+        if let Some(i) = scope_segments(ui, lit, selected, ui::SEGMENT_CELL_H)
+            && s.scope != SCOPES[i]
+        {
+            s.set_scope(SCOPES[i]);
+        }
+    });
+}
+
+/// A hand-laid field's ground, [`ui::field_frame`]'s, wearing [`ui::typing_edge`]
+/// while `focused`; Find's fields too.
+pub(crate) fn field_ground(ui: &egui::Ui, rect: egui::Rect, focused: bool) {
+    let p = ui.painter();
+    let r = egui::CornerRadius::same(ui::BUTTON_R);
+    p.rect_filled(rect, r, color::field());
+    p.rect_stroke(
+        rect,
+        r,
+        egui::Stroke::new(1.0, color::field_border()),
+        egui::StrokeKind::Inside,
+    );
+    if focused {
+        ui::typing_edge(ui, rect);
+    }
+}
+
+/// A frameless edit laid at `rect` inside a hand-laid field, `right` short of the
+/// field's end for the toggles there: its padding makes the whole height and the
+/// field's left inset part of the edit, so a press anywhere there focuses it.
+pub(crate) fn field_edit<'t>(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    right: f32,
+    text: &'t mut dyn egui::TextBuffer,
+) -> (egui::Rect, egui::TextEdit<'t>) {
+    let font = egui::FontId::proportional(ui::CONTROL_PT);
+    let frame = ui::edit_frame(ui, &font, rect.height(), ui::FIELD_PAD_X).right(0.0);
+    let at = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.right() - 4.0 - right, rect.bottom()),
+    );
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the entry inside a composed field row, which paints the ground and ui::typing_edge itself"
+    )]
+    let edit = frame
+        .on(egui::TextEdit::singleline(text))
+        .desired_width(at.width() - ui::FIELD_PAD_X)
+        .font(font);
+    (at, edit)
+}
+
+/// Two [`ui::field_toggle`]s and the 4 between them ([`toggles`]' spacing).
+const TWO_TOGGLES_W: f32 = ui::FIELD_TOGGLE.x * 2.0 + 4.0;
+const FIND_ID: &str = "batch-rename-find";
+const TEMPLATE_ID: &str = "batch-rename-template";
+
+/// The toggles at a field's right end, `w` wide.
+pub(crate) fn toggles(ui: &mut egui::Ui, rect: egui::Rect, w: f32) -> egui::Ui {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(egui::Rect::from_min_max(
+                egui::pos2(rect.right() - 4.0 - w, rect.top()),
+                egui::pos2(rect.right() - 4.0, rect.bottom()),
+            ))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.spacing_mut().item_spacing.x = 4.0;
+    child
+}
+
+fn find_row(ui: &mut egui::Ui, s: &mut Settings, error: Option<&str>) {
+    row(ui, "Find", FIELD_H, |ui| {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            let w = ui.available_width();
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, FIELD_H), egui::Sense::hover());
+            let id = egui::Id::new(FIND_ID);
+            field_ground(ui, rect, ui.memory(|m| m.has_focus(id)));
+            let (at, edit) = field_edit(ui, rect, TWO_TOGGLES_W, &mut s.find);
+            ui.put(
+                at,
+                edit.id(id).text_color(color::text()).hint_text(
+                    egui::RichText::new("Whole name")
+                        .size(ui::CONTROL_PT)
+                        .color(theme::text::faint()),
+                ),
+            );
+            let mut child = toggles(ui, rect, TWO_TOGGLES_W);
+            ui::field_toggle(&mut child, "Aa", "Match case", &mut s.match_case, false);
+            ui::field_toggle(&mut child, ".*", "Find as a pattern", &mut s.pattern, true);
+            if let Some(e) = error {
+                ui.label(
+                    egui::RichText::new(e)
+                        .size(ui::CAPTION_PT)
+                        .color(color::warn()),
+                );
+            }
+        });
+    });
+}
+
+/// Rename to: the template field with its tokens as pills, and the buttons that
+/// insert them.
+fn template_row(ui: &mut egui::Ui, b: &mut BatchRename) {
+    let groups = b.plan.groups;
+    row(ui, "Rename to", FIELD_H, |ui| {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 7.0;
+            let w = ui.available_width();
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, FIELD_H), egui::Sense::hover());
+            let id = egui::Id::new(TEMPLATE_ID);
+            let focused = ui.memory(|m| m.has_focus(id));
+            field_ground(ui, rect, focused);
+
+            // Backspace and Delete take a pill out whole: read before the field,
+            // which would take one bracket.
+            if focused {
+                take_pill(ui, id, &mut b.s.template);
+            }
+            // Which way the keys move the caret this frame, read before the field
+            // moves it, so a caret landing inside a pill leaves it on that side.
+            let leftward = focused && ui.input(|i| i.key_pressed(egui::Key::ArrowLeft));
+            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+                template_galley(ui, buf.as_str())
+            };
+            // `put` into the field's whole height, as Find is: shown in a child Ui,
+            // the edit takes one line's height and its text rides at the top.
+            let (at, edit) = field_edit(ui, rect, ui::FIELD_TOGGLE.x, &mut b.s.template);
+            let resp = ui.put(at, edit.id(id).layouter(&mut layouter));
+            let cursor =
+                egui::TextEdit::load_state(ui.ctx(), id).and_then(|s| s.cursor.char_range());
+            let caret = cursor.map(|c| c.primary.index.0);
+            if resp.changed() {
+                let (text, moved) = canonical(&b.s.template, caret.unwrap_or(0));
+                if text != b.s.template {
+                    b.s.template = text;
+                    b.focus = Some(Caret::At(moved));
+                }
+            }
+            if resp.has_focus() {
+                b.caret = caret;
+                if let Some(c) = cursor
+                    && c.primary.index == c.secondary.index
+                    && let Some(at) = out_of_pill(&b.s.template, c.primary.index.0, leftward)
+                {
+                    b.focus = Some(Caret::At(at));
+                }
+            }
+            if let Some(f) = b.focus.take() {
+                let len = b.s.template.chars().count();
+                let range = match f {
+                    Caret::All => egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(len),
+                    ),
+                    Caret::At(at) => {
+                        egui::text::CCursorRange::one(egui::text::CCursor::new(at.min(len)))
+                    }
+                };
+                let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                state.cursor.set_char_range(Some(range));
+                state.store(ui.ctx(), id);
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+            let mut child = toggles(ui, rect, ui::FIELD_TOGGLE.x);
+            ui::field_toggle(
+                &mut child,
+                "Ab",
+                "Keep each match’s case",
+                &mut b.s.keep_case,
+                false,
+            );
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let mut insert = |ui: &mut egui::Ui, label: &str, piece: Piece| {
+                    if insert_button(ui, label).clicked() {
+                        let token = Template(vec![piece]).to_string();
+                        let len = b.s.template.chars().count();
+                        let at = b.caret.unwrap_or(len).min(len);
+                        let byte = char_to_byte(&b.s.template, at);
+                        b.s.template.insert_str(byte, &token);
+                        b.focus = Some(Caret::At(at + token.chars().count()));
+                    }
+                };
+                insert(ui, "Name", Piece::Name);
+                insert(ui, "Number", Piece::Number);
+                insert(ui, "Text", Piece::Content);
+                for k in 1..=groups.min(9) {
+                    insert(ui, &format!("Group {k}"), Piece::Group(k));
+                }
+                if b.s.template.is_empty() && !b.s.find.is_empty() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new("Empty: removes the match")
+                                .size(ui::CAPTION_PT)
+                                .color(theme::text::faint()),
+                        );
+                    });
+                }
+            });
+        });
+    });
+}
+
+/// Take the pill before the caret on Backspace, or after it on Delete.
+fn take_pill(ui: &egui::Ui, id: egui::Id, text: &mut String) {
+    let Some(state) = egui::TextEdit::load_state(ui.ctx(), id) else {
+        return;
+    };
+    let Some(range) = state.cursor.char_range() else {
+        return;
+    };
+    if range.primary.index != range.secondary.index {
+        return;
+    }
+    let at = range.primary.index.0;
+    let none = egui::Modifiers::NONE;
+    let hit = ui.input_mut(|i| {
+        if let Some(r) = token_at(text, at, true)
+            && i.consume_key(none, egui::Key::Backspace)
+        {
+            return Some(r);
+        }
+        if let Some(r) = token_at(text, at, false)
+            && i.consume_key(none, egui::Key::Delete)
+        {
+            return Some(r);
+        }
+        None
+    });
+    if let Some(r) = hit {
+        let (a, z) = (char_to_byte(text, r.start), char_to_byte(text, r.end));
+        text.replace_range(a..z, "");
+        let mut state = state;
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(r.start),
+            )));
+        state.store(ui.ctx(), id);
+    }
+}
+
+/// *+ Name*, *+ Number*, *+ Group n*: an [`ui::action_button`] sized to its word.
+fn insert_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let size = egui::vec2(ui::action_button_w(ui.ctx(), label), ui::CONTROL_H);
+    ui::action_button(ui, icon::PLUS, label, FieldButton::Off, size)
+        .on_hover_text(format!("Insert {label} at the caret"))
+}
+
+/// *From*, *Step* and *Pad* as the inspector's scrubbable fields, sharing the row.
+/// Returns whether one is being dragged, so the caller can keep the numbering for
+/// a right-click cancel (`InFlight::rename_scrub`).
+fn number_row(ui: &mut egui::Ui, n: &mut Numbering) -> bool {
+    row(ui, "Number", NUM_H, |ui| {
+        const SPACE: f32 = 8.0;
+        ui.spacing_mut().item_spacing.x = SPACE;
+        let size = egui::vec2((ui.available_width() - SPACE * 2.0) / 3.0, NUM_H);
+        // Slow, as a grid's column count is: a step here is one number in every
+        // name, so each wants 20pt of travel rather than the usual 4.
+        let from = ui::value_field(
+            ui,
+            size,
+            Prefix::Text("From"),
+            &mut n.from,
+            Scrub::whole(0.1),
+            |d| d.custom_formatter(ui::number(0)),
+        )
+        .on_hover_text("The first layer's number");
+        let step = ui::value_field(
+            ui,
+            size,
+            Prefix::Text("Step"),
+            &mut n.step,
+            Scrub::whole(0.1),
+            |d| d.custom_formatter(ui::number(0)),
+        )
+        .on_hover_text("Added for each layer after it; below zero counts down");
+        let pad = ui::value_field(
+            ui,
+            size,
+            Prefix::Text("Pad"),
+            &mut n.pad,
+            // Six values, at a polygon's side count's 25pt each.
+            Scrub::whole(0.08).range(0.0..=f64::from(Numbering::MAX_PAD)),
+            |d| d.custom_formatter(ui::number(0)),
+        )
+        .on_hover_text("Zeros in front up to this many digits: 3 writes 001");
+        // The scrub's range settles a drag but leaves typing alone.
+        n.pad = n.pad.min(Numbering::MAX_PAD);
+        from.dragged() || step.dragged() || pad.dragged()
+    })
+}
+
+/// Which layer of the run is first, as the Settings modal's dropdowns.
+fn order_row(ui: &mut egui::Ui, order: &mut Order) {
+    row(ui, "Order", NUM_H, |ui| {
+        ui.spacing_mut().interact_size.y = NUM_H;
+        ui.spacing_mut().button_padding.y = 0.0;
+        egui::ComboBox::from_id_salt("batch-rename-order")
+            .icon(ui::combo_chevron)
+            .width(200.0)
+            .selected_text(ui::glyph_and_text(order.glyph(), order.label()))
+            .show_ui(ui, |ui| {
+                ui::menu_rows(ui);
+                for o in Order::ALL {
+                    ui.selectable_value(order, o, ui::glyph_and_text(o.glyph(), o.label()));
+                }
+            })
+            .response
+            .on_hover_text("Which layer is first");
+    });
+}
+
+fn checkbox(ui: &mut egui::Ui, label: &str, note: &str, on: &mut bool) {
+    ui.horizontal(|ui| {
+        ui.add_space(LABEL_W + GAP);
+        ui::tick_box(ui, label, note, on);
+    });
+}
+
+fn checks(ui: &mut egui::Ui, s: &mut Settings, skipped: usize) {
+    checkbox(ui, "Only default names", "", &mut s.default_names);
+    match s.scope {
+        Scope::Selection => checkbox(ui, "Include layers inside", "", &mut s.inside),
+        Scope::Page | Scope::Document => {
+            let note = match skipped {
+                0 => String::new(),
+                n => format!("· {} skipped", count(n)),
+            };
+            checkbox(
+                ui,
+                "Include layers inside instances",
+                &note,
+                &mut s.inside_instances,
+            );
+        }
+    }
+}
+
+/// The preview: every layer at Selection, the matches elsewhere. Only the rows in
+/// view are laid out, so a run of thousands costs what eight do.
+fn preview(ui: &mut egui::Ui, scope: Scope, plan: &Plan, landed: bool) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, 30.0), egui::Sense::hover());
+    let p = ui.painter();
+    let y = rect.bottom() - 10.0;
+    ui::paint_eyebrow(
+        p,
+        egui::pos2(rect.left() + PAD, y),
+        egui::Align2::LEFT_CENTER,
+        "Preview",
+    );
+    p.text(
+        egui::pos2(rect.right() - PAD, y),
+        egui::Align2::RIGHT_CENTER,
+        count_label(scope, plan),
+        egui::FontId::proportional(ui::CAPTION_PT),
+        theme::text::dim(),
+    );
+    egui::Frame::NONE
+        .inner_margin(egui::Margin {
+            left: 6,
+            right: 6,
+            top: 0,
+            bottom: 8,
+        })
+        .show(ui, |ui| {
+            if plan.rows.is_empty() {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(W - 12.0, ROW_H), egui::Sense::hover());
+                let note = if landed {
+                    "No layers match"
+                } else {
+                    "Matching…"
+                };
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(rect.with_min_x(rect.left() + 8.0))
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| ui::empty_note(ui, note),
+                );
+                return;
+            }
+            // Scrolls by wheel and drag with no bar: the list is the card's body.
+            egui::ScrollArea::vertical()
+                .id_salt("batch-rename-preview")
+                .max_height(ROW_H * ROWS_SHOWN)
+                .auto_shrink([false, true])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show_rows(ui, ROW_H, plan.rows.len(), |ui, range| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for r in &plan.rows[range] {
+                        match r {
+                            Row::Page { name, count } => page_head(ui, name, *count),
+                            Row::Layer(l) => layer_row(ui, l),
+                        }
+                    }
+                });
+        });
+}
+
+fn page_head(ui: &mut egui::Ui, name: &str, n: usize) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(W - 12.0, ROW_H), egui::Sense::hover());
+    let p = ui.painter();
+    let y = rect.bottom() - 4.0 - 6.0;
+    p.text(
+        egui::pos2(rect.left() + 8.0, y),
+        egui::Align2::LEFT_CENTER,
+        icon::FILE,
+        theme::icon_font(11.0),
+        theme::text::dim(),
+    );
+    p.text(
+        egui::pos2(rect.left() + 8.0 + 17.0, y),
+        egui::Align2::LEFT_CENTER,
+        name,
+        egui::FontId::proportional(ui::CAPTION_PT),
+        theme::text::dim(),
+    );
+    p.text(
+        egui::pos2(rect.right() - 8.0, y),
+        egui::Align2::RIGHT_CENTER,
+        n.to_string(),
+        egui::FontId::proportional(ui::CAPTION_PT),
+        theme::text::faint(),
+    );
+}
+
+fn layer_row(ui: &mut egui::Ui, l: &LayerRow) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(W - 12.0, ROW_H), egui::Sense::hover());
+    let dim = matches!(l.new, New::Unchanged);
+    let fade = |c: egui::Color32| if dim { c.gamma_multiply(0.42) } else { c };
+    let p = ui.painter();
+    let y = rect.center().y;
+    let inner = rect.shrink2(egui::vec2(8.0, 0.0));
+    // 16 | old 1fr | 14 | new 1.15fr, 8 apart.
+    let rest = inner.width() - 16.0 - 14.0 - 8.0 * 3.0;
+    let old_w = rest / 2.15;
+    let new_w = rest - old_w;
+    let x_old = inner.left() + 16.0 + 8.0;
+    let x_arrow = x_old + old_w + 8.0;
+    let x_new = x_arrow + 14.0 + 8.0;
+    p.text(
+        egui::pos2(inner.left() + 8.0, y),
+        egui::Align2::CENTER_CENTER,
+        l.glyph,
+        theme::icon_font(14.0),
+        fade(l.tint.colour()),
+    );
+
+    let font = egui::FontId::proportional(ui::CONTROL_PT);
+    let mut old = egui::text::LayoutJob::default();
+    let mut at = 0;
+    let plain = egui::TextFormat::simple(font.clone(), fade(theme::text::muted()));
+    for m in &l.matched {
+        if m.start < at || m.end > l.old.len() {
+            continue;
+        }
+        old.append(&l.old[at..m.start], 0.0, plain.clone());
+        old.append(
+            &l.old[m.clone()],
+            0.0,
+            egui::TextFormat {
+                color: fade(theme::text::strong()),
+                underline: egui::Stroke::new(1.0, fade(theme::text::muted())),
+                ..egui::TextFormat::simple(font.clone(), color::text())
+            },
+        );
+        at = m.end;
+    }
+    old.append(&l.old[at..], 0.0, plain);
+    old.wrap = egui::text::TextWrapping::truncate_at_width(old_w);
+    let old = ui.fonts_mut(|f| f.layout_job(old));
+    p.galley(
+        egui::pos2(x_old, y - old.size().y / 2.0),
+        old,
+        color::text(),
+    );
+
+    p.text(
+        egui::pos2(x_arrow + 7.0, y),
+        egui::Align2::CENTER_CENTER,
+        icon::ARROW_RIGHT,
+        theme::icon_font(11.0),
+        fade(theme::text::faint()),
+    );
+
+    let mut new = egui::text::LayoutJob::default();
+    let fmt = |c| egui::TextFormat::simple(font.clone(), c);
+    match &l.new {
+        New::Name(spans) => {
+            for s in spans {
+                let c = if s.changed {
+                    color::accent_300()
+                } else {
+                    color::text()
+                };
+                new.append(&s.text, 0.0, fmt(c));
+            }
+        }
+        New::Unchanged => new.append(&l.old, 0.0, fmt(fade(theme::text::dim()))),
+        New::Empty => new.append("Would be empty · kept", 0.0, fmt(color::warn())),
+        New::Variant => new.append("Named by its properties", 0.0, fmt(color::warn())),
+    }
+    new.wrap = egui::text::TextWrapping::truncate_at_width(new_w);
+    let new = ui.fonts_mut(|f| f.layout_job(new));
+    p.galley(
+        egui::pos2(x_new, y - new.size().y / 2.0),
+        new,
+        color::text(),
+    );
+}
+
+/// The footer: the hint, then *Cancel* and *Rename* in the dialogs' footer row
+/// (`settings::footer_row_noted`). `why_not` dims Rename and is its tooltip.
+fn foot(ui: &mut egui::Ui, changes: usize, why_not: Option<&str>) -> Option<Act> {
+    let go = match changes {
+        0 => "Rename".to_string(),
+        n => format!("Rename {}", layers(n)),
+    };
+    let state = match why_not {
+        None => FieldButton::Primary,
+        Some(_) => FieldButton::Disabled,
+    };
+    let buttons = [("Cancel", FieldButton::Off), (go.as_str(), state)];
+    let note = "Enter rename · Esc cancel";
+    match crate::settings::card_foot(ui, W, note, &buttons, why_not) {
+        Some(0) => Some(Act::Cancel),
+        Some(_) => Some(Act::Rename),
+        None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mastik_core::kurbo::{Affine, Size};
+    use mastik_core::{IdSource, NodeKind};
+
+    /// A `size` rectangle called `name` at `at` on the current page, on top.
+    fn rect(app: &mut MastikApp, name: &str, at: (f64, f64), size: (f64, f64)) -> NodeId {
+        let s = &mut app.session;
+        let id = s.ids.mint();
+        let parent = s.page;
+        let index = s.doc.get(parent).map_or(0, |n| n.children().len());
+        assert!(s.commit(Transaction(vec![Operation::CreateNode {
+            id,
+            parent,
+            index,
+            kind: NodeKind::Rect {
+                size: Size::new(size.0, size.1),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate(at)),
+            name: Some(name.into()),
+        }])));
+        id
+    }
+
+    fn named(app: &mut MastikApp, name: &str) -> NodeId {
+        rect(app, name, (0.0, 0.0), (10.0, 10.0))
+    }
+
+    fn app() -> (egui::Context, MastikApp) {
+        let ctx = egui::Context::default();
+        let app = MastikApp::headless(&ctx);
+        (ctx, app)
+    }
+
+    /// The box as `open_batch_rename` leaves it, with Find and the template set.
+    fn opened(ctx: &egui::Context, app: &mut MastikApp, find: &str, template: &str) -> BatchRename {
+        app.open_batch_rename(ctx, None);
+        let mut b = app.batch_rename.take().expect("the box opened");
+        b.s.find = find.into();
+        b.s.template = template.into();
+        b
+    }
+
+    /// What the box opened over: the snapshot its worker plans from.
+    fn snapshot(app: &MastikApp) -> Snapshot {
+        let s = &app.session;
+        Snapshot::take(&s.doc, &s.resolved, s.page, s.selection.ids())
+    }
+
+    fn planned(app: &MastikApp, b: &BatchRename) -> Plan {
+        plan(&snapshot(app), &b.s)
+    }
+
+    /// A row's kind glyph takes the palette it is painted in, not the one the box
+    /// opened in.
+    /// flip: `Snapshot::take` keeping `node_icon`'s colour in `Layer::tint` → fails
+    /// at the glyph's ink.
+    #[test]
+    fn a_rows_glyph_follows_a_theme_change_while_open() {
+        let (ctx, mut app) = app();
+        let a = named(&mut app, "Rect a");
+        app.session.selection.set(vec![a]);
+        let bx = opened(&ctx, &mut app, "Rect", "Item");
+        let plan = planned(&app, &bx);
+        let Some(Row::Layer(row)) = plan.rows.iter().find(|r| matches!(r, Row::Layer(_))) else {
+            panic!("a layer row")
+        };
+        assert_ne!(row.new, New::Unchanged, "an undimmed row");
+        crate::theme::apply(&ctx, theme::color::Theme::Light);
+        let out = ctx.run_ui(Default::default(), |ui| layer_row(ui, row));
+        let ink = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == icon::SQUARE => {
+                    Some(t.galley.job.sections[0].format.color)
+                }
+                _ => None,
+            })
+            .expect("the row's glyph");
+        assert_eq!(ink, theme::text::muted(), "the light palette's muted ink");
+    }
+
+    fn new_names(app: &MastikApp, plan: &Plan) -> Vec<(String, String)> {
+        plan.changes
+            .iter()
+            .map(|(id, new)| {
+                let old = app.session.doc.get(*id).unwrap().name().to_string();
+                (old, new.clone())
+            })
+            .collect()
+    }
+
+    /// The run is the tree's order, top row first, and only a layer Find matches
+    /// takes a number: the unmatched one is listed, dimmed, and leaves no gap.
+    ///
+    /// flip: `plan_into` counting `taken` for every listed layer → fails at the
+    /// second name, `Item 3 a`.
+    #[test]
+    fn a_run_is_numbered_in_tree_order_and_a_skip_leaves_no_gap() {
+        let (ctx, mut app) = app();
+        let a = named(&mut app, "Rect a");
+        let skip = named(&mut app, "Other");
+        let b = named(&mut app, "Rect b");
+        app.session.selection.set(vec![a, skip, b]);
+        let bx = opened(&ctx, &mut app, "Rect", "Item [Number]");
+        assert_eq!(bx.s.scope, Scope::Selection);
+        let plan = planned(&app, &bx);
+        assert_eq!(
+            new_names(&app, &plan),
+            [
+                ("Rect b".to_string(), "Item 1 b".to_string()),
+                ("Rect a".to_string(), "Item 2 a".to_string()),
+            ]
+        );
+        assert_eq!(plan.listed, 3, "Selection lists every layer");
+        let Row::Layer(middle) = &plan.rows[1] else {
+            panic!("a layer row")
+        };
+        assert_eq!((middle.id, &middle.new), (skip, &New::Unchanged));
+        assert_eq!(count_label(bx.s.scope, &plan), "2 of 3 change");
+    }
+
+    /// `[Text]` names a text layer after what it says, on one line; *Only default
+    /// names* leaves a layer someone named alone.
+    /// flip: `plan_into` ignoring `default_names` → fails at the changes (Hero is
+    /// renamed too).
+    #[test]
+    fn text_names_a_layer_and_default_names_keeps_the_named_ones() {
+        let (ctx, mut app) = app();
+        let s = &mut app.session;
+        let label = s.ids.mint();
+        let page = s.page;
+        assert!(s.commit(Transaction(vec![Operation::CreateNode {
+            id: label,
+            parent: page,
+            index: 0,
+            kind: crate::control_audit::text_kind("Sign\nin"),
+            transform: None,
+            name: Some("Text 1".into()),
+        }])));
+        let hero = named(&mut app, "Hero");
+        app.session.selection.set(vec![label, hero]);
+        let mut bx = opened(&ctx, &mut app, "", "[Text] label");
+        bx.s.default_names = true;
+        let plan = planned(&app, &bx);
+        assert_eq!(
+            new_names(&app, &plan),
+            [("Text 1".to_string(), "Sign in label".to_string())]
+        );
+        assert!(
+            plan.rows
+                .iter()
+                .all(|r| !matches!(r, Row::Layer(l) if l.id == hero)),
+            "Hero is left"
+        );
+    }
+
+    /// *Only default names* keeps every name the app writes, including those
+    /// outside core's generated table, and leaves a typed one.
+    /// flip: `app_named` reading `generated_stem` alone → fails at *Image 2*.
+    #[test]
+    fn default_names_are_every_name_the_app_writes() {
+        for name in [
+            "Rectangle 3",
+            "Image 2",
+            "Blend",
+            "Trace",
+            "Component",
+            "Mask 2",
+        ] {
+            assert!(app_named(name), "{name}");
+        }
+        for name in ["Hero", "Image 02", "Badge 2"] {
+            assert!(!app_named(name), "{name}");
+        }
+    }
+
+    /// Choosing *Batch rename…* with the box up keeps what was typed; the layers
+    /// tree's search, handed in, is the one thing taken.
+    /// flip: `open_batch_rename` without its already-up guard → fails at "what
+    /// was typed stays".
+    #[test]
+    fn reopening_the_box_keeps_what_was_typed() {
+        let (ctx, mut app) = app();
+        let a = named(&mut app, "Rect a");
+        app.session.selection.set(vec![a]);
+        let mut b = opened(&ctx, &mut app, "Btn", "Button [Number]");
+        b.s.default_names = true;
+        app.batch_rename = Some(b);
+        app.dispatch(&ctx, crate::input::Action::BatchRename);
+        let s = &app.batch_rename.as_ref().expect("still open").s;
+        assert_eq!(
+            (s.find.as_str(), s.template.as_str(), s.default_names),
+            ("Btn", "Button [Number]", true),
+            "what was typed stays"
+        );
+        app.open_batch_rename(&ctx, Some("Rect".into()));
+        let s = &app.batch_rename.as_ref().unwrap().s;
+        assert_eq!((s.find.as_str(), s.scope), ("Rect", Scope::Page));
+        assert_eq!(s.template, "Button [Number]");
+    }
+
+    /// `[Text]` reads a text bound to a string variable as it draws, not its
+    /// literal, which the binding leaves empty.
+    /// flip: `Snapshot::take` reading `node.kind()` → fails at the changes.
+    #[test]
+    fn text_reads_a_bound_text_as_it_draws() {
+        use serde_json::json;
+        let (ctx, mut app) = app();
+        let mut doc = app.session.doc.clone();
+        let page = app.session.page.to_wire();
+        let words = serde_json::to_value(mastik_core::Cell::String("Sign in".into())).unwrap();
+        let made = mastik_core::verbs::run_script(
+            &mut doc,
+            &mut app.session.ids,
+            mastik_core::verbs::Lent::default(),
+            &json!([
+                { "verb": "add_variable", "args": { "kind": "string", "value": words }, "as": "v" },
+                { "verb": "create_text", "args": { "parent": page, "text": "Old" }, "as": "t" },
+                { "verb": "set_name", "args": { "node": "@t", "name": "Text 1" } },
+                { "verb": "bind_variable", "args": { "nodes": ["@t"], "field": "content", "variable": "@v" } },
+            ]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let label = NodeId::from_wire(&made[1][0]).unwrap();
+        app.session.adopt_document(doc, None);
+        app.session.selection.set(vec![label]);
+        let bx = opened(&ctx, &mut app, "", "[Text] label");
+        let plan = planned(&app, &bx);
+        assert_eq!(
+            new_names(&app, &plan),
+            [("Text 1".to_string(), "Sign in label".to_string())]
+        );
+    }
+
+    /// A matched layer that already carries its number keeps it and uses it up,
+    /// so renumbering after a reorder hands no number to two layers.
+    ///
+    /// flip: `plan_into` not counting `taken` for a name left as it was → fails at
+    /// the changes, `Item 1` renamed `Item 2`.
+    #[test]
+    fn a_layer_already_numbered_keeps_its_number() {
+        let (ctx, mut app) = app();
+        // Made bottom first, so the tree reads Item 3, Item 2, Item 1.
+        let ids = ["Item 1", "Item 2", "Item 3"].map(|n| named(&mut app, n));
+        app.session.selection.set(ids.to_vec());
+        let bx = opened(&ctx, &mut app, "", "Item [Number]");
+        let plan = planned(&app, &bx);
+        assert_eq!(
+            new_names(&app, &plan),
+            [
+                ("Item 3".to_string(), "Item 1".to_string()),
+                ("Item 1".to_string(), "Item 3".to_string()),
+            ]
+        );
+        let Row::Layer(middle) = &plan.rows[1] else {
+            panic!("a layer row")
+        };
+        assert_eq!((middle.id, &middle.new), (ids[1], &New::Unchanged));
+    }
+
+    /// *Left to right* takes rows by band, though no two tops line up, then reads
+    /// each row left to right; *Top to bottom* takes columns the same way.
+    ///
+    /// flip: `by_bands` putting every layer in one band (sorting by the left edge
+    /// alone) → fails at the left-to-right order. Joining a band by the top rather
+    /// than the centre gives the same answer here.
+    #[test]
+    fn the_canvas_orders_read_by_band() {
+        let (ctx, mut app) = app();
+        // Made out of order, so the tree's order is not the answer.
+        let cards = [
+            ("e", (114.0, 104.0), 64.0),
+            ("a", (16.0, 30.0), 52.0),
+            ("f", (188.0, 124.0), 50.0),
+            ("c", (190.0, 38.0), 44.0),
+            ("d", (18.0, 118.0), 56.0),
+            ("b", (116.0, 14.0), 60.0),
+        ];
+        let ids: Vec<NodeId> = cards
+            .iter()
+            .map(|(n, at, h)| rect(&mut app, n, *at, (76.0, *h)))
+            .collect();
+        app.session.selection.set(ids);
+        let mut bx = opened(&ctx, &mut app, "", "[Name][Number]");
+        bx.s.order = Order::LeftToRight;
+        let got: Vec<String> = planned(&app, &bx)
+            .changes
+            .into_iter()
+            .map(|c| c.1)
+            .collect();
+        assert_eq!(got, ["a1", "b2", "c3", "d4", "e5", "f6"]);
+        bx.s.order = Order::TopToBottom;
+        let got: Vec<String> = planned(&app, &bx)
+            .changes
+            .into_iter()
+            .map(|c| c.1)
+            .collect();
+        assert_eq!(got, ["a1", "d2", "b3", "e4", "c5", "f6"]);
+    }
+
+    /// A frame renamed with the grid inside it forms no band with its cards: it
+    /// comes first, and the cards still read row by row, or column by column.
+    ///
+    /// flip: `by_bands` banding every boxed layer, holders included → fails at the
+    /// left-to-right order, the frame's band swallowing both rows.
+    #[test]
+    fn a_frame_round_its_grid_does_not_swallow_the_rows() {
+        let (ctx, mut app) = app();
+        let s = &mut app.session;
+        let (frame, page) = (s.ids.mint(), s.page);
+        let mut ops = vec![Operation::CreateNode {
+            id: frame,
+            parent: page,
+            index: 0,
+            kind: NodeKind::Artboard {
+                size: Size::new(300.0, 200.0),
+                corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: Some("Grid".into()),
+        }];
+        // Made out of order, so the tree's order is not the answer.
+        let cards = [
+            ("BM", (100.0, 100.0)),
+            ("TR", (200.0, 0.0)),
+            ("TL", (0.0, 0.0)),
+            ("BR", (200.0, 100.0)),
+            ("TM", (100.0, 0.0)),
+            ("BL", (0.0, 100.0)),
+        ];
+        for (i, (name, at)) in cards.into_iter().enumerate() {
+            ops.push(Operation::CreateNode {
+                id: s.ids.mint(),
+                parent: frame,
+                index: i,
+                kind: NodeKind::Rect {
+                    size: Size::new(80.0, 80.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate(at)),
+                name: Some(name.into()),
+            });
+        }
+        assert!(s.commit(Transaction(ops)));
+        app.session.selection.set_one(frame);
+        let mut bx = opened(&ctx, &mut app, "", "[Name][Number]");
+        assert!(bx.s.inside, "one frame opens with its insides");
+        let names = |bx: &BatchRename| -> Vec<String> {
+            planned(&app, bx).changes.into_iter().map(|c| c.1).collect()
+        };
+        bx.s.order = Order::LeftToRight;
+        assert_eq!(
+            names(&bx),
+            ["Grid1", "TL2", "TM3", "TR4", "BL5", "BM6", "BR7"]
+        );
+        bx.s.order = Order::TopToBottom;
+        assert_eq!(
+            names(&bx),
+            ["Grid1", "TL2", "BL3", "TM4", "BM5", "TR6", "BR7"]
+        );
+    }
+
+    /// A sidebar beside two rows of cards, its top the highest, holds none of them
+    /// but reaches across both: it comes first, and the cards still read by row.
+    ///
+    /// flip: `by_bands` leaving `spanning` layers in the bands → fails at the
+    /// left-to-right order, the sidebar's band swallowing both rows.
+    #[test]
+    fn a_sidebar_beside_the_rows_does_not_swallow_them() {
+        let (ctx, mut app) = app();
+        // Made out of order, so the tree's order is not the answer.
+        let ids = [
+            rect(&mut app, "BR", (200.0, 100.0), (80.0, 80.0)),
+            rect(&mut app, "TL", (100.0, 2.0), (80.0, 80.0)),
+            rect(&mut app, "Side", (0.0, 0.0), (80.0, 200.0)),
+            rect(&mut app, "BL", (100.0, 100.0), (80.0, 80.0)),
+            rect(&mut app, "TR", (200.0, 2.0), (80.0, 80.0)),
+        ];
+        app.session.selection.set(ids.to_vec());
+        let mut bx = opened(&ctx, &mut app, "", "[Name][Number]");
+        bx.s.order = Order::LeftToRight;
+        let got: Vec<String> = planned(&app, &bx)
+            .changes
+            .into_iter()
+            .map(|c| c.1)
+            .collect();
+        assert_eq!(got, ["Side1", "TL2", "TR3", "BL4", "BR5"]);
+    }
+
+    /// `spanning` marks a span only when the centres it holds belong to two spans
+    /// that do not overlap, checked against every pair directly.
+    #[test]
+    fn spanning_agrees_with_the_pairwise_definition() {
+        let mut seed = 7_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as f64 / f64::from(1u32 << 31) * 100.0
+        };
+        for n in [0, 1, 2, 3, 5, 8, 13, 40] {
+            let spans: Vec<(f64, f64)> = (0..n)
+                .map(|_| {
+                    let (a, len) = (next(), next() / 2.0);
+                    (a, a + len)
+                })
+                .collect();
+            let centre = |s: (f64, f64)| (s.0 + s.1) / 2.0;
+            let want: Vec<bool> = spans
+                .iter()
+                .map(|&(lo, hi)| {
+                    let held: Vec<_> = spans
+                        .iter()
+                        .filter(|&&s| (lo..=hi).contains(&centre(s)))
+                        .collect();
+                    held.iter().any(|a| held.iter().any(|b| a.1 < b.0))
+                })
+                .collect();
+            assert_eq!(spanning(&spans), want, "{n} spans: {spans:?}");
+        }
+    }
+
+    /// *Layers order, reversed* numbers the tree's bottom row first.
+    ///
+    /// flip: `plan_into` leaving the run unreversed for `Order::Reversed` → fails
+    /// at the names, `c1` first.
+    #[test]
+    fn reversed_numbers_from_the_bottom_row() {
+        let (ctx, mut app) = app();
+        let ids = ["a", "b", "c"].map(|n| named(&mut app, n));
+        app.session.selection.set(ids.to_vec());
+        let mut bx = opened(&ctx, &mut app, "", "[Name][Number]");
+        bx.s.order = Order::Reversed;
+        let got: Vec<String> = planned(&app, &bx)
+            .changes
+            .into_iter()
+            .map(|c| c.1)
+            .collect();
+        assert_eq!(got, ["a1", "b2", "c3"]);
+    }
+
+    /// *Include layers inside* takes the selected layer's subtree, and off it
+    /// takes the layer alone.
+    ///
+    /// flip: `Snapshot::take` not passing `under_selected` down to the children →
+    /// fails at "the frame and its two rectangles".
+    #[test]
+    fn include_layers_inside_takes_the_subtree() {
+        let (ctx, mut app, m) = with_an_instance();
+        app.session.selection.set_one(m);
+        let mut bx = opened(&ctx, &mut app, "", "X");
+        assert!(bx.s.inside);
+        let mut got: Vec<String> = new_names(&app, &planned(&app, &bx))
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            ["Button a", "Button b", "Card"],
+            "the frame and its two rectangles"
+        );
+        bx.s.inside = false;
+        assert_eq!(
+            new_names(&app, &planned(&app, &bx)),
+            [("Card".to_string(), "X".to_string())]
+        );
+    }
+
+    /// A variant in a set is listed as named by its properties, never renamed, and
+    /// takes no number.
+    ///
+    /// flip: `plan_into` without its variant arm → fails at "both variants listed
+    /// as such".
+    #[test]
+    fn a_variant_is_never_renamed() {
+        let (ctx, mut app) = app();
+        let mains = ["Small", "Large"].map(|n| {
+            let s = &mut app.session;
+            let (id, page) = (s.ids.mint(), s.page);
+            assert!(s.commit(Transaction(vec![
+                Operation::CreateNode {
+                    id,
+                    parent: page,
+                    index: 0,
+                    kind: NodeKind::Artboard {
+                        size: Size::new(50.0, 50.0),
+                        corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: None,
+                    name: Some(n.into()),
+                },
+                Operation::SetComponent {
+                    id,
+                    component: true,
+                },
+            ])));
+            id
+        });
+        app.session.selection.set(mains.to_vec());
+        app.combine_as_variants();
+        let set = app.session.selection.single().expect("the set");
+        assert!(mastik_core::variant::is_set(&app.session.doc, set));
+        app.session.selection.clear();
+        let bx = opened(&ctx, &mut app, "", "X[Number]");
+        assert_eq!(bx.s.scope, Scope::Page);
+        let plan = planned(&app, &bx);
+        let variants: Vec<NodeId> = plan
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Layer(l) if l.new == New::Variant => Some(l.id),
+                _ => None,
+            })
+            .collect();
+        let mut want = mains.to_vec();
+        want.sort();
+        let mut variants_sorted = variants.clone();
+        variants_sorted.sort();
+        assert_eq!(variants_sorted, want, "both variants listed as such");
+        assert!(
+            plan.changes.iter().all(|c| !mains.contains(&c.0)),
+            "no variant renamed: {:?}",
+            plan.changes
+        );
+        let numbers: Vec<String> = plan.changes.iter().map(|c| c.1.clone()).collect();
+        let want: Vec<String> = (1..=numbers.len()).map(|i| format!("X{i}")).collect();
+        assert_eq!(numbers, want, "the variants took no number");
+    }
+
+    /// A name that would come out empty is kept and says so; it takes no number
+    /// and is not counted in the button.
+    #[test]
+    fn an_empty_result_keeps_its_name() {
+        let (ctx, mut app) = app();
+        let hero = named(&mut app, "Draft Hero");
+        let bare = named(&mut app, "Draft");
+        app.session.selection.set(vec![hero, bare]);
+        let bx = opened(&ctx, &mut app, "Draft", "");
+        let plan = planned(&app, &bx);
+        assert_eq!(
+            new_names(&app, &plan),
+            [("Draft Hero".to_string(), "Hero".to_string())]
+        );
+        assert!(
+            plan.rows
+                .iter()
+                .any(|r| matches!(r, Row::Layer(l) if l.id == bare && l.new == New::Empty))
+        );
+    }
+
+    /// A pattern that does not parse renames nothing and says why, which is also
+    /// Rename's tooltip.
+    #[test]
+    fn a_bad_pattern_renames_nothing() {
+        let (ctx, mut app) = app();
+        let a = named(&mut app, "Card");
+        app.session.selection.set_one(a);
+        let mut bx = opened(&ctx, &mut app, "(", "x");
+        bx.s.pattern = true;
+        let plan = planned(&app, &bx);
+        assert!(plan.changes.is_empty());
+        let why = plan.why_not("(").expect("a reason");
+        assert!(why.starts_with("Not a pattern"), "{why}");
+        assert_eq!(plan.error.as_deref(), Some(why.as_str()));
+    }
+
+    /// Rename's tooltip says why it is dim: nothing matched, or every match would
+    /// come out empty or the same.
+    #[test]
+    fn a_dim_rename_says_why() {
+        let (ctx, mut app) = app();
+        let a = named(&mut app, "Card");
+        app.session.selection.set_one(a);
+        let mut bx = opened(&ctx, &mut app, "zzz", "x");
+        assert_eq!(
+            planned(&app, &bx).why_not("zzz").as_deref(),
+            Some("No layers match Find")
+        );
+        bx.s.find = "Card".into();
+        bx.s.template = "".into();
+        assert_eq!(
+            planned(&app, &bx).why_not("Card").as_deref(),
+            Some("Every new name would be empty")
+        );
+        bx.s.template = "[Name]".into();
+        assert_eq!(
+            planned(&app, &bx).why_not("Card").as_deref(),
+            Some("Nothing would change")
+        );
+        bx.s.template = "Tile".into();
+        assert_eq!(planned(&app, &bx).why_not("Card"), None);
+    }
+
+    /// Main frame *Card* holding two rectangles, and an instance of it on the page.
+    fn with_an_instance() -> (egui::Context, MastikApp, NodeId) {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let mut ids = IdSource::new(0xBA7C);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let [m, a, b] = [(); 3].map(|_| ids.mint());
+        let create = |id, parent, kind, name: &str| Operation::CreateNode {
+            id,
+            parent,
+            index: 0,
+            kind,
+            transform: None,
+            name: Some(name.into()),
+        };
+        let rect = || NodeKind::Rect {
+            size: Size::new(10.0, 10.0),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        };
+        doc.apply(&Transaction(vec![
+            create(
+                m,
+                root,
+                NodeKind::Artboard {
+                    size: Size::new(100.0, 100.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                "Card",
+            ),
+            create(a, m, rect(), "Button a"),
+            create(b, m, rect(), "Button b"),
+        ]))
+        .expect("a frame holding two rects");
+        app.session.adopt_document(doc, None);
+        app.session.selection.set_one(m);
+        app.create_component();
+        app.duplicate_selection();
+        app.session.selection.clear();
+        (ctx, app, m)
+    }
+
+    /// At page scope the layers inside an instance are left out and counted, and
+    /// *Include layers inside instances* takes them in. Keep case is on there.
+    ///
+    /// flip: `plan_into` ignoring `inside_instances` → fails at "the copies are
+    /// left out".
+    #[test]
+    fn the_page_leaves_instance_insides_out() {
+        let (ctx, mut app, _) = with_an_instance();
+        let mut bx = opened(&ctx, &mut app, "button", "cta");
+        assert_eq!(
+            bx.s.scope,
+            Scope::Page,
+            "nothing selected opens on the page"
+        );
+        assert!(bx.s.keep_case, "keep case is on away from the selection");
+        let plan = planned(&app, &bx);
+        assert_eq!(plan.listed, 2, "the copies are left out");
+        assert_eq!(plan.skipped, 2);
+        assert!(
+            plan.changes.iter().all(|c| c.1.starts_with("Cta ")),
+            "{:?}",
+            plan.changes
+        );
+        bx.s.inside_instances = true;
+        let plan = planned(&app, &bx);
+        assert_eq!((plan.listed, plan.skipped), (4, 0));
+    }
+
+    /// All pages heads each page's rows with its name and count, in the Pages
+    /// list's order, and the number runs on across pages.
+    #[test]
+    fn all_pages_heads_each_page_and_numbers_on() {
+        let (ctx, mut app) = app();
+        named(&mut app, "Hero");
+        named(&mut app, "Footer");
+        let first = app.session.page;
+        app.add_page();
+        named(&mut app, "hero image");
+        app.go_to_page(first);
+        let mut bx = opened(&ctx, &mut app, "hero", "[Name] [Number]");
+        bx.s.set_scope(Scope::Document);
+        let plan = planned(&app, &bx);
+        let heads: Vec<usize> = plan
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::Page { count, .. } => Some(*count),
+                Row::Layer(_) => None,
+            })
+            .collect();
+        assert_eq!(heads, [1, 1]);
+        let got: Vec<String> = plan.changes.into_iter().map(|c| c.1).collect();
+        assert_eq!(got, ["Hero 1", "hero 2 image"]);
+    }
+
+    /// *All pages* leaves a draft page out, unless it is the page the box opened
+    /// on.
+    ///
+    /// flip: `Snapshot::take` reading every page → fails at "the draft is left
+    /// out", its layer numbered 2.
+    #[test]
+    fn all_pages_leaves_a_draft_out_but_the_current_one() {
+        let (ctx, mut app) = app();
+        named(&mut app, "Hero");
+        let first = app.session.page;
+        app.add_page();
+        let sketch = app.session.page;
+        named(&mut app, "hero sketch");
+        app.toggle_page_draft(sketch);
+        assert!(app.session.doc.page(sketch).is_some_and(|p| p.draft));
+        app.add_page();
+        named(&mut app, "hero image");
+        app.go_to_page(first);
+        let mut bx = opened(&ctx, &mut app, "hero", "[Name] [Number]");
+        bx.s.set_scope(Scope::Document);
+        let got: Vec<String> = planned(&app, &bx)
+            .changes
+            .into_iter()
+            .map(|c| c.1)
+            .collect();
+        assert_eq!(got, ["Hero 1", "hero 2 image"], "the draft is left out");
+        app.go_to_page(sketch);
+        let mut bx = opened(&ctx, &mut app, "hero", "[Name] [Number]");
+        bx.s.set_scope(Scope::Document);
+        let got: Vec<String> = planned(&app, &bx)
+            .changes
+            .into_iter()
+            .map(|c| c.1)
+            .collect();
+        assert_eq!(got, ["Hero 1", "hero 2 sketch", "hero 3 image"]);
+    }
+
+    /// A plan sent in parts adds up to the plan made at once, its page headings
+    /// counting rows that arrive in a later part.
+    ///
+    /// flip: `Plan::absorb` not counting a row into the heading before it → fails
+    /// at the headings.
+    #[test]
+    fn parts_add_up_to_the_whole() {
+        let (ctx, mut app) = app();
+        for i in 0..(PART * 2 + 7) {
+            named(&mut app, &format!("Tile {i}"));
+        }
+        let mut bx = opened(&ctx, &mut app, "Tile", "Card");
+        bx.s.set_scope(Scope::Document);
+        let mut parts = 0;
+        let mut whole = Plan::default();
+        plan_into(&snapshot(&app), &bx.s, &mut |part| {
+            parts += 1;
+            whole.absorb(part);
+            true
+        });
+        assert_eq!(parts, 3);
+        assert_eq!(whole.listed, PART * 2 + 7);
+        assert_eq!(whole.changes.len(), PART * 2 + 7);
+        let Some(Row::Page { count, .. }) = whole.rows.first() else {
+            panic!("all pages heads the page")
+        };
+        assert_eq!(*count, PART * 2 + 7);
+        let at_once = plan(&snapshot(&app), &bx.s);
+        assert_eq!(whole.searched, at_once.searched);
+        assert_eq!(whole.rows, at_once.rows);
+        assert!(count_label(Scope::Document, &whole).starts_with("1,007 of "));
+    }
+
+    /// The count over the preview, at document scope.
+    #[test]
+    fn the_count_names_matches_and_pages() {
+        let plan = Plan {
+            listed: 5,
+            searched: 1204,
+            pages: 3,
+            ..Plan::default()
+        };
+        assert_eq!(
+            count_label(Scope::Document, &plan),
+            "5 of 1,204 match · 3 pages"
+        );
+        assert_eq!(count_label(Scope::Page, &plan), "5 of 1,204 match");
+    }
+
+    /// Opening: one layer with children ticks *Include layers inside*; the layers
+    /// search opens on the page with Find holding its text.
+    #[test]
+    fn the_box_opens_on_what_fits() {
+        let (ctx, mut app, m) = with_an_instance();
+        app.session.selection.set_one(m);
+        app.open_batch_rename(&ctx, None);
+        let b = app.batch_rename.take().unwrap();
+        assert_eq!(
+            (b.s.scope, b.s.inside, b.s.keep_case),
+            (Scope::Selection, true, false)
+        );
+        app.open_batch_rename(&ctx, Some(" button ".into()));
+        let b = app.batch_rename.take().unwrap();
+        assert_eq!((b.s.scope, b.s.find.as_str()), (Scope::Page, "button"));
+    }
+
+    /// The remembered Find reopens with its *.\** and *Aa*, so a pattern still
+    /// matches; the layers search's text opens with both off.
+    ///
+    /// flip: `open_batch_rename` opening with `pattern` off → fails at "the pattern
+    /// is remembered".
+    #[test]
+    fn the_remembered_find_keeps_its_switches() {
+        let (ctx, mut app) = app();
+        let a = named(&mut app, "1 · Intro");
+        let b = named(&mut app, "2 · Outro");
+        app.session.selection.set(vec![a, b]);
+        let mut bx = opened(&ctx, &mut app, r"^(\d+) · ", "Step [Group 1]: ");
+        (bx.s.pattern, bx.s.match_case) = (true, true);
+        bx.plan = planned(&app, &bx);
+        assert_eq!(bx.plan.changes.len(), 2, "the pattern matched");
+        app.commit_batch_rename(&bx);
+        assert_eq!(app.session.doc.get(a).unwrap().name(), "Step 1: Intro");
+        let c = named(&mut app, "3 · Close");
+        app.session.selection.set_one(c);
+        app.open_batch_rename(&ctx, None);
+        let bx = app.batch_rename.take().unwrap();
+        assert_eq!(
+            (bx.s.pattern, bx.s.match_case),
+            (true, true),
+            "the pattern is remembered"
+        );
+        assert_eq!(
+            new_names(&app, &planned(&app, &bx)),
+            [("3 · Close".to_string(), "Step 3: Close".to_string())]
+        );
+        app.open_batch_rename(&ctx, Some("close".into()));
+        let bx = app.batch_rename.take().unwrap();
+        assert_eq!((bx.s.pattern, bx.s.match_case), (false, false));
+    }
+
+    /// Typed short forms become their tokens with the caret moved past them, and
+    /// a pill is found from either side for Backspace and Delete.
+    #[test]
+    fn tokens_are_spelled_out_and_found_whole() {
+        assert_eq!(canonical("Card [n]", 8), ("Card [Number]".to_string(), 13));
+        assert_eq!(canonical("[name] x", 2), ("[Name] x".to_string(), 2));
+        assert_eq!(token_at("Card [Number]", 13, true), Some(5..13));
+        assert_eq!(token_at("Card [Number]", 5, true), None);
+        assert_eq!(token_at("Card [Number]", 5, false), Some(5..13));
+    }
+
+    /// One frame of the whole app.
+    fn pass(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> egui::FullOutput {
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1320.0, 820.0),
+            )),
+            modifiers,
+            events,
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame))
+    }
+
+    /// Frames until the worker's plan for the box's settings is whole.
+    fn settle(ctx: &egui::Context, app: &mut MastikApp) {
+        let start = std::time::Instant::now();
+        loop {
+            pass(ctx, app, Vec::new(), egui::Modifiers::NONE);
+            if app.batch_rename.as_ref().is_none_or(|b| b.done) {
+                return;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "the plan never landed"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    const CTRL: egui::Modifiers = egui::Modifiers {
+        alt: false,
+        ctrl: true,
+        shift: false,
+        mac_cmd: false,
+        command: true,
+    };
+
+    /// Through real frames: `Ctrl+R` on two layers opens the box, typing replaces
+    /// the selected Name pill and `[n]` becomes a Number pill, and Enter renames
+    /// both as one undo step and remembers the template.
+    ///
+    /// flip: `rename_selection` without its two-or-more branch → fails at "Ctrl+R
+    /// opens the box".
+    #[test]
+    fn ctrl_r_on_two_layers_renames_them_in_one_step() {
+        let (ctx, mut app) = app();
+        let none = egui::Modifiers::NONE;
+        let a = named(&mut app, "Rectangle 1");
+        let b = named(&mut app, "Rectangle 2");
+        app.session.selection.set(vec![a, b]);
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(&ctx, &mut app, vec![key(egui::Key::R, CTRL)], CTRL);
+        assert!(app.batch_rename.is_some(), "Ctrl+R opens the box");
+        // A frame for the field to take focus and select its pill.
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("Card [n]".into())],
+            none,
+        );
+        assert_eq!(
+            app.batch_rename.as_ref().map(|b| b.s.template.as_str()),
+            Some("Card [Number]"),
+            "typing replaced the Name pill"
+        );
+        settle(&ctx, &mut app);
+        let depth = app.session.history.undo_depth();
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, none)], none);
+        assert!(app.batch_rename.is_none(), "Enter closes the box");
+        let name = |app: &MastikApp, id| app.session.doc.get(id).unwrap().name().to_string();
+        assert_eq!(
+            (name(&app, b), name(&app, a)),
+            ("Card 1".into(), "Card 2".into())
+        );
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one undo step");
+        assert_eq!(app.prefs.batch_rename.template, "Card [Number]");
+        assert!(app.session.undo());
+        assert_eq!(name(&app, a), "Rectangle 1");
+        assert_eq!(name(&app, b), "Rectangle 2");
+    }
+
+    /// Enter on a focused control is that control's click, not *Rename*: tabbed
+    /// off the field onto a button or box, Enter renames nothing.
+    /// flip: `ui::card_enter` answering every Enter → fails at "renames nothing".
+    #[test]
+    fn enter_on_a_focused_control_does_not_rename() {
+        let (ctx, mut app) = app();
+        let none = egui::Modifiers::NONE;
+        let a = named(&mut app, "Rectangle 1");
+        app.session.selection.set_one(a);
+        pass(&ctx, &mut app, Vec::new(), none);
+        app.open_batch_rename(&ctx, None);
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(&ctx, &mut app, vec![egui::Event::Text("Card".into())], none);
+        settle(&ctx, &mut app);
+        let on_control = |ctx: &egui::Context| {
+            let id = ctx.memory(|m| m.focused());
+            id.is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_none())
+        };
+        for _ in 0..12 {
+            if on_control(&ctx) {
+                break;
+            }
+            pass(&ctx, &mut app, vec![key(egui::Key::Tab, none)], none);
+        }
+        assert!(on_control(&ctx), "Tab reached a control");
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, none)], none);
+        assert_eq!(
+            app.session.doc.get(a).unwrap().name(),
+            "Rectangle 1",
+            "renames nothing"
+        );
+    }
+
+    /// The canvas stays live under the box: no modal is up, and a layer made
+    /// with the box open is in its next plan, as a new match is in Find's.
+    /// flip: `refresh_batch_rename` never retaking the snapshot → fails at
+    /// "listed once it is drawn".
+    #[test]
+    fn the_box_leaves_the_canvas_live_and_follows_its_edits() {
+        let (ctx, mut app) = app();
+        named(&mut app, "Rect a");
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        app.open_batch_rename(&ctx, None);
+        app.batch_rename.as_mut().unwrap().s.find = "Rect".into();
+        settle(&ctx, &mut app);
+        assert!(!app.modal_is_up(), "the canvas keeps its input");
+        let b = named(&mut app, "Rect b");
+        settle(&ctx, &mut app);
+        let rows = &app.batch_rename.as_ref().expect("still open").plan.rows;
+        assert!(
+            rows.iter().any(|r| matches!(r, Row::Layer(l) if l.id == b)),
+            "a layer made under the box is listed once it is drawn"
+        );
+    }
+
+    /// Backspace takes a pill out whole, and Escape closes the box renaming nothing.
+    #[test]
+    fn backspace_takes_a_pill_and_escape_cancels() {
+        let (ctx, mut app) = app();
+        let none = egui::Modifiers::NONE;
+        let a = named(&mut app, "Rectangle 1");
+        app.session.selection.set_one(a);
+        pass(&ctx, &mut app, Vec::new(), none);
+        app.open_batch_rename(&ctx, None);
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("x[number]".into())],
+            none,
+        );
+        pass(&ctx, &mut app, Vec::new(), none);
+        assert_eq!(app.batch_rename.as_ref().unwrap().s.template, "x[Number]");
+        pass(&ctx, &mut app, vec![key(egui::Key::Backspace, none)], none);
+        assert_eq!(
+            app.batch_rename.as_ref().unwrap().s.template,
+            "x",
+            "the pill went whole"
+        );
+        pass(&ctx, &mut app, vec![key(egui::Key::Escape, none)], none);
+        assert!(app.batch_rename.is_none());
+        assert_eq!(app.session.doc.get(a).unwrap().name(), "Rectangle 1");
+    }
+
+    /// The template's text, pills included, is centred in its field: the text's
+    /// vertical middle within a point of the field's.
+    ///
+    /// flip: showing the template edit in a child `Ui` instead of `ui.put` → fails,
+    /// the text riding at the field's top.
+    #[test]
+    fn the_template_text_is_centred_in_its_field() {
+        let (ctx, mut app) = app();
+        let none = egui::Modifiers::NONE;
+        let a = named(&mut app, "Rectangle 1");
+        app.session.selection.set_one(a);
+        pass(&ctx, &mut app, Vec::new(), none);
+        app.open_batch_rename(&ctx, None);
+        let mut out = pass(&ctx, &mut app, Vec::new(), none);
+        for _ in 0..3 {
+            out = pass(&ctx, &mut app, Vec::new(), none);
+        }
+        let text = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "[Name]" => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("the template's galley");
+        // The field's ground: the well painted under the text.
+        let field = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                // By shape, not fill: the modal fades in, tinting its grounds.
+                egui::Shape::Rect(r)
+                    if (r.rect.height() - FIELD_H).abs() < 0.5
+                        && r.rect.contains(text.left_center() + egui::vec2(1.0, 0.0)) =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no field under the text at {text:?}"));
+        assert!(
+            (text.center().y - field.center().y).abs() < 1.0,
+            "text {text:?} in field {field:?}"
+        );
+    }
+
+    /// A caret the keys move into a pill leaves it on the side it was heading for;
+    /// one put there any other way goes after it.
+    #[test]
+    fn a_caret_leaves_a_pill_the_way_it_was_going() {
+        let t = "[Name][Number]";
+        assert_eq!(out_of_pill(t, 13, true), Some(6));
+        assert_eq!(out_of_pill(t, 5, true), Some(0));
+        assert_eq!(out_of_pill(t, 1, false), Some(6));
+        assert_eq!(out_of_pill(t, 7, false), Some(14));
+        assert_eq!(out_of_pill(t, 6, true), None, "between pills is a place");
+        assert_eq!(out_of_pill("a [Name]", 1, true), None);
+    }
+
+    /// Through real frames: the arrows walk the caret pill by pill, so a
+    /// separator can be typed between two of them.
+    ///
+    /// flip: `out_of_pill` ignoring `leftward` → fails at the first Left, the
+    /// caret put back after the pill.
+    #[test]
+    fn the_arrows_step_between_pills() {
+        let (ctx, mut app) = app();
+        let none = egui::Modifiers::NONE;
+        let a = named(&mut app, "Rectangle 1");
+        app.session.selection.set_one(a);
+        pass(&ctx, &mut app, Vec::new(), none);
+        app.open_batch_rename(&ctx, None);
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("[name][number]".into())],
+            none,
+        );
+        pass(&ctx, &mut app, Vec::new(), none);
+        assert_eq!(
+            app.batch_rename.as_ref().unwrap().s.template,
+            "[Name][Number]"
+        );
+        let id = egui::Id::new(TEMPLATE_ID);
+        let mut press = |key: egui::Key| {
+            pass(&ctx, &mut app, vec![super::tests::key(key, none)], none);
+            // The step out of a pill is placed on the frame after the press.
+            pass(&ctx, &mut app, Vec::new(), none);
+            egui::TextEdit::load_state(&ctx, id)
+                .and_then(|s| s.cursor.char_range())
+                .map(|c| c.primary.index.0)
+        };
+        assert_eq!(press(egui::Key::ArrowLeft), Some(6), "between the pills");
+        assert_eq!(press(egui::Key::ArrowLeft), Some(0), "before Name");
+        assert_eq!(press(egui::Key::ArrowRight), Some(6), "between again");
+        assert_eq!(press(egui::Key::ArrowRight), Some(14), "after Number");
+        press(egui::Key::ArrowLeft);
+        pass(&ctx, &mut app, vec![egui::Event::Text("_".into())], none);
+        assert_eq!(
+            app.batch_rename.as_ref().unwrap().s.template,
+            "[Name]_[Number]"
+        );
+    }
+
+    /// Two pills side by side are painted as two grounds with the gap between
+    /// them, not one ground across both.
+    ///
+    /// flip: giving every pill the same ground → fails at "two grounds", egui
+    /// joining them into one rectangle over the gap.
+    #[test]
+    fn pills_side_by_side_keep_a_gap() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut grounds = Vec::new();
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let galley = template_galley(ui, "[Name][Number]");
+            let mesh = &galley.rows[0].visuals.mesh;
+            // A ground is a quad of one translucent colour; ink is opaque.
+            for quad in mesh.vertices.chunks(4) {
+                let c = quad[0].color;
+                if quad.len() == 4 && quad.iter().all(|v| v.color == c) && (1..128).contains(&c.a())
+                {
+                    let xs = quad.iter().map(|v| v.pos.x);
+                    let lo = xs.clone().fold(f32::INFINITY, f32::min);
+                    let hi = xs.fold(f32::NEG_INFINITY, f32::max);
+                    grounds.push((lo, hi));
+                }
+            }
+        });
+        assert_eq!(grounds.len(), 2, "two grounds: {grounds:?}");
+        let gap = grounds[1].0 - grounds[0].1;
+        assert_eq!(gap, 2.0, "the gap painted, in {grounds:?}");
+    }
+
+    /// A right-click mid-scrub puts From back where the scrub began, as on any
+    /// scrubbable field.
+    ///
+    /// flip: dropping the box from `cancel_gesture`'s wind-backs → fails at "From is
+    /// back".
+    #[test]
+    fn a_right_click_winds_a_numbering_scrub_back() {
+        let (ctx, mut app) = app();
+        let none = egui::Modifiers::NONE;
+        let a = named(&mut app, "Rectangle 1");
+        app.session.selection.set_one(a);
+        app.prefs.batch_rename.template = "[Number]".into();
+        pass(&ctx, &mut app, Vec::new(), none);
+        app.open_batch_rename(&ctx, None);
+        let mut out = pass(&ctx, &mut app, Vec::new(), none);
+        for _ in 0..10 {
+            out = pass(&ctx, &mut app, Vec::new(), none);
+        }
+        let from = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "From" => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()).center())
+                }
+                _ => None,
+            })
+            .expect("the From field");
+        let ev = |e| vec![e];
+        let button = |pressed, at, button| egui::Event::PointerButton {
+            pos: at,
+            button,
+            pressed,
+            modifiers: none,
+        };
+        pass(&ctx, &mut app, ev(egui::Event::PointerMoved(from)), none);
+        pass(
+            &ctx,
+            &mut app,
+            ev(button(true, from, egui::PointerButton::Primary)),
+            none,
+        );
+        for dx in [10.0, 30.0, 60.0, 90.0] {
+            pass(
+                &ctx,
+                &mut app,
+                ev(egui::Event::PointerMoved(from + egui::vec2(dx, 0.0))),
+                none,
+            );
+        }
+        let scrubbed = app.batch_rename.as_ref().unwrap().s.numbering.from;
+        assert!(scrubbed > 1, "the drag scrubbed From, to {scrubbed}");
+        assert!(app.in_flight.rename_scrub.is_some(), "the scrub is armed");
+        let at = from + egui::vec2(90.0, 0.0);
+        pass(
+            &ctx,
+            &mut app,
+            ev(button(true, at, egui::PointerButton::Secondary)),
+            none,
+        );
+        assert_eq!(
+            app.batch_rename.as_ref().unwrap().s.numbering.from,
+            1,
+            "From is back"
+        );
+        assert!(app.batch_rename.is_some(), "the right-click closed nothing");
+    }
+
+    /// While a keystroke's plan is in flight, an empty preview keeps saying
+    /// nothing matches rather than flashing *Matching…*. Racy in the passing
+    /// direction only: the frame after the keystroke almost never has the
+    /// worker's answer, which is the case the flip needs.
+    ///
+    /// flip: `preview` reading `done` instead of `landed` → fails at "no flash".
+    #[test]
+    fn an_empty_preview_does_not_flash_while_matching() {
+        let (ctx, mut app) = app();
+        let none = egui::Modifiers::NONE;
+        // Nothing selected, so the box opens on the page, which lists only matches.
+        named(&mut app, "Rectangle 1");
+        app.prefs.batch_rename.find = "zz".into();
+        pass(&ctx, &mut app, Vec::new(), none);
+        app.open_batch_rename(&ctx, None);
+        settle(&ctx, &mut app);
+        let painted = |out: &egui::FullOutput, s: &str| {
+            out.shapes
+                .iter()
+                .any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == s))
+        };
+        app.batch_rename.as_mut().unwrap().s.find = "zzz".into();
+        let out = pass(&ctx, &mut app, Vec::new(), none);
+        assert!(!painted(&out, "Matching…"), "no flash");
+        assert!(painted(&out, "No layers match"));
+    }
+
+    /// While a new scope's plan is in flight, the count still describes the plan
+    /// shown, in its own scope's words. Racy in the passing direction only, as
+    /// `an_empty_preview_does_not_flash_while_matching` is.
+    ///
+    /// flip: `batch_rename_ui` labelling the preview by `b.s.scope` → fails at "the
+    /// page's count", reading `· 0 pages`.
+    #[test]
+    fn a_plan_in_flight_keeps_its_own_scope_label() {
+        let (ctx, mut app) = app();
+        let none = egui::Modifiers::NONE;
+        named(&mut app, "Rectangle 1");
+        pass(&ctx, &mut app, Vec::new(), none);
+        app.open_batch_rename(&ctx, None);
+        settle(&ctx, &mut app);
+        let painted = |out: &egui::FullOutput, s: &str| {
+            out.shapes
+                .iter()
+                .any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == s))
+        };
+        let b = app.batch_rename.as_mut().unwrap();
+        assert_eq!(b.s.scope, Scope::Page);
+        let n = b.plan.listed;
+        assert!(n > 0, "the page plan lists its layers");
+        b.s.set_scope(Scope::Document);
+        let out = pass(&ctx, &mut app, Vec::new(), none);
+        // Under load the new plan can land within the pass; only the old plan
+        // still showing has the old scope's words to check.
+        let old_shown = app
+            .batch_rename
+            .as_ref()
+            .is_some_and(|b| b.plan.scope == Some(Scope::Page));
+        assert!(
+            !old_shown || painted(&out, &format!("{n} of {n} match")),
+            "the page's count"
+        );
+        settle(&ctx, &mut app);
+        let out = pass(&ctx, &mut app, Vec::new(), none);
+        assert!(painted(&out, &format!("{n} of {n} match · 1 page")));
+    }
+}

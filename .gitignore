@@ -39,7 +39,7 @@
 /pd[0-9]
 *.pdb
 
-# Headless export scratch — `ondin export … -o out.svg` is the routine way to
+# Headless export scratch — `mastik export … -o out.svg` is the routine way to
 # check rendering without a window (CLAUDE.md, *Checking rendering without a
 # window*), and its output lands wherever the command was run.
 /out.svg

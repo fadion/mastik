@@ -1,9 +1,9 @@
 ---
 name: commit
-description: Ondin's commit flow — group the working tree into logical changes, run the pre-commit bar, then write the Conventional Commits message. Use whenever the user asks to commit ("commit this", "commit the changes", "make a commit", "commit what we just did"), including when they ask only for the message. Also carries the single-pass prompt for reviewing a range of commits, for when the user asks for one. Not for pushing, tagging or releasing — that's the `release` skill — and not for the full pre-release audit, which is `release-review`.
+description: Mastik's commit flow — group the working tree into logical changes, run the pre-commit bar, then write the Conventional Commits message. Use whenever the user asks to commit ("commit this", "commit the changes", "make a commit", "commit what we just did"), including when they ask only for the message. Also carries the single-pass prompt for reviewing a range of commits, for when the user asks for one. Not for pushing, tagging or releasing — that's the `release` skill — and not for the full pre-release audit, which is `release-review`.
 ---
 
-# Committing in Ondin
+# Committing in Mastik
 
 The order is **group → verify → commit**.
 
@@ -15,7 +15,7 @@ work in the tree and say it's ready.
 opposite.** Until 2026-09-16 CLAUDE.md said *"commit freely and without asking …
 how commits are grouped and what the messages say does not matter"*, because the
 repository was scaffolding due to be deleted. It was deleted, and the one that
-replaced it is published at `https://github.com/fadion/ondin` and kept. **If you
+replaced it is published at `https://github.com/fadion/mastik` and kept. **If you
 find a passage anywhere in this project that licenses a checkpoint commit, it is
 stale — and it is worth correcting rather than working around.**
 
@@ -97,7 +97,7 @@ Four notes, each of which has cost this project a green run that was not green:
   `#[cfg(test)]` module, which is where most of this project's assertions live
   (§15 D302).
 - **…and it is not sufficient either. Re-run clippy on the crate you edited**:
-  `cargo clippy -p ondin-core --all-targets`. The workspace spelling and the `-p`
+  `cargo clippy -p mastik-core --all-targets`. The workspace spelling and the `-p`
   spelling compile *different code* — workspace feature unification changes a
   dependency's layout, so a lint whose threshold the type straddles fires under
   one and not the other (CLAUDE.md, measured: `peniko::Gradient` is 168 bytes
@@ -109,7 +109,7 @@ Four notes, each of which has cost this project a green run that was not green:
   link on any private item, which here is most of them — and the doc gate is the
   one gate that checks the record against the code.
 
-`cargo check --release -p ondin-app` for anything more than a few lines: it is
+`cargo check --release -p mastik-app` for anything more than a few lines: it is
 the only gate not compiled with `debug_assertions`, and a line behind egui's own
 `#[cfg(debug_assertions)]` can break the release build with everything else
 green (§15 D161).

@@ -12,7 +12,7 @@
 # than a guess about the path. `packaging/repo/README.md` tells a developer to
 # run these builders by hand with an output path of their choosing, so the path
 # really is arbitrary input.
-ONDIN_DIR_STAMP=".ondin-build"
+MASTIK_DIR_STAMP=".mastik-build"
 
 # Empty `$dir` for a fresh build, refusing anything that is not demonstrably
 # ours to empty.
@@ -33,7 +33,7 @@ ONDIN_DIR_STAMP=".ondin-build"
 #   * `/` and `$HOME`;
 #   * the repository root, or any ancestor of it — a completed path one
 #     component short of the intended one lands here;
-#   * an existing, non-empty directory with no `ONDIN_DIR_STAMP` in it.
+#   * an existing, non-empty directory with no `MASTIK_DIR_STAMP` in it.
 #
 # A path that does not exist yet is created, which is CI's case and needs no
 # marker. A path that exists and is empty is adopted.
@@ -63,15 +63,15 @@ reset_dir() {
         return 1
     fi
     # An ancestor of the repository, or the repository itself. `${root}/` so
-    # `/src/ondin-notes` is not read as an ancestor of `/src/ondin`.
+    # `/src/mastik-notes` is not read as an ancestor of `/src/mastik`.
     if [ -n "$root" ] && { [ "$abs" = "$root" ] || case "${root}/" in "${abs}/"*) true ;; *) false ;; esac; }; then
         echo "refusing to empty ${abs}: it holds the repository at ${root}" >&2
         return 1
     fi
 
-    if [ -d "$abs" ] && [ ! -f "${abs}/${ONDIN_DIR_STAMP}" ] \
+    if [ -d "$abs" ] && [ ! -f "${abs}/${MASTIK_DIR_STAMP}" ] \
         && [ -n "$(ls -A "$abs" 2>/dev/null)" ]; then
-        echo "refusing to empty ${abs}: it is not empty and carries no ${ONDIN_DIR_STAMP}," >&2
+        echo "refusing to empty ${abs}: it is not empty and carries no ${MASTIK_DIR_STAMP}," >&2
         echo "so it was not written by these builders. Point at a new directory, or" >&2
         echo "remove it yourself if you meant this one." >&2
         return 1
@@ -79,5 +79,5 @@ reset_dir() {
 
     rm -rf "$abs"
     mkdir -p "$abs"
-    : > "${abs}/${ONDIN_DIR_STAMP}"
+    : > "${abs}/${MASTIK_DIR_STAMP}"
 }

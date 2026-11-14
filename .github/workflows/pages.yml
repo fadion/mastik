@@ -24,7 +24,7 @@ on:
       # The tag this build is publishing for, so the built site can be checked
       # against it. Without it a site that lost its newest release to a
       # transient download failure is perfectly self-consistent and every
-      # verifier passes it — see `build-site.sh`'s ONDIN_EXPECT_VERSION.
+      # verifier passes it — see `build-site.sh`'s MASTIK_EXPECT_VERSION.
       expect_version:
         description: "Fail unless the built site's newest release is this version"
         type: string
@@ -125,13 +125,13 @@ jobs:
       - name: Check the repository URL agrees everywhere
         run: |
           set -euo pipefail
-          expected="https://fadion.github.io/ondin"
+          expected="https://fadion.github.io/mastik"
           fail=0
           grep -q "^SITE=\"${expected}\"$" install.sh \
             || { echo "::error::install.sh does not point at ${expected}"; fail=1; }
-          grep -q "^BASE_URL=\"\${ONDIN_REPO_URL:-${expected}}\"$" packaging/repo/build-site.sh \
+          grep -q "^BASE_URL=\"\${MASTIK_REPO_URL:-${expected}}\"$" packaging/repo/build-site.sh \
             || { echo "::error::packaging/repo/build-site.sh does not default to ${expected}"; fail=1; }
-          grep -q "^ *ONDIN_REPO_URL: ${expected}$" .github/workflows/pages.yml \
+          grep -q "^ *MASTIK_REPO_URL: ${expected}$" .github/workflows/pages.yml \
             || { echo "::error::this workflow does not build for ${expected}"; fail=1; }
 
           # The **keyring path** is the same kind of value and has the same
@@ -139,7 +139,7 @@ jobs:
           # `Signed-By`, and a machine whose list points at a path nothing
           # installs stops verifying — or stops updating. Five copies, all
           # compared here.
-          keyring="/usr/share/keyrings/ondin-archive-keyring.gpg"
+          keyring="/usr/share/keyrings/mastik-archive-keyring.gpg"
           for f in install.sh packaging/repo/build-site.sh packaging/repo/index.html.in \
                    packaging/repo/verify-site.py; do
             grep -q "${keyring}" "$f" \
@@ -149,13 +149,13 @@ jobs:
             || { echo "::error::build-site.sh writes the keyring path in both the deb822 and the one-line source, or the pair has drifted"; fail=1; }
 
           # `Origin`/`Suite` are what an unattended-upgrades user writes in
-          # `Allowed-Origins` as "Ondin:stable", so they are published
+          # `Allowed-Origins` as "Mastik:stable", so they are published
           # interface in exactly the way the base URL is.
-          grep -q '^ORIGIN="Ondin"$' packaging/repo/build-apt-repo.sh \
-            || { echo "::error::the apt repository's Origin is no longer Ondin; every Allowed-Origins line in the wild names the old one"; fail=1; }
+          grep -q '^ORIGIN="Mastik"$' packaging/repo/build-apt-repo.sh \
+            || { echo "::error::the apt repository's Origin is no longer Mastik; every Allowed-Origins line in the wild names the old one"; fail=1; }
           grep -q '^SUITE="stable"$' packaging/repo/build-apt-repo.sh \
             || { echo "::error::the apt repository's Suite is no longer stable"; fail=1; }
-          grep -q 'Origin: Ondin`, `Suite: stable' packaging/repo/README.md \
+          grep -q 'Origin: Mastik`, `Suite: stable' packaging/repo/README.md \
             || { echo "::error::packaging/repo/README.md documents a different Origin/Suite"; fail=1; }
 
           # `Components` and `Architectures` are the same class of value one
@@ -171,7 +171,7 @@ jobs:
           # Three places, deliberately: the stanza the user installs, the
           # builder that lays the index out, and the checker that fetches it.
           grep -q '^Components: main$' packaging/repo/build-site.sh \
-            || { echo "::error::the published source list no longer names the 'main' component; every ondin.sources in the wild asks for it"; fail=1; }
+            || { echo "::error::the published source list no longer names the 'main' component; every mastik.sources in the wild asks for it"; fail=1; }
           grep -q '^Architectures: amd64$' packaging/repo/build-site.sh \
             || { echo "::error::the published source list no longer names the amd64 architecture"; fail=1; }
           grep -q '^COMPONENT="main"$' packaging/repo/build-apt-repo.sh \
@@ -187,13 +187,13 @@ jobs:
       - name: Build the site
         env:
           GH_TOKEN: ${{ github.token }}
-          ONDIN_REPO_URL: https://fadion.github.io/ondin
-          ONDIN_RETAIN: "5"
-          ONDIN_GH_REPO: ${{ github.repository }}
+          MASTIK_REPO_URL: https://fadion.github.io/mastik
+          MASTIK_RETAIN: "5"
+          MASTIK_GH_REPO: ${{ github.repository }}
           # Empty on `workflow_dispatch`, which has no tag — the repair path
           # rebuilds whatever the releases currently hold, which is the point of
           # it.
-          ONDIN_EXPECT_VERSION: ${{ inputs.expect_version }}
+          MASTIK_EXPECT_VERSION: ${{ inputs.expect_version }}
         run: bash packaging/repo/build-site.sh site
 
       # **The published fingerprint is an identity value too**, and the one

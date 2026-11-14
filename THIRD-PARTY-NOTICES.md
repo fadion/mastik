@@ -1,11 +1,11 @@
 # Third-party notices
 
-Ondin itself is licensed under the MIT License (see [`LICENSE`](LICENSE)).
+Mastik itself is licensed under the MIT License (see [`LICENSE`](LICENSE)).
 
-Distributed builds of Ondin incorporate third-party material. This file records
+Distributed builds of Mastik incorporate third-party material. This file records
 the notices those licenses require to accompany a distribution. **Nothing below
-imposes copyleft on Ondin's own source** — every dependency is permissively
-licensed, dual-licensed with a permissive option that Ondin elects, or weak
+imposes copyleft on Mastik's own source** — every dependency is permissively
+licensed, dual-licensed with a permissive option that Mastik elects, or weak
 (file-level) copyleft used unmodified.
 
 Audited 2026-09-16 against the resolved lockfile: **502 third-party packages**,
@@ -16,15 +16,15 @@ plus the bundled assets below.
 ### Inter
 
 `Inter-Variable.ttf` and `Inter-Italic-Variable.ttf` are embedded via
-`include_bytes!` (`crates/ondin-core/assets/fonts/`). They are the *only* fonts
-`ondin-core` shapes with — the crate never scans system fonts, which is what
+`include_bytes!` (`crates/mastik-core/assets/fonts/`). They are the *only* fonts
+`mastik-core` shapes with — the crate never scans system fonts, which is what
 makes layout deterministic.
 
 - Copyright 2020 The Inter Project Authors (https://github.com/rsms/inter),
   designed by Rasmus Andersson.
 - Licensed under the SIL Open Font License, Version 1.1 (`OFL-1.1`).
 - Full license text:
-  [`crates/ondin-core/assets/fonts/OFL.txt`](crates/ondin-core/assets/fonts/OFL.txt).
+  [`crates/mastik-core/assets/fonts/OFL.txt`](crates/mastik-core/assets/fonts/OFL.txt).
 
 The OFL permits bundling and redistribution, including commercially. Inter
 remains under the OFL — it is not relicensed under MIT. ⚠️ **Inter declares no
@@ -35,7 +35,7 @@ not apply here; but "Inter" is a trademark of rsms, per the font's own
 ### Noto Emoji
 
 `NotoEmoji.ttf` (the variable `NotoEmoji[wght].ttf` from `google/fonts`) is
-embedded via `include_bytes!` (`crates/ondin-app/assets/fonts/`) and draws
+embedded via `include_bytes!` (`crates/mastik-app/assets/fonts/`) and draws
 monochrome emoji in the UI, ahead of egui's older copy below.
 
 - Copyright 2013 Google LLC.
@@ -46,7 +46,7 @@ monochrome emoji in the UI, ahead of egui's older copy below.
 ### egui's built-in fonts
 
 🚨 **These ship whether or not you expect them to.** `theme::install` starts from
-`egui::FontDefinitions::default()` and inserts Inter, Noto Emoji and Ondin's own icon font *in front of*
+`egui::FontDefinitions::default()` and inserts Inter, Noto Emoji and Mastik's own icon font *in front of*
 the built-ins rather than replacing them, so egui's fonts remain in the binary
 **and remain live as fallbacks** for any glyph Inter lacks. They arrive through
 `epaint_default_fonts`, whose crate license expression is
@@ -61,7 +61,7 @@ the built-ins rather than replacing them, so egui's fonts remain in the binary
 
 All four are free to bundle and redistribute. Two carry Reserved Font Names —
 "Bitstream" and "Vera" via Hack's Bitstream Vera portion — which restrict
-distributing a *modified* font under those names; Ondin modifies none of them.
+distributing a *modified* font under those names; Mastik modifies none of them.
 The Ubuntu Font Licence likewise requires a renamed derivative, and permits
 embedding and redistribution unchanged.
 
@@ -71,11 +71,11 @@ subsection, at the cost of the fallback coverage.
 
 ### Application icon
 
-`icons/icon.ico` is compiled into `ondin.exe` as a Win32 resource by
-`crates/ondin-app/build.rs`, `icons/icon.png` is embedded as the runtime window
+`icons/icon.ico` is compiled into `mastik.exe` as a Win32 resource by
+`crates/mastik-app/build.rs`, `icons/icon.png` is embedded as the runtime window
 icon and `icons/icon-64.png` as the top bar's mark, and `icons/icon-1024.png` is
 the source of the macOS `.icns`. All are original project artwork and are
-covered by Ondin's own MIT license.
+covered by Mastik's own MIT license.
 
 ## Rust dependencies (statically linked)
 
@@ -91,7 +91,7 @@ permissive or permissively-electable:
 - **One weak-copyleft crate**: `option-ext` (`MPL-2.0`), reached through
   `dirs → dirs-sys`, which is how the font cache and preferences directories are
   located. MPL-2.0 is **file-level** copyleft: it obliges anyone distributing
-  *modified versions of those files* to publish them, and does not reach Ondin's
+  *modified versions of those files* to publish them, and does not reach Mastik's
   own source. The crate is used **unmodified** from crates.io, where its source
   is already public. It is in the Windows dependency graph, so it does ship.
 - `ring` (`Apache-2.0 AND ISC`) and `webpki-roots` (`CDLA-Permissive-2.0`) arrive
@@ -103,7 +103,7 @@ permissive or permissively-electable:
   through the CPU raster path.
 
 No `GPL`, `AGPL`, `LGPL`, `CDDL`, `EPL` or `SSPL` terms apply to any part of a
-distributed Ondin build.
+distributed Mastik build.
 
 The complete per-crate manifest can be regenerated from the lockfile:
 

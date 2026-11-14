@@ -37,10 +37,10 @@ REPO_ROOT="$(cd "${HERE}/../.." && pwd -P)"
 : "${GPG_KEY_ID:?set GPG_KEY_ID to the signing key fingerprint or uid}"
 
 # Origin and Label are what an unattended-upgrades user writes in
-# Allowed-Origins ("Ondin:stable"), so they are part of the published
+# Allowed-Origins ("Mastik:stable"), so they are part of the published
 # interface and not free text to reword later.
-ORIGIN="Ondin"
-LABEL="Ondin"
+ORIGIN="Mastik"
+LABEL="Mastik"
 SUITE="stable"
 COMPONENT="main"
 ARCH="amd64"
@@ -58,7 +58,7 @@ fi
 
 # Refuses a path that is not demonstrably this builder's — see `reset_dir`.
 reset_dir "$OUTPUT_DIR" "$REPO_ROOT"
-POOL="${OUTPUT_DIR}/pool/${COMPONENT}/o/ondin"
+POOL="${OUTPUT_DIR}/pool/${COMPONENT}/o/mastik"
 DIST="${OUTPUT_DIR}/dists/${SUITE}"
 BINDIR="${DIST}/${COMPONENT}/binary-${ARCH}"
 mkdir -p "$POOL" "$BINDIR"
@@ -98,7 +98,7 @@ EOF
         -o "APT::FTPArchive::Release::Codename=${SUITE}" \
         -o "APT::FTPArchive::Release::Architectures=${ARCH}" \
         -o "APT::FTPArchive::Release::Components=${COMPONENT}" \
-        -o "APT::FTPArchive::Release::Description=Ondin - native 2D design tool" \
+        -o "APT::FTPArchive::Release::Description=Mastik - native 2D design tool" \
         release "dists/${SUITE}" > "dists/${SUITE}/Release.tmp"
     mv "dists/${SUITE}/Release.tmp" "dists/${SUITE}/Release"
 )

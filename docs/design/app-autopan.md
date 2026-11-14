@@ -30,7 +30,7 @@ Stated as a rule, not a list of names:
   ruler scroll the view. Placing a guide beyond the visible area is done with the Guide panel's
   position field instead.
 
-`OndinApp::ruler_at` (callers `guide_input`, `guide_at`) asks the two-part question
+`MastikApp::ruler_at` (callers `guide_input`, `guide_at`) asks the two-part question
 `rulers_on() && ruler_at(..)` in one place so no caller claims a press for an invisible bar.
 
 ### Cancel puts the view back

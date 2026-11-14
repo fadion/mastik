@@ -86,7 +86,7 @@ Use a `general-purpose` subagent (it needs Read/Grep/Glob plus Bash for probe ha
 It inherits nothing from this session, so the prompt carries everything:
 
 ```
-You are running pass <ID> of an in-progress codebase review of Ondin, a Rust 2D design editor
+You are running pass <ID> of an in-progress codebase review of Mastik, a Rust 2D design editor
 (egui/wgpu/vello). Read these first:
 
 - .claude/skills/codebase-review/reference.md — §1 lenses, §3 the verification gate,
@@ -121,7 +121,7 @@ Before claiming a gap, search for the guard. Before claiming a deviation, check 
 
 Anchor every location on its enclosing item, not on a line number alone — the tree is NOT frozen
 for this review, so line numbers drift and symbols do not. Write
-`crates/ondin-app/src/canvas.rs:5528 · fn snapped_point`, and do the same for every line ref
+`crates/mastik-app/src/canvas.rs:5528 · fn snapped_point`, and do the same for every line ref
 inside Evidence. Where there is no enclosing item, quote the line of code.
 
 Writing to review/findings.md: append your findings block at the "**Status:** open" / "---" /

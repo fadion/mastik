@@ -1,7 +1,7 @@
-# Ondin — keyboard shortcuts
+# Mastik — keyboard shortcuts
 
 The whole keymap: ✅ bound, ➕ agreed and unbuilt, ⛔ deliberately unbound. The code wins:
-`crates/ondin-app/src/input.rs` for the editor, `panels/dashboard.rs` (`dashboard_keys`,
+`crates/mastik-app/src/input.rs` for the editor, `panels/dashboard.rs` (`dashboard_keys`,
 `search_field`) for the library. In the editor every chord that is a key plus exact modifiers is
 one row of `input::BINDINGS`, which `resolve` reads and every menu, palette and cheatsheet label
 spells from, so a chord's binding and its text cannot drift. The rest are code in `normal_mode`
@@ -151,14 +151,14 @@ Plain only; numpad digits work (`Key::Num0`–`Num9`). Applies via `build::set_o
 an empty selection.
 
 - **The window needs a repaint to close**: the pending first digit schedules
-  `request_repaint_after(remaining)`, folded into `OndinApp::frame_body` through
+  `request_repaint_after(remaining)`, folded into `MastikApp::frame_body` through
   `fold_opacity_entry` (§15 D698).
 - **The first digit is a preview, not a commit**, so `4`,`5` leaves one history step reading 45%.
   The window shutting commits — by a second digit or the deadline (`OPACITY_DIGIT_WINDOW`).
   `opacity_window_open` is shared by `opacity_step` (pairing) and the deadline so they cannot
   drift and spend one keystroke twice.
 - ⚠️ **A third way the window shuts commits nothing** (§15 D535): `Escape` or a right-click, via
-  `OndinApp::cancel_gesture`, which drops `opacity_entry` along with the preview. A cancelled
+  `MastikApp::cancel_gesture`, which drops `opacity_entry` along with the preview. A cancelled
   gesture owes zero transactions (§9.3).
 - ⚠️ **The pending digit carries the layers it was typed against** (§15 D470): `4` on A, click B,
   and the deadline used to apply 40% to B. `4` on A then `5` on B are two values.
@@ -216,7 +216,7 @@ selection-chrome hide) a visibility switch has nothing to look at.
 
 Rename opens the same `renaming_layer` field as a layers-panel double-click, showing the panel if
 hidden and unfolding its Layers section. With **two or more layers selected it opens the batch
-rename box** instead, the verb that fits them (`OndinApp::rename_selection`). Otherwise it **refuses
+rename box** instead, the verb that fits them (`MastikApp::rename_selection`). Otherwise it **refuses
 in focus mode** (no panels are drawn, so it would arm against a field that never renders); the box
 is not in a panel and opens there.
 
@@ -240,7 +240,7 @@ Figma's distributes (`Ctrl+Alt+H`/`V`) collide with paste-properties (§7), and 
 keymap's **boolean namespace**. Illustrator has no align shortcuts. `Alt+S` does not collide with
 `Ctrl+Alt+S` (subtract): the block is `!cmd`. `build::align`/`distribute` honour the key layer when
 one is designated (§15 D113). While the node tool edits a path, these chords align and distribute
-its selected points instead, as the Align card does (`OndinApp::dispatch`).
+its selected points instead, as the Align card does (`MastikApp::dispatch`).
 
 ## 6. View, grid, guides and snapping — Adobe's set
 
@@ -271,7 +271,7 @@ its selected points instead, as the Align card does (`OndinApp::dispatch`).
 `StatusMessages`, `SnapBaselines`): no free convention to match, and a menu row to reach instead. They are listed
 so nobody calls a free chord parity. `Ctrl+\` maps to focus mode, which already is "hide the
 panels, restore on leaving"; Escape still leaves it. `Ctrl+U` is underline in TextInsert (§10).
-Guide lock is a workspace toggle on `OndinApp`, not a per-guide property (`architecture.md` §9.4).
+Guide lock is a workspace toggle on `MastikApp`, not a per-guide property (`architecture.md` §9.4).
 `theme::install` switches `zoom_with_keyboard` off, the only egui chord that collided; check it
 before adding another.
 
@@ -307,7 +307,7 @@ when a sentence happened to be copied elsewhere. The event arm only silences the
 
 | Key | Action | |
 |---|---|---|
-| `Ctrl+S` | **save and pin a version** | ✅ writes *and* copies into `.versions/<document id>/<unix seconds>.ondin`, keyed on the id so a rename cannot orphan history (§15 D364); a save of nothing new since the newest version pins none. Autosave runs every thirty seconds, so bare save meant nothing. The top bar's disk button is the same action |
+| `Ctrl+S` | **save and pin a version** | ✅ writes *and* copies into `.versions/<document id>/<unix seconds>.mastik`, keyed on the id so a rename cannot orphan history (§15 D364); a save of nothing new since the newest version pins none. Autosave runs every thirty seconds, so bare save meant nothing. The top bar's disk button is the same action |
 | `Ctrl+Shift+S` | ~~save as~~ | ⛔ every document lives in the base folder (§9.5); *Duplicate* in the dashboard mints a new id. ⚠️ Exact matching is all that keeps it unbound: `Save`'s row holds Ctrl alone; `save_takes_the_bare_chord_and_the_shifted_one_is_free` asserts the **empty** result |
 | `Ctrl+O` | **the library** | ✅ the library tab: `go_to_dashboard`, which saves the document in front; its tab stays open. No file dialog exists |
 | `Ctrl+K` / `Ctrl+P` | **search files and projects** | ✅ **dashboard only**, read in `search_field` because `input::resolve` does not run while the library is up. `Enter` takes the first document match, never a project: most recently edited, ties by name (§15 D967). **`Ctrl` without Alt and Shift** (§15 D712) |
@@ -348,7 +348,7 @@ draws the box.
 
 `Ctrl+N` and `Ctrl+Shift+N` work here too and are §8's and §6's rows, not second ones.
 
-⚠️ **None of these goes through `input::resolve`, and none can**: `OndinApp::ui` returns before it
+⚠️ **None of these goes through `input::resolve`, and none can**: `MastikApp::ui` returns before it
 while the library is up, so `dashboard_keys` reads the context. Its guard (`library_keys_are_free`)
 lists what owns the keyboard: the two confirmations, the ⋮ menu, the *All projects ⌄* dropdown, the
 *Move to project* sheet, the *New project* and *Settings* cards, the rename field, the search
@@ -372,7 +372,7 @@ non-goal**; `DashboardState::selected` is one path and every verb takes one docu
 | `Escape` | leave |
 
 Stepping stops at either end. A step to another frame keeps the zoom and opens the frame at its
-top. `present_ui` reads these and nothing else: `OndinApp::ui` returns before `input::resolve` while presenting, so no editor chord runs (`design/app-canvas-chrome.md`).
+top. `present_ui` reads these and nothing else: `MastikApp::ui` returns before `input::resolve` while presenting, so no editor chord runs (`design/app-canvas-chrome.md`).
 
 ### 8c. Compare's own keys
 
@@ -381,7 +381,7 @@ top. `present_ui` reads these and nothing else: `OndinApp::ui` returns before `i
 | `Enter` / `Shift+Enter` | next / previous change, round the ends |
 | `\` (no modifiers) | toggle Then and Now |
 | `O` (no modifiers) | toggle the overlay (the change marks) |
-| `Escape` | leave (a rung of `OndinApp::escape`, below colour review) |
+| `Escape` | leave (a rung of `MastikApp::escape`, below colour review) |
 
 `compare_bar` reads the first two while no modal, palette or text field has the keyboard;
 `compare_overlay_key` takes `O` under the same conditions before the keymap and consumes it, so
@@ -486,7 +486,7 @@ in a place §0 did not predict; the C/X/V test rule now covers a non-clipboard b
 | `Ctrl+I` | italic on / off | ✅ `TextChord::Italic`, the family's own face (`text::italic_step`) |
 
 **`Ctrl+B`/`Ctrl+I` pick one of the family's own faces; they never flip a bare flag on a family that
-cannot draw it.** Both go through `OndinApp::toggle_face`, as the Type panel's Bold/Italic toggles
+cannot draw it.** Both go through `MastikApp::toggle_face`, as the Type panel's Bold/Italic toggles
 do, and apply the result as picking a variant does (weight, italic and axis coordinates merged).
 The rule is core's (`text.md` §5.4, *Bold and italic*):
 
@@ -508,7 +508,7 @@ decoration — the one row whose semantics differ from every app it is borrowed 
 **`Tab` is not a keymap binding**, which keeps it clear of `Tab` stepping the point selection
 (§11, §15 D123). `text_insert_mode` resolves **no bare key**; that rule, not an empty `Vec`, is
 the separation. It is claimed **whether or not it moves anything**: a `Tab` reaching egui moves the
-focus ring and swallows the next keystroke. `took_tab` in `OndinApp::frame_body` hands focus
+focus ring and swallows the next keystroke. `took_tab` in `MastikApp::frame_body` hands focus
 back (§15 D698).
 
 **Modality carries load here.** `Ctrl+U` (snap to shapes), `Ctrl+Shift+L` (lock), `Alt`+arrows
@@ -541,10 +541,10 @@ combinations asserts the two **partition** the space.
 | `Shift`+arrows | nudge (10) | ✅ `NudgeStep::large`; need not exceed the small step |
 | `Ctrl`+arrows | resize: `→` wider, `←` narrower, `↓` taller, `↑` shorter | ✅ (§15 D346); no convention behind it. Distance is the nudge step, held by the top-left corner |
 | `Tab` / `Shift+Tab` | step the point selection | ✅ node tool only (§10: nests in TextInsert) |
-| `Enter` | step **into** the selection, or back out | ✅ `OndinApp::enter_action`: the node tool and image editing toggle out; with one layer selected an instance with children first (§12), then text, picture, path, group/boolean, in `double_click_pick`'s order so key and double-click cannot disagree. On text with no pointer it **selects the whole string**; a group is a *depth*, so `Escape` is the way out |
+| `Enter` | step **into** the selection, or back out | ✅ `MastikApp::enter_action`: the node tool and image editing toggle out; with one layer selected an instance with children first (§12), then text, picture, path, group/boolean, in `double_click_pick`'s order so key and double-click cannot disagree. On text with no pointer it **selects the whole string**; a group is a *depth*, so `Escape` is the way out |
 | `Escape` | unwind one rung | ✅ |
 
-`OndinApp::escape` is an `else if` chain, so the order is the whole content; re-derive it from the
+`MastikApp::escape` is an `else if` chain, so the order is the whole content; re-derive it from the
 code rather than editing this sentence:
 
 focus mode → a bindable field's menu / `--` list / mode menu → a style card's menu, picker, name
@@ -583,7 +583,7 @@ not in that set**: it is a tool, and leaving it is the ladder's last rung.
 **Image editing's only keyboard door is `Enter`** (§15 D268); `Escape` or a second `Enter` leaves,
 as does the **Done** pill (`choose_tool`, §15 D270). **All three `Enter` targets refuse on a locked
 layer** (§15 D320, D321) through `query::is_effectively_locked`, so a locked *group* shuts the door
-on its contents: `OndinApp::begin_image_edit`, `canvas::begin_edit_text` and the `Path` arm of
+on its contents: `MastikApp::begin_image_edit`, `canvas::begin_edit_text` and the `Path` arm of
 `enter_action` each refuse, so chord and menu row agree. `A` arms with no check and is shut in
 `canvas::edited_path`.
 

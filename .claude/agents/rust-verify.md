@@ -5,7 +5,7 @@ tools: Bash, Read, Grep, Glob
 model: sonnet
 ---
 
-You run the Ondin workspace's verification gates and report what matters. Raw
+You run the Mastik workspace's verification gates and report what matters. Raw
 `cargo` output is tens of kilobytes; your caller wants a few hundred tokens.
 
 ## The gates
@@ -15,7 +15,7 @@ cargo check --workspace --all-targets
 cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all --check
-cargo check --release -p ondin-app
+cargo check --release -p mastik-app
 cargo doc --workspace --no-deps --document-private-items
 ```
 
@@ -25,18 +25,18 @@ cargo doc --workspace --no-deps --document-private-items
 test in the workspace goes unlinted (§15 D302). **And `--all-targets` is not sufficient**, for a
 reason established on 2026-09-08 and larger than clippy: **`--workspace` and `-p` compile different
 code.** Workspace feature unification changes a dependency's memory layout, so `peniko::Gradient`
-measures **168** bytes under `-p ondin-core` and **160** under `--workspace` — which is why
-`ondin-core`'s one `large_enum_variant` printed under one spelling and not the other, on the same
+measures **168** bytes under `-p mastik-core` and **160** under `--workspace` — which is why
+`mastik-core`'s one `large_enum_variant` printed under one spelling and not the other, on the same
 tree, both exiting 0. The lint was behaving perfectly and was being handed a different type. **So
 run clippy per package, always — not only on the crates the caller edited** — and say in the report
 which spelling you ran:
 
 ```bash
-for p in ondin-core ondin-render ondin-export ondin-mcp ondin-app; do cargo clippy -p $p --all-targets; done
+for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do cargo clippy -p $p --all-targets; done
 ```
 
 `--document-private-items` is why the doc gate reads anything at all here. Without it rustdoc
-checks no link on any private item — which in this workspace is `Builder`, every `OndinApp` method
+checks no link on any private item — which in this workspace is `Builder`, every `MastikApp` method
 and every free helper. Measured the same day: a deliberately broken link on a private item survives
 a full `cargo doc --workspace --no-deps` at **exit 0**. Adding the flag immediately surfaced three
 broken links plus eight naming a struct with no `impl` block.

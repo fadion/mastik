@@ -1,4 +1,4 @@
-# Ondin — Roadmap
+# Mastik — Roadmap
 
 Open work only. **Now** is in the order it is taken up; **Later** waits on a stated trigger;
 **Considerations** are ideas not yet decided. Decided non-goals are in `non-goals.md`; built
@@ -8,8 +8,8 @@ true.
 
 ## Now · MCP
 
-Fewer tokens and fewer round trips for an agent driving `ondin-mcp`. `tools/list` names the core
-set (`ondin_mcp::tools::CORE`), and `schema`'s `the_tool_list_stays_within_its_budget` holds it
+Fewer tokens and fewer round trips for an agent driving `mastik-mcp`. `tools/list` names the core
+set (`mastik_mcp::tools::CORE`), and `schema`'s `the_tool_list_stays_within_its_budget` holds it
 and the whole list to byte budgets. Each item lands with a size budget test, and the set is checked
 by re-running the same agent task on the old and new build.
 
@@ -23,14 +23,14 @@ by re-running the same agent task on the old and new build.
 ## Now · Library
 
 Documents are found by name alone: search is a lowercase substring of the display name or a
-project's name (`OndinApp::search_results`), and the scan reads only a file's first 4 KB, so the
+project's name (`MastikApp::search_results`), and the scan reads only a file's first 4 KB, so the
 library knows nothing of what a document holds. A card shows its cover, name and age.
 
 - **Ranked search** — every word must match, exact before prefix before word start before
   substring, as `assets::sets::rank_name` ranks icons; one rule for search, the palette and the
   results page.
 - **Sortable list columns** — a click on a *Name*, *Project*, *Edited*, *Created* or *Size* header
-  (`OndinApp::file_list`) sorts by it, a second reverses; `Sort` gains a direction the sort control
+  (`MastikApp::file_list`) sorts by it, a second reverses; `Sort` gains a direction the sort control
   offers too.
 - **Day headings under a date sort** — *Today*, *Yesterday*, *This week*, *Earlier*, worded as the
   version-history card's (`versions.rs`).
@@ -60,7 +60,7 @@ library knows nothing of what a document holds. A card shows its cover, name and
 
 ## Now
 
-- **Command Mode** — `architecture.md` §13, `vm.md`. Its verbs are the registry's (`ondin_core::verbs`, built). Scripts
+- **Command Mode** — `architecture.md` §13, `vm.md`. Its verbs are the registry's (`mastik_core::verbs`, built). Scripts
   stored inert, never run by the document (§15 D1100). Open in `vm.md` §13: the editor's UI, the
   parameter header, `mlua` exposing Luau's analysis, files outside the document (parked), first-run
   disclosure, schema place, kit scripts. `/ai`, its door into the assistant, and a reply's *Open in
@@ -93,7 +93,7 @@ Ideas worth weighing, not yet decided or scheduled.
   (*Parked decisions*); a compare that forgives edge pixels and still catches a moved shape is what
   would unblock it. The same harness could hold approved screenshots of the chrome as regression
   baselines.
-- **A centroid snap during a move.** A layer's visual centre (`ondin_core::centroid`) as a source
+- **A centroid snap during a move.** A layer's visual centre (`mastik_core::centroid`) as a source
   in `snap_rect` while the Align card's visual-centre toggle is on. Worth weighing only once the
   toggle has seen use.
 

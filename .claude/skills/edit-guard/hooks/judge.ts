@@ -366,7 +366,7 @@ export function judge(command: string, kinds?: Kinds, depth = 0): string | undef
 /**
  * The paths the command's `git add` and `git checkout` name, for the hook to
  * ask the disk about: only the disk tells `git checkout feature/x` (a branch)
- * from `git checkout crates/ondin-app` (a directory's work thrown away).
+ * from `git checkout crates/mastik-app` (a directory's work thrown away).
  */
 export function pathspecs(command: string): string[] {
   const { skel, strings } = parse(command)

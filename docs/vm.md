@@ -1,4 +1,4 @@
-# Ondin — the scripting VM
+# Mastik — the scripting VM
 
 > **Status: design, not built.** Nothing here exists in code. This document is the working design
 > for the language behind Command Mode (`architecture.md` §13), kept separate from `architecture.md`
@@ -29,7 +29,7 @@ The argument that this is cheap is the codebase itself:
 
 - **Invariant 2** already forces every mutation through `Document::apply(Transaction)`. There is no
   second path to bind, and no way for a script to reach around the one that exists.
-- **`ondin-core/src/build.rs`** is already the intent layer — 43 public functions, most of them pure
+- **`mastik-core/src/build.rs`** is already the intent layer — 43 public functions, most of them pure
   `(&Document, &Resolved, ...) -> Transaction`. `align`, `distribute`, `z_order`, `group`, `boolean`,
   `flatten`, `recolor`, `set_opacity_all`. That is the verb list, already written, already headless,
   already shared with MCP by construction.
@@ -284,7 +284,7 @@ shows the command that would have done it.
 ## 10. Where scripts live
 
 **A script may be stored in the document; it is never run by the document** (§15 D1100, the
-maintainer's ruling of 2026-10-17). This section read *"Never in the `.ondin` file"* until then. The
+maintainer's ruling of 2026-10-17). This section read *"Never in the `.mastik` file"* until then. The
 rule that replaced it is about running, not storage: **no script runs on open, none re-runs on any
 change, ever** — the maintainer: *"one would never want to autorun a script."* The two reasons the old
 rule gave are both still answered, the first whole:
@@ -305,7 +305,7 @@ Run Python Scripts* off — and reading source protects few people. With nothing
 is nothing to warn about.
 
 **A document never needed a script to be complete.** A script is a tool whose run commits native
-layers (§7), and the document records the result, so an `.ondin` file never needed a reference to an
+layers (§7), and the document records the result, so an `.mastik` file never needed a reference to an
 external script — it was always complete. A stored script is a tool shipped beside the work, not part
 of it.
 
@@ -315,8 +315,8 @@ of it.
   them.
 - **Library** — saved outside any document, as plain `.luau` files in a folder beside preferences
   (`dirs` is already a dependency), so they can be git-tracked and shared as files.
-- **Document** — saved in the `.ondin` file, inert. Listed in the script list marked as coming from this
-  document, and run only by hand; **the first time one is run, Ondin shows that it came with the
+- **Document** — saved in the `.mastik` file, inert. Listed in the script list marked as coming from this
+  document, and run only by hand; **the first time one is run, Mastik shows that it came with the
   document, and its source.** A kit can carry document scripts under the same rule, listed as coming
   from the kit.
 
@@ -328,7 +328,7 @@ with its source; neither shadows the other.
 **The editor is in the app** (the maintainer: sending people to Zed or VS Code *"would be weird"*).
 egui ships no code editor, so this is built. Its v1: monospace text, line numbers, syntax highlighting,
 undo, find, an error placed on its line after a run, and an output area for `print`. **Completion
-covers Ondin's API only** — `sel`, node fields, the verbs — not Lua itself, and is generated from the
+covers Mastik's API only** — `sel`, node fields, the verbs — not Lua itself, and is generated from the
 same definitions as the bindings, so the two cannot drift. Type-aware completion is not promised:
 Luau's type checker is a separate C++ analysis library that `mlua` is believed not to expose —
 **unverified**. A `.d.luau` definitions file generated from the same source gives an outside editor
@@ -337,7 +337,7 @@ write most scripts (§11), so the editor's first job is reading, tweaking and ru
 errors come before completion. Its UI is not designed yet.
 
 **Parameters are designed for, not in the first build.** A script may declare its inputs in a header,
-and Ondin draws them as a small form when it is run — Blender's operator properties. It is still a run
+and Mastik draws them as a small form when it is run — Blender's operator properties. It is still a run
 the person starts, not reactivity. The header's shape is to be settled up front, before the first
 build (§13).
 
@@ -346,7 +346,7 @@ a different security design.
 
 ## 11. Relationship to MCP and `/ai`
 
-`ondin-mcp` has no handler today, and `tools.rs` holds §8.4's planned tools as the constants
+`mastik-mcp` has no handler today, and `tools.rs` holds §8.4's planned tools as the constants
 `PHASE_1` to `PHASE_4`, checked against it (§15 D726, D1095, D1096) — Phase 1 read and export,
 Phase 2 write mapped 1:1 onto `Operation`, Phase 3 components, variables and styles through the
 verbs, Phase 4 kits and the library through the app's own actions. Nothing is built. **This is the
@@ -356,7 +356,7 @@ Phases 2 and 3 ship.
 
 The split that survives contact with an agent:
 
-- **Reads stay typed tools.** The snapshot (`ondin-export/src/snapshot.rs`, `SNAPSHOT_VERSION`) is
+- **Reads stay typed tools.** The snapshot (`mastik-export/src/snapshot.rs`, `SNAPSHOT_VERSION`) is
   how an agent sees the document, and a language does nothing for that. Keep `get_document`,
   `get_node`, `get_selection`, `hit_test`, `get_bounds`.
 - **Single edits stay typed tools**, because a typed call gives validated arguments and per-call error
@@ -379,7 +379,7 @@ language in, reviewable code out, ordinary undo. `/ai` waits on the bar; the ass
 - **Links between a document's scripts and the library's.** Copies only (§10, §15 D1100).
 - **Plugins and UI extension.** A script mutates the document; it does not add panels, tools or
   chrome. Different feature, different security design.
-- **An embedded model.** §13 already says Ondin embeds no model; `/ai` goes to the configured
+- **An embedded model.** §13 already says Mastik embeds no model; `/ai` goes to the configured
   agent harness (`design/assistant.md`).
 - **Async, coroutines, or anything that yields across frames.** §8.
 - **Binding the interaction layer.** §6.
@@ -419,9 +419,9 @@ These are the parts worth arguing about before anything is built.
    images, which §8 forbids. The recorded answer today is one document: the script generates the
    frames, or a variable mode per brand with each frame exported. If files are wanted, two shapes are
    on the table and neither is ruled: (a) **host-mediated** — the script returns new documents and
-   Ondin saves them into a folder the person picks after the run, and images arrive as data from a
-   folder the person picks, never as paths; (b) **a CLI batch run** — `ondin run script.luau --in
-   base.ondin --out dir/`, the shell owning the files. It is its own decision because it is the first
+   Mastik saves them into a folder the person picks after the run, and images arrive as data from a
+   folder the person picks, never as paths; (b) **a CLI batch run** — `mastik run script.luau --in
+   base.mastik --out dir/`, the shell owning the files. It is its own decision because it is the first
    time a script reaches past the document.
 10. **The build order.** The session's recommendation, not ruled: §9's cheap proof first — log each
     committed transaction in its scriptable form, sizing the coverage before any Luau exists — then
@@ -429,6 +429,6 @@ These are the parts worth arguing about before anything is built.
     alongside.
 11. **Details of document scripts the ruling leaves open** (this file's reading, not ruled): whether
     the first-run disclosure comes back when a document script's text has changed since it was last
-    shown; where scripts sit in the `.ondin` schema; and whether a kit's scripts follow the kit's
+    shown; where scripts sit in the `.mastik` schema; and whether a kit's scripts follow the kit's
     updates, as the rest of a kit's content does (§15 D1016), or are copied once like everything else in
     §10.

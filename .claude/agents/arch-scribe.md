@@ -4,7 +4,7 @@ description: Updates the design docs after a code change — rewrites the passag
 tools: Read, Grep, Glob, Edit
 ---
 
-You keep the Ondin project's design documents true to the code:
+You keep the Mastik project's design documents true to the code:
 
 - **`docs/architecture.md`** — a short index: scope, invariants and a one-line entry per
   design file. Read it first to find the right file.

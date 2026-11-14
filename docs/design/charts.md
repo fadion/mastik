@@ -345,9 +345,9 @@ it applies to; switching kind keeps the others' values.
   Everything else is left alone: data, palette, theme, text family, number formats, and an option no
   preset sets, so a user's bar gap survives a Style while the group gap (*Bold*) and the radius
   (*Soft*) follow it.
-- **Palette** — *Ondin* (eight colours, every two at least 7 apart (CIE76) under protanopia,
+- **Palette** — *Mastik* (eight colours, every two at least 7 apart (CIE76) under protanopia,
   deuteranopia and tritanopia, on either theme: `vision.rs ·
-  the_ondin_chart_palette_survives_the_dichromacies`), *Cool*, *Warm*, *Mono* (one hue in steps), or *From
+  the_mastik_chart_palette_survives_the_dichromacies`), *Cool*, *Warm*, *Mono* (one hue in steps), or *From
   variables*: a group of colour variables
   that may bind a fill (the name before the last `/`, else the collection's name; its variables
   in the table's order), bound to the series in order (a Sankey's nodes), round again past the
@@ -430,7 +430,7 @@ A chart has no title or caption of its own: a text layer next to it does that, a
   a 480 × 280 chart at the click (`tools::CHART_CLICK_SIZE`), on a white ground, named for its
   kind (*Column chart*). The new chart has the kind's sample table (`Chart::sample`: *Category*,
   three series, six rows: *Jan*–*Jun*; a scatter's numeric *Hours* and two Y series; a Sankey's
-  *From*, *To*, *Value* with eight flows over three columns), the *Clean* preset and the *Ondin*
+  *From*, *To*, *Value* with eight flows over three columns), the *Clean* preset and the *Mastik*
   palette, and the data window
   opens on it with the first cell selected, so typing or pasting replaces the sample. Undo step
   *Insert chart*. A press where the chart would land inside a main component, an instance or a
@@ -628,7 +628,7 @@ read, since they name this document's node ids.
   with the cursor's edge); `Enter` commits and moves down, `Tab` commits and moves right,
   `Shift` the other way; `Escape` abandons an edit, and with none closes the window (the focused
   grid answers it; with nothing holding the keyboard it reaches the window through
-  `OndinApp::escape`); `Delete` and `Backspace` clear the selected cells; `Shift`+arrows, a
+  `MastikApp::escape`); `Delete` and `Backspace` clear the selected cells; `Shift`+arrows, a
   `Shift`-click and a drag select a range, a header click its column. `Ctrl+C` / `Ctrl+X` /
   `Ctrl+V` read and write tab-separated text, quoted as a spreadsheet quotes a cell holding a
   tab, a line break or a quote, so a range pasted from a spreadsheet lands as cells from the
@@ -765,7 +765,7 @@ without one (`menu::KIND_VERBS`).
   (`Chart::variant`), the table's header with each column's id and type and its row count, the
   mapping by column id, each series' name, visibility and own colour, and whether it is linked)
   beside its parts, each part with its `role`. Version 17.
-- **Verbs** (`ondin_core::verbs`, MCP's Phase 2, `mcp.md`): `insert_chart` makes a 480 × 280
+- **Verbs** (`mastik_core::verbs`, MCP's Phase 2, `mcp.md`): `insert_chart` makes a 480 × 280
   frame named *Chart* on the kind's sample table, or on a table given, its mapping read off the
   column types unless one is given (`Mapping::guess`: a Sankey's first two text columns and first
   number column, a scatter's first number column as X and the rest as Y, else the first text

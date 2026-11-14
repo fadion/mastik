@@ -1,0 +1,6628 @@
+//! The **Container** and **Item** cards — container layout's inspector
+//! (`architecture.md` §5.3c).
+//!
+//! **Container** is a frame's or a group's layout — `display`, and under `flex` its
+//! direction, wrap, three alignments, two gaps and its padding; under `grid` its
+//! flow, two track lists, four alignments, gaps and padding (the child module
+//! `grid`). **Item** is a layer's place in its parent's layout — `flex-grow`,
+//! `flex-shrink`, `flex-basis` and `align-self` in a flex container, its lines and
+//! both self-alignments in a grid, and the four size limits in either — or, for a
+//! layer out of the flow, why it is out and the one button that brings it back.
+//! Every label is a CSS property's name and every value a CSS value, **in sentence
+//! case**: `justify-content` reads *Justify content*, `flex-start` *Flex start*.
+//!
+//! **Cards run from the layer in its parent to its children**: Transform, Position,
+//! Item, then Container and the Layout grid, then paint. A frame that is both an item
+//! and a container gets both cards, Item first.
+//!
+//! **Neither card has a header badge**: a badge is for a state a card has nowhere
+//! else to say, which is why the Position card has *Absolute*
+//! (`MastikApp::panel_badged`). The Item card says out-of-flow in a whole block, and
+//! Container's badge would repeat the display row under it.
+//!
+//! Rulings the cards state rather than read:
+//!
+//! - **A hidden layer is out of the flow** — the Item card says so in words.
+//! - **A resize's flips come with a receipt**: the growth a resize stops is named,
+//!   with an Undo that is the whole step (`session::FlexReceipt`).
+//! - **Sizing modes are offered per kind**: the W and H fields' unit is a menu of
+//!   only the modes that mean something different for that layer ([`size_modes`]),
+//!   and typing or dragging a number writes px.
+//!
+//! **An in-flow item's X and Y are inert**: its container places it and a typed
+//! position would be dropped at the commit door (`build::keep_flex_sizes`).
+
+use super::binding::FieldKey;
+use super::component::OverrideMark;
+use crate::app::MastikApp;
+use crate::theme::{self, color, icon};
+use crate::ui::{self, Prefix, Scrub, Suffix};
+use eframe::egui;
+use mastik_core::build::baked_ops;
+use mastik_core::container::{
+    self, AlignContent, AlignItems, Dimension, Display, Flex, FlexDirection, FlexWrap, Grid,
+    JustifyContent, LayoutItem,
+};
+use mastik_core::kurbo::Size;
+use mastik_core::{NodeId, NodeKind, Operation, Transaction};
+
+/// Grid's rows of both cards — the track lists, `grid-auto-flow`, the grid
+/// alignments, and an item's lines. A child module so it shares this file's
+/// private pieces: `glyph_combo`, `shared`, `edited`, the gap and padding rows.
+mod grid;
+
+// --- the pictures ---------------------------------------------------------
+
+/// One of the layout pictures, drawn on a 16-unit grid rather than taken from the
+/// icon font, which has nothing for a justification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Glyph {
+    /// `display: none` — three squares scattered, children keeping their own places.
+    /// **Never an eye**: `none` must not read as hidden.
+    DisplayNone,
+    DisplayFlex,
+    DisplayGrid,
+    Justify(JustifyContent),
+    Align(AlignItems),
+    Content(AlignContent),
+}
+
+/// One stroke of a [`Glyph`], in grid units: a filled bar, or an edge line (the
+/// container's side the items are pushed against). `a` is the opacity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Mark {
+    Bar {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        a: f32,
+    },
+    Edge {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        a: f32,
+        dashed: bool,
+    },
+}
+
+impl Mark {
+    /// Mirrored across the grid's diagonal — a row's picture turned into a column's.
+    fn transposed(self) -> Mark {
+        match self {
+            Mark::Bar { x, y, w, h, a } => Mark::Bar {
+                x: y,
+                y: x,
+                w: h,
+                h: w,
+                a,
+            },
+            Mark::Edge {
+                x1,
+                y1,
+                x2,
+                y2,
+                a,
+                dashed,
+            } => Mark::Edge {
+                x1: y1,
+                y1: x1,
+                x2: y2,
+                y2: x2,
+                a,
+                dashed,
+            },
+        }
+    }
+
+    fn flipped(self, fx: bool, fy: bool) -> Mark {
+        let f = |v: f32, on: bool| if on { 16.0 - v } else { v };
+        match self {
+            Mark::Bar { x, y, w, h, a } => Mark::Bar {
+                x: if fx { 16.0 - x - w } else { x },
+                y: if fy { 16.0 - y - h } else { y },
+                w,
+                h,
+                a,
+            },
+            Mark::Edge {
+                x1,
+                y1,
+                x2,
+                y2,
+                a,
+                dashed,
+            } => Mark::Edge {
+                x1: f(x1, fx),
+                y1: f(y1, fy),
+                x2: f(x2, fx),
+                y2: f(y2, fy),
+                a,
+                dashed,
+            },
+        }
+    }
+}
+
+const fn bar(x: f32, y: f32, w: f32, h: f32) -> Mark {
+    Mark::Bar { x, y, w, h, a: 1.0 }
+}
+
+const fn edge(x1: f32, y1: f32, x2: f32, y2: f32, a: f32) -> Mark {
+    Mark::Edge {
+        x1,
+        y1,
+        x2,
+        y2,
+        a,
+        dashed: false,
+    }
+}
+
+/// The container's four sides.
+const fn left(a: f32) -> Mark {
+    edge(1.5, 2.0, 1.5, 14.0, a)
+}
+const fn right(a: f32) -> Mark {
+    edge(14.5, 2.0, 14.5, 14.0, a)
+}
+const fn top(a: f32) -> Mark {
+    edge(2.0, 1.5, 14.0, 1.5, a)
+}
+const fn bottom(a: f32) -> Mark {
+    edge(2.0, 14.5, 14.0, 14.5, a)
+}
+
+/// A justification drawn along the x axis — a row's main axis.
+fn justify_marks(j: JustifyContent) -> Vec<Mark> {
+    use JustifyContent as J;
+    match j {
+        J::Start => vec![left(1.0), bar(3.5, 5.0, 3.0, 6.0), bar(8.0, 5.0, 3.0, 6.0)],
+        J::End => vec![right(1.0), bar(5.0, 5.0, 3.0, 6.0), bar(9.5, 5.0, 3.0, 6.0)],
+        J::Center => vec![
+            left(0.3),
+            right(0.3),
+            bar(4.25, 5.0, 3.0, 6.0),
+            bar(8.75, 5.0, 3.0, 6.0),
+        ],
+        J::SpaceBetween => vec![
+            left(0.3),
+            right(0.3),
+            bar(2.5, 5.0, 2.0, 6.0),
+            bar(7.0, 5.0, 2.0, 6.0),
+            bar(11.5, 5.0, 2.0, 6.0),
+        ],
+        J::SpaceAround => vec![
+            left(0.3),
+            right(0.3),
+            bar(3.25, 5.0, 2.0, 6.0),
+            bar(7.0, 5.0, 2.0, 6.0),
+            bar(10.75, 5.0, 2.0, 6.0),
+        ],
+        J::SpaceEvenly => vec![
+            left(0.3),
+            right(0.3),
+            bar(4.0, 5.0, 2.0, 6.0),
+            bar(7.0, 5.0, 2.0, 6.0),
+            bar(10.0, 5.0, 2.0, 6.0),
+        ],
+    }
+}
+
+/// Every mark of `g`, drawn for a `row` that does not wrap in reverse.
+/// [`Orient`] turns them from there.
+fn marks(g: Glyph) -> Vec<Mark> {
+    use AlignItems as A;
+    match g {
+        Glyph::DisplayNone => vec![
+            bar(2.0, 2.5, 4.5, 4.5),
+            bar(9.5, 4.5, 4.5, 4.5),
+            bar(4.5, 10.0, 4.0, 4.0),
+        ],
+        Glyph::DisplayFlex => vec![
+            bar(2.0, 4.0, 3.3, 8.0),
+            bar(6.35, 4.0, 3.3, 8.0),
+            bar(10.7, 4.0, 3.3, 8.0),
+        ],
+        Glyph::DisplayGrid => vec![
+            bar(2.5, 2.5, 4.5, 4.5),
+            bar(9.0, 2.5, 4.5, 4.5),
+            bar(2.5, 9.0, 4.5, 4.5),
+            bar(9.0, 9.0, 4.5, 4.5),
+        ],
+        Glyph::Justify(j) => justify_marks(j),
+        Glyph::Align(a) => match a {
+            A::Stretch => vec![
+                top(1.0),
+                bottom(1.0),
+                bar(4.0, 3.0, 3.0, 10.0),
+                bar(9.0, 3.0, 3.0, 10.0),
+            ],
+            A::Start => vec![top(1.0), bar(4.0, 3.0, 3.0, 5.0), bar(9.0, 3.0, 3.0, 8.0)],
+            A::End => vec![
+                bottom(1.0),
+                bar(4.0, 8.0, 3.0, 5.0),
+                bar(9.0, 5.0, 3.0, 8.0),
+            ],
+            A::Center => vec![
+                top(0.3),
+                bottom(0.3),
+                bar(4.0, 5.5, 3.0, 5.0),
+                bar(9.0, 4.0, 3.0, 8.0),
+            ],
+            A::Baseline => vec![
+                Mark::Edge {
+                    x1: 1.5,
+                    y1: 8.5,
+                    x2: 14.5,
+                    y2: 8.5,
+                    a: 0.8,
+                    dashed: true,
+                },
+                bar(4.0, 5.0, 3.0, 6.0),
+                bar(9.0, 3.0, 3.0, 9.0),
+            ],
+        },
+        // `align-content` reuses the justifications on the cross axis; `stretch` is
+        // the one drawn for itself.
+        Glyph::Content(AlignContent::Stretch) => vec![
+            top(1.0),
+            bottom(1.0),
+            bar(3.0, 3.0, 10.0, 4.25),
+            bar(3.0, 8.75, 10.0, 4.25),
+        ],
+        Glyph::Content(c) => justify_marks(content_as_justify(c))
+            .into_iter()
+            .map(Mark::transposed)
+            .collect(),
+    }
+}
+
+/// The justification an `align-content` value draws as. `Stretch` has its own
+/// picture and never asks.
+fn content_as_justify(c: AlignContent) -> JustifyContent {
+    match c {
+        AlignContent::Start | AlignContent::Stretch => JustifyContent::Start,
+        AlignContent::End => JustifyContent::End,
+        AlignContent::Center => JustifyContent::Center,
+        AlignContent::SpaceBetween => JustifyContent::SpaceBetween,
+        AlignContent::SpaceAround => JustifyContent::SpaceAround,
+        AlignContent::SpaceEvenly => JustifyContent::SpaceEvenly,
+    }
+}
+
+/// How a [`Glyph`] is turned to match its container: through the diagonal for a
+/// column, and mirrored along whichever axis runs backwards.
+///
+/// ⚠️ **Not a rotation**: one that takes a row's justify-start wall (left) to a
+/// column's (top) takes align-start's wall from the top to the *right*, where a
+/// column's cross start is on the left. The diagonal takes both where they belong.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Orient {
+    transpose: bool,
+    flip_x: bool,
+    flip_y: bool,
+}
+
+impl Orient {
+    /// `g` as `flex` lays it out: a column transposes everything, a reversed
+    /// direction mirrors the justifications along the main axis, and `wrap-reverse`
+    /// mirrors the cross axis — where CSS swaps cross-start and cross-end, so
+    /// `align-items: flex-start` really does sit at the bottom of a row.
+    pub(crate) fn of(g: Glyph, flex: &Flex) -> Orient {
+        let row = flex.direction.is_row();
+        let (main_flip, cross_flip) = match g {
+            Glyph::Justify(_) => (
+                matches!(
+                    flex.direction,
+                    FlexDirection::RowReverse | FlexDirection::ColumnReverse
+                ),
+                false,
+            ),
+            Glyph::Align(_) | Glyph::Content(_) => (false, flex.wrap == FlexWrap::WrapReverse),
+            _ => return Orient::default(),
+        };
+        let (flip_x, flip_y) = if row {
+            (main_flip, cross_flip)
+        } else {
+            (cross_flip, main_flip)
+        };
+        Orient {
+            transpose: !row,
+            flip_x,
+            flip_y,
+        }
+    }
+
+    fn apply(self, m: Mark) -> Mark {
+        let m = if self.transpose { m.transposed() } else { m };
+        m.flipped(self.flip_x, self.flip_y)
+    }
+}
+
+/// Paint `g` centred on `center`, `size` points square, in `ink`.
+pub(crate) fn paint_glyph(
+    p: &egui::Painter,
+    center: egui::Pos2,
+    size: f32,
+    g: Glyph,
+    orient: Orient,
+    ink: egui::Color32,
+) {
+    let s = size / 16.0;
+    let o = center - egui::vec2(size, size) / 2.0;
+    let at = |x: f32, y: f32| o + egui::vec2(x * s, y * s);
+    for m in marks(g) {
+        match orient.apply(m) {
+            Mark::Bar { x, y, w, h, a } => {
+                p.rect_filled(
+                    egui::Rect::from_min_size(at(x, y), egui::vec2(w * s, h * s)),
+                    egui::CornerRadius::same(1),
+                    ink.gamma_multiply(a),
+                );
+            }
+            Mark::Edge {
+                x1,
+                y1,
+                x2,
+                y2,
+                a,
+                dashed,
+            } => {
+                let stroke = egui::Stroke::new(1.2 * s, ink.gamma_multiply(a));
+                let (from, to) = (at(x1, y1), at(x2, y2));
+                if dashed {
+                    let length = from.distance(to);
+                    let dir = (to - from) / length.max(1e-3);
+                    let (on, off) = (1.4 * s, 1.6 * s);
+                    let mut t = 0.0;
+                    while t < length {
+                        let end = (t + on).min(length);
+                        p.line_segment([from + dir * t, from + dir * end], stroke);
+                        t += on + off;
+                    }
+                } else {
+                    p.line_segment([from, to], stroke);
+                }
+            }
+        }
+    }
+}
+
+/// The size a glyph is drawn at inside a field or a menu row, and the room left
+/// for it in the text beside it.
+const GLYPH_PT: f32 = 14.0;
+const GLYPH_GAP: f32 = 6.0;
+
+// --- names ------------------------------------------------------------------
+//
+// **CSS's names, in sentence case**: `flex-start` reads *Flex start* — first letter
+// raised, hyphens gone, so each is still the CSS name a reader can look up. The
+// model, the file and the snapshot keep CSS's spelling; inside a sentence (the
+// receipt) the names are lower-cased again.
+
+pub(crate) fn justify_name(j: JustifyContent) -> &'static str {
+    match j {
+        JustifyContent::Start => "Flex start",
+        JustifyContent::End => "Flex end",
+        JustifyContent::Center => "Center",
+        JustifyContent::SpaceBetween => "Space between",
+        JustifyContent::SpaceAround => "Space around",
+        JustifyContent::SpaceEvenly => "Space evenly",
+    }
+}
+
+pub(crate) fn align_name(a: AlignItems) -> &'static str {
+    match a {
+        AlignItems::Stretch => "Stretch",
+        AlignItems::Start => "Flex start",
+        AlignItems::End => "Flex end",
+        AlignItems::Center => "Center",
+        AlignItems::Baseline => "Baseline",
+    }
+}
+
+pub(crate) fn content_name(c: AlignContent) -> &'static str {
+    match c {
+        AlignContent::Stretch => "Stretch",
+        AlignContent::Start => "Flex start",
+        AlignContent::End => "Flex end",
+        AlignContent::Center => "Center",
+        AlignContent::SpaceBetween => "Space between",
+        AlignContent::SpaceAround => "Space around",
+        AlignContent::SpaceEvenly => "Space evenly",
+    }
+}
+
+/// What each `flex-direction` cell does, for its tooltip: the name, then the way
+/// the items run.
+const DIRECTION_TIPS: [&str; 4] = [
+    "Row — items run left to right",
+    "Row reverse — items run right to left",
+    "Column — items run top to bottom",
+    "Column reverse — items run bottom to top",
+];
+
+/// What each `flex-wrap` cell does, for its tooltip.
+const WRAP_TIPS: [&str; 3] = [
+    "No wrap — every item stays on one line, shrinking to fit",
+    "Wrap — items that do not fit start a new line",
+    "Wrap reverse — new lines stack the other way",
+];
+
+/// What each `display` cell does, for its tooltip.
+const DISPLAY_TIPS: [&str; 3] = [
+    "None — children keep their own places",
+    "Flex — lay the children out in a row or a column",
+    "Grid — lay the children out in rows and columns of tracks",
+];
+
+const JUSTIFY: [JustifyContent; 6] = [
+    JustifyContent::Start,
+    JustifyContent::End,
+    JustifyContent::Center,
+    JustifyContent::SpaceBetween,
+    JustifyContent::SpaceAround,
+    JustifyContent::SpaceEvenly,
+];
+const ALIGN: [AlignItems; 5] = [
+    AlignItems::Stretch,
+    AlignItems::Start,
+    AlignItems::End,
+    AlignItems::Center,
+    AlignItems::Baseline,
+];
+const CONTENT: [AlignContent; 7] = [
+    AlignContent::Stretch,
+    AlignContent::Start,
+    AlignContent::End,
+    AlignContent::Center,
+    AlignContent::SpaceBetween,
+    AlignContent::SpaceAround,
+    AlignContent::SpaceEvenly,
+];
+const DIRECTIONS: [FlexDirection; 4] = [
+    FlexDirection::Row,
+    FlexDirection::RowReverse,
+    FlexDirection::Column,
+    FlexDirection::ColumnReverse,
+];
+const WRAPS: [FlexWrap; 3] = [FlexWrap::NoWrap, FlexWrap::Wrap, FlexWrap::WrapReverse];
+
+/// The value every one of `all` agrees on, or `None` for *mixed*.
+fn shared<T: Copy + PartialEq, S>(all: &[S], f: impl Fn(&S) -> T) -> Option<T> {
+    let first = f(all.first()?);
+    all.iter().all(|s| f(s) == first).then_some(first)
+}
+
+/// A number field's digits replaced with **"Mixed"** while the selection
+/// disagrees — showing one of the values would read as a claim that it is *the*
+/// value.
+///
+/// The unit beside a mixed sizing mode reads a dash ([`size_field`]) that is **not
+/// a mixed marker**: the digits say "Mixed", the dash says *no single unit*.
+fn mixed_if(d: egui::DragValue<'_>, mixed: bool) -> egui::DragValue<'_> {
+    if mixed {
+        return d.custom_formatter(|_, _| ui::MIXED_WORD.into());
+    }
+    d
+}
+
+/// Whether the field behind `resp` has been edited since it was engaged — `moved`
+/// is whether its number changed this frame — **held through the frame the
+/// engagement ends**, which is the frame `MastikApp::edit_valve` commits on.
+///
+/// 🚨 **Without it every number field in these cards commits nothing**: nothing
+/// moves on the release frame (the field shows the value its own preview
+/// installed), so the valve gets an empty transaction and drops the preview. The
+/// fields cannot build unconditionally, because a click in and out must not write
+/// the value shown (a mixed selection's first, a keyword's resolved size) to every
+/// subject. One accessor for the read and the write — nested `data_mut` deadlocks.
+pub(crate) fn edited(resp: &egui::Response, moved: bool) -> bool {
+    let engaged = resp.dragged() || resp.has_focus();
+    let id = resp.id.with("layout-field-edited");
+    resp.ctx.data_mut(|d| {
+        let now = d.get_temp::<bool>(id).unwrap_or(false) || moved;
+        d.insert_temp(id, now && engaged);
+        now
+    })
+}
+
+// --- sizing modes -------------------------------------------------------------
+
+/// How a W or H — or a basis, or a limit — is set: CSS's four ways of saying a
+/// size, and for W or H alone `aspect-ratio`, the side sized from the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SizeMode {
+    Px,
+    Percent,
+    Auto,
+    FitContent,
+    Ratio,
+}
+
+impl SizeMode {
+    /// The mode as the field's unit shows it: lower case, as `px` and `%` are — a
+    /// unit beside a number, not a label.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            SizeMode::Px => "px",
+            SizeMode::Percent => "%",
+            SizeMode::Auto => "auto",
+            SizeMode::FitContent => "fit content",
+            SizeMode::Ratio => "ratio",
+        }
+    }
+
+    /// The mode as the unit's menu lists it — the units as they are, the two
+    /// keywords in sentence case.
+    fn label(self) -> &'static str {
+        match self {
+            SizeMode::Px => "px",
+            SizeMode::Percent => "%",
+            SizeMode::Auto => "Auto",
+            SizeMode::FitContent => "Fit content",
+            SizeMode::Ratio => "Ratio",
+        }
+    }
+
+    fn describe(self) -> &'static str {
+        match self {
+            SizeMode::Px => "fixed size",
+            SizeMode::Percent => "of the container",
+            SizeMode::Auto => "size to content",
+            SizeMode::FitContent => "size to content",
+            SizeMode::Ratio => "from the other side",
+        }
+    }
+}
+
+/// The modes a W or H field offers for a layer of `kind` — **only those that mean
+/// something different for it**.
+///
+/// `container::style_of` tells only three of CSS's four apart, and which two it
+/// merges depends on the kind: a **frame**'s `auto` is its stored size (`px`); a
+/// **group with a layout** has no stored size, so `auto` and `fit-content` both hug;
+/// a **shape** is sized by its own geometry. So a frame offers `px` and, with a
+/// layout to hug, `fit-content`; a group with a layout `px` and `auto`; a shape only
+/// `px`. `%` joins any that is `laid_out` and can resize (`container::can_stretch`,
+/// or the group's box), and *Ratio* any whose size is stored
+/// (`container::holds_ratio`). **Fewer than two means no menu at all.**
+pub(crate) fn size_modes(kind: &NodeKind, has_display: bool, laid_out: bool) -> Vec<SizeMode> {
+    let mut modes = vec![SizeMode::Px];
+    let resizable = match kind {
+        NodeKind::Artboard { .. } => {
+            if has_display {
+                modes.push(SizeMode::FitContent);
+            }
+            true
+        }
+        NodeKind::Group if has_display => {
+            modes.push(SizeMode::Auto);
+            true
+        }
+        k => container::can_stretch(k),
+    };
+    if laid_out && resizable {
+        modes.push(SizeMode::Percent);
+    }
+    if container::holds_ratio(kind) {
+        modes.push(SizeMode::Ratio);
+    }
+    modes
+}
+
+/// The mode W (`horizontal`) or H shows for a layer of `kind` with `item`:
+/// *Ratio* on the side its aspect ratio derives, else [`size_mode_of`].
+pub(crate) fn side_mode(kind: &NodeKind, item: &LayoutItem, horizontal: bool) -> SizeMode {
+    let side = if horizontal {
+        container::RatioSide::Width
+    } else {
+        container::RatioSide::Height
+    };
+    match item.aspect_ratio {
+        Some(r) if r.side == side => SizeMode::Ratio,
+        _ => size_mode_of(kind, if horizontal { item.width } else { item.height }),
+    }
+}
+
+/// The mode a stored W or H `d` shows as, for a layer of `kind` — [`size_modes`]'
+/// merges read back: a frame's or a shape's `auto` is its stored size, `px`; a
+/// group's `fit-content` hugs exactly as its `auto` does.
+pub(crate) fn size_mode_of(kind: &NodeKind, d: Dimension) -> SizeMode {
+    match (kind, d) {
+        (_, Dimension::Percent(_)) => SizeMode::Percent,
+        (NodeKind::Group, Dimension::Px(_)) => SizeMode::Px,
+        (NodeKind::Group, _) => SizeMode::Auto,
+        (NodeKind::Artboard { .. }, Dimension::FitContent) => SizeMode::FitContent,
+        _ => SizeMode::Px,
+    }
+}
+
+/// A basis's or a limit's mode, where every stored value is its own mode.
+fn plain_mode(d: Dimension) -> SizeMode {
+    match d {
+        Dimension::Px(_) => SizeMode::Px,
+        Dimension::Percent(_) => SizeMode::Percent,
+        Dimension::Auto => SizeMode::Auto,
+        Dimension::FitContent => SizeMode::FitContent,
+    }
+}
+
+/// A segmented cell's tooltip up to its dash — *Row reverse* out of *Row reverse —
+/// items run right to left* — as an override mark names the value.
+fn tip_word(tips: &[&'static str], i: Option<usize>) -> String {
+    i.and_then(|i| tips.get(i))
+        .and_then(|t| t.split(" —").next())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// A layout compared by its **mode** alone — none, flex or grid — for the
+/// `display` cells' override mark: a copy whose gap differs is still a flex like
+/// its main, and that difference is the gap field's mark. Its reset writes the
+/// main's whole layout, as the mode it names comes with it.
+#[derive(Clone)]
+struct ByMode(Option<Display>);
+
+impl PartialEq for ByMode {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_ref().map(std::mem::discriminant) == other.0.as_ref().map(std::mem::discriminant)
+    }
+}
+
+/// The source's layout item out of a field reset — what an Item card field's
+/// override mark compares against (`MastikApp::sub_mark`).
+pub(crate) fn item_of(op: &Operation) -> Option<LayoutItem> {
+    match op {
+        Operation::SetLayoutItem { item, .. } => Some(*item),
+        _ => None,
+    }
+}
+
+/// A stored size as an override mark's tooltip names it: the number
+/// in its unit, or the keyword — *Reset to main · 50%*, *· fit content*.
+pub(crate) fn dimension_words(d: &Dimension) -> String {
+    match *d {
+        Dimension::Px(v) => super::component::mark_num(v),
+        Dimension::Percent(v) => format!("{}%", super::component::mark_num(v)),
+        Dimension::Auto => SizeMode::Auto.word().to_owned(),
+        Dimension::FitContent => SizeMode::FitContent.word().to_owned(),
+    }
+}
+
+/// What a [`size_field`] did this frame.
+pub(crate) struct SizeEdit {
+    /// The number's own response, for the valve.
+    pub resp: egui::Response,
+    /// A mode picked from the unit's menu — committed directly, a conversion
+    /// rather than an edit, as a unit flip is (`ui::value_field_suffixed`).
+    pub picked: Option<SizeMode>,
+    /// The number, from the frame it was typed or dragged away from what it showed
+    /// through the frame the field lets go ([`edited`]) — so the valve's committing
+    /// frame has it too.
+    pub typed: Option<f64>,
+    /// The override mark's ↺ was clicked.
+    pub reset: bool,
+}
+
+/// A value field whose unit is a **menu of sizing modes**.
+///
+/// **The digits show a number where the number is a real size of the layer, the
+/// keyword where the property is unset.**
+///
+/// - `number` given: the size in the unit the mode names — for a keyword, the size
+///   it resolved to, the keyword standing where the unit would be. The Transform
+///   card's W and H always pass one.
+/// - `number` absent and the mode a keyword: the keyword in the digits' place,
+///   `under` beneath it so a scrub starts from there, and **no unit at all** (the
+///   Position card's unpinned inset, the Item card's basis and limits); typing or
+///   dragging a number leaves it, landing in px with the menu back.
+/// - `number` absent and no mode: the selection disagrees, and the digits read
+///   "Mixed" ([`mixed_if`]).
+///
+/// Typing or dragging writes the number in px, or in % while the mode is %.
+/// `mark` is an instance's override mark on the field, its ↺ answered as
+/// [`SizeEdit::reset`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn size_field(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    prefix: Prefix,
+    mode: Option<SizeMode>,
+    number: Option<f64>,
+    under: f64,
+    modes: &[SizeMode],
+    mark: Option<ui::FieldMark<'_>>,
+) -> SizeEdit {
+    let mut v = number.unwrap_or(under);
+    let start = v;
+    let percent = mode == Some(SizeMode::Percent);
+    // A ratio reads `16 : 9` and takes `4:3`, `2/1` or `1.5`.
+    let ratio = mode == Some(SizeMode::Ratio) && number.is_some();
+    // The keyword standing in the digits, when there is no number to show.
+    let word = match (number, mode) {
+        (None, Some(m @ (SizeMode::Auto | SizeMode::FitContent))) => Some(m.word()),
+        _ => None,
+    };
+    let (resp, unit, reset) = ui::value_field_unit_marked(
+        ui,
+        size,
+        prefix,
+        // No unit under a keyword.
+        word.is_none().then_some(Suffix {
+            text: match (number, mode) {
+                (Some(_), Some(m)) => m.word(),
+                _ => "–",
+            },
+            clickable: modes.len() > 1,
+            tooltip: "How this size is set",
+        }),
+        mark,
+        &mut v,
+        if ratio {
+            Scrub::fine(0.01, 2).range(0.01..=100.0)
+        } else if percent {
+            Scrub::fine(0.25, 1)
+        } else {
+            Scrub::whole(0.5).range(0.0..=f64::MAX)
+        },
+        |d| match word {
+            Some(w) => d.custom_formatter(move |_, _| w.into()),
+            None if ratio => d
+                .custom_formatter(|v, _| container::ratio_words(v))
+                .custom_parser(container::parse_ratio),
+            None => mixed_if(d.custom_formatter(ui::number(2)), number.is_none()),
+        },
+    );
+    let mut picked = None;
+    // Anchored on the unit, right edges together: the number's response starts at the
+    // prefix, so the menu would open under the letter at the field's left.
+    if let Some(unit) = unit {
+        egui::Popup::menu(&unit)
+            .align(egui::RectAlign::BOTTOM_END)
+            .show(|ui| {
+                ui::menu_rows(ui);
+                // The dropdowns' row padding: `Popup::menu`'s own style cuts `x` to 2,
+                // leaving "px" touching the highlight. `y` is one of the two values
+                // `ui::MENU_ROW_H`'s floor is proved against
+                // (`a_menu_rows_height_does_not_depend_on_its_state`).
+                ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
+                for m in modes {
+                    let row = ui
+                        .selectable_label(mode == Some(*m), m.label())
+                        .on_hover_text(m.describe());
+                    // The lit row picks nothing: re-picking the mode already set would
+                    // write a conversion, and `%`'s rounding would turn a stored
+                    // `33.33%` into `33.3%`.
+                    if row.clicked() && mode != Some(*m) {
+                        picked = Some(*m);
+                    }
+                }
+            });
+    }
+    // Held until the valve's committing frame ([`edited`]).
+    let typed = edited(&resp, v != start).then_some(v);
+    SizeEdit {
+        resp,
+        picked,
+        typed,
+        reset,
+    }
+}
+
+// --- a dropdown with pictures -----------------------------------------------
+
+/// A dropdown whose face and rows lead with a layout [`Glyph`], with the CSS
+/// property's name inside the face as the label, the picture saying which value at
+/// a glance.
+///
+/// `shown` is `None` for *mixed*: "Mixed" on the face, nothing lit in the list.
+/// `auto` is an extra first row whose face reads `Auto · <inherited>`
+/// (`align-self`), with the inherited value's picture.
+///
+/// **A held value `options` does not offer gets a lit row of its own, last**, so
+/// the list always lights what the face names — grid's menus leave `baseline` out
+/// and a grid can still hold it, from flex or a file.
+///
+/// `mark` is an instance's override mark: the label at full brightness with the dot
+/// after it, the open list led by its reset (`component::menu_reset_row`), answered
+/// as the second return value.
+#[allow(clippy::too_many_arguments)]
+fn glyph_combo<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    salt: &str,
+    label: &str,
+    width: f32,
+    shown: Option<Option<T>>,
+    options: &[T],
+    name: fn(T) -> &'static str,
+    glyph: impl Fn(T) -> Glyph,
+    orient: impl Fn(Glyph) -> Orient,
+    auto: Option<T>,
+    enabled: bool,
+    hint: Option<&str>,
+    mark: Option<&OverrideMark>,
+) -> (Option<Option<T>>, bool) {
+    let mut picked = None;
+    let mut reset = false;
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = ui::CONTROL_H;
+        ui.spacing_mut().button_padding.y = 0.0;
+        let pad = ui.spacing().button_padding.x;
+        let ink = if enabled {
+            color::text()
+        } else {
+            theme::text::disabled()
+        };
+        let label_font = egui::FontId::proportional(ui::CAPTION_PT);
+        let value_font = egui::FontId::proportional(ui::CONTROL_PT);
+        let label_w = ui
+            .ctx()
+            .fonts_mut(|f| f.layout_no_wrap(label.to_owned(), label_font.clone(), ink))
+            .size()
+            .x;
+        // What the face shows: a value and its picture, or "Auto · Stretch" with the
+        // inherited value's picture, or "Mixed" with none.
+        let (face_text, face_glyph) = match shown {
+            Some(Some(v)) => (name(v).to_owned(), Some(glyph(v))),
+            Some(None) => match auto {
+                Some(inherited) => (
+                    format!("Auto · {}", name(inherited)),
+                    Some(glyph(inherited)),
+                ),
+                None => (ui::MIXED_WORD.to_owned(), None),
+            },
+            None => (ui::MIXED_WORD.to_owned(), None),
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            label,
+            0.0,
+            egui::TextFormat::simple(
+                label_font,
+                match mark {
+                    Some(_) => theme::text::strong(),
+                    None => theme::text::faint(),
+                },
+            ),
+        );
+        job.append(
+            &face_text,
+            GLYPH_GAP * 2.0 + GLYPH_PT,
+            egui::TextFormat::simple(value_font.clone(), ink),
+        );
+        let inner = ui::disable_unless(ui, enabled, |ui| {
+            egui::ComboBox::from_id_salt(salt)
+                .icon(ui::combo_chevron)
+                .width(width)
+                .selected_text(job)
+                .show_ui(ui, |ui| {
+                    ui::menu_rows(ui);
+                    if let Some(m) = mark {
+                        reset = super::component::menu_reset_row(ui, m);
+                    }
+                    let row_pad = ui.spacing().button_padding.x;
+                    let held = match shown {
+                        Some(Some(v)) if !options.contains(&v) => Some(Some(v)),
+                        _ => None,
+                    };
+                    let rows = auto
+                        .map(|_| None)
+                        .into_iter()
+                        .chain(options.iter().map(|o| Some(*o)))
+                        .chain(held);
+                    for row in rows {
+                        let mut text = egui::text::LayoutJob::default();
+                        text.append(
+                            row.map_or("Auto", name),
+                            GLYPH_PT + GLYPH_GAP,
+                            egui::TextFormat::simple(value_font.clone(), color::text()),
+                        );
+                        let lit = shown == Some(row);
+                        let r = ui.selectable_label(lit, text);
+                        if let Some(v) = row {
+                            let g = glyph(v);
+                            paint_glyph(
+                                ui.painter(),
+                                egui::pos2(
+                                    r.rect.left() + row_pad + GLYPH_PT / 2.0,
+                                    r.rect.center().y,
+                                ),
+                                GLYPH_PT,
+                                g,
+                                orient(g),
+                                theme::text::dim(),
+                            );
+                        }
+                        if r.clicked() {
+                            picked = Some(row);
+                        }
+                    }
+                })
+                .response
+        });
+        let face = inner.inner.rect;
+        if mark.is_some() {
+            // After the label, at the height a field's dot sits (`ui::value_field_marked`).
+            ui::override_dot(
+                ui.painter(),
+                egui::pos2(face.left() + pad + label_w + 3.5, face.center().y - 4.0),
+            );
+        }
+        if let Some(g) = face_glyph {
+            paint_glyph(
+                ui.painter(),
+                egui::pos2(
+                    face.left() + pad + label_w + GLYPH_GAP + GLYPH_PT / 2.0,
+                    face.center().y,
+                ),
+                GLYPH_PT,
+                g,
+                orient(g),
+                ink,
+            );
+        }
+        if let Some(hint) = hint {
+            ui.painter().text(
+                egui::pos2(face.right() - 26.0, face.center().y),
+                egui::Align2::RIGHT_CENTER,
+                hint,
+                egui::FontId::proportional(ui::CAPTION_PT),
+                theme::text::disabled(),
+            );
+        }
+    });
+    (picked, reset)
+}
+
+/// A `display` cell: its picture and its word, centred together.
+fn display_cell(p: &egui::Painter, i: usize, rect: egui::Rect, on: bool) {
+    let (g, word) = [
+        (Glyph::DisplayNone, "None"),
+        (Glyph::DisplayFlex, "Flex"),
+        (Glyph::DisplayGrid, "Grid"),
+    ][i];
+    let ink = if on {
+        color::text()
+    } else {
+        theme::text::dim()
+    };
+    let galley = p.layout_no_wrap(
+        word.to_owned(),
+        egui::FontId::proportional(ui::SMALL_PT),
+        ink,
+    );
+    const G: f32 = 12.0;
+    const GAP: f32 = 5.0;
+    let x = rect.center().x - (G + GAP + galley.size().x) / 2.0;
+    paint_glyph(
+        p,
+        egui::pos2(x + G / 2.0, rect.center().y),
+        G,
+        g,
+        Orient::default(),
+        ink,
+    );
+    p.galley(
+        egui::pos2(x + G + GAP, rect.center().y - galley.size().y / 2.0),
+        galley,
+        ink,
+    );
+}
+
+// --- why a layer is out of the flow ------------------------------------------------
+
+/// Why a child of a container is not laid out by it — `container::in_flow`'s three
+/// answers, in the order the card names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutOfFlow {
+    /// Pinned by insets: `position: absolute`.
+    Absolute,
+    /// Hidden: CSS's `display: none`.
+    Hidden,
+    /// A mask: it clips its siblings and is never laid out.
+    Mask,
+}
+
+// --- the cards ----------------------------------------------------------------
+
+impl MastikApp {
+    /// The selected frames and groups — every layer that can be a container
+    /// (`container::is_container`), in document order. Filtered rather than
+    /// all-or-nothing, `frame_subjects`' rule. A chart is left out: its layout is
+    /// its description's, and a write to it would refuse the whole edit.
+    pub(super) fn container_subjects(&self) -> Vec<NodeId> {
+        let doc = &self.session.doc;
+        mastik_core::build::in_document_order(doc, self.session.selection.ids())
+            .into_iter()
+            .filter(|id| {
+                doc.get(*id)
+                    .is_some_and(|n| container::is_container(n.kind()) && n.chart().is_none())
+            })
+            .collect()
+    }
+
+    /// The selected layers whose parent lays its children out — a frame or a group
+    /// with a `display` — in document order, in the flow or out of it.
+    pub(super) fn item_subjects(&self) -> Vec<NodeId> {
+        let doc = &self.session.doc;
+        mastik_core::build::in_document_order(doc, self.session.selection.ids())
+            .into_iter()
+            .filter(|id| {
+                doc.get(*id)
+                    .and_then(|n| n.parent())
+                    .and_then(|p| doc.get(p))
+                    .is_some_and(|p| p.display().is_some() && container::is_container(p.kind()))
+            })
+            .collect()
+    }
+
+    /// Why `id` is out of its container's flow, or `None` for an item in it —
+    /// through the preview, so a pin being dragged reads as the pin it will be.
+    pub(super) fn out_of_flow(&self, id: NodeId) -> Option<OutOfFlow> {
+        let node = self.session.display_node(id)?;
+        if node.insets().is_authored() {
+            Some(OutOfFlow::Absolute)
+        } else if !node.visible() {
+            Some(OutOfFlow::Hidden)
+        } else if self.session.doc.get(id).is_some_and(|n| n.mask()) {
+            Some(OutOfFlow::Mask)
+        } else {
+            None
+        }
+    }
+
+    /// The **Container** card: `display`, and under `flex` or `grid` everything
+    /// that layout has. Drawn for any selection with a frame or a group in it; every
+    /// edit applies to each of them.
+    pub(super) fn inspector_container(&mut self, ui: &mut egui::Ui) {
+        let subjects = self.container_subjects();
+        if subjects.is_empty() {
+            return;
+        }
+        let displays: Vec<Option<Display>> = subjects
+            .iter()
+            .map(|id| self.session.display_node(*id).and_then(|n| n.display()))
+            .collect();
+        let mode = shared(&displays, |d| match d {
+            None => 0,
+            Some(Display::Flex(_)) => 1,
+            Some(Display::Grid(_)) => 2,
+        });
+        let flexes: Vec<Flex> = displays
+            .iter()
+            .filter_map(|d| match d {
+                Some(Display::Flex(f)) => Some(*f),
+                _ => None,
+            })
+            .collect();
+        let grids: Vec<Grid> = displays
+            .iter()
+            .filter_map(|d| match d {
+                Some(Display::Grid(g)) => Some(g.clone()),
+                _ => None,
+            })
+            .collect();
+        // The `display` cells' mark, by mode alone ([`ByMode`]).
+        let mode_mark = self.sub_mark(
+            &subjects,
+            |op| match op {
+                Operation::SetDisplay { display, .. } => Some(display.clone()),
+                _ => None,
+            },
+            |n| Some(n.display().cloned()),
+            |d| ByMode(d.clone()),
+            |d, v| *d = v.0,
+            |id, display| Operation::SetDisplay { id, display },
+            |v| {
+                match &v.0 {
+                    None => "None",
+                    Some(Display::Flex(_)) => "Flex",
+                    Some(Display::Grid(_)) => "Grid",
+                }
+                .to_owned()
+            },
+        );
+        // A style slot: the `⋯`, and the capsule over a styled container — expanded,
+        // the whole card greyed.
+        let _ = self.style_card(
+            ui,
+            "Container",
+            mastik_core::style::StyleSlot::Layout,
+            &subjects,
+            None,
+            |app, ui| {
+                let full = ui.available_width();
+                // Mixed: nothing raised (an index past the last cell) and the first
+                // cell's picture traded for `ui::segment_mixed`'s dash; blank reads
+                // as a bug.
+                let (pick, reset) = ui::segmented_marked(
+                    ui,
+                    full,
+                    ui::SEGMENT_CELL_H,
+                    3,
+                    mode.unwrap_or(3),
+                    |_| true,
+                    |i| DISPLAY_TIPS[i],
+                    mode_mark.as_ref().map(OverrideMark::field),
+                    |p, i, r, on| {
+                        if mode.is_none() && i == 0 {
+                            ui::segment_mixed(p, r);
+                        } else {
+                            display_cell(p, i, r, on);
+                        }
+                    },
+                );
+                app.reset_marked(reset, &mode_mark);
+                if let Some(i) = pick {
+                    app.set_display(&subjects, i);
+                }
+                let laid: Vec<Display> = displays.iter().flatten().cloned().collect();
+                match mode {
+                    Some(1) => app.flex_rows(ui, &subjects, &flexes, &laid),
+                    Some(2) => app.grid_container_rows(ui, &subjects, &grids, &laid),
+                    _ => {}
+                }
+            },
+        );
+    }
+
+    /// Give every subject the layout of `display` cell `to` — none, flex or grid.
+    ///
+    /// **Taking it away keeps every child where it is drawn** — its used transform
+    /// and size written back (`build::baked`), a hugging frame keeping the size it
+    /// hugged to — or `none` would send every child back to a stored transform it
+    /// has not been drawn at since the layout was set. `build::keep_flex_sizes` lets
+    /// those transforms stand, because the same transaction relays their parent.
+    ///
+    /// **Switching between flex and grid keeps the padding and the gaps** and starts
+    /// the rest at CSS's defaults. **Flex on a container with none** reads its
+    /// direction, gap, padding and alignment from where the children sit and
+    /// orders them so (`build::flex_from_placement`).
+    fn set_display(&mut self, subjects: &[NodeId], to: usize) {
+        let doc = &self.session.doc;
+        let res = &self.session.resolved;
+        let mut ops = Vec::new();
+        for id in subjects {
+            let Some(node) = doc.get(*id) else {
+                continue;
+            };
+            let was = node.display();
+            let kept = |mut d: Display| {
+                if let Some(w) = was {
+                    *d.padding_mut() = w.padding();
+                    let (c, r) = w.gaps();
+                    let (mc, mr) = d.gaps_mut();
+                    (*mc, *mr) = (c, r);
+                }
+                d
+            };
+            if (to, was) == (1, None)
+                && let Some(placed) = mastik_core::build::flex_from_placement(doc, res, *id)
+            {
+                ops.extend(placed);
+                continue;
+            }
+            let now = match (to, was) {
+                (1, Some(Display::Flex(_))) | (2, Some(Display::Grid(_))) | (0, None) => continue,
+                (1, _) => Some(kept(Display::Flex(Flex::default()))),
+                (2, _) => Some(kept(Display::Grid(Grid::default()))),
+                _ => None,
+            };
+            match (now, was.is_some()) {
+                (Some(display), _) => ops.push(Operation::SetDisplay {
+                    id: *id,
+                    display: Some(display),
+                }),
+                (None, true) => {
+                    // Every child, not only the in-flow ones: a laid group's pinned
+                    // children are placed against a box the group loses with its
+                    // layout, so they too are written where they are drawn, insets
+                    // kept (`build::baked`).
+                    for child in node.children() {
+                        ops.extend(mastik_core::build::baked(doc, res, *child));
+                    }
+                    // A frame hugging its children keeps the size it hugged to.
+                    if let Some(kind @ NodeKind::Artboard { .. }) = res.used_kind(doc, *id) {
+                        ops.extend(
+                            baked_ops(*id, node, node.transform(), kind)
+                                .into_iter()
+                                .filter(|op| matches!(op, Operation::SetGeometry { .. })),
+                        );
+                        let mut item = *node.item();
+                        for d in [&mut item.width, &mut item.height] {
+                            if *d == Dimension::FitContent {
+                                *d = Dimension::Auto;
+                            }
+                        }
+                        if item != *node.item() {
+                            ops.push(Operation::SetLayoutItem { id: *id, item });
+                        }
+                    }
+                    ops.push(Operation::SetDisplay {
+                        id: *id,
+                        display: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+        let (label, glyph) = match to {
+            1 => ("Flex layout", icon::FLEX_LAYOUT),
+            2 => ("Grid layout", icon::GRID_LAYOUT),
+            _ => ("Remove layout", icon::NO_LAYOUT),
+        };
+        self.session.name_step(label, glyph);
+        self.commit_edit(Transaction(ops));
+    }
+
+    /// A right-click on the unbound direction or wrap control `rect` opens its
+    /// field menu, the door to a binding, as a picker's is. On one container
+    /// only (`key`), and not under a layout style.
+    fn flow_menu_door(&mut self, ui: &egui::Ui, key: Option<FieldKey>, rect: egui::Rect) {
+        let Some(key) = key else { return };
+        let styled = self
+            .session
+            .doc
+            .get(key.at())
+            .is_some_and(|n| n.styles().layout.is_some());
+        let at = ui.input(|i| {
+            i.pointer
+                .secondary_clicked()
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        });
+        if let Some(at) = at.filter(|p| rect.contains(*p) && !styled) {
+            self.field_menu = Some((key, at, rect));
+        }
+    }
+
+    /// Every subject's flex layout with `f` applied, as the ops that change one —
+    /// **from the committed document**, as a transaction a valve both previews and
+    /// commits must be.
+    fn flex_tx(&self, subjects: &[NodeId], f: impl Fn(&mut Flex)) -> Transaction {
+        self.display_tx(subjects, |d| {
+            if let Display::Flex(flex) = d {
+                f(flex);
+            }
+        })
+    }
+
+    /// Every subject's layout, flex or grid, with `f` applied — [`Self::flex_tx`]
+    /// for what both layouts share (the gaps, the padding) and for grid's own rows.
+    fn display_tx(&self, subjects: &[NodeId], f: impl Fn(&mut Display)) -> Transaction {
+        Transaction(
+            subjects
+                .iter()
+                .filter_map(|id| {
+                    let was = self.session.doc.get(*id)?.display()?;
+                    let mut now = was.clone();
+                    f(&mut now);
+                    (&now != was).then_some(Operation::SetDisplay {
+                        id: *id,
+                        display: Some(now),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// The rows under `display: flex`: direction and wrap, the three alignments, the
+    /// gaps, the padding. `laid` is every subject's layout, for the rows flex shares
+    /// with grid.
+    fn flex_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        subjects: &[NodeId],
+        flexes: &[Flex],
+        laid: &[Display],
+    ) {
+        let Some(&first) = flexes.first() else {
+            return;
+        };
+        let full = ui.available_width();
+        let gap = ui::CARD_COL_GAP;
+        let direction = shared(flexes, |f| f.direction);
+        let wrap = shared(flexes, |f| f.wrap);
+        // The pictures turn with the layout they describe, read off the first
+        // subject's when the selection disagrees.
+        let orient = |g: Glyph| Orient::of(g, &first);
+        let wraps = wrap != Some(FlexWrap::NoWrap);
+        // An instance's overridden flex fields, each its own mark.
+        let direction_mark = self.flex_mark(
+            subjects,
+            |f| f.direction,
+            |f, v| f.direction = v,
+            |v| tip_word(&DIRECTION_TIPS, DIRECTIONS.iter().position(|d| d == v)),
+        );
+        let wrap_mark = self.flex_mark(
+            subjects,
+            |f| f.wrap,
+            |f, v| f.wrap = v,
+            |v| tip_word(&WRAP_TIPS, WRAPS.iter().position(|w| w == v)),
+        );
+        let justify_mark = self.flex_mark(
+            subjects,
+            |f| f.justify_content,
+            |f, v| f.justify_content = v,
+            |v| justify_name(*v).to_owned(),
+        );
+        let align_mark = self.flex_mark(
+            subjects,
+            |f| f.align_items,
+            |f, v| f.align_items = v,
+            |v| align_name(*v).to_owned(),
+        );
+        let content_mark = self.flex_mark(
+            subjects,
+            |f| f.align_content,
+            |f, v| f.align_content = v,
+            |v| content_name(*v).to_owned(),
+        );
+
+        // --- direction and wrap ---------------------------------------------
+        // On one container each binds a string scoped to it: bound, its chip
+        // takes the control's place; the field menu is the door, as the eye's.
+        let one = match subjects {
+            [id] => Some(*id),
+            _ => None,
+        };
+        let flow_key = |slot| one.map(|id| FieldKey::Flow { id, slot });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            let cell = (full - gap) / 7.0;
+            let arrows = [
+                icon::ARROW_RIGHT,
+                icon::ARROW_LEFT,
+                icon::ARROW_DOWN,
+                icon::ARROW_UP,
+            ];
+            let at = direction
+                .and_then(|d| DIRECTIONS.iter().position(|x| *x == d))
+                .unwrap_or(DIRECTIONS.len());
+            let key = flow_key(0);
+            let from = ui.cursor().min;
+            if let Some(key) = key
+                && let Some(var) = self.field_var(key)
+            {
+                if self.number_chip(ui, key, var, cell * 4.0, direction_mark.as_ref())
+                    && let Some(m) = &direction_mark
+                {
+                    self.commit_reset(m.tx.clone());
+                }
+            } else {
+                let (pick, reset) = ui::segmented_marked(
+                    ui,
+                    cell * 4.0,
+                    ui::SEGMENT_CELL_H,
+                    4,
+                    at,
+                    |_| true,
+                    |i| DIRECTION_TIPS[i],
+                    direction_mark.as_ref().map(OverrideMark::field),
+                    |p, i, r, on| match direction {
+                        None if i == 0 => ui::segment_mixed(p, r),
+                        _ => ui::segment_glyph(p, r, arrows[i], on),
+                    },
+                );
+                self.reset_marked(reset, &direction_mark);
+                if let Some(i) = pick {
+                    // A picked direction is a literal, the binding gone.
+                    let tx = self.flex_tx(subjects, |f| {
+                        f.direction = DIRECTIONS[i];
+                        f.direction_var = None;
+                    });
+                    self.session.name_step("Direction", arrows[i]);
+                    self.commit_edit(tx);
+                }
+                let rect =
+                    egui::Rect::from_min_size(from, egui::vec2(cell * 4.0, ui::SEGMENT_CELL_H));
+                self.flow_menu_door(ui, key, rect);
+            }
+            let turns = [icon::ARROW_LINE_RIGHT, icon::WRAP, icon::WRAP_REVERSE];
+            let at = wrap
+                .and_then(|w| WRAPS.iter().position(|x| *x == w))
+                .unwrap_or(WRAPS.len());
+            let key = flow_key(1);
+            let from = ui.cursor().min;
+            if let Some(key) = key
+                && let Some(var) = self.field_var(key)
+            {
+                if self.number_chip(ui, key, var, cell * 3.0, wrap_mark.as_ref())
+                    && let Some(m) = &wrap_mark
+                {
+                    self.commit_reset(m.tx.clone());
+                }
+            } else {
+                let (pick, reset) = ui::segmented_marked(
+                    ui,
+                    cell * 3.0,
+                    ui::SEGMENT_CELL_H,
+                    3,
+                    at,
+                    |_| true,
+                    |i| WRAP_TIPS[i],
+                    wrap_mark.as_ref().map(OverrideMark::field),
+                    |p, i, r, on| match wrap {
+                        None if i == 0 => ui::segment_mixed(p, r),
+                        _ => ui::segment_glyph(p, r, turns[i], on),
+                    },
+                );
+                self.reset_marked(reset, &wrap_mark);
+                if let Some(i) = pick {
+                    let tx = self.flex_tx(subjects, |f| {
+                        f.wrap = WRAPS[i];
+                        f.wrap_var = None;
+                    });
+                    self.session.name_step("Wrap", turns[i]);
+                    self.commit_edit(tx);
+                }
+                let rect =
+                    egui::Rect::from_min_size(from, egui::vec2(cell * 3.0, ui::SEGMENT_CELL_H));
+                self.flow_menu_door(ui, key, rect);
+            }
+        });
+
+        // --- the alignments -------------------------------------------------
+        let (pick, reset) = glyph_combo(
+            ui,
+            "flex-justify",
+            "Justify content",
+            full,
+            shared(flexes, |f| Some(f.justify_content)),
+            &JUSTIFY,
+            justify_name,
+            Glyph::Justify,
+            orient,
+            None,
+            true,
+            None,
+            justify_mark.as_ref(),
+        );
+        self.reset_marked(reset, &justify_mark);
+        if let Some(Some(j)) = pick {
+            let tx = self.flex_tx(subjects, |f| f.justify_content = j);
+            self.session.name_step("Justify content", icon::ALIGN_LEFT);
+            self.commit_edit(tx);
+        }
+        let (pick, reset) = glyph_combo(
+            ui,
+            "flex-align-items",
+            "Align items",
+            full,
+            shared(flexes, |f| Some(f.align_items)),
+            &ALIGN,
+            align_name,
+            Glyph::Align,
+            orient,
+            None,
+            true,
+            None,
+            align_mark.as_ref(),
+        );
+        self.reset_marked(reset, &align_mark);
+        if let Some(Some(a)) = pick {
+            let tx = self.flex_tx(subjects, |f| f.align_items = a);
+            self.session.name_step("Align items", icon::ALIGN_TOP);
+            self.commit_edit(tx);
+        }
+        // Dimmed in place rather than removed while nothing wraps: toggling wrap
+        // must not shift the card under the pointer.
+        let (pick, reset) = glyph_combo(
+            ui,
+            "flex-align-content",
+            "Align content",
+            full,
+            shared(flexes, |f| Some(f.align_content)),
+            &CONTENT,
+            content_name,
+            Glyph::Content,
+            orient,
+            None,
+            wraps,
+            (!wraps).then_some("Needs wrap"),
+            content_mark.as_ref(),
+        );
+        self.reset_marked(reset, &content_mark);
+        if let Some(Some(c)) = pick {
+            let tx = self.flex_tx(subjects, |f| f.align_content = c);
+            self.session.name_step("Align content", icon::ALIGN_TOP);
+            self.commit_edit(tx);
+        }
+
+        // --- the gaps: between items first ------------------------------------
+        // The first field is always the gap between items — `column-gap` in a row,
+        // `row-gap` in a column — and a selection that disagrees about direction
+        // reads in row order.
+        let column = direction.is_some_and(|d| !d.is_row());
+        self.gap_row(ui, subjects, laid, !column, wraps, full);
+
+        // --- the padding ------------------------------------------------------
+        self.padding_rows(ui, subjects, laid, full);
+    }
+
+    /// The two gaps, side by side — `column-gap` first when `column_first`, and
+    /// the second field dimmed unless `second_live`. Flex puts the gap between its
+    /// items first and dims the one between lines on one line; grid shows both,
+    /// columns first.
+    fn gap_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        subjects: &[NodeId],
+        laid: &[Display],
+        column_first: bool,
+        second_live: bool,
+        full: f32,
+    ) {
+        let Some(first) = laid.first() else {
+            return;
+        };
+        let gap = ui::CARD_COL_GAP;
+        let half = egui::vec2((full - gap) / 2.0, ui::CONTROL_H);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for is_first in [true, false] {
+                let is_column_gap = is_first == column_first;
+                let (glyph, word) = if is_column_gap {
+                    (icon::ARROWS_OUT_LINE_HORIZONTAL, "Column gap")
+                } else {
+                    (icon::ARROWS_OUT_LINE_VERTICAL, "Row gap")
+                };
+                let get = |d: &Display| {
+                    let (c, r) = d.gaps();
+                    if is_column_gap { c } else { r }
+                };
+                let slots = if is_column_gap {
+                    super::binding::COLUMN_GAP
+                } else {
+                    super::binding::ROW_GAP
+                };
+                let key = super::binding::FieldKey::Spacing {
+                    id: subjects[0],
+                    slots,
+                };
+                let shown =
+                    shared(laid, get).filter(|_| !self.spacing_partly_bound(subjects, slots));
+                // An instance's overridden gap — its binding first.
+                let mark = OverrideMark::and(
+                    self.spacing_vars_mark(subjects, slots),
+                    self.display_mark(
+                        subjects,
+                        |d| Some(get(d)),
+                        |d, v| {
+                            let (c, r) = d.gaps_mut();
+                            *(if is_column_gap { c } else { r }) = v;
+                        },
+                        |v| super::component::mark_num(*v),
+                    ),
+                );
+                // Live while it carries a mark, inert or not: the ↺ is the prefix
+                // strip's own press (`ui::value_field_marked`), which a disabled
+                // field does not sense, so its reset could not be clicked.
+                let live = is_first || second_live || mark.is_some();
+                ui::disable_unless(ui, live, |ui| {
+                    // Bound, the field is a chip: the CSS name trailing it gives way,
+                    // the glyph naming the field.
+                    if self.bound_field_ui(ui, key, half.x, &mark) {
+                        return;
+                    }
+                    let mut v = shown.unwrap_or_else(|| get(first));
+                    let start = v;
+                    let (resp, _, hit) = ui::value_field_unit_marked(
+                        ui,
+                        half,
+                        Prefix::Icon(glyph),
+                        Some(Suffix {
+                            text: word,
+                            clickable: false,
+                            tooltip: "",
+                        }),
+                        mark.as_ref().map(OverrideMark::field),
+                        &mut v,
+                        Scrub::whole(0.5).range(0.0..=f64::MAX),
+                        |d| mixed_if(d.custom_formatter(ui::number(2)), shown.is_none()),
+                    );
+                    self.reset_marked(hit, &mark);
+                    let tx = if !edited(&resp, v != start) {
+                        Transaction(Vec::new())
+                    } else {
+                        self.display_tx(subjects, |d| {
+                            let (c, r) = d.gaps_mut();
+                            *(if is_column_gap { c } else { r }) = v.max(0.0);
+                        })
+                    };
+                    self.named_valve("Gap", glyph, &resp, tx);
+                    self.field_doors(ui, key, &resp);
+                });
+            }
+        });
+    }
+
+    /// Padding: left-and-right and top-and-bottom as two fields, opening to the
+    /// four sides — L R over T B, the Position card's order — with the button at
+    /// the end of the row. **Open by itself whenever two opposite sides differ**, so
+    /// the two fields never have to stand for a pair they do not describe. Either
+    /// layout's.
+    fn padding_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        subjects: &[NodeId],
+        laid: &[Display],
+        full: f32,
+    ) {
+        let paddings: Vec<[f64; 4]> = laid.iter().map(Display::padding).collect();
+        const TOP: usize = 0;
+        const RIGHT: usize = 1;
+        const BOTTOM: usize = 2;
+        const LEFT: usize = 3;
+        let gap = ui::CARD_COL_GAP;
+        let side = ui::CONTROL_H;
+        // A side's bit in a `FieldKey::Spacing` — padding follows the two gaps in
+        // a `SpacingVars`.
+        let bit = |side: usize| 1u8 << (2 + side);
+        // Opposite sides bound apart are uneven too: the pair's one field could only
+        // say *Mixed* for them.
+        let unpaired = subjects.iter().any(|id| {
+            let v = self
+                .session
+                .doc
+                .get(*id)
+                .map(|n| n.spacing_vars())
+                .unwrap_or_default();
+            v[2 + LEFT] != v[2 + RIGHT] || v[2 + TOP] != v[2 + BOTTOM]
+        });
+        let uneven = unpaired
+            || paddings
+                .iter()
+                .any(|p| p[LEFT] != p[RIGHT] || p[TOP] != p[BOTTOM]);
+        let key = egui::Id::new(("flex-padding-sides", subjects.first().copied()));
+        let asked = ui.ctx().data(|d| d.get_temp::<bool>(key).unwrap_or(false));
+        let open = asked || uneven;
+        let pair = egui::vec2((full - side - gap * 2.0) / 2.0, side);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for (sides, glyph, word) in [
+                (
+                    [LEFT, RIGHT],
+                    icon::SIDES_SEPARATE,
+                    "Left and right padding",
+                ),
+                (
+                    [TOP, BOTTOM],
+                    icon::SIDES_SEPARATE,
+                    "Top and bottom padding",
+                ),
+            ] {
+                let slots = bit(sides[0]) | bit(sides[1]);
+                let key = super::binding::FieldKey::Spacing {
+                    id: subjects[0],
+                    slots,
+                };
+                let shown = shared(&paddings, |p| {
+                    (p[sides[0]] == p[sides[1]]).then_some(p[sides[0]])
+                })
+                .flatten()
+                .filter(|_| !self.spacing_partly_bound(subjects, slots));
+                let mut v = shown.unwrap_or(first_or_zero(&paddings, sides[0]));
+                let start = v;
+                // An instance's overridden padding on either of the pair's sides — its
+                // binding first; the reset puts back both.
+                let mark = OverrideMark::and(
+                    self.spacing_vars_mark(subjects, slots),
+                    self.display_mark(
+                        subjects,
+                        |d| Some(sides.map(|s| d.padding()[s])),
+                        |d, v| {
+                            for (s, x) in sides.into_iter().zip(v) {
+                                d.padding_mut()[s] = x;
+                            }
+                        },
+                        |v| match v {
+                            [a, b] if a == b => super::component::mark_num(*a),
+                            [a, b] => format!(
+                                "{} · {}",
+                                super::component::mark_num(*a),
+                                super::component::mark_num(*b)
+                            ),
+                        },
+                    ),
+                );
+                if self.bound_field_ui(ui, key, pair.x, &mark) {
+                    continue;
+                }
+                let (resp, hit) = ui::value_field_marked(
+                    ui,
+                    pair,
+                    Prefix::Icon(glyph),
+                    mark.as_ref().map(OverrideMark::field),
+                    &mut v,
+                    Scrub::whole(0.5).range(0.0..=f64::MAX),
+                    |d| mixed_if(d.custom_formatter(ui::number(2)), shown.is_none()),
+                );
+                let resp = super::inspector::tip_unless_marked(resp, &mark, word);
+                self.reset_marked(hit, &mark);
+                let tx = if !edited(&resp, v != start) {
+                    Transaction(Vec::new())
+                } else {
+                    self.display_tx(subjects, |d| {
+                        for s in sides {
+                            d.padding_mut()[s] = v.max(0.0);
+                        }
+                    })
+                };
+                self.named_valve("Padding", glyph, &resp, tx);
+                self.field_doors(ui, key, &resp);
+            }
+            let state = if uneven {
+                ui::FieldButton::Set
+            } else {
+                ui::FieldButton::on_if(open)
+            };
+            if ui::field_button(ui, icon::SIDES_SEPARATE, side, state)
+                .on_hover_text(if uneven {
+                    "Padding per side — the sides differ, so they stay open"
+                } else if open {
+                    "Padding per side"
+                } else {
+                    "Set padding per side"
+                })
+                .clicked()
+                && !uneven
+            {
+                ui.ctx().data_mut(|d| d.insert_temp(key, !asked));
+            }
+        });
+        if !open {
+            return;
+        }
+        let half = egui::vec2((full - gap) / 2.0, side);
+        for pair in [
+            [(LEFT, icon::SIDE_LEFT), (RIGHT, icon::SIDE_RIGHT)],
+            [(TOP, icon::SIDE_TOP), (BOTTOM, icon::SIDE_BOTTOM)],
+        ] {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for (s, glyph) in pair {
+                    let key = super::binding::FieldKey::Spacing {
+                        id: subjects[0],
+                        slots: bit(s),
+                    };
+                    let shown = shared(&paddings, |p| p[s])
+                        .filter(|_| !self.spacing_partly_bound(subjects, bit(s)));
+                    let mut v = shown.unwrap_or(first_or_zero(&paddings, s));
+                    let start = v;
+                    let mark = OverrideMark::and(
+                        self.spacing_vars_mark(subjects, bit(s)),
+                        self.display_mark(
+                            subjects,
+                            |d| Some(d.padding()[s]),
+                            |d, v| d.padding_mut()[s] = v,
+                            |v| super::component::mark_num(*v),
+                        ),
+                    );
+                    if self.bound_field_ui(ui, key, half.x, &mark) {
+                        continue;
+                    }
+                    let (resp, hit) = ui::value_field_marked(
+                        ui,
+                        half,
+                        Prefix::Icon(glyph),
+                        mark.as_ref().map(OverrideMark::field),
+                        &mut v,
+                        Scrub::whole(0.5).range(0.0..=f64::MAX),
+                        |d| mixed_if(d.custom_formatter(ui::number(2)), shown.is_none()),
+                    );
+                    self.reset_marked(hit, &mark);
+                    let tx = if !edited(&resp, v != start) {
+                        Transaction(Vec::new())
+                    } else {
+                        self.display_tx(subjects, |d| d.padding_mut()[s] = v.max(0.0))
+                    };
+                    self.named_valve("Padding", glyph, &resp, tx);
+                    self.field_doors(ui, key, &resp);
+                }
+            });
+        }
+    }
+
+    /// The **Item** card: a layer's place in its parent's flow — or, out of it, why,
+    /// and the button that brings it back.
+    pub(super) fn inspector_item(&mut self, ui: &mut egui::Ui) {
+        let subjects = self.item_subjects();
+        let Some(&anchor) = subjects.first() else {
+            return;
+        };
+        let flowing: Vec<NodeId> = subjects
+            .iter()
+            .copied()
+            .filter(|id| self.out_of_flow(*id).is_none())
+            .collect();
+        self.panel(ui, "Item", None, |app, ui| {
+            if flowing.is_empty() {
+                if let Some(why) = app.out_of_flow(anchor) {
+                    app.out_of_flow_block(ui, &subjects, anchor, why);
+                }
+                return;
+            }
+            if flowing.len() < subjects.len() {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} of these are out of the flow and keep their place.",
+                        subjects.len() - flowing.len()
+                    ))
+                    .size(ui::SMALL_PT)
+                    .color(theme::text::faint()),
+                );
+            }
+            app.item_rows(ui, &flowing);
+        });
+    }
+
+    /// Why the layer is out of the flow, in words, and the one button that puts it
+    /// back — each reason with its own. The button acts on every subject out for the
+    /// same reason.
+    fn out_of_flow_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        subjects: &[NodeId],
+        anchor: NodeId,
+        why: OutOfFlow,
+    ) {
+        // Plain words, not CSS's: what holds the layer and what the layout does
+        // about it.
+        let (glyph, title, body, button, button_glyph) = match why {
+            OutOfFlow::Absolute => (
+                icon::PIN,
+                "Absolutely positioned".to_owned(),
+                format!(
+                    "{}, so it sits outside the layout.",
+                    pinned_edges(
+                        &self
+                            .session
+                            .display_node(anchor)
+                            .map(|n| n.insets())
+                            .unwrap_or_default()
+                    )
+                ),
+                "Unpin and return to the layout",
+                icon::PIN,
+            ),
+            OutOfFlow::Hidden => (
+                icon::EYE_SLASH,
+                "Hidden".to_owned(),
+                "Hidden layers take no space in the layout.".to_owned(),
+                "Show layer",
+                icon::EYE,
+            ),
+            OutOfFlow::Mask => (
+                icon::MASK,
+                "Mask".to_owned(),
+                "Masks clip their siblings and are never laid out.".to_owned(),
+                "Release mask",
+                icon::MASK,
+            ),
+        };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 9.0;
+            ui.label(theme::icon_text(glyph, 15.0, theme::text::dim()));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(ui::CONTROL_PT)
+                        .color(theme::text::strong()),
+                );
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(body)
+                            .size(ui::SMALL_PT)
+                            .color(theme::text::dim()),
+                    )
+                    .wrap(),
+                );
+            });
+        });
+        let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
+        if ui::action_button(ui, button_glyph, button, ui::FieldButton::Off, size).clicked() {
+            self.back_into_flow(subjects, why);
+        }
+    }
+
+    /// The out-of-flow block's button: every subject out for `why`, back in the
+    /// flow as one commit — pinned layers unpinned where they are drawn (their
+    /// transform and size kept, `build::baked_ops`), hidden ones shown, masks
+    /// released. Each rejoins at its own place among its siblings.
+    fn back_into_flow(&mut self, subjects: &[NodeId], why: OutOfFlow) {
+        let same: Vec<NodeId> = subjects
+            .iter()
+            .copied()
+            .filter(|id| self.out_of_flow(*id) == Some(why))
+            .collect();
+        let doc = &self.session.doc;
+        let res = &self.session.resolved;
+        let ops: Vec<Operation> = match why {
+            // Where it is drawn, kept — then the insets go. `keep_flex_sizes` lets
+            // the transform stand, because the same edit changes its flow.
+            OutOfFlow::Absolute => same
+                .iter()
+                .flat_map(|id| {
+                    let mut ops = match (
+                        doc.get(*id),
+                        res.used_local(doc, *id),
+                        res.used_kind(doc, *id),
+                    ) {
+                        (Some(n), Some(local), Some(kind)) => baked_ops(*id, n, local, kind),
+                        _ => Vec::new(),
+                    };
+                    ops.push(Operation::SetInsets {
+                        id: *id,
+                        insets: mastik_core::Insets::default(),
+                    });
+                    ops
+                })
+                .collect(),
+            OutOfFlow::Hidden => same
+                .iter()
+                .map(|id| Operation::SetVisible {
+                    id: *id,
+                    visible: true,
+                })
+                .collect(),
+            OutOfFlow::Mask => same
+                .iter()
+                .map(|id| Operation::SetMask {
+                    id: *id,
+                    mask: false,
+                })
+                .collect(),
+        };
+        let (verb, glyph) = match why {
+            OutOfFlow::Absolute => ("Unpin", icon::PIN),
+            OutOfFlow::Hidden => ("Show", icon::EYE),
+            OutOfFlow::Mask => ("Release mask", icon::MASK),
+        };
+        self.session.name_step(verb, glyph);
+        self.commit_edit(Transaction(ops));
+    }
+
+    /// An Item card field's override mark over `subjects` — one property
+    /// of the layout item, which the comparison resets only whole.
+    fn item_mark<V: PartialEq + Clone>(
+        &self,
+        subjects: &[NodeId],
+        get: impl Fn(&LayoutItem) -> V,
+        put: impl Fn(&mut LayoutItem, V),
+        say: impl Fn(&V) -> String,
+    ) -> Option<OverrideMark> {
+        self.sub_mark(
+            subjects,
+            item_of,
+            |n| Some(*n.item()),
+            get,
+            put,
+            |id, item| Operation::SetLayoutItem { id, item },
+            say,
+        )
+    }
+
+    /// A Container card field's override mark over `subjects`: `get`
+    /// reads the field out of a layout, `None` where that layout has no such field —
+    /// a flex field where the main is a grid — which marks nothing, the `display`
+    /// cells' own mark saying so instead ([`ByMode`]).
+    fn display_mark<V: PartialEq + Clone>(
+        &self,
+        subjects: &[NodeId],
+        get: impl Fn(&Display) -> Option<V>,
+        put: impl Fn(&mut Display, V),
+        say: impl Fn(&V) -> String,
+    ) -> Option<OverrideMark> {
+        self.sub_mark(
+            subjects,
+            |op| match op {
+                Operation::SetDisplay { display, .. } => Some(display.clone()),
+                _ => None,
+            },
+            |n| Some(n.display().cloned()),
+            |d| d.as_ref().and_then(&get),
+            |d, v| {
+                if let (Some(d), Some(v)) = (d.as_mut(), v) {
+                    put(d, v);
+                }
+            },
+            |id, display| Operation::SetDisplay { id, display },
+            |v| v.as_ref().map(&say).unwrap_or_default(),
+        )
+    }
+
+    /// An instance's overridden **binding** on a spacing field's slots — a copy bound
+    /// to another variable than its main's, or bound where the main is not: both
+    /// literals 0, so invisible to [`Self::display_mark`]. Joined to that mark by the
+    /// caller, binding first, so the tip names the main's variable.
+    fn spacing_vars_mark(&self, subjects: &[NodeId], slots: u8) -> Option<OverrideMark> {
+        use super::binding::spacing_slots;
+        let table = self.session.doc.variables();
+        let name = |v: Option<mastik_core::VarId>| match v {
+            Some(v) => table
+                .get(v)
+                .map_or_else(|| "a variable".to_owned(), |x| x.name.clone()),
+            None => "unbound".to_owned(),
+        };
+        self.sub_mark(
+            subjects,
+            |op| match op {
+                Operation::SetSpacingVars { vars, .. } => Some(*vars),
+                _ => None,
+            },
+            |n| Some(n.spacing_vars()),
+            move |v: &mastik_core::SpacingVars| {
+                let mut m = [None; 6];
+                for k in spacing_slots(slots) {
+                    m[k] = v[k];
+                }
+                m
+            },
+            move |v, m| {
+                for k in spacing_slots(slots) {
+                    v[k] = m[k];
+                }
+            },
+            |id, vars| Operation::SetSpacingVars { id, vars },
+            move |m| {
+                let mut names: Vec<String> = spacing_slots(slots).map(|k| name(m[k])).collect();
+                names.dedup();
+                names.join(" · ")
+            },
+        )
+    }
+
+    /// Whether some of a spacing field's places are bound and some are not, which
+    /// reads the plain grey *Mixed* whatever the numbers: a number there would
+    /// stand for a binding on one layer and a literal on another.
+    fn spacing_partly_bound(&self, subjects: &[NodeId], slots: u8) -> bool {
+        let doc = &self.session.doc;
+        let mut any = false;
+        let mut all = true;
+        for id in subjects {
+            let v = doc.get(*id).map(|n| n.spacing_vars()).unwrap_or_default();
+            for k in super::binding::spacing_slots(slots) {
+                any |= v[k].is_some();
+                all &= v[k].is_some();
+            }
+        }
+        any && !all
+    }
+
+    /// [`Self::display_mark`] for one field of a flex layout.
+    fn flex_mark<V: PartialEq + Clone>(
+        &self,
+        subjects: &[NodeId],
+        get: impl Fn(&Flex) -> V,
+        put: impl Fn(&mut Flex, V),
+        say: impl Fn(&V) -> String,
+    ) -> Option<OverrideMark> {
+        self.display_mark(
+            subjects,
+            |d| match d {
+                Display::Flex(f) => Some(get(f)),
+                Display::Grid(_) => None,
+            },
+            |d, v| {
+                if let Display::Flex(f) = d {
+                    put(f, v);
+                }
+            },
+            say,
+        )
+    }
+
+    /// [`Self::display_mark`] for one field of a grid layout.
+    fn grid_mark<V: PartialEq + Clone>(
+        &self,
+        subjects: &[NodeId],
+        get: impl Fn(&Grid) -> V,
+        put: impl Fn(&mut Grid, V),
+        say: impl Fn(&V) -> String,
+    ) -> Option<OverrideMark> {
+        self.display_mark(
+            subjects,
+            |d| match d {
+                Display::Grid(g) => Some(get(g)),
+                Display::Flex(_) => None,
+            },
+            |d, v| {
+                if let Display::Grid(g) = d {
+                    put(g, v);
+                }
+            },
+            say,
+        )
+    }
+
+    /// Every flowing subject's item properties with `f` applied, as the ops that
+    /// change one — from the committed document, [`Self::flex_tx`]'s rule.
+    fn item_tx(&self, subjects: &[NodeId], f: impl Fn(&mut LayoutItem)) -> Transaction {
+        Transaction(
+            subjects
+                .iter()
+                .filter_map(|id| {
+                    let was = *self.session.doc.get(*id)?.item();
+                    let mut now = was;
+                    f(&mut now);
+                    (now != was).then_some(Operation::SetLayoutItem { id: *id, item: now })
+                })
+                .collect(),
+        )
+    }
+
+    /// The flowing subjects' rows: grow and shrink, basis and `align-self` in a
+    /// flex container, or the lines and both self-alignments in a grid; the four
+    /// limits behind a disclosure; and the receipt of a resize that changed any of
+    /// them.
+    fn item_rows(&mut self, ui: &mut egui::Ui, subjects: &[NodeId]) {
+        let items: Vec<LayoutItem> = subjects
+            .iter()
+            .filter_map(|id| self.session.display_node(*id).map(|n| n.item()))
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let full = ui.available_width();
+        let parent = self.session.doc.get(subjects[0]).and_then(|n| n.parent());
+        let parent_display = parent
+            .and_then(|p| self.session.display_node(p))
+            .and_then(|n| n.display());
+        let parent_flex = match &parent_display {
+            Some(Display::Flex(f)) => *f,
+            _ => Flex::default(),
+        };
+        let parent_grid = match parent_display {
+            Some(Display::Grid(g)) => Some(g),
+            _ => None,
+        };
+        // What the last resize flipped, for the subjects in hand.
+        let receipt: Vec<(LayoutItem, LayoutItem)> = self
+            .session
+            .flex_receipt()
+            .map(|r| {
+                r.held
+                    .iter()
+                    .filter(|(id, ..)| subjects.contains(id))
+                    .map(|(_, was, now)| (*was, *now))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let flipped_grow = receipt.iter().any(|(w, n)| w.grow != n.grow);
+        let flipped_shrink = receipt.iter().any(|(w, n)| w.shrink != n.shrink);
+        // A resize clears the basis with the growth: named, or a hand-set basis
+        // would go unannounced on an item whose growth was already 0.
+        let cleared_basis = receipt.iter().any(|(w, n)| w.basis != n.basis);
+        let flipped_align = receipt.iter().any(|(w, n)| w.align_self != n.align_self);
+        let flipped_justify = receipt
+            .iter()
+            .any(|(w, n)| w.justify_self != n.justify_self);
+
+        // The first subject's drawn box, which a mode picked from a unit converts.
+        let drawn = self.session.preview_local_box(subjects[0]);
+
+        // A grid item has its lines and two self-alignments where a flex item has
+        // grow, shrink, basis and `align-self`; the limits and receipt are both layouts'.
+        if let Some(grid) = &parent_grid {
+            self.grid_item_rows(
+                ui,
+                subjects,
+                &items,
+                grid,
+                full,
+                [flipped_justify, flipped_align],
+            );
+        } else {
+            self.flex_item_rows(
+                ui,
+                subjects,
+                &items,
+                &parent_flex,
+                drawn,
+                [flipped_grow, flipped_shrink, flipped_align],
+            );
+        }
+
+        // --- min / max ----------------------------------------------------------
+        self.limit_rows(ui, subjects, &items, drawn, full);
+
+        // --- the receipt --------------------------------------------------------
+        if !receipt.is_empty() {
+            // Each property is said from the items whose property the resize
+            // changed, every distinct value named once.
+            let values = |changed: &dyn Fn(&LayoutItem, &LayoutItem) -> bool,
+                          say: &dyn Fn(&LayoutItem) -> Option<String>|
+             -> Option<String> {
+                let mut out: Vec<String> = Vec::new();
+                for (_, now) in receipt.iter().filter(|(w, n)| changed(w, n)) {
+                    if let Some(s) = say(now)
+                        && !out.contains(&s)
+                    {
+                        out.push(s);
+                    }
+                }
+                (!out.is_empty()).then(|| out.join(" / "))
+            };
+            let mut said = Vec::new();
+            if let Some(v) = values(&|w, n| w.grow != n.grow, &|n| {
+                Some(ui::number(2)(n.grow, 0..=2))
+            }) {
+                said.push(format!("flex grow to {v}"));
+            }
+            if let Some(v) = values(&|w, n| w.shrink != n.shrink, &|n| {
+                Some(ui::number(2)(n.shrink, 0..=2))
+            }) {
+                said.push(format!("flex shrink to {v}"));
+            }
+            if cleared_basis {
+                said.push("flex basis to auto".to_owned());
+            }
+            // Mid-sentence, so lower-cased back from the menu's sentence case —
+            // grid's names for a grid item.
+            let name = |a: AlignItems| match (&parent_grid, a) {
+                (Some(_), AlignItems::Start) => "start",
+                (Some(_), AlignItems::End) => "end",
+                _ => align_name(a),
+            };
+            if let Some(v) = values(&|w, n| w.justify_self != n.justify_self, &|n| {
+                n.justify_self.map(|a| name(a).to_lowercase())
+            }) {
+                said.push(format!("justify self to {v}"));
+            }
+            if let Some(v) = values(&|w, n| w.align_self != n.align_self, &|n| {
+                n.align_self.map(|a| name(a).to_lowercase())
+            }) {
+                said.push(format!("align self to {v}"));
+            }
+            let list = match said.len() {
+                0 => return,
+                1 => said[0].clone(),
+                n => format!("{} and {}", said[..n - 1].join(", "), said[n - 1]),
+            };
+            let mut undo = false;
+            egui::Frame::new()
+                .fill(color::accent().gamma_multiply(0.14))
+                .corner_radius(egui::CornerRadius::same(ui::BUTTON_R))
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("Resizing set {list}."))
+                                    .size(ui::SMALL_PT)
+                                    .color(theme::text::strong()),
+                            )
+                            .wrap(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            // Painted after the press is known, so the word brightens
+                            // under the pointer.
+                            let word = ui.painter().layout_no_wrap(
+                                "Undo".to_owned(),
+                                egui::FontId::proportional(ui::SMALL_PT),
+                                egui::Color32::PLACEHOLDER,
+                            );
+                            let (rect, resp) =
+                                ui.allocate_exact_size(word.size(), egui::Sense::click());
+                            let ink = match resp.hovered() {
+                                true => color::accent_200(),
+                                false => color::accent_300(),
+                            };
+                            ui.painter().galley(rect.min, word, ink);
+                            undo = resp
+                                .on_hover_text("Undo the resize — the flips are what made it hold")
+                                .clicked();
+                        });
+                    });
+                });
+            if undo {
+                self.undo();
+            }
+        }
+    }
+
+    /// A flex item's rows: grow and shrink, basis and `align-self`, each accented
+    /// while the last resize's receipt names it — `flipped` is grow, shrink, align.
+    #[allow(clippy::too_many_arguments)]
+    fn flex_item_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        subjects: &[NodeId],
+        items: &[LayoutItem],
+        parent_flex: &Flex,
+        drawn: Option<mastik_core::kurbo::Rect>,
+        flipped: [bool; 3],
+    ) {
+        let [flipped_grow, flipped_shrink, flipped_align] = flipped;
+        let Some(&first) = items.first() else {
+            return;
+        };
+        let full = ui.available_width();
+        let gap = ui::CARD_COL_GAP;
+        let accent = |ui: &egui::Ui, rect: egui::Rect, on: bool| {
+            if on {
+                ui.painter().rect_stroke(
+                    rect,
+                    egui::CornerRadius::same(ui::BUTTON_R),
+                    egui::Stroke::new(1.0, color::accent_700()),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        };
+
+        // --- grow and shrink ----------------------------------------------------
+        let half = egui::vec2((full - gap) / 2.0, ui::CONTROL_H);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for (label, is_grow, flipped) in [
+                ("Flex grow", true, flipped_grow),
+                ("Flex shrink", false, flipped_shrink),
+            ] {
+                let get = |i: &LayoutItem| if is_grow { i.grow } else { i.shrink };
+                let shown = shared(items, get);
+                let mut v = shown.unwrap_or_else(|| get(&first));
+                let start = v;
+                let at = egui::Rect::from_min_size(ui.cursor().min, half);
+                // An instance's overridden grow or shrink.
+                let mark = self.item_mark(
+                    subjects,
+                    get,
+                    |i, v| {
+                        if is_grow {
+                            i.grow = v;
+                        } else {
+                            i.shrink = v;
+                        }
+                    },
+                    |v| super::component::mark_num(*v),
+                );
+                let (resp, hit) = ui::value_field_marked(
+                    ui,
+                    half,
+                    Prefix::Label(label),
+                    mark.as_ref().map(OverrideMark::field),
+                    &mut v,
+                    Scrub::fine(0.05, 1).range(0.0..=f64::MAX),
+                    |d| mixed_if(d.custom_formatter(ui::number(2)), shown.is_none()),
+                );
+                self.reset_marked(hit, &mark);
+                accent(ui, at, flipped);
+                let tx = if !edited(&resp, v != start) {
+                    Transaction(Vec::new())
+                } else {
+                    self.item_tx(subjects, |i| {
+                        if is_grow {
+                            i.grow = v.max(0.0);
+                        } else {
+                            i.shrink = v.max(0.0);
+                        }
+                    })
+                };
+                self.named_valve(label, icon::ARROWS_OUT_LINE_HORIZONTAL, &resp, tx);
+            }
+        });
+
+        // --- basis ------------------------------------------------------------
+        let row = parent_flex.direction.is_row();
+        let main = drawn.map(|b| if row { b.width() } else { b.height() });
+        self.dimension_row(
+            ui,
+            subjects,
+            items,
+            "Flex basis",
+            full,
+            |i| i.basis,
+            |i, d| i.basis = d,
+            main,
+            row,
+            &[SizeMode::Auto, SizeMode::Px, SizeMode::Percent],
+            None,
+        );
+
+        // --- align-self -------------------------------------------------------
+        let at = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(full, ui::CONTROL_H));
+        let mark = self.item_mark(
+            subjects,
+            |i| i.align_self,
+            |i, v| i.align_self = v,
+            |v| v.map_or("Auto", align_name).to_owned(),
+        );
+        let (pick, reset) = glyph_combo(
+            ui,
+            "flex-align-self",
+            "Align self",
+            full,
+            shared(items, |i| i.align_self),
+            &ALIGN,
+            align_name,
+            Glyph::Align,
+            |g| Orient::of(g, parent_flex),
+            Some(parent_flex.align_items),
+            true,
+            None,
+            mark.as_ref(),
+        );
+        self.reset_marked(reset, &mark);
+        if let Some(pick) = pick {
+            let tx = self.item_tx(subjects, |i| i.align_self = pick);
+            self.session.name_step("Align self", icon::ALIGN_TOP);
+            self.commit_edit(tx);
+        }
+        accent(ui, at, flipped_align);
+    }
+
+    /// The four size limits behind their disclosure — either layout's item.
+    #[allow(clippy::too_many_arguments)]
+    fn limit_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        subjects: &[NodeId],
+        items: &[LayoutItem],
+        drawn: Option<mastik_core::kurbo::Rect>,
+        full: f32,
+    ) {
+        // *Mixed* where the items disagree on which limits are set: a shared count
+        // alone would read "1 set" over one item's min width and another's max
+        // height. Values may still differ under a shared pattern; the fields say
+        // *Mixed* for those.
+        let pattern = |i: &LayoutItem| {
+            [i.min_width, i.max_width, i.min_height, i.max_height].map(|d| d != Dimension::Auto)
+        };
+        let set = shared(items, pattern).map(|p| p.iter().filter(|s| **s).count());
+        let key = egui::Id::new("flex-item-limits");
+        let open = ui.ctx().data(|d| d.get_temp::<bool>(key).unwrap_or(false));
+        // The whole row toggles; registered before the fold head, which wins its own
+        // caret and word and brightens them.
+        let hit = ui.interact(
+            egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), ui::FOLD_HEAD_H),
+            ),
+            egui::Id::new("flex-item-limits-row"),
+            egui::Sense::click(),
+        );
+        let mut head_clicked = false;
+        ui.horizontal(|ui| {
+            head_clicked = ui::fold_head(ui, "Min / max", open).0.clicked();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(match set {
+                        None => "Mixed".to_owned(),
+                        Some(0) => "All auto".to_owned(),
+                        Some(n) => format!("{n} set"),
+                    })
+                    .size(ui::CAPTION_PT)
+                    .color(theme::text::faint()),
+                );
+            });
+        });
+        if hit.clicked() || head_clicked {
+            ui.ctx().data_mut(|d| d.insert_temp(key, !open));
+        }
+        if open {
+            let limits: [Limit; 4] = [
+                ("Min width", true, |i| i.min_width, |i, d| i.min_width = d),
+                ("Max width", true, |i| i.max_width, |i, d| i.max_width = d),
+                (
+                    "Min height",
+                    false,
+                    |i| i.min_height,
+                    |i, d| i.min_height = d,
+                ),
+                (
+                    "Max height",
+                    false,
+                    |i| i.max_height,
+                    |i, d| i.max_height = d,
+                ),
+            ];
+            for (slot, (label, horizontal, get, put)) in limits.into_iter().enumerate() {
+                let along = drawn.map(|b| if horizontal { b.width() } else { b.height() });
+                // One layer's limit binds; a selection's row is its shared value.
+                let key = match subjects {
+                    [id] => Some(super::binding::FieldKey::Limit { id: *id, slot }),
+                    _ => None,
+                };
+                self.dimension_row(
+                    ui,
+                    subjects,
+                    items,
+                    label,
+                    full,
+                    get,
+                    put,
+                    along,
+                    horizontal,
+                    &[SizeMode::Auto, SizeMode::Px, SizeMode::Percent],
+                    key,
+                );
+            }
+        }
+    }
+
+    /// The content box of container `id` along one axis — its drawn size less its
+    /// padding — which is what a CSS percentage of it is a percentage of.
+    pub(super) fn content_extent(&self, id: NodeId, horizontal: bool) -> Option<f64> {
+        let node = self.session.display_node(id)?;
+        let size = match node.kind() {
+            NodeKind::Artboard { size, .. } => *size,
+            _ => self.session.preview_frame(id)?,
+        };
+        let pad = match node.display().map(|d| d.padding()) {
+            Some(p) if horizontal => p[1] + p[3],
+            Some(p) => p[0] + p[2],
+            None => 0.0,
+        };
+        let extent = if horizontal { size.width } else { size.height } - pad;
+        (extent > 0.0).then_some(extent)
+    }
+
+    /// One [`size_field`] row over a basis or a limit along an axis (`horizontal`),
+    /// full width: typing writes px (or % while the mode is %), and a mode picked
+    /// from the unit converts each subject's specified length in its own container
+    /// ([`specified_along`]) — so switching the unit moves nothing.
+    /// `drawn` is the first subject's drawn length, where a scrub under a keyword
+    /// starts. `key`, a limit's binding: bound, the row is its chip.
+    #[allow(clippy::too_many_arguments)]
+    fn dimension_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        subjects: &[NodeId],
+        items: &[LayoutItem],
+        label: &'static str,
+        width: f32,
+        get: impl Fn(&LayoutItem) -> Dimension,
+        put: impl Fn(&mut LayoutItem, Dimension) + Copy,
+        drawn: Option<f64>,
+        horizontal: bool,
+        modes: &[SizeMode],
+        key: Option<super::binding::FieldKey>,
+    ) {
+        let shown = shared(items, |i| get(i));
+        let mode = shown.map(plain_mode);
+        let number = match shown {
+            Some(Dimension::Px(v) | Dimension::Percent(v)) => Some(v),
+            _ => None,
+        };
+        // A limit's mark compares its binding with its literal, which is `Px(0)`
+        // on every bound side, and its reset writes the main's binding with it.
+        let slot = match key {
+            Some(super::binding::FieldKey::Limit { slot, .. }) => Some(slot),
+            _ => None,
+        };
+        let table = self.session.doc.variables();
+        let mark = self.sub_mark(
+            subjects,
+            item_of,
+            |n| Some(*n.item()),
+            |i| (get(i), slot.and_then(|s| i.limit_vars[s])),
+            |i, (d, v)| {
+                put(i, d);
+                if let Some(s) = slot {
+                    i.limit_vars[s] = v;
+                }
+            },
+            |id, item| Operation::SetLayoutItem { id, item },
+            |(d, v)| match v.and_then(|v| table.get(v)) {
+                Some(var) => var.name.clone(),
+                None => dimension_words(d),
+            },
+        );
+        if let Some(key) = key
+            && self.bound_field_ui(ui, key, width, &mark)
+        {
+            return;
+        }
+        let edit = size_field(
+            ui,
+            egui::vec2(width, ui::CONTROL_H),
+            Prefix::Label(label),
+            mode,
+            number,
+            // Under a keyword, the size drawn, so a scrub starts from it.
+            drawn.unwrap_or(0.0),
+            modes,
+            mark.as_ref().map(OverrideMark::field),
+        );
+        self.reset_marked(edit.reset, &mark);
+        if let Some(key) = key {
+            self.field_doors(ui, key, &edit.resp);
+        }
+        if let Some(m) = edit.picked {
+            // Each subject's own value, converted in its own container from what it
+            // **specifies** (`specified_along`): a mixed `100px`/`160px` basis picked
+            // to px must not become 100 for both.
+            let doc = &self.session.doc;
+            let ops = subjects
+                .iter()
+                .filter_map(|id| {
+                    let node = doc.get(*id)?;
+                    let mut item = *node.item();
+                    let was = get(&item);
+                    let extent = node
+                        .parent()
+                        .and_then(|p| self.content_extent(p, horizontal));
+                    let drawn = self
+                        .session
+                        .preview_local_box(*id)
+                        .map(|b| if horizontal { b.width() } else { b.height() });
+                    let own = doc.resolved_kind(*id)?;
+                    let length = specified_along(&own, was, horizontal, extent, drawn);
+                    let to = match m {
+                        SizeMode::Auto => Some(Dimension::Auto),
+                        SizeMode::FitContent => Some(Dimension::FitContent),
+                        SizeMode::Px => length.map(Dimension::Px),
+                        SizeMode::Percent => length
+                            .zip(extent)
+                            .map(|(d, e)| Dimension::Percent((d / e * 1000.0).round() / 10.0)),
+                        // Never offered here: a basis or a limit has no other side.
+                        SizeMode::Ratio => None,
+                    }?;
+                    put(&mut item, to);
+                    (item != *node.item()).then_some(Operation::SetLayoutItem { id: *id, item })
+                })
+                .collect();
+            self.session.name_step(label, icon::ARROWS_OUT);
+            self.commit_edit(Transaction(ops));
+            return;
+        }
+        let tx = match edit.typed {
+            Some(v) => {
+                let to = if mode == Some(SizeMode::Percent) {
+                    Dimension::Percent(v)
+                } else {
+                    Dimension::Px(v.max(0.0))
+                };
+                self.item_tx(subjects, |i| put(i, to))
+            }
+            None => Transaction(Vec::new()),
+        };
+        self.named_valve(label, icon::ARROWS_OUT, &edit.resp, tx);
+    }
+
+    /// The ops a mode picked from W's or H's unit menu writes for layer `id`. Each
+    /// converts what the axis **specifies**, not the size drawn ([`specified_along`]):
+    /// `px` writes it on the picked axis only (text goes through `baked_ops`' used
+    /// kind, so a W gives an auto-width label `AutoHeight` and an H fixes the box),
+    /// `%` converts against the container's content box, a keyword hands the size
+    /// to the layout.
+    pub(super) fn size_mode_tx(
+        &self,
+        id: NodeId,
+        horizontal: bool,
+        mode: SizeMode,
+        drawn: Size,
+    ) -> Transaction {
+        let doc = &self.session.doc;
+        let Some(node) = doc.get(id) else {
+            return Transaction(Vec::new());
+        };
+        let mut item = *node.item();
+        let along = if horizontal {
+            drawn.width
+        } else {
+            drawn.height
+        };
+        let mut ops = Vec::new();
+        // What the axis specifies, converted: a grown or shrunk item's drawn size
+        // includes the line's share, which writing it back would hand over twice.
+        let extent = node
+            .parent()
+            .and_then(|p| self.content_extent(p, horizontal));
+        let dim = if horizontal { item.width } else { item.height };
+        let own = doc
+            .resolved_kind(id)
+            .map_or_else(|| node.kind().clone(), std::borrow::Cow::into_owned);
+        let length = specified_along(&own, dim, horizontal, extent, Some(along)).unwrap_or(along);
+        let to = match (mode, node.kind()) {
+            // A group's px is its box; anything else's is its stored size, written
+            // where it is drawn, with the keyword back to `auto`.
+            (SizeMode::Px, NodeKind::Group) => Dimension::Px(length),
+            // The picked axis only: the stored size takes `length` on it and keeps
+            // its own on the other, so a stretched height does not outlive the stretch.
+            (SizeMode::Px, k)
+                if crate::tools::resizable_size(k).is_some()
+                    && !matches!(k, NodeKind::Text { .. }) =>
+            {
+                let stored = crate::tools::resizable_size(k).unwrap_or_default();
+                let size = if horizontal {
+                    Size::new(length, stored.height)
+                } else {
+                    Size::new(stored.width, length)
+                };
+                if size != stored {
+                    ops.push(Operation::SetGeometry {
+                        id,
+                        geometry: mastik_core::GeometryPatch::Size(size),
+                    });
+                }
+                Dimension::Auto
+            }
+            (SizeMode::Px, _) => {
+                if let Some(kind) = self.session.resolved.used_kind(doc, id) {
+                    ops.extend(
+                        baked_ops(id, node, node.transform(), kind)
+                            .into_iter()
+                            .filter(|op| matches!(op, Operation::SetGeometry { .. })),
+                    );
+                }
+                Dimension::Auto
+            }
+            (SizeMode::Percent, _) => {
+                let Some(extent) = extent else {
+                    return Transaction(Vec::new());
+                };
+                Dimension::Percent((length / extent * 1000.0).round() / 10.0)
+            }
+            (SizeMode::Auto, _) => Dimension::Auto,
+            (SizeMode::FitContent, _) => Dimension::FitContent,
+            // From the drawn W : H; on W while H holds one, the ratio moves to W.
+            // `build::keep_ratios` keeps the stored size to it.
+            (SizeMode::Ratio, _) => {
+                if drawn.width > 0.0 && drawn.height > 0.0 {
+                    item.aspect_ratio = Some(container::AspectRatio {
+                        ratio: drawn.width / drawn.height,
+                        side: if horizontal {
+                            container::RatioSide::Width
+                        } else {
+                            container::RatioSide::Height
+                        },
+                    });
+                }
+                Dimension::Auto
+            }
+        };
+        // Any other mode on the side a ratio derives takes the side back from it.
+        let side = if horizontal {
+            container::RatioSide::Width
+        } else {
+            container::RatioSide::Height
+        };
+        if mode != SizeMode::Ratio && item.aspect_ratio.is_some_and(|r| r.side == side) {
+            item.aspect_ratio = None;
+        }
+        if horizontal {
+            item.width = to;
+        } else {
+            item.height = to;
+        }
+        if item != *node.item() {
+            ops.push(Operation::SetLayoutItem { id, item });
+        }
+        Transaction(ops)
+    }
+}
+
+/// The length a size or a basis **specifies** along one axis, for a unit switch
+/// to convert: its own number — px as it is, a percentage of `extent` — and for
+/// `auto` the stored size a shape or a frame has; `drawn` only where nothing is
+/// specified, a keyword the layout resolves.
+///
+/// **Not the drawn size**: for a grown or shrunk item that includes the line's
+/// share, which writing it back would hand over twice. `kind` is the node's at its
+/// specified size, a bound width or height resolved (`Document::resolved_kind`);
+/// the stored literal there is 0.
+fn specified_along(
+    kind: &NodeKind,
+    dim: Dimension,
+    horizontal: bool,
+    extent: Option<f64>,
+    drawn: Option<f64>,
+) -> Option<f64> {
+    match dim {
+        Dimension::Px(v) => Some(v),
+        Dimension::Percent(p) => extent.map(|e| p * e / 100.0),
+        // A text's `auto` is its content's, which only the layout knows.
+        Dimension::Auto => match kind {
+            NodeKind::Text { .. } => drawn,
+            k => crate::tools::resizable_size(k)
+                .map(|s| if horizontal { s.width } else { s.height })
+                .or(drawn),
+        },
+        Dimension::FitContent => drawn,
+    }
+}
+
+/// One of the Item card's four size limits: its CSS name, whether it is a width,
+/// and how to read and write it on an item.
+type Limit = (
+    &'static str,
+    bool,
+    fn(&LayoutItem) -> Dimension,
+    fn(&mut LayoutItem, Dimension),
+);
+
+/// The first subject's padding on `side` — `paddings[0][side]` — or zero where
+/// there is none: the number a mixed padding field starts a scrub from.
+fn first_or_zero(paddings: &[[f64; 4]], side: usize) -> f64 {
+    paddings.first().map_or(0.0, |p| p[side])
+}
+
+/// "Pinned to its container's top and right edges" — which of a layer's edges
+/// hold it, in the Item card's sentence about why it is out of the flow.
+fn pinned_edges(insets: &mastik_core::Insets) -> String {
+    let names: Vec<&str> = [
+        (insets.top.is_some(), "top"),
+        (insets.right.is_some(), "right"),
+        (insets.bottom.is_some(), "bottom"),
+        (insets.left.is_some(), "left"),
+    ]
+    .into_iter()
+    .filter_map(|(on, n)| on.then_some(n))
+    .collect();
+    match names.as_slice() {
+        [] => "Pinned inside its container".to_owned(),
+        [one] => format!("Pinned to its container's {one} edge"),
+        [init @ .., last] => format!(
+            "Pinned to its container's {} and {last} edges",
+            init.join(", ")
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The Container and Item cards, flex's rows and grid's, driven whole through
+    //! the `Panel` harness — and the pure pieces beside them.
+    //!
+    //! Plain backticks throughout: `cargo doc` builds without the `test` cfg, so a
+    //! link here is checked by nothing.
+    use super::*;
+    use mastik_core::kurbo::{Affine, Rect, RoundedRectRadii};
+    use mastik_core::{Document, GeometryPatch, IdSource, Insets, LengthPct};
+
+    /// A 400×200 frame laying out a row (gap 10, padding 20, `stretch`) of two rects,
+    /// 40 and 60 wide, both stored at (300, 150) so a placement by their own
+    /// transform shows.
+    struct Scene {
+        app: MastikApp,
+        frame: NodeId,
+        a: NodeId,
+        b: NodeId,
+    }
+
+    fn scene() -> Scene {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let mut ids = IdSource::new(0xCA);
+        let root = ids.mint();
+        let (frame, a, b) = (ids.mint(), ids.mint(), ids.mint());
+        let rect = |id, index, w| Operation::CreateNode {
+            id,
+            parent: frame,
+            index,
+            kind: NodeKind::Rect {
+                size: Size::new(w, 30.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((300.0, 150.0))),
+            name: None,
+        };
+        let mut doc = Document::new(root);
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: frame,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(400.0, 200.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::IDENTITY),
+                name: None,
+            },
+            rect(a, 0, 40.0),
+            rect(b, 1, 60.0),
+            Operation::SetDisplay {
+                id: frame,
+                display: Some(Display::Flex(Flex {
+                    column_gap: 10.0,
+                    padding: [20.0; 4],
+                    ..Default::default()
+                })),
+            },
+        ]))
+        .unwrap();
+        app.session.adopt_document(doc, None);
+        Scene { app, frame, a, b }
+    }
+
+    fn drawn(app: &MastikApp, id: NodeId) -> Rect {
+        app.session.resolved.world_bounds(id).expect("measured")
+    }
+
+    fn set_item(app: &mut MastikApp, id: NodeId, f: impl FnOnce(&mut LayoutItem)) {
+        let mut item = *app.session.doc.get(id).unwrap().item();
+        f(&mut item);
+        app.session
+            .commit(Transaction(vec![Operation::SetLayoutItem { id, item }]));
+    }
+
+    /// A size reset (`MastikApp::commit_reset`) is not a resize: a growing instance
+    /// whose width was overridden keeps growing after the reset.
+    ///
+    /// flip: `MastikApp::items_stated` handing the transaction back without the
+    /// stated items → fails at *"still grows"*.
+    #[test]
+    fn a_size_reset_leaves_a_growing_instance_growing() {
+        let mut s = scene();
+        let root = s.app.session.doc.first_page();
+        let main = s.app.session.ids.mint();
+        assert!(s.app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: main,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(50.0, 30.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((1000.0, 0.0))),
+                name: None,
+            },
+            Operation::SetComponent {
+                id: main,
+                component: true,
+            },
+        ])));
+        let inst = {
+            let doc = &s.app.session.doc;
+            let (tx, made) = mastik_core::insert_subtrees(
+                doc,
+                &mut s.app.session.ids,
+                &[mastik_core::Placement {
+                    nodes: doc.capture_subtree(main).unwrap(),
+                    parent: s.frame,
+                    index: Some(2),
+                }],
+                Default::default(),
+            );
+            assert!(s.app.session.commit(tx));
+            made[0]
+        };
+        // One transaction, the item beside the size — or the door holds this
+        // resize too, which is the mechanism under test.
+        let mut item = *s.app.session.doc.get(inst).unwrap().item();
+        item.grow = 1.0;
+        assert!(s.app.session.commit(Transaction(vec![
+            Operation::SetGeometry {
+                id: inst,
+                geometry: GeometryPatch::Size(Size::new(80.0, 30.0)),
+            },
+            Operation::SetLayoutItem { id: inst, item },
+        ])));
+        let grown = drawn(&s.app, inst).width();
+        assert!(
+            grown > 80.0,
+            "the fixture: drawn wider than stored, {grown}"
+        );
+        s.app.commit_reset(Transaction(vec![Operation::SetGeometry {
+            id: inst,
+            geometry: GeometryPatch::Size(Size::new(50.0, 30.0)),
+        }]));
+        let node = s.app.session.doc.get(inst).unwrap();
+        assert_eq!(node.item().grow, 1.0, "still grows");
+        assert!(matches!(
+            node.kind(),
+            NodeKind::Artboard { size, .. } if size.width == 50.0
+        ));
+    }
+
+    /// An instance marks only the layout fields it overrides: the gap resets alone,
+    /// the `display` cells stay quiet while it is a flex like its main, and with its
+    /// layout taken away the mode is marked and the gap is not.
+    ///
+    /// flip: comparing `ByMode` by the whole layout → fails at *"the mode follows"*.
+    #[test]
+    fn an_instance_marks_its_own_layout_fields_and_no_others() {
+        let mut s = scene();
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::SetComponent {
+                    id: s.frame,
+                    component: true,
+                }]))
+        );
+        let inst = {
+            let doc = &s.app.session.doc;
+            let (tx, made) = mastik_core::insert_subtrees(
+                doc,
+                &mut s.app.session.ids,
+                &[mastik_core::Placement {
+                    nodes: doc.capture_subtree(s.frame).unwrap(),
+                    parent: doc.first_page(),
+                    index: None,
+                }],
+                Default::default(),
+            );
+            assert!(s.app.session.commit(tx));
+            made[0]
+        };
+        let ia = s.app.session.doc.get(inst).unwrap().children()[0];
+        let mut wide = s
+            .app
+            .session
+            .doc
+            .get(inst)
+            .unwrap()
+            .display()
+            .cloned()
+            .unwrap();
+        *wide.gaps_mut().0 = 24.0;
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::SetDisplay {
+                    id: inst,
+                    display: Some(wide.clone()),
+                }]))
+        );
+        set_item(&mut s.app, ia, |i| i.grow = 1.0);
+        s.app.session.selection.set(vec![inst, ia]);
+        s.app.gather_card_overrides();
+
+        let gap = s
+            .app
+            .display_mark(
+                &[inst],
+                |d| Some(d.gaps().0),
+                |d, v| *d.gaps_mut().0 = v,
+                |v| super::super::component::mark_num(*v),
+            )
+            .expect("the gap is overridden");
+        assert_eq!(gap.tip, "Reset to main · 10");
+        let mut back = wide.clone();
+        *back.gaps_mut().0 = 10.0;
+        assert_eq!(
+            gap.tx,
+            Transaction(vec![Operation::SetDisplay {
+                id: inst,
+                display: Some(back),
+            }])
+        );
+        assert!(
+            s.app
+                .flex_mark(
+                    &[inst],
+                    |f| f.direction,
+                    |f, v| f.direction = v,
+                    |_| String::new()
+                )
+                .is_none(),
+            "the direction follows"
+        );
+        let mode = |app: &MastikApp| {
+            app.sub_mark(
+                &[inst],
+                |op| match op {
+                    Operation::SetDisplay { display, .. } => Some(display.clone()),
+                    _ => None,
+                },
+                |n| Some(n.display().cloned()),
+                |d| ByMode(d.clone()),
+                |d, v| *d = v.0,
+                |id, display| Operation::SetDisplay { id, display },
+                |_| String::new(),
+            )
+        };
+        assert!(mode(&s.app).is_none(), "the mode follows");
+        assert!(
+            s.app
+                .item_mark(&[ia], |i| i.grow, |i, v| i.grow = v, |_| String::new())
+                .is_some(),
+            "grow is overridden"
+        );
+        assert!(
+            s.app
+                .item_mark(&[ia], |i| i.shrink, |i, v| i.shrink = v, |_| String::new())
+                .is_none(),
+            "shrink follows"
+        );
+
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::SetDisplay {
+                    id: inst,
+                    display: None,
+                }]))
+        );
+        s.app.gather_card_overrides();
+        assert!(mode(&s.app).is_some(), "the mode is overridden");
+        assert!(
+            s.app
+                .display_mark(
+                    &[inst],
+                    |d| Some(d.gaps().0),
+                    |d, v| *d.gaps_mut().0 = v,
+                    |_| String::new(),
+                )
+                .is_none(),
+            "no layout, no gap to reset"
+        );
+    }
+
+    /// `size_modes` offers only the modes that differ for the kind, cell by cell.
+    #[test]
+    fn the_size_menu_offers_only_modes_that_differ_for_the_kind() {
+        use SizeMode::*;
+        let frame = NodeKind::Artboard {
+            size: Size::new(1.0, 1.0),
+            corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+            corner_smoothing: 0.0,
+        };
+        let rect = NodeKind::Rect {
+            size: Size::new(1.0, 1.0),
+            corner_radii: RoundedRectRadii::default(),
+            corner_smoothing: 0.0,
+        };
+        let path = NodeKind::Path {
+            path: Default::default(),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+            mirror: mastik_core::symmetry::PathMirror::NONE,
+        };
+        assert_eq!(
+            size_modes(&frame, false, false),
+            vec![Px, Ratio],
+            "a stored size can follow a ratio anywhere"
+        );
+        assert_eq!(size_modes(&frame, true, false), vec![Px, FitContent, Ratio]);
+        assert_eq!(
+            size_modes(&frame, true, true),
+            vec![Px, FitContent, Percent, Ratio]
+        );
+        assert_eq!(size_modes(&NodeKind::Group, true, false), vec![Px, Auto]);
+        assert_eq!(
+            size_modes(&NodeKind::Group, true, true),
+            vec![Px, Auto, Percent]
+        );
+        assert_eq!(
+            size_modes(&NodeKind::Group, false, true),
+            vec![Px],
+            "a group without a layout has no box to size"
+        );
+        assert_eq!(size_modes(&rect, false, true), vec![Px, Percent, Ratio]);
+        assert_eq!(size_modes(&rect, false, false), vec![Px, Ratio]);
+        assert_eq!(
+            size_modes(&path, false, true),
+            vec![Px],
+            "the layout cannot resize a path, so a percentage would do nothing, and a \
+             path has no stored size for a ratio to keep: no menu at all"
+        );
+    }
+
+    /// Where a picture's wall lands — the midpoint of a start alignment's edge line,
+    /// which says which side it is on and not which way the line was drawn.
+    fn wall(g: Glyph, flex: Flex) -> (f32, f32) {
+        let o = Orient::of(g, &flex);
+        marks(g)
+            .into_iter()
+            .find_map(|m| match o.apply(m) {
+                Mark::Edge { x1, y1, x2, y2, .. } => Some(((x1 + x2) / 2.0, (y1 + y2) / 2.0)),
+                Mark::Bar { .. } => None,
+            })
+            .expect("a start alignment has a wall")
+    }
+
+    /// `Orient` turns the pictures through the diagonal, not by a rotation: in a
+    /// column the justify wall is on top and the align wall on the left;
+    /// `row-reverse` puts the justify wall on the right, `wrap-reverse` the align
+    /// wall at the bottom.
+    ///
+    /// flip: the transpose replaced with a quarter turn → fails at *"align-start in
+    /// a column"*.
+    #[test]
+    fn the_pictures_turn_with_the_layout_through_the_diagonal() {
+        let column = Flex {
+            direction: FlexDirection::Column,
+            ..Default::default()
+        };
+        let start = Glyph::Justify(JustifyContent::Start);
+        let align = Glyph::Align(AlignItems::Start);
+        assert_eq!(
+            wall(start, Flex::default()),
+            (1.5, 8.0),
+            "justify in a row: left"
+        );
+        assert_eq!(
+            wall(align, Flex::default()),
+            (8.0, 1.5),
+            "align in a row: top"
+        );
+        assert_eq!(wall(start, column), (8.0, 1.5), "justify-start in a column");
+        assert_eq!(wall(align, column), (1.5, 8.0), "align-start in a column");
+        let reversed = Flex {
+            direction: FlexDirection::RowReverse,
+            ..Default::default()
+        };
+        assert_eq!(wall(start, reversed), (14.5, 8.0), "row-reverse: right");
+        let lines_reversed = Flex {
+            wrap: FlexWrap::WrapReverse,
+            ..Default::default()
+        };
+        assert_eq!(
+            wall(align, lines_reversed),
+            (8.0, 14.5),
+            "wrap-reverse: align-start at the bottom"
+        );
+    }
+
+    /// A resize's receipt (`session::FlexReceipt`) lasts exactly as long as its step
+    /// is the top of the history: undo takes it away, redo brings it back, the next
+    /// commit ends it.
+    ///
+    /// flip: the undo-depth half of `flex_receipt`'s test dropped → fails at *"an
+    /// undo takes it away"*; keying the receipt on the revision → fails at *"a redo
+    /// puts the step back on top"*.
+    #[test]
+    fn a_resize_leaves_a_receipt_until_anything_else_is_committed() {
+        let mut s = scene();
+        set_item(&mut s.app, s.a, |i| i.grow = 1.0);
+        assert!(
+            s.app.session.flex_receipt().is_none(),
+            "an item property set by hand is not a receipt"
+        );
+        let tall = drawn(&s.app, s.a).height();
+        s.app
+            .session
+            .commit(Transaction(vec![Operation::SetGeometry {
+                id: s.a,
+                geometry: GeometryPatch::Size(Size::new(100.0, tall)),
+            }]));
+        let receipt = s
+            .app
+            .session
+            .flex_receipt()
+            .expect("a resize that stops growth");
+        assert_eq!(receipt.held.len(), 1);
+        let (id, was, now) = receipt.held[0];
+        assert_eq!(id, s.a);
+        assert_eq!((was.grow, was.shrink), (1.0, 1.0));
+        assert_eq!(
+            (now.grow, now.shrink),
+            (0.0, 0.0),
+            "main axis: growth stopped"
+        );
+        assert_eq!(now.align_self, None, "the cross axis was not resized");
+
+        s.app.session.undo();
+        assert!(
+            s.app.session.flex_receipt().is_none(),
+            "an undo takes it away"
+        );
+        s.app.session.redo();
+        assert!(
+            s.app.session.flex_receipt().is_some(),
+            "a redo puts the step back on top, and the receipt with it"
+        );
+        s.app
+            .session
+            .commit(Transaction(vec![Operation::SetGeometry {
+                id: s.frame,
+                geometry: GeometryPatch::Size(Size::new(500.0, 200.0)),
+            }]));
+        assert!(
+            s.app.session.flex_receipt().is_none(),
+            "the next commit ends it"
+        );
+    }
+
+    /// A resize that clears a basis on an item with no growth to stop still leaves a
+    /// receipt naming it.
+    ///
+    /// flip: `growth_held` without its basis clause → fails at *"a receipt"*.
+    #[test]
+    fn a_resize_that_clears_the_basis_leaves_a_receipt_saying_so() {
+        let mut s = scene();
+        set_item(&mut s.app, s.a, |i| {
+            i.basis = Dimension::Px(100.0);
+            i.grow = 0.0;
+            i.shrink = 0.0;
+        });
+        s.app
+            .session
+            .commit(Transaction(vec![Operation::SetGeometry {
+                id: s.a,
+                // Along the row only, so nothing but the basis can be named.
+                geometry: GeometryPatch::Size(Size::new(60.0, 160.0)),
+            }]));
+        let receipt = s.app.session.flex_receipt().expect("a receipt");
+        assert_eq!(
+            receipt.held[0].2.basis,
+            Dimension::Auto,
+            "the basis cleared"
+        );
+        let a = s.a;
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        p.run("Resizing set flex basis to auto.");
+    }
+
+    /// `display: none` (`MastikApp::set_display`) keeps every child where it is drawn
+    /// and a hugging frame at the size it hugged to.
+    ///
+    /// flip: the children's `baked_ops` dropped → fails at *"a stayed where it was
+    /// drawn"*.
+    #[test]
+    fn display_none_keeps_every_child_where_it_is_drawn() {
+        let mut s = scene();
+        set_item(&mut s.app, s.frame, |i| i.width = Dimension::FitContent);
+        let (f0, a0, b0) = (
+            drawn(&s.app, s.frame),
+            drawn(&s.app, s.a),
+            drawn(&s.app, s.b),
+        );
+        assert_eq!(
+            f0.width(),
+            150.0,
+            "the fixture hugs: 20 + 40 + 10 + 60 + 20"
+        );
+        assert_eq!(a0.x0, 20.0, "and lays out");
+
+        s.app.set_display(&[s.frame], 0);
+        assert!(s.app.session.doc.get(s.frame).unwrap().display().is_none());
+        assert_eq!(drawn(&s.app, s.a), a0, "a stayed where it was drawn");
+        assert_eq!(drawn(&s.app, s.b), b0, "and b");
+        assert_eq!(
+            drawn(&s.app, s.frame).width(),
+            150.0,
+            "the frame kept the size it hugged to"
+        );
+        assert_eq!(
+            s.app.session.doc.get(s.frame).unwrap().item().width,
+            Dimension::Auto
+        );
+        s.app.session.undo();
+        assert!(
+            s.app.session.doc.get(s.frame).unwrap().display().is_some(),
+            "one undo step"
+        );
+    }
+
+    /// Flex on a frame with none (`MastikApp::set_display`) reads the row back
+    /// from where its children sit — the gap and the padding the layout taken away
+    /// had — orders them left to right, and moves nothing.
+    ///
+    /// flip: `set_display`'s `flex_from_placement` arm dropped → fails at *"the
+    /// gap read from the row"*.
+    #[test]
+    fn flex_on_loose_children_reads_their_row() {
+        let mut s = scene();
+        s.app.set_display(&[s.frame], 0);
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::Reorder { id: s.a, index: 1 }]))
+        );
+        let (a0, b0) = (drawn(&s.app, s.a), drawn(&s.app, s.b));
+        s.app.set_display(&[s.frame], 1);
+        let frame = s.app.session.doc.get(s.frame).unwrap();
+        let Some(Display::Flex(flex)) = frame.display() else {
+            panic!("a flex layout");
+        };
+        assert_eq!(flex.column_gap, 10.0, "the gap read from the row");
+        assert_eq!((flex.padding[0], flex.padding[3]), (20.0, 20.0));
+        assert_eq!(frame.children(), &[s.a, s.b], "ordered left to right");
+        assert_eq!((drawn(&s.app, s.a), drawn(&s.app, s.b)), (a0, b0));
+
+        // A group, moved to its children's corner through the app's commit.
+        let root = s.app.session.doc.first_page();
+        let (g, c, d) = (
+            s.app.session.ids.mint(),
+            s.app.session.ids.mint(),
+            s.app.session.ids.mint(),
+        );
+        let rect = |id, at: (f64, f64)| Operation::CreateNode {
+            id,
+            parent: g,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(30.0, 30.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate(at)),
+            name: None,
+        };
+        assert!(s.app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: g,
+                parent: root,
+                index: 1,
+                kind: NodeKind::Group,
+                transform: None,
+                name: None,
+            },
+            rect(c, (600.0, 300.0)),
+            rect(d, (600.0, 350.0)),
+        ])));
+        let (c0, d0) = (drawn(&s.app, c), drawn(&s.app, d));
+        s.app.set_display(&[g], 1);
+        assert!(s.app.session.doc.get(g).unwrap().display().is_some());
+        assert_eq!(
+            (drawn(&s.app, c), drawn(&s.app, d)),
+            (c0, d0),
+            "a group too"
+        );
+    }
+
+    /// A min width extracted into a variable (`FieldKey::Limit`) draws as before,
+    /// the variable's px laid out; an item write of another min detaches it and
+    /// the status says so; a number typed over its chip writes the limit and
+    /// detaches.
+    ///
+    /// flip: `number_retype`'s `Limit` arm returning early → fails at *"the
+    /// typed min"*; `commit_inner`'s `limits_cut` left out of the status → fails
+    /// at *"and says so"*.
+    #[test]
+    fn a_min_width_binds_and_takes_a_number_back() {
+        use crate::panels::binding::{FieldKey, Retype};
+        let mut s = scene();
+        set_item(&mut s.app, s.a, |i| i.min_width = Dimension::Px(70.0));
+        let w0 = drawn(&s.app, s.a).width();
+        assert_eq!(w0, 70.0, "the fixture lays out at its min");
+        let key = FieldKey::Limit { id: s.a, slot: 0 };
+        let value = s.app.field_value(key).expect("a value");
+        s.app.extract_field(key, value);
+        assert!(s.app.field_var(key).is_some(), "bound");
+        assert_eq!(
+            s.app.session.doc.get(s.a).unwrap().item().min_width,
+            Dimension::Px(0.0),
+            "the literal 0"
+        );
+        assert_eq!(drawn(&s.app, s.a).width(), w0, "drawn as before");
+
+        // A min written over the binding by the row's own write detaches it, said.
+        set_item(&mut s.app, s.a, |i| i.min_width = Dimension::Px(80.0));
+        assert_eq!(s.app.field_var(key), None, "a typed min detaches");
+        assert_eq!(
+            s.app.session.status().text,
+            "Detached number 1",
+            "and says so"
+        );
+        s.app.session.undo();
+
+        s.app.var_retype = Some(Retype {
+            key,
+            text: "90".into(),
+            focus: true,
+        });
+        let ctx = egui::Context::default();
+        let run = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    app.number_retype(ui, key, app.var_retype.clone().unwrap(), 200.0);
+                },
+            );
+        };
+        run(&mut s.app, Vec::new());
+        run(
+            &mut s.app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert_eq!(drawn(&s.app, s.a).width(), 90.0, "the typed min");
+        assert_eq!(s.app.field_var(key), None, "detached");
+    }
+
+    /// *Add flex layout* (`MastikApp::add_layout`) on loose layers wraps them in a
+    /// frame laid out as they sit, selected, in one undo step; on that frame again
+    /// it says so and writes nothing.
+    ///
+    /// flip: `add_layout`'s `flex_from_placement` on the framed document dropped →
+    /// panics at *"a flex layout"*.
+    #[test]
+    fn add_layout_wraps_a_loose_selection_in_a_laid_frame() {
+        let mut s = scene();
+        let root = s.app.session.doc.first_page();
+        let (c, d) = (s.app.session.ids.mint(), s.app.session.ids.mint());
+        let rect = |id, at: (f64, f64)| Operation::CreateNode {
+            id,
+            parent: root,
+            index: 1,
+            kind: NodeKind::Rect {
+                size: Size::new(30.0, 30.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate(at)),
+            name: None,
+        };
+        assert!(s.app.session.commit(Transaction(vec![
+            rect(c, (600.0, 350.0)),
+            rect(d, (600.0, 300.0)),
+        ])));
+        let (c0, d0) = (drawn(&s.app, c), drawn(&s.app, d));
+        let steps = s.app.session.history.undo_depth();
+        s.app.session.selection.set(vec![c, d]);
+        s.app.add_layout();
+        let frame = s.app.session.doc.get(c).unwrap().parent().unwrap();
+        assert_ne!(frame, root, "wrapped");
+        assert_eq!(s.app.session.selection.ids(), &[frame]);
+        let node = s.app.session.doc.get(frame).unwrap();
+        let Some(Display::Flex(flex)) = node.display() else {
+            panic!("a flex layout");
+        };
+        assert_eq!(
+            (flex.direction, flex.row_gap),
+            (FlexDirection::Column, 20.0),
+            "a column read from the stack"
+        );
+        assert_eq!(node.children(), &[d, c], "top to bottom");
+        assert_eq!((drawn(&s.app, c), drawn(&s.app, d)), (c0, d0));
+        assert_eq!(s.app.session.history.undo_depth(), steps + 1, "one step");
+
+        s.app.add_layout();
+        assert_eq!(
+            s.app.session.history.undo_depth(),
+            steps + 1,
+            "nothing more"
+        );
+    }
+
+    /// `display: none` keeps (a) a laid group's pinned children and (b) a grown laid
+    /// group's box. ⚠️ (a)'s group is outside a flow on purpose: a laid group that is
+    /// itself an item loses its padding and growth with its layout, and its parent
+    /// then places everything inside differently.
+    ///
+    /// flip: the arm baking only `is_flex_item` children → fails at *"c stayed
+    /// against where the box was"*; (b) needs the container half of `build::baked`,
+    /// which core's `a_grown_laid_group_keeps_its_box_when_wrapped` flips.
+    #[test]
+    fn display_none_keeps_a_laid_groups_pinned_children_and_a_grown_groups_box() {
+        let mut s = scene();
+        let (g, c) = (s.app.session.ids.mint(), s.app.session.ids.mint());
+        let (frame, root) = (s.frame, s.app.session.doc.first_page());
+        assert!(s.app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: g,
+                parent: root,
+                index: 1,
+                kind: NodeKind::Group,
+                transform: Some(Affine::translate((500.0, 300.0))),
+                name: None,
+            },
+            Operation::Reparent {
+                id: s.a,
+                new_parent: g,
+                index: 0,
+            },
+            Operation::Reparent {
+                id: s.b,
+                new_parent: g,
+                index: 1,
+            },
+            Operation::CreateNode {
+                id: c,
+                parent: g,
+                index: 2,
+                kind: NodeKind::Rect {
+                    size: Size::new(10.0, 10.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetDisplay {
+                id: g,
+                display: Some(Display::Flex(Flex {
+                    column_gap: 10.0,
+                    padding: [20.0; 4],
+                    ..Default::default()
+                })),
+            },
+            Operation::SetInsets {
+                id: c,
+                insets: mastik_core::Insets {
+                    top: Some(mastik_core::LengthPct::Px(0.0)),
+                    right: Some(mastik_core::LengthPct::Px(0.0)),
+                    ..Default::default()
+                },
+            },
+        ])));
+        let (g0, c0) = (drawn(&s.app, g), drawn(&s.app, c));
+        assert_eq!(c0.x1, g0.x1, "the fixture: c is pinned to the box's right");
+        assert_eq!(c0.x0, 640.0, "140 right of where it is stored");
+        s.app.set_display(&[g], 0);
+        assert_eq!(drawn(&s.app, c), c0, "c stayed against where the box was");
+
+        // (b): a group with a row of its own, in the frame's row and grown.
+        let (h, r) = (s.app.session.ids.mint(), s.app.session.ids.mint());
+        assert!(s.app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: h,
+                parent: frame,
+                index: 0,
+                kind: NodeKind::Group,
+                transform: None,
+                name: None,
+            },
+            Operation::CreateNode {
+                id: r,
+                parent: h,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size: Size::new(20.0, 20.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetDisplay {
+                id: h,
+                display: Some(Display::Flex(Flex {
+                    padding: [10.0; 4],
+                    ..Default::default()
+                })),
+            },
+        ])));
+        set_item(&mut s.app, h, |i| i.grow = 1.0);
+        let h0 = drawn(&s.app, h);
+        assert!(h0.width() > 100.0, "the fixture: grown, {}", h0.width());
+        s.app.set_display(&[frame], 0);
+        assert_eq!(drawn(&s.app, h), h0, "the grown group kept its laid box");
+    }
+
+    /// A mode picked from the W/H menu (`size_mode_tx`) moves nothing: a hugging
+    /// frame switched to px keeps its hugged width as its stored size; an item
+    /// switched to % gets the percentage of the content box it already fills.
+    #[test]
+    fn a_mode_picked_from_the_size_menu_moves_nothing() {
+        let mut s = scene();
+        set_item(&mut s.app, s.frame, |i| i.width = Dimension::FitContent);
+        let size = drawn(&s.app, s.frame).size();
+        let tx = s.app.size_mode_tx(s.frame, true, SizeMode::Px, size);
+        s.app.session.commit(tx);
+        let frame = s.app.session.doc.get(s.frame).unwrap();
+        assert_eq!(frame.item().width, Dimension::Auto);
+        assert_eq!(
+            frame.kind(),
+            &NodeKind::Artboard {
+                size: Size::new(150.0, 200.0),
+                corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            "the hugged width, now the frame's own"
+        );
+
+        let tx = s
+            .app
+            .size_mode_tx(s.a, true, SizeMode::Percent, drawn(&s.app, s.a).size());
+        s.app.session.commit(tx);
+        assert_eq!(
+            s.app.session.doc.get(s.a).unwrap().item().width,
+            Dimension::Percent(36.4)
+        );
+        assert!(
+            (drawn(&s.app, s.a).width() - 40.0).abs() < 0.1,
+            "drawn where it was, to the tenth of a percent: {}",
+            drawn(&s.app, s.a).width()
+        );
+    }
+
+    /// The unit at the right of the Item card's row labelled `label`, and the
+    /// menu row reading `pick` under it once it is clicked — then clicked.
+    fn pick_unit(p: &mut Panel, label: &str, pick: &str) {
+        let row = p.run(label);
+        let unit = ["px", "%", "–", "auto"]
+            .into_iter()
+            .flat_map(|u| p.runs(u))
+            .filter(|u| (u.y - row.y).abs() < 6.0 && u.x > row.x)
+            .max_by(|a, b| a.x.total_cmp(&b.x))
+            .expect("a unit on the row");
+        p.click(unit);
+        let choice = p
+            .runs(pick)
+            .into_iter()
+            .filter(|r| r.y > unit.y + 4.0)
+            .min_by(|a, b| a.y.total_cmp(&b.y))
+            .expect("the menu's row");
+        p.click(choice);
+    }
+
+    /// A unit switch on a growing item moves nothing, and re-picking the lit unit
+    /// is no edit.
+    ///
+    /// flip: the pick converting the drawn length → fails at *"drawn where it
+    /// was"*. ⚠️ The lit-row filter in `size_field` deleted does **not** bite on
+    /// `px` (converting the specified 40px into px changes nothing); it bites on
+    /// `%`, where the tenth-of-a-percent rounding turns `33.33%` into `33.3%` →
+    /// fails at *"the lit % is no step either"*.
+    #[test]
+    fn a_unit_switch_on_a_growing_item_moves_nothing() {
+        let mut s = scene();
+        set_item(&mut s.app, s.a, |i| {
+            i.basis = Dimension::Px(40.0);
+            i.grow = 1.0;
+        });
+        set_item(&mut s.app, s.b, |i| {
+            i.basis = Dimension::Px(60.0);
+            i.grow = 1.0;
+        });
+        assert!(
+            (drawn(&s.app, s.a).width() - 165.0).abs() < 0.1,
+            "the fixture"
+        );
+        let a = s.a;
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        let depth = p.app.session.history.undo_depth();
+        pick_unit(&mut p, "Flex basis", "px");
+        assert_eq!(
+            p.app.session.history.undo_depth(),
+            depth,
+            "the lit row is no step"
+        );
+        pick_unit(&mut p, "Flex basis", "%");
+        assert!(
+            (drawn(&p.app, a).width() - 165.0).abs() < 0.2,
+            "drawn where it was: {}",
+            drawn(&p.app, a).width()
+        );
+
+        // A stored percentage finer than the conversion's tenth.
+        set_item(&mut p.app, a, |i| i.basis = Dimension::Percent(33.33));
+        let depth = p.app.session.history.undo_depth();
+        pick_unit(&mut p, "Flex basis", "%");
+        assert_eq!(
+            (
+                p.app.session.history.undo_depth(),
+                p.app.session.doc.get(a).unwrap().item().basis
+            ),
+            (depth, Dimension::Percent(33.33)),
+            "the lit % is no step either"
+        );
+    }
+
+    /// A unit picked over a mixed selection (`25%` and `160px`) converts each item's
+    /// own value; it also pins the px row's conversion.
+    ///
+    /// flip: the anchor's converted value written to every subject → fails at *"b
+    /// keeps its own"*; `dimension_row` writing `Px(0.0)` → fails at the same line.
+    #[test]
+    fn a_unit_picked_over_a_mixed_selection_converts_each_item() {
+        let mut s = scene();
+        set_item(&mut s.app, s.a, |i| i.basis = Dimension::Percent(25.0));
+        set_item(&mut s.app, s.b, |i| i.basis = Dimension::Px(160.0));
+        let (a, b) = (s.a, s.b);
+        let b0 = drawn(&s.app, b).width();
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a, b]);
+        pick_unit(&mut p, "Flex basis", "px");
+        assert_eq!(
+            p.app.session.doc.get(b).unwrap().item().basis,
+            Dimension::Px(160.0),
+            "b keeps its own"
+        );
+        assert_eq!(drawn(&p.app, b).width(), b0, "and is drawn where it was");
+    }
+
+    /// W's `px` writes the picked axis only: a stretched `a` keeps its stored height.
+    ///
+    /// flip: the whole used kind baked → fails at *"the height untouched"*.
+    #[test]
+    fn a_px_pick_writes_the_picked_axis_only() {
+        let mut s = scene();
+        set_item(&mut s.app, s.a, |i| i.width = Dimension::Percent(10.0));
+        assert_eq!(drawn(&s.app, s.a).height(), 160.0, "the fixture stretches");
+        let tx = s
+            .app
+            .size_mode_tx(s.a, true, SizeMode::Px, drawn(&s.app, s.a).size());
+        s.app.session.commit(tx);
+        let NodeKind::Rect { size, .. } = s.app.session.doc.get(s.a).unwrap().kind() else {
+            unreachable!()
+        };
+        assert_eq!(size.height, 30.0, "the height untouched");
+        assert_eq!(size.width, 36.0, "the width the 10% specified, of 360");
+    }
+
+    /// A text's W `px` keeps it the width it is drawn while its height follows its
+    /// lines (`AutoHeight`); its H `px` fixes the box. The text arm bakes the used
+    /// kind rather than the picked axis because `baked_ops` keeps the stored mode at
+    /// the drawn extents (`mastik_core::build::kept_text_mode`); every other kind
+    /// reaching it offers `px` alone, so no menu picks it.
+    ///
+    /// flip: text routed through the shapes' picked-axis arm → fails at *"W's px:
+    /// the width the axis specified"*.
+    #[test]
+    fn a_texts_px_pick_keeps_its_width_and_lets_its_lines_set_the_height() {
+        let (mut p, text, _) = text_column(AlignItems::Start);
+        set_item(&mut p.app, text, |i| i.width = Dimension::Percent(50.0));
+        let before = drawn(&p.app, text);
+        assert_eq!(
+            before.width(),
+            150.0,
+            "the fixture wraps at half the column"
+        );
+        let tx = p.app.size_mode_tx(text, true, SizeMode::Px, before.size());
+        p.app.session.commit(tx);
+        let sizing = |p: &Panel| match p.app.session.doc.get(text).unwrap().kind() {
+            NodeKind::Text { sizing, .. } => *sizing,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            sizing(&p),
+            mastik_core::TextSizing::AutoHeight(150.0),
+            "W's px: the width the axis specified, the height the lines'"
+        );
+        assert_eq!(drawn(&p.app, text), before, "drawn where it was");
+
+        set_item(&mut p.app, text, |i| i.height = Dimension::Percent(20.0));
+        let tall = drawn(&p.app, text);
+        assert_eq!(tall.height(), 60.0, "the fixture: a fifth of the column");
+        let tx = p.app.size_mode_tx(text, false, SizeMode::Px, tall.size());
+        p.app.session.commit(tx);
+        assert_eq!(
+            sizing(&p),
+            mastik_core::TextSizing::Fixed(tall.size()),
+            "H's px: the box fixed where it is drawn"
+        );
+        assert_eq!(drawn(&p.app, text), tall, "and still drawn where it was");
+    }
+
+    /// **The out-of-flow block's buttons bring a layer back**, at its own place
+    /// among its siblings (`back_into_flow`): a rect pinned to the frame's
+    /// bottom-right corner leaves the row, which closes up; *Unpin insets* puts it
+    /// back first in the row. A hidden one is shown.
+    #[test]
+    fn the_way_back_into_the_flow_puts_a_layer_at_its_own_place() {
+        let mut s = scene();
+        s.app.session.commit(Transaction(vec![Operation::SetInsets {
+            id: s.a,
+            insets: Insets {
+                right: Some(LengthPct::Px(0.0)),
+                bottom: Some(LengthPct::Px(0.0)),
+                ..Default::default()
+            },
+        }]));
+        assert_eq!(s.app.out_of_flow(s.a), Some(OutOfFlow::Absolute));
+        assert_eq!(drawn(&s.app, s.b).x0, 20.0, "the row closed up");
+        assert_eq!(
+            pinned_edges(s.app.session.doc.get(s.a).unwrap().insets()),
+            "Pinned to its container's right and bottom edges"
+        );
+
+        s.app.back_into_flow(&[s.a], OutOfFlow::Absolute);
+        assert_eq!(s.app.out_of_flow(s.a), None);
+        assert!(s.app.session.doc.get(s.a).unwrap().insets().is_unset());
+        assert_eq!(drawn(&s.app, s.a).x0, 20.0, "first in the row again");
+        assert_eq!(drawn(&s.app, s.b).x0, 70.0, "and b after it");
+
+        s.app
+            .session
+            .commit(Transaction(vec![Operation::SetVisible {
+                id: s.b,
+                visible: false,
+            }]));
+        assert_eq!(s.app.out_of_flow(s.b), Some(OutOfFlow::Hidden));
+        s.app.back_into_flow(&[s.b], OutOfFlow::Hidden);
+        assert!(s.app.session.doc.get(s.b).unwrap().visible());
+    }
+
+    /// One card drawn headlessly in the inspector column's 284, with real pointer
+    /// events — the harness the field-scrub tests share. `card` is which card:
+    /// `inspector_container` or `inspector_item`.
+    struct Panel {
+        ctx: egui::Context,
+        app: MastikApp,
+        time: f64,
+        card: fn(&mut MastikApp, &mut egui::Ui),
+    }
+
+    impl Panel {
+        fn new(app: MastikApp, card: fn(&mut MastikApp, &mut egui::Ui)) -> Self {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            Panel {
+                ctx,
+                app,
+                time: 0.0,
+                card,
+            }
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) -> egui::FullOutput {
+            self.time += 0.1;
+            let (app, card) = (&mut self.app, self.card);
+            self.ctx.run_ui(
+                egui::RawInput {
+                    time: Some(self.time),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.set_max_width(284.0);
+                    card(app, ui);
+                },
+            )
+        }
+
+        /// Settled, then where the first run reading exactly `text` is.
+        fn run(&mut self, text: &str) -> egui::Pos2 {
+            let mut out = self.frame(Vec::new());
+            for _ in 0..2 {
+                out = self.frame(Vec::new());
+            }
+            out.shapes
+                .iter()
+                .find_map(|cs| match &cs.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text() == text => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no run reads {text:?}"))
+        }
+
+        /// Press at `from`, drag 80 points right in four steps, let go.
+        fn scrub(&mut self, from: egui::Pos2) {
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            self.frame(vec![egui::Event::PointerMoved(from), button(from, true)]);
+            for step in 1..=4 {
+                let at = from + egui::vec2(20.0 * step as f32, 0.0);
+                self.frame(vec![egui::Event::PointerMoved(at)]);
+            }
+            let at = from + egui::vec2(80.0, 0.0);
+            self.frame(vec![button(at, false)]);
+            for _ in 0..3 {
+                self.frame(Vec::new());
+            }
+        }
+    }
+
+    /// A scrub on the Column gap, then the left-and-right padding, lands as one undo
+    /// step each, through the real card and valve.
+    ///
+    /// flip: `edited` answering `moved` alone (the latch dropped) → fails at *"the
+    /// gap landed"*.
+    #[test]
+    fn a_scrub_on_a_container_field_lands_as_one_undo_step() {
+        let s = scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let flex = |app: &MastikApp| match app.session.doc.get(frame_id).unwrap().display() {
+            Some(Display::Flex(f)) => *f,
+            _ => panic!("the fixture lost its flex layout"),
+        };
+
+        assert_eq!(flex(&p.app).column_gap, 10.0, "the fixture");
+        let depth = p.app.session.history.undo_depth();
+        // The gap's digits: the only run reading 10 (the padding reads 20).
+        let at = p.run("10");
+        p.scrub(at);
+        let gap = flex(&p.app).column_gap;
+        assert!(gap > 15.0, "the gap landed: {gap}, from 10 by 80 points");
+        assert_eq!(p.app.session.history.undo_depth(), depth + 1, "as one step");
+
+        // The left-and-right padding: the first run reading 20, its row being
+        // above top-and-bottom's.
+        let at = p.run("20");
+        p.scrub(at);
+        let padding = flex(&p.app).padding;
+        assert!(
+            padding[1] > 25.0 && padding[1] == padding[3],
+            "left and right landed together: {padding:?}"
+        );
+        assert_eq!(padding[0], 20.0, "and top was left alone");
+    }
+
+    /// A scrub on `a`'s Flex grow, then its basis (from the `auto` in its digits,
+    /// starting at the drawn width, so it lands in px above 40), lands as one undo
+    /// step each.
+    ///
+    /// flip: `edited` answering `moved` alone → fails at *"the grow landed"*.
+    #[test]
+    fn a_scrub_on_an_item_field_lands_as_one_undo_step() {
+        let s = scene();
+        let a = s.a;
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        let item = |app: &MastikApp| *app.session.doc.get(a).unwrap().item();
+        assert_eq!(item(&p.app).grow, 0.0, "the fixture");
+        let depth = p.app.session.history.undo_depth();
+
+        let at = p.run("0");
+        p.scrub(at);
+        let grow = item(&p.app).grow;
+        assert!(grow > 0.5, "the grow landed: {grow}");
+        assert_eq!(p.app.session.history.undo_depth(), depth + 1, "as one step");
+
+        let at = p.run("auto");
+        p.scrub(at);
+        match item(&p.app).basis {
+            Dimension::Px(v) => assert!(v > 40.0, "the basis landed in px: {v}"),
+            other => panic!("the basis did not land: {other:?}"),
+        }
+        assert_eq!(p.app.session.history.undo_depth(), depth + 2, "one more");
+    }
+
+    /// The Transform card as the single-layer inspector draws it — its world and
+    /// size read through the preview, `inspector_single`'s way — over the first
+    /// selected layer, a rect.
+    fn transform_card(app: &mut MastikApp, ui: &mut egui::Ui) {
+        let id = app.session.selection.ids()[0];
+        let world = app
+            .session
+            .preview_world_transform(id)
+            .unwrap_or_default()
+            .as_coeffs();
+        let size = app.session.display_node(id).and_then(|n| match n.kind() {
+            NodeKind::Rect { size, .. } => Some(*size),
+            _ => None,
+        });
+        app.inspector_transform(ui, id, world, size);
+    }
+
+    /// `transform_card` for a text node, whose W/H read its box through the
+    /// preview (`preview_local_box`), as `inspector_single` hands them — the
+    /// committed box would hand the field back the size the edit is replacing.
+    fn text_transform_card(app: &mut MastikApp, ui: &mut egui::Ui) {
+        let id = app.session.selection.ids()[0];
+        let world = app
+            .session
+            .preview_world_transform(id)
+            .unwrap_or_default()
+            .as_coeffs();
+        let size = app.session.preview_local_box(id).map(|b| b.size());
+        app.inspector_transform(ui, id, world, size);
+    }
+
+    /// A 300 × 300 flex column — `align-items` as given — holding an auto-width
+    /// label and, under it, a 50 × 30 rect. The label selected.
+    fn text_column(align: AlignItems) -> (Panel, NodeId, NodeId) {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let mut ids = IdSource::new(0xCB);
+        let (root, frame, text, rect) = (ids.mint(), ids.mint(), ids.mint(), ids.mint());
+        let mut doc = Document::new(root);
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: frame,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(300.0, 300.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::IDENTITY),
+                name: None,
+            },
+            Operation::CreateNode {
+                id: text,
+                parent: frame,
+                index: 0,
+                kind: NodeKind::Text {
+                    content: "several short words".into(),
+                    style: Box::default(),
+                    spans: Default::default(),
+                    para_spans: Default::default(),
+                    paragraph: Default::default(),
+                    block: Default::default(),
+                    sizing: mastik_core::TextSizing::Auto,
+                    on_path: None,
+                    on_path_flip: false,
+                    on_path_offset: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::CreateNode {
+                id: rect,
+                parent: frame,
+                index: 1,
+                kind: NodeKind::Rect {
+                    size: Size::new(50.0, 30.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetDisplay {
+                id: frame,
+                display: Some(Display::Flex(Flex {
+                    direction: FlexDirection::Column,
+                    align_items: align,
+                    ..Default::default()
+                })),
+            },
+        ]))
+        .unwrap();
+        app.session.adopt_document(doc, None);
+        let mut p = Panel::new(app, text_transform_card);
+        p.app.session.selection.set(vec![text]);
+        (p, text, rect)
+    }
+
+    /// Click a number field at `at` — moved over, pressed and let go on frames of
+    /// their own, as a pointer does — type `text` a character a frame, and leave
+    /// it with `Enter`. An empty `text` is the click-through.
+    fn type_number(p: &mut Panel, at: egui::Pos2, text: &str) {
+        p.frame(vec![egui::Event::PointerMoved(at)]);
+        p.frame(vec![press(at, true)]);
+        p.frame(vec![press(at, false)]);
+        p.frame(Vec::new());
+        for ch in text.chars() {
+            p.frame(vec![egui::Event::Text(ch.to_string())]);
+        }
+        p.frame(vec![key(egui::Key::Enter)]);
+        for _ in 0..2 {
+            p.frame(Vec::new());
+        }
+    }
+
+    fn stored_sizing(app: &MastikApp, id: NodeId) -> mastik_core::TextSizing {
+        match app.session.doc.get(id).unwrap().kind() {
+            NodeKind::Text { sizing, .. } => *sizing,
+            k => panic!("not text: {k:?}"),
+        }
+    }
+
+    /// A W typed into a stretched auto-width label (drawn as a 300-wide `Fixed` box)
+    /// keeps its mode: `AutoHeight` at the width asked, the rect below the wrapped
+    /// lines.
+    ///
+    /// flip: `tools::gesture_text_sizing` answering the drawn sizing → fails at *"the
+    /// mode kept"*.
+    #[test]
+    fn a_width_typed_into_a_stretched_label_keeps_its_mode() {
+        let (mut p, text, rect) = text_column(AlignItems::Stretch);
+        assert_eq!(drawn(&p.app, text).width(), 300.0, "the fixture stretches");
+        let at = p.run("300");
+        type_number(&mut p, at, "40");
+        // 40 asked, 53.73 drawn: a wrapping item is never narrower than its widest
+        // word in a flex line, and the field reads the preview back.
+        assert!(
+            matches!(
+                stored_sizing(&p.app, text),
+                mastik_core::TextSizing::AutoHeight(w) if (w - 53.734375).abs() < 1e-3
+            ),
+            "the mode kept: {:?}",
+            stored_sizing(&p.app, text)
+        );
+        assert!(
+            drawn(&p.app, rect).y0 >= drawn(&p.app, text).y1 - 1e-6,
+            "and the rect sits under the wrapped lines"
+        );
+    }
+
+    /// A click into W and out again with no number typed commits nothing: the label
+    /// stays `Auto`.
+    ///
+    /// flip: the W/H arm's `_ if !typed` guard deleted → fails at *"still auto"*.
+    #[test]
+    fn a_click_through_w_commits_nothing() {
+        let (mut p, text, _) = text_column(AlignItems::Start);
+        let depth = p.app.session.history.undo_depth();
+        let shown = crate::ui::number(2)(drawn(&p.app, text).width(), 0..=0);
+        let at = p.run(&shown);
+        type_number(&mut p, at, "");
+        assert_eq!(
+            stored_sizing(&p.app, text),
+            mastik_core::TextSizing::Auto,
+            "still auto"
+        );
+        assert_eq!(p.app.session.history.undo_depth(), depth, "and no step");
+    }
+
+    /// A stretched item's H scrubs in the Transform card: it lands taller, out of the
+    /// stretch, as one step. The field reads back through the preview, so the preview
+    /// must not stretch it straight back to 160 on each frame.
+    ///
+    /// flip: `set_preview` without the holds → fails at *"the height landed"*.
+    #[test]
+    fn a_stretched_items_height_scrubs_in_the_transform_card() {
+        let s = scene();
+        let a = s.a;
+        let mut p = Panel::new(s.app, transform_card);
+        p.app.session.selection.set(vec![a]);
+        assert_eq!(drawn(&p.app, a).height(), 160.0, "the fixture stretches");
+        let depth = p.app.session.history.undo_depth();
+
+        let at = p.run("160");
+        p.scrub(at);
+        let h = drawn(&p.app, a).height();
+        assert!(h > 170.0, "the height landed: {h}, from 160 by 80 points");
+        assert_eq!(
+            p.app.session.doc.get(a).unwrap().item().align_self,
+            Some(AlignItems::Start),
+            "out of the stretch"
+        );
+        assert_eq!(p.app.session.history.undo_depth(), depth + 1, "as one step");
+    }
+
+    /// *Ratio* on H, picked from its unit's menu, holds H at the drawn W : H and
+    /// reads it as `2 : 1`, and the proportions lock gives H its room; a ratio
+    /// typed there resizes H to it, W held.
+    ///
+    /// flip: `size_mode_tx`'s Ratio arm writing no ratio → fails at *"a ratio on
+    /// H"*; the lock drawn whatever `held_by_ratio` says → fails at *"no lock"*.
+    #[test]
+    fn ratio_on_h_holds_it_to_w() {
+        let mut s = scene();
+        let page = s.app.session.doc.first_page();
+        let r = s.app.session.ids.mint();
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::CreateNode {
+                    id: r,
+                    parent: page,
+                    index: 0,
+                    kind: NodeKind::Rect {
+                        size: Size::new(200.0, 100.0),
+                        corner_radii: RoundedRectRadii::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: Some(Affine::translate((900.0, 0.0))),
+                    name: None,
+                }]))
+        );
+        let mut p = Panel::new(s.app, transform_card);
+        p.app.session.selection.set(vec![r]);
+        assert_eq!(p.runs(icon::ASPECT_RATIO).len(), 1, "the fixture: a lock");
+        // H's unit is the right-hand `px`.
+        let units = p.runs("px");
+        let unit = *units
+            .iter()
+            .max_by(|a, b| a.x.total_cmp(&b.x))
+            .expect("two units");
+        p.click(unit);
+        let at = p.run("Ratio");
+        p.click(at);
+        let item = *p.app.session.doc.get(r).unwrap().item();
+        assert_eq!(
+            item.aspect_ratio,
+            Some(mastik_core::container::AspectRatio {
+                ratio: 2.0,
+                side: mastik_core::container::RatioSide::Height,
+            }),
+            "a ratio on H"
+        );
+        assert!(p.runs(icon::ASPECT_RATIO).is_empty(), "no lock");
+        p.retype("2 : 1", "4:1", egui::Key::Enter);
+        assert_eq!(
+            mastik_core::edit::resizable_size(p.app.session.doc.get(r).unwrap().kind()),
+            Some(Size::new(200.0, 50.0)),
+            "H follows W at 4 : 1"
+        );
+        p.run("4 : 1");
+    }
+
+    /// The sizing menu opens under the unit that was clicked, with room either side
+    /// of the lit row's text.
+    ///
+    /// flip: the popup on the unit with its default alignment → fails at *"under the
+    /// unit"*; the row padding dropped → fails at *"room
+    /// either side"*. The highlight is searched from the end of the shapes: from the
+    /// front it finds the rotation field's ground under the popup.
+    #[test]
+    fn the_size_menu_opens_under_its_unit() {
+        let s = scene();
+        let a = s.a;
+        let mut p = Panel::new(s.app, transform_card);
+        p.app.session.selection.set(vec![a]);
+        let unit = p.run("px");
+        let button = |pressed| egui::Event::PointerButton {
+            pos: unit,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        p.frame(vec![egui::Event::PointerMoved(unit), button(true)]);
+        p.frame(vec![button(false)]);
+        let row = p.run("%");
+        assert!(row.y > unit.y, "below it: {row:?} against {unit:?}");
+
+        // The lit row (`px`, W's mode) and the highlight behind its text.
+        let out = p.frame(Vec::new());
+        let text = out
+            .shapes
+            .iter()
+            .rev()
+            .find_map(|cs| match &cs.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text() == "px" && t.pos.y > unit.y => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .expect("the menu's px row");
+        let lit = out
+            .shapes
+            .iter()
+            .rev()
+            .find_map(|cs| match &cs.shape {
+                egui::epaint::Shape::Rect(r)
+                    if r.fill.a() > 0
+                        && r.rect.contains(text.center())
+                        && r.rect.height() < 40.0 =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("the lit row's highlight");
+        // Right edges together: the rows are as wide as the longest mode's name, so
+        // the menu's right edge is what lines up with the unit.
+        assert!(
+            (lit.right() - unit.x).abs() < 24.0,
+            "under the unit: the menu's right edge at x {} against the unit's {}",
+            lit.right(),
+            unit.x
+        );
+        let (left, right) = (text.left() - lit.left(), lit.right() - text.right());
+        assert!(
+            left >= 7.0 && right >= 7.0,
+            "room either side of the text: {left} and {right}"
+        );
+    }
+
+    /// A stretched item dragged by its top handle previews as it lands: shorter, its
+    /// bottom held at the row's.
+    ///
+    /// flip, each → fails at *"the preview follows the handle"*: `set_preview`
+    /// without the holds; `resized_from_cross_start` answering `false`;
+    /// `RenderOverrides`' `flex_relayout` falling back to the document's transform
+    /// where `item_placed` answers `local: None`.
+    #[test]
+    fn a_stretched_item_dragged_by_its_top_previews_as_it_lands() {
+        let mut s = scene();
+        let tx = crate::tools::resize_layer(
+            &s.app.session.doc,
+            &s.app.session.resolved,
+            s.a,
+            crate::preview::Handle::Top,
+            mastik_core::kurbo::Point::new(40.0, 110.0),
+            crate::tools::Resize::default(),
+        );
+        s.app.session.set_preview(&tx);
+        let seen = s.app.session.preview_world_bounds(s.a).expect("measured");
+        assert_eq!(
+            (seen.y0.round(), seen.y1.round()),
+            (110.0, 180.0),
+            "the preview follows the handle"
+        );
+        s.app.session.commit(tx);
+        let landed = drawn(&s.app, s.a);
+        assert_eq!(
+            (landed.y0.round(), landed.y1.round()),
+            (110.0, 180.0),
+            "and lands there"
+        );
+        assert_eq!(
+            s.app.session.doc.get(s.a).unwrap().item().align_self,
+            Some(AlignItems::End)
+        );
+    }
+
+    /// On the Item card's painted text, a field over a selection that disagrees
+    /// reads "Mixed" and a basis at `auto` reads `auto`.
+    ///
+    /// flip: `mixed_if` back to a dash → fails at *"the grow field says so"*; the
+    /// keyword dropped from `size_field` → fails at the same line (the basis's
+    /// digits read "Mixed" too), not at *"the basis reads its keyword"*; the
+    /// `word.is_none()` gate dropped → fails at *"and has no unit"*.
+    #[test]
+    fn a_mixed_field_reads_mixed_and_an_unset_basis_reads_auto() {
+        let mut s = scene();
+        set_item(&mut s.app, s.a, |i| i.grow = 1.0);
+        s.app.session.selection.set(vec![s.a, s.b]);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let out = ctx.run_ui(Default::default(), |ui| {
+            ui.set_max_width(284.0);
+            s.app.inspector_item(ui);
+        });
+        let texts: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::epaint::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        let count = |w: &str| texts.iter().filter(|t| *t == w).count();
+        assert_eq!(count("Mixed"), 1, "the grow field says so: {texts:?}");
+        assert_eq!(count("auto"), 1, "the basis reads its keyword: {texts:?}");
+        assert_eq!(count("–"), 0, "and has no unit (§15 D906): {texts:?}");
+    }
+
+    /// A row and a column selected together: the direction row draws
+    /// `ui::segment_mixed`'s dash where its first arrow was. The display and wrap
+    /// rows agree and no Container field has a unit, so one dash is the whole count.
+    ///
+    /// flip: the direction row's `None if i == 0` arm deleted → fails at *"the
+    /// direction row says it is mixed"*.
+    #[test]
+    fn a_segment_row_over_containers_that_disagree_marks_it() {
+        let mut s = scene();
+        let mut ids = IdSource::new(0xCB);
+        let column = ids.mint();
+        s.app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: column,
+                parent: s.app.session.doc.first_page(),
+                index: 1,
+                kind: NodeKind::Artboard {
+                    size: Size::new(200.0, 200.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((600.0, 0.0))),
+                name: None,
+            },
+            Operation::SetDisplay {
+                id: column,
+                display: Some(Display::Flex(Flex {
+                    direction: FlexDirection::Column,
+                    ..Default::default()
+                })),
+            },
+        ]));
+        s.app.session.selection.set(vec![s.frame, column]);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let out = ctx.run_ui(Default::default(), |ui| {
+            ui.set_max_width(284.0);
+            s.app.inspector_container(ui);
+        });
+        let dashes = out
+            .shapes
+            .iter()
+            .filter(
+                |cs| matches!(&cs.shape, egui::epaint::Shape::Text(t) if t.galley.text() == "–"),
+            )
+            .count();
+        assert_eq!(dashes, 1, "the direction row says it is mixed");
+    }
+
+    /// A bound direction draws its chip in the segmented control's place, naming
+    /// the variable, and the layout lays the word it holds.
+    ///
+    /// flip: `flex_rows` drawing the segmented control whatever is bound → fails
+    /// at "the chip names it".
+    #[test]
+    fn a_bound_direction_is_a_chip_in_the_controls_place() {
+        use mastik_core::variable::{Cell, CollectionId, Field, Mode, Scope, VarKind, Variable};
+        let mut s = scene();
+        let mut ids = IdSource::new(0xCC);
+        let (mode, var) = (ids.mint_mode(), ids.mint_var());
+        s.app.session.commit(Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: Mode {
+                    id: mode,
+                    name: "Mode 1".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: Variable {
+                    id: var,
+                    name: "cards-flow".into(),
+                    kind: VarKind::String,
+                    cells: [(mode, Cell::String("Column".into()))].into(),
+                    scope: Some(Scope::of([Field::FlexDirection])),
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ]));
+        s.app.bind_field(
+            FieldKey::Flow {
+                id: s.frame,
+                slot: 0,
+            },
+            var,
+        );
+        assert!(matches!(
+            s.app.session.doc.resolved_display(s.frame).as_deref(),
+            Some(Display::Flex(f)) if f.direction == FlexDirection::Column
+        ));
+        s.app.session.selection.set(vec![s.frame]);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let out = ctx.run_ui(Default::default(), |ui| {
+            ui.set_max_width(284.0);
+            s.app.inspector_container(ui);
+        });
+        let named = out.shapes.iter().any(
+            |cs| matches!(&cs.shape, egui::epaint::Shape::Text(t) if t.galley.text() == "cards-flow"),
+        );
+        assert!(named, "the chip names it");
+    }
+
+    /// A chart selected with a frame leaves the Container card to the frame,
+    /// whose gap then changes rather than the whole edit being refused.
+    /// flip: `container_subjects` keeping the chart → fails at "the frame alone".
+    #[test]
+    fn a_chart_beside_a_frame_is_no_container_subject() {
+        let mut s = scene();
+        let chart = s.app.session.ids.mint();
+        let page = s.app.session.doc.first_page();
+        let index = s
+            .app
+            .session
+            .doc
+            .get(page)
+            .map_or(0, |n| n.children().len());
+        let tx = mastik_core::edit::create_chart(
+            chart,
+            page,
+            index,
+            mastik_core::kurbo::Affine::IDENTITY,
+            mastik_core::kurbo::Point::new(-4000.0, 0.0),
+            mastik_core::kurbo::Point::new(-3520.0, 280.0),
+            mastik_core::peniko::Color::WHITE,
+            mastik_core::chart::Chart::sample(mastik_core::chart::ChartKind::Column),
+        );
+        assert!(s.app.session.commit(tx));
+        s.app.session.selection.set(vec![s.frame, chart]);
+        let subjects = s.app.container_subjects();
+        assert_eq!(subjects, vec![s.frame], "the frame alone");
+        let tx = s.app.display_tx(&subjects, |d| {
+            if let Display::Flex(f) = d {
+                f.column_gap = 17.0;
+            }
+        });
+        assert!(s.app.commit_edit(tx), "the edit lands");
+        let gap = match s.app.session.doc.get(s.frame).and_then(|n| n.display()) {
+            Some(Display::Flex(f)) => f.column_gap,
+            _ => 0.0,
+        };
+        assert_eq!(gap, 17.0);
+    }
+
+    /// Each card offers itself for what it describes and draws without panicking:
+    /// Container for the frame, Item for the rects, both for a mix, the out-of-flow
+    /// block for a pinned rect, the display row alone for a frame with no layout.
+    #[test]
+    fn each_card_offers_itself_for_what_it_describes() {
+        let mut s = scene();
+        s.app.session.selection.set(vec![s.frame]);
+        assert_eq!(s.app.container_subjects(), vec![s.frame]);
+        assert!(
+            s.app.item_subjects().is_empty(),
+            "a top-level frame is in no layout"
+        );
+        s.app.session.selection.set(vec![s.a, s.b]);
+        assert!(
+            s.app.container_subjects().is_empty(),
+            "a rect is no container"
+        );
+        assert_eq!(s.app.item_subjects(), vec![s.a, s.b]);
+
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let draw = |app: &mut MastikApp, selection: Vec<NodeId>| {
+            app.session.selection.set(selection);
+            // The inspector column's own width (`MastikApp::inspector_column`): at 240 a
+            // half-width gap field, which carries its CSS name as a unit, has no room
+            // left for its digits.
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                ui.set_max_width(284.0);
+                app.inspector_item(ui);
+                app.inspector_container(ui);
+                let id = app.session.selection.ids()[0];
+                let world = app
+                    .session
+                    .resolved
+                    .world_transform(id)
+                    .unwrap_or_default()
+                    .as_coeffs();
+                let size = Some(drawn(app, id).size());
+                app.inspector_transform(ui, id, world, size);
+            });
+        };
+        draw(&mut s.app, vec![s.frame]);
+        draw(&mut s.app, vec![s.a]);
+        draw(&mut s.app, vec![s.frame, s.a]);
+        // The limits' disclosure open, and uneven padding (opens the side fields).
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("flex-item-limits"), true));
+        let tx = s
+            .app
+            .flex_tx(&[s.frame], |f| f.padding = [4.0, 8.0, 12.0, 16.0]);
+        s.app.session.commit(tx);
+        draw(&mut s.app, vec![s.frame, s.a]);
+        set_item(&mut s.app, s.a, |i| i.grow = 1.0);
+        draw(&mut s.app, vec![s.a, s.b]);
+        s.app.session.commit(Transaction(vec![Operation::SetInsets {
+            id: s.a,
+            insets: Insets {
+                top: Some(LengthPct::Px(0.0)),
+                ..Default::default()
+            },
+        }]));
+        draw(&mut s.app, vec![s.a]);
+        s.app.set_display(&[s.frame], 0);
+        draw(&mut s.app, vec![s.frame]);
+    }
+
+    /// Where the run reading `text` is on the row whose label reads `label` —
+    /// level with it and right of it.
+    fn on_row(p: &mut Panel, label: &str, text: &str) -> egui::Pos2 {
+        let row = p.run(label);
+        p.runs(text)
+            .into_iter()
+            .find(|r| (r.y - row.y).abs() < 6.0 && r.x > row.x)
+            .unwrap_or_else(|| panic!("no {text:?} on the {label} row"))
+    }
+
+    /// Each size limit's field (`limit_rows`) writes its own limit and no other.
+    ///
+    /// flip: the `Max width` row's setter writing `min_width` → fails at *"each limit
+    /// its own number"*.
+    #[test]
+    fn each_limit_field_writes_its_own_limit() {
+        let s = scene();
+        let a = s.a;
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        let at = p.run("MIN / MAX");
+        p.click(at);
+        for (label, typed) in [
+            ("Min width", "30"),
+            ("Max width", "120"),
+            ("Min height", "20"),
+            ("Max height", "140"),
+        ] {
+            let at = on_row(&mut p, label, "auto");
+            type_number(&mut p, at, typed);
+        }
+        let item = *p.app.session.doc.get(a).unwrap().item();
+        assert_eq!(
+            [
+                item.min_width,
+                item.max_width,
+                item.min_height,
+                item.max_height
+            ],
+            [
+                Dimension::Px(30.0),
+                Dimension::Px(120.0),
+                Dimension::Px(20.0),
+                Dimension::Px(140.0)
+            ],
+            "each limit its own number"
+        );
+    }
+
+    /// The first gap field is the gap between items: `column-gap` in a row,
+    /// `row-gap` in a column (`flex_rows`).
+    ///
+    /// flip: `gap_row` handed `column_first: true` whatever the direction → fails at
+    /// *"a column: row-gap first"*.
+    #[test]
+    fn a_columns_first_gap_field_is_row_gap() {
+        let s = scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let (column_gap, row_gap) = (p.run("Column gap"), p.run("Row gap"));
+        assert!(
+            column_gap.x < row_gap.x,
+            "a row: column-gap first, {column_gap:?} against {row_gap:?}"
+        );
+        let tx = p
+            .app
+            .flex_tx(&[frame_id], |f| f.direction = FlexDirection::Column);
+        p.app.session.commit(tx);
+        let (column_gap, row_gap) = (p.run("Column gap"), p.run("Row gap"));
+        assert!(
+            row_gap.x < column_gap.x,
+            "a column: row-gap first, {row_gap:?} against {column_gap:?}"
+        );
+    }
+
+    /// Padding that differs side to side opens the four side fields by itself
+    /// (`padding_rows`); even padding leaves them closed.
+    ///
+    /// flip: `open = asked` (the `uneven` term dropped) → fails at *"uneven: open by
+    /// itself"*.
+    #[test]
+    fn uneven_padding_opens_the_side_fields_by_itself() {
+        let s = scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let glyphs = [
+            icon::SIDE_LEFT,
+            icon::SIDE_RIGHT,
+            icon::SIDE_TOP,
+            icon::SIDE_BOTTOM,
+        ];
+        let sides = |p: &mut Panel| glyphs.map(|g| p.runs(g).len());
+        assert_eq!(sides(&mut p), [0; 4], "even: closed");
+        let tx = p
+            .app
+            .flex_tx(&[frame_id], |f| f.padding = [4.0, 8.0, 12.0, 16.0]);
+        p.app.session.commit(tx);
+        assert_eq!(sides(&mut p), [1; 4], "uneven: open by itself");
+        for (glyph, value) in glyphs.into_iter().zip(["16", "8", "4", "12"]) {
+            on_row(&mut p, glyph, value);
+        }
+    }
+
+    /// Each Container mark's ↺ resets its own field, through the production
+    /// closures: clicks on the Column gap's glyph, the Row gap's and the left side's
+    /// (`ui::value_field_marked`'s prefix strip) on an instance that differs
+    /// from its main. Grid's rows and the Item card have their own tests below.
+    ///
+    /// flip: `gap_row`'s put made `*(if is_column_gap { r } else { c }) = v` → fails
+    /// at *"the column gap's ↺: the column gap back"*.
+    #[test]
+    fn each_container_marks_reset_writes_its_own_field() {
+        let mut s = scene();
+        // Wrapping, so the row gap's field is live — and its ↺ with it.
+        let tx = s.app.flex_tx(&[s.frame], |f| f.wrap = FlexWrap::Wrap);
+        assert!(s.app.session.commit(tx));
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::SetComponent {
+                    id: s.frame,
+                    component: true,
+                }]))
+        );
+        let inst = {
+            let doc = &s.app.session.doc;
+            let (tx, made) = mastik_core::insert_subtrees(
+                doc,
+                &mut s.app.session.ids,
+                &[mastik_core::Placement {
+                    nodes: doc.capture_subtree(s.frame).unwrap(),
+                    parent: doc.first_page(),
+                    index: None,
+                }],
+                Default::default(),
+            );
+            assert!(s.app.session.commit(tx));
+            made[0]
+        };
+        let tx = s.app.flex_tx(&[inst], |f| {
+            f.column_gap = 24.0;
+            f.row_gap = 30.0;
+            f.padding = [4.0, 8.0, 12.0, 16.0];
+        });
+        assert!(s.app.session.commit(tx));
+        let flex = |app: &MastikApp, id| match app.session.doc.get(id).unwrap().display() {
+            Some(Display::Flex(f)) => *f,
+            _ => panic!("the fixture lost its flex layout"),
+        };
+        let main = flex(&s.app, s.frame);
+        assert_eq!(
+            (main.column_gap, main.row_gap, main.padding),
+            (10.0, 0.0, [20.0; 4]),
+            "the fixture's main"
+        );
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![inst]);
+
+        let at = p.run(icon::ARROWS_OUT_LINE_HORIZONTAL);
+        p.click(at);
+        let f = flex(&p.app, inst);
+        assert_eq!(
+            f.column_gap, 10.0,
+            "the column gap's ↺: the column gap back"
+        );
+        assert_eq!(
+            (f.row_gap, f.padding),
+            (30.0, [4.0, 8.0, 12.0, 16.0]),
+            "and nothing else"
+        );
+
+        let at = p.run(icon::ARROWS_OUT_LINE_VERTICAL);
+        p.click(at);
+        let f = flex(&p.app, inst);
+        assert_eq!((f.column_gap, f.row_gap), (10.0, 0.0), "the row gap's ↺");
+        assert_eq!(f.padding, [4.0, 8.0, 12.0, 16.0], "the padding untouched");
+
+        // The side fields are open by themselves over uneven padding.
+        let at = p.run(icon::SIDE_LEFT);
+        p.click(at);
+        assert_eq!(
+            flex(&p.app, inst).padding,
+            [4.0, 8.0, 12.0, 20.0],
+            "the left side's ↺: the left side alone"
+        );
+    }
+
+    /// `s.frame` made a main and an instance of it placed at the root, as
+    /// `each_container_marks_reset_writes_its_own_field` builds it; the instance,
+    /// and its copies of `a` and `b` (each linked to its source).
+    fn instance_of_frame(s: &mut Scene) -> (NodeId, NodeId, NodeId) {
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::SetComponent {
+                    id: s.frame,
+                    component: true,
+                }]))
+        );
+        let doc = &s.app.session.doc;
+        let (tx, made) = mastik_core::insert_subtrees(
+            doc,
+            &mut s.app.session.ids,
+            &[mastik_core::Placement {
+                nodes: doc.capture_subtree(s.frame).unwrap(),
+                parent: doc.first_page(),
+                index: None,
+            }],
+            Default::default(),
+        );
+        assert!(s.app.session.commit(tx));
+        let inst = made[0];
+        let copy = |src| {
+            let doc = &s.app.session.doc;
+            doc.get(inst)
+                .unwrap()
+                .children()
+                .iter()
+                .copied()
+                .find(|c| doc.get(*c).unwrap().link() == Some(src))
+                .expect("a copy")
+        };
+        (inst, copy(s.a), copy(s.b))
+    }
+
+    impl Panel {
+        /// Settled, then where the first run whose text **begins** with `text`
+        /// is — a glyph combo's face (its label and value are one galley) or its
+        /// list's reset row (the ↺ glyph and the mark's tip).
+        fn run_starting(&mut self, text: &str) -> egui::Pos2 {
+            self.shapes()
+                .iter()
+                .find_map(|cs| match &cs.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text().starts_with(text) => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no run begins {text:?}"))
+        }
+
+        /// A glyph combo's mark reset: its face opened, then the list's first
+        /// row, `component::menu_reset_row`'s ↺ and *Reset to main · …*.
+        fn combo_reset(&mut self, face: &str) {
+            let at = self.run_starting(face);
+            self.click(at);
+            let reset = format!("{}Reset to main", icon::ARROW_COUNTER_CLOCKWISE);
+            let at = self.run_starting(&reset);
+            self.click(at);
+        }
+    }
+
+    /// Each flex Item mark's ↺ resets its own field, through the production
+    /// closures: clicks on *Flex grow*'s, *Flex shrink*'s and *Flex basis*'s labels
+    /// and the reset row of *Align self*'s list, on a copy whose four properties
+    /// differ from its main's.
+    ///
+    /// flip: `flex_item_rows`' grow and shrink put made `if !is_grow` → fails at
+    /// *"grow's ↺: grow back"*; *Flex basis*'s put made `i.min_width = d` → fails at
+    /// *"basis's ↺: basis back"*.
+    #[test]
+    fn each_flex_item_marks_reset_writes_its_own_field() {
+        let mut s = scene();
+        let (_, ai, _) = instance_of_frame(&mut s);
+        let main = *s.app.session.doc.get(s.a).unwrap().item();
+        assert_eq!(
+            (main.grow, main.shrink, main.basis, main.align_self),
+            (0.0, 1.0, Dimension::Auto, None),
+            "the fixture's main"
+        );
+        let own = LayoutItem {
+            grow: 2.0,
+            shrink: 3.0,
+            basis: Dimension::Px(80.0),
+            align_self: Some(AlignItems::Center),
+            ..main
+        };
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::SetLayoutItem {
+                    id: ai,
+                    item: own
+                }]))
+        );
+        let item = |app: &MastikApp| *app.session.doc.get(ai).unwrap().item();
+        assert_eq!(item(&s.app), own, "the fixture: the copy's own item");
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![ai]);
+
+        let at = p.run("Flex grow");
+        p.click(at);
+        assert_eq!(item(&p.app).grow, 0.0, "grow's ↺: grow back");
+        assert_eq!(
+            item(&p.app),
+            LayoutItem { grow: 0.0, ..own },
+            "and nothing else"
+        );
+
+        let at = p.run("Flex shrink");
+        p.click(at);
+        assert_eq!(
+            item(&p.app),
+            LayoutItem {
+                grow: 0.0,
+                shrink: 1.0,
+                ..own
+            },
+            "shrink's ↺: shrink back, and nothing else"
+        );
+
+        let at = p.run("Flex basis");
+        p.click(at);
+        assert_eq!(item(&p.app).basis, Dimension::Auto, "basis's ↺: basis back");
+        assert_eq!(
+            item(&p.app).align_self,
+            Some(AlignItems::Center),
+            "align-self untouched"
+        );
+
+        p.combo_reset("Align self");
+        assert_eq!(item(&p.app), main, "align-self's ↺: the copy is its main's");
+    }
+
+    /// Each grid Container mark's ↺ resets its own field: clicks on the lit *Column*
+    /// cell (`ui::segmented_marked`), *Grid template columns*' and *rows*' labels and
+    /// the reset row of *Justify items*' list, on a copy that differs from its main in
+    /// each. The gaps and padding are flex's, driven by
+    /// `each_container_marks_reset_writes_its_own_field`.
+    ///
+    /// flip: `track_list`'s put made `with_list(g, !rows, &l)` → fails at *"the
+    /// columns' ↺: columns back"*; *Justify items*' put made `g.align_items = v` →
+    /// fails earlier, at `combo_reset`'s *"no run begins …Reset to main"*, because
+    /// `sub_mark` then finds the reset would write nothing and draws no mark.
+    #[test]
+    fn each_grid_container_marks_reset_writes_its_own_field() {
+        let mut s = grid_scene();
+        let (inst, ..) = instance_of_frame(&mut s);
+        let main = grid_of(&s.app, s.frame);
+        assert_eq!(
+            (
+                main.auto_flow,
+                tracks_css_of(&main.columns),
+                main.rows.len(),
+                main.justify_items
+            ),
+            (
+                mastik_core::container::GridAutoFlow::Row,
+                "100px 1fr".to_owned(),
+                0,
+                None
+            ),
+            "the fixture's main"
+        );
+        let own = Grid {
+            auto_flow: mastik_core::container::GridAutoFlow::Column,
+            columns: mastik_core::container::parse_tracks("1fr").unwrap(),
+            rows: mastik_core::container::parse_tracks("40px").unwrap(),
+            justify_items: Some(AlignItems::Center),
+            ..main.clone()
+        };
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::SetDisplay {
+                    id: inst,
+                    display: Some(Display::Grid(own.clone())),
+                }]))
+        );
+        assert_eq!(
+            grid_of(&s.app, inst),
+            own,
+            "the fixture: the copy's own grid"
+        );
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![inst]);
+
+        let at = p.run("Column");
+        p.click(at);
+        assert_eq!(
+            grid_of(&p.app, inst),
+            Grid {
+                auto_flow: main.auto_flow,
+                ..own.clone()
+            },
+            "the flow's ↺: the flow back, and nothing else"
+        );
+
+        let at = p.run("Grid template columns");
+        p.click(at);
+        let g = grid_of(&p.app, inst);
+        assert_eq!(
+            tracks_css_of(&g.columns),
+            "100px 1fr",
+            "the columns' ↺: columns back"
+        );
+        assert_eq!(tracks_css_of(&g.rows), "40px", "the rows untouched");
+
+        let at = p.run("Grid template rows");
+        p.click(at);
+        let g = grid_of(&p.app, inst);
+        assert!(g.rows.is_empty(), "the rows' ↺: rows back");
+        assert_eq!(
+            g.justify_items,
+            Some(AlignItems::Center),
+            "justify-items untouched"
+        );
+
+        p.combo_reset("Justify items");
+        assert_eq!(
+            grid_of(&p.app, inst),
+            main,
+            "justify-items' ↺: the copy is its main's"
+        );
+    }
+
+    /// Each grid Item mark's ↺ resets its own field: clicks on *Grid column*'s and
+    /// *Grid row*'s labels and the reset row of *Justify self*'s list, on a copy
+    /// that differs from its main in each.
+    ///
+    /// flip: the lines' put in `grid_item_rows` made `if !rows` → fails at
+    /// *"grid-column's ↺: the column back"*.
+    #[test]
+    fn each_grid_item_marks_reset_writes_its_own_field() {
+        use mastik_core::container::{GridLines, GridPlacement};
+        let mut s = grid_scene();
+        let (_, ai, _) = instance_of_frame(&mut s);
+        let main = *s.app.session.doc.get(s.a).unwrap().item();
+        assert_eq!(
+            (main.grid_column, main.grid_row, main.justify_self),
+            (GridLines::default(), GridLines::default(), None),
+            "the fixture's main"
+        );
+        let own = LayoutItem {
+            grid_column: GridLines {
+                start: GridPlacement::Line(2),
+                end: GridPlacement::Auto,
+            },
+            grid_row: GridLines {
+                start: GridPlacement::Line(1),
+                end: GridPlacement::Span(2),
+            },
+            justify_self: Some(AlignItems::Center),
+            ..main
+        };
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::SetLayoutItem {
+                    id: ai,
+                    item: own
+                }]))
+        );
+        let item = |app: &MastikApp| *app.session.doc.get(ai).unwrap().item();
+        assert_eq!(item(&s.app), own, "the fixture: the copy's own item");
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![ai]);
+
+        let at = p.run("Grid column");
+        p.click(at);
+        assert_eq!(
+            item(&p.app).grid_column,
+            main.grid_column,
+            "grid-column's ↺: the column back"
+        );
+        assert_eq!(
+            item(&p.app),
+            LayoutItem {
+                grid_column: main.grid_column,
+                ..own
+            },
+            "and nothing else"
+        );
+
+        let at = p.run("Grid row");
+        p.click(at);
+        assert_eq!(item(&p.app).grid_row, main.grid_row, "grid-row's ↺");
+        assert_eq!(
+            item(&p.app).justify_self,
+            Some(AlignItems::Center),
+            "justify-self untouched"
+        );
+
+        p.combo_reset("Justify self");
+        assert_eq!(
+            item(&p.app),
+            main,
+            "justify-self's ↺: the copy is its main's"
+        );
+    }
+
+    /// An overridden row gap's ↺ can be clicked on a row that does not wrap, where
+    /// the field is disabled and a disabled field does not sense the prefix press.
+    ///
+    /// flip: `gap_row`'s `live` without `|| mark.is_some()` → fails at *"the row
+    /// gap's ↺ on a row that does not wrap"*.
+    #[test]
+    fn an_inert_row_gaps_mark_still_resets() {
+        let mut s = scene();
+        let (inst, ..) = instance_of_frame(&mut s);
+        let tx = s.app.flex_tx(&[inst], |f| f.row_gap = 30.0);
+        assert!(s.app.session.commit(tx));
+        let flex = |app: &MastikApp| match app.session.doc.get(inst).unwrap().display() {
+            Some(Display::Flex(f)) => *f,
+            _ => panic!("the fixture lost its flex layout"),
+        };
+        assert_eq!(
+            (flex(&s.app).wrap, flex(&s.app).row_gap),
+            (FlexWrap::NoWrap, 30.0),
+            "the fixture: a row that does not wrap, its row gap its own"
+        );
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![inst]);
+        let at = p.run(icon::ARROWS_OUT_LINE_VERTICAL);
+        p.click(at);
+        assert_eq!(
+            flex(&p.app).row_gap,
+            0.0,
+            "the row gap's ↺ on a row that does not wrap"
+        );
+    }
+
+    fn tracks_css_of(l: &[mastik_core::container::Track]) -> String {
+        mastik_core::container::tracks_css(l)
+    }
+
+    /// An *Align items* pick (`flex_rows`) writes the value picked and nothing else.
+    ///
+    /// flip: the pick writing `AlignItems::Start` whatever was clicked → fails at
+    /// *"align-items, and nothing else"*.
+    #[test]
+    fn an_align_items_pick_writes_the_value_picked() {
+        let s = scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let flex = |app: &MastikApp| match app.session.doc.get(frame_id).unwrap().display() {
+            Some(Display::Flex(f)) => *f,
+            _ => panic!("the fixture lost its flex layout"),
+        };
+        let before = flex(&p.app);
+        assert_eq!(before.align_items, AlignItems::Stretch, "the fixture");
+        // A glyph combo's label and face are one galley.
+        let face = p.run("Align itemsStretch");
+        p.click(face);
+        let row = p.run("Center");
+        p.click(row);
+        assert_eq!(
+            flex(&p.app),
+            Flex {
+                align_items: AlignItems::Center,
+                ..before
+            },
+            "align-items, and nothing else"
+        );
+    }
+
+    // --- grid's rows -------------------------------------------------
+
+    /// `scene` with the frame's row turned into a grid of `100px 1fr` columns —
+    /// its gap 10 and padding 20 kept, as picking *Grid* keeps them.
+    fn grid_scene() -> Scene {
+        let mut s = scene();
+        s.app.set_display(&[s.frame], 2);
+        let Some(Display::Grid(g)) = s.app.session.doc.get(s.frame).unwrap().display().cloned()
+        else {
+            panic!("the fixture's grid");
+        };
+        let columns = mastik_core::container::parse_tracks("100px 1fr").unwrap();
+        s.app
+            .session
+            .commit(Transaction(vec![Operation::SetDisplay {
+                id: s.frame,
+                display: Some(Display::Grid(Grid { columns, ..g })),
+            }]));
+        s
+    }
+
+    fn press(at: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+
+    impl Panel {
+        /// A click at `at`, and a frame to let it land.
+        fn click(&mut self, at: egui::Pos2) {
+            self.frame(vec![egui::Event::PointerMoved(at), press(at, true)]);
+            self.frame(vec![press(at, false)]);
+            self.frame(Vec::new());
+        }
+
+        /// Focus the field whose text reads `shown`, type `text` over it (a field
+        /// selects all on focus) and leave by `leave`.
+        fn retype(&mut self, shown: &str, text: &str, leave: egui::Key) {
+            let at = self.run(shown);
+            self.click(at);
+            self.frame(vec![egui::Event::Text(text.into())]);
+            self.frame(vec![key(leave)]);
+            for _ in 0..2 {
+                self.frame(Vec::new());
+            }
+        }
+
+        /// Settled, then where every run reading exactly `text` is, top to bottom.
+        fn runs(&mut self, text: &str) -> Vec<egui::Pos2> {
+            self.shapes()
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text() == text => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// Settled, then what the card painted.
+        fn shapes(&mut self) -> Vec<egui::epaint::ClippedShape> {
+            for _ in 0..2 {
+                self.frame(Vec::new());
+            }
+            self.frame(Vec::new()).shapes
+        }
+
+        /// Press at `from`, move to `to` in four steps, and let go only if
+        /// `release` — a grip's drag.
+        fn drag(&mut self, from: egui::Pos2, to: egui::Pos2, release: bool) {
+            self.frame(vec![egui::Event::PointerMoved(from), press(from, true)]);
+            for step in 1..=4 {
+                let at = from + (to - from) * (step as f32 / 4.0);
+                self.frame(vec![egui::Event::PointerMoved(at)]);
+            }
+            if release {
+                self.frame(vec![press(to, false)]);
+                self.frame(Vec::new());
+            }
+        }
+    }
+
+    /// Whether `shapes` hold a carried track row: a grip off every one of the
+    /// `resting` grips' heights, which `carried_unit` moves it from.
+    fn carried(shapes: &[egui::epaint::ClippedShape], resting: &[egui::Pos2]) -> bool {
+        shapes.iter().any(|cs| match &cs.shape {
+            egui::epaint::Shape::Text(t) if t.galley.text() == icon::DOTS_SIX_VERTICAL => {
+                let y = t.galley.rect.translate(t.pos.to_vec2()).center().y;
+                resting.iter().all(|r| (r.y - y).abs() > 0.5)
+            }
+            _ => false,
+        })
+    }
+
+    fn grid_of(app: &MastikApp, id: NodeId) -> Grid {
+        match app.session.doc.get(id).unwrap().display() {
+            Some(Display::Grid(g)) => g.clone(),
+            other => panic!("not a grid: {other:?}"),
+        }
+    }
+
+    /// Picking *Grid* keeps the padding and the gaps from the flex row and nothing
+    /// else — the tracks start empty, CSS's `none`.
+    ///
+    /// flip: `set_display`'s `kept` returning the fresh layout untouched → fails at
+    /// *"the padding travelled"*.
+    #[test]
+    fn picking_grid_keeps_the_padding_and_the_gaps() {
+        let s = scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let at = p.run("Grid");
+        p.click(at);
+        let g = grid_of(&p.app, frame_id);
+        assert_eq!(g.padding, [20.0; 4], "the padding travelled");
+        assert_eq!(g.column_gap, 10.0, "and the gap");
+        assert!(g.columns.is_empty() && g.rows.is_empty(), "no tracks yet");
+    }
+
+    /// The column list's `+` adds a `1fr` track, the cross removes one, and the count
+    /// reads the track total.
+    #[test]
+    fn a_track_is_added_with_the_plus_and_removed_with_the_cross() {
+        let s = grid_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        p.run("2 tracks");
+        // The first `+` is the columns' — their head is above the rows'.
+        let at = p.run(icon::PLUS);
+        p.click(at);
+        let css =
+            |app: &MastikApp| mastik_core::container::tracks_css(&grid_of(app, frame_id).columns);
+        assert_eq!(css(&p.app), "100px 1fr 1fr");
+        let at = p.run(icon::X);
+        p.click(at);
+        assert_eq!(css(&p.app), "1fr 1fr", "the first entry's cross");
+    }
+
+    /// The CSS line applies on Enter and never on Escape (`ui::defocus_commits`); a
+    /// list with no unit is refused with its reason under the field.
+    ///
+    /// flip: `css_field` committing on a bare `lost_focus()` → fails at *"Escape
+    /// abandons it"*.
+    #[test]
+    fn the_css_line_applies_on_enter_and_never_on_escape() {
+        let s = grid_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let css =
+            |app: &MastikApp| mastik_core::container::tracks_css(&grid_of(app, frame_id).columns);
+        p.retype("100px 1fr", "200px repeat(2, 1fr)", egui::Key::Enter);
+        assert_eq!(css(&p.app), "200px repeat(2, 1fr)", "Enter applies it");
+        p.retype("200px repeat(2, 1fr)", "50px", egui::Key::Escape);
+        assert_eq!(css(&p.app), "200px repeat(2, 1fr)", "Escape abandons it");
+        let depth = p.app.session.history.undo_depth();
+        p.retype("200px repeat(2, 1fr)", "100", egui::Key::Enter);
+        assert_eq!(css(&p.app), "200px repeat(2, 1fr)", "a bad list is refused");
+        assert_eq!(p.app.session.history.undo_depth(), depth, "with no step");
+        p.run("100 needs a unit: px, % or fr");
+    }
+
+    /// An automatic repeat beside an `fr` track is refused under the CSS line with
+    /// the track it needs fixed named; on its own it applies, and the list's head
+    /// reads *repeats to fit* for a count the frame's width decides, its `+`
+    /// disabled.
+    ///
+    /// flip: the CSS line's refusal falling back to the plain *CSS does not accept
+    /// that list* → fails at the named refusal; the `+` enabled whatever the list
+    /// holds → fails at *"the columns' + disabled"* (the click alone cannot tell,
+    /// since the operation refuses the `1fr` too).
+    #[test]
+    fn an_automatic_repeat_is_refused_with_its_reason_and_counts_to_fit() {
+        let s = grid_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let css =
+            |app: &MastikApp| mastik_core::container::tracks_css(&grid_of(app, frame_id).columns);
+        let depth = p.app.session.history.undo_depth();
+        p.retype(
+            "100px 1fr",
+            "repeat(auto-fill, 100px) 1fr",
+            egui::Key::Enter,
+        );
+        assert_eq!(css(&p.app), "100px 1fr", "refused");
+        assert_eq!(p.app.session.history.undo_depth(), depth, "with no step");
+        p.run(
+            "auto-fill needs every track to have a fixed size — track 2, 1fr, has none. Make it \
+             px, %, or a minmax with a px end",
+        );
+        p.retype("100px 1fr", "repeat(auto-fill, 100px)", egui::Key::Enter);
+        assert_eq!(css(&p.app), "repeat(auto-fill, 100px)");
+        p.run("repeats to fit");
+        // The `+`s, columns' first: its `1fr` could not stand beside the repeat, so
+        // it is drawn disabled; the rows' stays live.
+        let pluses: Vec<egui::Color32> = p
+            .shapes()
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text() == icon::PLUS => {
+                    Some(t.fallback_color)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            pluses,
+            [theme::text::disabled(), theme::text::muted()],
+            "the columns' + disabled"
+        );
+        let depth = p.app.session.history.undo_depth();
+        let at = p.runs(icon::PLUS)[0];
+        p.click(at);
+        assert_eq!(
+            css(&p.app),
+            "repeat(auto-fill, 100px)",
+            "the + adds nothing"
+        );
+        assert_eq!(p.app.session.history.undo_depth(), depth, "and no step");
+    }
+
+    /// The *repeats once* note reads the layout: a frame that fits its content,
+    /// grown by its row parent to 240 wide, repeats `auto-fill` twice and has no
+    /// note; not grown, it has nothing to fill, and the note shows.
+    ///
+    /// flip: the note's `laid_once` test dropped → fails at *"grown, no note"*.
+    #[test]
+    fn a_grown_fit_content_grid_has_no_repeats_once_note() {
+        const NOTE: &str = "Fit content gives no width to fill — it repeats once";
+        let mut s = scene();
+        let inner = s.app.session.ids.mint();
+        assert!(s.app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: inner,
+                parent: s.frame,
+                index: 2,
+                kind: NodeKind::Artboard {
+                    size: Size::new(50.0, 50.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::IDENTITY),
+                name: None,
+            },
+            Operation::SetDisplay {
+                id: inner,
+                display: Some(Display::Grid(Grid {
+                    columns:
+                        mastik_core::container::parse_tracks("repeat(auto-fill, 100px)").unwrap(),
+                    ..Default::default()
+                })),
+            },
+        ])));
+        set_item(&mut s.app, inner, |i| {
+            i.width = Dimension::FitContent;
+            i.grow = 1.0;
+        });
+        // 400 less the padding, the two rects and two gaps.
+        assert_eq!(drawn(&s.app, inner).width(), 240.0, "fixture: grown");
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![inner]);
+        p.run("repeats to fit");
+        assert!(p.runs(NOTE).is_empty(), "grown, no note");
+        set_item(&mut p.app, inner, |i| i.grow = 0.0);
+        p.run(NOTE);
+    }
+
+    /// `grid_scene` with its columns set to `css`.
+    fn grid_with_columns(css: &str) -> Scene {
+        let mut s = grid_scene();
+        let mut g = grid_of(&s.app, s.frame);
+        g.columns = mastik_core::container::parse_tracks(css).unwrap();
+        s.app
+            .session
+            .commit(Transaction(vec![Operation::SetDisplay {
+                id: s.frame,
+                display: Some(Display::Grid(g)),
+            }]));
+        s
+    }
+
+    /// A click in and out of a *Mixed* template line (two grids with different
+    /// columns) writes nothing: an empty buffer must not compare unequal to the
+    /// `None` a mixed selection shows, or both grids lose every column.
+    ///
+    /// flip: `css_field` comparing against `shown` → fails at *"both grids keep
+    /// their columns"*. The click must land on the second *Mixed*; the first is the
+    /// list's summary and focuses nothing.
+    #[test]
+    fn a_click_through_a_mixed_template_line_writes_nothing() {
+        let mut s = grid_scene();
+        let other = s.app.session.ids.mint();
+        let root = s.app.session.doc.first_page();
+        assert!(s.app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: other,
+                parent: root,
+                index: 1,
+                kind: NodeKind::Artboard {
+                    size: Size::new(300.0, 200.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((600.0, 0.0))),
+                name: None,
+            },
+            Operation::SetDisplay {
+                id: other,
+                display: Some(Display::Grid(Grid {
+                    columns: mastik_core::container::parse_tracks("1fr 1fr 1fr").unwrap(),
+                    ..Default::default()
+                })),
+            },
+        ])));
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id, other]);
+        let depth = p.app.session.history.undo_depth();
+        // The second *Mixed*: the first is the column list's summary.
+        let at = p.runs(ui::MIXED_WORD)[1];
+        p.click(at);
+        p.frame(vec![key(egui::Key::Enter)]);
+        for _ in 0..2 {
+            p.frame(Vec::new());
+        }
+        let css =
+            |app: &MastikApp, id| mastik_core::container::tracks_css(&grid_of(app, id).columns);
+        assert_eq!(
+            (css(&p.app, frame_id), css(&p.app, other)),
+            ("100px 1fr".to_owned(), "1fr 1fr 1fr".to_owned()),
+            "both grids keep their columns"
+        );
+        assert_eq!(p.app.session.history.undo_depth(), depth, "and no step");
+    }
+
+    /// Picking a `minmax()` end's lit unit changes nothing.
+    ///
+    /// flip: the `k != kind` filter deleted → fails at *"unchanged"*.
+    #[test]
+    fn picking_a_minmax_ends_lit_unit_changes_nothing() {
+        let s = grid_with_columns("minmax(200px, 1fr) 50px");
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let depth = p.app.session.history.undo_depth();
+        // The min's unit: the first `px` in the card, the column list leading it.
+        let unit = p.runs("px")[0];
+        p.click(unit);
+        let row = p
+            .runs("px")
+            .into_iter()
+            .filter(|r| r.y > unit.y + 4.0)
+            .min_by(|a, b| a.y.total_cmp(&b.y))
+            .expect("the menu's px row under the unit");
+        p.click(row);
+        assert_eq!(
+            mastik_core::container::tracks_css(&grid_of(&p.app, frame_id).columns),
+            "minmax(200px, 1fr) 50px",
+            "unchanged"
+        );
+        assert_eq!(p.app.session.history.undo_depth(), depth, "and no step");
+    }
+
+    /// `0` typed over a keyword lands (`minmax(auto, 1fr)` becomes
+    /// `minmax(0, 1fr)`) although the hidden number under a keyword is already 0;
+    /// a letter typed over it writes nothing.
+    ///
+    /// flip: the keystroke clause deleted → fails at *"minmax(0, 1fr)"*; the clause
+    /// accepting any character → fails at *"a letter is no number"*.
+    #[test]
+    fn zero_typed_over_a_keyword_lands() {
+        let s = grid_with_columns("minmax(auto, 1fr)");
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        p.retype("auto", "x", egui::Key::Enter);
+        assert_eq!(
+            mastik_core::container::tracks_css(&grid_of(&p.app, frame_id).columns),
+            "minmax(auto, 1fr)",
+            "a letter is no number: nothing written"
+        );
+        p.retype("auto", "0", egui::Key::Enter);
+        assert_eq!(
+            mastik_core::container::tracks_css(&grid_of(&p.app, frame_id).columns),
+            "minmax(0px, 1fr)",
+            "minmax(0, 1fr)"
+        );
+    }
+
+    /// `grid_scene` with one 50px row and a `head` area across both columns, and
+    /// item `a` placed in it.
+    fn areas_scene() -> Scene {
+        let mut s = grid_with_columns("100px 1fr");
+        let mut g = grid_of(&s.app, s.frame);
+        g.rows = mastik_core::container::parse_tracks("50px").unwrap();
+        g.areas = mastik_core::container::parse_areas("\"head head\"").unwrap();
+        let mut item = *s.app.session.doc.get(s.a).unwrap().item();
+        item.grid_area = Some(mastik_core::container::AreaName::new("head"));
+        assert!(s.app.session.commit(Transaction(vec![
+            Operation::SetDisplay {
+                id: s.frame,
+                display: Some(Display::Grid(g)),
+            },
+            Operation::SetLayoutItem { id: s.a, item },
+        ])));
+        s
+    }
+
+    /// The Container card's areas: the head counts them, the map names them, and
+    /// the CSS line takes typed areas or says why not.
+    ///
+    /// flip: `area_map`'s CSS line committing nothing → fails at *"typed areas
+    /// apply"*.
+    #[test]
+    fn grid_areas_are_mapped_and_typed_as_css() {
+        let s = areas_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        p.run("Grid template areas");
+        p.run("1 area");
+        p.run("head");
+        p.retype("\"head head\"", "\"a b\"", egui::Key::Enter);
+        let names: Vec<String> = grid_of(&p.app, frame_id)
+            .areas
+            .iter()
+            .map(|a| a.name.to_string())
+            .collect();
+        assert_eq!(names, ["a", "b"], "typed areas apply");
+        p.run("2 areas");
+        let depth = p.app.session.history.undo_depth();
+        p.retype("\"a b\"", "\"a b a\"", egui::Key::Enter);
+        assert_eq!(p.app.session.history.undo_depth(), depth, "refused");
+        p.run("An area must be a rectangle — \"a\" is not");
+    }
+
+    /// A double-click on an area in the map opens its name; a name typed there
+    /// renames it, and the item placed in it follows in the same step.
+    ///
+    /// flip: `commit_inner` without `keep_area_names` → fails at *"the item
+    /// follows"*.
+    #[test]
+    fn renaming_an_area_in_the_map_carries_its_items() {
+        let s = areas_scene();
+        let (frame_id, a) = (s.frame, s.a);
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let at = p.run("head");
+        p.frame(vec![egui::Event::PointerMoved(at)]);
+        p.click(at);
+        p.click(at);
+        let depth = p.app.session.history.undo_depth();
+        p.frame(vec![egui::Event::Text("main".into())]);
+        p.frame(vec![key(egui::Key::Enter)]);
+        p.frame(Vec::new());
+        let names: Vec<String> = grid_of(&p.app, frame_id)
+            .areas
+            .iter()
+            .map(|a| a.name.to_string())
+            .collect();
+        assert_eq!(names, ["main"], "renamed");
+        assert_eq!(
+            p.app.session.doc.get(a).unwrap().item().grid_area,
+            Some(mastik_core::container::AreaName::new("main")),
+            "the item follows"
+        );
+        assert_eq!(p.app.session.history.undo_depth(), depth + 1, "one step");
+    }
+
+    /// A drag across empty cells makes an area and opens its name; the name typed
+    /// there joins the drag's undo step, so one undo takes the area away.
+    ///
+    /// flip: the rename committing with `commit_edit` whatever its `fold` → fails
+    /// at *"making and naming is one step"*.
+    #[test]
+    fn making_and_naming_an_area_is_one_step() {
+        let s = areas_scene();
+        let frame_id = s.frame;
+        let mut g = grid_of(&s.app, frame_id);
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        g.rows = mastik_core::container::parse_tracks("50px 50px").unwrap();
+        assert!(
+            p.app
+                .session
+                .commit(Transaction(vec![Operation::SetDisplay {
+                    id: frame_id,
+                    display: Some(Display::Grid(g)),
+                }]))
+        );
+        p.app.session.selection.set(vec![frame_id]);
+        let head = p.run("head");
+        let depth = p.app.session.history.undo_depth();
+        // The empty second row, under `head`'s label.
+        let row2 = head + egui::vec2(0.0, ui::CONTROL_H + 3.0);
+        p.drag(row2, row2 + egui::vec2(8.0, 0.0), true);
+        p.frame(vec![egui::Event::Text("side".into())]);
+        p.frame(vec![key(egui::Key::Enter)]);
+        p.frame(Vec::new());
+        let names = |app: &MastikApp| -> Vec<String> {
+            grid_of(app, frame_id)
+                .areas
+                .iter()
+                .map(|a| a.name.to_string())
+                .collect()
+        };
+        assert_eq!(names(&p.app), ["head", "side"], "made and named");
+        assert_eq!(
+            p.app.session.history.undo_depth(),
+            depth + 1,
+            "making and naming is one step"
+        );
+        p.app.session.undo();
+        assert_eq!(names(&p.app), ["head"], "one undo takes it away");
+    }
+
+    /// A right-button drag across the map's empty cells makes no area: only the
+    /// left button draws one, and a right-click during it drops it.
+    ///
+    /// The cancel is egui's own (the right press ends its drag), so no flip of
+    /// ours reaches *"a right-click cancels a left drag"*; it pins egui's
+    /// behaviour.
+    /// flip: `area_cells` starting and ending its drag on `drag_started()` and
+    /// `drag_stopped()`, any button → fails at *"no area"*. Either guard alone
+    /// holds: the flip has to take both.
+    #[test]
+    fn a_right_drag_on_the_area_map_makes_nothing() {
+        let s = areas_scene();
+        let frame_id = s.frame;
+        let mut g = grid_of(&s.app, frame_id);
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        g.rows = mastik_core::container::parse_tracks("50px 50px").unwrap();
+        assert!(
+            p.app
+                .session
+                .commit(Transaction(vec![Operation::SetDisplay {
+                    id: frame_id,
+                    display: Some(Display::Grid(g)),
+                }]))
+        );
+        p.app.session.selection.set(vec![frame_id]);
+        let head = p.run("head");
+        let depth = p.app.session.history.undo_depth();
+        let row2 = head + egui::vec2(0.0, ui::CONTROL_H + 3.0);
+        let right = |at: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        p.frame(vec![egui::Event::PointerMoved(row2), right(row2, true)]);
+        for step in 1..=4 {
+            let at = row2 + egui::vec2(2.0 * step as f32, 0.0);
+            p.frame(vec![egui::Event::PointerMoved(at)]);
+        }
+        p.frame(vec![right(row2 + egui::vec2(8.0, 0.0), false)]);
+        for _ in 0..3 {
+            p.frame(Vec::new());
+        }
+        assert_eq!(grid_of(&p.app, frame_id).areas.len(), 1, "no area");
+        assert_eq!(p.app.session.history.undo_depth(), depth, "and no step");
+        // A right-click during a left drag drops it.
+        let to = row2 + egui::vec2(8.0, 0.0);
+        p.drag(row2, to, false);
+        p.frame(vec![right(to, true)]);
+        p.frame(vec![right(to, false)]);
+        p.frame(vec![press(to, false)]);
+        for _ in 0..3 {
+            p.frame(Vec::new());
+        }
+        assert_eq!(
+            grid_of(&p.app, frame_id).areas.len(),
+            1,
+            "a right-click cancels a left drag"
+        );
+        p.drag(row2, to, true);
+        for _ in 0..3 {
+            p.frame(Vec::new());
+        }
+        assert_eq!(
+            grid_of(&p.app, frame_id).areas.len(),
+            2,
+            "the control: a left drag alone makes one"
+        );
+    }
+
+    /// An axis that repeats to fit draws the map on the tracks laid at the frame's
+    /// size, with a caption saying so: `repeat(auto-fill, 100px)` across the
+    /// fixture's 360 of content lays three columns, `head` over two of them and
+    /// one cell empty.
+    ///
+    /// flip: `area_cells` counting with `map_tracks(g, None)` → fails at *"three
+    /// columns"*.
+    #[test]
+    fn an_auto_fill_grid_maps_its_areas_at_the_laid_size() {
+        let s = areas_scene();
+        let frame_id = s.frame;
+        let mut g = grid_of(&s.app, frame_id);
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        g.columns = mastik_core::container::parse_tracks("repeat(auto-fill, 100px)").unwrap();
+        assert!(
+            p.app
+                .session
+                .commit(Transaction(vec![Operation::SetDisplay {
+                    id: frame_id,
+                    display: Some(Display::Grid(g)),
+                }]))
+        );
+        p.app.session.selection.set(vec![frame_id]);
+        p.run("head");
+        p.run(
+            "Drawn at the frame's current size — the repeat lays more or fewer tracks at another",
+        );
+        let empty = p
+            .shapes()
+            .iter()
+            .filter(|cs| {
+                matches!(&cs.shape, egui::epaint::Shape::Rect(r)
+                    if r.fill == color::hover() && (r.rect.height() - ui::CONTROL_H).abs() < 0.5)
+            })
+            .count();
+        assert_eq!(empty, 1, "three columns: head's two and one empty cell");
+    }
+
+    /// An area typed past the template's tracks is drawn on tracks of its own, as
+    /// CSS grows the explicit grid to it: a third column beside a two-column
+    /// template sits inside the map, and a second row under a one-row template a
+    /// whole row below.
+    ///
+    /// flip: `area_cells` counting `track_count` alone → fails at *"side inside
+    /// the map"*.
+    #[test]
+    fn an_area_past_the_template_gets_tracks_of_its_own() {
+        let s = areas_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        p.retype(
+            "\"head head\"",
+            "\"head head side\" \"low . .\"",
+            egui::Key::Enter,
+        );
+        assert_eq!(
+            grid_of(&p.app, frame_id).areas.len(),
+            3,
+            "typed areas apply"
+        );
+        let shapes = p.shapes();
+        let label = |name: &str| {
+            shapes
+                .iter()
+                .find_map(|cs| match &cs.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text() == name => {
+                        Some((t.galley.rect.translate(t.pos.to_vec2()), cs.clip_rect))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{name} is drawn"))
+        };
+        let (head, _) = label("head");
+        let (side, clip) = label("side");
+        assert!(
+            clip.contains_rect(side),
+            "side inside the map: {side:?} in {clip:?}"
+        );
+        assert!(side.left() > head.right(), "side right of head");
+        let (low, clip) = label("low");
+        assert!(clip.contains_rect(low), "low inside the map");
+        assert!(
+            (low.center().y - head.center().y - (ui::CONTROL_H + 3.0)).abs() < 1.0,
+            "low a whole row below: {low:?} under {head:?}"
+        );
+    }
+
+    /// An item in an area: the Item card's *Grid area* reads its name, and the
+    /// line rows show the area's lines, disabled.
+    #[test]
+    fn an_item_in_an_area_shows_it_and_its_lines() {
+        let s = areas_scene();
+        let a = s.a;
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        p.run("Grid area");
+        p.run("head");
+        p.run("3");
+        let depth = p.app.session.history.undo_depth();
+        p.retype("3", "2", egui::Key::Enter);
+        assert_eq!(
+            p.app.session.history.undo_depth(),
+            depth,
+            "a disabled line takes no typing"
+        );
+    }
+
+    /// A grid item's card has its lines and self-alignments in place of flex's rows,
+    /// and a line is typed as CSS: a column start `2` and end `span 2` land as
+    /// `2 / span 2`.
+    #[test]
+    fn a_grid_items_lines_are_typed_as_css() {
+        let s = grid_scene();
+        let a = s.a;
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        p.run("Grid column");
+        // A glyph combo's label and face are one galley; `auto` reads what the
+        // container's items row resolves to, `normal`.
+        p.run("Justify selfAuto · Normal");
+        let out = p.frame(Vec::new());
+        assert!(
+            !out.shapes.iter().any(|cs| matches!(
+                &cs.shape,
+                egui::epaint::Shape::Text(t) if t.galley.text() == "Flex grow"
+            )),
+            "no flex rows in a grid"
+        );
+        // Four fields read `auto`; the first is the column's start.
+        p.retype("auto", "2", egui::Key::Enter);
+        let start = p.app.session.doc.get(a).unwrap().item().grid_column.start;
+        assert_eq!(start, mastik_core::container::GridPlacement::Line(2));
+        // The column's end is now the first `auto` left.
+        p.retype("auto", "span 2", egui::Key::Enter);
+        let lines = p.app.session.doc.get(a).unwrap().item().grid_column;
+        assert_eq!(
+            lines.end,
+            mastik_core::container::GridPlacement::Span(2),
+            "{lines:?}"
+        );
+    }
+
+    /// The column list of `id`'s grid, as its CSS line reads it.
+    fn columns_css(app: &MastikApp, id: NodeId) -> String {
+        mastik_core::container::tracks_css(&grid_of(app, id).columns)
+    }
+
+    /// A track row's grip carries the row under the pointer while the button is
+    /// held, and drops its entry where it is let go, as one undo step.
+    ///
+    /// flip: the list's `forward_landing` update dropped → fails at *"dropped
+    /// last"*.
+    #[test]
+    fn a_track_rows_grip_drag_reorders_the_list() {
+        let s = grid_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let grips = p.runs(icon::DOTS_SIX_VERTICAL);
+        assert_eq!(grips.len(), 2, "the fixture: a grip per column entry");
+        let depth = p.app.session.history.undo_depth();
+        let below = grips[1] + egui::vec2(0.0, 8.0);
+        p.drag(grips[0], below, false);
+        assert!(
+            carried(&p.frame(Vec::new()).shapes, &grips),
+            "the row, carried"
+        );
+        p.frame(vec![press(below, false)]);
+        p.frame(Vec::new());
+        assert_eq!(columns_css(&p.app, frame_id), "1fr 100px", "dropped last");
+        assert_eq!(p.app.session.history.undo_depth(), depth + 1, "one step");
+        assert!(!carried(&p.shapes(), &grips), "and set down");
+    }
+
+    /// A grip drag let go where no grip saw it (the selection changed mid-drag)
+    /// carries nothing and reorders nothing on a later press. The panel harness
+    /// runs no frame's close, so the release frame's `end_released_gestures` is
+    /// called by hand.
+    ///
+    /// flip: `end_released_gestures` leaving `track_drag` → fails at *"nothing
+    /// moved"*.
+    #[test]
+    fn a_grip_drag_let_go_elsewhere_draws_nothing_later() {
+        let s = grid_scene();
+        let (frame_id, a) = (s.frame, s.a);
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let grips = p.runs(icon::DOTS_SIX_VERTICAL);
+        let away = grips[0] + egui::vec2(0.0, 60.0);
+        p.drag(grips[0], away, false);
+        assert!(
+            carried(&p.frame(Vec::new()).shapes, &grips),
+            "the fixture: held"
+        );
+        p.app.session.selection.set(vec![a]);
+        p.frame(vec![press(away, false)]);
+        p.app.end_released_gestures();
+        p.frame(Vec::new());
+        p.app.session.selection.set(vec![frame_id]);
+        p.frame(Vec::new());
+        let nowhere = egui::pos2(1000.0, 800.0);
+        p.drag(nowhere, nowhere + egui::vec2(0.0, 30.0), false);
+        assert!(
+            !carried(&p.frame(Vec::new()).shapes, &grips),
+            "no row follows a later press"
+        );
+        p.frame(vec![press(nowhere, false)]);
+        p.frame(Vec::new());
+        assert_eq!(columns_css(&p.app, frame_id), "100px 1fr", "nothing moved");
+    }
+
+    /// A right-click mid-drag (`cancel_gesture`) sets the carried row back and the
+    /// release then moves nothing, as on the Fill and Stroke rows.
+    ///
+    /// flip: `cancel_gesture` leaving `track_drag` → fails at *"set back while
+    /// still held"*.
+    #[test]
+    fn a_right_click_cancels_a_track_drag() {
+        let s = grid_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let grips = p.runs(icon::DOTS_SIX_VERTICAL);
+        let below = grips[1] + egui::vec2(0.0, 8.0);
+        let depth = p.app.session.history.undo_depth();
+        p.drag(grips[0], below, false);
+        assert!(
+            carried(&p.frame(Vec::new()).shapes, &grips),
+            "the fixture: held"
+        );
+        let ctx = p.ctx.clone();
+        assert!(p.app.cancel_gesture(&ctx), "a gesture to cancel");
+        assert!(
+            !carried(&p.frame(Vec::new()).shapes, &grips),
+            "set back while still held"
+        );
+        p.frame(vec![press(below, false)]);
+        p.frame(Vec::new());
+        assert_eq!(columns_css(&p.app, frame_id), "100px 1fr", "nothing moved");
+        assert_eq!(p.app.session.history.undo_depth(), depth, "and no step");
+    }
+
+    /// The columns' cross removes a column with the row list drawn under it: the
+    /// two lists' rows share a parent, so each needs ids of its own.
+    ///
+    /// flip: one `carried_unit` salt for both lists → fails at *"a column gone"*.
+    #[test]
+    fn the_columns_cross_removes_a_column_with_rows_below() {
+        let mut s = grid_scene();
+        let mut g = grid_of(&s.app, s.frame);
+        g.rows = mastik_core::container::parse_tracks("50px 60px").unwrap();
+        assert!(
+            s.app
+                .session
+                .commit(Transaction(vec![Operation::SetDisplay {
+                    id: s.frame,
+                    display: Some(Display::Grid(g)),
+                }]))
+        );
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        // The topmost cross is the columns' first entry's.
+        let at = p.runs(icon::X)[0];
+        p.click(at);
+        let g = grid_of(&p.app, frame_id);
+        let css = mastik_core::container::tracks_css;
+        assert_eq!(css(&g.columns), "1fr", "a column gone");
+        assert_eq!(css(&g.rows), "50px 60px", "the rows untouched");
+    }
+
+    /// A refusal stays under the CSS line only while the line reads what was refused
+    /// and until the field is engaged again.
+    ///
+    /// flip: `refusal` answering whatever was stored (the `about == shown` test
+    /// dropped) → fails at *"a `+` makes it about a list that is gone"*;
+    /// `css_field`'s removal on `gained_focus` dropped → fails at *"gone once the
+    /// field is engaged again"*.
+    #[test]
+    fn a_refusal_lasts_until_the_list_or_the_field_moves_on() {
+        const WHY: &str = "100 needs a unit: px, % or fr";
+        let s = grid_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        p.retype("100px 1fr", "100", egui::Key::Enter);
+        assert_eq!(p.runs(WHY).len(), 1, "the fixture: refused, and why");
+        let at = p.run(icon::PLUS);
+        p.click(at);
+        assert_eq!(columns_css(&p.app, frame_id), "100px 1fr 1fr");
+        assert!(
+            p.runs(WHY).is_empty(),
+            "a `+` makes it about a list that is gone"
+        );
+        p.retype("100px 1fr 1fr", "100", egui::Key::Enter);
+        assert_eq!(p.runs(WHY).len(), 1, "refused again");
+        let at = p.run("100px 1fr 1fr");
+        p.click(at);
+        assert!(
+            p.runs(WHY).is_empty(),
+            "gone once the field is engaged again"
+        );
+    }
+
+    /// A grid item's resize receipt outlines the row it names: a `justify-self:
+    /// stretch` item resized narrower is held with `start`, the receipt says
+    /// *"justify self"*, and the Justify self row is stroked in the accent, not the
+    /// Align self row.
+    ///
+    /// flip: `grid_item_rows` handed `[false, false]` → fails at *"the justify row
+    /// outlined"*; `growth_held`'s `justify_self` term dropped → fails at *"a
+    /// receipt"*.
+    #[test]
+    fn a_grid_items_resize_receipt_outlines_the_row_it_names() {
+        let mut s = grid_scene();
+        set_item(&mut s.app, s.a, |i| {
+            i.justify_self = Some(AlignItems::Stretch)
+        });
+        let tall = drawn(&s.app, s.a).height();
+        s.app
+            .session
+            .commit(Transaction(vec![Operation::SetGeometry {
+                id: s.a,
+                geometry: GeometryPatch::Size(Size::new(50.0, tall)),
+            }]));
+        let receipt = s.app.session.flex_receipt().expect("a receipt");
+        assert_eq!(
+            receipt.held[0].2.justify_self,
+            Some(AlignItems::Start),
+            "the fixture: justify-self held"
+        );
+        let a = s.a;
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        let shapes = p.shapes();
+        let row = |head: &str| {
+            shapes
+                .iter()
+                .find_map(|cs| match &cs.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text().starts_with(head) => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no {head} row"))
+        };
+        let outlined = |at: egui::Pos2| {
+            shapes.iter().any(|cs| {
+                matches!(
+                    &cs.shape,
+                    egui::epaint::Shape::Rect(r)
+                        if r.stroke.color == color::accent_700() && r.rect.contains(at)
+                )
+            })
+        };
+        p.run("Resizing set justify self to start.");
+        assert!(outlined(row("Justify self")), "the justify row outlined");
+        assert!(!outlined(row("Align self")), "and not the align row");
+    }
+
+    /// The *Min / max* summary counts every item: it does not read "All auto" over a
+    /// selection one item of which has a limit, and a shared count is not a shared
+    /// summary — one limit each, but different ones, reads neither *1 set* nor
+    /// *All auto*; the same limit at different values reads *1 set*. (*Mixed* is not
+    /// asserted: other fields say it too.)
+    ///
+    /// flip: the count read off `items.first()` → fails at *"not All auto over
+    /// both"*; the summary shared by count rather than pattern → fails at *"one
+    /// limit each, but not the same one"*.
+    #[test]
+    fn the_limits_summary_counts_every_item() {
+        let mut s = scene();
+        set_item(&mut s.app, s.b, |i| i.min_width = Dimension::Px(100.0));
+        let (a, b) = (s.a, s.b);
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        assert_eq!(p.runs("All auto").len(), 1, "the control: a alone");
+        p.app.session.selection.set(vec![b]);
+        assert_eq!(p.runs("1 set").len(), 1, "b alone");
+        p.app.session.selection.set(vec![a, b]);
+        assert!(p.runs("All auto").is_empty(), "not All auto over both");
+        assert!(p.runs("1 set").is_empty(), "nor b's count");
+
+        set_item(&mut p.app, a, |i| i.max_height = Dimension::Px(80.0));
+        assert!(
+            p.runs("1 set").is_empty(),
+            "one limit each, but not the same one"
+        );
+        set_item(&mut p.app, a, |i| {
+            i.max_height = Dimension::Auto;
+            i.min_width = Dimension::Px(60.0);
+        });
+        assert_eq!(
+            p.runs("1 set").len(),
+            1,
+            "the same limit at different values: 1 set, the values the fields' business"
+        );
+    }
+
+    /// A receipt over two items held at opposite ends (`start` and `end`) names both
+    /// values: *"justify self to start / end"*.
+    ///
+    /// flip: `values` keeping only its first item's value → fails at *"both values
+    /// named"*.
+    #[test]
+    fn a_receipt_over_items_held_at_opposite_ends_names_both() {
+        let mut s = grid_scene();
+        for id in [s.a, s.b] {
+            set_item(&mut s.app, id, |i| {
+                i.justify_self = Some(AlignItems::Stretch)
+            });
+        }
+        let (a, b) = (drawn(&s.app, s.a), drawn(&s.app, s.b));
+        let resize = |app: &MastikApp, id, handle, to| {
+            crate::tools::resize_layer(
+                &app.session.doc,
+                &app.session.resolved,
+                id,
+                handle,
+                to,
+                crate::tools::Resize::default(),
+            )
+        };
+        let mut tx = resize(
+            &s.app,
+            s.a,
+            crate::preview::Handle::Right,
+            mastik_core::kurbo::Point::new(a.x0 + 50.0, a.center().y),
+        );
+        tx.0.extend(
+            resize(
+                &s.app,
+                s.b,
+                crate::preview::Handle::Left,
+                mastik_core::kurbo::Point::new(b.x1 - 50.0, b.center().y),
+            )
+            .0,
+        );
+        s.app.session.commit(tx);
+        let receipt = s.app.session.flex_receipt().expect("a receipt");
+        let held = |id| {
+            receipt
+                .held
+                .iter()
+                .find(|(n, ..)| *n == id)
+                .and_then(|(_, _, now)| now.justify_self)
+        };
+        assert_eq!(
+            (held(s.a), held(s.b)),
+            (Some(AlignItems::Start), Some(AlignItems::End)),
+            "the fixture: held at opposite ends"
+        );
+        let (a, b) = (s.a, s.b);
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a, b]);
+        assert!(
+            !p.runs("Resizing set justify self to start / end.")
+                .is_empty(),
+            "both values named"
+        );
+    }
+
+    /// A grid item holding `justify-self: baseline` (carried from a file; a grid
+    /// treats it as `start` on its inline axis) reads *Baseline · Start*, and its
+    /// list lights a row saying so. `align-self: baseline` reads plain *Baseline*,
+    /// the block axis drawing it.
+    ///
+    /// flip: `glyph_combo`'s held row dropped → fails at *"a row for \"Baseline ·
+    /// Start\""*; `items_name`'s `baseline` arm dropped → fails at the face, no run
+    /// reading *Justify selfBaseline · Start*; the align row's `align_items_name`
+    /// arm dropped → fails at *"Align selfBaseline"*.
+    #[test]
+    fn a_held_baseline_in_a_grid_reads_as_start_on_a_lit_row() {
+        let mut s = scene();
+        set_item(&mut s.app, s.a, |i| {
+            i.justify_self = Some(AlignItems::Baseline);
+            i.align_self = Some(AlignItems::Baseline);
+        });
+        s.app.set_display(&[s.frame], 2);
+        let a = s.a;
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        p.run("Align selfBaseline");
+        // A glyph combo's label and face are one galley.
+        let face = p.run("Justify selfBaseline · Start");
+        p.click(face);
+        let shapes = p.shapes();
+        let row = |text: &str| {
+            shapes
+                .iter()
+                .find_map(|cs| match &cs.shape {
+                    egui::epaint::Shape::Text(t) if t.galley.text() == text => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("a row for {text:?}"))
+        };
+        let fill = p.ctx.style_of(egui::Theme::Dark).visuals.selection.bg_fill;
+        let lit = |at: egui::Pos2| {
+            shapes.iter().any(|cs| {
+                matches!(
+                    &cs.shape,
+                    egui::epaint::Shape::Rect(r) if r.fill == fill && r.rect.contains(at)
+                )
+            })
+        };
+        assert!(lit(row("Baseline · Start")), "the held value's row is lit");
+        assert!(!lit(row("Start")), "and the plain Start row is not");
+    }
+
+    /// The glyph combo whose face begins with `label` opened, and its row reading
+    /// exactly `pick` clicked — a combo's label and face are one galley, so no
+    /// face reads `pick` alone and the open list's row is the only run that does.
+    fn pick_combo(p: &mut Panel, label: &str, pick: &str) {
+        let face = p
+            .shapes()
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text().starts_with(label) => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no {label} combo"));
+        p.click(face);
+        let row = p.run(pick);
+        p.click(row);
+    }
+
+    /// A list CSS does not accept (`minmax(1fr, 1fr)` parses, but an `fr` minimum is
+    /// refused) is refused under the line with CSS's reason and writes nothing
+    /// (`track_list`'s `is_valid` gate).
+    ///
+    /// flip: the gate's `is_valid()` forced `true` → fails at *"the reason, under the
+    /// line"*; the list and undo depth hold either way, the document refusing it a
+    /// second time.
+    #[test]
+    fn a_list_css_does_not_accept_is_refused_under_the_line() {
+        const WHY: &str = "CSS does not accept that list";
+        let s = grid_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let depth = p.app.session.history.undo_depth();
+        p.retype("100px 1fr", "minmax(1fr, 1fr)", egui::Key::Enter);
+        assert_eq!(columns_css(&p.app, frame_id), "100px 1fr", "the list stays");
+        assert_eq!(p.app.session.history.undo_depth(), depth, "with no step");
+        assert_eq!(p.runs(WHY).len(), 1, "the reason, under the line");
+    }
+
+    /// A number typed into a track (`track_fields`) keeps the track's kind: `1`
+    /// retyped `3` is `3fr`, `100` retyped `120` is `120px`.
+    ///
+    /// flip: the typed number always landing as `TrackBreadth::Px` → fails at *"still
+    /// a share"*.
+    #[test]
+    fn a_track_number_typed_keeps_the_tracks_kind() {
+        let s = grid_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        p.retype("1", "3", egui::Key::Enter);
+        assert_eq!(columns_css(&p.app, frame_id), "100px 3fr", "still a share");
+        p.retype("100", "120", egui::Key::Enter);
+        assert_eq!(columns_css(&p.app, frame_id), "120px 3fr", "still a length");
+    }
+
+    /// Each `minmax()` field (`track_fields`) writes its own end.
+    ///
+    /// flip: the ends' `to` closure reading `!is_min` → fails at *"the minimum"*
+    /// with `minmax(100px, 100px)`: the field reads its number back through the
+    /// valve's preview, which moved the maximum, so the committing frame held 100
+    /// again (read from the code, not instrumented). The same flip also fails
+    /// `zero_typed_over_a_keyword_lands`.
+    #[test]
+    fn a_minmax_field_writes_its_own_end() {
+        let s = grid_with_columns("minmax(100px, 1fr)");
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        p.retype("100", "150", egui::Key::Enter);
+        assert_eq!(
+            columns_css(&p.app, frame_id),
+            "minmax(150px, 1fr)",
+            "the minimum"
+        );
+        p.retype("1", "2", egui::Key::Enter);
+        assert_eq!(
+            columns_css(&p.app, frame_id),
+            "minmax(150px, 2fr)",
+            "the maximum"
+        );
+    }
+
+    /// A `repeat()`'s count and its track each take what is typed into them
+    /// (`track_fields`): `repeat(2, 1fr)` becomes `repeat(3, 2fr)`.
+    ///
+    /// flip: the count's commit writing `repeat: *repeat` → fails at *"the count"*.
+    #[test]
+    fn a_repeats_count_and_track_take_what_is_typed() {
+        let s = grid_with_columns("repeat(2, 1fr)");
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        p.retype("2", "3", egui::Key::Enter);
+        assert_eq!(columns_css(&p.app, frame_id), "repeat(3, 1fr)", "the count");
+        p.retype("1", "2", egui::Key::Enter);
+        assert_eq!(columns_css(&p.app, frame_id), "repeat(3, 2fr)", "the track");
+    }
+
+    /// Each of the grid Container's picks (`grid_container_rows`) writes the
+    /// property it names and nothing else, each step asserted against the whole grid.
+    ///
+    /// flip, each failing at its own step: the auto-flow cell writing `Row` whatever
+    /// was clicked → fails at *"auto-flow"*; the *Justify items* pick writing
+    /// `align_items` → fails at *"justify-items"*.
+    #[test]
+    fn each_grid_container_pick_writes_the_property_it_names() {
+        let s = grid_scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        let mut want = grid_of(&p.app, frame_id);
+        let at = p.run("Column");
+        p.click(at);
+        want.auto_flow = mastik_core::container::GridAutoFlow::Column;
+        assert_eq!(grid_of(&p.app, frame_id), want, "auto-flow");
+        pick_combo(&mut p, "Justify content", "Center");
+        want.justify_content = AlignContent::Center;
+        assert_eq!(grid_of(&p.app, frame_id), want, "justify-content");
+        pick_combo(&mut p, "Justify items", "Center");
+        want.justify_items = Some(AlignItems::Center);
+        assert_eq!(grid_of(&p.app, frame_id), want, "justify-items");
+        pick_combo(&mut p, "Align items", "Center");
+        want.align_items = Some(AlignItems::Center);
+        assert_eq!(grid_of(&p.app, frame_id), want, "align-items");
+        pick_combo(&mut p, "Align content", "Center");
+        want.align_content = AlignContent::Center;
+        assert_eq!(grid_of(&p.app, frame_id), want, "align-content");
+    }
+
+    /// A grid item's two self-alignments (`grid_item_rows`) each write their own axis
+    /// and leave the other alone.
+    ///
+    /// flip: the two picks' writes swapped → fails at *"justify-self takes it"*.
+    #[test]
+    fn a_grid_items_self_picks_write_their_own_axis() {
+        let s = grid_scene();
+        let a = s.a;
+        let mut p = Panel::new(s.app, MastikApp::inspector_item);
+        p.app.session.selection.set(vec![a]);
+        let selves = |app: &MastikApp| {
+            let item = app.session.doc.get(a).unwrap().item();
+            (item.justify_self, item.align_self)
+        };
+        assert_eq!(selves(&p.app), (None, None), "the fixture");
+        pick_combo(&mut p, "Justify self", "End");
+        assert_eq!(
+            selves(&p.app),
+            (Some(AlignItems::End), None),
+            "justify-self takes it"
+        );
+        pick_combo(&mut p, "Align self", "Center");
+        assert_eq!(
+            selves(&p.app),
+            (Some(AlignItems::End), Some(AlignItems::Center)),
+            "align-self takes its own"
+        );
+    }
+
+    /// A gap binds through the Container card, and a number typed over its chip
+    /// detaches it: `--` opens the list for the field, a bound field is the chip
+    /// with its CSS name gone, and a typed 6 leaves the gap 6 and unbound.
+    ///
+    /// flip: `gap_row` without its `bound_field_ui` arm → fails at
+    /// `p.run("space/4")`.
+    #[test]
+    fn a_gap_binds_through_the_container_card_and_detaches_when_typed_over() {
+        use super::super::binding::{COLUMN_GAP, FieldKey, Retype};
+        use mastik_core::variable::{Cell, Mode, VarKind, Variable};
+        let mut s = scene();
+        let (mode, var) = (s.app.session.ids.mint_mode(), s.app.session.ids.mint_var());
+        assert!(s.app.commit_edit(Transaction(vec![
+            Operation::AddMode {
+                collection: mastik_core::variable::CollectionId::FIRST,
+                mode: Mode {
+                    id: mode,
+                    name: "Mode 1".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: Variable {
+                    id: var,
+                    name: "space/4".into(),
+                    kind: VarKind::Number,
+                    cells: [(mode, Cell::Number(8.0))].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ])));
+        let (frame, a, b) = (s.frame, s.a, s.b);
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame]);
+        let key = FieldKey::Spacing {
+            id: frame,
+            slots: COLUMN_GAP,
+        };
+        // `--` typed into the field opens its list.
+        let label = p.run("Column gap");
+        let value = p
+            .runs("10")
+            .into_iter()
+            .find(|r| (r.y - label.y).abs() < 6.0 && r.x < label.x)
+            .expect("the column gap's 10");
+        p.click(value);
+        p.frame(vec![egui::Event::Text("--".into())]);
+        p.frame(Vec::new());
+        assert_eq!(
+            p.app.var_complete.as_ref().map(|c| c.key),
+            Some(key),
+            "`--` opens the list under the field"
+        );
+        p.app.var_complete = None;
+        p.app.var_retype = None;
+        p.frame(vec![key_event(egui::Key::Escape)]);
+
+        p.app.bind_field(key, var);
+        assert_eq!(
+            p.app.session.doc.get(frame).unwrap().spacing_vars()[0],
+            Some(var)
+        );
+        assert_eq!(
+            drawn(&p.app, b).min_x() - drawn(&p.app, a).max_x(),
+            8.0,
+            "the gap lays out at the variable's 8"
+        );
+        p.run("space/4");
+        assert!(
+            p.runs("Column gap").is_empty(),
+            "the field is the chip, its CSS name gone"
+        );
+
+        p.app.var_retype = Some(Retype {
+            key,
+            text: "6".into(),
+            focus: true,
+        });
+        p.frame(Vec::new());
+        p.frame(Vec::new());
+        p.frame(vec![key_event(egui::Key::Enter)]);
+        p.frame(Vec::new());
+        assert_eq!(
+            p.app.session.doc.get(frame).unwrap().spacing_vars()[0],
+            None,
+            "a number typed over the chip detaches"
+        );
+        assert_eq!(
+            p.app
+                .session
+                .doc
+                .get(frame)
+                .unwrap()
+                .display()
+                .unwrap()
+                .gaps()
+                .0,
+            6.0
+        );
+    }
+
+    fn key_event(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+}

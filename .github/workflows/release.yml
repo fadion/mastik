@@ -3,11 +3,11 @@ name: Release
 # Fires on a version tag (§15 D956):
 #     git tag v0.4.0
 #     git push origin v0.4.0
-# Builds Ondin on Windows, Linux and macOS and attaches to the tag's GitHub
+# Builds Mastik on Windows, Linux and macOS and attaches to the tag's GitHub
 # Release (created if it does not exist yet):
 #
-# - the self-updating installers Velopack builds — `Ondin-win-x64-Setup.exe`,
-#   `Ondin-linux-x64.AppImage`, `Ondin-osx-arm64-Setup.pkg` and `.dmg` — with the
+# - the self-updating installers Velopack builds — `Mastik-win-x64-Setup.exe`,
+#   `Mastik-linux-x64.AppImage`, `Mastik-osx-arm64-Setup.pkg` and `.dmg` — with the
 #   `.nupkg` and `releases.<channel>.json` feed every installed copy polls;
 # - portable archives, a `.zip` for Windows and a `.tar.gz` for Linux, which do
 #   not update themselves;
@@ -52,7 +52,7 @@ jobs:
         include:
           # `channel` is Velopack's, and **explicit and unique per os/rid**: left
           # to its default, two platforms would each emit
-          # `Ondin-<version>-full.nupkg`, which two jobs cannot both upload to one
+          # `Mastik-<version>-full.nupkg`, which two jobs cannot both upload to one
           # Release — and worse, `GithubSource` resolves a package by file name
           # across the Release's assets, so a Linux client could be handed the
           # Windows package. Naming the channel puts it in every file name.
@@ -162,19 +162,19 @@ jobs:
         run: cargo install --locked cargo-zigbuild --version 0.23.4
       - name: Build release binary (Linux, glibc 2.31)
         if: runner.os == 'Linux'
-        run: cargo zigbuild --release -p ondin-app --bin ondin --target x86_64-unknown-linux-gnu.2.31
+        run: cargo zigbuild --release -p mastik-app --bin mastik --target x86_64-unknown-linux-gnu.2.31
 
-      # **Two binaries on Windows** (§15 D953): `ondin.exe` is GUI-subsystem, so
-      # the window opens with no console and `ondin export …` at a prompt prints
-      # nothing; `ondin-cli` is its console twin, shipped as `ondin.com`.
+      # **Two binaries on Windows** (§15 D953): `mastik.exe` is GUI-subsystem, so
+      # the window opens with no console and `mastik export …` at a prompt prints
+      # nothing; `mastik-cli` is its console twin, shipped as `mastik.com`.
       - name: Build release binaries (Windows)
         if: runner.os == 'Windows'
-        run: cargo build --release -p ondin-app --bin ondin --bin ondin-cli
+        run: cargo build --release -p mastik-app --bin mastik --bin mastik-cli
 
       # Native: the runner is Apple Silicon and `osx-arm64` the only channel.
       - name: Build release binary (macOS, arm64)
         if: runner.os == 'macOS'
-        run: cargo build --release -p ondin-app --bin ondin
+        run: cargo build --release -p mastik-app --bin mastik
 
       # The binary beside the notices a distributed build must carry, then the
       # portable archive. The notices are every bundled asset's license — Inter
@@ -184,11 +184,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir dist
-          cp target/x86_64-unknown-linux-gnu/release/ondin dist/
+          cp target/x86_64-unknown-linux-gnu/release/mastik dist/
           cp LICENSE THIRD-PARTY-NOTICES.md README.md dist/
-          cp crates/ondin-core/assets/fonts/OFL.txt dist/Inter-OFL.txt
+          cp crates/mastik-core/assets/fonts/OFL.txt dist/Inter-OFL.txt
           cp licenses/*.txt dist/
-          tar czf "ondin-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" -C dist .
+          tar czf "mastik-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" -C dist .
 
       # ── Distribution packages ────────────────────────────────────────────
       # A .deb and an .rpm around the same binary. An install under /usr/bin is
@@ -202,7 +202,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          binary=target/x86_64-unknown-linux-gnu/release/ondin
+          binary=target/x86_64-unknown-linux-gnu/release/mastik
           bash packaging/linux/build-deb.sh "$VPK_VERSION" "$binary" dist-packages
           bash packaging/linux/build-rpm.sh "$VPK_VERSION" "$binary" dist-packages
           ls -l dist-packages
@@ -211,26 +211,26 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item target/release/ondin.exe dist/
+          Copy-Item target/release/mastik.exe dist/
           # **Renamed to `.com`, and the extension is the whole mechanism.**
-          # `PATHEXT` is `.COM;.EXE;…`, so a bare `ondin` at a prompt resolves to
+          # `PATHEXT` is `.COM;.EXE;…`, so a bare `mastik` at a prompt resolves to
           # the console twin while shortcuts and Explorer keep the GUI .exe.
-          Copy-Item target/release/ondin-cli.exe dist/ondin.com
+          Copy-Item target/release/mastik-cli.exe dist/mastik.com
           Copy-Item LICENSE, THIRD-PARTY-NOTICES.md, README.md dist/
-          Copy-Item crates/ondin-core/assets/fonts/OFL.txt dist/Inter-OFL.txt
+          Copy-Item crates/mastik-core/assets/fonts/OFL.txt dist/Inter-OFL.txt
           Copy-Item licenses/*.txt dist/
-          Compress-Archive -Path dist/* -DestinationPath "ondin-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          Compress-Archive -Path dist/* -DestinationPath "mastik-${{ github.ref_name }}-${{ matrix.target }}.zip"
 
       # macOS gets no archive of its own: the .dmg below is the macOS deliverable.
       # The .app is built here, Info.plist with its document type, icon and
       # notices included, and `vpk` packs it as it is. The icon is made from
       # `icon-1024.png` on the runner, as only macOS can build an .icns.
-      - name: Build Ondin.app (macOS)
+      - name: Build Mastik.app (macOS)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
           mkdir dist
-          bash packaging/macos/build-app.sh "$VPK_VERSION" target/release/ondin dist
+          bash packaging/macos/build-app.sh "$VPK_VERSION" target/release/mastik dist
 
       # ── Velopack: the self-updating artifacts ────────────────────────────
       # A per-user Setup.exe that installs to %LocalAppData% with no UAC prompt,
@@ -281,12 +281,12 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           vpk pack `
-            --packId Ondin `
+            --packId Mastik `
             --packVersion $env:VPK_VERSION `
             --packDir dist `
-            --mainExe ondin.exe `
-            --packTitle Ondin `
-            --packAuthors "Ondin contributors" `
+            --mainExe mastik.exe `
+            --packTitle Mastik `
+            --packAuthors "Mastik contributors" `
             --icon icons/icon.ico `
             --channel ${{ matrix.channel }} `
             --delta None `
@@ -299,12 +299,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           vpk pack \
-            --packId Ondin \
+            --packId Mastik \
             --packVersion "$VPK_VERSION" \
             --packDir dist \
-            --mainExe ondin \
-            --packTitle Ondin \
-            --packAuthors "Ondin contributors" \
+            --mainExe mastik \
+            --packTitle Mastik \
+            --packAuthors "Mastik contributors" \
             --icon icons/icon.png \
             --categories Graphics \
             --channel ${{ matrix.channel }} \
@@ -320,14 +320,14 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           vpk pack \
-            --packId Ondin \
+            --packId Mastik \
             --packVersion "$VPK_VERSION" \
-            --packDir dist/Ondin.app \
-            --mainExe ondin \
-            --packTitle Ondin \
-            --packAuthors "Ondin contributors" \
-            --icon dist/Ondin.app/Contents/Resources/icon.icns \
-            --bundleId io.github.fadion.Ondin \
+            --packDir dist/Mastik.app \
+            --mainExe mastik \
+            --packTitle Mastik \
+            --packAuthors "Mastik contributors" \
+            --icon dist/Mastik.app/Contents/Resources/icon.icns \
+            --bundleId io.github.fadion.Mastik \
             --channel ${{ matrix.channel }} \
             --delta None
           # The staging step below names each file and fails on a missing one;
@@ -343,16 +343,16 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf dmg-root && mkdir -p dmg-root
-          ditto -x -k "Releases/Ondin-${{ matrix.channel }}-Portable.zip" dmg-root
-          # The shipped app must still say it opens .ondin files, whatever `vpk`
+          ditto -x -k "Releases/Mastik-${{ matrix.channel }}-Portable.zip" dmg-root
+          # The shipped app must still say it opens .mastik files, whatever `vpk`
           # did to the bundle it was given.
-          plist=dmg-root/Ondin.app/Contents/Info.plist
-          test "$(plutil -extract UTExportedTypeDeclarations.0.UTTypeIdentifier raw "$plist")" = io.github.fadion.Ondin.document
-          test "$(plutil -extract CFBundleDocumentTypes.0.LSItemContentTypes.0 raw "$plist")" = io.github.fadion.Ondin.document
+          plist=dmg-root/Mastik.app/Contents/Info.plist
+          test "$(plutil -extract UTExportedTypeDeclarations.0.UTTypeIdentifier raw "$plist")" = io.github.fadion.Mastik.document
+          test "$(plutil -extract CFBundleDocumentTypes.0.LSItemContentTypes.0 raw "$plist")" = io.github.fadion.Mastik.document
           test "$(plutil -extract CFBundleShortVersionString raw "$plist")" = "$VPK_VERSION"
           ln -s /Applications dmg-root/Applications
-          hdiutil create -volname Ondin -srcfolder dmg-root -ov -format UDZO \
-            "Releases/Ondin-${{ matrix.channel }}.dmg"
+          hdiutil create -volname Mastik -srcfolder dmg-root -ov -format UDZO \
+            "Releases/Mastik-${{ matrix.channel }}.dmg"
           ls -l Releases
 
       # ── Hand the leg's assets to `publish` ──────────────────────────────
@@ -377,18 +377,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir assets
-          cp "Releases/Ondin-$VPK_VERSION-$CHANNEL-full.nupkg" "Releases/releases.$CHANNEL.json" assets/
+          cp "Releases/Mastik-$VPK_VERSION-$CHANNEL-full.nupkg" "Releases/releases.$CHANNEL.json" assets/
           case "$RUNNER_OS" in
             Windows)
-              cp "ondin-$GITHUB_REF_NAME-$TARGET.zip" "Releases/Ondin-$CHANNEL-Setup.exe" assets/
+              cp "mastik-$GITHUB_REF_NAME-$TARGET.zip" "Releases/Mastik-$CHANNEL-Setup.exe" assets/
               ;;
             Linux)
-              cp "ondin-$GITHUB_REF_NAME-$TARGET.tar.gz" "Releases/Ondin-$CHANNEL.AppImage" assets/
-              cp "dist-packages/ondin_${VPK_VERSION}_amd64.deb" "dist-packages/ondin-$VPK_VERSION-1.x86_64.rpm" assets/
+              cp "mastik-$GITHUB_REF_NAME-$TARGET.tar.gz" "Releases/Mastik-$CHANNEL.AppImage" assets/
+              cp "dist-packages/mastik_${VPK_VERSION}_amd64.deb" "dist-packages/mastik-$VPK_VERSION-1.x86_64.rpm" assets/
               ;;
             macOS)
               # No archive: the .dmg is the macOS deliverable.
-              cp "Releases/Ondin-$CHANNEL-Setup.pkg" "Releases/Ondin-$CHANNEL.dmg" assets/
+              cp "Releases/Mastik-$CHANNEL-Setup.pkg" "Releases/Mastik-$CHANNEL.dmg" assets/
               ;;
             *)
               echo "::error::No asset list for runner OS '$RUNNER_OS'."
@@ -444,7 +444,7 @@ jobs:
 
   # ── The Linux package repositories ──────────────────────────────────────
   # Rebuilds the apt and dnf repositories on GitHub Pages from the release this
-  # run just published, so `apt upgrade` and `dnf upgrade` carry Ondin forward.
+  # run just published, so `apt upgrade` and `dnf upgrade` carry Mastik forward.
   #
   # **Called, not triggered.** A release created with `GITHUB_TOKEN` fires no
   # `release` event, and a workflow listening for the tag would start beside

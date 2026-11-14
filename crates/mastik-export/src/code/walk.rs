@@ -1,0 +1,4221 @@
+//! The DOM core: layers to elements and declarations, each in the first of the
+//! three tiers that draws it exactly — CSS, inline SVG, PNG.
+//!
+//! **Every element establishes its layer's local space**: its top-left is the
+//! layer's box origin, so a child's numbers are the model's numbers. Every element
+//! is positioned (`relative` in a flow, `absolute` out of one) so siblings paint in
+//! tree order, as the model's z-order does.
+
+use super::Report;
+use super::css::{self, px};
+use super::dom::{Arg, Child, Classes, Element, Instance, Live, TextClass, When, slug};
+use super::image;
+use super::tokens::{self, Tokens};
+use crate::svg::fmt;
+use mastik_core::container::{
+    self, AlignContent, AlignItems, Dimension, Display, FlexDirection, FlexWrap, GridAutoFlow,
+    JustifyContent, LengthPct,
+};
+use mastik_core::effect::{EFFECT_BLUR, EFFECT_X, EFFECT_Y};
+use mastik_core::element::HtmlElement;
+use mastik_core::kurbo::{Affine, Rect, Size};
+use mastik_core::peniko::ImageQuality;
+use mastik_core::style::{StyleId, StyleValue};
+use mastik_core::variable::{ModeId, VarId};
+use mastik_core::variant::{self, Interaction, PropKind, PropValue, Property, RootElement};
+use mastik_core::{
+    Brush, BrushSource, Document, EffectKind, Fill, ItemId, Node, NodeId, NodeKind, Resolved,
+    Stroke, StrokeAlign, StrokeSides, TextSizing, TextStyle,
+};
+use mastik_core::{component, reset};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
+/// The page the walk builds, and what it saw on the way.
+pub(crate) struct Page {
+    pub root: Element,
+    /// The other pages, each a frame picking its mode by width that was
+    /// exported beside other layers, filling the window: its file name (a
+    /// slug for HTML, a component name for React and Vue) and its root.
+    pub others: Vec<(String, Element)>,
+    pub report: Report,
+    /// Pictures the page links to, by path under the export's folder.
+    pub assets: Vec<(String, Vec<u8>)>,
+    /// `tokens.css`, when the page reads a variable.
+    pub tokens: Option<String>,
+    /// `text-styles.css`, when a text on the page or in a component wears a
+    /// text style.
+    pub text_styles: Option<String>,
+    /// The components the page uses, at any depth, each after those it uses.
+    pub components: Vec<Component>,
+}
+
+/// A main, or a component set, written as a component.
+pub(crate) struct Component {
+    /// Its name as code reads it, unique in the export.
+    pub name: String,
+    /// The folder its file is in, from the export's top: empty for the page,
+    /// `components`, or a kit's folder under it.
+    pub dir: String,
+    /// Each variant's tree with the variant values it is drawn for, the default
+    /// variant's last and drawn for any others. A main outside a set, and a set
+    /// whose trees merge (`merge::merge`), has one tree, drawn always.
+    pub bodies: Vec<(When, Element)>,
+    /// Its props: each one's name in code, its type and its default, which a
+    /// forwarded prop has none of — the slot it reaches supplies its own.
+    pub props: Vec<(String, Ty, Option<Arg>)>,
+}
+
+impl Component {
+    /// The page as a component of one tree and no properties, named `App`.
+    pub fn page(root: Element) -> Self {
+        Self::page_named("App", root)
+    }
+
+    /// Another page, named `name`: one of [`Page::others`].
+    pub fn page_named(name: &str, root: Element) -> Self {
+        Component {
+            name: name.into(),
+            dir: String::new(),
+            bodies: vec![(Vec::new(), root)],
+            props: Vec::new(),
+        }
+    }
+}
+
+/// A prop's type.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Ty {
+    Bool,
+    Text,
+    /// A variant property's values.
+    Union(Vec<String>),
+    /// A component, which a slot draws.
+    Component,
+}
+
+/// One parameter of the component made from an owner.
+#[derive(Clone)]
+struct Param {
+    /// Its name in code, unique in the component.
+    code: String,
+    kind: ParamKind,
+    ty: Ty,
+    /// Its value on the default tree; `None` for a forwarded one.
+    default: Option<PropValue>,
+}
+
+/// A layer's place below a tree's root: each layer down to it as its name and
+/// which sibling of that name it is.
+type NamePath = Vec<(String, usize)>;
+
+/// One parameter a shown slot's use passes on.
+#[derive(Clone)]
+struct Forwarded {
+    /// The slot's component's parameter.
+    inner: String,
+    /// The main's own, which it takes.
+    outer: String,
+    ty: Ty,
+    /// The slot's value where it differs from what its component draws unset,
+    /// which stands in when `outer` is left unset.
+    fallback: Option<PropValue>,
+}
+
+/// What a parameter reads on an instance.
+#[derive(Clone)]
+enum ParamKind {
+    /// The set's variant property at this index: the variant the instance shows.
+    Choice(usize),
+    /// A boolean, text or swap property, by item.
+    Prop(ItemId, PropKind),
+    /// Parameter `inner` of the component made from `owner`, read on the shown
+    /// nested instance at `key`, its name path from the instance's root.
+    Forward {
+        key: NamePath,
+        owner: NodeId,
+        inner: usize,
+    },
+}
+
+/// What [`Walk::bound`] knows of a property while its main is written.
+#[derive(Clone)]
+struct BoundProp {
+    name: String,
+    kind: PropKind,
+    /// Whether the main's text under it has runs or paragraphs one value cannot keep.
+    styled: bool,
+}
+
+/// How a layer sits in its parent's element.
+#[derive(Clone, Copy)]
+enum Place {
+    /// An item of its parent's flex or grid layout.
+    Flow { grid: bool },
+    /// Positioned in its parent element's space by `local`, its parent's
+    /// transform to it (with `outer` folded in for an export's origins). `boxed`
+    /// when the parent has edges for insets to measure from.
+    Free { local: Affine, boxed: bool },
+    /// Inside a pinned plain group or boolean, whose box `of` (in the group's
+    /// space) its contents scale with: placed and sized by its share of `of` in
+    /// percentages, as `container::place_in_stretch` lays it.
+    Share { local: Affine, of: Rect },
+    /// A component's root: sized as its main is, placed by whoever uses it.
+    Root,
+}
+
+/// `origins` as a page. With `components`, an instance of a main is written as a
+/// use of a component made from the main, where it can be; without, every
+/// instance is written out as its layers.
+pub(crate) fn page(doc: &Document, res: &Resolved, origins: &[NodeId], components: bool) -> Page {
+    // A kit's mains live in the vault, which is never resolved: a component
+    // written from one is drawn from a copy of the document with the vault's
+    // tops at the root, which leaves the page's own layers where they are.
+    let (placed, placed_res);
+    let (doc, res) = match doc.vault().filter(|_| components) {
+        Some(vault) => {
+            let tops = doc.get(vault).map(|v| v.children().to_vec());
+            placed = mastik_core::kit::as_placed(doc, &tops.unwrap_or_default());
+            placed_res = Resolved::rebuild(&placed);
+            (&placed, &placed_res)
+        }
+        None => (doc, res),
+    };
+    // Every text style's class is named up front, in id order, so no layer's
+    // class takes the name whichever is met first.
+    let mut names = Classes::default();
+    let text_names: HashMap<StyleId, String> = doc
+        .styles()
+        .iter()
+        .filter(|s| matches!(s.value, StyleValue::Text(_)))
+        .map(|s| (s.id, names.mint(&format!("text {}", s.name), "text style")))
+        .collect();
+    let mut walk = Walk {
+        doc,
+        res,
+        classes: Classes::reserving(text_names.values()),
+        text_names,
+        text_classes: Vec::new(),
+        inside: Vec::new(),
+        main_written: false,
+        report: Report::default(),
+        assets: Vec::new(),
+        tokens: Tokens::new(doc),
+        // The page's name, and the component types React and Vue import.
+        components: components.then(|| Components {
+            names: ["app", "component", "componenttype"]
+                .map(String::from)
+                .into(),
+            ..Default::default()
+        }),
+        bound: HashMap::new(),
+        forwards: HashMap::new(),
+        params_memo: RefCell::default(),
+        inline_memo: RefCell::default(),
+        window: None,
+    };
+    // A frame that picks its mode by width is the window: written alone, it
+    // fills it, and the media blocks read the window's width as the canvas
+    // reads the frame's. Beside other layers each such frame is a page of its
+    // own; the first page holds the other layers, else the first such frame.
+    let picks: Vec<NodeId> = origins
+        .iter()
+        .copied()
+        .filter(|id| doc.width_pick(*id).is_some())
+        .collect();
+    let (main, own): (Vec<NodeId>, &[NodeId]) = match picks.as_slice() {
+        [] => (origins.to_vec(), &[]),
+        [first, rest @ ..] => {
+            let others: Vec<NodeId> = origins
+                .iter()
+                .copied()
+                .filter(|id| !picks.contains(id))
+                .collect();
+            match others.is_empty() {
+                true => (vec![*first], rest),
+                false => (others, picks.as_slice()),
+            }
+        }
+    };
+    let root = walk.page_root(&main);
+    // A page's file is named by its frame, apart from the first page's and,
+    // for React and Vue, every component's.
+    let mut html_names: HashSet<String> = ["index".to_string()].into();
+    let mut others = Vec::new();
+    for id in own {
+        let name = doc.get(*id).map(Node::name).unwrap_or_default();
+        let file = match &mut walk.components {
+            Some(c) => unique_file(component_name(name), "Page", &mut c.names),
+            None => {
+                let base = slug(name);
+                let base = if base.is_empty() { "page".into() } else { base };
+                unique_file(base, "-page", &mut html_names)
+            }
+        };
+        others.push((file, walk.page_root(&[*id])));
+    }
+    if !components && holds_marked_set(doc, origins) {
+        walk.report.state(
+            "Interaction states are written by the React and Vue exports; \
+             plain HTML draws each layer as it is",
+        );
+    }
+    for name in walk.tokens.unfollowed(doc) {
+        walk.report.approximate(format!(
+            "variable “{name}”: it aliases another collection's variables by mode, \
+             so a frame setting that collection's mode reads the page's value"
+        ));
+    }
+    let tokens = walk.tokens.css(doc);
+    let text_styles = (!walk.text_classes.is_empty()).then(|| {
+        let mut css = String::new();
+        for (_, t) in &walk.text_classes {
+            t.css(&mut css);
+        }
+        css
+    });
+    let components = walk.components.map(|c| c.list).unwrap_or_default();
+    Page {
+        root,
+        others,
+        report: walk.report,
+        assets: walk.assets,
+        tokens,
+        text_styles,
+        components,
+    }
+}
+
+struct Walk<'a> {
+    doc: &'a Document,
+    res: &'a Resolved,
+    /// The classes of the file being written: the page's, or a component's.
+    classes: Classes,
+    /// Every text style's class name, by style.
+    text_names: HashMap<StyleId, String>,
+    /// The text styles worn so far, in the order first met.
+    text_classes: Vec<(StyleId, Rc<TextClass>)>,
+    /// The elements written around the layer being walked, outermost first.
+    inside: Vec<HtmlElement>,
+    /// Whether the file being written already holds its one `main`.
+    main_written: bool,
+    report: Report,
+    assets: Vec<(String, Vec<u8>)>,
+    tokens: Tokens,
+    components: Option<Components>,
+    /// The properties of the main being written as a component, by bound layer.
+    bound: HashMap<NodeId, BoundProp>,
+    /// The shown slots of the main being written, each with what its use
+    /// passes on.
+    forwards: HashMap<NodeId, Vec<Forwarded>>,
+    /// [`Self::params`] by owner, and [`Self::why_inline`] by root: both read
+    /// only the document and are asked again at every level of a nesting.
+    params_memo: RefCell<HashMap<NodeId, Rc<Vec<Param>>>>,
+    inline_memo: RefCell<HashMap<NodeId, Option<String>>>,
+    /// The page being written's frame filling the window, if it is one.
+    window: Option<NodeId>,
+}
+
+/// The components made so far.
+#[derive(Default)]
+struct Components {
+    /// By owner: the set for a variant, else the main.
+    by_owner: HashMap<NodeId, Signature>,
+    /// In the order finished, so a component comes after those it uses.
+    list: Vec<Component>,
+    /// Component names taken, lowercase ([`unique_file`]).
+    names: HashSet<String>,
+    /// Each kit's folder under `components`, by kit id.
+    kit_dirs: HashMap<String, String>,
+    /// The components whose root is a button or a link, by name.
+    interactive: HashSet<String>,
+    /// The components whose root is a marked Plain root, a `div` taking focus,
+    /// which a button or a link may not hold either, by name.
+    focusable: HashSet<String>,
+}
+
+/// What a use of a component needs to know of it.
+#[derive(Clone)]
+struct Signature {
+    name: String,
+    params: Rc<Vec<Param>>,
+}
+
+/// What a layer's name reads as in the report: its name in quotes, or its kind.
+pub(super) fn label(node: &Node) -> String {
+    if node.name().is_empty() {
+        node.kind().default_name().to_lowercase()
+    } else {
+        format!("“{}”", node.name())
+    }
+}
+
+impl Walk<'_> {
+    /// One page's root holding `origins`, each placed where it is drawn,
+    /// measured from their extent. A lone frame picking its mode by width fills
+    /// the window instead: the root `width: 100%` with `min-height` its height,
+    /// the frame `left: 0; width: 100%`.
+    fn page_root(&mut self, origins: &[NodeId]) -> Element {
+        let (doc, res) = (self.doc, self.res);
+        // Each page is a document of its own, holding its own main.
+        self.main_written = false;
+        let view = crate::extent(res, &crate::drawn_origins(doc, origins))
+            .unwrap_or(Rect::new(0.0, 0.0, 100.0, 100.0));
+        let mut root = Element::new("div", self.classes.mint("page", "page"));
+        root.set("position", "relative");
+        root.set("width", px(view.width()));
+        root.set("height", px(view.height()));
+        // What blends mixes with the page's own layers and never the document
+        // behind it, as on the canvas and in every other export.
+        if origins.iter().any(|id| res.blends_within(*id)) {
+            root.set("isolation", "isolate");
+        }
+        let offset = Affine::translate(-view.origin().to_vec2());
+        let window = match origins {
+            [id] => doc.width_pick(*id).is_some().then_some(*id),
+            _ => None,
+        };
+        self.window = window;
+        if window.is_some() {
+            root.set("width", "100%");
+            root.set("min-height", px(view.height()));
+            root.style.retain(|(p, _)| *p != "height");
+        }
+        for id in origins {
+            let Some(node) = doc.get(*id) else { continue };
+            // An origin's parent is not in the export: it is placed where it is drawn.
+            let parent = node
+                .parent()
+                .and_then(|p| res.world_transform(p))
+                .unwrap_or(Affine::IDENTITY);
+            let local = offset * parent * res.used_local_of(node);
+            let Some(mut el) = self.node(
+                *id,
+                Place::Free {
+                    local,
+                    boxed: false,
+                },
+            ) else {
+                continue;
+            };
+            if window == Some(*id) {
+                el.set("left", "0px");
+                el.set("width", "100%");
+            }
+            // The modes its ancestors set, which the export does not hold. The
+            // collection picked by width answers to the window, so a layer that is
+            // not the window names its mode there even when it is the default.
+            let t = doc.variables();
+            let by_width = t.by_width().filter(|_| window != Some(*id));
+            let mut inherited: Vec<_> = node
+                .parent()
+                .map(|p| doc.modes_at(p))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| t.mode(*m).is_some() && t.default_of(*m) != Some(*m))
+                .collect();
+            if let Some(c) = by_width
+                && !inherited.iter().any(|m| c.has(*m))
+                && let Some(m) = doc.mode_at(*id, c.id)
+            {
+                inherited.push(m);
+            }
+            // Each collection inherits on its own: the layer's modes replace
+            // only theirs, and its `data-mode` names the rest too.
+            let own = node.modes();
+            inherited.retain(|m| {
+                !own.iter()
+                    .any(|o| mastik_core::variable::same_collection(t, *o, *m))
+            });
+            if let Some(mode) = self.tokens.modes_attr(inherited) {
+                match el.attrs.iter_mut().find(|(k, _)| *k == "data-mode") {
+                    Some((_, words)) => {
+                        words.push(' ');
+                        words.push_str(&mode);
+                    }
+                    None if el.instance.is_some() => el = self.with_mode(el, mode),
+                    None => el.attrs.push(("data-mode", mode)),
+                }
+            }
+            root.children.push(Child::Element(Box::new(el)));
+        }
+        root
+    }
+
+    /// The element for `id` placed by `place`, or `None` for a layer that draws
+    /// nothing here (hidden, or a mask, which its parent's picture carries).
+    ///
+    /// A layer a boolean property shows is written hidden or not, and shown by it.
+    fn node(&mut self, id: NodeId, place: Place) -> Option<Element> {
+        let doc = self.doc;
+        let node = doc.get(id)?;
+        let shown_by = self
+            .bound
+            .get(&id)
+            .filter(|b| b.kind == PropKind::Boolean)
+            .map(|b| b.name.clone());
+        // A visibility bound to a variable that varies is a token, so the layer
+        // is written whatever it shows here, and shown or hidden by the mode.
+        let shown_var = node
+            .visible_var()
+            .filter(|v| shown_by.is_none() && tokens::varies(doc, *v));
+        // A slice is an export region, never part of the page's code.
+        if node.mask()
+            || matches!(node.kind(), NodeKind::Slice { .. })
+            || (shown_by.is_none() && shown_var.is_none() && !doc.shown(id))
+        {
+            return None;
+        }
+        let mut used = None;
+        if self.components.is_some()
+            && node.link().is_some()
+            && component::instance_root(doc, id) == Some(id)
+        {
+            match self.why_inline(id) {
+                None => used = Some(self.instance(node, place)),
+                Some(why) => self
+                    .report
+                    .inline(format!("instance {}: {why}", label(node))),
+            }
+        }
+        // A use's element is its component root's, written in its own file.
+        let element = match &used {
+            None => self.element_of(node),
+            Some(_) => None,
+        };
+        // A use keeps the elements its component wrote, so one inside a button,
+        // or an interactive or focusable one inside a link, is invalid HTML
+        // that only a report can flag.
+        if let Some(i) = used.as_ref().and_then(|u| u.instance.as_ref()) {
+            let comps = self.components.as_ref().expect("components are on");
+            let in_link = self.inside.iter().any(|a| a.interactive());
+            let why = if self.inside.contains(&HtmlElement::Button) {
+                Some(" sits inside a button, which holds only text and pictures")
+            } else if in_link && comps.interactive.contains(&i.component) {
+                Some(", which is interactive, sits inside a button or a link")
+            } else if in_link && comps.focusable.contains(&i.component) {
+                Some(", which takes focus, sits inside a button or a link")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                self.report.approximate(format!(
+                    "instance {}: its {}{why}, so the HTML is invalid",
+                    label(node),
+                    i.component
+                ));
+            }
+        }
+        if let Some(e) = element {
+            self.inside.push(e);
+        }
+        let built = match used {
+            Some(el) => Some(el),
+            None => match self.css_blocker(node) {
+                None => Some(self.css_element(node, place)),
+                Some(why) => self.picture(node, place, &why),
+            },
+        };
+        if element.is_some() {
+            self.inside.pop();
+        }
+        let mut el = built?;
+        if let Some(e) = element {
+            self.write_element(&mut el, node, e);
+        }
+        if let Some(var) = shown_var {
+            // A use's own display is its component root's, which a `display`
+            // in its doubled-class rule would override.
+            if el.instance.is_some() {
+                el = self.around(el, "shown");
+            }
+            let own = el
+                .style
+                .iter()
+                .find(|(p, _)| *p == "display")
+                .map_or_else(|| "block".to_string(), |(_, v)| v.clone());
+            el.set("display", self.tokens.shown(var, &own));
+        }
+        el.shown_by = shown_by;
+        el.key = Some(name_step(doc, node));
+        el.lineage = Some((node.lineage(), node.lineage_recorded()));
+        Some(el)
+    }
+
+    /// Why the instance at `root` cannot be a use of its main's component, or
+    /// `None` when it can: when every value it differs from its main in is a
+    /// property's, up the chain of copies to the main, apart from its root's
+    /// size, which its use sets, and its root's mode, which an element around the
+    /// use sets.
+    fn why_inline(&self, root: NodeId) -> Option<String> {
+        if let Some(why) = self.inline_memo.borrow().get(&root) {
+            return why.clone();
+        }
+        let why = self.why_inline_uncached(root);
+        self.inline_memo.borrow_mut().insert(root, why.clone());
+        why
+    }
+
+    fn why_inline_uncached(&self, root: NodeId) -> Option<String> {
+        let doc = self.doc;
+        let main = component::main_of(doc, root)?;
+        if let Some(why) = self.unwritable(main) {
+            return Some(why);
+        }
+        const OVERRIDES: &str = "inlined because of overrides; make it a property to keep the link";
+        // The root's own mode goes on an element around the use, which a mode
+        // the component's root sets itself would override.
+        let main_mode = doc.get(main)?.modes();
+        if !main_mode.is_empty() && doc.get(root)?.modes() != main_mode {
+            return Some(OVERRIDES.into());
+        }
+        // Each of the document's collections' mode there, its default filled in.
+        let in_force = |id: NodeId| -> Vec<Option<mastik_core::ModeId>> {
+            doc.variables()
+                .collections()
+                .iter()
+                .map(|c| doc.mode_at(id, c.id))
+                .collect()
+        };
+        if in_force(root) != in_force(main) && self.varies_by_mode(main) {
+            return Some(
+                "drawn in another mode than its main, whose pictures, strokes, effects, \
+                 visibility or content read a variable that changes with the mode"
+                    .into(),
+            );
+        }
+        let mut at = root;
+        loop {
+            let n = doc.get(at)?;
+            if n.swap().is_some() {
+                return Some(OVERRIDES.into());
+            }
+            let drift = reset::drift(doc, at);
+            if drift.removed + drift.order + drift.local > 0 {
+                return Some(OVERRIDES.into());
+            }
+            // The fields a use can set: those its component's parameters read.
+            let mut props: HashSet<(NodeId, PropKind)> = HashSet::new();
+            for p in self.params(main).iter() {
+                match self.fields(at, &p.kind) {
+                    Some(f) => props.extend(f),
+                    None => return Some(OVERRIDES.into()),
+                }
+            }
+            for id in reset::scope_nodes(doc, at) {
+                if id != at
+                    && let Some(swap) = doc.get(id)?.swap()
+                    && (!props.contains(&(id, PropKind::Swap)) || self.unwritable(swap).is_some())
+                {
+                    return Some(OVERRIDES.into());
+                }
+                for o in reset::overrides(doc, id) {
+                    use mastik_core::Operation as O;
+                    let allowed = match o.reset {
+                        O::SetVisible { .. } | O::SetVisibleVar { .. } => {
+                            id == at || props.contains(&(id, PropKind::Boolean))
+                        }
+                        O::SetText { .. } => props.contains(&(id, PropKind::Text)),
+                        O::SetSwap { .. } => props.contains(&(id, PropKind::Swap)),
+                        O::SetGeometry { .. } | O::SetModes { .. } => id == at,
+                        _ => false,
+                    };
+                    if !allowed {
+                        return Some(OVERRIDES.into());
+                    }
+                }
+            }
+            let src = reset::source_of(doc, at)?;
+            if src == main {
+                return None;
+            }
+            at = src;
+        }
+    }
+
+    /// Why no component can be made from `main`, or `None` when one can.
+    fn unwritable(&self, main: NodeId) -> Option<String> {
+        let doc = self.doc;
+        if let Some(set) = variant::set_of(doc, main)
+            && variant::find_variant(doc, set, doc.get(main)?.variant()) != Some(main)
+        {
+            return Some("its variant has the values of another, which is written".into());
+        }
+        // Every variant is a tree of the component, so each must be a CSS root.
+        let trees = self.trees(main).0;
+        for t in &trees {
+            if self.css_blocker(doc.get(*t)?).is_some() {
+                return Some("its main is drawn as a picture".into());
+            }
+        }
+        // A use cannot reach into a picture, which holds the main's values.
+        let owner = variant::owner_of_main(doc, main).unwrap_or(main);
+        let mut bound: HashMap<NodeId, Vec<PropKind>> = HashMap::new();
+        for p in doc.get(owner)?.props() {
+            for b in &p.bound {
+                bound.entry(*b).or_default().push(p.kind);
+            }
+        }
+        for t in &trees {
+            for c in doc.get(*t)?.children() {
+                if self.pictures_bound(*c, &bound) {
+                    return Some("its main draws a property's layer as a picture".into());
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether the layer at `id`, or one under it written as it is, is a picture
+    /// holding a layer a property is `bound` to — but for a boolean on the
+    /// picture itself, which shows the picture's element.
+    fn pictures_bound(&self, id: NodeId, bound: &HashMap<NodeId, Vec<PropKind>>) -> bool {
+        let doc = self.doc;
+        let Some(n) = doc.get(id) else {
+            return false;
+        };
+        // A use is its own component's to write.
+        if n.link().is_some()
+            && component::instance_root(doc, id) == Some(id)
+            && self.why_inline(id).is_none()
+        {
+            return false;
+        }
+        if self.css_blocker(n).is_none() {
+            return n.children().iter().any(|c| self.pictures_bound(*c, bound));
+        }
+        let shows = bound
+            .get(&id)
+            .is_some_and(|k| k.iter().all(|k| *k == PropKind::Boolean));
+        let mut under = vec![id];
+        while let Some(at) = under.pop() {
+            if (at != id || !shows) && bound.contains_key(&at) {
+                return true;
+            }
+            under.extend(doc.get(at).map(Node::children).unwrap_or_default());
+        }
+        false
+    }
+
+    /// Whether a component written from `main` in its own mode would draw wrong
+    /// in another: a picture reading a variable that changes with the mode, which
+    /// the picture bakes, or a layer whose stroke, effects, visibility or content
+    /// read one, which decide what CSS is written rather than a `var()` in it.
+    fn varies_by_mode(&self, main: NodeId) -> bool {
+        let doc = self.doc;
+        let varies =
+            |vars: &[Option<VarId>]| vars.iter().flatten().any(|v| tokens::varies(doc, *v));
+        let mut under: Vec<(NodeId, bool)> =
+            self.trees(main).0.into_iter().map(|t| (t, false)).collect();
+        while let Some((at, pictured)) = under.pop() {
+            let Some(n) = doc.get(at) else { continue };
+            let pictured = pictured || self.css_blocker(n).is_some();
+            if varies(&deciding_vars(n, pictured)) {
+                return true;
+            }
+            under.extend(n.children().iter().map(|c| (*c, pictured)));
+        }
+        false
+    }
+
+    /// Whether the picture at `id`, inside the window frame, bakes a value the
+    /// window's width would change: one of its layers reads a variable that
+    /// resolves otherwise in another mode of the collection picked by width,
+    /// with no layer between pinning that collection's mode.
+    fn picture_follows_width(&self, id: NodeId) -> bool {
+        let doc = self.doc;
+        let t = doc.variables();
+        let (Some(window), Some(c)) = (self.window, t.by_width()) else {
+            return false;
+        };
+        let mut at = Some(id);
+        while let Some(a) = at.filter(|a| *a != window) {
+            let Some(n) = doc.get(a) else { return false };
+            if n.modes().iter().any(|m| c.has(*m)) {
+                return false;
+            }
+            at = n.parent();
+        }
+        if at.is_none() {
+            return false;
+        }
+        let set: Vec<ModeId> = doc
+            .modes_at(id)
+            .into_iter()
+            .filter(|m| !c.has(*m))
+            .collect();
+        let differs = |var: VarId| {
+            let mut values = c.modes.iter().map(|m| {
+                let mut s = set.clone();
+                s.push(m.id);
+                t.resolve_at(var, &s)
+            });
+            let first = values.next();
+            values.any(|v| Some(v) != first)
+        };
+        mastik_core::build::subtree_nodes(doc, &[id])
+            .into_iter()
+            .filter_map(|at| doc.get(at))
+            .any(|n| deciding_vars(n, true).into_iter().flatten().any(differs))
+    }
+
+    /// The trees the component made from `main` draws — its set's variants, the
+    /// first of any that share their values, or the main alone — and its default:
+    /// the set's default variant, else the main.
+    fn trees(&self, main: NodeId) -> (Vec<NodeId>, NodeId) {
+        let doc = self.doc;
+        let Some(set) = variant::set_of(doc, main) else {
+            return (vec![main], main);
+        };
+        let mut seen = HashSet::new();
+        let trees: Vec<NodeId> = variant::variants(doc, set)
+            .into_iter()
+            .filter(|v| seen.insert(doc.get(*v).map(|n| n.variant().to_vec())))
+            .collect();
+        let default = mastik_core::kit::default_variant(doc, set)
+            .filter(|d| trees.contains(d))
+            .unwrap_or(main);
+        (trees, default)
+    }
+
+    /// Property `p`'s default: its value on the default tree, where it reaches it.
+    fn prop_default(&self, p: &Property, default: NodeId) -> Option<PropValue> {
+        let doc = self.doc;
+        let b = p
+            .bound
+            .iter()
+            .find(|b| under(doc, **b, default))
+            .or(p.bound.first())?;
+        variant::field_value(doc, *b, p.kind)
+    }
+
+    /// The main a swap property's slots show, when the property can be a prop:
+    /// every slot it is bound to shows that main, as a use setting nothing.
+    fn swap_default(&self, p: &Property) -> Option<NodeId> {
+        let doc = self.doc;
+        let mut shown = None;
+        for b in &p.bound {
+            let m = component::main_of(doc, *b)?;
+            if shown.is_some_and(|s| s != m)
+                || component::instance_root(doc, *b) != Some(*b)
+                || self.why_inline(*b).is_some()
+                || !self.differences(*b).is_empty()
+            {
+                return None;
+            }
+            shown = Some(m);
+        }
+        shown
+    }
+
+    /// The parameters of the component made from `main`: its set's variant
+    /// properties, its boolean and text properties, its swap properties that a
+    /// use can set, and the parameters of each nested instance it shows,
+    /// forwarded under the slot's name.
+    fn params(&self, main: NodeId) -> Rc<Vec<Param>> {
+        let owner = variant::owner_of_main(self.doc, main).unwrap_or(main);
+        if let Some(p) = self.params_memo.borrow().get(&owner) {
+            return p.clone();
+        }
+        let p = Rc::new(self.params_uncached(main));
+        self.params_memo.borrow_mut().insert(owner, p.clone());
+        p
+    }
+
+    fn params_uncached(&self, main: NodeId) -> Vec<Param> {
+        let doc = self.doc;
+        let owner_id = variant::owner_of_main(doc, main).unwrap_or(main);
+        let Some(owner) = doc.get(owner_id) else {
+            return Vec::new();
+        };
+        let (trees, default) = self.trees(main);
+        // What a component's props object already holds.
+        let mut taken: HashSet<String> = ["className", "key", "ref", "children"]
+            .map(String::from)
+            .into();
+        let mut out = Vec::new();
+        let default_values = doc.get(default).map(Node::variant).unwrap_or_default();
+        for (i, (vp, d)) in owner
+            .set()
+            .map(|s| s.props.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .zip(default_values)
+            .enumerate()
+        {
+            out.push(Param {
+                code: unique(prop_name(&vp.name), &mut taken),
+                kind: ParamKind::Choice(i),
+                ty: Ty::Union(vp.values.clone()),
+                default: Some(PropValue::Text(d.clone())),
+            });
+        }
+        for p in owner.props() {
+            let (ty, value) = match p.kind {
+                PropKind::Boolean => (Ty::Bool, self.prop_default(p, default)),
+                PropKind::Text => (Ty::Text, self.prop_default(p, default)),
+                PropKind::Swap => (Ty::Component, self.swap_default(p).map(PropValue::Swap)),
+                PropKind::Nested => continue,
+            };
+            let Some(value) = value else { continue };
+            out.push(Param {
+                code: unique(prop_name(&p.name), &mut taken),
+                kind: ParamKind::Prop(p.id, p.kind),
+                ty,
+                default: Some(value),
+            });
+        }
+        // The shown slots, by name path, in every tree.
+        let Some(showing) = owner.props().iter().find(|p| p.kind == PropKind::Nested) else {
+            return out;
+        };
+        let mut keys: Vec<(NamePath, Vec<NodeId>)> = Vec::new();
+        for b in &showing.bound {
+            let Some(t) = trees.iter().find(|t| under(doc, *b, **t)) else {
+                continue;
+            };
+            let key = name_path(doc, *t, *b);
+            match keys.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, slots)) => slots.push(*b),
+                None => keys.push((key, vec![*b])),
+            }
+        }
+        let swapped: HashSet<NodeId> = owner
+            .props()
+            .iter()
+            .filter(|p| p.kind == PropKind::Swap)
+            .flat_map(|p| p.bound.iter().copied())
+            .collect();
+        'keys: for (key, slots) in keys {
+            // Every slot at the path a use this component can make, of one
+            // component, and none of them a swap property's, whose component
+            // the use chooses.
+            let mut inner_owner = None;
+            for s in &slots {
+                let Some(m) = component::main_of(doc, *s) else {
+                    continue 'keys;
+                };
+                let o = variant::owner_of_main(doc, m).unwrap_or(m);
+                if inner_owner.is_some_and(|i| i != o)
+                    || swapped.contains(s)
+                    || self.why_inline(*s).is_some()
+                {
+                    continue 'keys;
+                }
+                inner_owner = Some(o);
+            }
+            let (Some(inner_owner), Some(first)) = (inner_owner, slots.first()) else {
+                continue;
+            };
+            let slot_name = doc.get(*first).map(Node::name).unwrap_or_default();
+            let inner = component::main_of(doc, *first).map(|m| self.params(m));
+            for (j, ip) in inner.iter().flat_map(|p| p.iter()).enumerate() {
+                out.push(Param {
+                    code: unique(prop_name(&format!("{slot_name} {}", ip.code)), &mut taken),
+                    kind: ParamKind::Forward {
+                        key: key.clone(),
+                        owner: inner_owner,
+                        inner: j,
+                    },
+                    ty: ip.ty.clone(),
+                    default: None,
+                });
+            }
+        }
+        out
+    }
+
+    /// The value parameter `kind` reads on the instance at `root`, or `None`
+    /// where it reaches nothing there.
+    fn read(&self, root: NodeId, kind: &ParamKind) -> Option<PropValue> {
+        let doc = self.doc;
+        match kind {
+            ParamKind::Choice(i) => {
+                let main = component::main_of(doc, root)?;
+                doc.get(main)?
+                    .variant()
+                    .get(*i)
+                    .map(|v| PropValue::Text(v.clone()))
+            }
+            ParamKind::Prop(item, k) => {
+                let props = variant::instance_properties(doc, root);
+                let p = props.iter().find(|p| p.id == *item)?;
+                let c = *variant::counterparts(doc, root, p).first()?;
+                variant::field_value(doc, c, *k)
+            }
+            ParamKind::Forward { key, owner, inner } => {
+                let copy = self.shown_copy(root, key)?;
+                let m = component::main_of(doc, copy)?;
+                if variant::owner_of_main(doc, m).unwrap_or(m) != *owner {
+                    return None;
+                }
+                let kind = self.params(m).get(*inner)?.kind.clone();
+                self.read(copy, &kind)
+            }
+        }
+    }
+
+    /// The value the instance at `root` draws for parameter `p` when its use
+    /// passes nothing: the default, or for a forwarded one, its slot's value in
+    /// the tree the instance shows.
+    fn expected(&self, root: NodeId, p: &Param) -> Option<PropValue> {
+        match &p.kind {
+            ParamKind::Forward { key, inner, .. } => {
+                let tree = component::main_of(self.doc, root)?;
+                let slot = at_name_path(self.doc, tree, key)?;
+                let m = component::main_of(self.doc, slot)?;
+                let kind = self.params(m).get(*inner)?.kind.clone();
+                self.read(slot, &kind)
+            }
+            _ => p.default.clone(),
+        }
+    }
+
+    /// The fields parameter `kind` reads on the instance at `root`, which its
+    /// use sets rather than overriding, or `None` when the instance holds a
+    /// value the parameter cannot say: a shown copy swapped to another
+    /// component.
+    fn fields(&self, root: NodeId, kind: &ParamKind) -> Option<Vec<(NodeId, PropKind)>> {
+        let doc = self.doc;
+        match kind {
+            // The instance's own variant is its link, never an override.
+            ParamKind::Choice(_) => Some(Vec::new()),
+            ParamKind::Prop(item, k) => {
+                let props = variant::instance_properties(doc, root);
+                let Some(p) = props.iter().find(|p| p.id == *item) else {
+                    return Some(Vec::new());
+                };
+                Some(
+                    variant::counterparts(doc, root, p)
+                        .into_iter()
+                        .map(|c| (c, *k))
+                        .collect(),
+                )
+            }
+            ParamKind::Forward { key, owner, inner } => {
+                let Some(copy) = self.shown_copy(root, key) else {
+                    return Some(Vec::new());
+                };
+                let m = component::main_of(doc, copy)?;
+                if variant::owner_of_main(doc, m).unwrap_or(m) != *owner {
+                    return None;
+                }
+                let kind = self.params(m).get(*inner)?.kind.clone();
+                let mut f = self.fields(copy, &kind)?;
+                // A shown copy's variant switch is a swap within its set.
+                if matches!(kind, ParamKind::Choice(_)) {
+                    f.push((copy, PropKind::Swap));
+                }
+                Some(f)
+            }
+        }
+    }
+
+    /// The copy of the slot at `key` that the instance at `root` shows.
+    fn shown_copy(&self, root: NodeId, key: &[(String, usize)]) -> Option<NodeId> {
+        variant::shown_nested(self.doc, root)
+            .into_iter()
+            .find(|s| s.path.len() == 1 && s.key == key)
+            .map(|s| s.copy)
+    }
+
+    /// What the instance at `root` sets apart from what its component draws by
+    /// default, by parameter index.
+    fn differences(&self, root: NodeId) -> Vec<(usize, PropValue)> {
+        let Some(main) = component::main_of(self.doc, root) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (i, p) in self.params(main).iter().enumerate() {
+            if let Some(v) = self.read(root, &p.kind)
+                && Some(&v) != self.expected(root, p).as_ref()
+            {
+                out.push((i, v));
+            }
+        }
+        out
+    }
+
+    /// `v` as an argument, making the component a swap's value names.
+    fn arg(&mut self, v: PropValue) -> Arg {
+        match v {
+            PropValue::Boolean(b) => Arg::Bool(b),
+            PropValue::Text(t) => Arg::Text(t),
+            PropValue::Swap(m) => Arg::Component(self.component(m).name),
+        }
+    }
+
+    /// The instance at `node` as a use of its main's component, placed as `place`
+    /// says, with the variant and the properties it sets apart from the defaults.
+    fn instance(&mut self, node: &Node, place: Place) -> Element {
+        let doc = self.doc;
+        let main = component::main_of(doc, node.id()).expect("checked by why_inline");
+        let sig = self.component(main);
+        let kind = self.res.used_kind_of(node).clone();
+        let mut el = Element::new("div", self.classes.mint(node.name(), kind.default_name()));
+        let bx = self.box_rect(node);
+        self.place(&mut el, node, &kind, bx, place);
+        let mut args = Vec::new();
+        match self.forwards.get(&node.id()).cloned() {
+            // A shown slot passes on the main's own parameters, its value where
+            // it differs standing in for one left unset.
+            Some(forwarded) => {
+                for f in forwarded {
+                    let fallback = f.fallback.map(|v| Box::new(self.arg(v)));
+                    let var = Arg::Var {
+                        name: f.outer,
+                        component: f.ty == Ty::Component,
+                        fallback,
+                    };
+                    args.push((f.inner, var));
+                }
+            }
+            None => {
+                for (i, v) in self.differences(node.id()) {
+                    let arg = self.arg(v);
+                    args.push((sig.params[i].code.clone(), arg));
+                }
+            }
+        }
+        let slot = self
+            .bound
+            .get(&node.id())
+            .filter(|b| b.kind == PropKind::Swap)
+            .map(|b| b.name.clone());
+        el.instance = Some(Instance {
+            component: sig.name,
+            args,
+            slot,
+        });
+        // `why_inline` let a root's own mode through only where the main sets none.
+        let main_modes = doc.get(main).map(Node::modes).unwrap_or_default();
+        let own = node
+            .modes()
+            .iter()
+            .copied()
+            .filter(|m| !main_modes.contains(m));
+        match self.tokens.modes_attr(own) {
+            Some(mode) => {
+                let mode = mode.to_string();
+                // A use of a main with width queries marks its own pin
+                // `data-pin` too: it beats the queries, as a pin on the instance
+                // does on the canvas (`Tokens::query_blocks`), where a mode
+                // inherited from around does not.
+                let pin = doc
+                    .get(main)
+                    .is_some_and(|m| !m.queries().is_empty())
+                    .then(|| mode.clone());
+                let mut around = self.with_mode(el, mode);
+                if let Some(pin) = pin {
+                    around.attrs.push(("data-pin", pin));
+                }
+                around
+            }
+            None => el,
+        }
+    }
+
+    /// `used` inside an element that draws no box and sets `mode`: a component
+    /// use writes no attributes of its own.
+    fn with_mode(&mut self, used: Element, mode: String) -> Element {
+        let mut around = self.around(used, "mode");
+        around.attrs.push(("data-mode", mode));
+        around
+    }
+
+    /// `used` inside an element of class `name` that draws no box.
+    fn around(&mut self, used: Element, name: &str) -> Element {
+        let mut around = Element::new("div", self.classes.mint(name, name));
+        around.set("display", "contents");
+        around.children.push(Child::Element(Box::new(used)));
+        around
+    }
+
+    /// The component written from `main`, or from the set it is a variant of,
+    /// made the first time it is asked for.
+    fn component(&mut self, main: NodeId) -> Signature {
+        let doc = self.doc;
+        let owner_id = variant::owner_of_main(doc, main).unwrap_or(main);
+        let comps = self.components.as_mut().expect("components are on");
+        if let Some(sig) = comps.by_owner.get(&owner_id) {
+            return sig.clone();
+        }
+        let owner = doc.get(owner_id).expect("a main in the document");
+        let name = unique_file(component_name(owner.name()), "Component", &mut comps.names);
+        // A kit's components go in a folder named for the kit.
+        let dir = match owner.origin() {
+            None => "components".to_string(),
+            Some(o) => {
+                if !comps.kit_dirs.contains_key(&o.kit) {
+                    let named = o.name.clone().or_else(|| {
+                        let kits = doc.variables().kits();
+                        kits.get(&o.kit).and_then(|k| k.name.clone())
+                    });
+                    let mut taken = comps
+                        .kit_dirs
+                        .values()
+                        .map(|d| d.to_ascii_lowercase())
+                        .collect();
+                    let folder = unique_file(
+                        component_name(named.as_deref().unwrap_or("Kit")),
+                        "Kit",
+                        &mut taken,
+                    );
+                    comps.kit_dirs.insert(o.kit.clone(), folder);
+                }
+                format!("components/{}", comps.kit_dirs[&o.kit])
+            }
+        };
+        let params = self.params(main);
+        let sig = Signature {
+            name: name.clone(),
+            params: params.clone(),
+        };
+        let comps = self.components.as_mut().expect("components are on");
+        comps.by_owner.insert(owner_id, sig.clone());
+
+        // The defaults as arguments, which makes the components they name first,
+        // so they are written before this one.
+        let mut props = Vec::new();
+        for p in params.iter() {
+            let default = p.default.clone().map(|v| self.arg(v));
+            props.push((p.code.clone(), p.ty.clone(), default));
+        }
+
+        let (trees, default) = self.trees(main);
+        let mut bound = HashMap::new();
+        let mut forwards: HashMap<NodeId, Vec<_>> = HashMap::new();
+        for p in params.iter() {
+            match &p.kind {
+                ParamKind::Prop(item, kind) => {
+                    let Some(prop) = owner.props().iter().find(|q| q.id == *item) else {
+                        continue;
+                    };
+                    for b in &prop.bound {
+                        let styled = match doc.get(*b).map(Node::kind) {
+                            Some(NodeKind::Text { content, spans, .. }) => {
+                                content.contains('\n') || !spans.is_empty()
+                            }
+                            _ => false,
+                        };
+                        bound.insert(
+                            *b,
+                            BoundProp {
+                                name: p.code.clone(),
+                                kind: *kind,
+                                styled,
+                            },
+                        );
+                    }
+                }
+                ParamKind::Forward { key, inner, .. } => {
+                    for t in &trees {
+                        let Some(slot) = at_name_path(doc, *t, key) else {
+                            continue;
+                        };
+                        let Some(m) = component::main_of(doc, slot) else {
+                            continue;
+                        };
+                        let Some(ip) = self.params(m).get(*inner).cloned() else {
+                            continue;
+                        };
+                        let fallback = self
+                            .differences(slot)
+                            .into_iter()
+                            .find(|(i, _)| i == inner)
+                            .map(|(_, v)| v);
+                        forwards.entry(slot).or_default().push(Forwarded {
+                            inner: ip.code,
+                            outer: p.code.clone(),
+                            ty: p.ty.clone(),
+                            fallback,
+                        });
+                    }
+                }
+                ParamKind::Choice(_) => {}
+            }
+        }
+
+        // A set's interaction state: its place, rest's value, the ties, the
+        // element, and the prop forcing a state, which loses its default.
+        let marked = owner.set().and_then(|vs| {
+            let at = vs.interaction()?;
+            let rest = variant::rest_value(doc, owner_id, at)?;
+            let p = params
+                .iter()
+                .position(|p| matches!(p.kind, ParamKind::Choice(i) if i == at))?;
+            let element = variant::root_element(doc, owner_id);
+            Some((at, rest, vs.props[at].states.clone(), element, p))
+        });
+        let mut live = None;
+        if let Some((_, rest, ties, element, p)) = &marked {
+            // Every root holds the set's one element, and one address: the
+            // default's, else the first another root holds. Roots linking apart
+            // are reported, since a component's `<a>` has one.
+            let hrefs: Vec<&str> = [&default]
+                .into_iter()
+                .chain(trees.iter().filter(|t| **t != default))
+                .filter_map(|t| doc.get(*t))
+                .map(|n| n.href())
+                .filter(|h| !h.is_empty())
+                .collect();
+            let href = hrefs.first().copied().unwrap_or_default().to_string();
+            if *element == RootElement::Link && hrefs.iter().any(|h| *h != href) {
+                self.report.approximate(format!(
+                    "{name}: its variants link to different addresses, written with “{href}”"
+                ));
+            }
+            props[*p].2 = None;
+            let mut taken: HashSet<String> = props.iter().map(|(c, _, _)| c.clone()).collect();
+            taken.extend(["className", "key", "ref", "children"].map(String::from));
+            let disabled = unique("disabled".into(), &mut taken);
+            let spread = unique("rest".into(), &mut taken);
+            props.push((disabled.clone(), Ty::Bool, Some(Arg::Bool(false))));
+            live = Some(Live {
+                prop: params[*p].code.clone(),
+                rest: rest.clone(),
+                spread,
+                disabled,
+                disabled_value: ties
+                    .iter()
+                    .find(|(_, s)| **s == Interaction::Disabled)
+                    .map(|(v, _)| v.clone()),
+                element: *element,
+                href,
+            });
+        }
+
+        // One file's classes across every variant's tree.
+        let classes = std::mem::replace(
+            &mut self.classes,
+            Classes::reserving(self.text_names.values()),
+        );
+        // A component is its own file: nothing around its use, and no main yet.
+        let outer_inside = std::mem::take(&mut self.inside);
+        let outer_main = std::mem::replace(&mut self.main_written, false);
+        let outer_bound = std::mem::replace(&mut self.bound, bound);
+        let outer_forwards = std::mem::replace(&mut self.forwards, forwards);
+        let mut bodies = Vec::new();
+        // The default's tree is walked first, so its classes take the plain
+        // names, and moved last, where it is the fallback.
+        for t in [&default]
+            .into_iter()
+            .chain(trees.iter().filter(|t| **t != default))
+        {
+            let Some(node) = doc.get(*t) else { continue };
+            // Each variant's tree is drawn alone, so each may hold the main. A
+            // marked set's button or link root is written by `as_element`, but
+            // what it is still bars what may sit inside it; any other element
+            // is written here, as an unmarked root's is.
+            self.main_written = false;
+            let element = match &marked {
+                Some(_) => variant::root_element(doc, owner_id)
+                    .element()
+                    .or_else(|| self.element_of(node)),
+                None => self.element_of(node),
+            };
+            self.inside.extend(element);
+            let mut root = self.css_element(node, Place::Root);
+            self.inside.clear();
+            if let Some(e) = element.filter(|e| marked.is_none() || !e.interactive()) {
+                self.write_element(&mut root, node, e);
+            }
+            root.takes_class = true;
+            let when = match *t == default {
+                true => Vec::new(),
+                false => params
+                    .iter()
+                    .filter_map(|p| match p.kind {
+                        ParamKind::Choice(i) => {
+                            let value = node.variant().get(i)?.clone();
+                            Some(match &marked {
+                                // Unset, the browser decides: read as rest.
+                                Some((at, rest, ties, ..)) if *at == i => {
+                                    let plain: Vec<String> = owner
+                                        .set()
+                                        .map(|vs| vs.props[i].values.clone())
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .filter(|v| v != rest && !ties.contains_key(v))
+                                        .collect();
+                                    (super::dom::state_prop(&p.code, rest, &plain), value)
+                                }
+                                _ => (p.code.clone(), value),
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            };
+            bodies.push(super::states::Body {
+                when,
+                values: node.variant().to_vec(),
+                tree: root,
+            });
+        }
+        bodies.rotate_left(1);
+        self.bound = outer_bound;
+        self.forwards = outer_forwards;
+        // Every tree's layers keyed as the default's counterparts.
+        if let Some((last, others)) = bodies.split_last_mut() {
+            for b in others {
+                super::merge::pair(&last.tree, &mut b.tree);
+            }
+        }
+        let mut bodies = match &marked {
+            Some((at, rest, ties, _, p)) => {
+                let m = super::states::Marked {
+                    component: &name,
+                    prop: &params[*p].code,
+                    at: *at,
+                    rest,
+                    ties,
+                };
+                super::states::write(bodies, &m, &mut self.classes, &mut self.report)
+            }
+            None => {
+                let bodies = bodies.into_iter().map(|b| (b.when, b.tree)).collect();
+                super::merge::merge(bodies).bodies
+            }
+        };
+        if let Some(mut live) = live {
+            // Interactive content cannot nest: a root holding a button, a link
+            // or a marked Plain root, which takes focus, is written as Plain.
+            let comps = self.components.as_ref().expect("components are on");
+            let mut nested = None;
+            for (_, root) in &bodies {
+                root.each(&mut |e| {
+                    if let Some(i) = &e.instance
+                        && nested.is_none()
+                    {
+                        if comps.interactive.contains(&i.component) {
+                            nested = Some((i.component.clone(), "is interactive"));
+                        } else if comps.focusable.contains(&i.component) {
+                            nested = Some((i.component.clone(), "takes focus"));
+                        }
+                    }
+                });
+            }
+            if let Some((inner, why)) = nested.filter(|_| live.element != RootElement::Plain) {
+                self.report.approximate(format!(
+                    "{name}: it holds a {inner}, which {why}, so it is written as Plain"
+                ));
+                live.element = RootElement::Plain;
+            }
+            let comps = self.components.as_mut().expect("components are on");
+            match live.element {
+                RootElement::Plain => comps.focusable.insert(name.clone()),
+                _ => comps.interactive.insert(name.clone()),
+            };
+            for (_, root) in &mut bodies {
+                as_element(root, &live);
+            }
+        } else if doc
+            .get(default)
+            .and_then(Node::element)
+            .is_some_and(HtmlElement::interactive)
+        {
+            let comps = self.components.as_mut().expect("components are on");
+            comps.interactive.insert(name.clone());
+        }
+        self.classes = classes;
+        self.inside = outer_inside;
+        self.main_written = outer_main;
+
+        // Pushed once finished, so after the components it uses.
+        let comps = self.components.as_mut().expect("components are on");
+        comps.list.push(Component {
+            name,
+            dir,
+            bodies,
+            props,
+        });
+        sig
+    }
+
+    /// Why `node` cannot be a CSS element, or `None` when it can. Only the
+    /// layer's own features count: its children choose their own tier.
+    fn css_blocker(&self, node: &Node) -> Option<String> {
+        let doc = self.doc;
+        let id = node.id();
+        let kind = self.res.used_kind_of(node);
+        match kind {
+            NodeKind::Artboard { .. } | NodeKind::Group | NodeKind::Rect { .. } => {}
+            // CSS has no arc: a wedge or a ring goes out as the outline.
+            NodeKind::Ellipse { arc, .. } if !arc.is_whole() => {
+                return Some("an arc, which CSS cannot draw".into());
+            }
+            NodeKind::Ellipse { .. } => {}
+            NodeKind::Text { on_path, .. } => {
+                if on_path.is_some() {
+                    return Some("type on a path".into());
+                }
+            }
+            NodeKind::Polygon { .. } => return Some("a polygon".into()),
+            NodeKind::Star { .. } => return Some("a star".into()),
+            NodeKind::Line { .. } => return Some("a line".into()),
+            NodeKind::Spiral { .. } => return Some("a spiral".into()),
+            NodeKind::Arc { .. } => return Some("an arc, which CSS cannot draw".into()),
+            NodeKind::Path { .. } => return Some("a vector path".into()),
+            NodeKind::Boolean { .. } => return Some("a boolean".into()),
+            NodeKind::Root => return Some("the document".into()),
+            // `node` never visits one.
+            NodeKind::Slice { .. } => return Some("a slice".into()),
+        }
+        if node
+            .children()
+            .iter()
+            .any(|c| doc.get(*c).is_some_and(Node::mask) && doc.shown(*c))
+        {
+            return Some("a mask".into());
+        }
+        // As drawn, so a gradient layout stretched is judged in its drawn form.
+        let paint = mastik_core::paint_box::node_paint(doc, self.res, id)
+            .unwrap_or_else(|| doc.resolved_paint(id, node.paint()));
+        let fills: Vec<&Fill> = paint
+            .fills
+            .iter()
+            .filter(|f| f.visible)
+            .map(|f| &f.value)
+            .collect();
+        let strokes: Vec<&Stroke> = paint
+            .strokes
+            .iter()
+            .filter(|s| s.visible && s.width > 0.0)
+            .map(|s| &s.value)
+            .collect();
+        let size = self.box_rect(node).map(|r| r.size()).unwrap_or_default();
+        if let NodeKind::Text { .. } = kind {
+            match fills.as_slice() {
+                [] => {}
+                [f] if matches!(f.brush.drawn(), Brush::Solid(_)) => {}
+                _ => return Some("text painted with more than one solid colour".into()),
+            }
+            if !strokes.is_empty() {
+                return Some("stroked text".into());
+            }
+        } else if !matches!(kind, NodeKind::Group) {
+            // `image-rendering` is the element's, so its pictures must agree on it.
+            let mut nearest = fills.iter().filter_map(|f| match f.brush.drawn() {
+                Brush::Image(img) => Some(img.sampler.quality == ImageQuality::Low),
+                _ => None,
+            });
+            if let Some(first) = nearest.next()
+                && nearest.any(|n| n != first)
+            {
+                return Some("pictures sampled two ways".into());
+            }
+            for f in &fills {
+                match f.brush.drawn() {
+                    Brush::Image(img) => {
+                        if let Err(why) = image::layer(doc, img, size) {
+                            return Some(why);
+                        }
+                    }
+                    b => {
+                        if css::background_layer(b, size).is_none() {
+                            return Some("a gradient CSS cannot draw".into());
+                        }
+                    }
+                }
+            }
+            match strokes.as_slice() {
+                [] => {}
+                [s] => {
+                    if let Some(why) = self.stroke_blocker(node, kind, s) {
+                        return Some(why);
+                    }
+                }
+                _ => return Some("more than one stroke".into()),
+            }
+        }
+        let effects = doc.resolved_effects(id, node.effects());
+        let visible: Vec<_> = effects.iter().filter(|e| e.visible).collect();
+        if visible
+            .iter()
+            .any(|e| matches!(e.kind, EffectKind::BackgroundBlur { .. }))
+        {
+            // `backdrop-filter` shows through the element's box, where the canvas
+            // shows through the outline.
+            if matches!(kind, NodeKind::Group | NodeKind::Text { .. }) {
+                return Some("a background blur on a group or on type".into());
+            }
+            // An element's `filter` applies over its filtered backdrop too, where
+            // the canvas leaves the backdrop out of the layer's own effects.
+            if visible
+                .iter()
+                .any(|e| !matches!(e.kind, EffectKind::BackgroundBlur { .. }))
+            {
+                return Some("a background blur with another effect".into());
+            }
+        }
+        let mut shadows = 0;
+        for e in visible {
+            match &e.kind {
+                EffectKind::LayerBlur { .. } | EffectKind::BackgroundBlur { .. } => {}
+                // `drop-shadow()` has no blend mode of its own.
+                EffectKind::DropShadow(s) if s.blends() => {
+                    return Some("a shadow with a blend mode".into());
+                }
+                EffectKind::DropShadow(s) if s.spread == 0.0 => shadows += 1,
+                EffectKind::DropShadow(_) => return Some("a shadow with spread".into()),
+                EffectKind::InnerShadow(_) => return Some("an inner shadow".into()),
+                EffectKind::Filters(_) => return Some("colour filters".into()),
+            }
+        }
+        // CSS chains `drop-shadow()`s, each casting the last one's shadow too.
+        if shadows > 1 {
+            return Some("more than one drop shadow".into());
+        }
+        None
+    }
+
+    /// Why one stroke has no CSS form here, or `None`. All four sides are an
+    /// `outline` offset to the alignment ([`Self::paint`]); per-side widths are
+    /// `border`s, which only an inside stroke on a childless rect matches — a
+    /// border moves the padding box absolutely positioned children are measured
+    /// from.
+    fn stroke_blocker(&self, node: &Node, kind: &NodeKind, s: &Stroke) -> Option<String> {
+        if !matches!(s.brush.drawn(), Brush::Solid(_)) {
+            return Some("a gradient or image stroke".into());
+        }
+        if !s.dashes.is_empty() {
+            return Some("a dashed stroke".into());
+        }
+        // An outline offsets an ellipse's radii, which is its parallel curve
+        // only for a circle.
+        if let NodeKind::Ellipse { size, .. } = kind
+            && size.width != size.height
+        {
+            return Some("a stroked ellipse that is not a circle".into());
+        }
+        let (square, any_square) = match kind {
+            NodeKind::Rect { corner_radii, .. } | NodeKind::Artboard { corner_radii, .. } => (
+                mastik_core::geometry::is_square_cornered(corner_radii),
+                [
+                    corner_radii.top_left,
+                    corner_radii.top_right,
+                    corner_radii.bottom_right,
+                    corner_radii.bottom_left,
+                ]
+                .iter()
+                .any(|r| *r <= 0.0),
+            ),
+            _ => (false, false),
+        };
+        let sides = mastik_core::geometry::effective_sides(kind, s);
+        if !sides.is_all() {
+            // Through a rounded corner CSS tapers one width into the other where
+            // the canvas splits the arc between the sides.
+            if s.align != StrokeAlign::Inside || !node.children().is_empty() || !square {
+                return Some("a per-side stroke CSS borders cannot draw".into());
+            }
+            return None;
+        }
+        // An outline's corners are mitred where the radius is zero; the model
+        // joins them as asked.
+        let mitred =
+            s.join == mastik_core::kurbo::Join::Miter && s.miter_limit >= std::f64::consts::SQRT_2;
+        if any_square && s.align != StrokeAlign::Inside && !mitred {
+            return Some("a stroke with rounded or bevelled corners".into());
+        }
+        None
+    }
+
+    /// `node`'s box in its own space, or `None` for a group without a layout,
+    /// which has none.
+    fn box_rect(&self, node: &Node) -> Option<Rect> {
+        let kind = self.res.used_kind_of(node);
+        match kind {
+            NodeKind::Group => self
+                .res
+                .used_frame(node.id())
+                .filter(|_| node.display().is_some())
+                .map(|s| Rect::from_origin_size((0.0, 0.0), s)),
+            _ => mastik_core::geometry::local_bounds(kind, self.res.text_layout(node.id())),
+        }
+    }
+
+    /// The box a plain group or a boolean placed at `place` scales its contents
+    /// with: its drawn contents' box when its insets place it in a box, or when it
+    /// sits in such a group itself. `None` for any other layer, and for one whose
+    /// insets are inert.
+    fn shared_box(&self, node: &Node, place: Place) -> Option<Rect> {
+        let pinned = match place {
+            Place::Free { boxed, .. } => boxed && node.insets().is_authored(),
+            Place::Share { .. } => true,
+            _ => false,
+        };
+        (pinned && container::placed_by_contents(self.res.used_kind_of(node), node.display()))
+            .then(|| self.res.contents_box(self.doc, node.id()))
+            .flatten()
+    }
+
+    /// Tier 1: `node` as an element with declarations, children recursed.
+    fn css_element(&mut self, node: &Node, place: Place) -> Element {
+        let doc = self.doc;
+        let id = node.id();
+        let kind = self.res.used_kind_of(node).clone();
+        let mut el = Element::new("div", self.classes.mint(node.name(), kind.default_name()));
+        let shared = self.shared_box(node, place);
+        let bx = self.box_rect(node).or(shared);
+        self.place(&mut el, node, &kind, bx, place);
+        if let Some(mode) = self.tokens.modes_attr(node.modes().iter().copied()) {
+            el.attrs.push(("data-mode", mode));
+        }
+        // A frame whose contents pick modes by its width: a container, named
+        // after the component whose widths these are.
+        if !node.queries().is_empty() {
+            let scope = match node.component() {
+                true => node.name().to_string(),
+                false => mastik_core::component::main_of(doc, id)
+                    .and_then(|m| doc.get(m))
+                    .map_or_else(|| node.name().to_string(), |m| m.name().to_string()),
+            };
+            if let Some(words) = self
+                .tokens
+                .query_attr(doc.variables(), &scope, node.queries())
+            {
+                el.attrs.push(("data-query", words));
+            }
+        }
+        if let Some(var) = node.opacity_var() {
+            el.set("opacity", self.tokens.opacity(var));
+        } else {
+            let opacity = doc.drawn_opacity(id);
+            if opacity < 1.0 {
+                el.set("opacity", fmt(f64::from(opacity.max(0.0))));
+            }
+        }
+        if let Some((prop, value)) = crate::svg::blend_decl(doc, node) {
+            el.set(prop, value);
+        }
+        self.effects(&mut el, node);
+
+        let mut over_children = None;
+        match &kind {
+            NodeKind::Rect {
+                corner_radii,
+                size,
+                corner_smoothing,
+            } => {
+                self.border_radius(&mut el, node, *size, *corner_radii, *corner_smoothing);
+                self.paint(&mut el, node, *size);
+            }
+            NodeKind::Ellipse { size, .. } => {
+                el.set("border-radius", "50%");
+                self.paint(&mut el, node, *size);
+            }
+            NodeKind::Artboard {
+                size,
+                corner_radii,
+                corner_smoothing,
+            } => {
+                if node.clip() {
+                    el.set("overflow", "hidden");
+                    // A clip is an isolation group on the canvas and in SVG, and
+                    // `overflow` makes no stacking context.
+                    if crate::svg::holds_blend(doc, node) {
+                        el.set("isolation", "isolate");
+                    }
+                }
+                self.border_radius(&mut el, node, *size, *corner_radii, *corner_smoothing);
+                over_children = self.paint(&mut el, node, *size);
+            }
+            NodeKind::Text { .. } => {
+                self.text(&mut el, node, matches!(place, Place::Share { .. }));
+                if let Some(b) = self.bound.get(&id).filter(|b| b.kind == PropKind::Text) {
+                    // One value in the first paragraph's style, which is what the
+                    // canvas does with a value that is not the main's.
+                    if b.styled {
+                        self.report.approximate(format!(
+                            "text {}: its property is written in one style, which the \
+                             main's own text has more than",
+                            label(node)
+                        ));
+                    }
+                    el.children.truncate(1);
+                    if let NodeKind::Text {
+                        content,
+                        style,
+                        spans,
+                        ..
+                    } = &kind
+                    {
+                        let first = spans.runs(style, content.len()).into_iter().next();
+                        let s = first.map_or_else(|| (**style).clone(), |(_, s)| s);
+                        let value =
+                            self.run(Child::Prop(b.name.clone()), &s, style, node, &el.class);
+                        if let Some(Child::Element(p)) = el.children.first_mut() {
+                            // The value is cased as it arrives, by CSS's rules.
+                            if let Some(t) = text_transform(s.case) {
+                                p.set("text-transform", t);
+                                self.report.approximate(format!(
+                                    "text {}: its property is cased by CSS's `text-transform`, \
+                                     which cases some letters differently",
+                                    label(node)
+                                ));
+                            }
+                            p.children = vec![value];
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(display) = doc.resolved_display(id)
+            && container::is_container(&kind)
+        {
+            self.display(&mut el, &display, node.spacing_vars());
+        } else if matches!(kind, NodeKind::Group) {
+            self.report.position(format!(
+                "group {}: no layout, so its children are absolutely positioned",
+                label(node)
+            ));
+        }
+
+        let lays_out = node.display().is_some() && container::is_container(&kind);
+        let grid = matches!(node.display(), Some(Display::Grid(_)));
+        let boxed = matches!(kind, NodeKind::Artboard { .. }) || lays_out;
+        for child in node.children() {
+            let Some(c) = doc.get(*child) else { continue };
+            let in_flow = lays_out && !c.insets().is_authored();
+            let place = if in_flow {
+                Place::Flow { grid }
+            } else if let Some(of) = shared {
+                Place::Share {
+                    local: self.res.used_local_of(c),
+                    of,
+                }
+            } else {
+                // Where layout put it: a picture is placed by this alone, and an
+                // inset-pinned layer's stored transform is stale.
+                Place::Free {
+                    local: self.res.used_local_of(c),
+                    boxed,
+                }
+            };
+            if let Some(e) = self.node(*child, place) {
+                el.children.push(Child::Element(Box::new(e)));
+            }
+        }
+        if let Some(e) = over_children {
+            el.children.push(Child::Element(Box::new(e)));
+        }
+        // A chart reads as one picture named by its layer; its parts, hidden
+        // with the subtrees under them, would read as a heap of numbers.
+        if node.chart().is_some() {
+            el.attrs.push(("role", "img".into()));
+            el.attrs.push(("aria-label", node.name().to_string()));
+            for c in &mut el.children {
+                if let Child::Element(e) = c {
+                    e.attrs.push(("aria-hidden", "true".into()));
+                }
+            }
+        }
+        el
+    }
+
+    /// Position and size `el` as `place` says. The box's slot is its top-left
+    /// before its own transform, which turns it about its centre, CSS's default
+    /// `transform-origin` — a group without a layout has no box, so it turns about
+    /// its own origin.
+    fn place(
+        &mut self,
+        el: &mut Element,
+        node: &Node,
+        kind: &NodeKind,
+        bx: Option<Rect>,
+        place: Place,
+    ) {
+        let item = node.item();
+        let bx_or_point = bx.unwrap_or(Rect::ZERO);
+        match place {
+            Place::Flow { grid } => {
+                el.set("position", "relative");
+                self.sizes(el, node, kind, bx, (false, false), true);
+                if !grid {
+                    if item.grow != 0.0 {
+                        el.set("flex-grow", fmt(item.grow));
+                    }
+                    if item.shrink != 1.0 {
+                        el.set("flex-shrink", fmt(item.shrink));
+                    }
+                    if item.basis != Dimension::Auto {
+                        el.set("flex-basis", dimension(item.basis));
+                    }
+                } else if let Some(area) = item.grid_area {
+                    // The area sets all four lines; the item's own are not drawn.
+                    // A name the grid lacks is laid `auto` (`container::area_lines`),
+                    // where a browser would read it as a named line past the grid,
+                    // so it is written only where the template has the area. One
+                    // the canvas lays but the template leaves out is reported.
+                    let areas = node
+                        .parent()
+                        .and_then(|p| self.doc.get(p))
+                        .and_then(|p| match p.display() {
+                            Some(Display::Grid(g)) => Some(g.areas.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    if writable_areas(&areas).iter().any(|a| a.name == area) {
+                        el.set("grid-area", area.to_string());
+                    } else if areas.iter().any(|a| a.name == area) {
+                        self.report.approximate(format!(
+                            "{} {}: its grid area “{area}” is one CSS cannot write \
+                             beside the grid's others, so it is placed automatically",
+                            kind_word(node),
+                            label(node)
+                        ));
+                    }
+                    if let Some(j) = item.justify_self {
+                        el.set("justify-self", align_items(j));
+                    }
+                } else {
+                    if item.grid_column != Default::default() {
+                        el.set(
+                            "grid-column",
+                            format!(
+                                "{} / {}",
+                                container::placement_css(item.grid_column.start),
+                                container::placement_css(item.grid_column.end)
+                            ),
+                        );
+                    }
+                    if item.grid_row != Default::default() {
+                        el.set(
+                            "grid-row",
+                            format!(
+                                "{} / {}",
+                                container::placement_css(item.grid_row.start),
+                                container::placement_css(item.grid_row.end)
+                            ),
+                        );
+                    }
+                    if let Some(j) = item.justify_self {
+                        el.set("justify-self", align_items(j));
+                    }
+                }
+                if let Some(a) = item.align_self {
+                    el.set("align-self", align_items(a));
+                }
+                // A shape is a replaced element to the layout: it never shrinks or
+                // is squeezed below its own size, which an empty `div` would be.
+                if replaced(node, kind)
+                    && let Some(b) = bx
+                {
+                    // Not on a ratio's derived side, which the ratio sizes, down
+                    // as well as up, from whatever the layout gives the other, nor
+                    // on a percentage, which follows its parent down.
+                    let derived = |side| {
+                        item.aspect_ratio.is_some_and(|r| {
+                            r.side == side && r.is_valid() && container::holds_ratio(kind)
+                        })
+                    };
+                    let pct = |d: Dimension| matches!(d, Dimension::Percent(_));
+                    if item.min_width == Dimension::Auto
+                        && !derived(container::RatioSide::Width)
+                        && !pct(item.width)
+                    {
+                        let w = self.axis_size(node, 0, b.width());
+                        el.set("min-width", w);
+                    }
+                    if item.min_height == Dimension::Auto
+                        && !derived(container::RatioSide::Height)
+                        && !pct(item.height)
+                    {
+                        let h = self.axis_size(node, 1, b.height());
+                        el.set("min-height", h);
+                    }
+                }
+                if let Some(m) = css::matrix(css::linear(node.transform())) {
+                    el.set("transform", m);
+                }
+            }
+            Place::Free { local, boxed } => {
+                el.set("position", "absolute");
+                let slot = container::slot_of(local, bx_or_point);
+                let insets = node.insets();
+                let insets_apply = boxed
+                    && insets.is_authored()
+                    && (container::takes_insets(kind)
+                        || container::placed_by_contents(kind, node.display()));
+                let mut stretched = (false, false);
+                if insets_apply {
+                    let m = insets.margin_auto;
+                    let (x, x_mid) = margined_axis(
+                        el,
+                        ("left", "right"),
+                        (insets.left, insets.right),
+                        (m.left, m.right),
+                        slot.x,
+                    );
+                    let (y, y_mid) = margined_axis(
+                        el,
+                        ("top", "bottom"),
+                        (insets.top, insets.bottom),
+                        (m.top, m.bottom),
+                        slot.y,
+                    );
+                    if x_mid || y_mid {
+                        let half = |mid: bool| if mid { "-50%" } else { "0" };
+                        el.set("translate", format!("{} {}", half(x_mid), half(y_mid)));
+                    }
+                    stretched = stretched_axes((x, y), insets, kind);
+                } else {
+                    el.set("left", px(slot.x));
+                    el.set("top", px(slot.y));
+                }
+                self.sizes(el, node, kind, bx, stretched, false);
+                if bx.is_none() {
+                    el.set("transform-origin", "0 0");
+                }
+                if let Some(m) = css::matrix(css::linear(local)) {
+                    el.set("transform", m);
+                }
+            }
+            Place::Share { local, of } => {
+                el.set("position", "absolute");
+                // The unturned box's share, turned about its centre as CSS turns
+                // by default: the canvas stretches a turned layer's own box and
+                // turns that. Text keeps its type size there too. An axis the
+                // kind does not stretch on (`share_axes`) keeps the layer's own
+                // length at its share's start; an axis the group is flat on
+                // keeps its offset in px, as `container::share_of` does.
+                match bx {
+                    Some(b) => {
+                        let at = container::slot_of(local, b);
+                        let on = share_axes(kind, b);
+                        let axis =
+                            |start: f64, len: f64, lo: f64, extent: f64, on: bool| match extent
+                                > FLAT_EXTENT
+                            {
+                                true => (
+                                    format!("{}%", fmt((start - lo) / extent * 100.0)),
+                                    on.then(|| format!("{}%", fmt(len / extent * 100.0))),
+                                ),
+                                false => (px(start - lo), None),
+                            };
+                        let (left, width) = axis(at.x, b.width(), of.x0, of.width(), on.0);
+                        let (top, height) = axis(at.y, b.height(), of.y0, of.height(), on.1);
+                        let on = (width.is_some(), height.is_some());
+                        self.sizes(el, node, kind, bx, on, false);
+                        el.set("left", left);
+                        el.set("top", top);
+                        if let Some(w) = width {
+                            el.set("width", w);
+                        }
+                        if let Some(h) = height {
+                            el.set("height", h);
+                        }
+                        if let Some(m) = css::matrix(css::linear(local)) {
+                            el.set("transform", m);
+                        }
+                    }
+                    // With no box to share: at its drawn place from the group's
+                    // box, which a resize leaves where it is.
+                    None => {
+                        self.report.approximate(format!(
+                            "{} {}: in a group its insets scale, written at its drawn size",
+                            kind_word(node),
+                            label(node)
+                        ));
+                        let slot = container::slot_of(local, bx_or_point);
+                        el.set("left", px(slot.x - of.x0));
+                        el.set("top", px(slot.y - of.y0));
+                        self.sizes(el, node, kind, bx, (false, false), false);
+                        if bx.is_none() {
+                            el.set("transform-origin", "0 0");
+                        }
+                        if let Some(m) = css::matrix(css::linear(local)) {
+                            el.set("transform", m);
+                        }
+                    }
+                }
+            }
+            Place::Root => {
+                el.set("position", "relative");
+                self.sizes(el, node, kind, bx, (false, false), false);
+                if bx.is_none() {
+                    el.set("transform-origin", "0 0");
+                }
+            }
+        }
+    }
+
+    /// A box's own size on `axis` (0 width, 1 height): its bound variable's, else
+    /// `used` px.
+    fn axis_size(&mut self, node: &Node, axis: usize, used: f64) -> String {
+        match node.size_vars()[axis] {
+            Some(v) => self.tokens.px_floored(v),
+            None => px(used),
+        }
+    }
+
+    /// Width and height as specified: a shape's or a frame's own size, a group's
+    /// `LayoutItem` sizes (`auto` hugging, as the model reads it), a text box's
+    /// sizing mode. An axis `stretched` between two insets is left to them.
+    /// `in_flow` is a layout's item, the only place a frame's typed size is read.
+    fn sizes(
+        &mut self,
+        el: &mut Element,
+        node: &Node,
+        kind: &NodeKind,
+        bx: Option<Rect>,
+        stretched: (bool, bool),
+        in_flow: bool,
+    ) {
+        let item = node.item();
+        // A bound size stands for the kind's own size, the axis's px.
+        let [bound_w, bound_h] = node.size_vars();
+        let (w, h): (Option<String>, Option<String>) = match kind {
+            NodeKind::Group => {
+                if node.display().is_none() {
+                    // A pinned one has its contents' box (`Walk::shared_box`).
+                    match bx {
+                        Some(b) => (Some(px(b.width())), Some(px(b.height()))),
+                        None => (Some("0".into()), Some("0".into())),
+                    }
+                } else {
+                    (Some(hug(item.width)), Some(hug(item.height)))
+                }
+            }
+            NodeKind::Artboard { size, .. } if node.display().is_some() => (
+                Some(match (item.width, bound_w) {
+                    (Dimension::Auto, Some(v)) => self.tokens.px_floored(v),
+                    (d, _) => own_or(d, size.width),
+                }),
+                Some(match (item.height, bound_h) {
+                    (Dimension::Auto, Some(v)) => self.tokens.px_floored(v),
+                    (d, _) => own_or(d, size.height),
+                }),
+            ),
+            // A frame without a layout: in a layout's flow, a typed size as the
+            // layout reads it (a chart's plot is 100% of its grid cell), else
+            // its own box, which is all the canvas reads of a free one.
+            NodeKind::Artboard { .. } => {
+                let s = bx.map(|b| b.size()).unwrap_or_default();
+                let typed = |d: Dimension| {
+                    (in_flow && matches!(d, Dimension::Px(_) | Dimension::Percent(_)))
+                        .then(|| dimension(d))
+                };
+                (
+                    Some(typed(item.width).unwrap_or_else(|| self.axis_size(node, 0, s.width))),
+                    Some(typed(item.height).unwrap_or_else(|| self.axis_size(node, 1, s.height))),
+                )
+            }
+            NodeKind::Text { sizing, .. } => match sizing {
+                TextSizing::Auto => (None, None),
+                TextSizing::AutoHeight(w) => (Some(px(*w)), None),
+                TextSizing::Fixed(s) => (Some(px(s.width)), Some(px(s.height))),
+            },
+            _ => {
+                let s = bx.map(|b| b.size()).unwrap_or_default();
+                (
+                    Some(self.axis_size(node, 0, s.width)),
+                    Some(self.axis_size(node, 1, s.height)),
+                )
+            }
+        };
+        // A ratio's derived side is left to `aspect-ratio`, as the canvas lays it,
+        // unless two insets stretch that side, which the canvas draws by them.
+        let ratio = item.aspect_ratio.filter(|r| {
+            let derived_stretched = match r.side {
+                container::RatioSide::Width => stretched.0,
+                container::RatioSide::Height => stretched.1,
+            };
+            r.is_valid() && container::holds_ratio(kind) && !derived_stretched
+        });
+        let derived = |side| ratio.is_some_and(|r| r.side == side);
+        if let Some(w) = w.filter(|_| !stretched.0 && !derived(container::RatioSide::Width)) {
+            el.set("width", w);
+        }
+        if let Some(h) = h.filter(|_| !stretched.1 && !derived(container::RatioSide::Height)) {
+            el.set("height", h);
+        }
+        if let Some(r) = ratio {
+            el.set("aspect-ratio", r.css());
+        }
+        // `k` is `LayoutItem::limit`'s place; a bound limit is its variable in px.
+        for (k, prop) in [
+            (0, "min-width"),
+            (2, "min-height"),
+            (1, "max-width"),
+            (3, "max-height"),
+        ] {
+            match (item.limit_vars[k], item.limit(k)) {
+                (Some(var), _) => el.set(prop, self.tokens.px_floored(var)),
+                (None, Dimension::Auto) => {}
+                (None, d) => el.set(prop, dimension(d)),
+            }
+        }
+    }
+
+    /// A frame's or rect's corners as `border-radius`, smoothing reported as
+    /// approximated.
+    fn border_radius(
+        &mut self,
+        el: &mut Element,
+        node: &Node,
+        size: Size,
+        corner_radii: mastik_core::kurbo::RoundedRectRadii,
+        corner_smoothing: f64,
+    ) {
+        let bound = node.corner_vars();
+        let r = [
+            corner_radii.top_left,
+            corner_radii.top_right,
+            corner_radii.bottom_right,
+            corner_radii.bottom_left,
+        ];
+        // A bound corner may read 0 in this mode and not in another, so it
+        // is rounded wherever `border-radius` is written, and noted alike.
+        let rounded = r.iter().any(|r| *r > 0.0) || bound.iter().any(Option::is_some);
+        if corner_smoothing > 0.0 && rounded {
+            self.report.approximate(format!(
+                "{} {}: CSS has no corner smoothing, so its corners are circular",
+                kind_word(node),
+                label(node)
+            ));
+        }
+        let half = size.width.min(size.height).max(0.0) * 0.5;
+        // Clamped per corner as the outline is, so CSS's own proportional
+        // scaling never has an overlap to resolve — against the bound size
+        // when there is one, since it changes with the mode.
+        let sized = node.size_vars().iter().any(Option::is_some);
+        let half_css = if sized {
+            let w = self.axis_size(node, 0, size.width);
+            let h = self.axis_size(node, 1, size.height);
+            format!("calc(min({w}, {h}) / 2)")
+        } else {
+            px(half)
+        };
+        if rounded {
+            // A bound corner needs no floor: CSS clamps a negative radius to 0
+            // as the model floors it. Nor a cap, when no value it takes in any
+            // mode passes half of a box no variable sizes.
+            let all: Vec<String> = r
+                .iter()
+                .zip(bound)
+                .map(|(r, var)| match var {
+                    Some(v) if !sized && tokens::at_most(self.doc, v, half) => self.tokens.px(v),
+                    Some(v) => format!("min({}, {half_css})", self.tokens.px(v)),
+                    None if sized && *r > 0.0 => format!("min({}, {half_css})", px(*r)),
+                    None => px(r.clamp(0.0, half)),
+                })
+                .collect();
+            el.set(
+                "border-radius",
+                if all.iter().all(|x| *x == all[0]) {
+                    all[0].clone()
+                } else {
+                    all.join(" ")
+                },
+            );
+        }
+    }
+
+    /// Fills as `background` layers (CSS lists the top one first) and the one
+    /// stroke as an `outline` or `border`s. [`Self::css_blocker`] has already
+    /// checked that each has a form. Answers the element drawing a frame's
+    /// stroke over its children, which goes after them.
+    fn paint(&mut self, el: &mut Element, node: &Node, size: Size) -> Option<Element> {
+        let paint = mastik_core::paint_box::node_paint(self.doc, self.res, node.id())
+            .unwrap_or_else(|| self.doc.resolved_paint(node.id(), node.paint()));
+        // The resolved list for the tier's checks, the stored one for bindings;
+        // resolving keeps every item in place.
+        let stored = node.paint();
+        let mut pixelated = false;
+        let mut pictured = false;
+        // Each layer with whether it is a lone colour, which only a stack needs
+        // written as a one-colour gradient.
+        let layers: Vec<(String, bool)> = paint
+            .fills
+            .iter()
+            .zip(&stored.fills)
+            .filter(|(f, _)| f.visible)
+            .rev()
+            .filter_map(|(f, s)| match &s.brush {
+                BrushSource::Bound { var, alpha } => Some((self.tokens.color(*var, *alpha), true)),
+                BrushSource::Literal(Brush::Image(img)) => {
+                    let layer = image::layer(self.doc, img, size).ok()?;
+                    if !self.assets.iter().any(|(p, _)| *p == layer.path)
+                        && let Some(bytes) = image::file(self.doc, &img.image)
+                    {
+                        self.assets.push((layer.path.clone(), bytes));
+                    }
+                    pixelated |= layer.pixelated;
+                    pictured = true;
+                    Some((layer.css, false))
+                }
+                BrushSource::Literal(_) => match f.brush.drawn() {
+                    Brush::Solid(c) => Some((css::color(*c, 1.0), true)),
+                    drawn => css::background_layer(drawn, size).map(|l| (l, false)),
+                },
+            })
+            .collect();
+        if let [(only, _)] = layers.as_slice() {
+            el.set("background", only.clone());
+        } else if !layers.is_empty() {
+            let stack: Vec<String> = layers
+                .into_iter()
+                .map(|(l, solid)| match solid {
+                    true => format!("linear-gradient({l}, {l})"),
+                    false => l,
+                })
+                .collect();
+            el.set("background", stack.join(", "));
+        }
+        if pixelated {
+            el.set("image-rendering", "pixelated");
+        }
+        let kind = self.res.used_kind_of(node);
+        let (s, raw) = paint
+            .strokes
+            .iter()
+            .zip(&stored.strokes)
+            .find(|(s, _)| s.visible && s.width > 0.0)?;
+        let c = match raw.brush {
+            BrushSource::Bound { var, alpha } => self.tokens.color(var, alpha),
+            BrushSource::Literal(_) => {
+                let Brush::Solid(c) = s.brush.drawn() else {
+                    return None;
+                };
+                css::color(*c, 1.0)
+            }
+        };
+        let sides = mastik_core::geometry::effective_sides(kind, s);
+        if sides.is_all() {
+            let bound = raw.width_var.map(|var| self.tokens.px_floored(var));
+            // `k` times the stroke's width.
+            let times = |k: f64| match &bound {
+                Some(w) if k == 1.0 => w.clone(),
+                Some(w) => format!("calc({w} * {})", fmt(k)),
+                None => px(s.width * k),
+            };
+            let offset = match s.align {
+                StrokeAlign::Inside => -1.0,
+                StrokeAlign::Center => -0.5,
+                StrokeAlign::Outside => 0.0,
+            };
+            // The canvas strokes a frame over its children, which paint over the
+            // frame's own outline: the part inside the box goes on a last child,
+            // the part outside stays on a clipping frame, which would clip it.
+            let (own, over) = match (node.children().is_empty(), node.clip(), s.align) {
+                (true, ..) => (Some((1.0, offset)), None),
+                (false, true, StrokeAlign::Outside) => (Some((1.0, 0.0)), None),
+                (false, true, StrokeAlign::Center) => (Some((0.5, 0.0)), Some((0.5, -0.5))),
+                (false, ..) => (None, Some((1.0, offset))),
+            };
+            let outline = |el: &mut Element, (width, offset): (f64, f64)| {
+                el.set("outline", format!("{} solid {c}", times(width)));
+                if offset != 0.0 {
+                    el.set("outline-offset", times(offset));
+                }
+            };
+            if let Some(own) = own {
+                outline(el, own);
+            }
+            over.map(|over| {
+                let class = self.classes.mint(&format!("{} stroke", el.class), "stroke");
+                let mut e = Element::new("div", class);
+                for (p, v) in [
+                    ("position", "absolute"),
+                    ("left", "0"),
+                    ("top", "0"),
+                    ("width", "100%"),
+                    ("height", "100%"),
+                    ("pointer-events", "none"),
+                    // The frame's corners, which the outline follows.
+                    ("border-radius", "inherit"),
+                ] {
+                    e.set(p, v);
+                }
+                outline(&mut e, over);
+                // No layer's name path: a merged set matches it as its own.
+                e.key = Some((String::new(), usize::MAX));
+                e
+            })
+        } else {
+            el.set("box-sizing", "border-box");
+            // A picture is framed on the whole box, not inside the borders.
+            if pictured {
+                el.set("background-origin", "border-box");
+            }
+            let [t, r, b, l] = side_widths(sides, s.width);
+            // A bound width is every drawn side's, but for custom widths, which
+            // carry their own numbers.
+            let bound = raw
+                .width_var
+                .filter(|_| !matches!(sides, StrokeSides::Custom { .. }));
+            for (w, prop) in [
+                (t, "border-top"),
+                (r, "border-right"),
+                (b, "border-bottom"),
+                (l, "border-left"),
+            ] {
+                if w > 0.0 {
+                    let width = match bound {
+                        Some(var) => self.tokens.px_floored(var),
+                        None => px(w),
+                    };
+                    el.set(prop, format!("{width} solid {c}"));
+                }
+            }
+            None
+        }
+    }
+
+    /// The effect stack as `filter`: blurs first, the one drop shadow after, as
+    /// the model casts shadows from the blurred layer.
+    fn effects(&mut self, el: &mut Element, node: &Node) {
+        let effects = self.doc.resolved_effects(node.id(), node.effects());
+        // Resolved for the numbers, stored for the bindings, item for item.
+        let both: Vec<_> = effects
+            .iter()
+            .zip(node.effects())
+            .filter(|(e, _)| e.visible)
+            .map(|(e, s)| (e.kind.clone(), s.vars))
+            .collect();
+        let mut parts = Vec::new();
+        for (kind, vars) in &both {
+            if let EffectKind::LayerBlur { radius } = kind {
+                let blur = match vars[EFFECT_BLUR] {
+                    Some(v) => format!("calc({} * 0.5)", self.tokens.px_floored(v)),
+                    None => px(mastik_core::effect::deviation(*radius)),
+                };
+                parts.push(format!("blur({blur})"));
+            }
+        }
+        for (kind, vars) in &both {
+            if let EffectKind::DropShadow(s) = kind {
+                let x = match vars[EFFECT_X] {
+                    Some(v) => self.tokens.px(v),
+                    None => px(s.offset.x),
+                };
+                let y = match vars[EFFECT_Y] {
+                    Some(v) => self.tokens.px(v),
+                    None => px(s.offset.y),
+                };
+                let blur = match vars[EFFECT_BLUR] {
+                    Some(v) => format!("calc({} * 0.5)", self.tokens.px_floored(v)),
+                    None => px(mastik_core::effect::deviation(s.blur)),
+                };
+                parts.push(format!(
+                    "drop-shadow({x} {y} {blur} {})",
+                    css::color(s.color, 1.0)
+                ));
+            }
+        }
+        if !parts.is_empty() {
+            el.set("filter", parts.join(" "));
+        }
+        let backdrop: Vec<String> = both
+            .iter()
+            .filter_map(|(kind, vars)| match kind {
+                EffectKind::BackgroundBlur { radius } => Some(match vars[EFFECT_BLUR] {
+                    Some(v) => format!("blur(calc({} * 0.5))", self.tokens.px_floored(v)),
+                    None => format!("blur({})", px(mastik_core::effect::deviation(*radius))),
+                }),
+                _ => None,
+            })
+            .collect();
+        if !backdrop.is_empty() {
+            el.set("backdrop-filter", backdrop.join(" "));
+        }
+    }
+
+    /// A container's own layout declarations; `bound` its gap and padding
+    /// bindings, in `Display::spacing`'s order.
+    fn display(&mut self, el: &mut Element, display: &Display, bound: [Option<VarId>; 6]) {
+        let pad = display.padding();
+        let (column_gap, row_gap) = display.gaps();
+        match display {
+            Display::Flex(f) => {
+                el.set("display", "flex");
+                // A direction or wrap bound to a string that holds only their
+                // words is its token, written bare (`tokens::keywords`).
+                let direction = f
+                    .direction_var
+                    .filter(|v| self.tokens.keywords(self.doc, *v));
+                let wrap = f.wrap_var.filter(|v| self.tokens.keywords(self.doc, *v));
+                // Scoped wider, the string's words are not CSS's: drawn as now.
+                let loose = [(f.direction_var, direction), (f.wrap_var, wrap)]
+                    .into_iter()
+                    .any(|(b, k)| k.is_none() && b.is_some_and(|v| tokens::varies(self.doc, v)));
+                if loose {
+                    self.report.approximate(
+                        "a flex direction or wrap is bound to a string scoped wider than \
+                         them, and written for one mode"
+                            .to_string(),
+                    );
+                }
+                match direction {
+                    Some(v) => el.set("flex-direction", self.tokens.var(v)),
+                    None if f.direction != FlexDirection::Row => {
+                        el.set("flex-direction", f.direction.css())
+                    }
+                    None => {}
+                }
+                match wrap {
+                    Some(v) => el.set("flex-wrap", self.tokens.var(v)),
+                    None if f.wrap != FlexWrap::NoWrap => el.set("flex-wrap", f.wrap.css()),
+                    None => {}
+                }
+                el.set("justify-content", justify(f.justify_content));
+                el.set("align-items", align_items(f.align_items));
+                if f.wrap != FlexWrap::NoWrap || wrap.is_some() {
+                    el.set("align-content", align_content(f.align_content));
+                }
+            }
+            Display::Grid(g) => {
+                el.set("display", "grid");
+                el.set("grid-template-columns", container::tracks_css(&g.columns));
+                el.set("grid-template-rows", container::tracks_css(&g.rows));
+                if !g.areas.is_empty() {
+                    el.set(
+                        "grid-template-areas",
+                        container::areas_css(
+                            &writable_areas(&g.areas),
+                            container::track_count(&g.columns),
+                            container::track_count(&g.rows),
+                        ),
+                    );
+                }
+                if g.auto_flow != GridAutoFlow::Row {
+                    el.set("grid-auto-flow", "column");
+                }
+                el.set("justify-content", align_content(g.justify_content));
+                if let Some(j) = g.justify_items {
+                    el.set("justify-items", align_items(j));
+                }
+                if let Some(a) = g.align_items {
+                    el.set("align-items", align_items(a));
+                }
+                el.set("align-content", align_content(g.align_content));
+            }
+        }
+        let mut length = |v: f64, var: Option<VarId>| match var {
+            Some(var) => Some(self.tokens.px(var)),
+            None => (v != 0.0).then(|| px(v)),
+        };
+        if let Some(g) = length(column_gap, bound[0]) {
+            el.set("column-gap", g);
+        }
+        if let Some(g) = length(row_gap, bound[1]) {
+            el.set("row-gap", g);
+        }
+        let sides: Vec<Option<String>> = (0..4).map(|i| length(pad[i], bound[2 + i])).collect();
+        if sides.iter().any(Option::is_some) {
+            el.set(
+                "padding",
+                sides
+                    .into_iter()
+                    .map(|s| s.unwrap_or_else(|| "0".into()))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+    }
+
+    /// A text node: the face on the element, a `p` per paragraph, its runs as
+    /// [`Self::run`] writes them, and the content already cased as the canvas
+    /// cases it. `shared` is text a pinned group scales, whose box is a wrap
+    /// width whatever its sizing (`container::resized`).
+    fn text(&mut self, el: &mut Element, node: &Node, shared: bool) {
+        let kind = self.res.used_kind_of(node);
+        let NodeKind::Text {
+            content,
+            style,
+            spans,
+            block,
+            sizing,
+            ..
+        } = kind
+        else {
+            return;
+        };
+        let paint = self.doc.resolved_paint(node.id(), node.paint());
+        let ink = paint
+            .fills
+            .iter()
+            .zip(&node.paint().fills)
+            .find(|(f, _)| f.visible)
+            .map(|(f, stored)| (f.brush.drawn().clone(), &stored.brush));
+        match ink {
+            Some((_, BrushSource::Bound { var, alpha })) => {
+                let c = self.tokens.color(*var, *alpha);
+                el.set("color", c);
+            }
+            Some((Brush::Solid(c), _)) => el.set("color", css::color(c, 1.0)),
+            // Text with no ink is black, as on the canvas.
+            _ => el.set("color", "#000000"),
+        }
+        for (p, v) in face(style, None) {
+            el.set(p, v);
+        }
+        let vars = node.text_vars();
+        let content_var = vars[mastik_core::variable::TEXT_CONTENT];
+        if let Some(var) = vars[mastik_core::variable::TEXT_FAMILY] {
+            el.set(
+                "font-family",
+                format!("{}, sans-serif", self.tokens.var(var)),
+            );
+        }
+        // A bound type number in the unit its literal holds, a % as hundredths of
+        // an em, within the ranges the model keeps it to (`variable::TextVars`).
+        let em = |l: Option<mastik_core::Length>| matches!(l, Some(mastik_core::Length::Em(_)));
+        if let Some(var) = vars[mastik_core::variable::TEXT_SIZE] {
+            el.set("font-size", format!("max(1px, {})", self.tokens.px(var)));
+        }
+        if let Some(var) = vars[mastik_core::variable::TEXT_WEIGHT] {
+            el.set(
+                "font-weight",
+                format!("clamp(1, round({}), 1000)", self.tokens.var(var)),
+            );
+        }
+        if let Some(var) = vars[mastik_core::variable::TEXT_LINE_HEIGHT] {
+            let v = match em(style.line_height) {
+                true => format!("max(0, calc({} / 100))", self.tokens.var(var)),
+                false => self.tokens.px_floored(var),
+            };
+            el.set("line-height", v);
+        }
+        if let Some(var) = vars[mastik_core::variable::TEXT_LETTER_SPACING] {
+            let v = match em(Some(style.letter_spacing)) {
+                true => format!("calc({} * 0.01em)", self.tokens.var(var)),
+                false => self.tokens.px(var),
+            };
+            el.set("letter-spacing", v);
+        }
+        // A content that varies by mode is each mode's text, shown by a hidden
+        // token of that mode; a property's value replaces it anyway.
+        let prop = self
+            .bound
+            .get(&node.id())
+            .is_some_and(|b| b.kind == PropKind::Text);
+        let by_mode = content_var
+            .filter(|v| !prop && tokens::varies(self.doc, *v))
+            .and_then(|v| Some((v, tokens::strings_by_mode(self.doc, v)?)));
+        if let Some(var) = content_var
+            && tokens::varies(self.doc, var)
+            && by_mode.is_none()
+        {
+            self.report.approximate(format!(
+                "text {}: its content is bound to a variable and written for one mode",
+                label(node)
+            ));
+        }
+        // CSS's `normal` reads a different metrics table per browser and platform,
+        // so an automatic line height is written as the height the canvas laid.
+        let runs = spans.runs(style, content.len());
+        if style.line_height.is_none()
+            && let Some(layout) = self.res.text_layout(node.id())
+        {
+            el.set("line-height", px(layout.line_height));
+            if runs.iter().any(|(_, s)| {
+                s.line_height.is_none()
+                    && (s.font_size != style.font_size || s.font_family != style.font_family)
+            }) {
+                self.report.approximate(format!(
+                    "text {}: an automatic line height under a run of another size or font",
+                    label(node)
+                ));
+            }
+        }
+        el.text_class = self.text_class(node, el);
+        // On each paragraph, not here: the indentation between `p`s would be kept.
+        let white_space = if matches!(sizing, TextSizing::Auto) && !shared {
+            "pre"
+        } else {
+            "pre-wrap"
+        };
+        if block.vertical_align != mastik_core::VerticalAlign::Top {
+            el.set("display", "flex");
+            el.set("flex-direction", "column");
+            el.set(
+                "justify-content",
+                match block.vertical_align {
+                    mastik_core::VerticalAlign::Middle => "center",
+                    _ => "flex-end",
+                },
+            );
+        }
+        // CSS's `text-overflow` never fires on text that wraps, and the canvas's
+        // cut is its own.
+        if block.overflow != mastik_core::TextOverflow::Visible {
+            el.set("overflow", "hidden");
+            if block.overflow == mastik_core::TextOverflow::Ellipsis
+                && self.res.text_layout(node.id()).is_some_and(|l| l.truncated)
+            {
+                self.report.approximate(format!(
+                    "text {}: an ellipsis where the text overflows",
+                    label(node)
+                ));
+            }
+        }
+        if block.max_lines > 0 || block.trim != mastik_core::BoxTrim::None {
+            self.report
+                .approximate(format!("text {}: a line limit or box trim", label(node)));
+        }
+        // The canvas's shaper infers the base direction, which the page does not.
+        if content.chars().any(right_to_left) {
+            self.report
+                .approximate(format!("text {}: right-to-left text", label(node)));
+        }
+        let versions: Vec<(String, Option<String>)> = match by_mode {
+            Some((var, values)) => values
+                .into_iter()
+                .map(|(text, modes)| {
+                    let t = self.doc.variables();
+                    let show = self.tokens.shown_in(t, var, modes, "contents");
+                    (text, show)
+                })
+                .collect(),
+            None => vec![(content.to_string(), None)],
+        };
+        for (content, show) in versions {
+            let paras = self.paragraphs(el, node, &content, white_space, kind);
+            match show {
+                Some(display) => {
+                    let mut wrap = Element::new(
+                        "span",
+                        self.classes.mint(&format!("{} mode", el.class), "mode"),
+                    );
+                    wrap.set("display", display);
+                    wrap.children = paras;
+                    el.children.push(Child::Element(Box::new(wrap)));
+                }
+                None => el.children.extend(paras),
+            }
+        }
+    }
+
+    /// The element `node` is written as, or `None` for Automatic. One HTML
+    /// refuses where the layer now sits — a later move can put a link in a
+    /// button the menu never would — is written as Automatic, and reported.
+    fn element_of(&mut self, node: &Node) -> Option<HtmlElement> {
+        use HtmlElement as H;
+        let offered = mastik_core::element::offered(node.kind())?;
+        let e = node.element().filter(|e| offered.contains(e))?;
+        let around = |f: &dyn Fn(HtmlElement) -> bool| self.inside.iter().any(|a| f(*a));
+        let why = if around(&|a| a == H::Button) {
+            Some("inside a button, which holds only text and pictures".to_string())
+        } else if e.interactive() && around(&|a| a.interactive()) {
+            Some("a button or a link cannot sit inside another".into())
+        } else if e == H::Main && self.main_written {
+            Some("a page has one main".into())
+        } else if e == H::Main && around(&|a| a.bars_main()) {
+            Some("the main sits only inside plain boxes".into())
+        } else if matches!(e, H::Header | H::Footer)
+            && around(&|a| matches!(a, H::Header | H::Footer))
+        {
+            Some("a header or footer cannot sit inside another".into())
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            self.report.element(format!(
+                "{}: written as Automatic, not <{}>: {why}",
+                label(node),
+                e.tag()
+            ));
+            return None;
+        }
+        if e == H::Main {
+            self.main_written = true;
+        }
+        Some(e)
+    }
+
+    /// Write `el`, drawn for `node`, as `e`: its tag, the attributes and the
+    /// resets that make it draw as the `div` it replaces, and phrasing content
+    /// inside a button or a heading. A layer drawn as a picture keeps its tag.
+    fn write_element(&mut self, el: &mut Element, node: &Node, e: HtmlElement) {
+        use HtmlElement as H;
+        if el.markup.is_some() || el.tag == "img" {
+            self.report.element(format!(
+                "{}: drawn as a picture, so not written as <{}>",
+                label(node),
+                e.tag()
+            ));
+            // A picture holds no layers, so the page's main is still to come.
+            if e == H::Main {
+                self.main_written = false;
+            }
+            return;
+        }
+        el.tag = e.tag();
+        match e {
+            H::Button => {
+                el.attrs.insert(0, ("type", "button".into()));
+                // A text style's class sets the face, which `font` would undo.
+                let reset: Vec<_> = BUTTON_RESET
+                    .iter()
+                    .filter(|(p, _)| el.text_class.is_none() || *p != "font")
+                    .copied()
+                    .collect();
+                reset_first(el, &reset);
+                phrasing(el);
+            }
+            H::Link => {
+                if !node.href().is_empty() {
+                    el.attrs.push(("href", node.href().to_string()));
+                }
+                reset_first(el, LINK_RESET);
+            }
+            H::List => {
+                reset_first(
+                    el,
+                    &[("list-style", "none"), ("margin", "0"), ("padding", "0")],
+                );
+                self.items(el);
+            }
+            e if e.heading() => {
+                reset_first(el, &[("margin", "0")]);
+                phrasing(el);
+            }
+            _ => {}
+        }
+    }
+
+    /// A list's children as its items: one written as a plain box becomes the
+    /// `li`; any other (an element of its own, a picture, a use) is wrapped in
+    /// one that draws no box of its own.
+    fn items(&mut self, list: &mut Element) {
+        for c in &mut list.children {
+            let Child::Element(e) = c else { continue };
+            if e.tag == "div" && e.markup.is_none() && e.instance.is_none() {
+                e.tag = "li";
+                continue;
+            }
+            let mut li = Element::new(
+                "li",
+                self.classes.mint(&format!("{} item", e.class), "item"),
+            );
+            li.set("display", "contents");
+            li.children.push(Child::Element(e.clone()));
+            *c = Child::Element(Box::new(li));
+        }
+    }
+
+    /// The class of the text style `node` wears, made the first time one is
+    /// met: the style's face, an automatic line height as the px `el` (its first
+    /// user) was laid at. A user laid at another height keeps its own.
+    fn text_class(&mut self, node: &Node, el: &Element) -> Option<Rc<TextClass>> {
+        let id = node.styles().text?;
+        if let Some((_, t)) = self.text_classes.iter().find(|(s, _)| *s == id) {
+            return Some(t.clone());
+        }
+        let StyleValue::Text(ts) = &self.doc.styles().get(id)?.value else {
+            return None;
+        };
+        // A colour a hand-written file left in the style is no part of it.
+        let mut style = face(&mastik_core::style::type_part(ts), None);
+        if ts.line_height.is_none()
+            && let Some((_, laid)) = el.style.iter().find(|(p, _)| *p == "line-height")
+            && let Some(slot) = style.iter_mut().find(|(p, _)| *p == "line-height")
+        {
+            slot.1 = laid.clone();
+        }
+        let class = Rc::new(TextClass {
+            class: self.text_names.get(&id)?.clone(),
+            style,
+        });
+        self.text_classes.push((id, class.clone()));
+        Some(class)
+    }
+
+    /// `content`'s paragraphs as text `node` (drawn as `kind`) writes them under
+    /// `el`: a `p` each holding its runs, the content cased as the canvas cases it.
+    fn paragraphs(
+        &mut self,
+        el: &Element,
+        node: &Node,
+        content: &str,
+        white_space: &str,
+        kind: &NodeKind,
+    ) -> Vec<Child> {
+        let NodeKind::Text {
+            style,
+            spans,
+            para_spans,
+            paragraph,
+            ..
+        } = kind
+        else {
+            return Vec::new();
+        };
+        let runs = spans.runs(style, content.len());
+        // Length-preserving, so the runs' ranges index it as they do `content`.
+        let cased = mastik_core::text::cased_text(content, &runs);
+        let shown = cased.as_deref().unwrap_or(content);
+        let vars = node.text_vars();
+        let mut out = Vec::new();
+        let mut start = 0;
+        let mut first = true;
+        for para in content.split('\n') {
+            let end = start + para.len();
+            let p_style = para_spans.resolve(paragraph, start);
+            let mut p = Element::new("p", String::new());
+            let mut decl: Vec<(&'static str, String)> = Vec::new();
+            decl.push(("margin", "0".into()));
+            let wraps = p_style.wrap == mastik_core::WrapMode::Wrap;
+            decl.push((
+                "white-space",
+                if wraps { white_space } else { "pre" }.into(),
+            ));
+            // A paragraph with no spacing of its own draws the bound default —
+            // asked of the spans, since one of its own may equal this mode's value.
+            let own = para_spans.as_slice().iter().any(|s| {
+                (s.start..s.end).contains(&start)
+                    && matches!(s.attr, mastik_core::ParaAttr::Spacing(_))
+            });
+            let bound = vars[mastik_core::variable::TEXT_PARAGRAPH_SPACING].filter(|_| !own);
+            if !first && let Some(var) = bound {
+                let v = match paragraph.spacing {
+                    mastik_core::Length::Em(_) => {
+                        format!("calc({} * 0.01em)", self.tokens.var(var))
+                    }
+                    mastik_core::Length::Px(_) => self.tokens.px(var),
+                };
+                decl.push(("margin-top", v));
+            } else if !first && !p_style.spacing.is_zero() {
+                decl.push(("margin-top", px(p_style.spacing.resolve(style.font_size))));
+            }
+            decl.push((
+                "text-align",
+                text_align(p_style.align, p_style.direction).into(),
+            ));
+            // The model only translates the last line, as `text-align-last` does.
+            if p_style.align == mastik_core::TextAlign::Justify {
+                match p_style.justify_last {
+                    mastik_core::JustifyLast::Start => {}
+                    mastik_core::JustifyLast::Center => {
+                        decl.push(("text-align-last", "center".into()))
+                    }
+                    mastik_core::JustifyLast::End => decl.push(("text-align-last", "right".into())),
+                }
+            }
+            match p_style.word_break {
+                mastik_core::WordBreak::Normal => {}
+                mastik_core::WordBreak::BreakAll => decl.push(("word-break", "break-all".into())),
+                mastik_core::WordBreak::KeepAll => decl.push(("word-break", "keep-all".into())),
+            }
+            match p_style.overflow_wrap {
+                mastik_core::OverflowWrap::Normal => {}
+                mastik_core::OverflowWrap::Anywhere => {
+                    decl.push(("overflow-wrap", "anywhere".into()))
+                }
+                mastik_core::OverflowWrap::BreakWord => {
+                    decl.push(("overflow-wrap", "break-word".into()))
+                }
+            }
+            if p_style.optical_margins {
+                self.report
+                    .approximate(format!("text {}: optical margin alignment", label(node)));
+            }
+            if !p_style.indent.is_zero() {
+                if p_style.hanging {
+                    self.report
+                        .approximate(format!("text {}: a hanging indent", label(node)));
+                }
+                decl.push(("text-indent", px(p_style.indent.resolve(style.font_size))));
+            }
+            if !p_style.indent_start.is_zero() {
+                decl.push((
+                    "padding-inline-start",
+                    px(p_style.indent_start.resolve(style.font_size)),
+                ));
+            }
+            if !p_style.indent_end.is_zero() {
+                decl.push((
+                    "padding-inline-end",
+                    px(p_style.indent_end.resolve(style.font_size)),
+                ));
+            }
+            if p_style.marker.is_some() || p_style.level > 0 {
+                self.report
+                    .approximate(format!("text {}: list markers", label(node)));
+            }
+            p.style = decl;
+            p.class = self.classes.mint(&format!("{} p", el.class), "p");
+            for (range, s) in &runs {
+                let lo = range.start.max(start);
+                let hi = range.end.min(end);
+                if lo >= hi {
+                    continue;
+                }
+                let text = Child::Text(shown[lo..hi].to_string());
+                let run = self.run(text, s, style, node, &el.class);
+                p.children.push(run);
+            }
+            // An empty paragraph still takes a line.
+            if p.children.is_empty() {
+                p.children.push(Child::Break);
+            }
+            out.push(Child::Element(Box::new(p)));
+            start = end + 1;
+            first = false;
+        }
+        out
+    }
+
+    /// One run's `content` in its own inline box where it needs one: for a face
+    /// differing from the node's `base`, a baseline shift (moving the ink, not the
+    /// line, as the model does), or a decoration. A decoration is drawn by the box
+    /// carrying it and cannot be taken off below it, so it is never the node's:
+    /// both on one run nest, the underline outside.
+    fn run(
+        &mut self,
+        content: Child,
+        s: &TextStyle,
+        base: &TextStyle,
+        node: &Node,
+        class: &str,
+    ) -> Child {
+        let mut own = face(s, Some(base));
+        let shift = s.baseline_shift.resolve(s.font_size);
+        if shift != 0.0 {
+            own.push(("position", "relative".into()));
+            own.push(("top", px(-shift)));
+        }
+        let under = s
+            .underline
+            .as_ref()
+            .map(|d| self.decoration(node, "underline", d, s));
+        let strike = s
+            .strikethrough
+            .as_ref()
+            .map(|d| self.decoration(node, "line-through", d, s));
+        let span = |walk: &mut Self, style: Vec<(&'static str, String)>, child: Child| {
+            let mut e = Element::new("span", walk.classes.mint(&format!("{class} span"), "span"));
+            e.style = style;
+            e.children.push(child);
+            Child::Element(Box::new(e))
+        };
+        match (under, strike) {
+            (Some(mut u), Some(t)) => {
+                let inner = span(self, t, content);
+                own.append(&mut u);
+                span(self, own, inner)
+            }
+            (None, None) if own.is_empty() => content,
+            (u, t) => {
+                own.extend(u.or(t).unwrap_or_default());
+                span(self, own, content)
+            }
+        }
+    }
+
+    /// An underline or a strikethrough (`line`) as the declarations of the box
+    /// drawing it. The font decides an absent thickness or offset on both sides;
+    /// a style CSS draws its own way, or a strikethrough's offset, is reported.
+    fn decoration(
+        &mut self,
+        node: &Node,
+        line: &'static str,
+        d: &mastik_core::Decoration,
+        s: &TextStyle,
+    ) -> Vec<(&'static str, String)> {
+        let what = if line == "underline" {
+            "underline"
+        } else {
+            "strikethrough"
+        };
+        let mut out = vec![("text-decoration-line", line.to_string())];
+        let style = match d.style {
+            mastik_core::LineStyle::Solid => None,
+            mastik_core::LineStyle::Dashed => Some("dashed"),
+            mastik_core::LineStyle::Dotted => Some("dotted"),
+            mastik_core::LineStyle::Wavy => Some("wavy"),
+        };
+        if let Some(style) = style {
+            out.push(("text-decoration-style", style.into()));
+            self.report.approximate(format!(
+                "text {}: a dashed, dotted or wavy {what}",
+                label(node)
+            ));
+        }
+        if let Some(c) = d.color {
+            out.push(("text-decoration-color", css::color(c, 1.0)));
+        }
+        let thickness = d
+            .thickness
+            .map_or("from-font".into(), |t| px(t.resolve(s.font_size)));
+        out.push(("text-decoration-thickness", thickness));
+        if line == "underline" {
+            match d.offset {
+                // The model's offset is up from the baseline, CSS's down.
+                Some(o) => out.push(("text-underline-offset", px(-o.resolve(s.font_size)))),
+                None => out.push(("text-underline-position", "from-font".into())),
+            }
+            if !d.skip_ink {
+                out.push(("text-decoration-skip-ink", "none".into()));
+            }
+        } else if d.offset.is_some() {
+            self.report.approximate(format!(
+                "text {}: a strikethrough moved off the font's position",
+                label(node)
+            ));
+        }
+        out
+    }
+
+    /// Tiers 2 and 3: the subtree as inline SVG, or as a PNG when the SVG writer
+    /// would approximate it. `why` names what CSS could not draw.
+    fn picture(&mut self, node: &Node, place: Place, why: &str) -> Option<Element> {
+        let id = node.id();
+        let ink = self.res.ink_bounds(id)?;
+        let world = self.res.world_transform(id)?;
+        let class = self.classes.mint(node.name(), node.kind().default_name());
+        // Pictures are linked, so every layer drawing one shares its file.
+        let mut linked = HashMap::new();
+        let mut files = Vec::new();
+        let mut under = vec![id];
+        let mut drawn = Vec::new();
+        while let Some(at) = under.pop() {
+            let Some(n) = self.doc.get(at) else { continue };
+            drawn.push(at);
+            let paint = self.doc.resolved_paint(at, n.paint());
+            let brushes = paint.fills.iter().map(|f| f.brush.drawn());
+            for b in brushes.chain(paint.strokes.iter().map(|s| s.brush.drawn())) {
+                if let Brush::Image(img) = b
+                    && !linked.contains_key(&img.image.id)
+                    && let Some((path, bytes)) = image::payload(self.doc, &img.image.id)
+                {
+                    files.push((path.clone(), bytes));
+                    linked.insert(img.image.id.clone(), path);
+                }
+            }
+            under.extend(n.children());
+        }
+        // In its own space, so the same picture in two variants writes the same
+        // markup, and a variant tree pairs it with its counterpart.
+        let svg = crate::svg::svg_at_zero(
+            self.doc,
+            self.res,
+            &[id],
+            linked,
+            mastik_core::ExportText::Live,
+        );
+        let mut pic = if svg.approximated.is_empty() {
+            self.report.position(format!(
+                "{} {}: {why}, written as inline SVG",
+                kind_word(node),
+                label(node)
+            ));
+            for (path, bytes) in files {
+                if !self.assets.iter().any(|(p, _)| *p == path) {
+                    self.assets.push((path, bytes));
+                }
+            }
+            let mut e = Element::new("svg", class.clone());
+            e.markup = Some(content_ids(&svg.svg, &drawn).replacen(
+                "<svg ",
+                &format!("<svg class=\"{class}\" "),
+                1,
+            ));
+            e
+        } else {
+            for what in &svg.approximated {
+                self.report.approximate(format!(
+                    "{} {}: {what}, so it is a PNG",
+                    kind_word(node),
+                    label(node)
+                ));
+            }
+            let opts = crate::png::RasterOpts {
+                scale: 2.0,
+                ..Default::default()
+            };
+            let raster = crate::png::raster_of(self.doc, self.res, &[id], &opts)?;
+            let bytes = crate::png::encode_rgba8(&raster.rgba, raster.width, raster.height);
+            // The same picture shares one file, so its uses pair across variants;
+            // another takes a free name, since a class is unique only in its file.
+            let path = match self.assets.iter().find(|(_, b)| *b == bytes) {
+                Some((p, _)) => p.clone(),
+                None => {
+                    let mut path = format!("assets/{class}.png");
+                    let mut n = 1;
+                    while self.assets.iter().any(|(p, _)| *p == path) {
+                        n += 1;
+                        path = format!("assets/{class}-{n}.png");
+                    }
+                    self.assets.push((path.clone(), bytes));
+                    path
+                }
+            };
+            let mut e = Element::new("img", class.clone());
+            e.attrs.push(("src", path));
+            e.attrs.push(("alt", node.name().to_string()));
+            e
+        };
+        if self.picture_follows_width(id) {
+            self.report.approximate(format!(
+                "{} {}: drawn as a picture in the frame's width mode, which a wider \
+                 or narrower window does not change",
+                kind_word(node),
+                label(node)
+            ));
+        }
+        // On the element, not only inside it: an `<svg>` or an `<img>` is drawn
+        // alone, so a mode written within blends with nothing of the page.
+        if let Some((prop, value)) = crate::svg::blend_decl(self.doc, node) {
+            pic.set(prop, value);
+        }
+        pic.set("position", "absolute");
+        pic.set("left", "0");
+        pic.set("top", "0");
+        pic.set("width", px(ink.width()));
+        pic.set("height", px(ink.height()));
+        pic.set("transform-origin", "0 0");
+        let at_ink = Affine::translate(ink.origin().to_vec2());
+        // A path or a line stretched between its insets, or a picture in a group
+        // its insets scale: a box the insets or the share place, and the picture
+        // filling it as the canvas stretches the points — the geometry box as
+        // the view, scaled unevenly, the stroke not scaled. An axis it does not
+        // stretch on keeps the ink as its view, at its size, so a flat rule (no
+        // height to scale) still draws. Its offset into the box is a whole
+        // number, the view starting that far out: Chrome snaps a replaced
+        // element's box to the pixel, and a fractional `top` moved the stroke by
+        // up to half a pixel. A PNG has no view, so it is placed in the box by
+        // percentages of it.
+        let markup = pic.markup.is_some();
+        if (markup || matches!(place, Place::Share { .. }))
+            && let Some(Stretching {
+                mut holder,
+                view: g,
+                stretched: on,
+                into_own,
+            }) = self.stretching_holder(node, ink, world, place, markup)
+        {
+            if on.0 || on.1 {
+                self.report_stretch_distortion(node, &drawn, pic.markup.as_deref());
+            }
+            if let Some(m) = pic.markup.take() {
+                let span = |on: bool, g0: f64, g1: f64, len: f64| match on {
+                    true => (g0, g1, "0".to_string(), "100%".to_string()),
+                    false => {
+                        let out = g0.ceil();
+                        (g0 - out, len, px(-out), px(len - (g0 - out)))
+                    }
+                };
+                let (x0, x1, left, width) = span(on.0, g.x0, g.x1, ink.width());
+                let (y0, y1, top, height) = span(on.1, g.y0, g.y1, ink.height());
+                let m = match into_own {
+                    Some(t) => wrapped_markup(&m, t),
+                    None => m,
+                };
+                pic.markup = Some(stretched_markup(&m, Rect::new(x0, y0, x1, y1)));
+                pic.set("left", left);
+                pic.set("top", top);
+                pic.set("width", width);
+                pic.set("height", height);
+                pic.set("overflow", "visible");
+            } else {
+                let span = |on: bool, g0: f64, g1: f64, len: f64| {
+                    let extent = g1 - g0;
+                    match on && extent > FLAT_EXTENT {
+                        true => (
+                            format!("{}%", fmt(-g0 / extent * 100.0)),
+                            format!("{}%", fmt(len / extent * 100.0)),
+                        ),
+                        false => (px(-g0), px(len)),
+                    }
+                };
+                let (left, width) = span(on.0, g.x0, g.x1, ink.width());
+                let (top, height) = span(on.1, g.y0, g.y1, ink.height());
+                pic.set("left", left);
+                pic.set("top", top);
+                pic.set("width", width);
+                pic.set("height", height);
+            }
+            holder.children.push(Child::Element(Box::new(pic)));
+            return Some(holder);
+        }
+        match place {
+            // A component's root is only ever a CSS element (`Walk::why_inline`).
+            Place::Free { .. } | Place::Share { .. } | Place::Root => {
+                let local = match place {
+                    Place::Free { local, .. } => local,
+                    // From the share's box, where the group's element starts.
+                    Place::Share { local, of } => Affine::translate(-of.origin().to_vec2()) * local,
+                    _ => Affine::IDENTITY,
+                };
+                // The picture is in world space; `local` maps this layer into the
+                // parent element, `world` into the world.
+                let to_parent = local * world.inverse() * at_ink;
+                set_transform(&mut pic, to_parent);
+                Some(pic)
+            }
+            Place::Flow { .. } => {
+                // A box in the flow holding the picture, so the layout around it
+                // is kept.
+                let kind = self.res.used_kind_of(node).clone();
+                let bx = self.box_rect(node);
+                let mut holder =
+                    Element::new("div", self.classes.mint(&format!("{class} box"), "box"));
+                self.place(&mut holder, node, &kind, bx, place);
+                let origin = bx.map(|b| b.origin().to_vec2()).unwrap_or_default();
+                let to_box = Affine::translate(-origin) * world.inverse() * at_ink;
+                set_transform(&mut pic, to_box);
+                holder.children.push(Child::Element(Box::new(pic)));
+                Some(holder)
+            }
+        }
+    }
+
+    /// For a picture of a path or a line that its insets stretch, or of any
+    /// layer in a pinned group, the box that holds it ([`Stretching`]). `None`
+    /// for anything else, and for one drawn turned, skewed or scaled that
+    /// stretches one way only, or that is a PNG (`markup` false), which keeps
+    /// its size, reported.
+    fn stretching_holder(
+        &mut self,
+        node: &Node,
+        ink: Rect,
+        world: Affine,
+        place: Place,
+        markup: bool,
+    ) -> Option<Stretching> {
+        let kind = self.res.used_kind_of(node).clone();
+        let insets = node.insets();
+        let shared = self.shared_box(node, place);
+        let stretched = match place {
+            // A picture in a group its insets scale takes its share on the axes
+            // its kind stretches on, and is placed by it on the others.
+            Place::Share { .. } => {
+                let bx = self.box_rect(node).or(shared)?;
+                share_axes(&kind, bx)
+            }
+            Place::Free { .. } if !markup => return None,
+            Place::Free { boxed: true, .. }
+                if insets.is_authored()
+                    && (matches!(kind, NodeKind::Path { .. } | NodeKind::Line { .. })
+                        || shared.is_some()) =>
+            {
+                let both = (
+                    insets.left.is_some() && insets.right.is_some(),
+                    insets.top.is_some() && insets.bottom.is_some(),
+                );
+                stretched_axes(both, insets, &kind)
+            }
+            _ => return None,
+        };
+        let share = matches!(place, Place::Share { .. });
+        if !(share || stretched.0 || stretched.1) {
+            return None;
+        }
+        let bx = self.box_rect(node).or(shared)?;
+        if css::is_translation(world) {
+            let view = bx + (world.translation() - ink.origin().to_vec2());
+            let class = self.classes.mint(&format!("{} box", node.name()), "box");
+            let mut holder = Element::new("div", class);
+            self.place(&mut holder, node, &kind, Some(bx), place);
+            return Some(Stretching {
+                holder,
+                view,
+                stretched,
+                into_own: None,
+            });
+        }
+        // Drawn turned, skewed or scaled: the picture is taken back into the
+        // layer's own axes, where its box is `bx`, and the holder's CSS and its
+        // ancestors' turn it again. Only for markup that stretches both ways,
+        // since an axis kept at its size keeps the world ink as its view.
+        if !markup || stretched != (true, true) || world.determinant().abs() < 1e-12 {
+            let why = match share {
+                true => "in a group its insets scale",
+                false => "stretched between its insets",
+            };
+            self.report.approximate(format!(
+                "{} {}: {why} while turned or scaled, written at its drawn size",
+                kind_word(node),
+                label(node)
+            ));
+            return None;
+        }
+        let into_own = world.inverse() * Affine::translate(ink.origin().to_vec2());
+        let class = self.classes.mint(&format!("{} box", node.name()), "box");
+        let mut holder = Element::new("div", class);
+        self.place(&mut holder, node, &kind, Some(bx), place);
+        Some(Stretching {
+            holder,
+            view: bx,
+            stretched,
+            into_own: Some(into_own),
+        })
+    }
+
+    /// Reports what a stretched picture of `node` (its layers `drawn`, its
+    /// `markup` if inline SVG) scales with it that the canvas keeps in units:
+    /// type, effects, image fills, rounded corners and arcs, and a PNG's
+    /// strokes. Inline SVG's strokes are kept by `stretched_markup`; anything
+    /// else scales as the canvas scales it.
+    fn report_stretch_distortion(&mut self, node: &Node, drawn: &[NodeId], markup: Option<&str>) {
+        let mut what = Vec::new();
+        let has = |tag: &str| markup.is_some_and(|m| m.contains(tag));
+        if markup.is_none() {
+            what.push("strokes");
+        }
+        if has("<text") {
+            what.push("type");
+        }
+        if has("<filter") || markup.is_none() {
+            what.push("effects");
+        }
+        if has("<pattern") {
+            what.push("image fills");
+        }
+        let kinds = || {
+            drawn
+                .iter()
+                .filter_map(|id| self.doc.get(*id))
+                .map(|n| self.res.used_kind_of(n))
+        };
+        if kinds().any(rounded) {
+            what.push("rounded corners");
+        }
+        // An arc stretched on its own is never asked: it stretches on no axis.
+        if kinds().any(|k| matches!(k, NodeKind::Arc { .. })) {
+            what.push("arcs");
+        }
+        let Some(last) = what.pop() else {
+            return;
+        };
+        let list = match what.is_empty() {
+            true => last.to_string(),
+            false => format!("{} and {last}", what.join(", ")),
+        };
+        self.report.approximate(format!(
+            "{} {}: stretched as one picture, which scales its {list} with it",
+            kind_word(node),
+            label(node),
+        ));
+    }
+}
+
+/// Whether `kind` has a rounded corner, which a stretched picture scales
+/// unevenly and the canvas keeps at its radius.
+fn rounded(kind: &NodeKind) -> bool {
+    match kind {
+        NodeKind::Rect { corner_radii, .. } | NodeKind::Artboard { corner_radii, .. } => [
+            corner_radii.top_left,
+            corner_radii.top_right,
+            corner_radii.bottom_right,
+            corner_radii.bottom_left,
+        ]
+        .iter()
+        .any(|r| *r > 0.0),
+        NodeKind::Path { corner_radii, .. } => corner_radii.iter().any(|r| *r > 0.0),
+        NodeKind::Polygon { corner_radius, .. } | NodeKind::Star { corner_radius, .. } => {
+            *corner_radius > 0.0
+        }
+        _ => false,
+    }
+}
+
+/// Whether anything under `origins` is a variant, or an instance of one, of a
+/// set with an interaction state.
+fn holds_marked_set(doc: &Document, origins: &[NodeId]) -> bool {
+    let marked = |id: NodeId| {
+        component::main_of(doc, id)
+            .or(Some(id))
+            .and_then(|m| variant::set_of(doc, m).or(Some(m)))
+            .and_then(|s| doc.get(s)?.set()?.interaction())
+            .is_some()
+    };
+    mastik_core::build::subtree_nodes(doc, origins)
+        .into_iter()
+        .any(marked)
+}
+
+/// `svg` with each def id a layer of `drawn` named (`grad-<node>-…`, `fx-<node>`)
+/// renamed for the picture's content: the layer's place in `drawn` and a hash of
+/// the markup so renamed. The same picture drawn by another layer writes the same
+/// ids, so the two pair; a different one gets ids of its own, since inline SVGs
+/// on one page share one id space.
+fn content_ids(svg: &str, drawn: &[NodeId]) -> String {
+    // An id names its layer as `-<token>` followed by `-`, `"` or `)`.
+    let rename = |text: &str, from: &dyn Fn(usize) -> String, to: &dyn Fn(usize) -> String| {
+        let mut out = text.to_string();
+        for i in 0..drawn.len() {
+            for end in ['-', '"', ')'] {
+                out = out.replace(&format!("-{}{end}", from(i)), &format!("-{}{end}", to(i)));
+            }
+        }
+        out
+    };
+    let wire = |i: usize| drawn[i].to_wire().replace(':', "_");
+    let place = |i: usize| format!("p{i}");
+    let canonical = rename(svg, &wire, &place);
+    // FNV-1a, spelled out so an export's ids never change with the toolchain.
+    let h = canonical.bytes().fold(0x811c_9dc5_u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    });
+    rename(&canonical, &place, &|i| format!("{h:08x}_{i}"))
+}
+
+/// A marked set's root written as its element: a `<button type="button">`
+/// whose rule resets what the browser draws on one, an `<a>`, or a `div` taking
+/// focus; and with the props driving its states. A root drawn as a picture
+/// stays one.
+fn as_element(root: &mut Element, live: &Live) {
+    if root.markup.is_some() {
+        return;
+    }
+    match live.element {
+        RootElement::Button => {
+            root.tag = "button";
+            root.attrs.insert(0, ("type", "button".into()));
+            reset_first(root, BUTTON_RESET);
+            phrasing(root);
+        }
+        RootElement::Link => {
+            root.tag = "a";
+            if !live.href.is_empty() {
+                root.attrs.insert(0, ("href", live.href.clone()));
+            }
+            reset_first(root, LINK_RESET);
+        }
+        RootElement::Plain => {
+            root.attrs.insert(0, ("tabindex", "0".into()));
+        }
+    }
+    root.live = Some(live.clone());
+}
+
+/// What a `button` sets that a `div` does not, undone.
+const BUTTON_RESET: &[(&str, &str)] = &[
+    ("margin", "0"),
+    ("padding", "0"),
+    ("border", "0"),
+    ("background", "none"),
+    ("font", "inherit"),
+    ("color", "inherit"),
+    ("text-align", "inherit"),
+];
+
+/// What an `a` sets that a `div` does not, undone.
+const LINK_RESET: &[(&str, &str)] = &[("color", "inherit"), ("text-decoration", "none")];
+
+/// `reset` ahead of all `el`'s own declarations and its alternatives', each
+/// only where the rule does not state the property: a reset placed after a
+/// longhand (`font` after `font-size`) would win.
+fn reset_first(el: &mut Element, reset: &[(&'static str, &str)]) {
+    let styles = std::iter::once(&mut el.style).chain(el.alts.iter_mut().map(|a| &mut a.style));
+    for style in styles {
+        let mut at = 0;
+        for (p, v) in reset {
+            if !style.iter().any(|(q, _)| q == p) {
+                style.insert(at, (*p, (*v).to_string()));
+                at += 1;
+            }
+        }
+    }
+}
+
+/// Every element under `el` written as phrasing content, which a button or a
+/// heading only takes: a box becomes a `span` drawn as the block it was.
+fn phrasing(el: &mut Element) {
+    for c in &mut el.children {
+        let Child::Element(e) = c else { continue };
+        if e.markup.is_none() && e.instance.is_none() && !matches!(e.tag, "span" | "img" | "a") {
+            e.tag = "span";
+            let styles =
+                std::iter::once(&mut e.style).chain(e.alts.iter_mut().map(|a| &mut a.style));
+            for style in styles {
+                if !style.iter().any(|(p, _)| *p == "display") {
+                    style.push(("display", "block".into()));
+                }
+            }
+        }
+        phrasing(e);
+    }
+}
+
+/// `left`/`top` for a translation, else a `transform`.
+fn set_transform(el: &mut Element, t: Affine) {
+    if css::is_translation(t) {
+        let [.., e, f] = t.as_coeffs();
+        el.set("left", px(e));
+        el.set("top", px(f));
+    } else if let Some(m) = css::matrix(t) {
+        el.set("transform", m);
+    }
+}
+
+/// Which of the axes `both` says carry two insets stretch the layer, as
+/// `container::place` lays it: one the kind stretches on (`inset_stretch`) and
+/// with no auto margin, which centres at the layer's own size instead.
+fn stretched_axes(both: (bool, bool), insets: &container::Insets, kind: &NodeKind) -> (bool, bool) {
+    let can = container::inset_stretch(kind);
+    let m = insets.margin_auto;
+    (
+        both.0 && can.0 && !(m.left || m.right),
+        both.1 && can.1 && !(m.top || m.bottom),
+    )
+}
+
+/// The grid areas `grid-template-areas` can write: each one the operation would
+/// take (`GridArea::is_valid`), but for a later one of a name already kept or
+/// sharing a cell with one, which only a file carries and which would make the
+/// template one a browser refuses or redraws (`container::areas_are_valid`).
+fn writable_areas(areas: &[container::GridArea]) -> Vec<container::GridArea> {
+    let mut out: Vec<container::GridArea> = Vec::new();
+    for a in areas.iter().filter(|a| a.is_valid()) {
+        if out.iter().all(|k| k.name != a.name && !k.overlaps(a)) {
+            out.push(*a);
+        }
+    }
+    out
+}
+
+/// The extent below which an axis is flat: nothing on it scales, as
+/// `container::inset_stretch` and `container::place_in_stretch` read it.
+const FLAT_EXTENT: f64 = 1e-6;
+
+/// Which axes a layer of `kind` with the box `bx` stretches on in a group its
+/// insets scale, as `container::place_in_stretch` lays it: the axes its kind
+/// stretches on (a flat line only along its length, an arc on neither), and
+/// never one its box is flat on.
+fn share_axes(kind: &NodeKind, bx: Rect) -> (bool, bool) {
+    let can = container::inset_stretch(kind);
+    (
+        can.0 && bx.width() > FLAT_EXTENT,
+        can.1 && bx.height() > FLAT_EXTENT,
+    )
+}
+
+/// The box a stretched picture is drawn in ([`Walk::stretching_holder`]).
+struct Stretching {
+    /// The element the layer's insets or share place.
+    holder: Element,
+    /// The picture's `viewBox`: its geometry box in its markup's space, or in
+    /// the layer's own space when `into_own` is set.
+    view: Rect,
+    /// The axes the picture stretches on.
+    stretched: (bool, bool),
+    /// For a picture drawn turned, skewed or scaled, the transform that takes
+    /// its world-axes markup into the layer's own axes.
+    into_own: Option<Affine>,
+}
+
+/// An inline `<svg>` from the SVG writer with its contents, definitions too,
+/// drawn through `t`: a `<g>` just inside the root.
+fn wrapped_markup(svg: &str, t: Affine) -> String {
+    let open = svg
+        .find("<svg")
+        .and_then(|s| svg[s..].find('>').map(|e| s + e));
+    let (Some(open), Some(close)) = (open, svg.rfind("</svg>")) else {
+        return svg.to_string();
+    };
+    let m = css::matrix(t).unwrap_or_default();
+    format!(
+        "{}<g transform=\"{m}\">{}</g>{}",
+        &svg[..=open],
+        &svg[open + 1..close],
+        &svg[close..]
+    )
+}
+
+/// An inline `<svg>` from the SVG writer made to stretch: `view` as its view box,
+/// drawn unevenly into whatever box CSS gives it (`preserveAspectRatio="none"`),
+/// every shape's stroke kept at its width (`vector-effect`), which is the
+/// canvas's rule for a stretched shape. What else the stretch scales is
+/// reported (`Walk::report_stretch_distortion`).
+fn stretched_markup(svg: &str, view: Rect) -> String {
+    let open_end = svg.find('>').unwrap_or(svg.len());
+    let (open, rest) = svg.split_at(open_end);
+    let open = match (
+        open.find("viewBox=\""),
+        open.find("viewBox=\"")
+            .and_then(|s| open[s + 9..].find('"').map(|e| s + 9 + e)),
+    ) {
+        (Some(s), Some(e)) => format!(
+            "{}viewBox=\"{} {} {} {}\" preserveAspectRatio=\"none\"{}",
+            &open[..s],
+            fmt(view.min_x()),
+            fmt(view.min_y()),
+            fmt(view.width()),
+            fmt(view.height()),
+            &open[e + 1..]
+        ),
+        _ => open.to_string(),
+    };
+    let mut rest = rest.to_string();
+    for tag in ["<path ", "<line ", "<rect ", "<ellipse "] {
+        rest = rest.replace(tag, &format!("{tag}vector-effect=\"non-scaling-stroke\" "));
+    }
+    open + &rest
+}
+
+/// One axis of insets. Answers whether both are set, which stretches the layer.
+fn axis(
+    el: &mut Element,
+    start: &'static str,
+    end: &'static str,
+    a: Option<LengthPct>,
+    b: Option<LengthPct>,
+    slot: f64,
+) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            el.set(start, length_pct(a));
+            el.set(end, length_pct(b));
+            true
+        }
+        (Some(a), None) => {
+            el.set(start, length_pct(a));
+            false
+        }
+        (None, Some(b)) => {
+            el.set(end, length_pct(b));
+            false
+        }
+        (None, None) => {
+            el.set(start, px(slot));
+            false
+        }
+    }
+}
+
+/// [`axis`], with auto margins between its two insets placed as core places
+/// them (`container::Insets`): pushing the box against one inset, or centring it
+/// between the two even when it overflows them, where CSS's own auto margins
+/// would leave an overflowing box at its start. A push is the far inset alone; a
+/// centre is the midpoint, the box drawn back by half its size through
+/// `translate`. Answers whether both insets are set, and whether it centres.
+fn margined_axis(
+    el: &mut Element,
+    (start, end): (&'static str, &'static str),
+    (a, b): (Option<LengthPct>, Option<LengthPct>),
+    auto: (bool, bool),
+    slot: f64,
+) -> (bool, bool) {
+    match (a, b, auto) {
+        (Some(a), Some(b), (true, true)) => {
+            let mid = match (a, b) {
+                (LengthPct::Percent(a), LengthPct::Percent(b)) => {
+                    format!("{}%", fmt((a + 100.0 - b) / 2.0))
+                }
+                _ => format!("calc(({} + 100% - {}) / 2)", length_pct(a), length_pct(b)),
+            };
+            el.set(start, mid);
+            (true, true)
+        }
+        (Some(_), Some(b), (true, false)) => {
+            el.set(end, length_pct(b));
+            (true, false)
+        }
+        (Some(a), Some(_), (false, true)) => {
+            el.set(start, length_pct(a));
+            (true, false)
+        }
+        _ => (axis(el, start, end, a, b, slot), false),
+    }
+}
+
+fn length_pct(l: LengthPct) -> String {
+    match l {
+        LengthPct::Px(v) => px(v),
+        LengthPct::Percent(v) => format!("{}%", fmt(v)),
+    }
+}
+
+fn dimension(d: Dimension) -> String {
+    match d {
+        Dimension::Auto => "auto".into(),
+        Dimension::Px(v) => px(v),
+        Dimension::Percent(v) => format!("{}%", fmt(v)),
+        Dimension::FitContent => "fit-content".into(),
+    }
+}
+
+/// A group's size: `auto` is the model's hug, which on a block is `fit-content`.
+fn hug(d: Dimension) -> String {
+    match d {
+        Dimension::Auto => "fit-content".into(),
+        d => dimension(d),
+    }
+}
+
+/// A frame's size: its own unless its `LayoutItem` asks otherwise.
+fn own_or(d: Dimension, own: f64) -> String {
+    match d {
+        Dimension::Auto => px(own),
+        d => dimension(d),
+    }
+}
+
+/// Whether the layout treats `node` as a replaced element — anything but text and
+/// a container with a layout of its own.
+fn replaced(node: &Node, kind: &NodeKind) -> bool {
+    match kind {
+        NodeKind::Text { .. } => false,
+        k => !(container::is_container(k) && node.display().is_some()),
+    }
+}
+
+fn side_widths(sides: StrokeSides, width: f64) -> [f64; 4] {
+    sides.widths(width).map(|w| w.unwrap_or(0.0))
+}
+
+fn justify(j: JustifyContent) -> &'static str {
+    match j {
+        JustifyContent::Start => "flex-start",
+        JustifyContent::End => "flex-end",
+        JustifyContent::Center => "center",
+        JustifyContent::SpaceBetween => "space-between",
+        JustifyContent::SpaceAround => "space-around",
+        JustifyContent::SpaceEvenly => "space-evenly",
+    }
+}
+
+fn align_items(a: AlignItems) -> &'static str {
+    match a {
+        AlignItems::Stretch => "stretch",
+        AlignItems::Start => "flex-start",
+        AlignItems::End => "flex-end",
+        AlignItems::Center => "center",
+        AlignItems::Baseline => "baseline",
+    }
+}
+
+fn align_content(a: AlignContent) -> &'static str {
+    match a {
+        AlignContent::Stretch => "stretch",
+        AlignContent::Start => "flex-start",
+        AlignContent::End => "flex-end",
+        AlignContent::Center => "center",
+        AlignContent::SpaceBetween => "space-between",
+        AlignContent::SpaceAround => "space-around",
+        AlignContent::SpaceEvenly => "space-evenly",
+    }
+}
+
+/// `a` under `direction`, as the model resolves it: an explicit direction only
+/// picks the side `Start` and `End` mean, the base direction staying the
+/// content's.
+fn text_align(a: mastik_core::TextAlign, direction: mastik_core::TextDirection) -> &'static str {
+    use mastik_core::TextAlign as A;
+    use mastik_core::TextDirection as D;
+    match (a, direction) {
+        (A::Start, D::Auto) => "start",
+        (A::End, D::Auto) => "end",
+        (A::Start, D::Ltr) | (A::End, D::Rtl) | (A::Left, _) => "left",
+        (A::End, D::Ltr) | (A::Start, D::Rtl) | (A::Right, _) => "right",
+        (A::Center, _) => "center",
+        (A::Justify, _) => "justify",
+    }
+}
+
+/// CSS's nearest case transform for `case`, `None` for none.
+fn text_transform(case: mastik_core::TextCase) -> Option<&'static str> {
+    match case {
+        mastik_core::TextCase::Original => None,
+        mastik_core::TextCase::Upper => Some("uppercase"),
+        mastik_core::TextCase::Lower => Some("lowercase"),
+        mastik_core::TextCase::Title => Some("capitalize"),
+    }
+}
+
+/// Whether `c` belongs to a right-to-left script.
+fn right_to_left(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF
+    )
+}
+
+/// What a layer is, for the report.
+pub(super) fn kind_word(node: &Node) -> &'static str {
+    match node.kind() {
+        NodeKind::Text { .. } => "text",
+        NodeKind::Artboard { .. } => "frame",
+        NodeKind::Group => "group",
+        _ => "layer",
+    }
+}
+
+/// The layers from below `top` down to `id`, each as its name and which sibling
+/// of that name it is: how the model matches a shown slot across a set's
+/// variants and an instance's copies (`variant::ShownNested::key`).
+fn name_path(doc: &Document, top: NodeId, id: NodeId) -> Vec<(String, usize)> {
+    let mut steps = Vec::new();
+    let mut at = Some(id);
+    while let Some(n) = at.and_then(|a| doc.get(a)) {
+        if n.id() == top {
+            steps.reverse();
+            return steps;
+        }
+        steps.push(name_step(doc, n));
+        at = n.parent();
+    }
+    Vec::new()
+}
+
+/// `n`'s step in a name path: its name and which sibling of that name it is.
+fn name_step(doc: &Document, n: &Node) -> (String, usize) {
+    let k = n
+        .parent()
+        .and_then(|p| doc.get(p))
+        .map(|p| {
+            p.children()
+                .iter()
+                .take_while(|c| **c != n.id())
+                .filter(|c| doc.get(**c).is_some_and(|c| c.name() == n.name()))
+                .count()
+        })
+        .unwrap_or(0);
+    (n.name().to_string(), k)
+}
+
+/// The layer below `top` at `path`, [`name_path`]'s inverse.
+fn at_name_path(doc: &Document, top: NodeId, path: &[(String, usize)]) -> Option<NodeId> {
+    let mut at = top;
+    for (name, k) in path {
+        at = doc
+            .get(at)?
+            .children()
+            .iter()
+            .copied()
+            .filter(|c| doc.get(*c).is_some_and(|c| c.name() == name))
+            .nth(*k)?;
+    }
+    Some(at)
+}
+
+/// Whether `id` is `ancestor` or below it.
+fn under(doc: &Document, id: NodeId, ancestor: NodeId) -> bool {
+    let mut at = Some(id);
+    while let Some(a) = at {
+        if a == ancestor {
+            return true;
+        }
+        at = doc.get(a).and_then(Node::parent);
+    }
+    false
+}
+
+/// The variables `n` reads that decide what CSS is written for it — its
+/// visibility, content, stroke widths and effects — and, when it is `pictured`,
+/// every one it reads, which the picture bakes.
+fn deciding_vars(n: &Node, pictured: bool) -> Vec<Option<VarId>> {
+    let paint = n.paint();
+    let mut out: Vec<Option<VarId>> = vec![n.visible_var(), n.text_vars()[0]];
+    out.extend(paint.strokes.iter().map(|s| s.width_var));
+    out.extend(n.effects().iter().flat_map(|e| e.vars));
+    if pictured {
+        out.push(n.opacity_var());
+        out.extend(&n.text_vars()[1..]);
+        out.extend(n.item().limit_vars);
+        out.extend(n.size_vars());
+        out.extend(n.corner_vars());
+        out.extend(n.spacing_vars());
+        for b in paint
+            .fills
+            .iter()
+            .map(|f| &f.brush)
+            .chain(paint.strokes.iter().map(|s| &s.brush))
+        {
+            if let BrushSource::Bound { var, .. } = b {
+                out.push(Some(*var));
+            }
+        }
+    }
+    out
+}
+
+/// The runs of ASCII letters and digits in `name`.
+fn words(name: &str) -> Vec<String> {
+    name.split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `"primary button / hover"` → `PrimaryButtonHover`.
+fn component_name(name: &str) -> String {
+    let mut out: String = words(name)
+        .iter()
+        .map(|w| {
+            let mut c = w.chars();
+            c.next()
+                .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+                .unwrap_or_default()
+        })
+        .collect();
+    if out.is_empty() {
+        out.push_str("Component");
+    } else if out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, 'C');
+    }
+    // A swap prop's binding ends in `Slot` (`jsx::slot_binding`), so no
+    // component name does.
+    if out.ends_with("Slot") {
+        out.push_str("Component");
+    }
+    out
+}
+
+/// `"Show icon"` → `showIcon`; a reserved word gets `Prop` after it.
+fn prop_name(name: &str) -> String {
+    let mut out = String::new();
+    for (i, w) in words(name).iter().enumerate() {
+        let mut c = w.chars();
+        let Some(f) = c.next() else { continue };
+        if i == 0 {
+            out.push(f.to_ascii_lowercase());
+            out.push_str(c.as_str());
+        } else {
+            out.push(f.to_ascii_uppercase());
+            out.push_str(c.as_str());
+        }
+    }
+    if out.is_empty() {
+        out.push_str("prop");
+    } else if out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, 'p');
+    }
+    const RESERVED: &[&str] = &[
+        "break",
+        "case",
+        "catch",
+        "class",
+        "const",
+        "continue",
+        "debugger",
+        "default",
+        "delete",
+        "do",
+        "else",
+        "enum",
+        "export",
+        "extends",
+        "false",
+        "finally",
+        "for",
+        "function",
+        "if",
+        "import",
+        "in",
+        "instanceof",
+        "new",
+        "null",
+        "return",
+        "super",
+        "switch",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "typeof",
+        "var",
+        "void",
+        "while",
+        "with",
+        "yield",
+        "let",
+        "static",
+        "await",
+        // Reserved in strict code, which every ES module is.
+        "implements",
+        "interface",
+        "package",
+        "private",
+        "protected",
+        "public",
+        "arguments",
+        "eval",
+        "style",
+        "is",
+        "slot",
+        // The CSS module every React component imports its classes as.
+        "styles",
+    ];
+    if RESERVED.contains(&out.as_str()) {
+        out.push_str("Prop");
+    }
+    out
+}
+
+/// `base` as a file or folder name too: off the Windows device names (`Con` +
+/// `suffix`), and unique in `taken` ignoring case, as NTFS and APFS compare.
+/// `taken` holds lowercase names.
+fn unique_file(mut base: String, suffix: &str, taken: &mut HashSet<String>) -> String {
+    const DEVICES: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+        "LPT9",
+    ];
+    if DEVICES.contains(&base.to_ascii_uppercase().as_str()) {
+        base.push_str(suffix);
+    }
+    let mut candidate = base.clone();
+    let mut n = 1;
+    while taken.contains(&candidate.to_ascii_lowercase()) {
+        n += 1;
+        candidate = format!("{base}{n}");
+    }
+    taken.insert(candidate.to_ascii_lowercase());
+    candidate
+}
+
+/// `base`, or `base2`, `base3`… for the first not in `taken`, which it joins.
+fn unique(base: String, taken: &mut HashSet<String>) -> String {
+    let mut candidate = base.clone();
+    let mut n = 1;
+    while taken.contains(&candidate) {
+        n += 1;
+        candidate = format!("{base}{n}");
+    }
+    taken.insert(candidate.clone());
+    candidate
+}
+
+/// A face as declarations: all of it, or with `base` only what differs from it.
+/// Case, decorations and baseline shift are a run's own ([`Walk::run`]).
+fn face(s: &TextStyle, base: Option<&TextStyle>) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    let differs = |f: &dyn Fn(&TextStyle) -> String| base.is_none_or(|b| f(b) != f(s));
+    let family = |t: &TextStyle| format!("\"{}\", sans-serif", t.font_family.replace('"', ""));
+    if differs(&family) {
+        out.push(("font-family", family(s)));
+    }
+    let size = |t: &TextStyle| px(t.font_size);
+    if differs(&size) {
+        out.push(("font-size", size(s)));
+    }
+    let weight = |t: &TextStyle| t.weight.to_string();
+    if differs(&weight) {
+        out.push(("font-weight", weight(s)));
+    }
+    let style = |t: &TextStyle| {
+        if t.italic {
+            "italic".into()
+        } else {
+            "normal".into()
+        }
+    };
+    if differs(&style) {
+        out.push(("font-style", style(s)));
+    }
+    let line = |t: &TextStyle| match t.line_height {
+        None => "normal".to_string(),
+        Some(mastik_core::Length::Px(v)) => px(v),
+        Some(mastik_core::Length::Em(m)) => fmt(m),
+    };
+    if differs(&line) {
+        out.push(("line-height", line(s)));
+    }
+    let tracking = |t: &TextStyle| px(t.letter_spacing.resolve(t.font_size));
+    if differs(&tracking) && (base.is_some() || !s.letter_spacing.is_zero()) {
+        out.push(("letter-spacing", tracking(s)));
+    }
+    let words = |t: &TextStyle| px(t.word_spacing.resolve(t.font_size));
+    if differs(&words) && (base.is_some() || !s.word_spacing.is_zero()) {
+        out.push(("word-spacing", words(s)));
+    }
+    let ink = |t: &TextStyle| t.color.map(|c| css::color(c, 1.0)).unwrap_or_default();
+    if s.color.is_some() && differs(&ink) {
+        out.push(("color", ink(s)));
+    }
+    let features = |t: &TextStyle| {
+        t.features
+            .iter()
+            .map(|f| format!("\"{}\" {}", f.tag.as_str(), f.value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if !s.features.is_empty() && differs(&features) {
+        out.push(("font-feature-settings", features(s)));
+    }
+    let axes = |t: &TextStyle| {
+        t.variations
+            .iter()
+            .map(|a| format!("\"{}\" {}", a.tag.as_str(), fmt(a.value)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if !s.variations.is_empty() && differs(&axes) {
+        out.push(("font-variation-settings", axes(s)));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A button's resets all come ahead of the root's own declarations, so a
+    /// longhand the root sets is never undone by a reset after it.
+    ///
+    /// flip: `as_element` inserting each reset at its place in the reset list →
+    /// fails at "font ahead of font-size".
+    #[test]
+    fn a_buttons_resets_come_first() {
+        let mut root = Element::new("div", "root".into());
+        root.set("font-size", "14px");
+        root.set("border", "1px solid red");
+        let live = Live {
+            prop: "state".into(),
+            rest: "Default".into(),
+            disabled: "disabled".into(),
+            disabled_value: None,
+            element: RootElement::Button,
+            href: String::new(),
+            spread: "rest".into(),
+        };
+        as_element(&mut root, &live);
+        let at = |p: &str| root.style.iter().position(|(q, _)| *q == p).unwrap();
+        assert!(
+            at("font") < at("font-size"),
+            "font ahead of font-size: {:?}",
+            root.style
+        );
+        assert_eq!(root.style.iter().filter(|(p, _)| *p == "border").count(), 1);
+        assert_eq!(root.style.last().map(|(p, _)| *p), Some("border"));
+    }
+
+    /// A picture's def ids follow its content: the same picture drawn by two
+    /// layers writes the same ids, a different one other ids.
+    ///
+    /// flip: `content_ids` leaving the hash out of the ids → fails at "ids of
+    /// its own".
+    #[test]
+    fn a_pictures_ids_follow_its_content() {
+        let svg = |node: &str, fill: &str| {
+            format!(
+                "<svg><defs><linearGradient id=\"grad-{node}-fill0\">{fill}</linearGradient>\
+                 </defs><rect fill=\"url(#grad-{node}-fill0)\"/><g filter=\"url(#fx-{node})\"/></svg>"
+            )
+        };
+        let (a, b) = (
+            NodeId::from_wire("1:5").unwrap(),
+            NodeId::from_wire("1:9").unwrap(),
+        );
+        let one = content_ids(&svg("1_5", "red"), &[a]);
+        let same = content_ids(&svg("1_9", "red"), &[b]);
+        let other = content_ids(&svg("1_9", "blue"), &[b]);
+        assert_eq!(one, same, "the same picture, the same ids");
+        assert!(!one.contains("1_5"), "{one}");
+        let id = |s: &str| {
+            s.split("id=\"")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        assert_ne!(id(&one), id(&other), "ids of its own: {one} / {other}");
+        assert!(
+            one.contains(&format!("url(#{})", id(&one))),
+            "refs follow: {one}"
+        );
+    }
+}

@@ -133,15 +133,15 @@ def check_rpm(site: str) -> list[str]:
 
 
 def check_client_config(site: str) -> None:
-    keyring = "/usr/share/keyrings/ondin-archive-keyring.gpg"
+    keyring = "/usr/share/keyrings/mastik-archive-keyring.gpg"
     expected = {
-        "ondin.sources": [f"Signed-By: {keyring}", "/deb", "Suites: stable"],
-        "ondin.list": [f"signed-by={keyring}", "/deb", "stable main"],
+        "mastik.sources": [f"Signed-By: {keyring}", "/deb", "Suites: stable"],
+        "mastik.list": [f"signed-by={keyring}", "/deb", "stable main"],
         # Both checks, not one: gpgcheck covers the signature inside each
         # package and repo_gpgcheck the one over the index.
-        "ondin.repo": ["gpgcheck=1", "repo_gpgcheck=1", "/rpm", "ondin.asc"],
-        "ondin.asc": ["BEGIN PGP PUBLIC KEY BLOCK"],
-        "index.html": ["ondin.sources", "ondin.repo"],
+        "mastik.repo": ["gpgcheck=1", "repo_gpgcheck=1", "/rpm", "mastik.asc"],
+        "mastik.asc": ["BEGIN PGP PUBLIC KEY BLOCK"],
+        "index.html": ["mastik.sources", "mastik.repo"],
     }
     for name, needles in expected.items():
         path = os.path.join(site, name)

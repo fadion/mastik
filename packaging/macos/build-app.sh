@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build Ondin.app around an already-built Ondin binary.
+# Build Mastik.app around an already-built Mastik binary.
 #
 #     packaging/macos/build-app.sh <version> <binary> <output-dir>
 #
@@ -23,12 +23,12 @@ OUTPUT_DIR="$3"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
 
-APP="${OUTPUT_DIR}/Ondin.app"
+APP="${OUTPUT_DIR}/Mastik.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cp "$BINARY" "$APP/Contents/MacOS/ondin"
-chmod 755 "$APP/Contents/MacOS/ondin"
+cp "$BINARY" "$APP/Contents/MacOS/mastik"
+chmod 755 "$APP/Contents/MacOS/mastik"
 
 cp "$HERE/Info.plist" "$APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
@@ -48,7 +48,7 @@ rm -rf "$(dirname "$ICONSET")"
 
 # The notices a distributed build must carry, as the other platforms' archives do.
 cp "$REPO/LICENSE" "$REPO/THIRD-PARTY-NOTICES.md" "$REPO/README.md" "$APP/Contents/Resources/"
-cp "$REPO/crates/ondin-core/assets/fonts/OFL.txt" "$APP/Contents/Resources/Inter-OFL.txt"
+cp "$REPO/crates/mastik-core/assets/fonts/OFL.txt" "$APP/Contents/Resources/Inter-OFL.txt"
 cp "$REPO"/licenses/*.txt "$APP/Contents/Resources/"
 
 echo "$APP"

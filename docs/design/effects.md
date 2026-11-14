@@ -1,6 +1,6 @@
 # Effects
 
-The effect model (`ondin_core::effect`, §5.3a) and the pixel passes that draw it (`ondin-render/src/effects.rs`, §6.4). The passes are the single specification read by the CPU backend, the GPU shaders and the SVG writer.
+The effect model (`mastik_core::effect`, §5.3a) and the pixel passes that draw it (`mastik-render/src/effects.rs`, §6.4). The passes are the single specification read by the CPU backend, the GPU shaders and the SVG writer.
 
 ## 5.3a Effects (`effect.rs`)
 
@@ -63,7 +63,7 @@ pub fn escaped(bounds: Rect, escape: Insets, world: Affine) -> Rect;   // local 
 
 **The CPU convolution may be reorganized for speed only if it stays byte-identical.** `effects::convolve` sums each pixel's taps in kernel order with the edge taps skipped, which pins the floating-point result; within that, the vertical pass accumulates whole rows, a pass past `THREADED_COST` splits its rows across threads (`for_row_bands`), and a shadow's silhouette, whose colour is zero until the tint, is coarsened, blurred and upsampled in alpha alone (`Channels::Alpha`). `the_blur_is_the_direct_convolution_byte_for_byte` holds it to the direct loop.
 
-`ondin-export` calls `effects::filter_matrix` (once, from the `<filter>` emitter) and `effects::any_ink` (twice) across the crate boundary; that is why SVG needs `ondin-render`. Moving them into core was declined: it would split `filter_matrix`'s twenty coefficients (in the order `fx.wgsl` packs them) from the backend that holds them to account.
+`mastik-export` calls `effects::filter_matrix` (once, from the `<filter>` emitter) and `effects::any_ink` (twice) across the crate boundary; that is why SVG needs `mastik-render`. Moving them into core was declined: it would split `filter_matrix`'s twenty coefficients (in the order `fx.wgsl` packs them) from the backend that holds them to account.
 
 `Surface { px: &mut [u8], w, h }` is the seam: RGBA8, neither `vello_cpu::Pixmap` nor `wgpu::Texture`. Its constructor asserts the length (a stride off-by-one would silently shear the picture in release).
 
@@ -97,7 +97,7 @@ The silhouette both shadow kinds are cast from is the graphic's own alpha. `255 
 
 ### Tests
 
-CPU pixel tests in `ondin-render/tests/effects.rs` (shadow colour/position, alpha falloff, blur past the layer edge, filters change colour not extent, spread, inner shadow within the ink and on all four edges at (0,0), no-ink stack equals no stack). The SVG suite reads the filter graph. Neither would notice if only the other were right.
+CPU pixel tests in `mastik-render/tests/effects.rs` (shadow colour/position, alpha falloff, blur past the layer edge, filters change colour not extent, spread, inner shadow within the ink and on all four edges at (0,0), no-ink stack equals no stack). The SVG suite reads the filter graph. Neither would notice if only the other were right.
 
 ## Traps
 

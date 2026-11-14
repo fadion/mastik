@@ -2467,6 +2467,125 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "mastik-ai"
+version = "0.15.0"
+dependencies = [
+ "base64 0.22.1",
+ "libc",
+ "serde_json",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "mastik-app"
+version = "0.15.0"
+dependencies = [
+ "arboard",
+ "dirs",
+ "eframe",
+ "egui",
+ "egui-wgpu",
+ "fontdb",
+ "image",
+ "libc",
+ "libloading",
+ "log",
+ "mastik-ai",
+ "mastik-core",
+ "mastik-export",
+ "mastik-mcp",
+ "mastik-render",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "raw-window-handle",
+ "rfd",
+ "ring",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "unicode-segmentation",
+ "ureq",
+ "velopack",
+ "wgpu",
+ "windows",
+ "windows-sys 0.52.0",
+ "winresource",
+ "woff2-patched",
+ "zip",
+]
+
+[[package]]
+name = "mastik-core"
+version = "0.15.0"
+dependencies = [
+ "base64 0.22.1",
+ "flo_curves",
+ "i_overlay",
+ "kurbo",
+ "parley",
+ "peniko",
+ "read-fonts 0.40.2",
+ "regex",
+ "roxmltree 0.20.0",
+ "rstar",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "serde_path_to_error",
+ "skrifa 0.43.2",
+ "taffy",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mastik-export"
+version = "0.15.0"
+dependencies = [
+ "hayro-svg",
+ "image",
+ "krilla",
+ "krilla-svg",
+ "mastik-core",
+ "mastik-render",
+ "miniz_oxide 0.8.9",
+ "png",
+ "roxmltree 0.20.0",
+ "serde",
+ "serde_json",
+ "usvg",
+ "zip",
+]
+
+[[package]]
+name = "mastik-mcp"
+version = "0.15.0"
+dependencies = [
+ "base64 0.22.1",
+ "mastik-core",
+ "serde_json",
+]
+
+[[package]]
+name = "mastik-render"
+version = "0.15.0"
+dependencies = [
+ "image",
+ "kurbo",
+ "mastik-core",
+ "peniko",
+ "png",
+ "pollster 1.0.1",
+ "rustc-hash 2.1.3",
+ "serde_json",
+ "sha2",
+ "vello",
+ "vello_cpu 0.2.0",
+ "wgpu",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2938,125 +3057,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "ondin-ai"
-version = "0.15.0"
-dependencies = [
- "base64 0.22.1",
- "libc",
- "serde_json",
- "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "ondin-app"
-version = "0.15.0"
-dependencies = [
- "arboard",
- "dirs",
- "eframe",
- "egui",
- "egui-wgpu",
- "fontdb",
- "image",
- "libc",
- "libloading",
- "log",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "ondin-ai",
- "ondin-core",
- "ondin-export",
- "ondin-mcp",
- "ondin-render",
- "raw-window-handle",
- "rfd",
- "ring",
- "ruzstd",
- "serde",
- "serde_json",
- "unicode-segmentation",
- "ureq",
- "velopack",
- "wgpu",
- "windows",
- "windows-sys 0.52.0",
- "winresource",
- "woff2-patched",
- "zip",
-]
-
-[[package]]
-name = "ondin-core"
-version = "0.15.0"
-dependencies = [
- "base64 0.22.1",
- "flo_curves",
- "i_overlay",
- "kurbo",
- "parley",
- "peniko",
- "read-fonts 0.40.2",
- "regex",
- "roxmltree 0.20.0",
- "rstar",
- "rustc-hash 2.1.3",
- "serde",
- "serde_ignored",
- "serde_json",
- "serde_path_to_error",
- "skrifa 0.43.2",
- "taffy",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "ondin-export"
-version = "0.15.0"
-dependencies = [
- "hayro-svg",
- "image",
- "krilla",
- "krilla-svg",
- "miniz_oxide 0.8.9",
- "ondin-core",
- "ondin-render",
- "png",
- "roxmltree 0.20.0",
- "serde",
- "serde_json",
- "usvg",
- "zip",
-]
-
-[[package]]
-name = "ondin-mcp"
-version = "0.15.0"
-dependencies = [
- "base64 0.22.1",
- "ondin-core",
- "serde_json",
-]
-
-[[package]]
-name = "ondin-render"
-version = "0.15.0"
-dependencies = [
- "image",
- "kurbo",
- "ondin-core",
- "peniko",
- "png",
- "pollster 1.0.1",
- "rustc-hash 2.1.3",
- "serde_json",
- "sha2",
- "vello",
- "vello_cpu 0.2.0",
- "wgpu",
-]
 
 [[package]]
 name = "option-ext"

@@ -4,7 +4,7 @@ import { MAX_LINES, refusal } from '../hooks/archive.ts'
 group('refusal', () => {
   test('a whole read of the ledger is refused, in either path spelling', async () => {
     expect(refusal('docs/archive/ledger.md', undefined)).toBeDefined()
-    expect(refusal('C:\\Users\\x\\ondin\\docs\\archive\\ledger.md', undefined)).toBeDefined()
+    expect(refusal('C:\\Users\\x\\mastik\\docs\\archive\\ledger.md', undefined)).toBeDefined()
   })
 
   test('a ranged read of the ledger runs, up to the cap', async () => {

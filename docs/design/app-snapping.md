@@ -9,7 +9,7 @@ Part of §9.4.
 ### Sources arrive as one value
 
 `snap::Snapping { targets, guides, baselines, pixel, zoom, tolerance_px }`, built only in
-`OndinApp::snapping` and taken whole by every snap function.
+`MastikApp::snapping` and taken whole by every snap function.
 
 - A switched-off source arrives **empty**, not flagged — an empty list cannot win. `pixel` is the one
   flag (the lattice is everywhere). `zoom` is not `Default`-able (zero zoom = infinite tolerance).
@@ -23,10 +23,10 @@ Part of §9.4.
 | Source | Built by | Notes |
 | --- | --- | --- |
 | Shape targets | `snap::targets` | edges and centres of nodes in view; excludes the **gesture's own subtree** (§15 D43); capped by `SNAP_TARGET_LIMIT` |
-| Ruler guides | `OndinApp::guide_lines` → `snap::GuideLines { x, y }` | via `shown_guide` (a dragged guide snaps where it looks); frame-scoped guides projected only if the frame is `rulers::upright` (angle and skew ≈ 0, mirrors allowed; a quarter turn is not upright). No culling. |
-| Layout grids | `OndinApp::layout_grid_lines`, appended to the guide lines | under *Snap to guides*, and only while *Show layout grid* is on (`show_layout_grids`): both edges of every visible track of a shown frame, laid out on and clipped to the frame's used box (the one the grid is drawn on, so a hug, a stretch or a bound size counts), x for columns and y for rows (swapped under a quarter turn), in world space; they match as ruler guides do (tie wins, no mark). A frame that is moving or inside what moves is skipped (its grid travels with it), and so is one turned off the axes; a mirrored frame snaps. No culling. |
+| Ruler guides | `MastikApp::guide_lines` → `snap::GuideLines { x, y }` | via `shown_guide` (a dragged guide snaps where it looks); frame-scoped guides projected only if the frame is `rulers::upright` (angle and skew ≈ 0, mirrors allowed; a quarter turn is not upright). No culling. |
+| Layout grids | `MastikApp::layout_grid_lines`, appended to the guide lines | under *Snap to guides*, and only while *Show layout grid* is on (`show_layout_grids`): both edges of every visible track of a shown frame, laid out on and clipped to the frame's used box (the one the grid is drawn on, so a hug, a stretch or a bound size counts), x for columns and y for rows (swapped under a quarter turn), in world space; they match as ruler guides do (tie wins, no mark). A frame that is moving or inside what moves is skipped (its grid travels with it), and so is one turned off the axes; a mirrored frame snaps. No culling. |
 | Baselines | `canvas::baseline_lines` → `Vec<f64>` world ys | from cached `TextLayout::baselines` of visible text in view, excluding the gesture's whole subtree (`snap::is_inside_any`); rotated/skewed text contributes nothing, a half-turn is admitted (off-diagonal test); own switch, on by default, unbound |
-| Point targets | `OndinApp::point_snapping` → `snap::Outlines { anchors, segments, centres }` | for a dragged **point** only, under *Snap to shapes*: the drawn outlines (`Resolved::local_path`, text has none) of up to `SNAP_TARGET_LIMIT` nodes in view outside the gesture's subtree, their anchors, their segments near the pointer and their boxes' centres; plus the edited path's own anchors that are not moving and its segments touching none of them, and the pen's run so far |
+| Point targets | `MastikApp::point_snapping` → `snap::Outlines { anchors, segments, centres }` | for a dragged **point** only, under *Snap to shapes*: the drawn outlines (`Resolved::local_path`, text has none) of up to `SNAP_TARGET_LIMIT` nodes in view outside the gesture's subtree, their anchors, their segments near the pointer and their boxes' centres; plus the edited path's own anchors that are not moving and its segments touching none of them, and the pen's run so far |
 | Pixel grid | `snap::pixel_delta` | fallback only |
 
 `rulers::upright` also decides the dotted guide extension and whether `rulers::measure_guide` can
@@ -68,7 +68,7 @@ for Move and Resize, never stashed on `Drag`.
 
 - Snaps the **pointer**, not the box: `resize_to_handle` puts the handle at the pointer, so the
   anchored side never moves. Same tolerance and line rules as a move. Shift means `keep_ratio` only.
-- `OndinApp::resize_axes`: which world axes the handle travels, from `Handle::outward` mapped through
+- `MastikApp::resize_axes`: which world axes the handle travels, from `Handle::outward` mapped through
   the node's world transform (threshold 0.3, so a 45° edge claims both). A multi-selection uses
   `canvas::selection_frame`, the transform its handles are drawn with.
 - No spacing snap on a resize (it would have to move the anchored edge).
@@ -78,7 +78,7 @@ for Move and Resize, never stashed on `Drag`.
 ### Points (`snap_point` with `Outlines`)
 
 A pen anchor, a node-tool point or segment drag and a line's end are given point targets
-(`OndinApp::point_snapping`); a resize is not. A pen drawing into an edited path reads that path
+(`MastikApp::point_snapping`); a resize is not. A pen drawing into an edited path reads that path
 as its own: every subpath but the run in flight is a target (`pen_point`). With both axes free, `snap::point_target` first
 looks within the tolerance for, in this order, an **anchor**, an **intersection** of two segments,
 a **tangent**, a **perpendicular**, a segment's **midpoint**, a shape's **centre**, and the nearest
@@ -107,7 +107,7 @@ A target near but not yet caught is **hinted**: `snap::point_hint` finds the nea
 small unnamed square in the same red, so a midpoint or a foot can be found by eye from further off.
 It shows while nothing snapped, and while the point only lies *On path*, since sliding along a path
 is how a midpoint is found; a named snap's ring replaces it. A locked axis gets none.
-`OndinApp::point_snapping` gathers segments as far as the hint reaches. The pen shows its mark on hover
+`MastikApp::point_snapping` gathers segments as far as the hint reaches. The pen shows its mark on hover
 from before its first anchor; a dragged line end shows its mark too.
 
 ### Dragged guide (`snap_guide`)

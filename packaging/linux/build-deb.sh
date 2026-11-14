@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build a Debian package around an already-built Ondin binary.
+# Build a Debian package around an already-built Mastik binary.
 #
 #     packaging/linux/build-deb.sh <version> <binary> <output-dir> [deb-arch]
 #
@@ -35,11 +35,11 @@ REPO="$(cd "${HERE}/../.." && pwd)"
 # Where a bug report should go. Not a personal address on purpose - this string
 # ships inside every package that is ever downloaded and is not retractable
 # afterwards. Change it here if a real contact address is wanted.
-MAINTAINER="Ondin contributors <fadion@users.noreply.github.com>"
+MAINTAINER="Mastik contributors <fadion@users.noreply.github.com>"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
-ROOT="${STAGE}/ondin"
+ROOT="${STAGE}/mastik"
 
 bash "${HERE}/stage-payload.sh" "$VERSION" "$BINARY" "$ROOT"
 mkdir -p "${ROOT}/DEBIAN"
@@ -53,72 +53,72 @@ mkdir -p "${ROOT}/DEBIAN"
 {
     cat <<'EOF'
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: ondin
-Source: https://github.com/fadion/ondin
+Upstream-Name: mastik
+Source: https://github.com/fadion/mastik
 
 Files: *
-Copyright: 2026 Ondin contributors
+Copyright: 2026 Mastik contributors
 License: MIT
 
-Files: usr/share/doc/ondin/Inter-OFL.txt
+Files: usr/share/doc/mastik/Inter-OFL.txt
 Copyright: 2020 The Inter Project Authors (https://github.com/rsms/inter)
 License: OFL-1.1
  The Inter typeface is licensed under the SIL Open Font License 1.1; the full
- text is in /usr/share/doc/ondin/Inter-OFL.txt.
+ text is in /usr/share/doc/mastik/Inter-OFL.txt.
 
-Files: usr/share/doc/ondin/Ubuntu-Font-Licence-1.0.txt
+Files: usr/share/doc/mastik/Ubuntu-Font-Licence-1.0.txt
 Copyright: Canonical Ltd.
 License: Ubuntu-font-1.0
  egui's built-in Ubuntu-Light font is licensed under the Ubuntu Font Licence
- 1.0; the full text is in /usr/share/doc/ondin/Ubuntu-Font-Licence-1.0.txt.
+ 1.0; the full text is in /usr/share/doc/mastik/Ubuntu-Font-Licence-1.0.txt.
 
-Files: usr/share/doc/ondin/Hack-LICENSE.txt
+Files: usr/share/doc/mastik/Hack-LICENSE.txt
 Copyright: 2018 Source Foundry Authors
            2003 Bitstream, Inc.
 License: MIT and Bitstream-Vera
  egui's built-in Hack-Regular font is licensed under the MIT license, with
  portions under the Bitstream Vera License and public-domain DejaVu work; the
- full text is in /usr/share/doc/ondin/Hack-LICENSE.txt.
+ full text is in /usr/share/doc/mastik/Hack-LICENSE.txt.
 
-Files: usr/share/doc/ondin/NotoEmoji-OFL-1.1.txt
+Files: usr/share/doc/mastik/NotoEmoji-OFL-1.1.txt
 Copyright: Google Inc.
 License: OFL-1.1
  egui's built-in Noto Emoji font is licensed under the SIL Open Font License
- 1.1; the full text is in /usr/share/doc/ondin/NotoEmoji-OFL-1.1.txt.
+ 1.1; the full text is in /usr/share/doc/mastik/NotoEmoji-OFL-1.1.txt.
 
-Files: usr/share/doc/ondin/NotoEmoji-current-OFL-1.1.txt
+Files: usr/share/doc/mastik/NotoEmoji-current-OFL-1.1.txt
 Copyright: 2013 Google LLC
 License: OFL-1.1
  The current Noto Emoji font, embedded for the UI's emoji, is licensed under
  the SIL Open Font License 1.1; the full text is in
- /usr/share/doc/ondin/NotoEmoji-current-OFL-1.1.txt.
+ /usr/share/doc/mastik/NotoEmoji-current-OFL-1.1.txt.
 
-Files: usr/share/doc/ondin/emoji-icon-font-LICENSE.txt
+Files: usr/share/doc/mastik/emoji-icon-font-LICENSE.txt
 Copyright: 2014 John Slegers
 License: MIT
  egui's built-in emoji-icon-font is licensed under the MIT license; the full
- text is in /usr/share/doc/ondin/emoji-icon-font-LICENSE.txt.
+ text is in /usr/share/doc/mastik/emoji-icon-font-LICENSE.txt.
 
 License: MIT
 EOF
     sed 's/^$/./; s/^/ /' "${REPO}/LICENSE"
-} > "${ROOT}/usr/share/doc/ondin/copyright"
-chmod 0644 "${ROOT}/usr/share/doc/ondin/copyright"
+} > "${ROOT}/usr/share/doc/mastik/copyright"
+chmod 0644 "${ROOT}/usr/share/doc/mastik/copyright"
 
 # Every one of these is loaded with dlopen, not linked: on Schemaic, which this
 # list comes from, `readelf -d` on the binary lists glibc and nothing else,
 # because winit reaches X11, Wayland and xkbcommon through libloading and wgpu
-# reaches Vulkan and EGL the same way. Ondin runs the same two crates through
+# reaches Vulkan and EGL the same way. Mastik runs the same two crates through
 # eframe, so the same libraries are asked for the same way. That is exactly why
 # the list is written out rather than derived - no dependency scanner, Debian's
 # or rpm's, can see a library the loader only asks for at runtime, so an
 # automatic list produces a package that installs cleanly and then cannot open a
 # window.
 #
-# To regenerate after a dependency change (and to confirm the list for Ondin's
+# To regenerate after a dependency change (and to confirm the list for Mastik's
 # own binary, which has not been measured):
-#     readelf -d target/.../ondin | grep NEEDED
-#     strings -a target/.../ondin | grep -oE 'lib[a-zA-Z0-9_+-]+\.so(\.[0-9]+)*' | sort -u
+#     readelf -d target/.../mastik | grep NEEDED
+#     strings -a target/.../mastik | grep -oE 'lib[a-zA-Z0-9_+-]+\.so(\.[0-9]+)*' | sort -u
 #
 # These are Debian's *package* names, where the rpm spec requires *sonames*
 # instead. That asymmetry is not a stylistic choice: rpm distributions
@@ -129,8 +129,8 @@ chmod 0644 "${ROOT}/usr/share/doc/ondin/copyright"
 # libc6 (>= 2.31) restates the zigbuild floor rather than the binary's actual
 # high-water mark: the build target is the promise being made, and it is the
 # number that stays true when the code changes. (Schemaic measured its own
-# high-water mark at GLIBC_2.30; Ondin's is unmeasured -
-# `objdump -T ondin | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -n1` says.)
+# high-water mark at GLIBC_2.30; Mastik's is unmeasured -
+# `objdump -T mastik | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -n1` says.)
 DEPENDS="libc6 (>= 2.31)"
 DEPENDS="${DEPENDS}, libxkbcommon0, libxkbcommon-x11-0"
 DEPENDS="${DEPENDS}, libwayland-client0, libwayland-egl1"
@@ -144,7 +144,7 @@ DEPENDS="${DEPENDS}, libvulkan1, libegl1"
 INSTALLED_SIZE="$(du -ks --exclude=DEBIAN "$ROOT" | cut -f1)"
 
 cat > "${ROOT}/DEBIAN/control" <<EOF
-Package: ondin
+Package: mastik
 Version: ${VERSION}
 Architecture: ${DEB_ARCH}
 Maintainer: ${MAINTAINER}
@@ -153,9 +153,9 @@ Depends: ${DEPENDS}
 Recommends: mesa-vulkan-drivers
 Section: graphics
 Priority: optional
-Homepage: https://github.com/fadion/ondin
+Homepage: https://github.com/fadion/mastik
 Description: Native 2D design tool with a GPU canvas and CSS-style layout
- Ondin is a native, open-source 2D design tool written in Rust. Multiple
+ Mastik is a native, open-source 2D design tool written in Rust. Multiple
  artboards sit on an infinite, GPU-rendered canvas, holding a nested tree of
  frames, shapes, paths and rich text, with boolean operations and masks.
  .
@@ -163,11 +163,11 @@ Description: Native 2D design tool with a GPU canvas and CSS-style layout
  lay out their children with flexbox and CSS grid, a project library keeps
  documents together, and drawings export to SVG and PNG.
  .
- Ondin is early in its development: the v1 feature list is not complete.
+ Mastik is early in its development: the v1 feature list is not complete.
 EOF
 
 mkdir -p "$OUTPUT_DIR"
-OUT="${OUTPUT_DIR}/ondin_${VERSION}_${DEB_ARCH}.deb"
+OUT="${OUTPUT_DIR}/mastik_${VERSION}_${DEB_ARCH}.deb"
 # --root-owner-group so the package does not carry the build user's uid, which
 # would otherwise be whatever the CI runner happens to use.
 dpkg-deb --root-owner-group --build "$ROOT" "$OUT" >/dev/null

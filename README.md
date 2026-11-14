@@ -1,11 +1,11 @@
-# Ondin
+# Mastik
 
 A native, open-source 2D design tool written in Rust: frames on an infinite
 canvas, vector shapes and paths, rich text, images, effects, and flexbox and
 grid layout, with SVG and PNG export.
 
 Still early. The v1 feature list is not complete, and each version's changes are
-on the [Releases](https://github.com/fadion/ondin/releases) page.
+on the [Releases](https://github.com/fadion/mastik/releases) page.
 
 ## Why
 
@@ -14,7 +14,7 @@ on the [Releases](https://github.com/fadion/ondin/releases) page.
 - **Local.** No account, no telemetry. Documents are files on your disk.
 - **Real CSS layout.** Flexbox, CSS grid and absolute insets, under their CSS
   names, so a layout means what it will mean in code.
-- **Plain files.** `.ondin` is versioned JSON with deterministic bytes, so a
+- **Plain files.** `.mastik` is versioned JSON with deterministic bytes, so a
   document diffs and versions like code.
 
 ## Features
@@ -48,42 +48,42 @@ on the [Releases](https://github.com/fadion/ondin/releases) page.
   covers. Autosave every 30 seconds and crash recovery.
 - **Updates.** Installed builds update themselves.
 
-Ondin is dark-themed only and has had no accessibility pass yet.
+Mastik is dark-themed only and has had no accessibility pass yet.
 
 ## Install
 
 Builds for every release are on the
-[Releases page](https://github.com/fadion/ondin/releases/latest), for
+[Releases page](https://github.com/fadion/mastik/releases/latest), for
 **Windows and Linux (x86_64)** and **macOS (Apple Silicon)**. Installed builds
-check GitHub for a new release in the background; set `ONDIN_NO_UPDATE_CHECK=1`
+check GitHub for a new release in the background; set `MASTIK_NO_UPDATE_CHECK=1`
 to turn that off.
 
 ### Windows
 
-Download and run **`Ondin-win-x64-Setup.exe`**. It installs per-user, with no
+Download and run **`Mastik-win-x64-Setup.exe`**. It installs per-user, with no
 admin prompt, and updates itself. The installer isn't code-signed, so SmartScreen
 warns the first time: click *More info*, then *Run anyway*.
 
-`ondin-vX.Y.Z-windows-x86_64.zip` is a portable build that doesn't update itself.
+`mastik-vX.Y.Z-windows-x86_64.zip` is a portable build that doesn't update itself.
 
 ### macOS
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fadion/ondin/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/fadion/mastik/main/install.sh | bash
 ```
 
-This installs Ondin into `/Applications`, and it updates itself from then on.
+This installs Mastik into `/Applications`, and it updates itself from then on.
 
-To install by hand, take **`Ondin-osx-arm64.dmg`** (or the `.pkg`) and drag Ondin
+To install by hand, take **`Mastik-osx-arm64.dmg`** (or the `.pkg`) and drag Mastik
 into `/Applications`. The app isn't signed with an Apple Developer ID, so macOS
 blocks the first launch: open it once, then click **Open Anyway** in
 **System Settings → Privacy & Security**, or run
-`xattr -dr com.apple.quarantine /Applications/Ondin.app`.
+`xattr -dr com.apple.quarantine /Applications/Mastik.app`.
 
 ### Linux
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fadion/ondin/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/fadion/mastik/main/install.sh | bash
 ```
 
 - **Debian and Ubuntu:** adds the signed apt repository.
@@ -92,35 +92,35 @@ curl -fsSL https://raw.githubusercontent.com/fadion/ondin/main/install.sh | bash
 
 Packaged installs update with the rest of your system. Read
 [install.sh](install.sh) first if you prefer; it asks for `sudo`.
-`ONDIN_PKG_FAMILY=debian|rpm|appimage` overrides its choice, and
-`ONDIN_NO_REPO=1` installs a single package without adding a repository.
+`MASTIK_PKG_FAMILY=debian|rpm|appimage` overrides its choice, and
+`MASTIK_NO_REPO=1` installs a single package without adding a repository.
 
 #### Adding the repository by hand
 
 Debian, Ubuntu and derivatives:
 
 ```sh
-curl -fsSL https://fadion.github.io/ondin/ondin-archive-keyring.gpg \
-  | sudo tee /usr/share/keyrings/ondin-archive-keyring.gpg > /dev/null
-curl -fsSL https://fadion.github.io/ondin/ondin.sources \
-  | sudo tee /etc/apt/sources.list.d/ondin.sources > /dev/null
-sudo apt-get update && sudo apt-get install ondin
+curl -fsSL https://fadion.github.io/mastik/mastik-archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/mastik-archive-keyring.gpg > /dev/null
+curl -fsSL https://fadion.github.io/mastik/mastik.sources \
+  | sudo tee /etc/apt/sources.list.d/mastik.sources > /dev/null
+sudo apt-get update && sudo apt-get install mastik
 ```
 
 Fedora, RHEL and CentOS:
 
 ```sh
-sudo curl -fsSL https://fadion.github.io/ondin/ondin.repo \
-  -o /etc/yum.repos.d/ondin.repo
-sudo dnf install ondin
+sudo curl -fsSL https://fadion.github.io/mastik/mastik.repo \
+  -o /etc/yum.repos.d/mastik.repo
+sudo dnf install mastik
 ```
 
 openSUSE, whose `zypper` reads its own directory rather than
 `/etc/yum.repos.d`:
 
 ```sh
-sudo zypper addrepo https://fadion.github.io/ondin/ondin.repo
-sudo zypper install ondin
+sudo zypper addrepo https://fadion.github.io/mastik/mastik.repo
+sudo zypper install mastik
 ```
 
 The first install asks to import the signing key. Check that it matches this
@@ -134,10 +134,10 @@ fingerprint before you accept:
 
 | File | Install | Updates itself |
 | --- | --- | --- |
-| `Ondin-linux-x64.AppImage` | `chmod +x` and run | Yes |
-| `ondin_X.Y.Z_amd64.deb` | `sudo apt-get install ./ondin_*.deb` | No |
-| `ondin-X.Y.Z-1.x86_64.rpm` | `sudo dnf install ./ondin-*.rpm` | No |
-| `ondin-vX.Y.Z-linux-x86_64.tar.gz` | Extract anywhere | No |
+| `Mastik-linux-x64.AppImage` | `chmod +x` and run | Yes |
+| `mastik_X.Y.Z_amd64.deb` | `sudo apt-get install ./mastik_*.deb` | No |
+| `mastik-X.Y.Z-1.x86_64.rpm` | `sudo dnf install ./mastik-*.rpm` | No |
+| `mastik-vX.Y.Z-linux-x86_64.tar.gz` | Extract anywhere | No |
 
 The `.deb` and `.rpm` on the Releases page are unsigned; the repository copies
 are signed. dnf does not check a local file's signature unless the machine is
@@ -147,12 +147,12 @@ dependencies dnf fetches without checking theirs.
 
 ## Command line
 
-`ondin export` renders a document without opening a window or needing a GPU:
+`mastik export` renders a document without opening a window or needing a GPU:
 
 ```sh
-ondin export design.ondin --png --scale 2 -o design.png
-ondin export design.ondin --svg -o design.svg
-ondin export design.ondin --all -o exports/
+mastik export design.mastik --png --scale 2 -o design.png
+mastik export design.mastik --svg -o design.svg
+mastik export design.mastik --all -o exports/
 ```
 
 - `--svg` (the default), `--png` or `--json`.
@@ -165,7 +165,7 @@ ondin export design.ondin --all -o exports/
 Requires a recent Rust toolchain (edition 2024).
 
 ```sh
-cargo run -p ondin-app
+cargo run -p mastik-app
 cargo test --workspace
 ```
 

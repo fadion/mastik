@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Install Ondin on Linux or macOS (§15 D957).
+# Install Mastik on Linux or macOS (§15 D957).
 #
-#     curl -fsSL https://raw.githubusercontent.com/fadion/ondin/main/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/fadion/mastik/main/install.sh | bash
 #
 # Picks the right route for this machine: the .pkg on macOS, the signed apt
 # repository on Debian and Ubuntu, the signed dnf/zypper repository on Fedora,
@@ -10,13 +10,13 @@
 #
 # **Every one of those updates itself, by a different mechanism, and the script
 # says which at the end.** The .pkg and the AppImage are Velopack installs and
-# poll GitHub on their own (set ONDIN_NO_UPDATE_CHECK=1 to stop that). A .deb or
+# poll GitHub on their own (set MASTIK_NO_UPDATE_CHECK=1 to stop that). A .deb or
 # .rpm lands in /usr/bin, which is not a Velopack install, so the in-app check
 # correctly never runs - those come from the package repositories at
-# https://fadion.github.io/ondin and are carried forward by `apt-get upgrade` /
+# https://fadion.github.io/mastik and are carried forward by `apt-get upgrade` /
 # `dnf upgrade` with the rest of the system.
 #
-# Set ONDIN_NO_REPO=1 to install a single downloaded .deb or .rpm instead,
+# Set MASTIK_NO_REPO=1 to install a single downloaded .deb or .rpm instead,
 # adding nothing to the system's source lists. That build does not update
 # itself and re-running this script is the only way forward from it, which is
 # the trade being made.
@@ -30,18 +30,18 @@
 #
 set -euo pipefail
 
-REPO="fadion/ondin"
+REPO="fadion/mastik"
 API="https://api.github.com/repos/${REPO}/releases/latest"
 RAW="https://raw.githubusercontent.com/${REPO}/main"
-APP_ID="io.github.fadion.Ondin"
+APP_ID="io.github.fadion.Mastik"
 
 # The package repositories. This URL is written into the user's source list and
-# their machine will keep asking for it for as long as Ondin is installed,
+# their machine will keep asking for it for as long as Mastik is installed,
 # so it is as permanent as the Velopack channel names - moving it means every
 # existing install stops seeing updates, silently, with no route back to those
 # users to tell them. Change it only alongside a plan for that.
-SITE="https://fadion.github.io/ondin"
-KEYRING="/usr/share/keyrings/ondin-archive-keyring.gpg"
+SITE="https://fadion.github.io/mastik"
+KEYRING="/usr/share/keyrings/mastik-archive-keyring.gpg"
 
 # The repository signing key's fingerprint, as an **independent** channel.
 #
@@ -56,7 +56,7 @@ KEYRING="/usr/share/keyrings/ondin-archive-keyring.gpg"
 # Without this the only check was a *shape* test — the first byte is 0x98/0x99/
 # 0xc6, or the file says BEGIN PGP PUBLIC KEY BLOCK — which any attacker-made
 # key passes. On Debian the substituted key then signs every future
-# `apt-get upgrade` of ondin, root-run, for the life of the install; on RPM
+# `apt-get upgrade` of mastik, root-run, for the life of the install; on RPM
 # `rpm --import` puts it in the **global** rpm keyring, where it validates
 # packages from any repository on the machine, permanently — which is why the
 # rpm uninstall instructions end in `rpm -e gpg-pubkey-<id>`, derived from
@@ -130,13 +130,13 @@ case "$os" in
     Linux) want_arch=x86_64 ;;
     Darwin) want_arch=arm64 ;;
     *)
-        err "Ondin has no build for ${os}. Windows users want the installer"
+        err "Mastik has no build for ${os}. Windows users want the installer"
         err "from https://github.com/${REPO}/releases/latest"
         exit 1
         ;;
 esac
 if [ "$arch" != "$want_arch" ]; then
-    err "Ondin publishes ${want_arch} builds for ${os}, and this machine is ${arch}."
+    err "Mastik publishes ${want_arch} builds for ${os}, and this machine is ${arch}."
     err "Building from source is documented at https://github.com/${REPO}#building"
     exit 1
 fi
@@ -181,10 +181,10 @@ require_fingerprint_configured() {
     esac
     err "this copy of install.sh has no repository signing key fingerprint yet"
     err "(KEY_FINGERPRINT is '${KEY_FINGERPRINT}'), so it cannot check the key the"
-    err "Ondin package repository would install, and it does not install a key unchecked."
+    err "Mastik package repository would install, and it does not install a key unchecked."
     err "Nothing has been installed. Until the repository is set up, install with"
-    err "  ONDIN_NO_REPO=1          a single package from the latest release, no updates"
-    err "  ONDIN_PKG_FAMILY=appimage  the self-updating AppImage"
+    err "  MASTIK_NO_REPO=1          a single package from the latest release, no updates"
+    err "  MASTIK_PKG_FAMILY=appimage  the self-updating AppImage"
     return 1
 }
 
@@ -318,7 +318,7 @@ require_published_key() {
         return 1
     fi
     if [ "$got" != "$KEY_FINGERPRINT" ]; then
-        err "the downloaded signing key is NOT the published Ondin key."
+        err "the downloaded signing key is NOT the published Mastik key."
         err "  expected ${KEY_FINGERPRINT}"
         err "  got      ${got}"
         err "Nothing has been installed. Either the key was rotated and this script is"
@@ -476,7 +476,7 @@ write_apt_source() {
 }
 
 # Where the rpm route installs the verified key, for `gpgkey=` to name.
-RPM_KEY="/etc/pki/rpm-gpg/RPM-GPG-KEY-ondin"
+RPM_KEY="/etc/pki/rpm-gpg/RPM-GPG-KEY-mastik"
 
 # The .repo, with **`gpgkey=` naming the key on disk** that this script has
 # checked against `KEY_FINGERPRINT` — not the https URL the published file
@@ -486,13 +486,13 @@ RPM_KEY="/etc/pki/rpm-gpg/RPM-GPG-KEY-ondin"
 # constrained what dnf trusted (`[X3-L5-02]`).
 #
 # `autorefresh=1` is zypper's: without it `zypper update` never refreshes this
-# repository and never sees a new Ondin (`[X3-L1-02]`). dnf reads the metadata
+# repository and never sees a new Mastik (`[X3-L1-02]`). dnf reads the metadata
 # on its own schedule and ignores the key, as it does in every vendor .repo
 # that carries it for openSUSE's sake.
 write_rpm_repo() {
     printf '%s\n' \
-        "[ondin]" \
-        "name=Ondin" \
+        "[mastik]" \
+        "name=Mastik" \
         "baseurl=${SITE}/rpm" \
         "enabled=1" \
         "autorefresh=1" \
@@ -506,7 +506,7 @@ write_rpm_repo() {
 # limited to 60/hour per address, and this is the script's only one.
 #
 # The patterns the callers pass are the exact names release.yml publishes
-# (`vpk pack --packId Ondin` on the `linux-x64` and `osx-arm64` channels, and
+# (`vpk pack --packId Mastik` on the `linux-x64` and `osx-arm64` channels, and
 # the two package builders' own naming), anchored on the `/` before the file
 # name. A looser pattern would take the first URL that merely *contains* it.
 asset_url() {
@@ -531,7 +531,7 @@ detect_family() {
     # It would not even complete: the spec's nine soname `Requires:` cannot be
     # met by an empty rpm database, so `rpm -i` fails, `set -e` ends the script,
     # and an Ubuntu user gets an rpm error with no hint that
-    # `ONDIN_PKG_FAMILY=debian` exists. (Schemaic's installer shipped exactly
+    # `MASTIK_PKG_FAMILY=debian` exists. (Schemaic's installer shipped exactly
     # that, which is why the order below is what it is.)
     if has dnf || has zypper; then
         echo rpm
@@ -551,7 +551,7 @@ detect_family() {
 # fetching from here, so this is also the only route on which an upgrade
 # arrives without the user coming back.
 install_deb() {
-    if [ "${ONDIN_NO_REPO:-0}" = 1 ]; then
+    if [ "${MASTIK_NO_REPO:-0}" = 1 ]; then
         install_deb_direct
         return
     fi
@@ -562,13 +562,13 @@ install_deb() {
 
     local tmp first
     tmp="$(mktemp -d)"
-    info "Adding the Ondin apt repository (${SITE}/deb)"
+    info "Adding the Mastik apt repository (${SITE}/deb)"
 
     # The dearmored keyring is published beside the armoured key precisely so
     # this needs no gpg on the machine - a slim container often has none, and
     # `gpg --dearmor` would be an extra dependency for a file we can just as
     # easily publish in both forms.
-    download_to "${SITE}/ondin-archive-keyring.gpg" "${tmp}/keyring.gpg"
+    download_to "${SITE}/mastik-archive-keyring.gpg" "${tmp}/keyring.gpg"
     # A 404 or a captive-portal page arrives here looking like a file, and apt
     # would then reject every update with an unhelpful signature error. A
     # keyring begins with an OpenPGP public-key packet: 0x98, 0x99 or 0xc6.
@@ -588,31 +588,31 @@ install_deb() {
         exit 1
     fi
 
-    write_apt_source "${tmp}/ondin.sources"
+    write_apt_source "${tmp}/mastik.sources"
 
     info "Installing the repository (this needs root)"
     run_privileged install -m 0644 -D "${tmp}/keyring.gpg" "$KEYRING"
-    run_privileged install -m 0644 -D "${tmp}/ondin.sources" /etc/apt/sources.list.d/ondin.sources
+    run_privileged install -m 0644 -D "${tmp}/mastik.sources" /etc/apt/sources.list.d/mastik.sources
     rm -rf "$tmp"
     ok "Repository added, signed by the published key"
 
     # Not fatal. A machine with somebody else's broken PPA in its lists fails
     # `apt-get update` as a whole, and that is not a reason to refuse to
-    # install Ondin - if our own source is the broken one, the install below
+    # install Mastik - if our own source is the broken one, the install below
     # says so precisely.
     if ! run_privileged apt-get update; then
         warn "apt-get update reported an error, often from an unrelated repository; continuing"
     fi
-    info "Installing ondin"
-    run_privileged apt-get install -y ondin
+    info "Installing mastik"
+    run_privileged apt-get install -y mastik
     ok "Installed"
 }
 
-# The pre-repository route, kept for ONDIN_NO_REPO=1: one package, nothing
+# The pre-repository route, kept for MASTIK_NO_REPO=1: one package, nothing
 # added to the system's source lists, and no updates.
 install_deb_direct() {
     local url tmp
-    url="$(asset_url '/ondin_[0-9][^"/]*_amd64\.deb')"
+    url="$(asset_url '/mastik_[0-9][^"/]*_amd64\.deb')"
     tmp="$(mktemp --suffix=.deb)"
     info "Downloading ${url##*/}"
     download_to "$url" "$tmp"
@@ -634,11 +634,11 @@ install_deb_direct() {
 }
 
 install_rpm() {
-    if [ "${ONDIN_NO_REPO:-0}" = 1 ] || ! { has dnf || has zypper; }; then
+    if [ "${MASTIK_NO_REPO:-0}" = 1 ] || ! { has dnf || has zypper; }; then
         # Plain rpm with no dnf and no zypper has no repository support worth
         # the name, so that machine takes the direct route whatever it asked
         # for - and is told so.
-        if [ "${ONDIN_NO_REPO:-0}" != 1 ]; then
+        if [ "${MASTIK_NO_REPO:-0}" != 1 ]; then
             warn "neither dnf nor zypper is available; installing a single package instead of adding the repository"
         fi
         install_rpm_direct
@@ -651,10 +651,10 @@ install_rpm() {
 
     local tmp
     tmp="$(mktemp -d)"
-    info "Adding the Ondin package repository (${SITE}/rpm)"
+    info "Adding the Mastik package repository (${SITE}/rpm)"
 
-    download_to "${SITE}/ondin.asc" "${tmp}/ondin.asc"
-    if ! grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "${tmp}/ondin.asc"; then
+    download_to "${SITE}/mastik.asc" "${tmp}/mastik.asc"
+    if ! grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "${tmp}/mastik.asc"; then
         err "the downloaded signing key is not an armoured GPG key"
         rm -rf "$tmp"
         exit 1
@@ -663,11 +663,11 @@ install_rpm() {
     # escalations: the rpm database's keyring is not scoped to this repository,
     # so a substituted key would validate packages from any repository on this
     # machine, permanently, and no line of the uninstall instructions removes it.
-    if ! require_published_key "${tmp}/ondin.asc"; then
+    if ! require_published_key "${tmp}/mastik.asc"; then
         rm -rf "$tmp"
         exit 1
     fi
-    write_rpm_repo "${tmp}/ondin.repo"
+    write_rpm_repo "${tmp}/mastik.repo"
 
     # Imported into the rpm database up front so the packages verify against a
     # key the machine already holds. Without this, dnf offers to import it
@@ -675,34 +675,34 @@ install_rpm() {
     # worse moment to be deciding whether to trust a key. And installed as a
     # file, for the `.repo`'s `gpgkey=` to name — the same verified bytes.
     info "Importing the signing key (this needs root)"
-    run_privileged install -m 0644 -D "${tmp}/ondin.asc" "$RPM_KEY"
+    run_privileged install -m 0644 -D "${tmp}/mastik.asc" "$RPM_KEY"
     run_privileged rpm --import "$RPM_KEY"
 
     if has dnf; then
-        run_privileged install -m 0644 -D "${tmp}/ondin.repo" /etc/yum.repos.d/ondin.repo
+        run_privileged install -m 0644 -D "${tmp}/mastik.repo" /etc/yum.repos.d/mastik.repo
         rm -rf "$tmp"
         ok "Repository added, with signature checking on"
-        info "Installing ondin"
-        run_privileged dnf install -y ondin
+        info "Installing mastik"
+        run_privileged dnf install -y mastik
     else
         # zypper reads its own directory, not /etc/yum.repos.d.
-        run_privileged install -m 0644 -D "${tmp}/ondin.repo" /etc/zypp/repos.d/ondin.repo
+        run_privileged install -m 0644 -D "${tmp}/mastik.repo" /etc/zypp/repos.d/mastik.repo
         rm -rf "$tmp"
         ok "Repository added, with signature checking on"
-        info "Installing ondin"
-        run_privileged zypper --non-interactive refresh ondin
-        run_privileged zypper --non-interactive install ondin
+        info "Installing mastik"
+        run_privileged zypper --non-interactive refresh mastik
+        run_privileged zypper --non-interactive install mastik
     fi
     ok "Installed"
 }
 
-# The pre-repository route, kept for ONDIN_NO_REPO=1 and for machines with
+# The pre-repository route, kept for MASTIK_NO_REPO=1 and for machines with
 # no dnf or zypper: one package, nothing added to the system, no updates. The
 # .rpm on the Releases page is unsigned - only the copies in the repository are
 # signed - which is why every branch below waives the signature check.
 install_rpm_direct() {
     local url tmp
-    url="$(asset_url '/ondin-[0-9][^"/]*-1\.x86_64\.rpm')"
+    url="$(asset_url '/mastik-[0-9][^"/]*-1\.x86_64\.rpm')"
     tmp="$(mktemp --suffix=.rpm)"
     info "Downloading ${url##*/}"
     download_to "$url" "$tmp"
@@ -751,9 +751,9 @@ install_appimage() {
     # 512 because icons/icon.png is 512x512, and the hicolor directory has to
     # name the PNG's real size or the icon never resolves.
     icon_dir="${HOME}/.local/share/icons/hicolor/512x512/apps"
-    dest="${bindir}/Ondin.AppImage"
+    dest="${bindir}/Mastik.AppImage"
 
-    url="$(asset_url '/Ondin-linux-x64\.AppImage')"
+    url="$(asset_url '/Mastik-linux-x64\.AppImage')"
     mkdir -p "$bindir" "$desktop_dir" "$icon_dir"
     info "Downloading ${url##*/}"
     # **Beside the old one, then renamed over it** (§15 D974, `[X3-L1-06]`): a
@@ -781,11 +781,11 @@ install_appimage() {
     fetch "${RAW}/packaging/linux/${APP_ID}.desktop" > "$tmp_desktop"
     # Drop whatever `Exec=` the upstream file carries and append ours, rather
     # than substituting a restated copy of it. A spelling like
-    # `sed "s|^Exec=ondin$|Exec=${dest}|"` is a second copy of
+    # `sed "s|^Exec=mastik$|Exec=${dest}|"` is a second copy of
     # `packaging/linux/<APP_ID>.desktop`'s own line, and `sed` substitutes zero
     # occurrences without an error: the ordinary next edit upstream
-    # (`Exec=ondin %U`, which is what makes "open with" work) would leave the
-    # installed entry pointing at an `ondin` that is not on PATH in an AppImage
+    # (`Exec=mastik %U`, which is what makes "open with" work) would leave the
+    # installed entry pointing at an `mastik` that is not on PATH in an AppImage
     # install, under a printed "Added a desktop entry". The file is fetched from
     # `main` while the AppImage beside it comes from the latest release, so the
     # two can differ by any number of commits and nothing pins them; an append
@@ -810,21 +810,21 @@ install_appimage() {
 
     case ":${PATH}:" in
         *":${bindir}:"*) ;;
-        *) warn "${bindir} is not on your PATH; add it to launch Ondin from a terminal" ;;
+        *) warn "${bindir} is not on your PATH; add it to launch Mastik from a terminal" ;;
     esac
 }
 
-# macOS has exactly one route, so it never consults ONDIN_PKG_FAMILY or the
+# macOS has exactly one route, so it never consults MASTIK_PKG_FAMILY or the
 # package-manager sniffing below - a Mac with Homebrew's `rpm` on it is still a
 # Mac.
 install_macos() {
     local url tmp
-    url="$(asset_url '/Ondin-osx-arm64-Setup\.pkg')"
-    tmp="$(mktemp -d)/Ondin.pkg"
+    url="$(asset_url '/Mastik-osx-arm64-Setup\.pkg')"
+    tmp="$(mktemp -d)/Mastik.pkg"
     info "Downloading ${url##*/}"
     download_to "$url" "$tmp"
     if ! pkgutil --check-signature "$tmp" >/dev/null 2>&1; then
-        # Expected while Ondin has no Apple Developer ID. Worth saying out loud
+        # Expected while Mastik has no Apple Developer ID. Worth saying out loud
         # rather than discovering later: you are trusting where this came from,
         # and nothing else is vouching for it.
         warn "This package is not signed by an Apple Developer ID."
@@ -843,7 +843,7 @@ install_macos() {
 if [ "$os" = Darwin ]; then
     family=macos
 else
-    family="${ONDIN_PKG_FAMILY:-$(detect_family)}"
+    family="${MASTIK_PKG_FAMILY:-$(detect_family)}"
 fi
 case "$family" in
     debian | rpm | appimage | macos) ;;
@@ -852,11 +852,11 @@ case "$family" in
         family=appimage
         ;;
     *)
-        err "Invalid ONDIN_PKG_FAMILY '${family}' (expected: debian, rpm, appimage)"
+        err "Invalid MASTIK_PKG_FAMILY '${family}' (expected: debian, rpm, appimage)"
         exit 1
         ;;
 esac
-info "Installing the ${BOLD}${family}${RESET} build (set ONDIN_PKG_FAMILY to override)"
+info "Installing the ${BOLD}${family}${RESET} build (set MASTIK_PKG_FAMILY to override)"
 
 case "$family" in
     debian) install_deb ;;
@@ -866,19 +866,19 @@ case "$family" in
 esac
 
 echo
-ok "Ondin is installed."
+ok "Mastik is installed."
 case "$family" in
     debian)
-        if [ "${ONDIN_NO_REPO:-0}" = 1 ]; then
+        if [ "${MASTIK_NO_REPO:-0}" = 1 ]; then
             info "Updates:   none - this is a single package, with no repository behind it."
-            info "           Re-run this script without ONDIN_NO_REPO to get them."
-            info "Uninstall: sudo apt-get remove ondin"
+            info "           Re-run this script without MASTIK_NO_REPO to get them."
+            info "Uninstall: sudo apt-get remove mastik"
         else
             info "Updates:   with the rest of your system - sudo apt-get update && sudo apt-get upgrade."
-            info "           To have unattended-upgrades pick it up too, add \"Ondin:stable\";"
+            info "           To have unattended-upgrades pick it up too, add \"Mastik:stable\";"
             info "           to Unattended-Upgrade::Allowed-Origins."
-            info "Uninstall: sudo apt-get remove ondin \\"
-            info "           && sudo rm /etc/apt/sources.list.d/ondin.sources ${KEYRING}"
+            info "Uninstall: sudo apt-get remove mastik \\"
+            info "           && sudo rm /etc/apt/sources.list.d/mastik.sources ${KEYRING}"
         fi
         ;;
     rpm)
@@ -899,9 +899,9 @@ case "$family" in
         # key check compares against.
         rpm_key_id="$(printf '%s' "${KEY_FINGERPRINT}" | tail -c 8 | tr 'A-F' 'a-f')"
         rpm_key_removal="&& sudo rpm -e --allmatches gpg-pubkey-${rpm_key_id}"
-        if [ "${ONDIN_NO_REPO:-0}" = 1 ] || { ! has dnf && ! has zypper; }; then
+        if [ "${MASTIK_NO_REPO:-0}" = 1 ] || { ! has dnf && ! has zypper; }; then
             info "Updates:   none - this is a single package, with no repository behind it."
-            info "           Re-run this script without ONDIN_NO_REPO to get them."
+            info "           Re-run this script without MASTIK_NO_REPO to get them."
             # The removal command comes from the same test `install_rpm_direct`
             # branched on, not from the family: the second disjunct above is
             # reached *precisely when there is no dnf*, and printing
@@ -915,38 +915,38 @@ case "$family" in
             # line that fails, on the branch where they are least able to tell
             # whether that mattered.
             if has dnf; then
-                info "Uninstall: sudo dnf remove ondin"
+                info "Uninstall: sudo dnf remove mastik"
             elif has zypper; then
-                info "Uninstall: sudo zypper remove ondin"
+                info "Uninstall: sudo zypper remove mastik"
             else
-                info "Uninstall: sudo rpm -e ondin"
+                info "Uninstall: sudo rpm -e mastik"
             fi
         elif has dnf; then
             info "Updates:   with the rest of your system - sudo dnf upgrade."
-            info "Uninstall: sudo dnf remove ondin \\"
-            info "           && sudo rm /etc/yum.repos.d/ondin.repo ${RPM_KEY} \\"
+            info "Uninstall: sudo dnf remove mastik \\"
+            info "           && sudo rm /etc/yum.repos.d/mastik.repo ${RPM_KEY} \\"
             info "           ${rpm_key_removal}"
         else
             info "Updates:   with the rest of your system - sudo zypper update."
-            info "Uninstall: sudo zypper remove ondin \\"
-            info "           && sudo rm /etc/zypp/repos.d/ondin.repo ${RPM_KEY} \\"
+            info "Uninstall: sudo zypper remove mastik \\"
+            info "           && sudo rm /etc/zypp/repos.d/mastik.repo ${RPM_KEY} \\"
             info "           ${rpm_key_removal}"
         fi
         ;;
     appimage)
         info "Updates:   checked automatically; the app offers a restart when one is staged."
-        info "           Set ONDIN_NO_UPDATE_CHECK=1 to stop it contacting GitHub."
+        info "           Set MASTIK_NO_UPDATE_CHECK=1 to stop it contacting GitHub."
         # All three files `install_appimage` writes, including the icon it
         # drops into the hicolor theme - following a line that omits one leaves
         # it behind.
-        info "Uninstall: rm ~/.local/bin/Ondin.AppImage \\"
+        info "Uninstall: rm ~/.local/bin/Mastik.AppImage \\"
         info "              ~/.local/share/applications/${APP_ID}.desktop \\"
         info "              ~/.local/share/icons/hicolor/512x512/apps/${APP_ID}.png"
         ;;
     macos)
         info "Updates:   checked automatically; the app offers a restart when one is staged."
-        info "           Set ONDIN_NO_UPDATE_CHECK=1 to stop it contacting GitHub."
-        info "Uninstall: rm -rf /Applications/Ondin.app"
+        info "           Set MASTIK_NO_UPDATE_CHECK=1 to stop it contacting GitHub."
+        info "Uninstall: rm -rf /Applications/Mastik.app"
         ;;
 esac
-printf '%sOndin is early in its development - keep copies of work you care about.%s\n' "$YELLOW" "$RESET"
+printf '%sMastik is early in its development - keep copies of work you care about.%s\n' "$YELLOW" "$RESET"

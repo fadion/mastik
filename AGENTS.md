@@ -1,7 +1,7 @@
-# Ondin — working notes for coding agents
+# Mastik — working notes for coding agents
 
-Ondin is a native 2D design tool in Rust (egui + wgpu), published at
-`https://github.com/fadion/ondin`. This file holds the working rules every agent in this
+Mastik is a native 2D design tool in Rust (egui + wgpu), published at
+`https://github.com/fadion/mastik`. This file holds the working rules every agent in this
 repository follows. The design lives in `docs/`, open work in `docs/roadmap.md`, and history in
 git.
 
@@ -138,8 +138,8 @@ everywhere. Then say so and change it everywhere.
 - Version bumps and tags are explicit-only. **A tag is a release**: CI builds it and every
   installed copy offers to update to it. A dry run is the Release workflow's
   `workflow_dispatch`.
-- Identity values are permanent: Velopack `--packId Ondin`, the channels
-  `win-x64`/`linux-x64`/`osx-arm64`, and `chrome::APP_ID` (`io.github.fadion.Ondin`). Add a
+- Identity values are permanent: Velopack `--packId Mastik`, the channels
+  `win-x64`/`linux-x64`/`osx-arm64`, and `chrome::APP_ID` (`io.github.fadion.Mastik`). Add a
   channel; never rename one.
 
 ## Running the app
@@ -147,12 +147,12 @@ everywhere. Then say so and change it everywhere.
 **Never launch the GUI as a check** — the window grabs the user's mouse and keyboard. Use
 tests and reasoning, or ask the user to look and say what to look for.
 
-- **Rendering:** `cargo run -p ondin-app -- export doc.ondin --svg -o out.svg` (`--png`
+- **Rendering:** `cargo run -p mastik-app -- export doc.mastik --svg -o out.svg` (`--png`
   through the CPU backend, `--json` for the MCP snapshot). To compare an SVG import against a
   browser, serve it over HTTP, not `file://`.
 - **Chrome:** a throwaway `#[test]` printing pixels or vertices, run with `--nocapture`.
   `egui::Context::default()`, `theme::install(&ctx)`, one `ctx.run_ui(…)` for fonts.
-  `OndinApp::headless(&ctx)` builds the whole app without GPU, font threads or prefs.
+  `MastikApp::headless(&ctx)` builds the whole app without GPU, font threads or prefs.
 - egui probe traps:
   - Interaction state is last frame's — pump several frames, and prefer a state you can set
     (`selected`) over one you drive the pointer into.
@@ -174,11 +174,11 @@ tests and reasoning, or ask the user to look and say what to look for.
 ## Build / test
 
 ```bash
-cargo build -p ondin-app                  # target/debug/ondin.exe
-cargo test                                # workspace; app tests: cargo test -p ondin-app
+cargo build -p mastik-app                  # target/debug/mastik.exe
+cargo test                                # workspace; app tests: cargo test -p mastik-app
 cargo clippy --workspace --all-targets    # --all-targets or the tests go unlinted
 cargo fmt --all
-cargo check --release -p ondin-app        # the only gate without debug_assertions
+cargo check --release -p mastik-app        # the only gate without debug_assertions
 cargo doc --workspace --no-deps --document-private-items
 ```
 
@@ -203,14 +203,14 @@ Keep the whole log; a red run here cannot be asked for again.
   and read the struct.
 - **Platform arms:** `cfg(unix)`/`target_os` code compiles only on CI here. WSL Ubuntu has
   Rust and runs the Unix arms locally (pipe output through `tr -d '\0'`):
-  `wsl.exe -d Ubuntu -- bash -lc 'cd /mnt/c/<path-to-repo> && CARGO_TARGET_DIR=$HOME/ondin-wsl-target cargo test -p ondin-app --bin ondin -- <filter>'`.
+  `wsl.exe -d Ubuntu -- bash -lc 'cd /mnt/c/<path-to-repo> && CARGO_TARGET_DIR=$HOME/mastik-wsl-target cargo test -p mastik-app --bin mastik -- <filter>'`.
   WSL also runs Docker, for throwaway Fedora containers. From Git Bash, put commands in a
   script and run it with `MSYS_NO_PATHCONV=1`.
 - **Windows CI checks out with `core.autocrlf=true`** and this machine does not, so an
   `include_str!` test matching `\n` can pass here and fail there.
 - `cargo test` stops at the first failing target; run `cargo test --workspace --release`
   before pushing a CI fix.
-- On-device GPU tests: `cargo test -p ondin-render --release -- --ignored`, with nothing else
+- On-device GPU tests: `cargo test -p mastik-render --release -- --ignored`, with nothing else
   running (timing tests fail under load).
 - Python here is a Store stub; never pipe into `python -`.
 
@@ -219,7 +219,7 @@ Keep the whole log; a red run here cannot be asked for again.
 Before trusting a gate on a defect it was quiet about, read its predicate, and break the
 thing it claims to cover to see it go red. Known holes:
 
-- `clippy::duplicated_attributes` is silent inside `impl` blocks; `ondin-core`'s
+- `clippy::duplicated_attributes` is silent inside `impl` blocks; `mastik-core`'s
   `tests/duplicated_attributes.rs` scans the source for it instead.
 - No gate catches an unused dependency.
 - `valve_condition_gate` reads a 160-character window and excuses a line by a marker within

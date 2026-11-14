@@ -4,27 +4,27 @@ The assistant lets a person ask a coding agent about the design in front of them
 doing, why a layout breaks at a width, how to name a set of variants, what to change to fix a
 contrast failure. They ask in a panel at the tool rail's foot, attach layers from the canvas, and
 read short answers that can point back at layers and propose edits. The harness layer is
-`crates/ondin-ai`; the window's side is `ondin-app`'s `assistant` module and `mcp::{access,
+`crates/mastik-ai`; the window's side is `mastik-app`'s `assistant` module and `mcp::{access,
 propose, agent_log}`. What is still unbuilt (Command Mode's `/ai`) is in `docs/ai.md`.
 
 ## 1. The thesis
 
-**Ondin embeds no model and holds no provider key.** The person already pays for, and is signed in
-to, a headless coding agent. Ondin starts that agent as a child process, points it at Ondin's own
+**Mastik embeds no model and holds no provider key.** The person already pays for, and is signed in
+to, a headless coding agent. Mastik starts that agent as a child process, points it at Mastik's own
 MCP endpoint, and shows its turn in the assistant panel. The harness owns the model, the account,
-the billing and the rate limits; Ondin owns what the agent can see and what it can change.
+the billing and the rate limits; Mastik owns what the agent can see and what it can change.
 
-- **No keys in Ondin.** Sign-in is always the harness's own. Settings holds no secret, and nothing
+- **No keys in Mastik.** Sign-in is always the harness's own. Settings holds no secret, and nothing
   goes into the keychain for the assistant.
 - **One way in.** The agent reads and writes through the same MCP tools an outside client gets, so
   its edits are ordinary transactions on `mcp.md` §8.3's queue, undoable like any other
   (invariant 10).
-- **Ondin seals the agent.** A coding agent arrives with a shell, a file editor and a web fetcher.
-  Ondin starts every harness with its built-in tools off and only Ondin's MCP tools allowed (§4).
+- **Mastik seals the agent.** A coding agent arrives with a shell, a file editor and a web fetcher.
+  Mastik starts every harness with its built-in tools off and only Mastik's MCP tools allowed (§4).
 
 ## 2. Harnesses
 
-A **harness** (`ondin_ai::Harness`) names a wire dialect, not a vendor: a fork that speaks its
+A **harness** (`mastik_ai::Harness`) names a wire dialect, not a vendor: a fork that speaks its
 parent's stream counts as the parent. Each has a persisted key, a label (*Claude Code*), a program
 name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown saved key
 (`Harness::from_key`) is no harness and reads as *Off*.
@@ -49,7 +49,7 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
   Codex as `--image` files. `Harness::takes_images` is false for the rest, which get no render.
 - **DeepSeek Harness takes almost nothing as a flag.** A `--patch` overlay written into the
   session's own `DSH_HOME` carries the model, the effort, the seal (every built-in tool row
-  disabled by id), the sign-in and Ondin's server. The overlay is checked with `--dump-config`
+  disabled by id), the sign-in and Mastik's server. The overlay is checked with `--dump-config`
   before every turn, and a row left live refuses the turn. The sign-in is the person's: their dsh
   account, read from their own credentials file by path and never copied, or a `DEEPSEEK_API_KEY`
   already in their environment, passed through and never stored.
@@ -62,16 +62,16 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 - **OpenCode reads its configuration from the session**: `XDG_CONFIG_HOME` at the session's
   `opencode.json`, project config off, and `OPENCODE_TEST_HOME` at an empty folder, since
   `~/.opencode/opencode.json` is merged over everything and no option turns it off. Because it
-  merges from places Ondin cannot list, `opencode debug config` is read back before the first turn,
+  merges from places Mastik cannot list, `opencode debug config` is read back before the first turn,
   and another enabled server, or a tool or permission the sealed agent allows, refuses the session.
 - **Antigravity is configured globally**: its server is registered in the person's own registry and
   its allow rules written into its `settings.json`, both installed with the session and withdrawn
-  when it ends. Each session registers under a name of its own, `ondin` and eight hex digits
+  when it ends. Each session registers under a name of its own, `mastik` and eight hex digits
   (`antigravity_server_name`), and grants and withdraws rules for that name only, so it never adds,
-  replaces or removes a registration or rule named `ondin` the person made. Its claim marker, named
-  after it and created exclusively, records the owning Ondin and the `agy` path it registered with,
+  replaces or removes a registration or rule named `mastik` the person made. Its claim marker, named
+  after it and created exclusively, records the owning Mastik and the `agy` path it registered with,
   and is removed only once the withdrawal held. While a session holds them, an `agy` the person
-  runs finds Ondin's server registered and its tools pre-approved; no option scopes either to one
+  runs finds Mastik's server registered and its tools pre-approved; no option scopes either to one
   process.
 - **Each harness is driven through its own headless mode, not the Agent Client Protocol.** ACP
   would turn the dialects into one, but Claude Code and Codex speak it only through adapter
@@ -80,7 +80,7 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 
 ### Finding and probing the program
 
-- **Lookup order:** a path set in Settings wins outright; else an `ONDIN_<HARNESS>_BIN` variable,
+- **Lookup order:** a path set in Settings wins outright; else an `MASTIK_<HARNESS>_BIN` variable,
   then each harness's known install folders (CLIs are often installed off the inherited `PATH`),
   then `PATH` with `PATHEXT`.
 - **On Windows** npm's `.cmd` shims come last, since Rust refuses a multi-line argument to a batch
@@ -90,12 +90,12 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 - **A helper** (the `--help` probe, `agy mcp …`, `cursor-agent mcp enable`) runs in a private empty
   folder and is ended, with its tree, past a deadline: 15 seconds for the probe, 30 for `agy`
   (`process::run_bounded`).
-- **Ondin never installs a harness.** A missing one is said in the panel with the program it
+- **Mastik never installs a harness.** A missing one is said in the panel with the program it
   looked for.
 - **A probe reads `--help` once per program path** and caches what it finds: which sealing flags
   exist, and so how sealed a session can be (§4). A probe that could not run is not cached.
-  `ondin_ai::warm` runs it in the background only while the assistant is on.
-- **`ondin_ai::sweep` runs at every launch** on a background thread (`assistant::at_launch`):
+  `mastik_ai::warm` runs it in the background only while the assistant is on.
+- **`mastik_ai::sweep` runs at every launch** on a background thread (`assistant::at_launch`):
   leftovers carry their owner's pid and start time, and only those whose owner is gone are removed,
   Antigravity's registration and rules included.
 
@@ -110,7 +110,7 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 
 ## 3. A turn
 
-- **Events** (`ondin_ai::Event`): text deltas, tool calls, tool results (paired to their call by the
+- **Events** (`mastik_ai::Event`): text deltas, tool calls, tool results (paired to their call by the
   harness's own id, never by recency, which mis-pairs parallel calls), the end of the turn with its
   duration and token counts, the harness exiting first, a refusal, and *Stopped*. Thinking is not
   shown.
@@ -133,19 +133,19 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
   `run/` for each session, never the document's folder and never the app's working directory, so
   no planted agent settings file beside a document can configure the child. A session that cannot
   make one is refused.
-- **The MCP server** in the harness's config is `ondin mcp-proxy --client <key> --document <path>`.
+- **The MCP server** in the harness's config is `mastik mcp-proxy --client <key> --document <path>`.
   The key is the session's, so a harness that starts a process per turn finds its document and
   revisions on its next connection, with `changed` reporting what the person did in between
   (`mcp.md`, *Revisions*).
-- **The environment** marks the child (`ONDIN_AGENT_CHILD=1`) and clears the variables that would
+- **The environment** marks the child (`MASTIK_AGENT_CHILD=1`) and clears the variables that would
   point a harness at another configuration or reopen its seal (`OPENCODE_PERMISSION` among them).
-  Under the mark the `ondin` command line refuses everything but `mcp-proxy`, `serve` included, and
+  Under the mark the `mastik` command line refuses everything but `mcp-proxy`, `serve` included, and
   the proxy connects only to the window, never starting `serve`: the window holds the chat's grant
   and `serve` none, so an agent there would act unchecked. A speed bump rather than a boundary.
   Codex and Cursor start an MCP server without the agent's environment, so their server config
   sets the mark itself, and the proxy also counts a chat's `--client` key (`assistant-…`) as the
   mark. Every child's `PWD` is its own working folder: OpenCode's runtime reads an inherited one
-  as its working folder, which would put it in the shell's folder Ondin was started from.
+  as its working folder, which would put it in the shell's folder Mastik was started from.
 - **The window must have its endpoint.** A chat refuses to start when the window could not open
   its MCP endpoint, since the chat's level lives in the window's grants.
 - **A command line too long** for the platform is refused before spawning, naming the limit and
@@ -156,7 +156,7 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 ### Sealing
 
 Each harness is started with its built-in tools off, the person's other MCP servers excluded where
-the harness allows it, and only Ondin's tools allowed. The mechanism differs per harness (flags, a
+the harness allows it, and only Mastik's tools allowed. The mechanism differs per harness (flags, a
 sandbox, a rules or permissions file, a config overlay), and each **fails closed**: a harness whose
 restricting config cannot be written, or whose probe cannot confirm its restricting options, is
 refused, not started open. The seal is graded — *Sealed* where built-in tools are off, *Restricted*
@@ -185,10 +185,10 @@ listed and refused: an agent that sees a tool plans around it.
 
 Every level lists the core set within it (`access::listed`) plus `describe_tools` and `call`, and
 reaches its other tools through `call`. Phase 4, the kits and the library, is never a chat's.
-`propose_edit` sits outside the phases, in `ondin_mcp::tools::ASSISTANT`.
+`propose_edit` sits outside the phases, in `mastik_mcp::tools::ASSISTANT`.
 
 **The host holds the level, not the harness.** The endpoint serves any process running as the
-person, and a harness with a shell can start `ondin mcp-proxy` itself or open the pipe or socket
+person, and a harness with a shell can start `mastik mcp-proxy` itself or open the pipe or socket
 directly. So the window, which starts the harness, grants each session's level to the MCP host
 (`access::Grants`) and the host enforces it on every call (`Engine::handle`):
 
@@ -245,7 +245,7 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
 
 ### Context sent with a turn
 
-- **The system prompt** (`assistant::prompt::system`) says what Ondin is, the access level and its
+- **The system prompt** (`assistant::prompt::system`) says what Mastik is, the access level and its
   tools truthfully, how to propose an edit, and how to answer, then the person's own instructions
   from Settings, which come last and so win.
 - **Answers are short**, since the panel is narrow: one or two sentences, the answer first, no
@@ -267,7 +267,7 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   of earlier turns is unreliable; and `style: brief`, since an instruction given once fades over a
   long thread. The page outline, names and ids only, goes only on a session's first turn. A name
   in the preamble is written on one line with `<` and `>` as `‹` and `›`, so no layer or page name can
-  close the `<ondin-turn>` block and write words the model would read as the person's.
+  close the `<mastik-turn>` block and write words the model would read as the person's.
 - **The design is never sent whole.** The agent's earlier reads stay in its session, and the
   preamble says which went stale. Tool results' `changed` cannot do this alone: an agent answering
   from memory calls no tool.
@@ -345,7 +345,7 @@ layers being asked about, and is one more kind of surface.
   bubble reads as comments, a non-goal.) Its tooltip is *Assistant (Ctrl+Shift+A)*. The palette's
   *Assistant* row and the chord open it too.
 - **It is a `ui::rail_popup`, taller than its siblings.** Its bottom-left is theirs
-  (`OndinApp::rail_popup_anchor`); its top stops 50 below the canvas's top, leaving the top of the page in view, down to a floor that
+  (`MastikApp::rail_popup_anchor`); its top stops 50 below the canvas's top, leaving the top of the page in view, down to a floor that
   still holds the head, one line of thread and the composer. It is 400 wide, and its right edge
   drags between 360 and 640, the only rail panel with a drag edge, since tables and code need the
   room; the width is kept per machine. The edge lights as the layers panel's does: a hairline over
@@ -396,7 +396,7 @@ layers being asked about, and is one more kind of surface.
 - **The app's own words** (a refused spawn, a stopped turn, a replay withheld) are notes beside a
   turn, never message text, so they are never sent back to the model.
 - **One conversation per document**, kept per machine in `<machine data>/chats/<document id>.json`
-  (by a hash of the path when the id is not a plain name), never in the `.ondin` file: a chat is the
+  (by a hash of the path when the id is not a plain name), never in the `.mastik` file: a chat is the
   person's, not the work's. It is written through `atomic::write`; when the document's id or path
   changes, the old file is removed only once the new one is written. At most 100 messages, cut
   from the front to start at a question, with each *Ask again* re-pointed at its question's new
@@ -406,13 +406,13 @@ layers being asked about, and is one more kind of surface.
 ## 7. Logging and privacy
 
 - **Off sends nothing and starts no agent**, the probe included. A launch still sweeps what a
-  closed Ondin's sessions left, which can run `agy mcp` to withdraw a dead session's own
-  registration (its `ondin` and eight hex digits) from the person's Antigravity config, with the
+  closed Mastik's sessions left, which can run `agy mcp` to withdraw a dead session's own
+  registration (its `mastik` and eight hex digits) from the person's Antigravity config, with the
   `agy` its marker recorded, else the one found now: a standing grant there is worse than one
   command. A marker whose withdrawal did not hold stays for the next launch.
 - **What leaves the machine** is what the harness sends: the question, the attached layers'
   references, and whatever the agent reads through the tools. No document file is handed over, and
-  no telemetry is sent by Ondin.
+  no telemetry is sent by Mastik.
 - **The agent log** (`mcp::agent_log`) is `agent_log.jsonl` in the machine data folder: one line
   `{at, tool, document, key, ok}` per granted call, refusals included, a call through `call` under
   the tool it named. It never records results. It rolls to `agent_log.jsonl.1` at 8 MiB; always on;
@@ -424,9 +424,9 @@ layers being asked about, and is one more kind of surface.
   harness's proxy connecting before `Session::start` returns; the grant with the session's process
   owner covers a process that sends another key or none
   (`an_owned_process_gets_the_chats_level_whatever_its_key`).
-- **An agent is kept off `serve` twice.** The proxy under `ONDIN_AGENT_CHILD` or a chat's key
+- **An agent is kept off `serve` twice.** The proxy under `MASTIK_AGENT_CHILD` or a chat's key
   connects only to the window (`proxy::Machine::connect`, `pick_host`), and `main` refuses
-  `ondin serve` under the mark, for an agent with a shell. Each looks redundant beside the other;
+  `mastik serve` under the mark, for an agent with a shell. Each looks redundant beside the other;
   `serve` holds no grant, so either gone lets an agent act unchecked. The key check is not
   redundant with the mark either: Codex and Cursor scrub their servers' environment, and only
   their config's `env` puts the mark back.
@@ -438,8 +438,8 @@ layers being asked about, and is one more kind of surface.
 - **Antigravity's seal is `--mode plan`, not `--sandbox`.** The sandbox restricts its terminal
   only; in a folder the person trusts (their home is a common entry) its own `write_file` and
   `run_command` still act, which was measured writing a file outside the run folder. Plan mode
-  refuses both and leaves Ondin's allowed tools working. Headless, a refused tool ends its turn,
-  so the system prompt tells every agent to call Ondin's tools directly rather than look around.
+  refuses both and leaves Mastik's allowed tools working. Headless, a refused tool ends its turn,
+  so the system prompt tells every agent to call Mastik's tools directly rather than look around.
 - **Cursor runs in its default mode.** `--mode ask` held back nothing the permissions file did not,
   and had the model refuse the edits a chat at *Edit* asked for.
 - **DeepSeek Harness grows tool plugins.** The per-turn check refuses a profile with a tool row

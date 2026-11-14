@@ -26,11 +26,11 @@ resize, drop outlines, the transform origin (pivot), *Transform again*, *Repeat 
   - **Gaps** are the median of the current gaps between neighbouring bands, never negative; an axis with no gaps takes the other's. They are measured band to band rather than box to box, so a box inset in its cell does not read as a wider gap next time — except across refilled rows, whose columns are not bands the user made: there the gap across is read box to box within each row.
   - **Stability**: the union's top-left holds still, and tidying twice moves nothing. `tidy_suite.rs` checks these properties over hand cases and seeded random layouts.
   - Once the gaps are even, the selection shows **spacing handles** on the canvas: drag a gap band to set every gap of its axis, or a layer's centre dot to reorder it (`layout.md`, *Spacing handles on a loose selection*).
-- **Align by visual centre**: a toggle on the Align card's head (`ui::HeadAction::toggle`, `icon::VISUAL_CENTRE`; `OndinApp::align_visual`, off at every launch and never saved) makes *Align centres* and *Align middles* put each outermost member's visual centre where its box centre would go, so a play triangle sits centred in its circle. `OndinApp::align` sends `Edge::Mid` to `align_visual_centres` while it is on, so `Alt+H`/`Alt+V`, the context menu's *Align ▸* and the palette follow it; edges, distribute and the gap field stay on boxes. The palette also toggles it (*Align by visual centre*, `ViewSwitch::AlignVisual`, on no menu).
-  - **The weight** is `ondin_core::centroid::visual_centre`, the plain centre of mass of the ink by area in world space, with no blend toward the box. Fills count by their fill rule and strokes by `build::stroke_ink`'s ink, flattened and unioned so an overlap counts once; a masked run is cut to its mask, which weighs nothing; hidden layers and slices do not count (`resolve::lends_bounds`); a boolean weighs by its own outline, a group or instance by its shown descendants, and a clipping frame's or instance's content only where it is drawn, cut to the clip. Partial opacity does not scale the weight, but a layer at opacity 0, or a fill or stroke wholly transparent (a keyline box), does not weigh at all (`inks`). A frame, and a layer with no ink of area, centre on their box (`VisualCentre::Box`). Text centres on its box (`VisualCentre::Text`), as type aligns by its box everywhere (`decisions.md`, *Text never aligns by its ink bounds*); inside a group its box is weighed as ink.
+- **Align by visual centre**: a toggle on the Align card's head (`ui::HeadAction::toggle`, `icon::VISUAL_CENTRE`; `MastikApp::align_visual`, off at every launch and never saved) makes *Align centres* and *Align middles* put each outermost member's visual centre where its box centre would go, so a play triangle sits centred in its circle. `MastikApp::align` sends `Edge::Mid` to `align_visual_centres` while it is on, so `Alt+H`/`Alt+V`, the context menu's *Align ▸* and the palette follow it; edges, distribute and the gap field stay on boxes. The palette also toggles it (*Align by visual centre*, `ViewSwitch::AlignVisual`, on no menu).
+  - **The weight** is `mastik_core::centroid::visual_centre`, the plain centre of mass of the ink by area in world space, with no blend toward the box. Fills count by their fill rule and strokes by `build::stroke_ink`'s ink, flattened and unioned so an overlap counts once; a masked run is cut to its mask, which weighs nothing; hidden layers and slices do not count (`resolve::lends_bounds`); a boolean weighs by its own outline, a group or instance by its shown descendants, and a clipping frame's or instance's content only where it is drawn, cut to the clip. Partial opacity does not scale the weight, but a layer at opacity 0, or a fill or stroke wholly transparent (a keyline box), does not weigh at all (`inks`). A frame, and a layer with no ink of area, centre on their box (`VisualCentre::Box`). Text centres on its box (`VisualCentre::Text`), as type aligns by its box everywhere (`decisions.md`, *Text never aligns by its ink bounds*); inside a group its box is weighed as ink.
   - **The target** is `align_target`'s, through its centre: the container's for a lone layer, the union's for several, and with a key the key's visual centre. One undo step, *Align visual centres*; the status line says *Aligned*, or *Aligned 3 layers; 1 text layer by its box* when text fell back.
   - **The card**: while on, the two centre buttons are `ui::icon_button_lit`, with the tooltips *Align visual centres* and *Align visual middles*. The toggle's tooltip reads *Centre by visual weight — align centres on the ink, not the box* while off and *Centre by the box again* while on; while the node tool edits points it is dimmed (*Points align by position*) and keeps its state.
-  - **The canvas** marks each outermost selected layer but the key with a 12pt `color::accent()` diamond on a 1pt `color::on_accent()` rim at its visual centre, over the selection boxes and under the handles (`canvas::paint_visual_centre`), while the toggle is on, selection chrome shows, the mode is Normal and nothing is moving the selection: a drag or a field's scrub hides them (`visual_marks_shown`), since they are weighed on the committed document. `OndinApp::visual_marks` keeps them by document revision, selection and key layer. Past `canvas::VISUAL_MARKS_MAX` (100) layers to weigh, counting each outermost layer and every layer under one weighed by its ink (a frame and a text are weighed by their box), none are weighed or drawn: weighing unions all that ink on the UI thread, a selected group of 1,000 circles costing what 1,000 selected ones do, and that many diamonds are a field nobody reads. `align_centres_by_weight_while_the_toggle_is_on` and `a_key_layer_is_the_target_and_not_marked` pin the routing and the key, `the_marks_stop_past_the_layers_they_would_weigh` the cap.
+  - **The canvas** marks each outermost selected layer but the key with a 12pt `color::accent()` diamond on a 1pt `color::on_accent()` rim at its visual centre, over the selection boxes and under the handles (`canvas::paint_visual_centre`), while the toggle is on, selection chrome shows, the mode is Normal and nothing is moving the selection: a drag or a field's scrub hides them (`visual_marks_shown`), since they are weighed on the committed document. `MastikApp::visual_marks` keeps them by document revision, selection and key layer. Past `canvas::VISUAL_MARKS_MAX` (100) layers to weigh, counting each outermost layer and every layer under one weighed by its ink (a frame and a text are weighed by their box), none are weighed or drawn: weighing unions all that ink on the UI thread, a selected group of 1,000 circles costing what 1,000 selected ones do, and that many diamonds are a field nobody reads. `align_centres_by_weight_while_the_toggle_is_on` and `a_key_layer_is_the_target_and_not_marked` pin the routing and the key, `the_marks_stop_past_the_layers_they_would_weigh` the cap.
 - **Flip** H/V across the selection's centreline, or about a single layer's pivot where one is placed; **quarter turns** either way. **Z-order** one step or all the way (`Ctrl`+`[`/`]`).
 - **Transform again** (the last move, rotation, scale or skew once more) and **Repeat around origin…** (copies turned about the pivot), below.
 - **Warp…**: an envelope round the selection, dragged by its corners or bent by an *Arc*, *Flag* or *Bulge* preset, baked into plain paths (below).
@@ -41,7 +41,7 @@ resize, drop outlines, the transform origin (pivot), *Transform again*, *Repeat 
 
 ### The tool rail (`rail.rs`)
 
-`OndinApp::tool_rail` is a 46pt left panel: the Select slot, Hand, Scale · the Frame slot, four
+`MastikApp::tool_rail` is a 46pt left panel: the Select slot, Hand, Scale · the Frame slot, four
 shapes and the Line slot · the Pen slot, Text, Place image, the Chart slot · the Builder slot and the eyedropper,
 which act on what is drawn and are used less; at its foot the styles-and-variables
 and insert-picker buttons. The node tool and image editing have no slot: each is entered on a
@@ -98,7 +98,7 @@ centre is over the canvas. It reads raw `MouseWheel` events, not egui's smoothed
   or more fingers only through `multi_touch`. When a second finger lands, `canvas_ui` calls
   `cancel_gesture` (the move or marquee the first finger started is abandoned, nothing committed)
   and sets `gesture_cancelled`. While a pinch is held, and through the frame the fingers lift
-  (`OndinApp::track_pinch`), the mode input (normal and text) does not run, so the first finger's
+  (`MastikApp::track_pinch`), the mode input (normal and text) does not run, so the first finger's
   release neither commits, clicks nor ends a text session; present mode asks the same helper, so
   that release is not a tap that steps a frame. The minimap is not covered: its first finger
   starts a map drag, which holds off its zoom. `a_two_finger_touch_pinches_instead_of_dragging`,
@@ -189,7 +189,7 @@ drawn, a marquee, a layers-row drag, an inspector scrub, a component carried out
 picker. The preview is dropped and nothing is committed, so history never records it (the CAD/3D
 convention; the alternative is finishing a wrong edit and undoing it).
 
-- The cancel shares a rung with Escape: `OndinApp::cancel_gesture` serves both. With nothing in flight it is a strict no-op, so right-click-to-remove-a-gradient-stop still works. Cancelling cannot end the press (§15 D31).
+- The cancel shares a rung with Escape: `MastikApp::cancel_gesture` serves both. With nothing in flight it is a strict no-op, so right-click-to-remove-a-gradient-stop still works. Cancelling cannot end the press (§15 D31).
 - "Is anything in flight" cannot be asked of egui's `dragged_id` (a fast right-click has already cleared it, §15 D168); `cancel_gesture` asks `InFlight::any`, exhaustive by construction.
 - A cancel must shut every window the gesture opened: the two-digit opacity window's clock is a separate field, so `cancel_gesture` clears `opacity_entry`.
 - An armed eyedropper is a gesture a right-click calls off: on the canvas the press runs `disarm_dropper`, setting `gesture_cancelled` if it disarmed (no menu opens, nothing is selected), then `cancel_gesture` as ever, so anything else in flight goes with the same press. Off the canvas egui never sees the press, and its release disarms (`gate_dropper_input`).
@@ -201,7 +201,7 @@ menu on the press would take the release as a row pick):
 - A press that cancels sets `gesture_cancelled`; `open_context_menu` refuses while it is up.
 - `canvas::canvas_context_menu` checks the flag at the top, before any branch sets the selection, or a cancelling right-click would also select the layer under the pointer.
 - `edit_valve` spends its engagement transition on the frame it bails, so a cancelled edit cannot commit a frame later.
-- `OndinApp::secondary_press` records the press position (egui delivers `secondary_clicked` on the release, when it is gone), so jitter cannot shift the menu.
+- `MastikApp::secondary_press` records the press position (egui delivers `secondary_clicked` on the release, when it is gone), so jitter cannot shift the menu.
 
 ### Context menus (`menu.rs`)
 
@@ -233,7 +233,7 @@ A hit inside the selection leaves it whole (right-click one of five layers and s
 *Union*); a hit outside replaces it. Empty canvas does not deselect, because *Paste here* is why
 that menu exists.
 
-**Opening the next floating thing closes the last** (R4). `OndinApp::context_menu` is the one slot;
+**Opening the next floating thing closes the last** (R4). `MastikApp::context_menu` is the one slot;
 opening it clears `open_menu`, `picker`, `stroke_menu`, `type_menu`, `effect_menu`, `export_menu` and
 `export_row_open`. The image-editing card is left out: it is a mode, not a popover. Three popover
 lists exist:
@@ -248,7 +248,7 @@ lists exist:
 - A click that dismisses a menu is spent on the dismissal: the canvas skips its mode input and a layers row its click. The library screen's ⋮ popup and project-filter dropdown follow the rule (§9.5).
 
 **Escape and menus** (R3): an open menu is the first thing Escape unwinds, and the press is consumed.
-`OndinApp::frame_body` handles the key and returns without calling `escape`;
+`MastikApp::frame_body` handles the key and returns without calling `escape`;
 `input::resolve` does not run while a menu is open. In focus mode the first Escape closes the menu
 and the second leaves focus mode.
 
@@ -261,7 +261,7 @@ and the second leaves focus mode.
 - the five inspector and Export popovers: an empty-bodied arm in `update`, gated by `a_popover_owns_escape`; they close themselves later in the frame.
 
 That gate is for `Escape` only, and counts only popovers actually drawn: each open popover's handler
-sets `OndinApp::popover_heard`, read by the arm at the top of the next frame; if nothing heard the
+sets `MastikApp::popover_heard`, read by the arm at the top of the next frame; if nothing heard the
 press, the flag is cleared and the press pays out its rung.
 
 ### Menu chrome
@@ -274,7 +274,7 @@ press, the flag is cleared and the press pays out its rung.
 
 ### Paste at a point
 
-`OndinApp::paste_at` (*Paste here*) centres the pasted layers on a world point, measuring from the
+`MastikApp::paste_at` (*Paste here*) centres the pasted layers on a world point, measuring from the
 source layers' bounds; cut-then-paste-here falls back to the fixed offset, the source being gone. It
 asks `paste`'s three questions in order: a picture, the app's own subtrees, text.
 
@@ -318,7 +318,7 @@ Two or more layers get one box; dragging it transforms all of them.
 - **Shape.** A transform (`IDENTITY` at rest) plus an extent (`canvas::selection_frame_box`): the union of the members' geometry quads in the box's own axes, so it does not creep under rotation and on stroked members is half a stroke tighter than ink. A member with no box (an empty `Group`) is skipped (`selection_frame_extent`).
 - **Session orientation** lives on `Selection`, not in the document: composed on each commit, dropped when the selection changes, so the box does not snap upright the instant a turn ends.
 - **Resize** runs on the oriented box. `canvas::selection_resize_box` is the committed-tree twin of `selection_frame_box`; `edit::resize_selection` takes `edit::SelectionBox { frame, extent }` and works in frame space (`frame · S · frame⁻¹ · world`); `canvas::resize_axes` maps the handle through the same frame. `Handles` stores no extent; everything recomputes it from the committed tree, because scaling against a previewed box compounds every frame. `snapped_resize` excludes the whole selection from the snap targets.
-- **Typed doors** (`OndinApp::size_step`, `inspector::scale_tx`, the multi W/H fields) keep the upright union, which the panel reports.
+- **Typed doors** (`MastikApp::size_step`, `inspector::scale_tx`, the multi W/H fields) keep the upright union, which the panel reports.
 - **Target.** `preview::Target { Layer(NodeId), Selection }` travels on `Drag::Resize`, `Drag::Rotate`, `Drag::Skew` and `Handles.target`; `resize_tx`, `rotate_tx`, `skew_tx`, `keep_ratio`, `snapped_resize` and `resize_axes` dispatch on it, so a drag cannot change target midway.
 - **Style.** 1px `SELECT_DIM`, against each member's 1.2px `SELECT` outline; `COMPONENT_DIM` box and `COMPONENT` handles when every member is a main or instance (§5.3d).
 - **Rotation** turns the arrangement about the union centre (`edit::rotate_selection`, `rotate_node` per member). §15 D50 covers the pivot, the proportion lock over a set, and where `build::outermost` applies.
@@ -341,7 +341,7 @@ carried at the commit door (§6.2).
 
 ### Gradient handles (`gradient.rs`)
 
-**The open picker is the mode**; there is no gradient tool. `OndinApp::edited_gradient` answers while
+**The open picker is the mode**; there is no gradient tool. `MastikApp::edited_gradient` answers while
 a selecting tool is up, the picker shows a gradient face (not *Variables*) for a `Fill(i)` or
 `Stroke(i)`, and that layer is the whole selection. Then `editing_in_place` is true, so the selection
 chrome hides, and the box handles, a lone line's ends and the rail handle do not arm
@@ -410,7 +410,7 @@ over `Tool` is an exhaustive `match` (the cursor, `create_tx`), a `matches!` all
 (`drags_a_box`, `selects`), or a wildcard with the right default (`scaling` → `Scaling::Geometry`).
 `NodeKind`'s `matches!` lists answer a missing kind with a confident "no" (§15 D87–D88).
 
-**Arming a create tool clears the selection** (`OndinApp::choose_tool`). The set is `drags_a_box`:
+**Arming a create tool clears the selection** (`MastikApp::choose_tool`). The set is `drags_a_box`:
 Frame, Slice, Rect, Ellipse, Polygon, Star, Line, Spiral, Arc, Text, Image. Left out: Select, Scale and Shape builder (operate on the
 selection), Hand (a pan keeps it), Node and ImageEdit (entered *from* a selected layer), Pen (places
 anchors, never drags a box), Pencil (a stroke can carry on the selected path), Eyedropper (picks onto the selection). `place_image_action` clears it too.
@@ -432,20 +432,20 @@ switch cannot be in). Unlike `cancel_gesture`'s `InFlight::any`, its three field
 - **The tool stays on** after a cut, the new slice selected, so slices are cut in runs. A click
   without a drag makes nothing (`click_makes` answers `None`). A drag begun on the selection's
   handles resizes it, as with Select, rather than cutting another.
-- **Picking.** With the tool on, a click inside a slice picks it (`OndinApp::slice_at`: the topmost
+- **Picking.** With the tool on, a click inside a slice picks it (`MastikApp::slice_at`: the topmost
   shown, unlocked slice whose box holds the point); elsewhere it does nothing. With any other tool a
   click inside passes through to what lies under it, and the slice is picked by its edge band
   (`PICK_SLOP_PX`, §5.10) or its layers row; that band drags it. Once selected, a press anywhere inside
-  it moves it (`OndinApp::selected_slice_at`, ahead of the art under it in `begin_select_drag`) and its
+  it moves it (`MastikApp::selected_slice_at`, ahead of the art under it in `begin_select_drag`) and its
   handles resize it. The marquee and the other bulk doors skip slices (`app-selection.md`).
-- **Chrome** (`OndinApp::draw_slices`, after the hover outline). A slice draws nothing in a render,
+- **Chrome** (`MastikApp::draw_slices`, after the hover outline). A slice draws nothing in a render,
   so the canvas draws a dashed 1 pt outline (4 on, 3 off) round every shown slice on the page, at its
   live size (the display node, so a resize or a W/H scrub shows as it happens): in `color::SELECT`
   when it is hovered (Select's hover target, or with the Slice tool the slice under the pointer) or
   selected, at 45% otherwise, so what is already cut shows.
   *Shown* here and in `slice_at` is `Document::shown_through`: a slice in a hidden group is hidden.
 - **Slice selection** (the layer menu's Structure group, and the palette) cuts a slice fitted to the
-  selection instead of dragging one (`OndinApp::slice_selection` → `build::slice_selection`): the
+  selection instead of dragging one (`MastikApp::slice_selection` → `build::slice_selection`): the
   selection's world bounds rounded out to whole units, just above the topmost selected layer in their
   nearest common container that is neither a boolean (it would be an operand) nor turned or skewed
   (its box would be the box of a turned box), a lone layer's name, one PNG 1× spec, selected afterwards. It dims, and
@@ -460,24 +460,24 @@ switch cannot be in). Unlike `cancel_gesture`'s `InFlight::any`, its three field
   colour. egui paints the overlays (selection, handles, guides, rulers, pixel grid) over that
   texture, so they are never sampled. Read live, so a pan or zoom made while armed is followed.
   Pixel preview yields while a dropper is armed, so the texture is at device pixels.
-- **Everywhere else**: the frozen frame (`OndinApp::dropper_frozen: eyedropper::Frozen`), a capture
+- **Everywhere else**: the frozen frame (`MastikApp::dropper_frozen: eyedropper::Frozen`), a capture
   of the whole window, so the chrome's own colours are pickable. A live capture cannot work: the
   loupe sits under the pointer, so it would always read the loupe.
 
 Both hold sRGB bytes: the texture is the document's space (invariant 7), and the window surface
 (Rgba8Unorm or Bgra8Unorm) holds egui's gamma-space bytes. Nothing is converted.
 
-**Two doors**, and `OndinApp::dropper_armed` says which is armed; a picker's pick button outranks
+**Two doors**, and `MastikApp::dropper_armed` says which is armed; a picker's pick button outranks
 the rail tool, as the narrower ask.
 
 | Door | Arms | Writes | Afterwards |
 | --- | --- | --- | --- |
-| Rail tool `Tool::Eyedropper` (`I`) | remembers the tool it was armed from (`dropper_return`); keeps the selection; disarms a picker's pick button | `ondin_core::set_top_paint_all`: every paint target's top **visible** fill (last in the list, which is paint order), or a new fill where none is visible; `Alt` the top stroke, adding a default one. Through `edited_brush`, so a binding survives an unchanged colour; opacity kept (`paint::alpha_of`, so a gradient's or picture's carries to the solid). Nothing selected: the hex goes to the clipboard and the status reads *Copied 6D8CD9 · nothing selected* | one shot: hands back to `dropper_return`; `Shift` keeps it armed |
+| Rail tool `Tool::Eyedropper` (`I`) | remembers the tool it was armed from (`dropper_return`); keeps the selection; disarms a picker's pick button | `mastik_core::set_top_paint_all`: every paint target's top **visible** fill (last in the list, which is paint order), or a new fill where none is visible; `Alt` the top stroke, adding a default one. Through `edited_brush`, so a binding survives an unchanged colour; opacity kept (`paint::alpha_of`, so a gradient's or picture's carries to the solid). Nothing selected: the hex goes to the clipboard and the status reads *Copied 6D8CD9 · nothing selected* | one shot: hands back to `dropper_return`; `Shift` keeps it armed |
 | A picker's pick button (`Picker::picking`, at the start of `hex_row`) | the button; a picking picker takes no click, so the button cannot disarm it | that picker's slot only, through `write_slot_rgb`, the typed colour's door (§9.3) | picker stays open, disarmed; `Shift` keeps it armed |
 
 - **A pick snaps to a document colour.** The sampled pixel becomes the nearest opaque colour the
   document already uses within Colour review's *Tight* limit (OKLab Δ ≤ 1, whatever the card is set
-  to; `OndinApp::dropper_snap`, over `color_review::census` of every page, taken once per
+  to; `MastikApp::dropper_snap`, over `color_review::census` of every page, taken once per
   revision): antialiasing and blends leave pixels a hair off the colour meant. A colour bound to a
   variable wins a tie, and on the rail door the pick then **binds** the top paint
   (`build::bind_top_paint_all`, keeping its `%`) where the variable's scope takes the field and it
@@ -487,11 +487,11 @@ the rail tool, as the narrower ask.
 - **One click, one transaction, one undo step.** A click never changes the selection.
 - **No canvas preview.** Hovering writes nothing and installs no `RenderOverrides`: a preview would change the pixels the next sample reads. From a picker, the hovered colour (canvas sample or frozen pixel) shows in its plane, hue and value row (`Picker::preview`): a dim *was XXXXXX* beside a hex, or the channel fields tinted accent with the old colour as a chip in the format chooser. That preview is not in the frozen frame: picking over the picker reads it as captured.
 - **The readback** (`CanvasRenderer::request_sample`): after the render, the `LOUPE_SIDE`² (11×11) device-pixel region round the hotspot is copied out of the canvas texture into a mapped buffer, without waiting, and collected a frame later. A `SampleKey` (hotspot, session revision, camera centre and zoom, canvas pixel size, `pick`) that matches the last sample is not read again, which keeps a still pointer from repainting forever. Headless, `cpu_region` draws the same region with `vello_cpu` and it lands at once; the tests use that arm.
-- **A pick always reads afresh.** Uncommitted changes (typing in a text session, a preview, a decode landing, the previewed ground) move pixels without moving the revision, so a key can match pixels that have changed. Hover keys carry `pick` 0; each click mints its own number (`OndinApp::dropper_picks`, in `dropper_input`), so its key matches no earlier sample and the canvas is read again. A stale loupe is only a look; a stale pick is a wrong write. The accepted cost: under a still pointer the hover loupe can stay stale until the pointer moves. Pinned by `a_pick_reads_afresh_when_pixels_moved_under_a_still_pointer`.
-- **Pick timing.** A click records a `PendingPick` whose `at` is a `PickAt`: `Canvas(key)` on the canvas, `Window(pos)` elsewhere. `OndinApp::dropper_frame` (run in `draw_canvas` after the render) lands a canvas pick when a sample with that key arrives, a window pick once the frozen frame is there. A canvas pick deferred behind an in-flight hover readback is copied off a later frame's render, so a pick whose camera or canvas size no longer matches is re-aimed at the pixel now showing the world point it was clicked on, or dropped when that point has left the canvas (`OndinApp::reaim_pick`).
+- **A pick always reads afresh.** Uncommitted changes (typing in a text session, a preview, a decode landing, the previewed ground) move pixels without moving the revision, so a key can match pixels that have changed. Hover keys carry `pick` 0; each click mints its own number (`MastikApp::dropper_picks`, in `dropper_input`), so its key matches no earlier sample and the canvas is read again. A stale loupe is only a look; a stale pick is a wrong write. The accepted cost: under a still pointer the hover loupe can stay stale until the pointer moves. Pinned by `a_pick_reads_afresh_when_pixels_moved_under_a_still_pointer`.
+- **Pick timing.** A click records a `PendingPick` whose `at` is a `PickAt`: `Canvas(key)` on the canvas, `Window(pos)` elsewhere. `MastikApp::dropper_frame` (run in `draw_canvas` after the render) lands a canvas pick when a sample with that key arrives, a window pick once the frozen frame is there. A canvas pick deferred behind an in-flight hover readback is copied off a later frame's render, so a pick whose camera or canvas size no longer matches is re-aimed at the pixel now showing the world point it was clicked on, or dropped when that point has left the canvas (`MastikApp::reaim_pick`).
 - **The frozen frame** (`Frozen`: `None` → `Asked(pass, screen)` → `Ready(image, screen)`). Armed and `None`, `dropper_frame` sends one `ViewportCommand::Screenshot` tagged `FrozenShot(pass)`, and that frame draws no loupe, because eframe captures the frame the command is sent in. `gate_dropper_input` takes the `Event::Screenshot` only when its tag matches the pending ask, so a capture from an earlier arming is ignored. While `Asked`, `dropper_frame` keeps asking for frames for 30 passes, not forever: a surface format egui cannot capture (only Rgba8Unorm and Bgra8Unorm are) never answers. It is asked again after a pick that leaves the dropper armed (`land_pick` resets it, since the panels now show the write), and when the window's size in points or its pixels-per-point differ from the frozen frame's. Disarming drops it. `window_region` reads the `LOUPE_SIDE`² device-pixel region round `floor(p * ppp)`.
-- **Input.** In `normal_mode_input` the dropper takes every press an armed pan does not (Space, Hand and middle-drag still pan), ahead of guides, handles and tools: they are chrome its sample never sees. It also routes in `TextInsert`, so a picker opened over a text session can pick. While a dropper is armed the canvas does not answer as Select (`OndinApp::selecting`): a picker's pick button leaves the tool on Select, and without this the hover outline, spacing bands and guide grabs kept answering.
-- **The rest of the window is inert while armed** (`OndinApp::gate_dropper_input`, from `raw_input_hook`), which is what keeps the frozen frame true. egui gets the pointer only over the canvas; the picking picker too is pickable, not clickable. Elsewhere egui is told the pointer is gone and gets no press or wheel, so no panel hovers, takes a click or scrolls; `dropper_pointer` keeps the position for the loupe. A press there is the dropper's (`OndinApp::dropper_press`) and its release acts: primary records a `PickAt::Window` pick at the press position (`Alt` stroke, `Shift` stay), secondary disarms. A press egui already has finishes untouched, so a pan dragged off the canvas still ends; disarming hands the pointer back where it is. The canvas is told apart from the panels by `canvas_rect`, since all of them share egui's background layer; any area above that layer is chrome.
+- **Input.** In `normal_mode_input` the dropper takes every press an armed pan does not (Space, Hand and middle-drag still pan), ahead of guides, handles and tools: they are chrome its sample never sees. It also routes in `TextInsert`, so a picker opened over a text session can pick. While a dropper is armed the canvas does not answer as Select (`MastikApp::selecting`): a picker's pick button leaves the tool on Select, and without this the hover outline, spacing bands and guide grabs kept answering.
+- **The rest of the window is inert while armed** (`MastikApp::gate_dropper_input`, from `raw_input_hook`), which is what keeps the frozen frame true. egui gets the pointer only over the canvas; the picking picker too is pickable, not clickable. Elsewhere egui is told the pointer is gone and gets no press or wheel, so no panel hovers, takes a click or scrolls; `dropper_pointer` keeps the position for the loupe. A press there is the dropper's (`MastikApp::dropper_press`) and its release acts: primary records a `PickAt::Window` pick at the press position (`Alt` stroke, `Shift` stay), secondary disarms. A press egui already has finishes untouched, so a pan dragged off the canvas still ends; disarming hands the pointer back where it is. The canvas is told apart from the panels by `canvas_rect`, since all of them share egui's background layer; any area above that layer is chrome.
 - **Ways out.** `Escape` is one rung (`disarm_dropper`, `shortcuts.md` §11): it disarms a picker's button and leaves the picker open, or hands the rail tool back. A right-click anywhere disarms and spends the click (above). A second `I` is `choose_tool`'s toggle arm. Leaving the editor for the library disarms (`go_to_dashboard`), since the gate runs on every screen and the library has neither a canvas nor the escape ladder. The picker's own pick button is not one: a picking picker takes no click.
 - **The loupe is the cursor** everywhere (`CursorIcon::None`): it draws the region at 8pt a pixel, centred on the hotspot, the centre pixel ringed, with a chip below (above near the window's bottom) showing what a click would apply: the hex, or after a snap the document colour with the magnet glyph, named by its variable when bound; with `Ctrl` held, the raw pixel's hex. Its edge is two rims, dark outside light, under a soft shadow, so one of the pair contrasts with any ground. Off the canvas, until the frozen frame lands, the eyedropper cursor (`cursor::Bitmap::Eyedropper`, aimed from its tip like the pen's) stands in, with no chip.
 - **On the canvas the picker's preview is the latest sample**, not the one for the pixel under the pointer: each pixel of movement starts a readback that lands a frame later, and waiting for the matching one put the slot's own colour back for that frame.
@@ -517,13 +517,13 @@ opposite side stays put (`canvas::skew_tx` → `edit::skew_to_handle` / `edit::s
 
 ### Drop outlines during a move
 
-- **Frame drop.** `canvas::draw_frame_drop_outline` boxes any frame (never the root) that would adopt the selection on release: 3px `color::SELECT`, above the hover outline, below the selection chrome. The decision is `OndinApp::move_destination` (split out of `move_tx`), asked by outline and commit with the same snapped delta; for an in-flow item it reads the pointer from `Drag::Move`'s anchor, so `finish_drag` restores the drag around the transaction it builds.
+- **Frame drop.** `canvas::draw_frame_drop_outline` boxes any frame (never the root) that would adopt the selection on release: 3px `color::SELECT`, above the hover outline, below the selection chrome. The decision is `MastikApp::move_destination` (split out of `move_tx`), asked by outline and commit with the same snapped delta; for an in-flow item it reads the pointer from `Drag::Move`'s anchor, so `finish_drag` restores the drag around the transaction it builds.
 - **Flex landing.** A flex item's move outlines its landing slot, dashed 1.5px `color::SELECT` (`canvas::draw_flex_landing`), from `RenderOverrides::landings` (§6.2) filtered to the item `flex_reorder_of` names. None for an item leaving its frame or a multi-selection. A grid item's move outlines the target cell and draws its container's track lines from `build::drop_grid`. When the reorder moves the container itself, the landing is composed through the container's previewed world transform.
-- **Memoised frames.** The artboard list the drop rule uses is memoised (`OndinApp::with_frames` → `FrameIndex`), keyed on `EditorSession::revision`, which is drawn from one counter every session shares (`session::next_revision`, so a key never names another tab's document) and bumped by `commit_inner`, `undo`, `redo` and `adopt_document` and nothing else: nothing may add, remove or move an artboard without one of those. A gesture in flight does not bump it, because the drop rule is defined against committed bounds. The same walk lists the page's tagged layers and slices, and `OndinApp::instances_of` fills every main's instances (`component::instances_by_main`) on the first ask at a revision, so nothing the canvas or the component cards ask every frame walks the document.
+- **Memoised frames.** The artboard list the drop rule uses is memoised (`MastikApp::with_frames` → `FrameIndex`), keyed on `EditorSession::revision`, which is drawn from one counter every session shares (`session::next_revision`, so a key never names another tab's document) and bumped by `commit_inner`, `undo`, `redo` and `adopt_document` and nothing else: nothing may add, remove or move an artboard without one of those. A gesture in flight does not bump it, because the drop rule is defined against committed bounds. The same walk lists the page's tagged layers and slices, and `MastikApp::instances_of` fills every main's instances (`component::instances_by_main`) on the first ask at a revision, so nothing the canvas or the component cards ask every frame walks the document.
 
 ### The transform origin (pivot)
 
-**The toggle.** `OndinApp::show_pivot` is app-wide and sticky (someone rigging pivots will place
+**The toggle.** `MastikApp::show_pivot` is app-wide and sticky (someone rigging pivots will place
 several): a `ui::HeadAction` toggle on the Transform header, dimmed with a tooltip for a
 multi-selection. Escape turns it off, after `cancel_gesture` and before the `entered_group` unwind,
 without undoing placed pivots.
@@ -589,7 +589,7 @@ delta. Each application is one undo step, *Transform again*; the status says *Ro
   *Skew 10°*). With nothing learnt it is dim with *Move, rotate or scale something first*; with
   nothing selected, *Select a layer first*.
 
-### Repeat around origin (`repeat.rs`, `ondin_core::repeat`)
+### Repeat around origin (`repeat.rs`, `mastik_core::repeat`)
 
 Copies of the selection turned step by step about one point, committed grouped with the originals.
 
@@ -616,8 +616,8 @@ Copies of the selection turned step by step about one point, committed grouped w
   no Transform rows, so the card is the door.
 
 **The card** is an inspector-lane popover: an `Order::Foreground` `Area` from
-`OndinApp::transform_popover_area`, placed by `popover_anchor` level with the top of the inspector's
-Transform card (`OndinApp::transform_card`, recorded by `panel_full` each frame; the inspector
+`MastikApp::transform_popover_area`, placed by `popover_anchor` level with the top of the inspector's
+Transform card (`MastikApp::transform_card`, recorded by `panel_full` each frame; the inspector
 column's top when no Transform card is drawn), on `ui::menu_frame(ui::POPOVER_PAD)` at `POPOVER_W`,
 rows at `ui::POPOVER_SECTION_GAP`. It is no modal and has no click-away: the canvas stays live,
 because the pivot decides the ring and must stay draggable. It holds the lane alone: opening it
@@ -655,7 +655,7 @@ raises it (`show_pivot`); closing or committing puts it back down only if the ca
   a main or an instance root, on, *Copies of a component are linked already*; otherwise off, with
   *Create component*'s reason (`repeat::why_not_linked` decides which).
 
-### Warp (`warp.rs`, `ondin_core::warp`)
+### Warp (`warp.rs`, `mastik_core::warp`)
 
 An envelope round the selection's world box, bent on the canvas and baked into plain paths. Nothing
 stays live. The box (`warp::bounds`) is the union of the outlines that are warped, not of the
@@ -700,7 +700,7 @@ centre.
   which masks the run above it as the node will. Stand-ins are minted from a copy of the id counter, so the preview spends
   no ids. It is rebuilt when the envelope changes and put back when another preview cleared it.
 
-**The session** (`WarpSession` on `OndinApp::warp`).
+**The session** (`WarpSession` on `MastikApp::warp`).
 
 - **Doors.** The layer menu's Structure row *Warp…* (`Item::Warp`, glyph `WARP`, `context-menus.md`
   §4) and the palette (keywords *distort*, *envelope*, *arc*,
@@ -744,7 +744,7 @@ centre.
 `Ctrl`+arrows step the selection's box by the nudge step (`input::NudgeStep`): 1, or 10 with
 `Shift`. `→` wider, `←` narrower, `↓` taller, `↑` shorter (`shortcuts.md` §11).
 
-- `OndinApp::size_step` uses `edit::resize_box_to` for one layer (grows along its own axes) and `edit::resize_selection` over the upright world union for several.
+- `MastikApp::size_step` uses `edit::resize_box_to` for one layer (grows along its own axes) and `edit::resize_selection` over the upright world union for several.
 - The top-left corner is held, so the step does not `reveal_selection`. One arrow table serves nudge and resize; `normal_mode` picks the verb from the modifier.
 - 1pt floor per axis. With every member proportion-locked, both axes move and the arrow names the driver (`edit::paired_size`). Guides are inert.
 - Bursts coalesce under the undo verb `resize-layers`, separate from nudges.

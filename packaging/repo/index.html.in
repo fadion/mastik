@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ondin package repositories</title>
+<title>Mastik package repositories</title>
 <link rel="icon" href="icon.png">
 <style>
   :root {
@@ -48,10 +48,10 @@
 <main>
   <header>
     <img src="icon.png" alt="">
-    <h1>Ondin package repositories</h1>
+    <h1>Mastik package repositories</h1>
   </header>
   <p class="lede">
-    APT and DNF repositories for <a href="https://github.com/fadion/ondin">Ondin</a>,
+    APT and DNF repositories for <a href="https://github.com/fadion/mastik">Mastik</a>,
     a native 2D design tool with a GPU canvas, vector editing, rich text and
     flexbox and CSS grid layout.
     Install from here and updates arrive with the rest of your system.
@@ -60,31 +60,31 @@
 
   <p>The one-line way in, on any Linux, is the installer script — it detects the
   distribution, adds the right repository below, and installs:</p>
-  <pre><code>curl -fsSL https://raw.githubusercontent.com/fadion/ondin/main/install.sh | bash</code></pre>
+  <pre><code>curl -fsSL https://raw.githubusercontent.com/fadion/mastik/main/install.sh | bash</code></pre>
   <p>Everything below is what that script does, written out, for anyone who
   would rather do it by hand.</p>
 
   <h2>Debian, Ubuntu and derivatives</h2>
-  <pre><code>curl -fsSL __BASE_URL__/ondin.asc \
-  | sudo gpg --dearmor -o /usr/share/keyrings/ondin-archive-keyring.gpg
-curl -fsSL __BASE_URL__/ondin.sources \
-  | sudo tee /etc/apt/sources.list.d/ondin.sources > /dev/null
+  <pre><code>curl -fsSL __BASE_URL__/mastik.asc \
+  | sudo gpg --dearmor -o /usr/share/keyrings/mastik-archive-keyring.gpg
+curl -fsSL __BASE_URL__/mastik.sources \
+  | sudo tee /etc/apt/sources.list.d/mastik.sources > /dev/null
 sudo apt-get update
-sudo apt-get install ondin</code></pre>
+sudo apt-get install mastik</code></pre>
   <p>Upgrades then come with <code>sudo apt-get upgrade</code>.</p>
 
   <h2>Fedora, RHEL, CentOS and openSUSE</h2>
-  <pre><code>sudo curl -fsSL __BASE_URL__/ondin.repo \
-  -o /etc/yum.repos.d/ondin.repo
-sudo dnf install ondin</code></pre>
-  <p>On openSUSE, <code>sudo zypper addrepo __BASE_URL__/ondin.repo</code>
-  and <code>sudo zypper install ondin</code>. Upgrades come with
+  <pre><code>sudo curl -fsSL __BASE_URL__/mastik.repo \
+  -o /etc/yum.repos.d/mastik.repo
+sudo dnf install mastik</code></pre>
+  <p>On openSUSE, <code>sudo zypper addrepo __BASE_URL__/mastik.repo</code>
+  and <code>sudo zypper install mastik</code>. Upgrades come with
   <code>dnf upgrade</code> or <code>zypper update</code>.</p>
 
   <h2>Signing key</h2>
   <p>Both repositories are signed, and so is every RPM in them. The public key
-  is <a href="ondin.asc">ondin.asc</a>
-  (<a href="ondin-archive-keyring.gpg">binary keyring</a> for APT's
+  is <a href="mastik.asc">mastik.asc</a>
+  (<a href="mastik-archive-keyring.gpg">binary keyring</a> for APT's
   <code>signed-by</code>); its fingerprint is:</p>
   <pre><code>__FINGERPRINT__</code></pre>
   <p class="note">This key says a package came from this repository and arrived
@@ -93,10 +93,10 @@ sudo dnf install ondin</code></pre>
   from somewhere other than this page — compare against that copy.</p>
 
   <h2>Unattended upgrades</h2>
-  <p>Debian and Ubuntu users who want Ondin picked up automatically can add
+  <p>Debian and Ubuntu users who want Mastik picked up automatically can add
   its origin to <code>/etc/apt/apt.conf.d/50unattended-upgrades</code>:</p>
   <pre><code>Unattended-Upgrade::Allowed-Origins {
-    "Ondin:stable";
+    "Mastik:stable";
 };</code></pre>
   <p>Nothing upgrades on its own without that — a package manager waits to be
   asked.</p>
@@ -104,19 +104,19 @@ sudo dnf install ondin</code></pre>
   <h2>What is here</h2>
   <p>The <strong>five most recent releases</strong> in each format, so a
   release you would rather not be on can be rolled back to with
-  <code>apt-get install ondin=X.Y.Z</code> or
-  <code>dnf downgrade ondin</code>. Older versions stay available as direct
+  <code>apt-get install mastik=X.Y.Z</code> or
+  <code>dnf downgrade mastik</code>. Older versions stay available as direct
   downloads on the
-  <a href="https://github.com/fadion/ondin/releases">Releases page</a>, which
+  <a href="https://github.com/fadion/mastik/releases">Releases page</a>, which
   is where these packages are built from.</p>
   <p>Only <code>x86_64</code>/<code>amd64</code>. There is no 32-bit or ARM
   Linux build to publish.</p>
 
   <hr>
   <footer>
-    Ondin is early in its development — keep copies of work you care about.
+    Mastik is early in its development — keep copies of work you care about.
     Rebuilt on every release from
-    <a href="https://github.com/fadion/ondin/blob/main/.github/workflows/pages.yml">pages.yml</a>.
+    <a href="https://github.com/fadion/mastik/blob/main/.github/workflows/pages.yml">pages.yml</a>.
   </footer>
 </main>
 </body>

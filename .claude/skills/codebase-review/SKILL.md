@@ -1,6 +1,6 @@
 ---
 name: codebase-review
-description: Set up and start a multi-level review of the Ondin codebase — check the gates, cut the code into review slices, run a mechanical fact sheet, then the repo-wide sweeps. Use when the user asks for a full/deep/multi-level codebase review, a review "by module" or "in different lenses" (bugs, quality, performance, architecture, security), an audit of the whole repo, or says "start the review" / "set up a codebase review". Produces review/plan.md + review/findings.md; individual passes after setup are run by the codebase-review-pass skill. Do NOT use for reviewing a pull request or the working diff — that's /code-review.
+description: Set up and start a multi-level review of the Mastik codebase — check the gates, cut the code into review slices, run a mechanical fact sheet, then the repo-wide sweeps. Use when the user asks for a full/deep/multi-level codebase review, a review "by module" or "in different lenses" (bugs, quality, performance, architecture, security), an audit of the whole repo, or says "start the review" / "set up a codebase review". Produces review/plan.md + review/findings.md; individual passes after setup are run by the codebase-review-pass skill. Do NOT use for reviewing a pull request or the working diff — that's /code-review.
 ---
 
 # Start a codebase review
@@ -14,7 +14,7 @@ subagent and stopping only at the attended checkpoints.
 gate, the ledger format and its integrity rules, the orchestration contract. **Read it before
 Phase 2.** Both skills follow it, so it's the one place the method lives.
 
-**This skill is Ondin-specific.** The parts below that name cargo commands, the invariants in
+**This skill is Mastik-specific.** The parts below that name cargo commands, the invariants in
 `docs/architecture.md` §4, this repo's traps and its scope decisions are the highest-yield content
 in it — a generic reviewer misses all of it. `reference.md` is the portable half and transfers
 between projects unchanged.
@@ -49,7 +49,7 @@ and the review's own fixes, continue on `main` throughout.
 *"here git is a safety net rather than a record — `.git` is to be deleted once the feature list
 lands and the repo restarted, probably at a `0.1.0` tag — so a review-round tag would anchor
 findings to something that will not exist by the time anyone re-reads them"*. The reset happened on
-2026-09-16 and the repository that replaced it is published at `https://github.com/fadion/ondin`
+2026-09-16 and the repository that replaced it is published at `https://github.com/fadion/mastik`
 with its history kept, so a tag would now survive perfectly well. What survives of the reasoning is
 the second half — the cost of pinning `main` — and that is enough on its own for a round that runs
 for weeks. ⚠️ **A range review is the opposite case and freezes deliberately**; see
@@ -58,7 +58,7 @@ for weeks. ⚠️ **A range review is the opposite case and freezes deliberately
 Three consequences, and each has to be handled or the review quietly degrades:
 
 1. **`file:line` rots, so a line number is not the anchor.** Every finding records the enclosing
-   item as well — `crates/ondin-app/src/canvas.rs:5528 · fn snapped_point`. A symbol survives an
+   item as well — `crates/mastik-app/src/canvas.rs:5528 · fn snapped_point`. A symbol survives an
    insertion above it; a line number does not, and in a repo whose history is going away the symbol
    is the more durable half anyway. A finding that cannot name an enclosing item names the nearest
    `///` heading or a quoted line of code instead.
@@ -81,19 +81,19 @@ Before Pass 0, verify in order (these are the project's own gates, in CLAUDE.md'
    the `/review/` line in `.gitignore` go in before Pass 0.
 2. `cargo fmt --all --check` → exit 0.
 3. `cargo clippy --workspace --all-targets` → clean, **then re-run it per package**:
-   `for p in ondin-core ondin-render ondin-export ondin-mcp ondin-app; do cargo clippy -p $p --all-targets; done`.
+   `for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do cargo clippy -p $p --all-targets; done`.
    The workspace form silently drops a member crate's warnings (CLAUDE.md, measured 2026-09-01);
    a warning only one spelling of the command prints is a warning nobody sees.
 4. `cargo test --workspace` → green.
 5. `cargo doc --workspace --no-deps --document-private-items` → exit 0. **The flag is not
    optional**: without it rustdoc checks no link on any private item, which here is most of them.
-6. `cargo check --release -p ondin-app` → the one gate not compiled with `debug_assertions`.
+6. `cargo check --release -p mastik-app` → the one gate not compiled with `debug_assertions`.
 7. **The two suites the workspace run does not reach**, on this machine, once, and recorded:
-   - `cargo test -p ondin-render --release -- --ignored` — ~21 tests behind
+   - `cargo test -p mastik-render --release -- --ignored` — ~21 tests behind
      `#[ignore = "requires a GPU adapter"]` plus the zoom sweep. Slices S10/S11 lean on these; if
      they are not run, say in the ledger that the on-device path is **unverified** rather than
      quietly proceeding.
-   - `cargo test -p ondin-app fonts -- --ignored` — three network tests (Fontsource/jsDelivr).
+   - `cargo test -p mastik-app fonts -- --ignored` — three network tests (Fontsource/jsDelivr).
      Slice S21 leans on them.
 
    All 33 `#[ignore]`s in the tree are legitimately gated (GPU, network, one 23-second boolean
@@ -115,10 +115,10 @@ user decides.
 
 Two environment facts that will otherwise cost a pass:
 
-- **Windows:** stop a running `ondin.exe` before building, or the linker can't overwrite it.
+- **Windows:** stop a running `mastik.exe` before building, or the linker can't overwrite it.
 - **Never launch the GUI** (CLAUDE.md). It grabs focus and the mouse and hijacks whatever the user
   is doing. A pass with a question about chrome answers it with a **throwaway headless `#[test]`**
-  (`OndinApp::headless(&ctx)`, §15 D303) or with `ondin export`, and deletes the probe. A pass that
+  (`MastikApp::headless(&ctx)`, §15 D303) or with `mastik export`, and deletes the probe. A pass that
   cannot answer its question either way says so in "Not covered" rather than guessing — and a
   reviewer probe is still an edit to the tree, so it must be removed before the pass returns and
   `git status --short` must come back empty.
@@ -194,15 +194,15 @@ you write it down. `C=.claude/skills/codebase-review/census.sh` below.
 | --- | --- | --- | --- |
 | `.unwrap()` / `.expect(` / `panic!` / `unreachable!` / `todo!` **outside test modules** | census, split by crate. The split by whether the input is user-controllable is the pass's call. | `bash $C panics` → **169** production (unwrap 1, expect 144, panic 3, unreachable 21), 10,113 in tests | L1 panic surface; **invariant 8** ("operations never panic on bad input") |
 | Raw indexing and slicing (`x[i]`, `x[a..b]`; `[..]` skipped) outside test modules | census of sites, by crate | `bash $C index` → **2,923** production, 4,613 in tests | L1 |
-| `unsafe` | census: enumerate every site | `bash $C unsafe` → **61**, all platform FFI in `ondin-app`, none in tests | L5 |
+| `unsafe` | census: enumerate every site | `bash $C unsafe` → **61**, all platform FFI in `mastik-app`, none in tests | L5 |
 | `#[allow(...)]` / `#![allow(...)]` / `cfg_attr(…, allow(…))` | census of attributes. Each is a silenced signal. | `bash $C allow` → **105** production, 7 in tests | L3 |
 | `TODO` / `FIXME` / `XXX` / `HACK` markers (the word opening a comment, or followed by `:` / `(`) | census | `bash $C todo` → **0** (four prose mentions of a dependency's TODO are not markers) | L3 / triage |
 | `cargo deny check` | census | `cargo deny check 2>&1 \| grep -oE '^(advisories.*\|error\[[a-z-]+\]\|warning\[[a-z-]+\])' \| sort \| uniq -c` → **advisories FAILED**: 12 vulnerabilities (`zip` 4, `rustls` 4, `quick-xml` 2, `rustls-webpki` 1, `webpki-roots` 1). Bans, licenses and sources ok, with 45 duplicate and 2 yanked warnings. | L5 / L3 |
 | `cargo tree --duplicates` | census of crate names | `cargo tree --workspace --duplicates --depth 0 --target all -e normal,build,dev \| grep -E '^[A-Za-z0-9_-]+ v' \| awk '{print $1}' \| sort -u \| wc -l` → **56** (28 for the host target alone) | L3 |
 | Line coverage per file | census | `cargo llvm-cov --workspace --summary-only` → not run on 2026-11-07, because it is a full instrumented test run. It is the tool's own output and has no hand-written filter. | L6 / A5 baseline |
 | `#[ignore]` sites and their reason strings | census of attributes | `bash $C ignore` → **61** (60 with a reason, 1 without: `keychain.rs:44`) | L6 — a gate nothing runs |
-| Contiguous `///` run lengths, sorted desc, each with the item below it (`//!` and runs at line 1 excluded) | census | `TOP=40 bash $C docruns` → longest **47** (`ondin-core/tests/resolve.rs:3749`); longest in production 37 (`propagate.rs:518`, `propagate_structure`) | A6 doc-comment theft |
-| `pub` items in `ondin-core` with zero callers in the workspace | **candidate list** — counts per module only; `dead_code` never fires on a `pub` lib item | — | L3 |
+| Contiguous `///` run lengths, sorted desc, each with the item below it (`//!` and runs at line 1 excluded) | census | `TOP=40 bash $C docruns` → longest **47** (`mastik-core/tests/resolve.rs:3749`); longest in production 37 (`propagate.rs:518`, `propagate_structure`) | A6 doc-comment theft |
+| `pub` items in `mastik-core` with zero callers in the workspace | **candidate list** — counts per module only; `dead_code` never fires on a `pub` lib item | — | L3 |
 | Structs deriving `PartialEq` (any crate) with fields written but never read | **candidate list**: a derived `PartialEq` silences `dead_code` on an unread field. Only the population is mechanical. | `bash $C partialeq` → **245** production structs derive it (core 133, app 77, export 29, render 6) | L3 |
 | `.clone()` inside per-frame closures / the scene walk / per-keystroke paths | **candidate list** — counts per file only | — | L4 |
 | `set_preview*` / `get_preview` call sites vs. `preview_guide` call sites | **candidate list**: every `set_preview` owes the second preview path beside it | `bash $C preview` → **36** set/get against **3** guide calls, per file | L1 |
@@ -260,9 +260,9 @@ like they cover.
 | # | Sweep | Lenses | This codebase |
 | --- | --- | --- | --- |
 | **A1** | Invariant conformance | L2 | The 11 numbered invariants in `docs/architecture.md` §4, one at a time, enumerating **every** site each governs. Evidence set below. **Attended.** |
-| **A2** | Architecture & boundaries | L7, L3 | The §3 dependency graph as actually built (`deps_forbidden.rs` covers core only — nothing enforces "only `ondin-app` may depend on egui/winit"). The god modules: `inspector.rs` 11.1k production lines, `canvas.rs` 11.2k, `app.rs` 7.3k, `tools/mod.rs` 3.6k — still cohesive, or landfills? Are `ScenePainter`, `RenderOverrides`, `Operation`/`Transaction`, `Resolved` real seams or decoration? What does `ondin-app` reach into that it should be asking core for? |
+| **A2** | Architecture & boundaries | L7, L3 | The §3 dependency graph as actually built (`deps_forbidden.rs` covers core only — nothing enforces "only `mastik-app` may depend on egui/winit"). The god modules: `inspector.rs` 11.1k production lines, `canvas.rs` 11.2k, `app.rs` 7.3k, `tools/mod.rs` 3.6k — still cohesive, or landfills? Are `ScenePainter`, `RenderOverrides`, `Operation`/`Transaction`, `Resolved` real seams or decoration? What does `mastik-app` reach into that it should be asking core for? |
 | **A3** | Security & data safety | L5 | Untrusted input end to end: **SVG import** (`svg_in.rs`, 3.0k lines parsing arbitrary files), **image decode** (four decoders, arbitrary bytes, `image` crate), **font download** (`ureq` → Fontsource/jsDelivr → `woff2` decode → cache dir write), **clipboard paste**, **file drag-drop**. Then the write paths: `atomic::write` and every caller, the `.recovery/` snapshot, the library store, zip export, and every place a user-supplied name becomes a path component. Panic messages carrying document data. |
-| **A4** | Performance map | L4 | Not a code read: a *map*. Per-frame (the scene walk, `nodes_in_view`, the canvas overlays, the rulers), per-keystroke (text shaping/`TextLayout`, the typography panel), per-gesture (hit test, snap, `RenderOverrides` rebuild), per-image (the adjust pass and its preview reduction, the decode cache, thumbnails), per-export. Output: ranked ≤8 paths worth deep L4 attention. Note that `ondin-render` is `opt-level = 3` even in debug, so a debug-build measurement of anything else is not comparable. |
+| **A4** | Performance map | L4 | Not a code read: a *map*. Per-frame (the scene walk, `nodes_in_view`, the canvas overlays, the rulers), per-keystroke (text shaping/`TextLayout`, the typography panel), per-gesture (hit test, snap, `RenderOverrides` rebuild), per-image (the adjust pass and its preview reduction, the decode cache, thumbnails), per-export. Output: ranked ≤8 paths worth deep L4 attention. Note that `mastik-render` is `opt-level = 3` even in debug, so a debug-build measurement of anything else is not comparable. |
 | **A5** | Test map | L6 | `llvm-cov` per file against decision functions; logic sitting in `&mut self` app methods where no test can reach it (§15 D269 — the fix is lifting it into a free function, not a harness); modules at zero; and whether the invariant-enforcing tests still enforce — `deps_forbidden.rs`, the SVG/JSON goldens, the round-trip suite, the boolean unwind guard. |
 | **A6** | Doc-comment ownership | L3, L8 | The `///`-run ranking from Pass 0. **Five instances of a doc comment silently reassigned to the wrong item are on record**, all with every gate green; one block had swallowed three. Investigate every run over 54 lines that is not one of the five excused baseline entries, and check the head of the ranking entry by entry rather than against a remembered top. The ranking is blind to short thefts and to deletions — so also spot-check `grep -n -B2 "fn <name>"` around items added in the last ~50 commits. |
 | **A7** | Record integrity | L8 | Every `docs/design/*.md` passage and `docs/decisions.md` line still describes the code as it stands. `docs/roadmap.md` holds open work **only**, and nothing in it is already built or a decided non-goal. Code comments asserting behaviour that does not exist — that has happened here at scale twice (several modules; seven passages about golden files). Doc comments whose prose contradicts the field or function below them. |
@@ -280,13 +280,13 @@ delegate. Run them one at a time, appending to the ledger, and pause after A1.
 | 1 | Core is headless — no GPU/windowing/UI dependency, fully testable without a device | `deps_forbidden.rs` covers the *transitive* tree, so this one is machine-enforced. Check instead that the test still runs and still asserts the full forbidden list, and that nothing in core needs a device at test time. |
 | 2 | **Single mutation path** — "The only way to change a `Document` is `Document::apply(Transaction)`. Node fields are private; no public `&mut` access." | Every `pub fn` on `Node`/`Document` returning `&mut`; every mutation of node state reachable from outside `apply`. |
 | 3 | Identity stable, never reused, **caller-minted** — "`apply` never allocates ids" | Every `IdSource` use; any id minting inside `apply` or an op handler; `remap_subtree` / `reserve_existing_ids` on the load and paste paths. |
-| 4 | Document = truth, everything else derived — "No render representation ever feeds back into the model" | Any write into `Document`/`Node` originating in `ondin-render`, `Resolved`, or scene code. |
+| 4 | Document = truth, everything else derived — "No render representation ever feeds back into the model" | Any write into `Document`/`Node` originating in `mastik-render`, `Resolved`, or scene code. |
 | 5 | **Uncommitted state never enters the Document** — gestures live in app-side preview state and reach the renderer as `RenderOverrides`; "exactly one `Transaction` is committed per completed gesture" | Every gesture in `tools/`, `canvas.rs`, `rulers.rs`, `panels/`: does it mutate the document mid-gesture, and does it commit exactly one transaction? Its corollary "one gesture = one transaction = one undo step" (§9.3) is the assertable half. |
 | 6 | Local transforms only — world transforms live only in `Resolved` | Any node field or serialized value holding a world transform. |
-| 7 | Colour-space discipline — sRGB, straight alpha in the document; "the conversion lives **only** in `ondin-render` (`color.rs`)" | Every premultiply/linearize/gamma site outside `render/color.rs`. |
+| 7 | Colour-space discipline — sRGB, straight alpha in the document; "the conversion lives **only** in `mastik-render` (`color.rs`)" | Every premultiply/linearize/gamma site outside `render/color.rs`. |
 | 8 | Operations total & validated — "returns `Result<_, OpError>`; never panic on bad input" | Cross this with Pass 0's panic census: every `unwrap`/`expect`/`panic!`/index in an op handler or on a path reachable from a loaded file. `apply` is atomic — "on any error mutate nothing" — so also: does any handler mutate before the last validation? |
 | 9 | Serialization versioned & deterministic — "saving the same document twice produces identical bytes" | Every `HashMap`/`HashSet` (incl. `rustc-hash`) whose iteration order reaches `save`; every `#[serde(default)]` field added without a version bump where the default changes an old document's meaning; `migrate.rs`'s coverage of every version. |
-| 10 | MCP is a thin adapter | `crates/ondin-mcp/` is 50 lines today; check it holds no logic and stays that way. |
+| 10 | MCP is a thin adapter | `crates/mastik-mcp/` is 50 lines today; check it holds no logic and stays that way. |
 | 11 | Renderers behind one shared walk — "the document→scene walk is written exactly once, in `scene.rs`" | Any walk logic duplicated in `gpu.rs`/`cpu.rs`/`fx_gpu.rs`/`export::svg`. Note §15 D2: the original `trait Renderer`/`RenderTarget` design is dead and the doc says so inline — check the prose around it hasn't re-drifted. |
 
 Three more rules recur across many sites and belong in the census even though they sit outside §4:
@@ -345,7 +345,7 @@ a generic one.
   source file at zero bytes. The ledger falls under the same rule and is worse off, since it isn't
   in git (reference §5).
 - **Never launch the GUI.** Chrome questions are answered with a throwaway headless `#[test]`
-  (`OndinApp::headless(&ctx)`) or with `ondin export --svg`, and the probe is deleted before the
+  (`MastikApp::headless(&ctx)`) or with `mastik export --svg`, and the probe is deleted before the
   pass returns. CLAUDE.md's "Checking the *chrome* without a window" section lists what `ctx.run_ui`
   will and will not tell you — read it before writing a probe, or the probe will measure the wrong
   thing (a tooltip's ink never arrives; a widget's interaction state is last frame's; `.shapes` is
@@ -359,7 +359,7 @@ Carried across rounds unless the user changes them:
   test files. Test code is reviewed under L6 and L3; its *prose* is A6/A7's problem.
 - **Out of scope:** `docs/` as documents (A7 reviews them only where they contradict the code),
   `todo.md` (untracked scratchpad), `icons/`,
-  `stress.ondin`, `Cargo.lock`, `target/`, and `.claude/agents/*` except where A8 finds a gate list
+  `stress.mastik`, `Cargo.lock`, `target/`, and `.claude/agents/*` except where A8 finds a gate list
   there that is wrong.
 - **`Cargo.toml`'s dependency notes are in scope** (S22) — they carry the interop pins and two
   measured profile decisions, and a stale one is exactly the drift this review is for.

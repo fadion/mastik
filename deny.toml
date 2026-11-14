@@ -4,7 +4,7 @@
 #   cargo deny check
 #
 # Guards the dependency tree so a future `cargo update` cannot silently pull in a
-# crate whose license is incompatible with shipping Ondin under MIT.
+# crate whose license is incompatible with shipping Mastik under MIT.
 #
 # CI runs `check licenses bans sources` on every push (`.github/workflows/ci.yml`);
 # advisories are left out there because the database changes without a commit.
@@ -36,7 +36,7 @@ allow = [
     # `option-ext`, reached through dirs → dirs-sys, which locates the font cache
     # and preferences directories. Weak, file-level copyleft: it obliges anyone
     # distributing *modified versions of those files* to publish them, and does
-    # not reach Ondin's source. Used unmodified from crates.io.
+    # not reach Mastik's source. Used unmodified from crates.io.
     "MPL-2.0",
     # `webpki-roots` — Mozilla's CA root certificate set, reached through ureq's
     # TLS stack, which is how the Font tab downloads a web font. A *data* license
@@ -52,7 +52,7 @@ allow = [
 ]
 confidence-threshold = 0.8
 
-# The fonts Ondin bundles ITSELF — Inter and Noto Emoji (OFL-1.1) — are
+# The fonts Mastik bundles ITSELF — Inter and Noto Emoji (OFL-1.1) — are
 # embedded assets rather than crates, so cargo-deny cannot see them. They are
 # covered in THIRD-PARTY-NOTICES.md, with texts in the tree.
 
@@ -68,7 +68,7 @@ unmaintained = "workspace"
 #
 # The `zip` entries below are held at 8.x by `velopack` 1.2, which requires
 # `zip` ^8.6; the only `velopack` on zip 9 is a pre-release. All four are faults
-# of `ZipArchive::extract` / `ZipStreamReader::extract`, which neither Ondin
+# of `ZipArchive::extract` / `ZipStreamReader::extract`, which neither Mastik
 # (the `.sketch` import and the export archive read and write entry by entry) nor
 # `velopack` (its bundle copies entries out through `by_index`) calls. The
 # workspace's own `zip` stays on 8.x beside it: on 9 it would compile a second

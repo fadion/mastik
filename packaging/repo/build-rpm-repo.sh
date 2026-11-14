@@ -77,7 +77,7 @@ fi
 # between site builds** (§15 D974, `[X3-L1-01]`). Nothing here is incremental:
 # every Pages run downloads the unsigned release assets and signs them again,
 # and a signature packet carries its creation time — so
-# `packages/ondin-0.4.0-1.x86_64.rpm` had new bytes at the same URL after every
+# `packages/mastik-0.4.0-1.x86_64.rpm` had new bytes at the same URL after every
 # release, and a dnf client whose cached index (48 hours by default) still held
 # the old checksum failed its *whole* `dnf upgrade` on the mismatch.
 #

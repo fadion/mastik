@@ -70,7 +70,7 @@ ordinary stroked `Path` the node tool edits like a pen path.
   path it would carry on, a click draws nothing.
 - **What lands.** One stroke, no fill, round caps and joins, in the frame under the press
   (`draw_target`). Colour and width are the last pencil path's as it stands now
-  (`OndinApp::pencil_last`), so a width changed on it in the Stroke card carries to the next stroke;
+  (`MastikApp::pencil_last`), so a width changed on it in the Stroke card carries to the next stroke;
   before any, the pen's (`PEN_STROKE_COLOR`, `PEN_STROKE_WIDTH`). `edit::create_paths` takes the whole
   `Stroke`. The new path is selected; one stroke is one undo step, *Draw path*.
 - **The tool stays on** after a stroke, unlike the pen: freehand comes in runs. Arming it keeps the
@@ -100,7 +100,7 @@ axis, a horizontal one or both (`crate::mirror`).
   frame the run lands in (`run_frame`: a pen run's parent fixed at its first press, which a Ctrl-moved
   first anchor does not change; under the pointer while nothing is drawn), on open canvas the middle
   of the canvas past the rulers (`view_middle`).
-  `OndinApp::mirror_axes` resolves it. A new run on open canvas fixes `at` there as it starts
+  `MastikApp::mirror_axes` resolves it. A new run on open canvas fixes `at` there as it starts
   (`pin_mirror_axes`, a run minted in a path edit included), so a pan or zoom mid-run does not move the axes under anchors already placed;
   *Reset axis* lets them follow the view again. Leaving the pen and the pencil for another tool
   puts `at` back to `None`, so a placed axis does not carry into the next
@@ -123,16 +123,16 @@ axis, a horizontal one or both (`crate::mirror`).
   it was drawn. *Both axes* applies the vertical rule, then the horizontal one over what that made,
   so a quarter drawn from axis to axis closes into a whole.
 - **New runs mirror; extending an end does not.** The pen's and the pencil's new-path finishes go
-  through `OndinApp::mirror_run` and `edit::create_paths` (several subpaths in one `Path` node), one
+  through `MastikApp::mirror_run` and `edit::create_paths` (several subpaths in one `Path` node), one
   undo step under its usual name, *Add path* or *Draw path*, and mark the path with the axes they
   mirrored across, as the parent's own axes (`mirror::local_mirror`, `mark_mirrored`), so it is
   saved mirrored (*Mirrored paths*, below). In a frame turned a quarter turn the world vertical is
   saved as the path's horizontal; in one turned any other way no axis holds, the path lands plain,
   and the status says so (`mirror::SAVED_PLAIN`). A new run inside the edited path (the node tool's pen on bare canvas, `PenEdit::minted`)
   mirrors too: across that path's own axes when it is mirrored, otherwise across the edit's own
-  switch when it is on, which leaves a plain path plain. The edit's switch (`OndinApp::edit_mirror`,
-  read and written through `OndinApp::mirror` / `mirror_mut`, as the drawing switch is outside an
-  edit) starts off in every edit, whatever the drawing switch says, and ends with the edit. `OndinApp::mirror_frame` makes that choice for the commit,
+  switch when it is on, which leaves a plain path plain. The edit's switch (`MastikApp::edit_mirror`,
+  read and written through `MastikApp::mirror` / `mirror_mut`, as the drawing switch is outside an
+  edit) starts off in every edit, whatever the drawing switch says, and ends with the edit. `MastikApp::mirror_frame` makes that choice for the commit,
   the snapping and the chrome. Extending an open end (pen resume, a pencil stroke carried on) does
   not mirror.
 - **Pen snapping.** An anchor within `ON_AXIS_PT` of an axis lands on it unless it already sits on
@@ -146,7 +146,7 @@ axis, a horizontal one or both (`crate::mirror`).
   accent pill at its top end (left end for the horizontal axis) is its grab handle: a drag moves
   that axis, a right-click mid-drag puts it back where the drag began (`Grips::from`, in
   `cancel_gesture`), a double-click puts the axes back to the default. The pill claims its pointer
-  (`mirror::Grips`, `OndinApp::mirror_grip`): a press or drag on it places no point, shows no
+  (`mirror::Grips`, `MastikApp::mirror_grip`): a press or drag on it places no point, shows no
   *On axis* mark and wears the resize cursor, under the pen, the pencil and the node tool. While the pen
   draws, the mirrored run shows at 45% of the pen stroke; while the pencil draws, its trail's image
   shows as it goes, the trail's own line at 45%, joined where the commit will join it. Where the next point would land on an
@@ -222,7 +222,7 @@ row's resting badge (`BADGE_MIRROR`, tooltip *Mirrored path*), which the eye and
 - Point editing also covers adding a point on a segment, bending a segment directly, keyboard anchor
   navigation and numeric handle fields.
 - **An undo or redo that moves the document clears the point selection and any live pen run**
-  (`OndinApp::document_rewound`, only when `EditorSession::undo` reports a change). `PointSet` holds
+  (`MastikApp::document_rewound`, only when `EditorSession::undo` reports a change). `PointSet` holds
   `(subpath, anchor)` indices that stay in range but stop naming the clicked points; `PenEdit::subpaths`
   is a snapshot that `finish_pen` writes back whole.
 - **The pen from inside the edit**: `P` arms `app::pen_bias` without switching tool. `canvas::pen_verb`
@@ -249,7 +249,7 @@ row's resting badge (`BADGE_MIRROR`, tooltip *Mirrored path*), which the eye and
 
 ## The path bar
 
-A short rail floats beside the tool rail, centred on its Pen slot (`OndinApp::pen_button`, whichever
+A short rail floats beside the tool rail, centred on its Pen slot (`MastikApp::pen_button`, whichever
 of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; every bar is drawn by
 `show_bar`). It shows nothing the canvas does not already offer except *Clean up*, *Offset*,
 *Pixel-fit* on selected points and the mirror.
@@ -277,7 +277,7 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
 - **While the pen or the pencil is armed** (`path_bar::drawing_bar`) it holds Mirror, a rule, and
   *Done*, which finishes a pen run and drops to Select. Mirror
   (`icon::FLIP_HORIZONTAL`, lit while mirroring or while its flyout is open) opens a `ui::flyout` in
-  the `Foreground` order (`OndinApp::mirror_open`): *Off*, *Vertical axis*, *Horizontal axis* and
+  the `Foreground` order (`MastikApp::mirror_open`): *Off*, *Vertical axis*, *Horizontal axis* and
   *Both axes* as `ui::menu_check` rows, a rule, and *Reset axis*, dimmed until an axis has been
   dragged (*The axis is where it starts*). A pick or a press elsewhere closes it, and so does
   `Escape`, a rung of the ladder; leaving the pen and the pencil drops it.
@@ -320,7 +320,7 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
   between neighbouring points, stay corners, so a drawn polyline loses its jitter and a real corner
   survives; a run its chord already passes within the accuracy of becomes a line. kurbo's simplifier,
   which an earlier version used, wants a smooth source: on a drawn polyline it looped and strayed tens
-  of units. A refit with no fewer segments commits nothing. `ondin-core`'s `tests/simplify_suite.rs`
+  of units. A refit with no fewer segments commits nothing. `mastik-core`'s `tests/simplify_suite.rs`
   holds it to that over drawn polylines and the catalogue's curves.
 - **Offset** (`build::offset_outline`) is the shape grown by the distance, or shrunk for a negative
   one: everything within the distance of the outline, with corners mitred and the mitre clipped
@@ -343,7 +343,7 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
   squared. flo_curves, which an earlier version used, drops or inverts operands that share an edge,
   and an offset built from band pieces is all shared edges. An open subpath grows into a
   round-capped stroke around it, a dot into a disc, and has no inside to shrink.
-  `ondin-core`'s `tests/offset_suite.rs` checks the shapes of `tests/common` at sixteen distances,
+  `mastik-core`'s `tests/offset_suite.rs` checks the shapes of `tests/common` at sixteen distances,
   and even-odd and crossing shapes, tiny shapes and distances, open paths and dots, against an
   independent point-by-point oracle (the shape and its mitred stroke) whose blind band narrows with
   the distance, and for specks, stray edges and runaway segment counts; the areas of a square and a
@@ -373,12 +373,12 @@ selected without the node tool. Every corner rounds; a radius on a smooth anchor
 
 ## Pixel-fit
 
-A command, not a mode (`ondin_core::pixel_fit`, its status line in the app's `pixel_fit`): it
+A command, not a mode (`mastik_core::pixel_fit`, its status line in the app's `pixel_fit`): it
 moves a layer's edges onto the pixel grid once, so a 16–24px icon renders crisp at 1×. The grid is
 world units: `pixel_fit::fit` is `fit_on` with the identity, and `fit_on` fits onto the grid a
 scale and a translation map whole units of. An icon export fits a copy onto each size's pixels
 through `fit_copy_on`, which fits locked layers too: a lock keeps the person's edits off a layer,
-and the copy is no one's edit (`export.md`, *Icon files*). Its doors are the layer menu's Structure row (`OndinApp::pixel_fit`, over the
+and the copy is no one's edit (`export.md`, *Icon files*). Its doors are the layer menu's Structure row (`MastikApp::pixel_fit`, over the
 selection; `context-menus.md` §4), the palette, the path bar's button (`pixel_fit_points`, above)
 and the `pixel_fit` verb; no chord. Its glyph is `icon::PIXEL_FIT`, an arrow
 pushing a square's corner, not `GRID_FOUR`, which is the View menu's grid.

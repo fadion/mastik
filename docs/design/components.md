@@ -2,8 +2,8 @@
 
 Main components, instances as linked copies, overrides found by comparison, structural and field
 propagation, resets, variants and component properties, instance swap, nested properties, and the
-chrome that shows them. Code: `ondin-core/src/{component,propagate,reset,variant,swap,item}.rs`,
-`ondin-app`'s `panels/{component,variants}.rs`, `canvas.rs`, `layers`.
+chrome that shows them. Code: `mastik-core/src/{component,propagate,reset,variant,swap,item}.rs`,
+`mastik-app`'s `panels/{component,variants}.rs`, `canvas.rs`, `layers`.
 
 ## 5.3d Components and overrides
 
@@ -127,7 +127,7 @@ template's track list, a gradient's stops, a `Path`'s points, `corner_radii`, te
   (`id`) from *same look* (`value`).
 - A whole-list `==` still compares ids, so every *Mixed* reading and the export plan's dedupe compare
   through `item::same_values` (`build::paint_shown`, `shared_effects`, `shared_grids_keyed`,
-  `shared_exports_keyed`, `ondin-export/src/plan.rs`).
+  `shared_exports_keyed`, `mastik-export/src/plan.rs`).
 - `ItemId` is a newtype over `NodeId`, minted by `IdSource::mint_item` from the global stream — an
   item added locally to an instance and one added later to its main must never collide.
 - Unique **within its list** only: `Node::check_item_ids` (all six lists), run by `Document::apply`
@@ -317,13 +317,13 @@ on — an instance still equal to the main's old value takes the new one, one wi
 
 ### The verbs
 
-- **Delete** (`relink_for_delete`, from `OndinApp::delete_selection`): deleting a main **detaches its
+- **Delete** (`relink_for_delete`, from `MastikApp::delete_selection`): deleting a main **detaches its
   instances** in the same transaction — each becomes a plain copy keeping its look; undo restores main
   and links; nested chains relink one level up. Toast *Deleted "Button" — 4 instances detached ·
   Ctrl+Z to undo*.
 - **Cut is a move**: *Cut* then *Paste* of a main in the same document restores it under its own ids
   and relinks the instances the cut detached. The cut detaches as delete does and keeps the links it
-  took (`OndinApp::cut_move`, a `CutMove`); the first paste of that clipboard into that document, none
+  took (`MastikApp::cut_move`, a `CutMove`); the first paste of that clipboard into that document, none
   of its ids present, inserts the subtrees under their original ids and gives back each link whose
   node still holds exactly what the delete left (`paste_cut_move`, `TakenLink`). A second paste is an
   instance; a refused move falls back to an ordinary paste; an undo past the cut **parks** the move
@@ -440,13 +440,13 @@ transaction. Gated on `propagate::touches_copied`.
 
 ### Snapshot
 
-No `snapshot_version` bump: a copy reads as an ordinary node. The snapshot (`ondin-export`) exposes
+No `snapshot_version` bump: a copy reads as an ordinary node. The snapshot (`mastik-export`) exposes
 neither `component` nor `link` yet; both are decided for MCP (§8.4), and whether a snapshot fill
 carries its item id is open (unverified). A change of the snapshot's shape owes its own bump.
 
 ### The commit door and pass order
 
-The passes live in `ondin-core`; `EditorSession`'s commit is the only door that writes through them
+The passes live in `mastik-core`; `EditorSession`'s commit is the only door that writes through them
 (MCP's write tools and Command Mode commit through it too, invariant 10). **A door that edits a
 document holding components and bypasses it is a defect**: a field edit to a main reaching
 `Document::apply` without the pass leaves every copy at the old value, which the compare rule then
@@ -500,7 +500,7 @@ Canvas:
 
 - A main's tag is a chip, `color::COMPONENT` fill (no edge), filled hexagon and name in
   `COMPONENT_INK`, *N instances* in `COMPONENT_INK_DIM` while selected. Shown selected or not, where it is worn. A group that is a
-  main gets a canvas label as a page frame does (`OndinApp::tagged`, walked by `canvas::draw_frame_labels`).
+  main gets a canvas label as a page frame does (`MastikApp::tagged`, walked by `canvas::draw_frame_labels`).
 - A frame instance on its page wears a tag: outline hexagon and name in `COMPONENT`, its main's name trailing in
   `COMPONENT_DIM` when they differ — drawn **only while the instance is selected or entered**. The
   entered instance (`canvas::entered_instance`) is tagged wherever it sits, nested included
@@ -522,7 +522,7 @@ Canvas:
 - `canvas::draw_component_chrome`: a `COMPONENT` hairline round each instance of a selected main; round
   the entered instance (`canvas::entered_instance`, nearest instance root at/above `entered_group`) a
   dashed `COMPONENT` boundary, cleared once the selection leaves by any door
-  (`OndinApp::leave_a_scope_the_selection_left`). This chrome lies over the artwork, not the canvas
+  (`MastikApp::leave_a_scope_the_selection_left`). This chrome lies over the artwork, not the canvas
   ground, so it takes the violet: a neutral grey vanished on a light frame.
 
 Layers panel: neutral icons wearing the hexagon. Trailing mark, hidden while the row is hovered (its
@@ -531,7 +531,7 @@ local instance); a **dot** for an override on the row; on a collapsed row
 inside an instance, or a collapsed instance root, a dot for any drift (`reset::Drift::any` or a local
 layer, from `drift_cache`), bubbling no further than the root. A removed or reordered child's dot goes
 on **its parent's row**, with a tooltip (`reset::child_drift`); the context menu then offers
-***Restore children***, scoped by the row's fold (`OndinApp::row_folded`: no search open; the canvas
+***Restore children***, scoped by the row's fold (`MastikApp::row_folded`: no search open; the canvas
 door reads the same fold). A collapsed row lit by fields alone offers *Reset all* only. A kept child
 shows as local (nothing records provenance). A deleted child layer gets **no** ghost row.
 
@@ -543,7 +543,7 @@ Inspector:
   *Local to this instance*), the mixed selection's line and the binding line are rows of the identity
   card (`inspector_component` takes a `ComponentPart`: `Identity` / `Cards`).
 - **Description**: a main's and a variant's Component card and a set's *Variants* card show a
-  multiline field under the name (hint *Add a description*; buffered in `OndinApp::desc_edit`,
+  multiline field under the name (hint *Add a description*; buffered in `MastikApp::desc_edit`,
   committed trimmed on defocus). A single instance's card shows its main's description dim under the
   main's name — the variant's own, else its set's (`component::description_note`); it is never an
   override. A row of the swap picker hovers its main's description (`SwapTarget::description`).
@@ -555,7 +555,7 @@ Inspector:
   set's host. An open button (`icon::ARROW_SQUARE_OUT`) opens the link shown, the main's own else its
   set's (`component::doc_link_of`). A single instance's card puts the same button (tooltip *Open
   documentation: ‹host›*) at the end of the name line when its main or set has a link, and none
-  otherwise. The host shown (`ondin_core::link_host`) ends at a `\` as well as at `/`, `?` and `#`,
+  otherwise. The host shown (`mastik_core::link_host`) ends at a `\` as well as at `/`, `?` and `#`,
   as a browser reads the address, so it is the host the link opens. **`component::open_doc_link` is the only door to the browser** (egui's `OpenUrl`)
   and re-checks `web_link`, so only an `http`/`https` address leaves the app; nothing is fetched.
 - A face's instance count is on its name's line and is the *Select all*
@@ -565,8 +565,8 @@ Inspector:
   deletes a local *layer*; list resets do remove the instance's own items.
 - The drift summary counts fields, removed children and order, and properties apart (`PropDrift`);
   several instances read *K with changes*. Counts come from `reset::Drift` cached on
-  `EditorSession::revision` (`OndinApp::drift_cache`, also read by the menu; property readings in
-  `OndinApp::prop_cache`). Resets commit through `commit_edit` (`OndinApp::reset_tx`).
+  `EditorSession::revision` (`MastikApp::drift_cache`, also read by the menu; property readings in
+  `MastikApp::prop_cache`). Resets commit through `commit_edit` (`MastikApp::reset_tx`).
 - **Pushes** (`panels/push.rs`): a single instance's ⋯ adds, under a rule after the resets, *Push all
   to main*, *Push properties to main N* (where the component defines properties), *Push fields to main
   N*, *Push local layers to main N*, *Push order to main*, and under a second rule *Push removals to
@@ -604,8 +604,8 @@ Inspector:
 - **Override look**: a 4px neutral dot and full-brightness label, swapped for ↺ on hover with the main's
   value in a tooltip (*Reset to main*). Card headers carry the dot and a unit count, and on an open
   card a hover chip (*↺ Reset fill*), from `reset::overrides` grouped by `component::card_of`.
-  Sub-fields (an inset, a gap, a grow, a text size) are marked by `OndinApp::sub_mark` reading the
-  source value from `OndinApp::field_overrides`, so a field `overrides` skips is never marked.
+  Sub-fields (an inset, a gap, a grow, a text size) are marked by `MastikApp::sub_mark` reading the
+  source value from `MastikApp::field_overrides`, so a field `overrides` skips is never marked.
 - Marked cards: Transform (compared on **stored local** values and the axis's insets, never the world
   readings; laid-out W/H via `layout::size_field`), Appearance, Mask, Position (centre buttons
   compared on the auto margins), Container (`display` cells by mode, `ByMode`), Item, Type (on the
@@ -629,7 +629,7 @@ instance and *Reset <name>* on a linked child, **omitted** when `reset::Drift::a
 be pushed and dimmed with `menu::PUSH_KIT` or `PUSH_LOCKED` — the finer pushes live on the card. Toasts are text-only `EditorSession::info` lines naming `Ctrl+Z`.
 A selection never spans pages, so *Select all instances* selects those on the current page and the
 status line counts the ones on other pages; *Go to main component* switches to the main's page
-(`OndinApp::select_main`).
+(`MastikApp::select_main`).
 
 ### Variants and component properties — `variant.rs`
 
@@ -660,7 +660,7 @@ variant* is the verb that takes the next free combination; an instance's name is
   variable's description share (§5.3f). An instance reads its main's through the link, so a copy never
   holds one; a duplicated main keeps its own (`remap_subtree` copies it).
 - `Node::doc_link: String` (`doc_link()`) — where a main's or set's documentation lives; empty is
-  none. Held to `ondin_core::web_link`'s form, `http`/`https` only: `SetDocLink { id, url }` refuses
+  none. Held to `mastik_core::web_link`'s form, `http`/`https` only: `SetDocLink { id, url }` refuses
   any other url (`OpError::BadDocLink`), and the loader drops one rather than refusing the file.
   Copied and cleared as `description` is. `web_link` trims, puts `https://` before a bare host,
   lower-cases the scheme and refuses another scheme (`LinkRefusal::NotWeb`) or a missing host or a
@@ -716,7 +716,7 @@ property, *Property 1*, each whole name a value, and is named by the names' comm
 doors refuse first with a message — *Combine as variants* over two kinds (`variant::one_kind`, row
 dimmed with `menu::COMBINE_MIXED`, `combine` refusing `WrongKindForOp`), a canvas drag into a set
 (`component::can_hold` → `variant::fits_set`, `canvas::SET_OF_ANOTHER_KIND`), the layers panel drop
-(`drop_is_legal`; `OndinApp::set_refusal` gives `SET_OF_ANOTHER_KIND` or `SET_OF_MIXED_KINDS`).
+(`drop_is_legal`; `MastikApp::set_refusal` gives `SET_OF_ANOTHER_KIND` or `SET_OF_MIXED_KINDS`).
 `variant::takes_together` (newcomer mains all one kind, fitting the set) is asked by both doors, since
 an empty set fits either kind. The loader never refuses a mixed set.
 
@@ -839,12 +839,12 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
 
 ### Variants chrome — `panels/variants.rs`, `panels/component.rs`
 
-- **A set** gets a *Variants* card in the Component card's place (`OndinApp::set_body`): glyph and name
+- **A set** gets a *Variants* card in the Component card's place (`MastikApp::set_body`): glyph and name
   via `component::name_line` with its instances' count as the select link; variant count in the title
-  (`OndinApp::panel_head`'s `size`); the clash note with a warning glyph; each variant property as a
+  (`MastikApp::panel_head`'s `size`); the clash note with a warning glyph; each variant property as a
   name field, a menu button and a × (disabled for the last), and its values as chips, a hairline
   (`variants::card_rule`) between properties. A chip's popup renames, moves and deletes its value;
-  deleting a used value confirms in a modal (`OndinApp::value_delete_confirmation`: *N variants use it
+  deleting a used value confirms in a modal (`MastikApp::value_delete_confirmation`: *N variants use it
   and are deleted with it. M instances will detach.*; a value changed meanwhile deletes nothing).
 - **Interaction state on the Variants card.** Every value chip's popup has a *State ▸* row
   (`icon::HAND_POINTING`, `ui::submenu_row`), greyed with `why_not_tie`'s reason on rest's value and
@@ -874,7 +874,7 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
   property-driven fields alone.
 - **A lone main or a set** gets a *Properties* card under the Component card: each property's kind
   glyph, name, ×, default and binding. A `+` in the header (`ui::HeadClicks::action_rect`,
-  `OndinApp::panel_head`) opens a menu hung `ui::MENU_GAP` under the `+`'s painted box: *Boolean ·
+  `MastikApp::panel_head`) opens a menu hung `ui::MENU_GAP` under the `+`'s painted box: *Boolean ·
   visibility*, *Text · text content*, an *Instance swap* row per unbound nested instance (one dimmed
   row saying why if none), and on a lone main *Variant · makes a set*. The card rests collapsed while
   empty (`sync_paint_collapse`). Three groups split by hairlines: boolean and text; swaps (each with
@@ -891,7 +891,7 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
   card colour and border, text never the selection blue; *N variants* while selected, or on a clash
   the warning glyph and `panels::clash_text`'s sentence; a clashing variant's tag leads with the
   warning glyph. A `+` disc at the bottom edge's middle while the set alone is selected, with its own
-  hit route (`canvas::set_plus_at` asked before any pick, calling `OndinApp::add_variant`;
+  hit route (`canvas::set_plus_at` asked before any pick, calling `MastikApp::add_variant`;
   `chrome_claims` keeps guides off it; `begin_select_drag` starts nothing on it), drawn after
   `draw_key_outline` (`draw_set_plus`).
 - **Layers**: the badge slot shows *N variants* on a collapsed set, `icon::PROPERTY_BOUND` on a layer bound

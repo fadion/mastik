@@ -1,0 +1,4068 @@
+//! The detached colour picker.
+//!
+//! One picker, three faces — solid, linear, radial — that differ only in the
+//! geometry controls above the ramp. It floats over the canvas and is dragged
+//! rather than docked into the inspector, because a gradient is judged against
+//! the artwork it sits on, not against a panel. It has no title bar, so the parts
+//! of the card that are not controls are the grab surface.
+//!
+//! **It holds no colour of its own.** Every frame it reads the brush back out of
+//! the target slot and writes edits through the inspector's preview→commit valve
+//! (§9.3), so a drag across the saturation plane is one undo step and the canvas
+//! updates live. The only state carried between frames is intent the document
+//! cannot express: which gradient stop is selected, the HSV it last wrote (RGB
+//! forgets hue at zero saturation and most of the saturation range near black), and
+//! a half-typed hex.
+//!
+//! **Two gestures the shared valve cannot see**, handled in
+//! [`MastikApp::pointer_slot`]: these controls are *position*-valued, so a colour
+//! exists the moment the pointer is over them. A **click** sets neither `dragged`
+//! nor `changed`, so it commits directly; a **press** sets neither either, so the
+//! frames before the gesture counts as a drag preview through `preview_slot`.
+use super::binding::{FaceTarget, FieldKey};
+use super::paint::{self, PaintKind, PaintSlot};
+use crate::app::MastikApp;
+use crate::colour_text;
+use crate::theme::{self, color, icon};
+use crate::ui::{self, Hsv, color_to_egui, hex_of, icon_button, mask_corners, segment_label};
+use eframe::egui;
+use eframe::egui::emath::GuiRounding as _;
+use mastik_core::Brush;
+use mastik_core::NodeId;
+use mastik_core::kurbo::Size;
+use mastik_core::peniko::Color;
+/// The open picker. Dropped when the target stops existing or the user closes it.
+pub struct Picker {
+    pub node: NodeId,
+    pub slot: PaintSlot,
+    /// Which gradient stop the colour controls are editing — the canvas handles'
+    /// too (`crate::gradient`).
+    pub(crate) stop: usize,
+    /// The HSV the picker last wrote, and the 8-bit colour it produced.
+    ///
+    /// **The handle's position is re-derived from the stored colour every frame, and
+    /// HSV↔RGB does not round-trip near the edges of the cube.** A grey has no hue,
+    /// so dragging value to zero and back comes out red; near black, saturation
+    /// collapses to a handful of 8-bit colours and the handle would jump sideways
+    /// while the pointer moves smoothly.
+    ///
+    /// Keyed by the colour it produced, so the remembered intent is trusted exactly
+    /// while the slot still holds what the picker put there. An edit from anywhere
+    /// else — the hex field, another panel, undo — changes the key and falls back to
+    /// deriving from the colour.
+    intent: Option<(Hsv, [u8; 4])>,
+    /// A hex field mid-edit. `None` when the field is showing the brush.
+    pub(crate) hex: Option<String>,
+    /// Where the window goes, and whether it has been put there yet.
+    ///
+    /// Forced with `current_pos` on the first frame rather than offered as a
+    /// `default_pos`, because egui keeps an area's position under its id for the
+    /// life of the process and ignores `default_pos` once shown. Moving the picker
+    /// clears space for the artwork, not a preference, so every open starts beside
+    /// the cards, level with the swatch that opened it.
+    spawn: egui::Pos2,
+    placed: bool,
+    /// The *Variables* face asked for over a paint that is not bound. A bound paint
+    /// shows that face whatever this says — the binding is its kind.
+    pub(crate) browse: bool,
+    /// The *Variables* face's search.
+    pub(crate) search: String,
+    /// Whether the current variable's row has been scrolled into view since the
+    /// picker opened on this slot.
+    pub(crate) scrolled: bool,
+    /// The hex row's pick button is armed: a canvas click picks into this slot
+    /// (`crate::eyedropper`).
+    pub(crate) picking: bool,
+    /// The colour under the eyedropper while it is over the canvas — shown in the
+    /// plane, the hue and the hex, and written nowhere.
+    pub(crate) preview: Option<[u8; 3]>,
+    /// The edited colour's hex while a preview stands in for it, for the hex
+    /// row's *was* label.
+    was: Option<String>,
+}
+impl Picker {
+    pub fn new(node: NodeId, slot: PaintSlot, spawn: egui::Pos2) -> Self {
+        Self {
+            node,
+            slot,
+            stop: 0,
+            intent: None,
+            hex: None,
+            spawn,
+            placed: false,
+            browse: false,
+            search: String::new(),
+            scrolled: false,
+            picking: false,
+            preview: None,
+            was: None,
+        }
+    }
+    /// Retarget an already-open picker, keeping its position on screen.
+    pub fn retarget(&mut self, node: NodeId, slot: PaintSlot) {
+        if self.node != node || self.slot != slot {
+            self.node = node;
+            self.slot = slot;
+            self.stop = 0;
+            self.hex = None;
+            // A different slot holds a different colour; its key would rule the
+            // intent out anyway, but dropping it does not rely on that.
+            self.intent = None;
+            self.browse = false;
+            self.search.clear();
+            self.scrolled = false;
+            self.picking = false;
+            self.preview = None;
+        }
+    }
+}
+/// Geometry: a card of 11px-padded rows.
+///
+/// The width is **pinned**, not derived from the contents: the faces do not need
+/// the same room, and an auto-sized window would jump every time the user changed
+/// tabs. 272 is what the *Variables* tab's label needs; every face stretches to it.
+pub(super) const WIDTH: f32 = 272.0;
+/// Roughly the tallest face, for placing the window clear of the screen edge.
+pub(super) const HEIGHT_HINT: f32 = 320.0;
+/// The picker is one more card hanging beside the panel, so its rows are
+/// [`ui::CONTROL_H`] like the panel's and the two popovers'.
+const ROW_H: f32 = ui::CONTROL_H;
+/// The **track**'s thickness — the hue ramp and the alpha strip — not a knob
+/// diameter.
+///
+/// [`ui::SLIDER_H`] is a different quantity (the knob diameter); this module's
+/// knob is a fixed 6.5/7.0 that this constant does not derive, so unifying the two
+/// values would thicken the strips and re-corner them. The two sliders bound
+/// different axes: this one bounds its knob vertically (the `+ 6.0` in
+/// `slider_track`) and lets it hang 7pt off each horizontal end, where `ui::slider`
+/// clamps travel so the knob cannot leave the rail.
+const TRACK_H: f32 = 9.0;
+const STOP_BAR_H: f32 = 11.0;
+/// Corner radius of the document-palette chips along the bottom of the card.
+const SWATCH_RADIUS: f32 = 5.0;
+/// The swatch rows: one chip's height, and the air between the recent row and the
+/// document's.
+const SWATCH_H: f32 = 14.0;
+const SWATCH_ROW_GAP: f32 = 6.0;
+/// Chips in each swatch row.
+const SWATCHES: usize = 6;
+/// How many colours the recent row remembers: as many as it shows.
+const RECENT_COLOURS: usize = SWATCHES;
+/// The value row's spacing, and its format button's and opacity field's widths.
+const ROW_GAP: f32 = ui::CARD_COL_GAP;
+const CHOOSER_W: f32 = 52.0;
+const PCT_W: f32 = 40.0;
+/// The value row's right inset, under a text field's 9 so the opacity sits nearer
+/// the edge and leaves the channels their room.
+const ROW_PAD_R: f32 = 6.0;
+/// The format menu's width, which holds `223 100 100` beside `HSB`.
+const MENU_W: f32 = 150.0;
+
+/// How the value row shows and takes the colour, a choice kept for the whole app
+/// (`Prefs::colour_format`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Format {
+    Hex,
+    Rgb,
+    Hsl,
+    Hsb,
+}
+
+impl Format {
+    pub(crate) const ALL: [Format; 4] = [Format::Hex, Format::Rgb, Format::Hsl, Format::Hsb];
+
+    /// The name the preferences file stores.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Format::Hex => "hex",
+            Format::Rgb => "rgb",
+            Format::Hsl => "hsl",
+            Format::Hsb => "hsb",
+        }
+    }
+
+    /// A stored name read back; anything unrecognised is Hex.
+    pub(crate) fn from_key(key: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|f| f.key() == key)
+            .unwrap_or(Format::Hex)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Format::Hex => "Hex",
+            Format::Rgb => "RGB",
+            Format::Hsl => "HSL",
+            Format::Hsb => "HSB",
+        }
+    }
+
+    /// Each field's tooltip and the most it holds; Hex has no fields.
+    fn channels(self) -> [(&'static str, f64); 3] {
+        match self {
+            Format::Hex | Format::Rgb => [
+                ("Red · 0–255", 255.0),
+                ("Green · 0–255", 255.0),
+                ("Blue · 0–255", 255.0),
+            ],
+            Format::Hsl => [
+                ("Hue · 0–360", 360.0),
+                ("Saturation · 0–100", 100.0),
+                ("Lightness · 0–100", 100.0),
+            ],
+            Format::Hsb => [
+                ("Hue · 0–360", 360.0),
+                ("Saturation · 0–100", 100.0),
+                ("Brightness · 0–100", 100.0),
+            ],
+        }
+    }
+
+    /// `c` as this format's three numbers. HSB and HSL come from `hsv`, the
+    /// picker's remembered intent for `c`, so a grey keeps its hue.
+    fn values(self, c: Color, hsv: Hsv) -> [f64; 3] {
+        let [h, s, third] = match self {
+            Format::Hex | Format::Rgb => {
+                let k = c.components;
+                return [k[0], k[1], k[2]].map(|v| f64::from(v) * 255.0);
+            }
+            Format::Hsb => [hsv.h, hsv.s, hsv.v],
+            Format::Hsl => hsl_of(hsv),
+        };
+        [
+            f64::from(h) * 360.0,
+            f64::from(s) * 100.0,
+            f64::from(third) * 100.0,
+        ]
+    }
+
+    /// `hsv` with channel `i` of this format set to `v`, in the format's units.
+    fn with_channel(self, hsv: Hsv, i: usize, v: f32) -> Hsv {
+        let units = [360.0, 100.0, 100.0];
+        let set = |mut c: [f32; 3]| {
+            c[i] = v / units[i];
+            c
+        };
+        match self {
+            Format::Hsb => {
+                let [h, s, b] = set([hsv.h, hsv.s, hsv.v]);
+                Hsv::new(h, s, b, hsv.a)
+            }
+            Format::Hsl => {
+                let [h, s, l] = set(hsl_of(hsv));
+                hsv_of_hsl(h, s, l, hsv.a)
+            }
+            Format::Hex | Format::Rgb => hsv,
+        }
+    }
+
+    /// The colour as the format's menu row reads it.
+    fn preview(self, c: Color, hsv: Hsv) -> String {
+        match self {
+            Format::Hex => hex_of(c),
+            _ => self
+                .values(c, hsv)
+                .map(|v| format!("{}", v.round()))
+                .join(" "),
+        }
+    }
+}
+
+/// HSV's hue, saturation and value as HSL's hue, saturation and lightness, all 0..1.
+fn hsl_of(hsv: Hsv) -> [f32; 3] {
+    let l = hsv.v * (1.0 - hsv.s / 2.0);
+    let s = if l <= 0.0 || l >= 1.0 {
+        0.0
+    } else {
+        (hsv.v - l) / l.min(1.0 - l)
+    };
+    [hsv.h, s, l]
+}
+
+/// [`hsl_of`]'s inverse.
+fn hsv_of_hsl(h: f32, s: f32, l: f32, a: f32) -> Hsv {
+    let v = l + s * l.min(1.0 - l);
+    let sv = if v <= 0.0 { 0.0 } else { 2.0 * (1.0 - l / v) };
+    Hsv::new(h, sv, v, a)
+}
+
+/// Whether a channel field's `text`, which arithmetic reads as `n`, is a
+/// hash-less hex colour instead. Six or eight hex digits always are, since no
+/// channel goes that high; three or four only past the channel's `max`, so a
+/// `128` typed into a field stays a number.
+fn hex_not_number(text: &str, n: f64, max: f64) -> bool {
+    let t = text.trim();
+    let hex = matches!(t.len(), 3 | 4 | 6 | 8) && t.chars().all(|c| c.is_ascii_hexdigit());
+    hex && (t.len() >= 6 || n > max)
+}
+/// The picker window's name, which `picker_window` also makes its `Area` id and
+/// so its layer's.
+///
+/// Named because the typography popup, which can open this picker, has to
+/// recognise a click that landed in it; the rect is not available to it (the
+/// picker draws after the inspector), so identity is the only question it can ask.
+/// See [`layer_id`].
+const WINDOW_NAME: &str = "colour-picker";
+
+/// The layer the picker draws into.
+pub(crate) fn layer_id() -> egui::Id {
+    egui::Id::new(WINDOW_NAME)
+}
+
+/// The picker's window, minus its position and its contents.
+///
+/// Shared with the test below rather than spelled twice, because the thing that
+/// has to be true is a property of *this* builder — a test that rebuilt it
+/// would keep passing after someone removed the line it exists to defend.
+fn picker_window() -> egui::Window<'static> {
+    egui::Window::new(WINDOW_NAME)
+        // Set, not derived: egui hashes the title as an `Option`, so the id a
+        // bare `Window::new` takes is not `Id::new(WINDOW_NAME)`.
+        .id(layer_id())
+        .title_bar(false)
+        .resizable(false)
+        // min == max pins the width; the height still follows the face.
+        .min_width(WIDTH)
+        .max_width(WIDTH)
+        // **Height zero, and do not "correct" it to the real one.** On its first
+        // frame an `Area` has no stored size and measures itself assuming
+        // `default_area_size` (600×400), which egui constrains to the screen —
+        // shoving a picker opened near the bottom edge up by the overhang of a
+        // window that does not exist. The shoved position is stored and `placed`
+        // never corrects it. An estimate of zero cannot overhang; the real height
+        // is still measured on that pass, and a larger estimate brings the bug back.
+        .default_size(egui::vec2(WIDTH, 0.0))
+        // Above the inspector column, which is also a floating area: dragged
+        // over it, the picker has to stay on top or it vanishes mid-edit.
+        .order(egui::Order::Foreground)
+        .frame(ui::menu_frame(ui::POPOVER_PAD))
+}
+impl MastikApp {
+    /// Open the picker on a node-less `slot` left of `card`, a popover's gap away
+    /// and a little above the row at `row_y`, as the inspector's opens left of its
+    /// cards; retarget it when one is open.
+    pub(crate) fn open_picker_beside(
+        &mut self,
+        ctx: &egui::Context,
+        slot: PaintSlot,
+        card: egui::Rect,
+        row_y: f32,
+    ) {
+        let page = self.session.page;
+        if let Some(p) = self.picker.as_mut() {
+            return p.retarget(page, slot);
+        }
+        let screen = ctx.input(|i| i.content_rect());
+        let (left, top) = (screen.min.x + 12.0, screen.min.y + 12.0);
+        let spawn = egui::pos2(
+            (card.left() - WIDTH - crate::app::POPOVER_GAP).max(left),
+            (row_y - 40.0).clamp(top, (screen.max.y - HEIGHT_HINT).max(top)),
+        );
+        self.picker = Some(Picker::new(page, slot, spawn));
+    }
+    /// Draw the picker if one is open. Closes itself when its target has gone
+    /// (the layer was deleted, or the fill row it points at was removed).
+    pub(crate) fn picker_ui(&mut self, ctx: &egui::Context) {
+        // A run of key steps ends when the keyboard leaves its control, the picker
+        // closed or not; only then does its colour join the recent ones.
+        if let Some((control, colour)) = self.key_colour
+            && ctx.memory(|m| m.focused()) != Some(control)
+        {
+            self.key_colour = None;
+            self.remember_colour(colour);
+        }
+        let Some(p) = &self.picker else { return };
+        let (node, slot, spawn, placed) = (p.node, p.slot, p.spawn, p.placed);
+        // The picker belongs to the layer it was opened from, so it goes away when
+        // that layer is deselected or replaced; leaving it up would edit something
+        // the canvas no longer shows as chosen.
+        let orphaned = match slot {
+            // The ground's picker is what the inspector offers when *nothing* is
+            // selected. `is_empty` would be wrong: it answers about layers, and a
+            // guide selection leaves it true while the inspector shows the Guide panel.
+            PaintSlot::Canvas => !self.session.selection.nothing(),
+            // `guides()`, not `guide()`: the latter answers "and is it the only
+            // one", which would close the picker when a second guide is Shift-clicked.
+            PaintSlot::Guide => self.session.selection.guides().is_empty(),
+            // These belong to the *selection*, so only it emptying orphans them;
+            // changing which layers are selected re-scopes the edit.
+            PaintSlot::Selection(..)
+            | PaintSlot::SelectionAll(_)
+            | PaintSlot::GroupColor(_)
+            | PaintSlot::GroupGradient(_) => self.session.selection.ids().is_empty(),
+            // Both character-scoped slots (`paint::char_scoped` is the same pair)
+            // orphan on a **row**: the rows that open them live on the Character tab
+            // of a popup that can be closed or switched away from. A switched-off
+            // `TextDecoration` is answered by `slot_brush` reading `None`; whether an
+            // absent run colour behaves the same way is not established.
+            PaintSlot::TextDecoration(_) | PaintSlot::TextColor => {
+                self.type_menu != Some(crate::app::TypeTab::Character)
+                    || !self.session.selection.contains(node)
+            }
+            // An effect row is drawn only where the selected layers **agree**. The
+            // catch-all below is not enough: the anchor stays contained after a
+            // Shift-click widens the selection, so the picker would survive a
+            // widening the card did not and replace another layer's whole stack.
+            // `Effect(i)` is scoped to one node's list, unlike the selection-scoped
+            // slots above.
+            PaintSlot::Effect(_) => {
+                !self.session.selection.contains(node)
+                    || self.shared_effects(self.session.selection.ids()).is_none()
+            }
+            // The Layout grid card draws its rows only where the selected frames
+            // **agree** (`shared_grids`), so the `Effect` argument applies. Its
+            // write goes through `frame_subjects()` and reads each subject's own
+            // list, so a hex typed after a widening would recolour another frame's
+            // grid on a row no longer drawn. `frame_subjects()` and not
+            // `selection.ids()`: a Shift-clicked *rect* does not make the grids
+            // disagree and must not close the picker.
+            PaintSlot::Grid(_) => {
+                !self.session.selection.contains(node)
+                    || self.shared_grids(&self.frame_subjects()).is_none()
+            }
+            // A duotone end's row lives on the image card's Adjustments tab, so the
+            // picker goes with the card or the tab.
+            PaintSlot::Duotone(i, _) => {
+                self.edited_image() != Some((node, i))
+                    || self.image_tab != super::ImageCard::Adjustments
+            }
+            // A variable's cell belongs to the browser, not to the selection: it
+            // goes when the browser, the variable or its mode does.
+            PaintSlot::VarCell(var, mode) => {
+                self.var_browser.is_none()
+                    || self.session.doc.variables().get(var).is_none()
+                    || self.session.doc.variables().mode(mode).is_none()
+            }
+            // A Settings colour belongs to the open form, whatever is selected.
+            PaintSlot::Pref(_) => self.settings.is_none(),
+            _ => !self.session.selection.contains(node),
+        };
+        // A cell's previewed colour lives only while a button is held, so a
+        // cancelled press cannot leave the picker reading a colour the table never
+        // took (`MastikApp::var_cell_preview`). **Not on the release frame**: the
+        // valve commits inside this frame's body, after `slot_brush` has read, so
+        // dropping it here would draw the old colour for a frame. The valve's
+        // release clears it itself.
+        if !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
+            self.var_cell_preview = None;
+        }
+        let Some(brush) = self.slot_brush(node, slot).filter(|_| !orphaned) else {
+            self.picker = None;
+            return;
+        };
+        // **The eyedropper's hovered colour stands in for the edited stop's**, for
+        // the eye only: nothing is written until the click.
+        let preview = self
+            .picker
+            .as_ref()
+            .filter(|p| p.picking)
+            .and_then(|p| p.preview.map(|rgb| (rgb, p.stop)));
+        let brush = match preview {
+            Some((rgb, stop)) if !matches!(brush, Brush::Image(_)) => {
+                let stops = paint::stops_of(&brush);
+                let was = hex_of(stops[stop.min(stops.len() - 1)].1);
+                if let Some(p) = &mut self.picker {
+                    p.was = Some(was);
+                }
+                with_stop_rgb(&brush, stop, rgb)
+            }
+            _ => {
+                if let Some(p) = &mut self.picker {
+                    p.was = None;
+                }
+                brush
+            }
+        };
+        let box_size = self.local_box(node).unwrap_or(Size::new(100.0, 100.0));
+        let mut close = false;
+        let mut window = picker_window();
+        if !placed {
+            window = window.current_pos(spawn);
+        }
+        let shown = window.show(ctx, |ui| {
+            ui::hold_tab(ui);
+            ui.set_width(WIDTH - ui::POPOVER_PAD * 2.0);
+            // One number across every popover in the app.
+            ui.spacing_mut().item_spacing.y = crate::ui::POPOVER_SECTION_GAP;
+            close = self.picker_body(ui, node, slot, &brush, box_size);
+        });
+        // Over the Settings modal, which a press raises to the top: put back above
+        // it, the picker stays live and the press is not a backdrop click.
+        if slot.pref_scoped().is_some()
+            && let Some(shown) = &shown
+        {
+            ctx.move_to_top(shown.response.layer_id);
+        }
+        if let Some(p) = &mut self.picker {
+            p.placed = true;
+        }
+        if close {
+            self.picker = None;
+        }
+    }
+    /// Returns true when the user asked to close.
+    fn picker_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        box_size: Size,
+    ) -> bool {
+        let kind = paint::kind_of(brush);
+        // **The picker closes rather than drawing itself over a picture.** An
+        // image's stop list is a placeholder grey (`paint::stops_of`), so the
+        // controls would offer a colour the picture does not have; writes are
+        // already refused (`paint::with_stops` returns an image unchanged). An
+        // image row does not open the picker (`inspector::paint_row`); this is for
+        // a picker left open over a slot that has since become an image — a relink,
+        // an undo, a paste.
+        if kind == PaintKind::Image {
+            return true;
+        }
+        let inner_w = ui.available_width();
+        let mut close = false;
+        // Kind tabs + close. The track takes everything the close button and the
+        // gap before it do not, so the row lands exactly on the right margin.
+        //
+        // The tabs are *Solid* and *Gradient*; which gradient is the geometry row's
+        // chip's menu (`kind_menu`), so the strip stays words at any number of kinds.
+        //
+        // **A slot that cannot hold a gradient shows the tabs anyway, with Gradient
+        // disabled**, so the header is not empty and the panel reads as the same one
+        // with a choice unavailable (§9.4).
+        //
+        // **A slot a variable can bind carries a third tab, *Variables***: a binding
+        // is another kind of paint. A bound paint opens on it; leaving it for *Solid*
+        // detaches to the colour drawn, and for *Gradient* converts what is drawn,
+        // which detaches too.
+        const TAB_GAP: f32 = 6.0;
+        let gradients = slot.takes_gradients();
+        // A variable's cell rides the same tab: a pick makes the cell an alias, and
+        // *Solid* writes the colour drawn, ending it.
+        let key = match slot {
+            PaintSlot::VarCell(var, mode) => Some(FaceTarget::Cell(var, mode)),
+            PaintSlot::Chart(_) => Some(FaceTarget::Field(FieldKey::Paint { id: node, slot })),
+            _ => super::binding::paint_item(slot)
+                .map(|_| FaceTarget::Field(FieldKey::Paint { id: node, slot })),
+        };
+        let bound = match key {
+            Some(FaceTarget::Field(k)) => self.field_var(k),
+            Some(FaceTarget::Cell(var, mode)) => {
+                self.session
+                    .doc
+                    .variables()
+                    .get(var)
+                    .and_then(|v| match v.cells.get(&mode) {
+                        Some(mastik_core::variable::Cell::Alias(t)) => Some(*t),
+                        _ => None,
+                    })
+            }
+            None => None,
+        };
+        let browse = self.picker.as_ref().is_some_and(|p| p.browse);
+        let on_vars = key.is_some() && (bound.is_some() || browse);
+        // The pick button lives in the hex row, which neither the Variables face
+        // nor an image draws, so a face without it cannot stay armed.
+        if (on_vars || kind == PaintKind::Image)
+            && let Some(p) = &mut self.picker
+        {
+            p.picking = false;
+            p.preview = None;
+        }
+        const SOLID: usize = 0;
+        const GRADIENT: usize = 1;
+        const VARIABLES: usize = 2;
+        let tabs = if key.is_some() { 3 } else { 2 };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = TAB_GAP;
+            let selected = match (on_vars, kind) {
+                (true, _) => VARIABLES,
+                (false, PaintKind::Solid) => SOLID,
+                (false, _) => GRADIENT,
+            };
+            let track = inner_w - ui::CLOSE_BUTTON_W - TAB_GAP;
+            let live = |i: usize| i != GRADIENT || gradients;
+            let label = |i: usize| match i {
+                SOLID => "Solid",
+                GRADIENT => "Gradient",
+                _ => "Variables",
+            };
+            let picked = ui::segmented_enabled(
+                ui,
+                track,
+                ui::SEGMENT_CELL_H,
+                tabs,
+                selected,
+                live,
+                |p, i, rect, on| match live(i) {
+                    true => segment_label(p, rect, label(i), on),
+                    false => ui::segment_label_disabled(p, rect, label(i)),
+                },
+            );
+            match picked {
+                Some(i) if i == selected => {}
+                Some(VARIABLES) => {
+                    if let Some(p) = &mut self.picker {
+                        p.browse = true;
+                        p.scrolled = false;
+                    }
+                }
+                Some(i) => {
+                    if let Some(p) = &mut self.picker {
+                        p.browse = false;
+                        p.stop = 0;
+                    }
+                    // *Gradient* from a solid or a binding makes a linear; the
+                    // chip's menu picks another.
+                    let to = match (i, kind) {
+                        (SOLID, _) => PaintKind::Solid,
+                        (_, k) if k.is_gradient() => k,
+                        _ => PaintKind::Linear,
+                    };
+                    match (bound, key) {
+                        // Solid off a binding: the colour drawn, `%` folded in.
+                        (Some(_), Some(FaceTarget::Field(k))) if to == PaintKind::Solid => {
+                            self.detach_field(k)
+                        }
+                        _ if to != kind || bound.is_some() => {
+                            let next = paint::convert(brush, to, box_size);
+                            self.write_slot(node, slot, next);
+                        }
+                        _ => {}
+                    }
+                }
+                None => {}
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui::close_button(ui).clicked() {
+                    close = true;
+                }
+            });
+        });
+        // The face keeps the Solid face's height so nothing jumps under the
+        // pointer — measured from that face when last drawn, a 226-point list
+        // until then.
+        let face_top = ui.cursor().top();
+        let solid_h = egui::Id::new("picker-solid-face-h");
+        if let (true, Some(k)) = (on_vars, key) {
+            let h = ui
+                .ctx()
+                .data(|d| d.get_temp::<f32>(solid_h))
+                .unwrap_or(ui::CONTROL_H + ui::POPOVER_SECTION_GAP + 226.0);
+            self.variables_face(ui, k, bound, inner_w, h);
+            return close;
+        }
+        // Geometry controls, then the stop bar — gradients only.
+        match kind {
+            PaintKind::Solid => {}
+            PaintKind::Linear => self.linear_controls(ui, node, slot, brush, box_size),
+            PaintKind::Radial => self.radial_controls(ui, node, slot, brush, box_size),
+            PaintKind::Sweep => self.sweep_controls(ui, node, slot, brush, box_size),
+            // Unreachable (the guard above returned); spelled out so removing that
+            // guard stops compiling here rather than drawing a stop bar over a photo.
+            PaintKind::Image => {}
+        }
+        if kind != PaintKind::Solid {
+            self.stop_bar(ui, node, slot, brush, inner_w);
+        }
+        // The colour controls act on the selected stop.
+        let stops = paint::stops_of(brush);
+        let index = self
+            .picker
+            .as_ref()
+            .map(|p| p.stop)
+            .unwrap_or(0)
+            .min(stops.len() - 1);
+        let current = stops[index].1;
+        // A gradient face's plane is shorter by what its geometry row and stop bar
+        // add over the Solid face's alpha slider and swatches, so all four faces
+        // are one height.
+        let plane_h = if kind == PaintKind::Solid {
+            104.0
+        } else {
+            102.0
+        };
+        self.sv_plane(ui, node, slot, brush, index, current, inner_w, plane_h);
+        self.hue_slider(ui, node, slot, brush, index, current, inner_w);
+        if kind == PaintKind::Solid && slot.takes_alpha() {
+            self.alpha_slider(ui, node, slot, brush, index, current, inner_w);
+        }
+        self.hex_row(ui, node, slot, brush, index, current, inner_w);
+        if kind == PaintKind::Solid {
+            self.document_swatches(ui, node, slot, brush, index, current, inner_w);
+            if key.is_some() {
+                let h = ui.min_rect().bottom() - face_top;
+                ui.ctx().data_mut(|d| d.insert_temp(solid_h, h));
+            }
+        }
+        close
+    }
+    // --- gradient geometry -------------------------------------------------
+    /// Kind chip, angle field, and the two stop-order controls.
+    fn linear_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        box_size: Size,
+    ) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 7.0;
+            self.kind_chip(ui, node, slot, brush, box_size);
+            // The two buttons are square, the size of the inspector's per-corner
+            // radius button; the angle takes what is left after the chip.
+            let unit = ui::CONTROL_H;
+            let col = ui.available_width() - 2.0 * (unit + 7.0);
+            let mut deg = paint::linear_angle(brush).unwrap_or(0.0);
+            // `paint::linear_angle` ends `rem_euclid(360.0)`, so the range never
+            // meets a stored value it would have to clamp.
+            let resp = ui::value_field(
+                ui,
+                egui::vec2(col, ROW_H),
+                ui::Prefix::Icon(icon::ROTATION),
+                &mut deg,
+                ui::Scrub::whole(0.5).range(0.0..=360.0),
+                |d| d.suffix("°").max_decimals(0),
+            );
+            let next = paint::with_linear_angle(brush, deg % 360.0, box_size);
+            self.valve_slot(&resp, node, slot, next);
+            if ui::field_button(ui, icon::FLIP_HORIZONTAL, unit, ui::FieldButton::Off)
+                .on_hover_text("Flip 180°")
+                .clicked()
+            {
+                let deg = paint::linear_angle(brush).unwrap_or(0.0);
+                let next = paint::with_linear_angle(brush, (deg + 180.0) % 360.0, box_size);
+                self.write_slot(node, slot, next);
+            }
+            if ui::field_button(ui, icon::ARROWS_CLOCKWISE, unit, ui::FieldButton::Off)
+                .on_hover_text("Reverse the stops")
+                .clicked()
+            {
+                let next = paint::reverse_stops(brush);
+                self.write_slot(node, slot, next);
+            }
+        });
+    }
+    /// Kind chip, the start-angle field, and *Reverse the stops*. The centre is
+    /// dragged on the canvas.
+    fn sweep_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        box_size: Size,
+    ) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 7.0;
+            self.kind_chip(ui, node, slot, brush, box_size);
+            let unit = ui::CONTROL_H;
+            let col = ui.available_width() - (unit + 7.0);
+            let (centre, start) =
+                paint::sweep_geom(brush).unwrap_or((mastik_core::kurbo::Point::ZERO, 0.0));
+            let mut deg = start;
+            // `paint::sweep_geom` ends `rem_euclid(360.0)`, so the range never meets a
+            // stored value it would have to clamp.
+            let resp = ui::value_field(
+                ui,
+                egui::vec2(col, ROW_H),
+                ui::Prefix::Icon(icon::ROTATION),
+                &mut deg,
+                ui::Scrub::whole(0.5).range(0.0..=360.0),
+                |d| d.suffix("°").max_decimals(0),
+            );
+            let resp = resp.on_hover_text("Where the sweep starts");
+            let next = paint::with_sweep_geom(brush, centre, deg % 360.0);
+            self.valve_slot(&resp, node, slot, next);
+            if ui::field_button(ui, icon::ARROWS_CLOCKWISE, unit, ui::FieldButton::Off)
+                .on_hover_text("Reverse the stops")
+                .clicked()
+            {
+                let next = paint::reverse_stops(brush);
+                self.write_slot(node, slot, next);
+            }
+        });
+    }
+    /// Kind chip, plus CX/CY fields. The centre and the radii are dragged on the
+    /// canvas.
+    fn radial_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        box_size: Size,
+    ) {
+        let (cx0, cy0) = paint::radial_centre(brush, box_size).unwrap_or((0.5, 0.5));
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 7.0;
+            self.kind_chip(ui, node, slot, brush, box_size);
+            // Split what is left after the chip, allowing for the one gap
+            // between the two fields — the row's own `item_spacing`, so the pair
+            // finishes flush with the right margin.
+            let fw = (ui.available_width() - 7.0) / 2.0;
+            for (label, value, is_x) in [("CX", cx0, true), ("CY", cy0, false)] {
+                let mut pct = value * 100.0;
+                // A radial centre is `paint::radial_centre`'s `c.x / w` and is not
+                // clamped — SVG allows a centre outside the shape — so the range
+                // bounds only what a scrub or a keystroke may produce:
+                // `ui::value_field` never rewrites a stored value to fit it.
+                let resp = ui::value_field(
+                    ui,
+                    egui::vec2(fw, ROW_H),
+                    ui::Prefix::Text(label),
+                    &mut pct,
+                    ui::Scrub::whole(0.5).range(0.0..=100.0),
+                    |d| d.suffix("%").max_decimals(0),
+                );
+                // ⚠️ Not clamped to `0..=1` here: `valve_slot` commits `next` when
+                // the valve lets go, whether anything moved or not, so a clamp
+                // would move a stored off-shape centre on a bare click.
+                let f = pct / 100.0;
+                let next = if is_x {
+                    paint::with_radial_centre(brush, f, cy0, box_size)
+                } else {
+                    paint::with_radial_centre(brush, cx0, f, box_size)
+                };
+                self.valve_slot(&resp, node, slot, next);
+            }
+        });
+    }
+    /// The kind button: a field button holding the gradient's thumbnail. A click
+    /// opens a menu of the gradient kinds, and picking one converts the paint (its
+    /// stops kept, its geometry reframed on the box). A caret badge on the
+    /// thumbnail's corner says so; open, the button wears the `accent_700` border.
+    fn kind_chip(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        box_size: Size,
+    ) {
+        /// The thumbnail's inset from the button's edge, and its corner.
+        const INSET: f32 = 5.0;
+        const THUMB_R: f32 = 3.0;
+        let (rect, resp, _) = ui::button_face(ui, egui::vec2(ROW_H, ROW_H), ui::FieldButton::Off);
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+        let ground = match resp.hovered() {
+            true => color::hover(),
+            false => color::field(),
+        };
+        let thumb = rect.shrink(INSET);
+        let p = ui.painter();
+        if open {
+            p.rect_stroke(
+                rect,
+                egui::CornerRadius::same(ui::BUTTON_R),
+                egui::Stroke::new(1.0, color::accent_700()),
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui::paint_checkerboard(p, thumb, 4.0);
+        ui::paint_ramp(p, thumb, &ramp(brush));
+        mask_corners(p, thumb, THUMB_R, ground);
+        // The badge hangs off the thumbnail's corner, ringed in the button's ground.
+        let badge = egui::pos2(thumb.right(), thumb.bottom());
+        p.circle_filled(badge, 5.5, ground);
+        p.circle_filled(badge, 4.5, theme::color::text_a(60));
+        p.text(
+            badge,
+            egui::Align2::CENTER_CENTER,
+            icon::CARET_DOWN,
+            theme::icon_font(7.0),
+            theme::text::strong(),
+        );
+        let kind = paint::kind_of(brush);
+        let resp = resp.on_hover_text("Gradient kind");
+        let mut picked = None;
+        egui::Popup::menu(&resp).gap(ui::MENU_GAP).show(|ui| {
+            ui::popup_rows(ui);
+            ui.set_width(MENU_W);
+            for k in PaintKind::GRADIENTS {
+                let row = ui::MenuRow::new("", k.label()).checked(k == kind);
+                if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                    picked = Some(k);
+                }
+            }
+        });
+        if let Some(k) = picked.filter(|k| *k != kind) {
+            if let Some(pk) = &mut self.picker {
+                pk.stop = 0;
+                pk.hex = None;
+            }
+            let next = paint::convert(brush, k, box_size);
+            self.write_slot(node, slot, next);
+        }
+    }
+    /// The stop bar: the ramp with a draggable handle per stop. Clicking the bar
+    /// adds a stop where it was clicked (sampled, so the ramp does not jump);
+    /// right-clicking a handle removes it.
+    fn stop_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        width: f32,
+    ) {
+        let stops = paint::stops_of(brush);
+        let selected = self.picker.as_ref().map(|p| p.stop).unwrap_or(0);
+        // Room for handles that overhang the bar top and bottom.
+        let (row, _) =
+            ui.allocate_exact_size(egui::vec2(width, STOP_BAR_H + 12.0), egui::Sense::empty());
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(row.min.x, row.center().y - STOP_BAR_H * 0.5),
+            egui::vec2(width, STOP_BAR_H),
+        );
+        let p = ui.painter();
+        ui::paint_checkerboard(p, bar, 5.0);
+        // **`stop_colours`, not `ramp`** — see that function.
+        ui::paint_ramp(p, bar, &stop_colours(brush));
+        mask_corners(p, bar, 5.0, color::card());
+        // The bar is registered *before* the handles on it: egui gives an
+        // overlapping click to the widget registered last, so grabbing a handle
+        // grabs the handle rather than dropping a new stop underneath it.
+        let bar_resp = ui.interact(bar, ui.id().with("stop-bar"), egui::Sense::click());
+        let mut hit_handle = false;
+        let mut add_stop: Option<f32> = None;
+        let mut remove: Option<usize> = None;
+        for (i, (off, col)) in stops.iter().enumerate() {
+            let x = bar.min.x + bar.width() * off.clamp(0.0, 1.0);
+            let h =
+                egui::Rect::from_center_size(egui::pos2(x, bar.center().y), egui::vec2(11.0, 17.0));
+            let resp = ui.interact(
+                h.expand(2.0),
+                ui.id().with(("stop", i)),
+                egui::Sense::click_and_drag(),
+            );
+            if resp.hovered() || resp.dragged() {
+                hit_handle = true;
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            let on = i == selected;
+            let p = ui.painter();
+            p.rect_filled(h, egui::CornerRadius::same(3), color_to_egui(*col));
+            p.rect_stroke(
+                h,
+                egui::CornerRadius::same(3),
+                egui::Stroke::new(
+                    1.5,
+                    if on {
+                        egui::Color32::WHITE
+                    } else {
+                        theme::color::text_a(140)
+                    },
+                ),
+                egui::StrokeKind::Outside,
+            );
+            pointer_takes_over(&resp);
+            if (resp.clicked() || resp.drag_started())
+                && let Some(pk) = &mut self.picker
+            {
+                pk.stop = i;
+                pk.hex = None;
+            }
+            if resp.secondary_clicked() && stops.len() > 2 {
+                remove = Some(i);
+            }
+            // The keyboard's half: a stop the focus arrives on is selected, the
+            // arrows move the focused one, `Delete` removes it. On arrival only, or
+            // a held focus would take the selection back from a stop the pointer chose.
+            if resp.has_focus() {
+                if resp.gained_focus()
+                    && i != selected
+                    && let Some(pk) = &mut self.picker
+                {
+                    pk.stop = i;
+                    pk.hex = None;
+                }
+                let delete = ui.input(|k| {
+                    k.key_pressed(egui::Key::Delete) || k.key_pressed(egui::Key::Backspace)
+                });
+                if delete && stops.len() > 2 {
+                    remove = Some(i);
+                }
+                let keys = ui::arrow_keys(ui, &resp, true, false);
+                if keys.any() {
+                    let mut next = stops.clone();
+                    next[i].0 = (*off + f32::from(keys.x) * key_step(keys)).clamp(0.0, 1.0);
+                    self.write_slot_step(node, slot, paint::with_stops(brush, next), "stop-keys");
+                }
+            }
+            // A plain click only selects the stop; only a drag moves it, so that
+            // reaching for a stop's colour never nudges its offset.
+            if (resp.dragged() || resp.drag_stopped())
+                && let Some(pos) = resp.interact_pointer_pos()
+            {
+                let t = ((pos.x - bar.min.x) / bar.width()).clamp(0.0, 1.0);
+                let mut next = stops.clone();
+                next[i].0 = t;
+                self.valve_slot(&resp, node, slot, paint::with_stops(brush, next));
+            }
+        }
+        // A click on bare ramp adds a stop there.
+        if bar_resp.clicked()
+            && !hit_handle
+            && let Some(pos) = bar_resp.interact_pointer_pos()
+        {
+            add_stop = Some(((pos.x - bar.min.x) / bar.width()).clamp(0.0, 1.0));
+        }
+        // `Enter` on the focused bar adds one halfway from the selected stop to the
+        // next, or to the one before when it is the last.
+        if bar_resp.clicked() && bar_resp.interact_pointer_pos().is_none() {
+            add_stop = keyed_stop(&stops, selected);
+        }
+        if let Some(t) = add_stop {
+            let mut next = stops.clone();
+            next.push((t, paint::sample(&stops, t)));
+            next.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let index = next.iter().position(|s| s.0 == t).unwrap_or(0);
+            self.write_slot(node, slot, paint::with_stops(brush, next));
+            if let Some(pk) = &mut self.picker {
+                pk.stop = index;
+                pk.hex = None;
+            }
+        } else if let Some(i) = remove {
+            let mut next = stops.clone();
+            next.remove(i);
+            let last = next.len().saturating_sub(1);
+            self.write_slot(node, slot, paint::with_stops(brush, next));
+            if let Some(pk) = &mut self.picker {
+                pk.stop = pk.stop.min(last);
+                pk.hex = None;
+            }
+        }
+    }
+    // --- colour controls ---------------------------------------------------
+    #[allow(clippy::too_many_arguments)]
+    fn sv_plane(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        current: Color,
+        width: f32,
+        height: f32,
+    ) {
+        let hsv = self.hsv_of(current);
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
+        pointer_takes_over(&resp);
+        let p = ui.painter();
+        ui::paint_sv_plane(p, rect, hsv.h);
+        mask_corners(p, rect, 5.0, color::card());
+        let handle = egui::pos2(
+            rect.min.x + rect.width() * hsv.s,
+            rect.min.y + rect.height() * (1.0 - hsv.v),
+        );
+        p.circle_stroke(handle, 5.5, egui::Stroke::new(1.5, egui::Color32::WHITE));
+        p.circle_stroke(
+            handle,
+            6.5,
+            egui::Stroke::new(1.0, egui::Color32::from_black_alpha(100)),
+        );
+        if let Some(pos) = ui::primary_press_pos(ui, &resp) {
+            let s = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+            let v = 1.0 - ((pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
+            let next = Hsv::new(hsv.h, s, v, hsv.a);
+            self.write_stop_colour(&resp, node, slot, brush, index, next);
+        }
+        // Focused, the arrows walk the plane: saturation across, brightness up.
+        let keys = ui::arrow_keys(ui, &resp, true, true);
+        if keys.any() {
+            let step = key_step(keys);
+            let s = (hsv.s + f32::from(keys.x) * step).clamp(0.0, 1.0);
+            let v = (hsv.v - f32::from(keys.y) * step).clamp(0.0, 1.0);
+            let next = Hsv::new(hsv.h, s, v, hsv.a);
+            self.key_stop_colour(resp.id, node, slot, brush, index, next);
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn hue_slider(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        current: Color,
+        width: f32,
+    ) {
+        let hsv = self.hsv_of(current);
+        let (rect, resp) = self.slider_track(ui, width);
+        let p = ui.painter();
+        // Six segments round the hue wheel.
+        let ramp: Vec<(f32, egui::Color32)> = (0..=6)
+            .map(|i| {
+                let h = i as f32 / 6.0;
+                (h, Hsv::new(h.min(0.999), 1.0, 1.0, 1.0).to_egui())
+            })
+            .collect();
+        ui::paint_ramp(p, rect, &ramp);
+        mask_corners(p, rect, TRACK_H * 0.5, color::card());
+        slider_knob(p, rect, hsv.h, Hsv::new(hsv.h, 1.0, 1.0, 1.0).to_egui());
+        if let Some(pos) = ui::primary_press_pos(ui, &resp) {
+            let h = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+            let next = Hsv::new(h, hsv.s, hsv.v, hsv.a);
+            self.write_stop_colour(&resp, node, slot, brush, index, next);
+        }
+        let keys = ui::arrow_keys(ui, &resp, true, false);
+        if keys.any() {
+            // Short of 1: a hue of 1 is red again, and the knob would jump home.
+            let h = (hsv.h + f32::from(keys.x) * key_step(keys)).clamp(0.0, 0.999);
+            let next = Hsv::new(h, hsv.s, hsv.v, hsv.a);
+            self.key_stop_colour(resp.id, node, slot, brush, index, next);
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn alpha_slider(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        current: Color,
+        width: f32,
+    ) {
+        let hsv = self.hsv_of(current);
+        let (rect, resp) = self.slider_track(ui, width);
+        let p = ui.painter();
+        ui::paint_checkerboard(p, rect, TRACK_H * 0.5);
+        let opaque = Hsv::new(hsv.h, hsv.s, hsv.v, 1.0).to_egui();
+        let [r, g, b, _] = opaque.to_srgba_unmultiplied();
+        let clear = egui::Color32::from_rgba_unmultiplied(r, g, b, 0);
+        ui::paint_ramp(p, rect, &[(0.0, clear), (1.0, opaque)]);
+        mask_corners(p, rect, TRACK_H * 0.5, color::card());
+        slider_knob(p, rect, hsv.a, opaque);
+        if let Some(pos) = ui::primary_press_pos(ui, &resp) {
+            let a = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+            let next = Hsv::new(hsv.h, hsv.s, hsv.v, a);
+            self.write_stop_colour(&resp, node, slot, brush, index, next);
+        }
+        let keys = ui::arrow_keys(ui, &resp, true, false);
+        if keys.any() {
+            let a = (hsv.a + f32::from(keys.x) * key_step(keys)).clamp(0.0, 1.0);
+            let next = Hsv::new(hsv.h, hsv.s, hsv.v, a);
+            self.key_stop_colour(resp.id, node, slot, brush, index, next);
+        }
+    }
+    /// A 9pt slider track in a 15pt row, so the knob clears it vertically.
+    ///
+    /// **The `+ 6.0` is the knob's room and it is only the vertical half.**
+    /// [`slider_knob`] draws to radius 7.0 against a half-row of 7.5. On the
+    /// horizontal axis it is unclamped: at `t = 0` and `t = 1` the knob hangs 7pt
+    /// past each end of the row, which stays inside the card's [`ui::POPOVER_PAD`] of 11.
+    /// `ui::slider` bounds the other axis (travel clamped to the rail).
+    fn slider_track(&self, ui: &mut egui::Ui, width: f32) -> (egui::Rect, egui::Response) {
+        let (row, resp) = ui.allocate_exact_size(
+            egui::vec2(width, TRACK_H + 6.0),
+            egui::Sense::click_and_drag(),
+        );
+        pointer_takes_over(&resp);
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(row.min.x, row.center().y - TRACK_H * 0.5),
+            egui::vec2(width, TRACK_H),
+        );
+        (rect, resp)
+    }
+    /// The value row for the selected stop: the pick button, the format chooser,
+    /// the colour in that format, and the opacity.
+    #[allow(clippy::too_many_arguments)]
+    fn hex_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        current: Color,
+        width: f32,
+    ) {
+        let stops = paint::stops_of(brush);
+        let format = Format::from_key(&self.prefs.colour_format);
+        // Over layers that disagree there is no one channel to show, so a field
+        // format falls back to the text field, reading *Mixed*.
+        let mixed = matches!(slot, PaintSlot::SelectionAll(_));
+        // The pick button sits as far from the row's left edge as from its top
+        // and bottom: (row − hairlines − button) / 2.
+        let left = (ROW_H - ui::FIELD_BORDER_H - 20.0) / 2.0;
+        ui::field_row_inset(ui, egui::vec2(width, ROW_H), left, ROW_PAD_R, |ui| {
+            ui.spacing_mut().item_spacing.x = ROW_GAP;
+            // The eyedropper's door into this one slot.
+            let picking = self.picker.as_ref().is_some_and(|p| p.picking);
+            let pick = icon_button(ui, icon::EYEDROPPER, 20.0, 14.0, picking, true)
+                .on_hover_text("Pick a colour from anywhere in the window");
+            if pick.clicked()
+                && let Some(p) = &mut self.picker
+            {
+                p.picking = !p.picking;
+                p.preview = None;
+            }
+            let was = self.picker.as_ref().and_then(|p| p.was.clone());
+            // Beside three fields there is no room for Hex's *was* label, so the
+            // edited colour rides the chooser as a chip.
+            let was_chip = was
+                .as_deref()
+                .and_then(colour_text::parse)
+                .filter(|_| format != Format::Hex)
+                .map(|t| t.color(1.0));
+            self.format_chooser(ui, format, current, was_chip);
+            let pct_w = if slot.takes_alpha() { PCT_W } else { 0.0 };
+            if format == Format::Hex || mixed {
+                let retargeted =
+                    self.colour_text_field(ui, node, slot, current, format, was.as_deref(), pct_w);
+                if retargeted {
+                    return;
+                }
+            } else {
+                let previewing = was.is_some();
+                self.channel_fields(
+                    ui, node, slot, brush, index, current, format, previewing, pct_w,
+                );
+            }
+            if !slot.takes_alpha() {
+                return;
+            }
+            // The selected stop's own alpha, as the rest of the row is its colour:
+            // a stop made transparent is made visible here. The ramp's opacity is
+            // the fill row's number in the inspector.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Clamped on read too: the range would otherwise clamp an
+                // out-of-range alpha from a file into a write on a bare click.
+                let mut pct = current.components[3].clamp(0.0, 1.0) * 100.0;
+                // Held to its budget, which `channel_fields` leaves it: the theme's
+                // minimum width would push it over the last channel.
+                ui.spacing_mut().interact_size.x = PCT_W;
+                ui.spacing_mut().button_padding.x = 0.0;
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "the number inside a composed field row"
+                )]
+                let r = ui::bare_drag_value(
+                    ui,
+                    egui::DragValue::new(&mut pct)
+                        .suffix("%")
+                        .speed(ui::scrub(0.5))
+                        .max_decimals(0)
+                        .range(0.0..=100.0),
+                );
+                // 🚨 **This out-clamp stays.** A stop's alpha is clamped on import
+                // and on read, but nothing clamps it on load, so the value is not
+                // 0..1 by construction.
+                let a = (pct / 100.0).clamp(0.0, 1.0);
+                let mut s = stops.clone();
+                s[index].1 = current.with_alpha(a);
+                self.valve_slot(&r, node, slot, paint::with_stops(brush, s));
+            });
+        });
+    }
+    /// The value row's text face: the Hex format's field, and every format's over a
+    /// *Mixed* row. Any CSS colour reads (`colour_text`). Buffered, so a half-typed
+    /// value is not parsed on every keystroke.
+    ///
+    /// Whether it wrote over a selection, which retargets the picker, so the rest
+    /// of the row is not drawn against the slot it left.
+    #[allow(clippy::too_many_arguments)]
+    fn colour_text_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        current: Color,
+        format: Format,
+        was: Option<&str>,
+        pct_w: f32,
+    ) -> bool {
+        let mixed = matches!(slot, PaintSlot::SelectionAll(_));
+        let shown = if mixed && format != Format::Hex {
+            "Mixed".to_string()
+        } else {
+            hex_of(current)
+        };
+        let mut text = self
+            .picker
+            .as_ref()
+            .and_then(|p| p.hex.clone())
+            .unwrap_or_else(|| shown.clone());
+        // Hex leaves room for the *was* label; standing in for three fields, the
+        // field takes their room.
+        let width = match format {
+            Format::Hex => 60.0,
+            _ => ui.available_width() - pct_w - ROW_GAP,
+        };
+        let font = egui::FontId::proportional(ui::CONTROL_PT);
+        let pad = ui::edit_frame(ui, &font, ROW_H - ui::FIELD_BORDER_H, 0.0);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the entry inside a composed field row, which paints the ground and ui::typing_edge itself"
+        )]
+        let resp = pad.add(
+            ui,
+            width,
+            egui::TextEdit::singleline(&mut text)
+                .char_limit(ui::COLOUR_CHAR_LIMIT)
+                .font(font),
+        );
+        if let Some(was) = was.filter(|_| format == Format::Hex) {
+            ui.label(
+                egui::RichText::new(format!("was {was}"))
+                    .size(ui::CAPTION_PT)
+                    .color(theme::text::faint()),
+            );
+        }
+        ui::select_all_on_focus(ui, &resp, &text);
+        if (resp.has_focus() || resp.changed())
+            && let Some(p) = &mut self.picker
+        {
+            p.hex = Some(text.clone());
+        }
+        // Applied on defocus (which Enter also triggers), not per keystroke, so
+        // "6D" does not land as a colour on the way to "6D8CD9". Clearing the
+        // buffer also strips a typed `#`: the field falls back to `hex_of`.
+        //
+        // 🚨 **[`ui::defocus_commits`] and not a bare `lost_focus()`**: `Escape`
+        // surrenders focus too, so a bare check commits the value being
+        // cancelled. The condition stays `lost_focus()` and the *write* is what
+        // `Escape` suppresses, because the buffer clear must run on every defocus.
+        if !resp.lost_focus() {
+            return false;
+        }
+        if let Some(p) = &mut self.picker {
+            p.hex = None;
+        }
+        if !ui::defocus_commits(&resp) || text == shown {
+            return false;
+        }
+        // 🚨 **Nothing is written unless the typed colour differs from the one
+        // that is there** (as `inspector::paint_hex_field` does), compared as
+        // *bytes*: a colour the HSV plane produced would otherwise come back
+        // changed, with an undo step, by a click that typed nothing. `SelectionAll`
+        // is exempt: over a set that disagrees, `current` is a stand-in.
+        match colour_text::parse(&text) {
+            Some(_) if !mixed && colour_text::matches(&text, current) => false,
+            // ⚠️ **Over a selection, an untyped alpha leaves each paint its own
+            // opacity** (`write_slot_rgb`): sending the stand-in's would flatten
+            // the set.
+            Some(t) => {
+                self.write_slot_rgb(node, slot, t.color(1.0), t.alpha);
+                mixed
+            }
+            None => {
+                if let Some(why) = colour_text::refusal(&text) {
+                    self.session.info(why);
+                }
+                false
+            }
+        }
+    }
+    /// The value row's three channel fields in `format`, each a scrub field
+    /// previewing through the valve as the panel's numbers do. A whole colour
+    /// typed or pasted into one sets the whole colour.
+    ///
+    /// `previewing` tints the numbers while the eyedropper shows a colour that
+    /// has not been written.
+    #[allow(clippy::too_many_arguments)]
+    fn channel_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        current: Color,
+        format: Format,
+        previewing: bool,
+        pct_w: f32,
+    ) {
+        let hsv = self.hsv_of(current);
+        let values = format.values(current, hsv);
+        let gaps = if pct_w > 0.0 { 3.0 } else { 2.0 };
+        let w = ((ui.available_width() - pct_w - ROW_GAP * gaps) / 3.0).max(1.0);
+        let hairline = egui::Stroke::new(1.0, theme::color::text_a(20));
+        let mut last = egui::Rect::NOTHING;
+        for (i, (name, max)) in format.channels().into_iter().enumerate() {
+            let mut v = values[i];
+            let start = v;
+            let whole = std::cell::Cell::new(None);
+            let refused = std::cell::RefCell::new(None);
+            // A slot of fixed width, the number centred in it: a field sized by its
+            // text would widen at some values and push its neighbours along.
+            let (cell, _) =
+                ui.allocate_exact_size(egui::vec2(w, ui.available_height()), egui::Sense::hover());
+            let fill = egui::Layout::centered_and_justified(egui::Direction::LeftToRight);
+            let resp = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(cell).layout(fill), |ui| {
+                    ui.spacing_mut().interact_size.x = w;
+                    ui.spacing_mut().button_padding.x = 0.0;
+                    if previewing {
+                        ui.visuals_mut().override_text_color = Some(color::accent_200());
+                    }
+                    // Read only when the edit ends, so a number half-typed is never
+                    // mistaken for a colour on the way.
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "the number inside a composed field row"
+                    )]
+                    let field = egui::DragValue::new(&mut v)
+                        .range(0.0..=max)
+                        .speed(ui::scrub(if max > 100.0 { 1.0 } else { 0.5 }))
+                        .max_decimals(0)
+                        .update_while_editing(false);
+                    ui::bare_drag_value_parsed(ui, field, |s| {
+                        let number = crate::expr::eval(s).filter(|n| !hex_not_number(s, *n, max));
+                        number.or_else(|| match colour_text::parse(s) {
+                            Some(t) => {
+                                whole.set(Some(t));
+                                Some(start)
+                            }
+                            None => {
+                                *refused.borrow_mut() = colour_text::refusal(s);
+                                None
+                            }
+                        })
+                    })
+                })
+                .inner
+                .on_hover_text(name);
+            // In the middle of the gap before the field.
+            let x = cell.left() - ROW_GAP / 2.0;
+            ui.painter().vline(x, resp.rect.y_range(), hairline);
+            last = egui::Rect::from_x_y_ranges(cell.x_range(), resp.rect.y_range());
+            // Untouched, the brush as it is: converting back from HSL would move
+            // the colour by a rounding, and a bare click would commit it.
+            let next = if v == start {
+                brush.clone()
+            } else {
+                self.channel_brush(brush, index, current, hsv, format, i, v as f32)
+            };
+            // Only an edit is remembered: the valve also commits the brush a bare
+            // click left as it was.
+            let colour = paint::stops_of(&next)
+                .get(index)
+                .map(|s| s.1)
+                .filter(|_| v != start);
+            if self.valve_slot(&resp, node, slot, next)
+                && let Some(c) = colour
+            {
+                self.remember_colour(c);
+            }
+            if ui::defocus_commits(&resp) {
+                if let Some(t) = whole.get() {
+                    self.write_slot_rgb(node, slot, t.color(1.0), t.alpha);
+                }
+                if let Some(why) = refused.take() {
+                    self.session.info(why);
+                }
+            }
+        }
+        // And one before the opacity, which the row draws next.
+        if pct_w > 0.0 {
+            let x = last.right() + ROW_GAP / 2.0;
+            ui.painter().vline(x, last.y_range(), hairline);
+        }
+    }
+    /// `brush` with the selected stop's channel `i` of `format` set to `v`. An HSB or
+    /// HSL edit goes through the picker's remembered HSV, so dragging a channel to an
+    /// edge of the cube and back keeps the hue, as the plane does.
+    #[allow(clippy::too_many_arguments)]
+    fn channel_brush(
+        &mut self,
+        brush: &Brush,
+        index: usize,
+        current: Color,
+        hsv: Hsv,
+        format: Format,
+        i: usize,
+        v: f32,
+    ) -> Brush {
+        let colour = match format {
+            Format::Rgb => {
+                let mut k = current.components;
+                k[i] = (v / 255.0).clamp(0.0, 1.0);
+                Color::new(k)
+            }
+            Format::Hsb | Format::Hsl => {
+                let next = format.with_channel(hsv, i, v);
+                if let Some(p) = &mut self.picker {
+                    p.intent = Some((next, next.to_color().to_rgba8().to_u8_array()));
+                }
+                next.to_color()
+            }
+            Format::Hex => current,
+        };
+        let mut stops = paint::stops_of(brush);
+        if let Some(s) = stops.get_mut(index) {
+            s.1 = colour;
+        }
+        paint::with_stops(brush, stops)
+    }
+    /// The value row's format button, and its menu, whose rows each read the
+    /// colour in their format, so the menu doubles as a read-out. `was` is the
+    /// edited colour while the eyedropper shows another, as a chip. It sits inside
+    /// the value row's field, so it is a cell there (a [`ui::field_toggle`]'s
+    /// height and hover) rather than a dropdown field of its own.
+    fn format_chooser(
+        &mut self,
+        ui: &mut egui::Ui,
+        format: Format,
+        current: Color,
+        was: Option<Color>,
+    ) {
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(CHOOSER_W, ui::FIELD_TOGGLE.y),
+            egui::Sense::click(),
+        );
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+        let p = ui.painter();
+        ui::list_row_ground(p, rect, false, open || resp.hovered());
+        let mut x = rect.left() + 6.0;
+        if let Some(was) = was {
+            let chip = egui::Rect::from_center_size(
+                egui::pos2(x + 4.0, rect.center().y),
+                egui::vec2(8.0, 8.0),
+            );
+            p.rect_filled(chip, egui::CornerRadius::same(2), color_to_egui(was));
+            x += 12.0;
+        }
+        p.text(
+            egui::pos2(x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            format.label(),
+            egui::FontId::proportional(ui::CONTROL_PT),
+            theme::color::text(),
+        );
+        p.text(
+            egui::pos2(rect.right() - 4.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            icon::CARET_DOWN,
+            theme::icon_font(ui::COMBO_CHEVRON_PT),
+            ui::combo_chevron_ink(),
+        );
+        let resp = resp.on_hover_text("Colour format");
+        let hsv = self.hsv_of(current);
+        let mut picked = None;
+        egui::Popup::menu(&resp).gap(ui::MENU_GAP).show(|ui| {
+            ui::popup_rows(ui);
+            ui.set_width(MENU_W);
+            for f in Format::ALL {
+                let preview = f.preview(current, hsv);
+                let row = ui::MenuRow::new("", f.label())
+                    .accel(Some(&preview))
+                    .checked(f == format);
+                if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                    picked = Some(f);
+                }
+            }
+        });
+        if let Some(f) = picked.filter(|f| *f != format) {
+            self.prefs.colour_format = f.key().into();
+            self.prefs.save();
+            if let Some(p) = &mut self.picker {
+                p.hex = None;
+            }
+        }
+    }
+    /// Give `slot`'s edited colour this RGB, at `alpha` when one was typed
+    /// (`RRGGBBAA`) and at its own alpha otherwise — what typing a colour does, and
+    /// what the eyedropper does (its rule 3). One transaction, and a recent colour.
+    ///
+    /// ⚠️ **Over a selection without a typed alpha, each paint keeps its own
+    /// opacity**: over a set that disagrees there is no one number to send with the
+    /// colour. The plane and the strips send a whole brush on purpose; the hex does
+    /// not.
+    pub(crate) fn write_slot_rgb(
+        &mut self,
+        node: NodeId,
+        slot: PaintSlot,
+        rgb: Color,
+        alpha: Option<f32>,
+    ) {
+        self.remember_colour(rgb);
+        let alpha = alpha.filter(|_| slot.takes_alpha());
+        if let PaintSlot::SelectionAll(target) = slot {
+            let tx = self.edit_paints_all(target, move |b| {
+                Brush::Solid(rgb.with_alpha(alpha.unwrap_or_else(|| paint::alpha_of(b))))
+            });
+            self.session
+                .name_step(paint_step_name(target), icon::PAINT_BUCKET);
+            self.commit_edit(tx);
+            return;
+        }
+        let Some(brush) = self.slot_brush(node, slot) else {
+            return;
+        };
+        let stops = paint::stops_of(&brush);
+        let index = self
+            .picker
+            .as_ref()
+            .filter(|p| p.node == node && p.slot == slot)
+            .map_or(0, |p| p.stop)
+            .min(stops.len() - 1);
+        let mut next = stops.clone();
+        next[index].1 = rgb.with_alpha(alpha.unwrap_or(stops[index].1.components[3]));
+        self.write_slot(node, slot, paint::with_stops(&brush, next));
+    }
+    /// The recent colours (`Prefs::recent_colours`) over the document's own,
+    /// most-used first — how a second shape gets the exact fill the first one has,
+    /// or the colour used a minute ago. Empty places keep their row, so the face
+    /// does not grow the first time a colour is committed.
+    #[allow(clippy::too_many_arguments)]
+    fn document_swatches(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        current: Color,
+        width: f32,
+    ) {
+        const GLYPH_W: f32 = 14.0;
+        const GLYPH_GAP: f32 = 6.0;
+        let recent: Vec<Color> = self
+            .prefs
+            .recent_colours
+            .iter()
+            .map(|&[r, g, b]| Color::new([r, g, b, 1.0]))
+            .collect();
+        let document = self.document_palette(SWATCHES);
+        let gap = 5.0;
+        let (block, _) = ui.allocate_exact_size(
+            egui::vec2(width, SWATCH_H * 2.0 + SWATCH_ROW_GAP),
+            egui::Sense::empty(),
+        );
+        let x0 = block.min.x + GLYPH_W + GLYPH_GAP;
+        let cw = (block.max.x - x0 - gap * (SWATCHES - 1) as f32) / SWATCHES as f32;
+        let rows = [
+            (icon::CLOCK_COUNTER_CLOCKWISE, "Recent colours", &recent),
+            (icon::PALETTE, "In this document", &document),
+        ];
+        let mut chosen = None;
+        for (r, (glyph, tip, colours)) in rows.into_iter().enumerate() {
+            let top = block.min.y + r as f32 * (SWATCH_H + SWATCH_ROW_GAP);
+            let glyph_rect = egui::Rect::from_min_size(
+                egui::pos2(block.min.x, top),
+                egui::vec2(GLYPH_W, SWATCH_H),
+            );
+            ui.painter().text(
+                glyph_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                glyph,
+                theme::icon_font(12.0),
+                theme::text::dim(),
+            );
+            ui.interact(
+                glyph_rect,
+                ui.id().with(("swatch-row", r)),
+                egui::Sense::hover(),
+            )
+            .on_hover_text(tip);
+            for i in 0..SWATCHES {
+                // **Rounded to whole pixels — but not for the fill's sake.** epaint
+                // snaps every `RectShape` itself
+                // (`TessellationOptions::round_rects_to_pixels`); what it does not snap
+                // is a `Mesh`, so this puts `mask_corners` and `ui.interact` on the
+                // same grid as the fill.
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(x0 + i as f32 * (cw + gap), top),
+                    egui::vec2(cw, SWATCH_H),
+                )
+                .round_to_pixels(ui.pixels_per_point());
+                let radius = egui::CornerRadius::same(SWATCH_RADIUS as u8);
+                let Some(col) = colours.get(i) else {
+                    ui.painter().rect_stroke(
+                        rect,
+                        radius,
+                        egui::Stroke::new(1.0, theme::color::text_a(28)),
+                        egui::StrokeKind::Inside,
+                    );
+                    continue;
+                };
+                let resp = ui.interact(rect, ui.id().with(("swatch", r, i)), egui::Sense::click());
+                let p = ui.painter();
+                // **One rounded rect, and nothing underneath it.** A mask over a
+                // square fill hard-steps the corners (a `Mesh` is not feathered), and
+                // `paint_checkerboard` lays a **white** base that a rounded fill
+                // anti-aliases against, haloing the chip. So the board is drawn only
+                // when there is transparency to show, inset so the fill's soft edge
+                // never lands on it.
+                //
+                // **One physical pixel, not one point**: `shrink(1.0)` is 1.5 device
+                // pixels at 150% and the gap comes out uneven; dividing by the scale
+                // keeps the board on the pixel grid.
+                if col.components[3] < 1.0 {
+                    let inset = 1.0 / ui.pixels_per_point();
+                    ui::paint_checkerboard(p, rect.shrink(inset), 4.0);
+                    mask_corners(p, rect.shrink(inset), SWATCH_RADIUS - inset, color::card());
+                }
+                p.rect_filled(rect, radius, color_to_egui(*col));
+                // The inspector chips' hairline: a dark drawing would otherwise fill
+                // this row with invisible chips. Unconditional, *under* the in-use
+                // ring below rather than instead of it.
+                p.rect_stroke(
+                    rect,
+                    radius,
+                    egui::Stroke::new(1.0, ui::swatch_hairline()),
+                    egui::StrokeKind::Inside,
+                );
+                // Ring the one already in use, compared as bytes: a recent colour
+                // and the document's may differ below the eighth bit.
+                if hex_of(*col) == hex_of(current) {
+                    p.rect_stroke(
+                        rect,
+                        radius,
+                        egui::Stroke::new(1.5, color::accent_200()),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+                if resp.clicked() {
+                    chosen = Some(*col);
+                }
+            }
+        }
+        if let Some(col) = chosen {
+            self.remember_colour(col);
+            // The swatch carries the colour, the alpha slider owns the alpha — over
+            // a selection, **each paint's own**, as in `hex_row`: a Mixed row's
+            // swatch grid and hex field are the same edit by two doors.
+            if let PaintSlot::SelectionAll(target) = slot {
+                let tx = self.edit_paints_all(target, move |b| {
+                    Brush::Solid(col.with_alpha(paint::alpha_of(b)))
+                });
+                self.session
+                    .name_step(paint_step_name(target), icon::PAINT_BUCKET);
+                self.commit_edit(tx);
+                if let Some(p) = &mut self.picker {
+                    p.hex = None;
+                }
+                return;
+            }
+            let mut stops = paint::stops_of(brush);
+            stops[index].1 = col.with_alpha(current.components[3]);
+            self.write_slot(node, slot, paint::with_stops(brush, stops));
+            if let Some(p) = &mut self.picker {
+                p.hex = None;
+            }
+        }
+    }
+    /// Distinct solid colours used by the document's fills, strokes and artboard
+    /// backgrounds, most-used first.
+    ///
+    /// The whole-document scope of the census the Group Colors panel runs over a
+    /// selection (`build::colors_in`); one walk serves both, so neither misses a
+    /// new place a colour can hide.
+    fn document_palette(&self, want: usize) -> Vec<Color> {
+        let pages: Vec<NodeId> = self.session.doc.page_ids().collect();
+        mastik_core::colors_in(&self.session.doc, &pages)
+            .into_iter()
+            .take(want)
+            .map(|u| u.color)
+            .collect()
+    }
+    /// Put `c`'s colour first among the recent colours, once — called where a
+    /// colour is committed, never during a drag, since each call rewrites the
+    /// preferences file.
+    pub(crate) fn remember_colour(&mut self, c: Color) {
+        let [r, g, b, _] = c.components;
+        let rgb = [r, g, b];
+        let same = |o: &[f32; 3]| hex_of(Color::new([o[0], o[1], o[2], 1.0])) == hex_of(c);
+        let recent = &mut self.prefs.recent_colours;
+        if recent.first().is_some_and(same) {
+            return;
+        }
+        recent.retain(|o| !same(o));
+        recent.insert(0, rgb);
+        recent.truncate(RECENT_COLOURS);
+        self.prefs.save();
+    }
+    // --- plumbing ----------------------------------------------------------
+    /// HSV for a colour, honouring what the picker last wrote — see
+    /// [`Picker::intent`] for the three components and why one of them is not
+    /// enough.
+    fn hsv_of(&self, c: Color) -> Hsv {
+        hsv_for(self.picker.as_ref().and_then(|p| p.intent), c)
+    }
+    /// Write one stop's colour, remembering the HSV that produced it.
+    fn write_stop_colour(
+        &mut self,
+        resp: &egui::Response,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        hsv: Hsv,
+    ) {
+        if let Some(p) = &mut self.picker {
+            // Keyed by the colour, so the intent is trusted only while the slot
+            // still holds it.
+            p.intent = Some((hsv, hsv.to_color().to_rgba8().to_u8_array()));
+            p.hex = None;
+        }
+        let mut stops = paint::stops_of(brush);
+        if index >= stops.len() {
+            return;
+        }
+        stops[index].1 = hsv.to_color();
+        let next = paint::with_stops(brush, stops);
+        if self.pointer_slot(resp, node, slot, next) {
+            self.remember_colour(hsv.to_color());
+        }
+    }
+    /// [`Self::write_stop_colour`] for an arrow key on a focused plane or track:
+    /// committed at once, the steps of one run folding into one undo step.
+    fn key_stop_colour(
+        &mut self,
+        control: egui::Id,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        hsv: Hsv,
+    ) {
+        if self.gesture_cancelled {
+            return;
+        }
+        if let Some(p) = &mut self.picker {
+            p.intent = Some((hsv, hsv.to_color().to_rgba8().to_u8_array()));
+            p.hex = None;
+        }
+        let mut stops = paint::stops_of(brush);
+        if index >= stops.len() {
+            return;
+        }
+        stops[index].1 = hsv.to_color();
+        self.write_slot_step(node, slot, paint::with_stops(brush, stops), "colour-keys");
+        // Remembered once the run ends, not a shade a press (`picker_ui`).
+        self.key_colour = Some((control, hsv.to_color()));
+    }
+    /// Commit a slot edit driven by a pointer gesture: the **press** shows the colour
+    /// at once, a drag keeps showing it, and the release commits.
+    ///
+    /// `edit_valve` alone is not enough, twice over. It fires on `dragged` /
+    /// `drag_stopped` / `changed`, none of which a plain click sets; and none of
+    /// which a *press* sets either, because egui does not call a gesture a drag
+    /// until it has travelled, so the frames between button-down and the first
+    /// movement would show nothing.
+    ///
+    /// **The press is already a value on these controls**: a plane or a strip reads
+    /// the pointer's *position*, where a `DragValue` reads its *delta* and must stay
+    /// silent on a press. That is why the fix is here and not in the shared valve.
+    ///
+    /// Shown rather than committed, because the gesture is not over: the release
+    /// commits through `clicked()` if it never travelled, or through the valve's
+    /// `drag_stopped()` if it did, clearing the preview. Whether this frame
+    /// committed.
+    fn pointer_slot(
+        &mut self,
+        resp: &egui::Response,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: Brush,
+    ) -> bool {
+        // A cancelled drag across the plane must not land as a click on
+        // release, which is the one way a colour could still get through.
+        if self.gesture_cancelled {
+            return false;
+        }
+        if resp.clicked() {
+            self.write_slot(node, slot, brush);
+            return true;
+        }
+        // `is_pointer_button_down_on` and `dragged` overlap once travel begins;
+        // the valve owns that half.
+        if resp.is_pointer_button_down_on()
+            && !resp.dragged()
+            && self.preview_slot(node, slot, brush.clone())
+        {
+            // The selection chrome owes the same retreat it owes every inspector
+            // edit; `true` because the button is down. Nothing downstream does it:
+            // `edit_note` reads `dragged()` and `changed()`, which a press sets neither.
+            self.note_live_edit(true);
+            return false;
+        }
+        self.valve_slot(resp, node, slot, brush)
+    }
+}
+/// A mouse drag starting on a focused picker control gives up the focus, so the
+/// valve sees the drag end: it counts a focused control as still being edited,
+/// and the pointer stops calling it once the button is up.
+fn pointer_takes_over(resp: &egui::Response) {
+    if resp.drag_started() && resp.has_focus() {
+        resp.surrender_focus();
+    }
+}
+/// One arrow's step on a picker control's 0–1 scale: a hundredth, a tenth with
+/// `Shift`.
+fn key_step(keys: ui::Arrows) -> f32 {
+    if keys.coarse { 0.1 } else { 0.01 }
+}
+/// Where `Enter` on the stop bar adds a stop: halfway from stop `selected` to the
+/// next one along the bar, or to the one before when none follows. `None` with
+/// fewer than two stops.
+fn keyed_stop(stops: &[(f32, Color)], selected: usize) -> Option<f32> {
+    let at = stops.get(selected)?.0;
+    let after = stops
+        .iter()
+        .map(|s| s.0)
+        .filter(|&o| o > at)
+        .reduce(f32::min);
+    let before = stops
+        .iter()
+        .map(|s| s.0)
+        .filter(|&o| o < at)
+        .reduce(f32::max);
+    after.or(before).map(|o| (at + o) / 2.0)
+}
+/// A slider knob: a filled circle in the value's own colour, ringed white.
+fn slider_knob(p: &egui::Painter, track: egui::Rect, t: f32, fill: egui::Color32) {
+    let c = egui::pos2(
+        track.min.x + track.width() * t.clamp(0.0, 1.0),
+        track.center().y,
+    );
+    p.circle_filled(c, 6.5, fill);
+    p.circle_stroke(c, 5.5, egui::Stroke::new(2.0, egui::Color32::WHITE));
+    p.circle_stroke(
+        c,
+        6.5,
+        egui::Stroke::new(1.0, egui::Color32::from_black_alpha(100)),
+    );
+}
+/// A brush's stops as an egui ramp, **with `GradientBrush::opacity` folded in** —
+/// what the paint looks like, for every surface that is showing a paint.
+///
+/// [`stop_colours`] is the named opt-out for the one surface that edits the stops
+/// themselves. [`crate::ui::Swatch::Picture`] and the layers row fold
+/// `ImageSampler::alpha` in likewise.
+pub(super) fn ramp(brush: &Brush) -> Vec<(f32, egui::Color32)> {
+    let opacity = match brush {
+        Brush::Gradient(g) => g.opacity.clamp(0.0, 1.0),
+        _ => 1.0,
+    };
+    stop_colours(brush)
+        .into_iter()
+        .map(|(off, c)| (off, c.gamma_multiply(opacity)))
+        .collect()
+}
+
+/// The stops as they are **stored**, with no ramp opacity folded in — for the one
+/// surface that is editing those stops rather than showing the paint.
+///
+/// 🚨 **[`ramp`] folds `GradientBrush::opacity` in and this does not, deliberately.**
+/// The callers that are *chips* (the picker's preview, the inspector's paint row,
+/// the Type panel's text swatch) must look like the canvas; the **stop bar** sits
+/// under the opacity slider, and a bar that faded as the slider moved would dim the
+/// very handles being dragged. The common case is the default, so a new chip gets
+/// it right by doing nothing.
+pub(super) fn stop_colours(brush: &Brush) -> Vec<(f32, egui::Color32)> {
+    paint::stops_of(brush)
+        .into_iter()
+        .map(|(off, c)| (off, color_to_egui(c)))
+        .collect()
+}
+
+/// The undo-history name of a paint edit over a selection's shared list.
+fn paint_step_name(target: mastik_core::PaintTarget) -> &'static str {
+    match target {
+        mastik_core::PaintTarget::Fill => "Fill",
+        mastik_core::PaintTarget::Stroke => "Stroke",
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// A translucent chip's checkerboard is inset by exactly one **physical**
+    /// pixel, on every side, at every scale the app is likely to meet.
+    ///
+    /// `shrink(1.0)` is wrong above 100%: at 150% it insets by 1.5 device pixels
+    /// and the gap lands unevenly. Arithmetic rather than pixels: the chip rect is
+    /// already snapped, so a whole-device-pixel inset keeps the board on the grid.
+    #[test]
+    fn the_translucent_chip_board_is_inset_one_device_pixel_all_round() {
+        for ppp in [1.0_f32, 1.25, 1.5, 2.0] {
+            // A deliberately fractional chip: the row divided by three.
+            let chip = egui::Rect::from_min_size(
+                egui::pos2(148.0 + 1.0 / 3.0, 100.25),
+                egui::vec2(69.0 + 1.0 / 3.0, 14.0),
+            )
+            .round_to_pixels(ppp);
+            let board = chip.shrink(1.0 / ppp);
+            for (name, gap) in [
+                ("left", board.min.x - chip.min.x),
+                ("right", chip.max.x - board.max.x),
+                ("top", board.min.y - chip.min.y),
+                ("bottom", chip.max.y - board.max.y),
+            ] {
+                let device = gap * ppp;
+                assert!(
+                    (device - 1.0).abs() < 1e-3,
+                    "@{ppp}: {name} gap is {device} device px, want 1"
+                );
+            }
+        }
+    }
+    /// The picker opens where it was asked to **the first time too**: an `Area`
+    /// assumes 600×400 on its first frame and would be shoved up by the overhang
+    /// (see `picker_window`). The spawns overhang that estimate on both screens
+    /// while fitting the real window, so the right answer is `spawn` untouched.
+    #[test]
+    fn the_picker_opens_where_it_was_spawned_on_the_very_first_frame() {
+        for (w, h) in [(1600.0_f32, 900.0_f32), (1280.0, 800.0)] {
+            for ppp in [1.0, 1.25, 1.5, 2.0] {
+                let ctx = egui::Context::default();
+                crate::theme::install(&ctx);
+                ctx.set_pixels_per_point(ppp);
+                let input = || egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(w, h),
+                    )),
+                    ..Default::default()
+                };
+                // One pass to make fonts available before anything is measured.
+                let _ = ctx.run_ui(input(), |_| {});
+                let spawn = egui::pos2(w - 500.0, h - 340.0);
+                let body = |ui: &mut egui::Ui| {
+                    ui.set_width(WIDTH - ui::POPOVER_PAD * 2.0);
+                    ui.allocate_space(egui::vec2(WIDTH - ui::POPOVER_PAD * 2.0, 270.0));
+                };
+                // Frame one: the picker has just opened, so it is positioned.
+                let _ = ctx.run_ui(input(), |_| {
+                    picker_window().current_pos(spawn).show(&ctx, body);
+                });
+                // Frame two: `placed`, so the app leaves the position alone.
+                let mut seen = None;
+                let _ = ctx.run_ui(input(), |_| {
+                    seen = picker_window().show(&ctx, body).map(|r| r.response.rect);
+                });
+                let seen = seen.expect("the picker is on screen");
+                assert!(
+                    seen.min.distance(spawn) < 1.0,
+                    "{w}x{h} @{ppp}: opened at {:?}, asked for {spawn:?} \
+                     (window is {:?}, which fits without clamping)",
+                    seen.min,
+                    seen.size(),
+                );
+            }
+        }
+    }
+
+    /// A new picker keeps the popovers' gap from the inspector's cards, whatever row
+    /// opened it. flip: `open_picker` spawning left of `anchor.x` again → fails at the gap.
+    #[test]
+    fn a_new_picker_keeps_the_popovers_gap_from_the_cards() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = crate::app::MastikApp::headless(&ctx);
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
+        let column = crate::app::MastikApp::inspector_column(screen);
+        // A row's text inset inside its card, where `ui.cursor()` puts the anchor.
+        let anchor = egui::pos2(column.left() + crate::ui::CARD_MARGIN_X, 300.0);
+        let id = mastik_core::IdSource::new(0x6D2).mint();
+        let _ = ctx.run_ui(input(), |ui| {
+            app.open_picker(ui, id, PaintSlot::Fill(0), anchor);
+        });
+        let spawn = app.picker.as_ref().expect("opened").spawn;
+        let gap = column.left() - (spawn.x + WIDTH);
+        let popover_gap = column.left()
+            - (crate::app::MastikApp::popover_left(&ctx, crate::app::POPOVER_W)
+                + crate::app::POPOVER_W);
+        assert!(
+            (gap - popover_gap).abs() < 0.01,
+            "the picker is {gap} from the cards, a popover {popover_gap}"
+        );
+    }
+
+    /// A pick or a hex into a gradient writes the picker's selected stop, at that
+    /// stop's own alpha, and leaves the other stops alone.
+    /// flip: `write_slot_rgb`'s index forced to 0 → fails at stop 0.
+    #[test]
+    fn a_colour_written_into_a_gradient_lands_on_the_selected_stop() {
+        use mastik_core::peniko::{Gradient, color::DynamicColor};
+        use mastik_core::{Document, Fill, IdSource, NodeKind, Operation, Transaction};
+        let ctx = egui::Context::default();
+        let mut app = crate::app::MastikApp::headless(&ctx);
+        let mut ids = IdSource::new(0x6D1);
+        let root = ids.mint();
+        let a = ids.mint();
+        let mut doc = Document::new(root);
+        let (red, green) = (
+            Color::from_rgba8(255, 0, 0, 255),
+            Color::from_rgba8(0, 255, 0, 128),
+        );
+        let ramp = Gradient::new_linear((0.0, 0.0), (100.0, 0.0))
+            .with_stops([(0.0, red), (1.0, green)].as_slice());
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: a,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size: Size::new(100.0, 100.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetFills {
+                id: a,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: Brush::Gradient(ramp.into()).into(),
+                    visible: true,
+                }]),
+            },
+        ]))
+        .expect("build");
+        app.session.adopt_document(doc, None);
+        let mut picker = Picker::new(a, PaintSlot::Fill(0), egui::pos2(400.0, 300.0));
+        picker.stop = 1;
+        app.picker = Some(picker);
+        app.write_slot_rgb(
+            a,
+            PaintSlot::Fill(0),
+            Color::from_rgba8(0, 0, 255, 255),
+            None,
+        );
+        let fill = &app.session.doc.get(a).expect("a").paint().fills[0];
+        let Some(Brush::Gradient(g)) = fill.brush.literal() else {
+            panic!("still a gradient")
+        };
+        let rgba = |c: &DynamicColor| {
+            let c: Color = c.to_alpha_color();
+            c.to_rgba8().to_u8_array()
+        };
+        let stops: Vec<[u8; 4]> = g.gradient.stops.iter().map(|s| rgba(&s.color)).collect();
+        assert_eq!(stops[0], [255, 0, 0, 255], "stop 0 untouched");
+        assert_eq!(stops[1], [0, 0, 255, 128], "stop 1 blue, at its own alpha");
+    }
+}
+
+/// `brush` with stop `stop`'s colour (clamped to the last) made `rgb`, its alpha
+/// kept — the eyedropper's preview of a pick.
+fn with_stop_rgb(brush: &Brush, stop: usize, [r, g, b]: [u8; 3]) -> Brush {
+    let mut stops = paint::stops_of(brush);
+    let i = stop.min(stops.len() - 1);
+    stops[i].1 = Color::from_rgba8(r, g, b, 255).with_alpha(stops[i].1.components[3]);
+    paint::with_stops(brush, stops)
+}
+
+/// The HSV to draw the handle at: the picker's remembered intent while the slot
+/// still holds the colour it produced, otherwise derived from that colour.
+///
+/// A free function so the decision can be asserted without drawing a panel. An
+/// intent is only reused for the exact colour it produced, so this can never report
+/// a colour the slot does not hold.
+fn hsv_for(intent: Option<(Hsv, [u8; 4])>, c: Color) -> Hsv {
+    match intent {
+        Some((hsv, key)) if key == c.to_rgba8().to_u8_array() => hsv,
+        _ => Hsv::from_color(c),
+    }
+}
+
+#[cfg(test)]
+mod handle_tests {
+    use super::*;
+
+    /// **The handle stays where the pointer put it, near black**, where the whole
+    /// saturation range maps to a handful of 8-bit colours. Both halves are
+    /// asserted: the intent is honoured for the colour it produced and ignored for
+    /// any other, or the picker could show a colour the slot does not hold.
+    #[test]
+    fn the_handle_honours_what_the_picker_wrote_and_only_that() {
+        const W: f32 = 218.0;
+        for v in [0.02_f32, 0.01, 0.006] {
+            for s in [0.5_f32, 0.85] {
+                let wrote = Hsv::new(0.6, s, v, 1.0);
+                let stored = wrote.to_color();
+                let key = stored.to_rgba8().to_u8_array();
+
+                // Derived: the jump this exists to remove.
+                let derived = hsv_for(None, stored);
+                let drift = (derived.s - s).abs() * W;
+
+                // Remembered: exactly where the pointer was.
+                let kept = hsv_for(Some((wrote, key)), stored);
+                assert_eq!(
+                    kept, wrote,
+                    "the intent must be honoured for the colour it produced \
+                     (deriving instead drifts {drift:.1}pt at v={v}, s={s})"
+                );
+            }
+        }
+
+        // A colour the picker did not write falls back to deriving, so the handle can
+        // never claim a colour the slot does not hold — a hex typed elsewhere, or undo.
+        let wrote = Hsv::new(0.6, 0.85, 0.02, 1.0);
+        let elsewhere = Color::from_rgba8(200, 30, 30, 255);
+        assert_eq!(
+            hsv_for(
+                Some((wrote, wrote.to_color().to_rgba8().to_u8_array())),
+                elsewhere
+            ),
+            Hsv::from_color(elsewhere),
+            "a stale intent must not describe someone else's colour"
+        );
+    }
+}
+
+#[cfg(test)]
+mod keyed_stop_tests {
+    use super::*;
+
+    /// `Enter` on the stop bar adds halfway to the next stop along the bar, else
+    /// to the one before, whatever order the stops are stored in.
+    #[test]
+    fn a_keyed_stop_lands_halfway_to_the_neighbour() {
+        let c = Color::from_rgba8(0, 0, 0, 255);
+        let stops = [(0.8, c), (0.0, c), (0.4, c)];
+        assert_eq!(keyed_stop(&stops, 1), Some(0.2), "from 0 toward 0.4");
+        assert_eq!(keyed_stop(&stops, 2), Some(0.6), "from 0.4 toward 0.8");
+        assert_eq!(
+            keyed_stop(&stops, 0),
+            Some(0.6),
+            "the last goes back toward 0.4"
+        );
+        assert_eq!(
+            keyed_stop(&stops[..1], 0),
+            None,
+            "one stop has no neighbour"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pointer_slot_tests {
+    //! **Which of the three slot verbs a pointer state selects**, asserted by
+    //! driving real frames: who calls `MastikApp::pointer_slot` and how often is not
+    //! in the text of the function. A **click** commits directly; a **press** that
+    //! has not yet travelled previews; everything else goes to the valve. Getting
+    //! the middle one wrong makes a picker look frozen.
+    use super::*;
+    use crate::app::MastikApp;
+    use mastik_core::{Operation, Transaction};
+
+    const AREA: egui::Rect = egui::Rect {
+        min: egui::pos2(0.0, 0.0),
+        max: egui::pos2(400.0, 400.0),
+    };
+
+    /// A headless app with one rect carrying one white fill, and that fill's slot.
+    fn app_with_a_fill() -> (egui::Context, MastikApp, NodeId, PaintSlot) {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let mut ids = mastik_core::IdSource::new(1);
+        let root = ids.mint();
+        let mut doc = mastik_core::Document::new(root);
+        let id = ids.mint();
+        doc.apply(&Transaction(vec![Operation::CreateNode {
+            id,
+            parent: root,
+            index: 0,
+            kind: mastik_core::NodeKind::Rect {
+                size: Size::new(100.0, 100.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        }]))
+        .expect("a rect");
+        app.session.adopt_document(doc, None);
+        app.session
+            .try_commit(Transaction(vec![Operation::SetFills {
+                id,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: Brush::Solid(Color::WHITE).into(),
+                    visible: true,
+                }]),
+            }]))
+            .expect("a fill to edit");
+        (ctx, app, id, PaintSlot::Fill(0))
+    }
+
+    /// Run one frame, handing `pointer_slot` a response over the whole area.
+    fn frame(ctx: &egui::Context, app: &mut MastikApp, events: Vec<egui::Event>, brush: &Brush) {
+        let node = app.session.selection.ids().first().copied();
+        let input = egui::RawInput {
+            screen_rect: Some(AREA),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            let resp = ui.interact(
+                AREA,
+                egui::Id::new("picker-plane"),
+                egui::Sense::click_and_drag(),
+            );
+            if let Some(node) = node {
+                app.pointer_slot(&resp, node, PaintSlot::Fill(0), brush.clone());
+            }
+        });
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    /// **A press previews and the release that completes a click commits.** Without
+    /// the explicit `is_pointer_button_down_on() && !dragged()` arm nothing happens
+    /// until the pointer travels, so the **preview** must be installed on the press
+    /// frame, before any movement.
+    #[test]
+    fn a_press_previews_before_it_travels_and_the_click_commits() {
+        let (ctx, mut app, id, _) = app_with_a_fill();
+        app.session.selection.set_one(id);
+        let red = Brush::Solid(Color::from_rgb8(255, 0, 0));
+        let shown = |app: &MastikApp| {
+            app.session
+                .display_node(id)
+                .map(|n| n.paint().fills[0].brush.clone())
+        };
+        let at = egui::pos2(200.0, 200.0);
+
+        // Warm-up: egui resolves a press against last frame's widget rects.
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)], &red);
+        let before = app.session.revision();
+
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(at), press(at, true)],
+            &red,
+        );
+        assert_eq!(
+            shown(&app),
+            Some(red.clone().into()),
+            "the press frame has to preview, or the plane does nothing until the \
+             pointer moves — which is what a frozen picker looks like"
+        );
+        assert_eq!(
+            app.session.revision(),
+            before,
+            "and it is a preview, so the whole gesture stays one undo step"
+        );
+
+        frame(&ctx, &mut app, vec![press(at, false)], &red);
+        assert_ne!(
+            app.session.revision(),
+            before,
+            "the release completes a click, and a click commits directly — neither \
+             `dragged` nor `changed` is ever set for one, so the valve cannot"
+        );
+        assert_eq!(
+            shown(&app),
+            Some(red.into()),
+            "on the colour the press showed"
+        );
+    }
+
+    /// **A cancelled gesture must not land as a click on release**, the one way a
+    /// colour could still get through after Escape. Asserted at the *release*,
+    /// where `clicked()` fires.
+    #[test]
+    fn a_cancelled_gesture_does_not_land_as_a_click() {
+        let (ctx, mut app, id, _) = app_with_a_fill();
+        app.session.selection.set_one(id);
+        let red = Brush::Solid(Color::from_rgb8(255, 0, 0));
+        let at = egui::pos2(200.0, 200.0);
+
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)], &red);
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(at), press(at, true)],
+            &red,
+        );
+        let before = app.session.revision();
+
+        // Escape's mark, set by `cancel_gesture` and read for the rest of the press.
+        app.gesture_cancelled = true;
+        frame(&ctx, &mut app, vec![press(at, false)], &red);
+        assert_eq!(
+            app.session.revision(),
+            before,
+            "a cancelled gesture releasing over the plane must commit nothing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mixed_hex_tests {
+    //! **The picker's hex field carries a colour, not an opacity.**
+    //!
+    //! Over a *Mixed* row `current` is a stand-in brush, and its alpha would go out
+    //! with the colour through `slot_transaction`'s `SelectionAll` arm, which writes
+    //! the whole brush onto every paint in scope: two layers at 100% and 40%, with
+    //! `00FF00` typed, would both come back green at 100%.
+    //!
+    //! (Plain backticks, not `[links]`: this module is `cfg(test)`.)
+
+    use super::*;
+    use crate::app::MastikApp;
+    use crate::theme;
+    use mastik_core::peniko::Color;
+    use mastik_core::{
+        Document, Fill, IdSource, NodeId, NodeKind, Operation, PaintTarget, Transaction,
+        kurbo::Size,
+    };
+
+    const SCREEN: egui::Vec2 = egui::vec2(1200.0, 900.0);
+    /// Inside the hex field's hit band (past the pick button and the format
+    /// chooser, y 512…537) with the picker spawned at `(400, 300)`, in points at
+    /// any `pixels_per_point`.
+    const HEX_FIELD: egui::Pos2 = egui::pos2(520.0, 524.0);
+
+    /// Two rects, one solid fill each, at the two given alphas.
+    fn two_rects(ctx: &egui::Context, alphas: (f32, f32)) -> (MastikApp, NodeId, NodeId) {
+        theme::install(ctx);
+        let mut app = MastikApp::headless(ctx);
+        let mut ids = IdSource::new(0x5A1);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let (a, b) = (ids.mint(), ids.mint());
+        let rect = |id| Operation::CreateNode {
+            id,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(20.0, 20.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        };
+        let paint = |id, c: Color| Operation::SetFills {
+            id,
+            fills: mastik_core::keyed_by_position([Fill {
+                brush: Brush::Solid(c).into(),
+                visible: true,
+            }]),
+        };
+        doc.apply(&Transaction(vec![
+            rect(a),
+            rect(b),
+            paint(a, Color::new([1.0, 0.0, 0.0, alphas.0])),
+            paint(b, Color::new([0.0, 0.0, 1.0, alphas.1])),
+        ]))
+        .expect("build");
+        app.session.adopt_document(doc, None);
+        (app, a, b)
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut MastikApp, events: Vec<egui::Event>) {
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events,
+                ..Default::default()
+            },
+            |ui| app.picker_ui(ui.ctx()),
+        );
+    }
+
+    fn rgba8(app: &MastikApp, id: NodeId) -> [u8; 4] {
+        match app.session.doc.get(id).expect("node").paint().fills[0]
+            .brush
+            .literal()
+        {
+            Some(Brush::Solid(c)) => c.to_rgba8().to_u8_array(),
+            other => panic!("the fixture's fill is a solid colour, got {other:?}"),
+        }
+    }
+
+    /// Click into the hex field, replace its text with `00FF00`, press `Enter`.
+    fn type_a_green(ctx: &egui::Context, app: &mut MastikApp) {
+        type_hex(ctx, app, "00FF00");
+    }
+
+    /// Click into the hex field, replace its text with `hex`, press `Enter`.
+    fn type_hex(ctx: &egui::Context, app: &mut MastikApp, hex: &str) {
+        type_at(ctx, app, HEX_FIELD, hex);
+    }
+
+    /// Click into the field at `at`, replace its text with `text`, press `Enter`.
+    fn type_at(ctx: &egui::Context, app: &mut MastikApp, at: egui::Pos2, text: &str) {
+        for _ in 0..2 {
+            frame(ctx, app, Vec::new());
+        }
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(ctx, app, vec![egui::Event::PointerMoved(at), button(true)]);
+        frame(ctx, app, vec![button(false)]);
+        // **One `Event::Text` replaces the whole buffer**, because
+        // `ui::select_all_on_focus` selects it on `gained_focus` — no Backspace.
+        frame(ctx, app, vec![egui::Event::Text(text.into())]);
+        frame(
+            ctx,
+            app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        for _ in 0..2 {
+            frame(ctx, app, Vec::new());
+        }
+    }
+
+    /// **A hex typed over a Mixed row leaves each layer its own opacity.** The hex
+    /// is typed rather than preset, so the events must reach *this* widget.
+    ///
+    /// flip: delete `write_slot_rgb`'s `SelectionAll` branch → fails at B's alpha. The
+    /// `undo_depth` assertion (one edit, one step) and the single-layer control
+    /// stay green under it; the control shows the loss is the scope, not the
+    /// field's arithmetic.
+    #[test]
+    fn a_mixed_rows_hex_field_leaves_each_layer_its_own_opacity() {
+        let ctx = egui::Context::default();
+        let (mut app, a, b) = two_rects(&ctx, (1.0, 0.4));
+        app.session.selection.set(vec![a, b]);
+        app.picker = Some(Picker::new(
+            a,
+            PaintSlot::SelectionAll(PaintTarget::Fill),
+            egui::pos2(400.0, 300.0),
+        ));
+        type_a_green(&ctx, &mut app);
+
+        assert_eq!(
+            rgba8(&app, a),
+            [0, 255, 0, 255],
+            "A was opaque and stays so"
+        );
+        assert_eq!(
+            rgba8(&app, b),
+            [0, 255, 0, 102],
+            "B keeps its 40% — the colour came from the field, the number did not"
+        );
+        assert_eq!(
+            app.session.history.undo_depth(),
+            1,
+            "one edit, one undo step (this does not catch the regression — the \
+             wrong version is one commit too)"
+        );
+
+        // **The control**, and it is green either way: one layer, its own slot,
+        // and its alpha survives because there is no scope to lose it to.
+        let ctx = egui::Context::default();
+        let (mut app, a, b) = two_rects(&ctx, (1.0, 0.4));
+        app.session.selection.set(vec![b]);
+        app.picker = Some(Picker::new(b, PaintSlot::Fill(0), egui::pos2(400.0, 300.0)));
+        type_a_green(&ctx, &mut app);
+        assert_eq!(
+            rgba8(&app, b),
+            [0, 255, 0, 102],
+            "control: B goes green at 40%"
+        );
+        assert_eq!(rgba8(&app, a), [255, 0, 0, 255], "control: A is untouched");
+    }
+
+    /// A typed `RRGGBBAA` is one opacity for every layer of a Mixed row, and the
+    /// stop's opacity for a single slot.
+    /// flip: `write_slot_rgb`'s `alpha` forced to `None` → fails at A's alpha.
+    #[test]
+    fn an_eight_digit_hex_sends_its_alpha() {
+        let ctx = egui::Context::default();
+        let (mut app, a, b) = two_rects(&ctx, (1.0, 0.4));
+        app.session.selection.set(vec![a, b]);
+        app.picker = Some(Picker::new(
+            a,
+            PaintSlot::SelectionAll(PaintTarget::Fill),
+            egui::pos2(400.0, 300.0),
+        ));
+        type_hex(&ctx, &mut app, "00FF0080");
+        assert_eq!(rgba8(&app, a), [0, 255, 0, 128], "A takes the typed alpha");
+        assert_eq!(rgba8(&app, b), [0, 255, 0, 128], "and so does B");
+
+        let ctx = egui::Context::default();
+        let (mut app, _a, b) = two_rects(&ctx, (1.0, 0.4));
+        app.session.selection.set(vec![b]);
+        app.picker = Some(Picker::new(b, PaintSlot::Fill(0), egui::pos2(400.0, 300.0)));
+        type_hex(&ctx, &mut app, "#0000FFC0");
+        assert_eq!(rgba8(&app, b), [0, 0, 255, 192], "one slot takes it too");
+    }
+
+    /// **A bare click through the picker's hex field writes nothing.** Parsing the
+    /// field's own unchanged text back gives bytes that `from_rgba8` re-expands, so
+    /// `0.5` would come back `0.5019608` and cost an undo step. The typed control
+    /// guards against a guard that refuses everything.
+    ///
+    /// `colour_text_field` has two guards, `text == shown` and the byte-compared
+    /// `matches` arm; either alone keeps this green, so a flip has to drop both
+    /// → fails at the colour (`[0.5019608, …]` against `[0.5, …]`).
+    #[test]
+    fn a_bare_click_through_the_hex_field_writes_nothing() {
+        let ctx = egui::Context::default();
+        // 0.5 is not on the 8-bit lattice: `hex_of` rounds it to `80` and
+        // `from_rgba8` gives back 0.5019608.
+        let (mut app, a, _b) = two_rects(&ctx, (1.0, 0.4));
+        let grey = Color::new([0.5, 0.5, 0.5, 1.0]);
+        app.session.commit(Transaction(vec![Operation::SetFills {
+            id: a,
+            fills: mastik_core::keyed_by_position([Fill {
+                brush: Brush::Solid(grey).into(),
+                visible: true,
+            }]),
+        }]));
+        app.session.selection.set(vec![a]);
+        app.picker = Some(Picker::new(a, PaintSlot::Fill(0), egui::pos2(400.0, 300.0)));
+        let before = match app.session.doc.get(a).expect("node").paint().fills[0]
+            .brush
+            .literal()
+        {
+            Some(Brush::Solid(c)) => c.components,
+            other => panic!("solid, got {other:?}"),
+        };
+        assert_eq!(
+            before[0], 0.5,
+            "the fixture is off the 8-bit lattice, or this test is about nothing"
+        );
+        let depth = app.session.history.undo_depth();
+
+        // Click in, click out. No text, no Enter.
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        for _ in 0..2 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        frame(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(HEX_FIELD),
+                button(HEX_FIELD, true),
+            ],
+        );
+        frame(&ctx, &mut app, vec![button(HEX_FIELD, false)]);
+        // The click has to have landed in the field: `hex_row` arms `picker.hex`
+        // on focus, the one observable that says the events reached this widget.
+        assert!(
+            app.picker.as_ref().and_then(|p| p.hex.as_ref()).is_some(),
+            "the click has to focus the hex field, or this test is about nothing"
+        );
+        // `Enter`, not a click away: a click elsewhere in the picker (on the SV
+        // plane) leaves the field focused, so the commit path is never reached.
+        // The `is_none()` assertion below catches that.
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+
+        let after = match app.session.doc.get(a).expect("node").paint().fills[0]
+            .brush
+            .literal()
+        {
+            Some(Brush::Solid(c)) => c.components,
+            other => panic!("solid, got {other:?}"),
+        };
+        assert!(
+            app.picker.as_ref().and_then(|p| p.hex.as_ref()).is_none(),
+            "PROBE: the field must actually have lost focus, or the commit path \
+             is never reached and this test proves nothing"
+        );
+        assert_eq!(
+            after, before,
+            "a click that typed nothing must leave the colour alone — parsing the \
+             field's own text back quantises it to the 8-bit lattice"
+        );
+        assert_eq!(
+            app.session.history.undo_depth(),
+            depth,
+            "and must not cost an undo step"
+        );
+
+        // The control: a colour that *is* typed still lands.
+        let ctx = egui::Context::default();
+        let (mut app, a, _b) = two_rects(&ctx, (1.0, 0.4));
+        app.session.selection.set(vec![a]);
+        app.picker = Some(Picker::new(a, PaintSlot::Fill(0), egui::pos2(400.0, 300.0)));
+        type_a_green(&ctx, &mut app);
+        assert_eq!(
+            rgba8(&app, a),
+            [0, 255, 0, 255],
+            "control: a typed hex still writes, or the guard refuses everything"
+        );
+    }
+
+    /// The picker on B's own fill, in `format`.
+    fn on_b(ctx: &egui::Context, format: Format) -> (MastikApp, NodeId) {
+        let (mut app, _a, b) = two_rects(ctx, (1.0, 0.4));
+        app.prefs.colour_format = format.key().into();
+        app.session.selection.set(vec![b]);
+        app.picker = Some(Picker::new(b, PaintSlot::Fill(0), egui::pos2(400.0, 300.0)));
+        (app, b)
+    }
+
+    /// Every text the picker draws this frame, with its centre.
+    fn texts(ctx: &egui::Context, app: &mut MastikApp) -> Vec<(String, egui::Pos2)> {
+        text_rects(ctx, app)
+            .into_iter()
+            .map(|(t, r)| (t, r.center()))
+            .collect()
+    }
+
+    /// Every text the picker draws this frame, with its box.
+    fn text_rects(ctx: &egui::Context, app: &mut MastikApp) -> Vec<(String, egui::Rect)> {
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                ..Default::default()
+            },
+            |ui| app.picker_ui(ui.ctx()),
+        );
+        out.shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::epaint::Shape::Text(t) => Some((
+                    t.galley.text().to_owned(),
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Where the `nth` (left to right) drawn text reading `text` sits, on the value
+    /// row (the plane and strips draw none).
+    fn field_at(ctx: &egui::Context, app: &mut MastikApp, text: &str, nth: usize) -> egui::Pos2 {
+        for _ in 0..2 {
+            frame(ctx, app, Vec::new());
+        }
+        let mut at: Vec<egui::Pos2> = texts(ctx, app)
+            .into_iter()
+            .filter(|(t, _)| t == text)
+            .map(|(_, p)| p)
+            .collect();
+        at.sort_by(|a, b| a.x.total_cmp(&b.x));
+        *at.get(nth)
+            .unwrap_or_else(|| panic!("the row draws {text:?} at least {} times", nth + 1))
+    }
+
+    /// On a gradient the opacity field is the selected stop's alpha: a stop made
+    /// transparent reads 0% and is made visible there, the ramp's opacity untouched.
+    /// flip: `hex_row`'s field reading and writing `paint::alpha_of`/`with_alpha`
+    /// → fails at "the transparent stop made opaque".
+    #[test]
+    fn a_gradients_opacity_field_is_the_selected_stops_alpha() {
+        use mastik_core::peniko::Gradient;
+        let ctx = egui::Context::default();
+        let (mut app, _a, b) = two_rects(&ctx, (1.0, 1.0));
+        let blue = Color::from_rgba8(0, 0, 255, 255);
+        let ramp = Gradient::new_linear((0.0, 0.0), (20.0, 0.0))
+            .with_stops([(0.0, blue), (1.0, blue.with_alpha(0.0))].as_slice());
+        app.session
+            .try_commit(Transaction(vec![Operation::SetFills {
+                id: b,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: Brush::Gradient(ramp.into()).into(),
+                    visible: true,
+                }]),
+            }]))
+            .expect("a ramp");
+        app.session.selection.set(vec![b]);
+        let mut picker = Picker::new(b, PaintSlot::Fill(0), egui::pos2(400.0, 300.0));
+        picker.stop = 1;
+        app.picker = Some(picker);
+
+        // The number is its own galley, the `%` another; the lowest `0` drawn, as
+        // the angle field above reads `0` too.
+        for _ in 0..2 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        let at = texts(&ctx, &mut app)
+            .into_iter()
+            .filter(|(t, _)| t == "0")
+            .map(|(_, p)| p)
+            .max_by(|a, b| a.y.total_cmp(&b.y))
+            .expect("the opacity field reads the stop's 0");
+        type_at(&ctx, &mut app, at, "100");
+        let Some(Brush::Gradient(g)) = app.session.doc.get(b).expect("b").paint().fills[0]
+            .brush
+            .literal()
+        else {
+            panic!("still a gradient")
+        };
+        let alphas: Vec<f32> = g
+            .gradient
+            .stops
+            .iter()
+            .map(|s| {
+                s.color
+                    .to_alpha_color::<mastik_core::peniko::color::Srgb>()
+                    .components[3]
+            })
+            .collect();
+        assert_eq!(alphas, vec![1.0, 1.0], "the transparent stop made opaque");
+        assert_eq!(g.opacity, 1.0, "the ramp's own opacity untouched");
+    }
+
+    /// Any CSS colour typed into the hex lands, its alpha with it; without one the
+    /// paint keeps its own.
+    ///
+    /// flip: `colour_text::parse` without its `rgb()` branch → fails at the first
+    /// assertion.
+    #[test]
+    fn a_css_colour_typed_into_the_hex_lands() {
+        let ctx = egui::Context::default();
+        let (mut app, b) = on_b(&ctx, Format::Hex);
+        type_hex(&ctx, &mut app, "rgb(0 255 0 / 50%)");
+        assert_eq!(rgba8(&app, b), [0, 255, 0, 128]);
+        type_hex(&ctx, &mut app, "rebeccapurple");
+        assert_eq!(
+            rgba8(&app, b),
+            [102, 51, 153, 128],
+            "a name has no alpha, so the 50% stays"
+        );
+    }
+
+    /// Text that is not a colour writes nothing, spends no undo step, and says so.
+    ///
+    /// flip: `colour_text::refusal` answering `None` → fails at the status.
+    #[test]
+    fn text_that_is_not_a_colour_is_refused_aloud() {
+        let ctx = egui::Context::default();
+        let (mut app, b) = on_b(&ctx, Format::Hex);
+        let (before, depth) = (rgba8(&app, b), app.session.history.undo_depth());
+        type_hex(&ctx, &mut app, "rgb(1 2)");
+        assert_eq!(rgba8(&app, b), before, "nothing written");
+        assert_eq!(app.session.history.undo_depth(), depth, "no undo step");
+        assert_eq!(app.session.status().text, "Not a colour: rgb(1 2)");
+    }
+
+    /// In RGB the value row is three fields, and typing one sets that channel
+    /// alone; the opacity is the paint's own.
+    ///
+    /// flip: `channel_brush` writing channel 0 whatever `i` is → fails at the
+    /// green field.
+    #[test]
+    fn an_rgb_field_sets_its_one_channel() {
+        let ctx = egui::Context::default();
+        let (mut app, b) = on_b(&ctx, Format::Rgb);
+        assert_eq!(
+            rgba8(&app, b),
+            [0, 0, 255, 102],
+            "fixture: B is blue at 40%"
+        );
+        let red = field_at(&ctx, &mut app, "0", 0);
+        type_at(&ctx, &mut app, red, "255");
+        assert_eq!(rgba8(&app, b), [255, 0, 255, 102], "R set, G and B kept");
+        let green = field_at(&ctx, &mut app, "0", 0);
+        type_at(&ctx, &mut app, green, "128");
+        assert_eq!(rgba8(&app, b), [255, 128, 255, 102], "then G");
+        assert_eq!(app.session.history.undo_depth(), 2, "one step per field");
+    }
+
+    /// A whole colour typed into a channel field sets the whole colour, so a paste
+    /// never needs a trip back to Hex.
+    ///
+    /// flip: the channel parser dropping its `colour_text::parse` fallback → fails
+    /// at the assertion (the text is refused and nothing changes).
+    #[test]
+    fn a_whole_colour_in_a_channel_field_sets_the_colour() {
+        let ctx = egui::Context::default();
+        let (mut app, b) = on_b(&ctx, Format::Rgb);
+        let red = field_at(&ctx, &mut app, "0", 0);
+        type_at(&ctx, &mut app, red, "hsl(120 100% 25%)");
+        assert_eq!(rgba8(&app, b), [0, 128, 0, 102]);
+        assert_eq!(app.session.history.undo_depth(), 1, "one paste, one step");
+    }
+
+    /// A hash-less hex of only digits is a colour, not a number clamped to the
+    /// channel's max; a short one is a colour only past the max, so `128` stays
+    /// a channel value.
+    ///
+    /// flip: `hex_not_number` answering false → fails at "a six-digit hex";
+    /// dropping its max test → fails at "a short number within it".
+    #[test]
+    fn an_all_digit_hex_in_a_channel_field_sets_the_colour() {
+        let ctx = egui::Context::default();
+        let (mut app, b) = on_b(&ctx, Format::Rgb);
+        let red = field_at(&ctx, &mut app, "0", 0);
+        type_at(&ctx, &mut app, red, "333333");
+        assert_eq!(rgba8(&app, b), [0x33, 0x33, 0x33, 102], "a six-digit hex");
+        let red = field_at(&ctx, &mut app, "51", 0);
+        type_at(&ctx, &mut app, red, "900");
+        assert_eq!(
+            rgba8(&app, b),
+            [0x99, 0, 0, 102],
+            "a short hex past the max"
+        );
+        let red = field_at(&ctx, &mut app, "153", 0);
+        type_at(&ctx, &mut app, red, "128");
+        assert_eq!(rgba8(&app, b), [128, 0, 0, 102], "a short number within it");
+    }
+
+    /// HSB's B taken to 0 and back keeps the hue and saturation, as the plane does:
+    /// the fields go through the picker's remembered HSV, not through black.
+    ///
+    /// flip: `channel_brush` not storing `intent` → fails at the return trip (black
+    /// then reads 0 0 0, so the row has forgotten the blue).
+    #[test]
+    fn hsb_brightness_keeps_the_hue_through_black() {
+        let ctx = egui::Context::default();
+        let (mut app, b) = on_b(&ctx, Format::Hsb);
+        // Blue reads 240 100 100: B is the second 100.
+        let brightness = field_at(&ctx, &mut app, "100", 1);
+        type_at(&ctx, &mut app, brightness, "0");
+        assert_eq!(rgba8(&app, b)[..3], [0, 0, 0], "fixture: black");
+        let brightness = field_at(&ctx, &mut app, "0", 0);
+        type_at(&ctx, &mut app, brightness, "100");
+        assert_eq!(rgba8(&app, b), [0, 0, 255, 102], "blue again, not grey");
+    }
+
+    /// The channel fields hold their places whatever they read, and an opaque
+    /// colour's `100%` clears the hairline before it.
+    ///
+    /// flip: the fields sized by their text (a plain `scope` instead of the fixed
+    /// cell, with egui's button padding) → fails at "holds its place", by 1.8pt;
+    /// `PCT_W` at 34 → fails at "clears".
+    #[test]
+    fn the_channel_fields_hold_their_places_and_the_opacity_clears_them() {
+        // The G and B fields' texts and the opacity's, with R at `r`.
+        let measure = |r: u8| {
+            let ctx = egui::Context::default();
+            let (mut app, a, _b) = two_rects(&ctx, (1.0, 1.0));
+            app.prefs.colour_format = Format::Rgb.key().into();
+            app.session.commit(Transaction(vec![Operation::SetFills {
+                id: a,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: Brush::Solid(Color::from_rgba8(r, 122, 26, 255)).into(),
+                    visible: true,
+                }]),
+            }]));
+            app.session.selection.set(vec![a]);
+            app.picker = Some(Picker::new(a, PaintSlot::Fill(0), egui::pos2(400.0, 300.0)));
+            for _ in 0..2 {
+                frame(&ctx, &mut app, Vec::new());
+            }
+            let shown = text_rects(&ctx, &mut app);
+            let find = |s: &str| shown.iter().find(|(t, _)| t == s).expect(s).1;
+            (find("122"), find("26"), find("100"))
+        };
+        let (g_wide, b, pct) = measure(255);
+        let (g_narrow, _, _) = measure(1);
+        assert_eq!(
+            g_wide.center(),
+            g_narrow.center(),
+            "G holds its place as R goes from 255 to 1"
+        );
+        // Fields sit at equal pitch, each centred in its cell, so the B cell's
+        // right edge is half a cell past its centre; the hairline is half a gap on.
+        let pitch = b.center().x - g_wide.center().x;
+        let hairline = b.center().x + (pitch - ROW_GAP) / 2.0 + ROW_GAP / 2.0;
+        assert!(
+            pct.left() >= hairline + 4.0,
+            "the opacity clears the hairline: 100% starts at {}, the hairline is at {hairline}",
+            pct.left()
+        );
+    }
+
+    /// Over a Mixed row a field format falls back to one text field reading
+    /// *Mixed*, which takes a whole colour as the hex does.
+    #[test]
+    fn a_mixed_row_in_a_field_format_takes_a_whole_colour() {
+        let ctx = egui::Context::default();
+        let (mut app, a, b) = two_rects(&ctx, (1.0, 0.4));
+        app.prefs.colour_format = Format::Rgb.key().into();
+        app.session.selection.set(vec![a, b]);
+        app.picker = Some(Picker::new(
+            a,
+            PaintSlot::SelectionAll(PaintTarget::Fill),
+            egui::pos2(400.0, 300.0),
+        ));
+        let mixed = field_at(&ctx, &mut app, "Mixed", 0);
+        type_at(&ctx, &mut app, mixed, "00FF00");
+        assert_eq!(rgba8(&app, a), [0, 255, 0, 255]);
+        assert_eq!(rgba8(&app, b), [0, 255, 0, 102], "each keeps its opacity");
+    }
+
+    /// A committed colour goes first among the recent colours, once, and the list
+    /// holds as many as the row shows.
+    ///
+    /// flip: `remember_colour` without its `retain` → fails at "once".
+    #[test]
+    fn a_committed_colour_goes_first_among_the_recent() {
+        let ctx = egui::Context::default();
+        let (mut app, _b) = on_b(&ctx, Format::Hex);
+        type_hex(&ctx, &mut app, "00FF00");
+        let first = |app: &MastikApp| app.prefs.recent_colours.first().copied();
+        assert_eq!(
+            first(&app),
+            Some([0.0, 1.0, 0.0]),
+            "a typed hex is remembered"
+        );
+        let c = |v: u8| Color::from_rgba8(v, v, v, 255);
+        app.remember_colour(c(10));
+        app.remember_colour(Color::from_rgba8(0, 255, 0, 255));
+        assert_eq!(
+            app.prefs.recent_colours.len(),
+            2,
+            "once: the green moved to the front rather than appearing twice"
+        );
+        for v in 20..30 {
+            app.remember_colour(c(v));
+        }
+        assert_eq!(app.prefs.recent_colours.len(), SWATCHES);
+        assert_eq!(first(&app), Some(c(29).components[..3].try_into().unwrap()));
+    }
+
+    /// The hex text sits on the line of the format chooser and the opacity beside it.
+    ///
+    /// flip: `ui::edit_frame` padding more below the line than above → fails, half
+    /// a point high.
+    #[test]
+    fn the_hex_text_shares_the_rows_line() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, _b) = on_b(&ctx, Format::Hex);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        let rects = text_rects(&ctx, &mut app);
+        let top = |s: &str| {
+            rects
+                .iter()
+                .find(|(t, _)| t == s)
+                .unwrap_or_else(|| panic!("the row draws {s:?}"))
+                .1
+                .min
+                .y
+        };
+        assert_eq!(top("0000FF"), top("Hex"));
+        assert_eq!(top("0000FF"), top("40"));
+    }
+}
+
+#[cfg(test)]
+mod format_tests {
+    use super::*;
+
+    /// A stored format reads back, and anything else is Hex.
+    #[test]
+    fn a_stored_format_reads_back() {
+        for f in Format::ALL {
+            assert_eq!(Format::from_key(f.key()), f);
+        }
+        assert_eq!(Format::from_key("oklch"), Format::Hex);
+    }
+
+    /// HSL and HSV convert to each other, and the menu row reads the CSS numbers.
+    #[test]
+    fn hsl_and_hsv_agree() {
+        let hsv = Hsv::new(223.0 / 360.0, 0.5, 0.85, 1.0);
+        let [h, s, l] = hsl_of(hsv);
+        let back = hsv_of_hsl(h, s, l, 1.0);
+        assert!((back.s - hsv.s).abs() < 1e-5 && (back.v - hsv.v).abs() < 1e-5);
+        let blue = Color::from_rgba8(109, 140, 217, 255);
+        let hsv = Hsv::from_color(blue);
+        assert_eq!(Format::Rgb.preview(blue, hsv), "109 140 217");
+        assert_eq!(Format::Hsl.preview(blue, hsv), "223 59 64");
+        assert_eq!(Format::Hsb.preview(blue, hsv), "223 50 85");
+    }
+}
+
+#[cfg(test)]
+mod radial_centre_tests {
+    //! **A radial centre the document holds outside the shape survives being
+    //! drawn.** SVG allows one, and the picker's CX/CY fields are a
+    //! `ui::value_field` ranged `0..=100`. egui's `clamp_existing_to_range`
+    //! defaults to `true`, which would paint `100` for a centre stored at `1.5`,
+    //! mark the response changed, and have `valve_slot` commit the rewrite on a bare
+    //! click; `value_field_f64` turns it off.
+    //!
+    //! (Plain backticks, not `[links]`: this module is `cfg(test)`.)
+
+    use super::*;
+    use crate::app::MastikApp;
+    use crate::theme;
+    use mastik_core::kurbo::{Affine, Point, Size};
+    use mastik_core::peniko::Color;
+    use mastik_core::{
+        Document, Fill, GradientBrush, IdSource, NodeId, NodeKind, Operation, Transaction, peniko,
+    };
+
+    const SCREEN: egui::Vec2 = egui::vec2(1200.0, 900.0);
+    const BOX: Size = Size::new(100.0, 100.0);
+    /// With the picker spawned at `(400, 300)` the CX label sits at `(463, 360)`
+    /// and its number at `(491, 358.5)`; this lands inside the field, not the label.
+    const CX_FIELD: egui::Pos2 = egui::pos2(495.0, 360.0);
+
+    /// A 100×100 rect filled with a radial gradient centred at `cx` of its width.
+    fn radial_rect(ctx: &egui::Context, cx: f64) -> (MastikApp, NodeId) {
+        theme::install(ctx);
+        let mut app = MastikApp::headless(ctx);
+        let mut ids = IdSource::new(0x5A1);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let a = ids.mint();
+        let centred = Brush::Gradient(GradientBrush {
+            gradient: peniko::Gradient {
+                kind: peniko::GradientKind::Radial(peniko::RadialGradientPosition {
+                    start_center: Point::new(50.0, 50.0),
+                    start_radius: 0.0,
+                    end_center: Point::new(50.0, 50.0),
+                    end_radius: 50.0,
+                }),
+                stops: [
+                    peniko::ColorStop {
+                        offset: 0.0,
+                        color: Color::new([1.0, 0.0, 0.0, 1.0]).into(),
+                    },
+                    peniko::ColorStop {
+                        offset: 1.0,
+                        color: Color::new([0.0, 0.0, 1.0, 1.0]).into(),
+                    },
+                ][..]
+                    .into(),
+                ..Default::default()
+            },
+            transform: Affine::IDENTITY,
+            opacity: 1.0,
+        });
+        // Through the panel's own writer, so the fixture is a brush the app can
+        // actually produce rather than one hand-assembled to suit the assertion.
+        let brush = crate::panels::paint::with_radial_centre(&centred, cx, 0.5, BOX);
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: a,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size: BOX,
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetFills {
+                id: a,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: brush.into(),
+                    visible: true,
+                }]),
+            },
+        ]))
+        .expect("build");
+        app.session.adopt_document(doc, None);
+        app.session.selection.set(vec![a]);
+        app.picker = Some(Picker::new(a, PaintSlot::Fill(0), egui::pos2(400.0, 300.0)));
+        (app, a)
+    }
+
+    fn centre(app: &MastikApp, id: NodeId) -> (f64, f64) {
+        crate::panels::paint::radial_centre(
+            app.session.doc.get(id).expect("node").paint().fills[0]
+                .brush
+                .literal()
+                .expect("the fixture's fill is literal"),
+            BOX,
+        )
+        .expect("the fixture's fill is a radial gradient")
+    }
+
+    /// Every text galley the frame drew, in paint order.
+    fn galleys(ctx: &egui::Context, app: &mut MastikApp, events: Vec<egui::Event>) -> Vec<String> {
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events,
+                ..Default::default()
+            },
+            |ui| app.picker_ui(ui.ctx()),
+        );
+        out.shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::epaint::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Click into the CX field, type nothing, and then leave it.
+    ///
+    /// ⚠️ **The `Tab` is not decoration and the test is vacuous without it.** The
+    /// commit is `app::edit_valve`'s `engaged → !engaged` transition, and a click
+    /// leaves the field focused, so nothing is written while the caret is in there.
+    /// `Tab` rather than a click elsewhere because a click outside the popover
+    /// closes it, and a closed picker draws no rows to assert on.
+    fn bare_click_and_leave(ctx: &egui::Context, app: &mut MastikApp) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: CX_FIELD,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let _ = galleys(
+            ctx,
+            app,
+            vec![egui::Event::PointerMoved(CX_FIELD), button(true)],
+        );
+        let _ = galleys(ctx, app, vec![button(false)]);
+        let _ = galleys(
+            ctx,
+            app,
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        for _ in 0..3 {
+            let _ = galleys(ctx, app, Vec::new());
+        }
+    }
+
+    /// The number drawn in the field labelled `label`: `ui::value_field` paints
+    /// its number, then its `%`, then the prefix back into its strip, so it is
+    /// the galley two before the label.
+    fn field_reads(drawn: &[String], label: &str) -> String {
+        let at = drawn
+            .iter()
+            .position(|t| t == label)
+            .unwrap_or_else(|| panic!("no `{label}` row in the frame: {drawn:?}"));
+        assert_eq!(drawn.get(at.wrapping_sub(1)).map(String::as_str), Some("%"));
+        drawn
+            .get(at.wrapping_sub(2))
+            .unwrap_or_else(|| panic!("`{label}` drew no number: {drawn:?}"))
+            .clone()
+    }
+
+    /// **The field shows what the document holds, and a bare click leaves it
+    /// there.** The galley assertion names the bug (the card painting `100` for a
+    /// stored `150`); the in-range control shows it is about the clamp, not the
+    /// click.
+    ///
+    /// flip: `.clamp_existing_to_range(true)` added in the CX/CY field's `build` →
+    /// fails at the galley, `"100"` where `"150"` was. A `clamp(0.0, 1.0)` on
+    /// `pct / 100.0` in `radial_controls` fails at the centre, `(1.0, 0.5)`.
+    /// Deleting `.range(0.0..=100.0)` does not bite here; the test below covers it.
+    #[test]
+    fn a_radial_centre_outside_the_shape_is_shown_and_not_rewritten_by_a_bare_click() {
+        let ctx = egui::Context::default();
+        let (mut app, a) = radial_rect(&ctx, 1.5);
+        assert_eq!(
+            centre(&app, a).0,
+            1.5,
+            "the fixture has to reach the state: an imported centre outside its own \
+             shape, which `svg_in` produces with `skipped` and `approximated` both \
+             empty"
+        );
+
+        // Three frames before reading any ink: the first frame of a headless
+        // `Context` has no fonts and placement settles over two, so an earlier
+        // read looks like a missing row.
+        for _ in 0..3 {
+            let _ = galleys(&ctx, &mut app, Vec::new());
+        }
+        let drawn = galleys(&ctx, &mut app, Vec::new());
+        assert_eq!(
+            field_reads(&drawn, "CX"),
+            "150",
+            "the field paints the document's number. `100` here is egui's \
+             `clamp_existing_to_range` rewriting a stored value it has no business \
+             touching, and the card is then lying about the gradient under it"
+        );
+
+        bare_click_and_leave(&ctx, &mut app);
+        assert_eq!(
+            centre(&app, a),
+            (1.5, 0.5),
+            "a click that typed nothing moved the gradient's centre 50 units, \
+             permanently"
+        );
+        assert_eq!(
+            app.session.history.undo_depth(),
+            0,
+            "and it must not have spent an undo step doing it — the widget's own \
+             rewrite reported as a user edit is what `edit_valve` then commits"
+        );
+
+        // **The control**: a centre inside the shape, the identical click.
+        let ctx = egui::Context::default();
+        let (mut app, a) = radial_rect(&ctx, 0.5);
+        for _ in 0..3 {
+            let _ = galleys(&ctx, &mut app, Vec::new());
+        }
+        let drawn = galleys(&ctx, &mut app, Vec::new());
+        assert_eq!(field_reads(&drawn, "CX"), "50", "control: shown as stored");
+        bare_click_and_leave(&ctx, &mut app);
+        assert_eq!(
+            centre(&app, a),
+            (0.5, 0.5),
+            "control: an in-range centre is untouched by the same click"
+        );
+        assert_eq!(
+            app.session.history.undo_depth(),
+            0,
+            "control: and spends no undo step either"
+        );
+    }
+
+    /// **The range still bounds what a keystroke may reach**: `500` typed into
+    /// the CX field lands at `100`, so leaving a stored off-shape centre alone
+    /// did not open the field to typing one.
+    ///
+    /// flip: the CX/CY field's `Scrub` without `.range(0.0..=100.0)` → fails at
+    /// `5.0`, and leaves the test above green.
+    ///
+    /// Not asserted: the drag path, which is `Scrub::settle`'s at every
+    /// `ui::value_field`; a synthetic drag through a popover that also drags its
+    /// preview chip is a fixture with two answers.
+    #[test]
+    fn a_number_typed_past_the_fields_range_is_still_bounded_by_it() {
+        let ctx = egui::Context::default();
+        let (mut app, a) = radial_rect(&ctx, 0.5);
+        for _ in 0..3 {
+            let _ = galleys(&ctx, &mut app, Vec::new());
+        }
+
+        let button = |pressed| egui::Event::PointerButton {
+            pos: CX_FIELD,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let _ = galleys(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(CX_FIELD), button(true)],
+        );
+        let _ = galleys(&ctx, &mut app, vec![button(false)]);
+        // One `Event::Text` replaces the whole buffer — `ui::select_all_on_focus`
+        // selects it on `gained_focus`, so no Backspace.
+        let _ = galleys(&ctx, &mut app, vec![egui::Event::Text("500".into())]);
+        let _ = galleys(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        for _ in 0..3 {
+            let _ = galleys(&ctx, &mut app, Vec::new());
+        }
+
+        assert_eq!(
+            centre(&app, a).0,
+            1.0,
+            "500% typed into a field ranged 0..=100 has to land at the range's end. \
+             `5.0` here means the range bounds nothing and deleting the clamp gave \
+             the keystroke a free run at the document"
+        );
+    }
+}
+
+#[cfg(test)]
+mod grid_orphan_tests {
+    //! **A grid picker goes away when the card's row does.** The anchor stays
+    //! contained after a Shift-click widens the selection, so without its own arm
+    //! the picker would survive a widening the *card* did not: `shared_grids`
+    //! answers `None` once two frames' grid lists differ and the card draws a
+    //! sentence instead of rows. A hex typed into it would then recolour **B's**
+    //! grid, on a row no longer drawn. Same argument as the `Effect(i)` arm.
+    //!
+    //! (Plain backticks, not `[links]`: this module is `cfg(test)`.)
+
+    use super::*;
+    use crate::app::MastikApp;
+    use crate::theme;
+    use mastik_core::kurbo::Size;
+    use mastik_core::layout::{GridAxis, LayoutGrid};
+    use mastik_core::peniko::Color;
+    use mastik_core::{Document, IdSource, NodeId, NodeKind, Operation, Transaction};
+
+    const SCREEN: egui::Vec2 = egui::vec2(1200.0, 900.0);
+    /// `mixed_hex_tests`' hit band for the hex field, at the same spawn; repeated
+    /// because the two modules are independent fixtures.
+    const HEX_FIELD: egui::Pos2 = egui::pos2(520.0, 524.0);
+
+    fn grid(count: u32, color: Color) -> LayoutGrid {
+        LayoutGrid {
+            count,
+            color,
+            ..LayoutGrid::new(GridAxis::Columns)
+        }
+    }
+
+    /// Two artboards with **disagreeing** grid lists, plus a rect that has none.
+    fn two_frames(ctx: &egui::Context) -> (MastikApp, NodeId, NodeId, NodeId) {
+        theme::install(ctx);
+        let mut app = MastikApp::headless(ctx);
+        let mut ids = IdSource::new(0x6121);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let (a, b, r) = (ids.mint(), ids.mint(), ids.mint());
+        let node = |id, kind| Operation::CreateNode {
+            id,
+            parent: root,
+            index: 0,
+            kind,
+            transform: None,
+            name: None,
+        };
+        doc.apply(&Transaction(vec![
+            node(
+                a,
+                NodeKind::Artboard {
+                    size: Size::new(400.0, 300.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+            ),
+            node(
+                b,
+                NodeKind::Artboard {
+                    size: Size::new(400.0, 300.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+            ),
+            node(
+                r,
+                NodeKind::Rect {
+                    size: Size::new(20.0, 20.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+            ),
+            Operation::SetLayoutGrids {
+                id: a,
+                grids: mastik_core::keyed_by_position([grid(5, Color::new([1.0, 0.0, 0.0, 1.0]))]),
+            },
+            Operation::SetLayoutGrids {
+                id: b,
+                grids: mastik_core::keyed_by_position([grid(10, Color::new([0.0, 0.0, 1.0, 1.0]))]),
+            },
+        ]))
+        .expect("build");
+        app.session.adopt_document(doc, None);
+        (app, a, b, r)
+    }
+
+    fn frame(ctx: &egui::Context, app: &mut MastikApp, events: Vec<egui::Event>) {
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events,
+                ..Default::default()
+            },
+            |ui| app.picker_ui(ui.ctx()),
+        );
+    }
+
+    fn grid_rgba8(app: &MastikApp, id: NodeId) -> [u8; 4] {
+        app.session.doc.get(id).expect("node").grids()[0]
+            .color
+            .to_rgba8()
+            .to_u8_array()
+    }
+
+    /// Click into the hex field, replace its text with `00FF00`, press `Enter`.
+    /// `mixed_hex_tests::type_a_green`, repeated for that module's reason.
+    fn type_a_green(ctx: &egui::Context, app: &mut MastikApp) {
+        for _ in 0..2 {
+            frame(ctx, app, Vec::new());
+        }
+        let button = |pressed| egui::Event::PointerButton {
+            pos: HEX_FIELD,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(
+            ctx,
+            app,
+            vec![egui::Event::PointerMoved(HEX_FIELD), button(true)],
+        );
+        frame(ctx, app, vec![button(false)]);
+        frame(ctx, app, vec![egui::Event::Text("00FF00".into())]);
+        frame(
+            ctx,
+            app,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        for _ in 0..2 {
+            frame(ctx, app, Vec::new());
+        }
+    }
+
+    /// **Widening the selection past agreement closes the grid picker**, so the
+    /// hex that follows reaches nothing. The damage assertion is `b`'s colour, not
+    /// the picker being `None`, which a fix closing it for the wrong reason would
+    /// also satisfy. Control 1 shows the write path works; control 2 shows the
+    /// question is `frame_subjects`' and not `selection.ids()`'.
+    ///
+    /// flip: delete the `PaintSlot::Grid(_)` arm of `picker_ui`'s orphan match →
+    /// fails at B's colour, `[0, 255, 0, 255]` where `[0, 0, 255, 255]` was; the
+    /// track-count assertion and both controls stay green.
+    #[test]
+    fn widening_past_agreement_closes_the_grid_picker_before_it_can_write() {
+        let ctx = egui::Context::default();
+        let (mut app, a, b, _r) = two_frames(&ctx);
+        app.session.selection.set(vec![a]);
+        app.picker = Some(Picker::new(a, PaintSlot::Grid(0), egui::pos2(400.0, 300.0)));
+        for _ in 0..2 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        assert!(
+            app.picker.is_some(),
+            "the fixture has to reach the state: over one frame the card draws its \
+             row and the picker stays up"
+        );
+
+        // The Shift-click: `shared_grids` now answers `None` (5 tracks against 10).
+        app.session.selection.set(vec![a, b]);
+        assert!(
+            app.shared_grids(&app.frame_subjects()).is_none(),
+            "and the fixture's two frames have to actually disagree, or the card \
+             would still be drawing the row this is about"
+        );
+        type_a_green(&ctx, &mut app);
+
+        assert_eq!(
+            grid_rgba8(&app, b),
+            [0, 0, 255, 255],
+            "B's grid was never on screen as a row and its colour is now A's"
+        );
+        assert_eq!(
+            app.session.doc.get(b).unwrap().grids()[0].count,
+            10,
+            "and its track count survives either way — `Grid`'s arm reads each \
+             subject's own list, which is what makes this narrower than `Effect`'s"
+        );
+        assert!(
+            app.picker.is_none(),
+            "the picker has to have gone, not merely failed to write"
+        );
+
+        // **Control 1**: one frame, the identical hex. The write must land.
+        let ctx = egui::Context::default();
+        let (mut app, a, _b, _r) = two_frames(&ctx);
+        app.session.selection.set(vec![a]);
+        app.picker = Some(Picker::new(a, PaintSlot::Grid(0), egui::pos2(400.0, 300.0)));
+        type_a_green(&ctx, &mut app);
+        assert_eq!(
+            grid_rgba8(&app, a),
+            [0, 255, 0, 255],
+            "control: over one frame the hex recolours that frame's grid"
+        );
+
+        // **Control 2**: a rect joins the selection. It has no grids, so
+        // `frame_subjects` filters it out and the frames still agree.
+        let ctx = egui::Context::default();
+        let (mut app, a, _b, r) = two_frames(&ctx);
+        app.session.selection.set(vec![a, r]);
+        app.picker = Some(Picker::new(a, PaintSlot::Grid(0), egui::pos2(400.0, 300.0)));
+        for _ in 0..2 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        assert!(
+            app.picker.is_some(),
+            "control: a Shift-clicked rectangle cannot make two frames' grids \
+             disagree, so the card is still drawing the row and the picker must \
+             still be up"
+        );
+    }
+
+    /// **A palette chip whose colour is already in the slot costs no undo step.**
+    /// Driven at `write_slot`, the single line the chip's click handler runs
+    /// (`document_swatches`), rather than through a click: the chips are laid out
+    /// from the document's own colours, so a hit coordinate would rot.
+    ///
+    /// flip: remove the `tx.changes_nothing(&self.doc)` guard from `commit_inner` →
+    /// fails at the first assertion (depth 1); the control stays green, so a
+    /// version that refused every write would not pass.
+    #[test]
+    fn a_palette_chip_already_in_the_slot_costs_no_undo_step() {
+        use mastik_core::Fill;
+        let ctx = egui::Context::default();
+        let (mut app, a, _b, _r) = two_frames(&ctx);
+        let red = Color::new([1.0, 0.0, 0.0, 1.0]);
+        app.session
+            .doc
+            .apply(&Transaction(vec![Operation::SetFills {
+                id: a,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: Brush::Solid(red).into(),
+                    visible: true,
+                }]),
+            }]))
+            .expect("fill the frame");
+        app.session.selection.set(vec![a]);
+        assert_eq!(
+            app.session.history.undo_depth(),
+            0,
+            "the fixture has to start with an empty history, or the assertion \
+             below is about whatever built it"
+        );
+
+        // Exactly what the ringed chip's click handler does: the colour it
+        // already has, back into the slot it came from.
+        app.write_slot(a, PaintSlot::Fill(0), Brush::Solid(red));
+        assert_eq!(
+            app.session.history.undo_depth(),
+            0,
+            "clicking the chip the picker rings dirties the document — arming \
+             autosave and the crash snapshot — and puts a step in the history \
+             that undoes to the picture it undid from"
+        );
+
+        // **The control**: a different colour through the same door has to land,
+        // or the assertion above is satisfied by a write that never works.
+        let green = Color::new([0.0, 1.0, 0.0, 1.0]);
+        app.write_slot(a, PaintSlot::Fill(0), Brush::Solid(green));
+        assert_eq!(
+            app.session.history.undo_depth(),
+            1,
+            "control: a chip the picker did *not* ring still commits"
+        );
+        match app.session.doc.get(a).unwrap().paint().fills[0]
+            .brush
+            .literal()
+        {
+            Some(Brush::Solid(c)) => assert_eq!(*c, green, "control: and lands"),
+            other => panic!("control: expected a solid fill, got {other:?}"),
+        }
+    }
+
+    /// **A chip shows the ramp's opacity; the stop bar shows the stops.** Both
+    /// halves are asserted, because the defaulting is the decision: checking only
+    /// the chip would pass if `stop_colours` folded the opacity in too, dimming the
+    /// handles being dragged. The chip assertion is a `<` rather than an equality;
+    /// the rounding of `gamma_multiply` is egui's business.
+    ///
+    /// flip: `ramp` returns `stop_colours(brush)` unchanged → fails at the chip
+    /// assertion, the faded chip reading the control's own `255`.
+    #[test]
+    fn a_faded_gradient_dims_its_chip_and_not_its_stop_bar() {
+        let brush = crate::panels::paint::default_brush(
+            crate::panels::paint::PaintKind::Linear,
+            vec![
+                (0.0, Color::from_rgba8(255, 0, 0, 255)),
+                (1.0, Color::from_rgba8(0, 0, 255, 255)),
+            ],
+            mastik_core::kurbo::Size::new(100.0, 100.0),
+        );
+        let faded = crate::panels::paint::with_alpha(&brush, 0.3);
+
+        let opaque_chip = ramp(&brush)[0].1.a();
+        let faded_chip = ramp(&faded)[0].1.a();
+        assert_eq!(opaque_chip, 255, "the control: an untouched ramp is opaque");
+        assert!(
+            faded_chip < opaque_chip && faded_chip > 0,
+            "a 30% gradient's chip has to look 30% — it draws beside a canvas \
+             that does, and one document drawn two ways in one frame is §15 \
+             D564's own defect (got {faded_chip})"
+        );
+
+        assert_eq!(
+            stop_colours(&faded)[0].1.a(),
+            255,
+            "and the stop bar stays raw — it is the editing surface for these \
+             stops and sits under the slider that would be fading it"
+        );
+    }
+
+    /// **The knob hangs 7pt past each end of its row, and the card's padding is
+    /// what catches it.** The vertical reach is bounded (7.0 in a 7.5 half-row);
+    /// the horizontal is not, and fits only because `ui::POPOVER_PAD` is 11 — an
+    /// accidental clearance a layout change could spend. The ink is read out of the
+    /// painter rather than recomputed from constants.
+    ///
+    /// flip: `ui::POPOVER_PAD` dropped to 6 → fails at the horizontal assertion; the knob's
+    /// outer stroke radius grown from 6.5 to 8.0 → fails the vertical one.
+    #[test]
+    fn the_alpha_knob_stays_inside_the_cards_padding_at_both_ends() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let track = egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(120.0, TRACK_H));
+
+        // Both ends: a knob clamped at one end only is a plausible wrong version.
+        for (label, t) in [("t = 0", 0.0_f32), ("t = 1", 1.0)] {
+            let out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400.0, 200.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| slider_knob(ui.painter(), track, t, egui::Color32::WHITE),
+            );
+            let ink = out
+                .shapes
+                .iter()
+                .map(|c| c.shape.visual_bounding_rect())
+                .filter(|r| r.is_finite() && r.is_positive())
+                .reduce(|a, b| a.union(b))
+                .expect("the knob painted something");
+
+            let row_half = (TRACK_H + 6.0) * 0.5;
+            let centre_y = track.center().y;
+            let up = centre_y - ink.min.y;
+            let down = ink.max.y - centre_y;
+            assert!(
+                up <= row_half && down <= row_half,
+                "{label}: the knob left its row vertically — {up} up and {down} \
+                 down against a {row_half} half-row. The `+ 6.0` in `slider_track` \
+                 is what buys this clearance (§15 D766)"
+            );
+
+            let over = (track.min.x - ink.min.x).max(ink.max.x - track.max.x);
+            assert!(
+                over > 0.0,
+                "{label}: the knob no longer overhangs at all — if it has been \
+                 clamped, this test and `slider_track`'s doc both need rewriting \
+                 rather than deleting"
+            );
+            assert!(
+                over <= ui::POPOVER_PAD,
+                "{label}: the knob hangs {over}pt past the track against {}pt \
+                 of card padding, so it is drawn outside the card. `slider_knob` \
+                 insets nothing — `ui::POPOVER_PAD` is the only thing holding it in \
+                 (§15 D766)",
+                ui::POPOVER_PAD
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_colour_route_tests {
+    //! **How the picker reaches a text layer's colour**: a click goes through
+    //! `write_slot` and a drag through `char_valve`.
+    use super::*;
+    use crate::app::MastikApp;
+    use crate::theme;
+    use mastik_core::{Document, IdSource, NodeId, NodeKind, Operation, Transaction};
+
+    const SCREEN: egui::Vec2 = egui::vec2(1200.0, 900.0);
+
+    fn frame(ctx: &egui::Context, app: &mut MastikApp, events: Vec<egui::Event>) {
+        frame_with(ctx, app, events, egui::Modifiers::NONE);
+    }
+
+    /// [`frame`] with `modifiers` held.
+    fn frame_with(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) {
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events,
+                modifiers,
+                ..Default::default()
+            },
+            |ui| app.picker_ui(ui.ctx()),
+        );
+    }
+
+    fn text_app(ctx: &egui::Context) -> (MastikApp, NodeId) {
+        theme::install(ctx);
+        let mut app = MastikApp::headless(ctx);
+        let mut ids = IdSource::new(0x7E5);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let id = ids.mint();
+        doc.apply(&Transaction(vec![Operation::CreateNode {
+            id,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Text {
+                content: "hello".into(),
+                style: Box::default(),
+                spans: Default::default(),
+                para_spans: Default::default(),
+                paragraph: Default::default(),
+                block: Default::default(),
+                sizing: mastik_core::TextSizing::Auto,
+                on_path: None,
+                on_path_flip: false,
+                on_path_offset: 0.0,
+            },
+            transform: None,
+            name: None,
+        }]))
+        .expect("a text node");
+        app.session.adopt_document(doc, None);
+        app.session.selection.set_one(id);
+        // Without this the picker orphans itself on its first frame: `TextColor`
+        // is only shown while the Type panel's Character tab is up.
+        app.type_menu = Some(crate::app::TypeTab::Character);
+        app.picker = Some(Picker::new(
+            id,
+            PaintSlot::TextColor,
+            egui::pos2(400.0, 300.0),
+        ));
+        (app, id)
+    }
+
+    fn text_rgba(app: &MastikApp, id: NodeId) -> Option<[u8; 4]> {
+        match app.session.doc.get(id)?.kind() {
+            NodeKind::Text { style, .. } => style.color.map(|c| c.to_rgba8().to_u8_array()),
+            _ => None,
+        }
+    }
+
+    /// **A click on the picker's plane sets a text layer's colour.** The route is
+    /// `sv_plane` → `write_stop_colour` → `pointer_slot`, which on `clicked()`
+    /// calls `write_slot` directly and never reaches `valve_slot`; a drag enters
+    /// the valve (see `a_drag_on_the_picker_writes_a_text_layers_colour_once`).
+    /// This route is read, not instrumented, so the test does not assert it.
+    ///
+    /// The fixture needs the Character tab up, or `TextColor` orphans the picker.
+    /// The coordinate (500, 344) with the picker spawned at (400, 300) is on the
+    /// saturation/value plane, and the expected colour is a reading at the 272
+    /// width: the same point is less saturated on a wider plane.
+    #[test]
+    fn a_click_on_the_picker_writes_a_text_layers_colour() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = text_app(&ctx);
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+
+        assert!(
+            app.picker.is_some(),
+            "the fixture is not in the state this test is about — `TextColor` \
+             orphans the picker unless the Character tab is up, and a closed \
+             picker answers every click the same way"
+        );
+        assert_eq!(
+            text_rgba(&app, id),
+            None,
+            "the layer starts with no colour of its own, so anything below is \
+             this click's doing"
+        );
+        let depth = app.session.history.undo_depth();
+
+        let at = egui::pos2(500.0, 344.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&ctx, &mut app, vec![button(true)]);
+        frame(&ctx, &mut app, vec![button(false)]);
+        frame(&ctx, &mut app, Vec::new());
+
+        assert_eq!(
+            text_rgba(&app, id),
+            Some([255, 165, 165, 255]),
+            "the click writes the colour under it"
+        );
+        assert_eq!(
+            app.session.history.undo_depth(),
+            depth + 1,
+            "and it is one undo step, not a preview left on the floor"
+        );
+    }
+
+    /// **A drag on the picker's plane sets a text layer's colour through
+    /// `char_valve`, and commits once, on the release.** This is the route that
+    /// enters the valve (`pointer_slot` → `valve_slot` →
+    /// `write_char_slot(CharWrite::Valve)`), previewing every frame and committing
+    /// on the falling edge. One undo step fails a commit-while-dragging version;
+    /// the colour landing fails a version with no falling edge.
+    ///
+    /// flip: disable `char_valve`'s `else if was_engaged` arm → fails at "the drag
+    /// writes a colour".
+    #[test]
+    fn a_drag_on_the_picker_writes_a_text_layers_colour_once() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = text_app(&ctx);
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+        assert!(app.picker.is_some(), "the fixture: the picker is up");
+        assert_eq!(text_rgba(&app, id), None, "and the layer has no colour yet");
+        let depth = app.session.history.undo_depth();
+
+        let from = egui::pos2(500.0, 344.0);
+        let button = |at, pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+        frame(&ctx, &mut app, vec![button(from, true)]);
+        let mut at = from;
+        for _ in 0..4 {
+            at += egui::vec2(10.0, 8.0);
+            frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        }
+        frame(&ctx, &mut app, vec![button(at, false)]);
+        frame(&ctx, &mut app, Vec::new());
+
+        assert!(text_rgba(&app, id).is_some(), "the drag writes a colour");
+        assert_eq!(
+            app.session.history.undo_depth(),
+            depth + 1,
+            "and it is one undo step for the whole drag, not one a frame"
+        );
+    }
+
+    /// A mouse drag on a plane the keyboard focused commits on release, as an unfocused one does.
+    /// flip: drop `pointer_takes_over` from `sv_plane` → fails at "the drag wrote a colour".
+    #[test]
+    fn a_drag_on_a_focused_plane_still_commits() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = text_app(&ctx);
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+        let (plane, rect) = ctx
+            .viewport(|v| {
+                v.this_pass
+                    .widgets
+                    .get_layer(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        super::layer_id(),
+                    ))
+                    .filter(|w| w.sense.is_focusable() && w.sense.senses_drag())
+                    .max_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+                    .map(|w| (w.id, w.rect))
+            })
+            .expect("the plane is drawn");
+        ctx.memory_mut(|m| m.request_focus(plane));
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+        let depth = app.session.history.undo_depth();
+
+        let from = rect.center();
+        let button = |at, pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+        frame(&ctx, &mut app, vec![button(from, true)]);
+        let mut at = from;
+        for _ in 0..4 {
+            at += egui::vec2(10.0, 8.0);
+            frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        }
+        frame(&ctx, &mut app, vec![button(at, false)]);
+        frame(&ctx, &mut app, Vec::new());
+
+        assert!(text_rgba(&app, id).is_some(), "the drag wrote a colour");
+        assert_eq!(
+            app.session.history.undo_depth(),
+            depth + 1,
+            "the drag committed"
+        );
+    }
+
+    /// A run of arrow steps on a text layer's colour, written per character, is one undo step.
+    /// flip: `write_slot_step` sends a per-character slot to `write_slot` → fails at
+    /// "one undo step".
+    #[test]
+    fn arrow_steps_on_a_text_layers_colour_fold_into_one_undo_step() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = text_app(&ctx);
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+        assert!(app.picker.is_some(), "the fixture: the picker is up");
+        let plane = ctx
+            .viewport(|v| {
+                // The frame just run; its widgets move to `prev_pass` only when the
+                // next one begins. The plane is the picker's biggest draggable stop.
+                v.this_pass
+                    .widgets
+                    .get_layer(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        super::layer_id(),
+                    ))
+                    .filter(|w| w.sense.is_focusable() && w.sense.senses_drag())
+                    .max_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+                    .map(|w| w.id)
+            })
+            .expect("the plane is drawn");
+        ctx.memory_mut(|m| m.request_focus(plane));
+        frame(&ctx, &mut app, Vec::new());
+        frame(&ctx, &mut app, Vec::new());
+        let depth = app.session.history.undo_depth();
+
+        // Up, a tenth at a time: brightness, so each step is a colour of its own
+        // from the black the layer starts in (saturation steps on black are not).
+        let up = egui::Event::Key {
+            key: egui::Key::ArrowUp,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        };
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            frame_with(&ctx, &mut app, vec![up.clone()], egui::Modifiers::SHIFT);
+            seen.push(text_rgba(&app, id));
+        }
+        frame(&ctx, &mut app, Vec::new());
+
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            5,
+            "each step wrote a colour of its own: {seen:?}"
+        );
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one undo step");
+    }
+}

@@ -1,4 +1,4 @@
-# Ondin — key decisions
+# Mastik — key decisions
 
 The decisions a developer has to know, or would otherwise argue again. Each is stated as it
 stands now. The `D<n>` labels are the numbers these had in the old deviation ledger, so
@@ -26,7 +26,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **D340** The effect stack is reordered by dragging its rows, as fills and strokes are, though order changes pixels only between `Filters` and `LayerBlur` and between two shadows on one side.
 - **D176** Image fills use `peniko::Brush<ImageBrush<ImageRef>>` with our reference in place of pixels; there is no brush enum of our own. **D178** peniko has no transparent extend, so a fitted picture needs a clip as well as a brush transform.
 - **D412** A gradient carries its own affine on the brush. An elliptical radial is a circular gradient under a squash. **D767** Gradient opacity is a field separate from the stops.
-- **A gradient follows its layer's box.** Its points stay stored in the layer's own px, and a box changing size is composed into `GradientBrush::transform` as scale(new/old), exact for every kind and with no save-format change: on write when a resize changes the stored size, at draw time when layout or a bound size draws another box (`ondin_core::paint_box`). The box it is stored against reads a bound axis at its variable's default-mode number, never the placeholder 0. Without it, free ends on a resized shape end in a flat band of the last stop.
+- **A gradient follows its layer's box.** Its points stay stored in the layer's own px, and a box changing size is composed into `GradientBrush::transform` as scale(new/old), exact for every kind and with no save-format change: on write when a resize changes the stored size, at draw time when layout or a bound size draws another box (`mastik_core::paint_box`). The box it is stored against reads a bound axis at its variable's default-mode number, never the placeholder 0. Without it, free ends on a resized shape end in a flat band of the last stop.
 - **D301** Image data is `Arc<[u8]>`, so commits and undo never deep-copy pictures. **D600** Exactly PNG, JPEG, WebP and GIF are accepted, enforced by a magic-byte predicate (`images::signature_is_accepted`), not by Cargo features.
 - **D358** There is one unit, px. Density is the export scale.
 - **D868** Specified and used values are two numbers. Used boxes are derived in `Resolved` and never saved.
@@ -50,7 +50,7 @@ Decided non-goals are in `docs/non-goals.md`.
 
 ## Layout
 
-- **D867** Container layout is CSS flexbox and grid, computed by taffy over Ondin's own nodes with no mirror tree. Where CSS and design-tool habit disagree, CSS wins. It is a fixed algorithm re-run from specified values, not a constraint engine.
+- **D867** Container layout is CSS flexbox and grid, computed by taffy over Mastik's own nodes with no mirror tree. Where CSS and design-tool habit disagree, CSS wins. It is a fixed algorithm re-run from specified values, not a constraint engine.
 - **D873** Used values are quantized to 1/64 px (`container::quantize`).
 - **D869** A group with `display` has a box; without it, it is a plain group. **D870** A frame may sit in any group, but never under a boolean or a mask.
 - **D871** Constraints are `position: absolute` with insets. **D874** Tools edit from drawn geometry, and `build::keep_insets` turns the result into insets at the commit door.
@@ -107,7 +107,7 @@ Decided non-goals are in `docs/non-goals.md`.
 
 ## Rendering and export
 
-- **D774** eframe owns the wgpu device; `ondin-render` borrows it. Only `ondin-render` depends on vello.
+- **D774** eframe owns the wgpu device; `mastik-render` borrows it. Only `mastik-render` depends on vello.
 - **D339** Each effect layer is recorded into a sub-scene, rasterized, filtered by `fx.wgsl` compute passes and handed back as an image. Sibling layers are packed one pass per renderer.
 - **D395** Effect cost is bounded independent of zoom: heavy blurs run at reduced resolution and the batch is limited to a pixel budget. **D744** Effect buffers are capped at 8192 px. **D745** The canvas packs every picture into one 8192 px atlas; exports use source resolution.
 - **D742** An inner shadow complements the tint, not the silhouette.
@@ -119,7 +119,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **A page and a top-level frame isolate when they hold a blended layer** (a mode or a visible shadow's mode), so what is inside blends with the page's or the frame's content and never the canvas ground: the canvas looks the same as every export, which lays its ground after drawing.
 - **A shadow with a blend mode is drawn in its own pass**, since it blends with what lies under the layer and the effect buffer does not hold that; a stack without one keeps the single effect layer. An SVG filter cannot see beneath its element, so the SVG writer draws the shadow Normal and reports it.
 - **D414** `vello_cpu` is pinned exactly; raster goldens are per architecture and version. **D434** Raster output is capped at 65408 px per side.
-- **D702** SVG export uses `ondin_render::effects` for effect arithmetic, so there is one implementation of it.
+- **D702** SVG export uses `mastik_render::effects` for effect arithmetic, so there is one implementation of it.
 - **D780** SVG export reports its losses (`svg_of_reported`).
 - **D81** SVG text is one `<text>` per line and one `<tspan>` per run. **D611** A layer's name is written as `data-name`.
 - **PDF is our SVG converted** (`usvg` and `krilla`), not a third writer, and its text is either embedded fonts or our own glyph outlines, a per-spec choice SVG shares.
@@ -137,9 +137,9 @@ Decided non-goals are in `docs/non-goals.md`.
 
 ## Files, library and storage
 
-- **D362** Documents live in one base folder (default `~/.ondin`). Identity is a block at the top of the `.ondin` file, holding only user-changed values.
+- **D362** Documents live in one base folder (default `~/.mastik`). Identity is a block at the top of the `.mastik` file, holding only user-changed values.
 - **D363** A project is an id in each file's metadata; metadata wins over folder location.
-- **D364** `Ctrl+S` pins a version under `.versions/`. Autosave is silent and only when dirty, and holds and asks when the file changed outside Ondin. There is no Save As.
+- **D364** `Ctrl+S` pins a version under `.versions/`. Autosave is silent and only when dirty, and holds and asks when the file changed outside Mastik. There is no Save As.
 - Version history says under each version what it changed against the one pinned before it, counted as the compare counts (topmost changed layers). The summary is worked out off the UI thread and cached for the app's life by the pair's two paths, since a pinned version never changes.
 - **D366** Recent files, stars and covers are local to the machine.
 - **D377** Crash recovery is a whole-document snapshot every 10 s, not a journal. **D393** One writer thread serialises autosave, snapshots and forgets; `Ctrl+S` stays synchronous.
@@ -153,29 +153,29 @@ Decided non-goals are in `docs/non-goals.md`.
 - **Filesystem is truth.** Every action writes to disk and re-scans. Nothing about a document lives only in the app's memory, and no fact lives only in a cache.
 - **The format stays git-friendly**: pretty JSON (line-level diffs), an id-sorted node list, stable string ids, byte-stable output (invariant 9), the camera in `EditorSession` rather than the DTO, and `skip_serializing_if`. A modified-at stamp or view state in `DocumentDto` would break all of it, so an edit time is read off the directory entry. An edit touches only its node and its parent, with no cascade across unrelated nodes.
 - **Autosave is debounced**: writing on every op into a synced folder thrashes the sync client.
-- **No save writes over an outside change.** Every write of an open document's file first checks it against the bytes the session last read or wrote (size and time, then a digest); a change holds the save and asks *Reload* or *Overwrite*. The file is also watched while open: a clean document follows its file, a dirty one asks at once. One window per machine guards only against a second Ondin, not a sync client, `git` or another program.
+- **No save writes over an outside change.** Every write of an open document's file first checks it against the bytes the session last read or wrote (size and time, then a digest); a change holds the save and asks *Reload* or *Overwrite*. The file is also watched while open: a clean document follows its file, a dirty one asks at once. One window per machine guards only against a second Mastik, not a sync client, `git` or another program.
 - **Leaving a tab saves it**, as leaving for the library does, instead of an autosave tick running for tabs behind: a tab behind is clean unless it cannot be saved, and nothing is written behind the user's back while it waits.
 - **Undo history is kept per document in the library** (`.history/<document id>.json`), never beside the file, so it does not travel with a copy. It is read back only for byte-identical file contents written by the same version (`CARGO_PKG_VERSION`): a history replayed onto any other document would corrupt it. Two development builds of one version share the check; released versions never do.
-- **Another tool's file (Sketch, Penpot, a fetched Figma file) and a placed PDF are parsed in a child process** (`ondin reader`), the result crossing back as save-format bytes the app loads and so re-validates: a reader's stack overflow or failed allocation aborts its process, which no `catch_unwind` sees. Each reader keeps its own bounds; the child is the guard for what they miss. `.ondin` loads and SVG import stay in the app, bounded by their own depth limits. The child only parses (the app fetches, and keeps the Figma token) and has no memory cap.
+- **Another tool's file (Sketch, Penpot, a fetched Figma file) and a placed PDF are parsed in a child process** (`mastik reader`), the result crossing back as save-format bytes the app loads and so re-validates: a reader's stack overflow or failed allocation aborts its process, which no `catch_unwind` sees. Each reader keeps its own bounds; the child is the guard for what they miss. `.mastik` loads and SVG import stay in the app, bounded by their own depth limits. The child only parses (the app fetches, and keeps the Figma token) and has no memory cap.
 
 ## Workspace and build
 
 - **D427/D775** Core and MCP crates stay free of UI and render dependencies, enforced by `deps_forbidden` walking `cargo tree --workspace` against a rules table.
 - **D703** Shared dependency versions are pinned in the workspace `Cargo.toml`.
 - **D445** `panic = "unwind"` is enforced by a `compile_error!`, since `catch_unwind` guards boolean evaluation and font decoding.
-- **D303** `OndinApp::headless(&ctx)` builds the app without GPU, font threads or prefs, so app decisions are testable.
+- **D303** `MastikApp::headless(&ctx)` builds the app without GPU, font threads or prefs, so app decisions are testable.
 - **D304** SVG and JSON goldens are byte-compared; PNG goldens are not.
 - **D1095** The MCP tool list covers the model as it is: reads, writes, components, variables, styles, kits and the library. **D1097** Invariant 10 covers document-level actions on §8.3's queue.
 
 ## Agents and Command Mode
 
-- **AI comes through a configured agent harness, never an embedded model or a provider key of Ondin's own** (2026-11-10). The person picks a headless coding agent they already use and are signed in to; Ondin starts it, points it at its own MCP endpoint and shows the turn in a panel at the tool rail's foot, with layers attached from the canvas (`design/assistant.md`). Each harness is driven headless, not through ACP, which Claude Code and Codex speak only through adapters the person would have to install. The harness holds the model, the account and the billing. Command Mode's `/ai` is a door into the same assistant and is built after it.
+- **AI comes through a configured agent harness, never an embedded model or a provider key of Mastik's own** (2026-11-10). The person picks a headless coding agent they already use and are signed in to; Mastik starts it, points it at its own MCP endpoint and shows the turn in a panel at the tool rail's foot, with layers attached from the canvas (`design/assistant.md`). Each harness is driven headless, not through ACP, which Claude Code and Codex speak only through adapters the person would have to install. The harness holds the model, the account and the billing. Command Mode's `/ai` is a door into the same assistant and is built after it.
 - **Seven harnesses; Gemini CLI is not one** (2026-11-13): Google withdrew its OAuth sign-in for individuals in favour of Antigravity, which is driven instead. An old saved `gemini` key loads as *Off* (`Harness::from_key`).
 - **Nothing of the assistant shows while it is *Off*** (2026-11-13): the layer menu's *Ask the assistant* is omitted, not dimmed, as the ask button is hidden, so someone who never turns it on sees neither; in private mode the row is dimmed with its reason.
 - **One thread per document, and *New chat* clears it at once without asking** (2026-11-13), ending a running turn; switching Access ends a running turn with a note. The session restarts on the next question with the prose replayed.
-- **One configured MCP server reaches any document** (2026-11-12): `ondin mcp-proxy` takes no file; `use_document` picks one by name or path and every later call acts on it until the next. A document not open anywhere opens as a background tab in the running window, else in a headless `serve` (`mcp.md` §8.1).
+- **One configured MCP server reaches any document** (2026-11-12): `mastik mcp-proxy` takes no file; `use_document` picks one by name or path and every later call acts on it until the next. A document not open anywhere opens as a background tab in the running window, else in a headless `serve` (`mcp.md` §8.1).
 - **The MCP wire is hand-rolled** (2026-11-12): JSON-RPC 2.0 over newline-delimited JSON on std threads, as `one_window.rs` already serves its socket. The tool schemas come from the verb registry, so an SDK's derive would go unused, and its async runtime would be the only one in the workspace.
-- **The MCP endpoint admits the same user on the same machine, with no token** (2026-11-12): a same-user process can already read and write the `.ondin` files the endpoint would guard.
+- **The MCP endpoint admits the same user on the same machine, with no token** (2026-11-12): a same-user process can already read and write the `.mastik` files the endpoint would guard.
 - **A model argument is read strictly, and a write takes what a read gives** (2026-11-13): a field the model has no place for is refused naming its path, never dropped, and the short forms take what `get_node` and CSS write. `get_tree` answers in short forms only where they read back to the same value, except an sRGB colour, written as hex rounded to the nearest byte: half a byte step no eye sees, for a quarter of the text.
 - **Change notices ride in tool results** (2026-11-12): every result carries the document's revision and, when it moved since the client last looked, what changed. Harnesses do not put a server's own notifications in front of the model mid-turn.
 - **An agent's write never edits through the style browser's *Edit*** (2026-11-12): the same call does the same thing whatever is open on screen; an agent changes a style with `set_style_value`.
@@ -184,13 +184,13 @@ Decided non-goals are in `docs/non-goals.md`.
 ## Distribution
 
 - **D952** The window draws its own title bar on Windows and Linux and keeps the system's on macOS.
-- **D953** The release `ondin.exe` is a GUI-subsystem binary; `ondin.com` is its console twin.
-- **D954** Velopack auto-update from GitHub Releases applies only at the exit the user asked for, never while another Ondin runs. `ONDIN_NO_UPDATE_CHECK` opts out.
+- **D953** The release `mastik.exe` is a GUI-subsystem binary; `mastik.com` is its console twin.
+- **D954** Velopack auto-update from GitHub Releases applies only at the exit the user asked for, never while another Mastik runs. `MASTIK_NO_UPDATE_CHECK` opts out.
 - **D955** CI builds and tests on Linux, Windows and macOS.
 - **D956/D976** A `v*` tag builds and publishes every platform. Build steps hold a read-only token; one `publish` job writes. Every action in a job that holds a write token or the package signing key (`release.yml`'s `publish`, `pages.yml`'s steps after the key import) is pinned by commit, since a tag can be moved.
 - **D957** Signed apt and dnf repositories are rebuilt on GitHub Pages. `install.sh` pins the key fingerprint.
-- **D969** The Windows data folder is `OndinData`, because `%LocalAppData%\Ondin` belongs to the installer.
-- **There is only ever one Ondin window per machine**: a later launch hands its file to the running window, which opens it in a tab and comes forward. Tabs are how one window holds several files; a second window defeats them, and two windows holding one file saved over each other. Command-line runs open no window and are not covered.
+- **D969** The Windows data folder is `MastikData`, because `%LocalAppData%\Mastik` belongs to the installer.
+- **There is only ever one Mastik window per machine**: a later launch hands its file to the running window, which opens it in a tab and comes forward. Tabs are how one window holds several files; a second window defeats them, and two windows holding one file saved over each other. Command-line runs open no window and are not covered.
 
 ## Interface
 
@@ -198,13 +198,13 @@ Decided non-goals are in `docs/non-goals.md`.
 - **Every form control follows one standard, held by the shared primitives in `ui.rs`** (`app-chrome.md`, *Shared rules*): one height (28, with one named toolbar scale of 24), one ground, one hover that never lights the hairline, one row height for every list, sizes the primitive picks rather than the caller. A primary action is a state of its own, separate from a latched On.
 - **D747** The panels are keyboard-traversable: Tab is meant to reach every control and field, not only a dialog's.
 - **The chrome has a dark and a light palette; the canvas marks are theme-independent.** Chrome colours are read through functions of the current theme; selection, key, component, measure and point marks stay constants, since they sit on artwork.
-- **The app ships its own icon set** (`OndinIcons.ttf`, built from `assets/icons/glyphs.json`) rather than a third-party one: each icon is drawn for the size it is shown at, so no picture is a compromise forced by what another set happens to contain.
+- **The app ships its own icon set** (`MastikIcons.ttf`, built from `assets/icons/glyphs.json`) rather than a third-party one: each icon is drawn for the size it is shown at, so no picture is a compromise forced by what another set happens to contain.
 - **Over the canvas the app draws every cursor, the arrow included**: a base drawing with at most one badge saying what a press there would do, one badge meaning one thing on every base, in the OS's own ink set and pointer size. Panels, menus and window edges keep the system cursor.
 - **D345** Dropping in the layers panel chooses the parent level by horizontal travel.
 - **Only a frame on its page is a page container**, as in Figma: it wears a name tag and is picked by it or its edge. A frame inside another frame or a group wears no tag and picks as a group does, so a design of nested frames is not a wall of names.
 - **D750** Focus mode hides the panels but keeps the rulers, guides and layout grids: they are editing aids, not app chrome.
 - **Focus mode and present mode are separate modes**: focus mode is for editing with the chrome hidden; present mode is view-only.
-- **Present mode is its own branch of `OndinApp::ui`**, which reads only its own keys and returns, not a flag the overlays and commands check.
+- **Present mode is its own branch of `MastikApp::ui`**, which reads only its own keys and returns, not a flag the overlays and commands check.
 - **Private mode hides names, not content, and is a saved preference**: every drawn layer, page, document and project name is masked as its kind and place while the work itself stays on screen, and a restart in the middle of a shared screen comes back masked.
 - **A contrast fix passes in every mode or is not offered.** A raw colour is the same in all modes, so the nearest colour must pass every mode's worst backdrop and only variables passing in every mode are listed; when no lightness at the hue passes everywhere, only variables are offered.
 - **Renaming is two verbs**: *Rename* (`Ctrl+R`, `F2`) is the layers tree's field for one layer, *Batch rename…* (`Ctrl+Shift+R`) a box for many. With two or more layers selected `Ctrl+R` opens the box rather than refusing, the verb that fits them.

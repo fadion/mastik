@@ -1,10 +1,10 @@
 # Invariants
 
-The non-negotiable rules of the Ondin architecture (original §4, numbering preserved). If a requested change would violate one, stop and surface the conflict instead of working around it.
+The non-negotiable rules of the Mastik architecture (original §4, numbering preserved). If a requested change would violate one, stop and surface the conflict instead of working around it.
 
 ## 4. INVARIANTS
 
-1. **Core is headless.** `ondin-core` has no GPU/windowing/UI dependency and is fully testable without a device (§3).
+1. **Core is headless.** `mastik-core` has no GPU/windowing/UI dependency and is fully testable without a device (§3).
 
 2. **Single mutation path.** The only way to change a `Document` is `Document::apply(Transaction)`. Node fields are private; there is no public `&mut` access. UI, MCP, importers and paste all go through operations.
    - Carve-outs: three setters outside `apply` and outside undo, each reporting no `DirtySet`, and none reaching a node, edge or geometry (§5.11a, §15 D735).
@@ -32,7 +32,7 @@ The non-negotiable rules of the Ondin architecture (original §4, numbering pres
 
 6. **Local transforms only.** Nodes store transforms local to their parent; world transforms live only in `Resolved`.
 
-7. **Colour space discipline.** The document stores colours as sRGB with straight (non-premultiplied) alpha. Whatever representation a backend needs, the conversion lives only in `ondin-render` (`color.rs`), and a pin-time test asserts a known sRGB fill produces the expected pixel through each backend. Verify against the pinned Vello version rather than assuming.
+7. **Colour space discipline.** The document stores colours as sRGB with straight (non-premultiplied) alpha. Whatever representation a backend needs, the conversion lives only in `mastik-render` (`color.rs`), and a pin-time test asserts a known sRGB fill produces the expected pixel through each backend. Verify against the pinned Vello version rather than assuming.
 
 8. **Operations are total and validated.** Every operation validates inputs and returns `Result<_, OpError>`; never panic on bad input (unknown id, cycle-creating reparent, duplicate id in `CreateNode`, a non-finite number in a geometry, transform, pivot, effect, guide position, paint or text style or span, etc.).
    - **Finiteness is the operation's job, not the loader's.** `serde_json` cannot carry a non-finite `f64`, so the operation is the last place to refuse one while the user still has their work; past it the document saves and never reopens. (D421)
@@ -56,22 +56,22 @@ The non-negotiable rules of the Ondin architecture (original §4, numbering pres
 
 9. **Serialization is versioned and deterministic.** Every saved document carries `schema_version`; the loader migrates older versions to current. Saving the same document twice gives identical bytes (nodes in sorted-id order, stable field order). The SVG and JSON goldens rest on this (`testing.md`); the PNG golden is not built.
 
-10. **MCP is a thin adapter.** Tool handlers only translate to and from `Operation`s, queries, and the owning process's document-level actions: marking a document a kit, publishing it, stopping its sharing, saving a named version, and filing a new document in the library (§8.3, D1097). Any logic they need lives in `ondin-core`, or in `ondin-export` where it needs the CPU renderer or the snapshot (`contrast`, `plan`, `context`), never in the handler. Renaming, moving, duplicating and deleting a document stay the person's, on the dashboard (§8.4). The five actions are never the handler's own: each is a request to the owning process, which runs the app's own functions (the ones the document menu's rows, *Save named version…* and the dashboard's *New file* end in).
-    - The editing arithmetic a handler needs (`resize_box_to`, `rotate_node`, `pen_outline`, `pen_anchors`, `insert_point`, `align_points`, `split_segments`, …) is in `ondin_core::edit`, beside the value types it is phrased in (`Handle`, `PenAnchor`, `PenSubpath`, `PointRef`). The app re-exports it from `tools` and keeps only gesture state (`preview.rs`) and what is phrased in the tool rail's `Tool`. A handler calls these rather than writing a second implementation. (D786)
+10. **MCP is a thin adapter.** Tool handlers only translate to and from `Operation`s, queries, and the owning process's document-level actions: marking a document a kit, publishing it, stopping its sharing, saving a named version, and filing a new document in the library (§8.3, D1097). Any logic they need lives in `mastik-core`, or in `mastik-export` where it needs the CPU renderer or the snapshot (`contrast`, `plan`, `context`), never in the handler. Renaming, moving, duplicating and deleting a document stay the person's, on the dashboard (§8.4). The five actions are never the handler's own: each is a request to the owning process, which runs the app's own functions (the ones the document menu's rows, *Save named version…* and the dashboard's *New file* end in).
+    - The editing arithmetic a handler needs (`resize_box_to`, `rotate_node`, `pen_outline`, `pen_anchors`, `insert_point`, `align_points`, `split_segments`, …) is in `mastik_core::edit`, beside the value types it is phrased in (`Handle`, `PenAnchor`, `PenSubpath`, `PointRef`). The app re-exports it from `tools` and keeps only gesture state (`preview.rs`) and what is phrased in the tool rail's `Tool`. A handler calls these rather than writing a second implementation. (D786)
 
 11. **Renderers behind one shared walk.** Both backends implement `trait ScenePainter`, and the document→scene walk is written exactly once, in `scene.rs`. Adding or swapping a backend means writing a `ScenePainter` and must not touch core, export or app logic. (The originally designed `trait Renderer`/`RenderTarget` are gone; `ScenePainter` is the boundary, D2.)
     - The rule can be broken from below: a backend that substitutes a value the walk left open is deciding, and the walk never sees it. The GPU painter once answered `clip: None` with a ±1e7 rectangle in the node's local space, so an ancestor `scale(0.001)` turned an unclipped layer into a clipped one. Where a backend must supply a value, lift the choice into a free function and test it there. (D612)
-    - The SVG writer is not a scene walk. `svg::emit_node` re-decides what `scene::build` also decides: visibility (a slice counting as never visible), opacity, clip, mask and mask mode, effects, blend mode (with the isolation of the page and a top-level frame), fill rule, paint order, the stroke-alignment clip, the missing-image placeholder and image framing. Agreement is held by convention plus `ondin-export/tests/two_walks.rs`, a differential over the ink set read node by node through per-node colours. The two legitimately differ on culling, geometry spelling and element ordering, and on a background blur, which SVG leaves out and reports. (D781)
+    - The SVG writer is not a scene walk. `svg::emit_node` re-decides what `scene::build` also decides: visibility (a slice counting as never visible), opacity, clip, mask and mask mode, effects, blend mode (with the isolation of the page and a top-level frame), fill rule, paint order, the stroke-alignment clip, the missing-image placeholder and image framing. Agreement is held by convention plus `mastik-export/tests/two_walks.rs`, a differential over the ink set read node by node through per-node colours. The two legitimately differ on culling, geometry spelling and element ordering, and on a background blur, which SVG leaves out and reports. (D781)
 
 12. **The app's distribution identity never changes once shipped.** Installed copies find updates by these values; renaming one orphans every install with no route back to those users. (D956, D957)
-    - Velopack `--packId Ondin` and channels `win-x64`, `linux-x64`, `osx-arm64`.
-    - Reverse-DNS id `io.github.fadion.Ondin` (`chrome::APP_ID`: Wayland app id, X11 class, desktop entry, AppStream metadata, icons, macOS `CFBundleIdentifier` in `packaging/macos/Info.plist`, repeated by `--bundleId`).
-    - Release feed `https://github.com/fadion/ondin` and opt-out `ONDIN_NO_UPDATE_CHECK` (`update.rs`).
-    - The document type: Windows ProgID `Ondin.Document` (`file_type.rs`), MIME type `application/x-ondin` (`packaging/linux`) and macOS type `io.github.fadion.Ondin.document` (`packaging/macos/Info.plist`); a rename leaves the old association behind.
-    - Package repositories' base URL `https://fadion.github.io/ondin`, keyring path, `Origin: Ondin`, `Suite: stable`, `main`/`amd64`.
+    - Velopack `--packId Mastik` and channels `win-x64`, `linux-x64`, `osx-arm64`.
+    - Reverse-DNS id `io.github.fadion.Mastik` (`chrome::APP_ID`: Wayland app id, X11 class, desktop entry, AppStream metadata, icons, macOS `CFBundleIdentifier` in `packaging/macos/Info.plist`, repeated by `--bundleId`).
+    - Release feed `https://github.com/fadion/mastik` and opt-out `MASTIK_NO_UPDATE_CHECK` (`update.rs`).
+    - The document type: Windows ProgID `Mastik.Document` (`file_type.rs`), MIME type `application/x-mastik` (`packaging/linux`) and macOS type `io.github.fadion.Mastik.document` (`packaging/macos/Info.plist`); a rename leaves the old association behind.
+    - Package repositories' base URL `https://fadion.github.io/mastik`, keyring path, `Origin: Mastik`, `Suite: stable`, `main`/`amd64`.
     - A new platform adds a channel; it never renames one.
-    - Guards: `release.yml` refuses an unknown channel; a test pins the feed and opt-out; a `pages.yml` step compares repository values across their copies; `machine_dir::tests` reads every `--packId` from `release.yml` and demands `Ondin`. The app id has no check at all.
-    - The pack id is also a folder: Velopack installs to `%LocalAppData%\<packId>`, which Setup renames aside and deletes and uninstall empties, so nothing the app keeps may live there. NTFS is case-insensitive, so the app's own data lives in `OndinData`. (D969)
+    - Guards: `release.yml` refuses an unknown channel; a test pins the feed and opt-out; a `pages.yml` step compares repository values across their copies; `machine_dir::tests` reads every `--packId` from `release.yml` and demands `Mastik`. The app id has no check at all.
+    - The pack id is also a folder: Velopack installs to `%LocalAppData%\<packId>`, which Setup renames aside and deletes and uninstall empties, so nothing the app keeps may live there. NTFS is case-insensitive, so the app's own data lives in `MastikData`. (D969)
 
 ## Traps
 

@@ -4,7 +4,7 @@ description: Answers questions about egui chrome that are really about numbers �
 tools: Read, Grep, Glob, Edit, Bash
 ---
 
-You settle questions about the Ondin app's egui chrome by **measuring** it. The
+You settle questions about the Mastik app's egui chrome by **measuring** it. The
 GUI must never be launched (`CLAUDE.md`: it grabs focus and the mouse and
 hijacks whatever the user is doing), and a great many chrome questions are not
 really visual questions at all — they are arithmetic that nobody has done.
@@ -18,12 +18,12 @@ really visual questions at all — they are arithmetic that nobody has done.
 ## Process
 
 1. **Find the code.** The thing under test is usually a private function in
-   `crates/ondin-app/src/` — `ui.rs`, `cursor.rs`, `canvas.rs`, `theme.rs`.
+   `crates/mastik-app/src/` — `ui.rs`, `cursor.rs`, `canvas.rs`, `theme.rs`.
 2. **Add a probe to that module's existing `#[cfg(test)] mod tests`.** Not a new
    file: `use super::*` is what gives you the private items, and most of what is
    worth probing is private. Name it `probe_<something>` so it is unmistakable.
-3. **Run it:** `cargo test -p ondin-app probe_ -- --nocapture`. This is a `bin`
-   crate — `-p ondin-app`, never `--lib`.
+3. **Run it:** `cargo test -p mastik-app probe_ -- --nocapture`. This is a `bin`
+   crate — `-p mastik-app`, never `--lib`.
 4. **Read the numbers.** Iterate on the probe until it answers the question.
 5. **Remove the probe and restore the file exactly.** 🚨 **The proof is
    `git status --short` and `git diff --stat`, not the tests.** A left-behind
@@ -31,7 +31,7 @@ really visual questions at all — they are arithmetic that nobody has done.
    it ran — so `cargo test` and `cargo fmt --all --check` can never detect one.
    Measured: a well-formatted `#[test] fn probe_leftover()` added to
    `grid.rs`'s test module gives `fmt --all --check` **exit 0** and
-   `cargo test -p ondin-app` **all passed**, with `git status --short` the only
+   `cargo test -p mastik-app` **all passed**, with `git status --short` the only
    witness. Run the tests too if you like — they say the tree still *builds*,
    which is a different claim from the tree being *unchanged*.
 6. **Report.**

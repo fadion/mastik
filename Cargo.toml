@@ -6,7 +6,7 @@ members = ["crates/*"]
 edition = "2024"
 version = "0.15.0"
 license = "MIT"
-repository = "https://github.com/fadion/ondin"
+repository = "https://github.com/fadion/mastik"
 
 # All *shared* external versions are pinned here and referenced from crates via
 # `<dep>.workspace = true`; a dependency used by exactly one crate is declared in
@@ -15,8 +15,8 @@ repository = "https://github.com/fadion/ondin"
 #
 # ⚠️ **This used to read "all external versions are pinned here" and five are
 # not** (§15 D703, `[A2-L3-06]`'s sibling `[S22-L3-05]`): `base64`, `roxmltree`
-# and `flo_curves` in `ondin-core`, `ring` in `ondin-app`, and `pollster` as a
-# dev-dependency of `ondin-render`. Each carries its own justification paragraph,
+# and `flo_curves` in `mastik-core`, `ring` in `mastik-app`, and `pollster` as a
+# dev-dependency of `mastik-render`. Each carries its own justification paragraph,
 # so the second home is deliberate — the opening sentence simply did not admit it
 # existed, in the block whose whole subject is this project's pinning story.
 #
@@ -38,11 +38,11 @@ repository = "https://github.com/fadion/ondin"
 #   * wgpu is pinned to exactly what vello 0.9 AND egui-wgpu 0.35 both require
 #     (29.0.4). vello renders the canvas; egui-wgpu composites it. They must
 #     share one wgpu, so this version is dictated by them, never chosen freely.
-#   * kurbo/peniko unify to a single version shared by ondin-core and vello, so
+#   * kurbo/peniko unify to a single version shared by mastik-core and vello, so
 #     the model's geometry/paint types ARE the types the renderer consumes
 #     (§6.3 "near-zero translation").
 [workspace.dependencies]
-# --- ondin-core (headless; no GPU/UI) ---
+# --- mastik-core (headless; no GPU/UI) ---
 kurbo = { version = "0.13.1", features = ["serde"] }
 peniko = { version = "0.6.1", features = ["serde"] }
 rstar = "0.13.1"
@@ -52,7 +52,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 # floats one ULP off — `29.101491260998422` came back as the next `f64` up — so a
 # save and reopen moved a coordinate, and an override one ULP off its main (an
 # override is a value that differs, §15 D979 (a)) was erased by the reload. The
-# exact parser costs some load time; `ondin-core`'s
+# exact parser costs some load time; `mastik-core`'s
 # `an_override_one_ulp_off_its_main_survives_a_reload` is the test. Feature
 # unification makes it workspace-wide whichever member names it.
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
@@ -62,13 +62,13 @@ thiserror = "2.0.19"
 parley = { version = "0.11.0", default-features = false, features = ["std"] }
 # Font metadata the Font tab builds itself from: `fvar` axes and named
 # instances (skrifa), GSUB/GPOS feature tags (read-fonts). Both are ALREADY in
-# ondin-core's tree via parley/fontique at exactly these versions, so naming
+# mastik-core's tree via parley/fontique at exactly these versions, so naming
 # them directly adds nothing to the dependency closure — and neither is a GPU or
 # UI crate, so `deps_forbidden` stays green.
 skrifa = "0.43.2"
 read-fonts = "0.40.2"
 
-# --- ondin-render (GPU + CPU backends) — pinned exactly ---
+# --- mastik-render (GPU + CPU backends) — pinned exactly ---
 vello = "=0.9.0"
 vello_cpu = "=0.2.0"
 wgpu = "=29.0.4"
@@ -83,8 +83,8 @@ wgpu = "=29.0.4"
 # same `image` build for `bmp` under `cfg(windows)` and `tiff` under
 # `cfg(target_os = "macos")` — TIFF being the exact format `ImageFormat`'s own doc
 # names as excluded on purpose. Measured: `cargo tree --workspace` reports
-# `bmp,gif,jpeg,png,webp` here, `cargo tree -p ondin-render` the declared four.
-# The four are decided in `ondin-render/src/images.rs · signature_is_accepted`,
+# `bmp,gif,jpeg,png,webp` here, `cargo tree -p mastik-render` the declared four.
+# The four are decided in `mastik-render/src/images.rs · signature_is_accepted`,
 # which reads magic bytes and so is not a function of what cargo resolved.
 image = { version = "0.25.10", default-features = false, features = [
   "png",
@@ -93,7 +93,7 @@ image = { version = "0.25.10", default-features = false, features = [
   "gif",
 ] }
 
-# --- ondin-export ---
+# --- mastik-export ---
 png = "0.18.1"
 # *Export as zip* — one archive holding a whole export set (§7). Hand-rolling the
 # container was the alternative and is the same argument core's `base64` note
@@ -125,7 +125,7 @@ usvg = "0.47.0"
 # author), then read by `svg_in` like any pasted SVG. Its kurbo is ours.
 hayro-svg = "0.8.0"
 
-# --- ondin-app (UI chrome + windowing) — egui trio pinned exactly, moves together ---
+# --- mastik-app (UI chrome + windowing) — egui trio pinned exactly, moves together ---
 # eframe (default features) owns the window + wgpu device + event loop; it pulls
 # egui/egui-wgpu/egui-winit/winit at matching versions (§9.1 harness decision).
 egui = "=0.35.0"
@@ -148,11 +148,11 @@ dirs = "6.0.0"
 # hook that services the installer's `--veloapp-*` re-invocations, and the
 # `UpdateManager` that polls this repository's GitHub Releases. Its API is
 # synchronous network and file I/O, so every call runs on a worker thread
-# (`ondin-app`'s `update`). It reaches TLS through `ureq` and `rustls` with
+# (`mastik-app`'s `update`). It reaches TLS through `ureq` and `rustls` with
 # `ring`, the same stack the font download already compiles.
 velopack = "1.2"
 # The logging facade Velopack writes through, and the app's own log file
-# (`ondin-app`'s `logging`): a release build is a GUI-subsystem binary with no
+# (`mastik-app`'s `logging`): a release build is a GUI-subsystem binary with no
 # stderr, so a failed update check is answerable only from a file.
 log = "0.4"
 # `localtime_r` and `tm_gmtoff`, for the library's local dates on Linux and macOS
@@ -167,7 +167,7 @@ libc = "0.2"
 # `winit`**, whose own 25-entry feature list carries `Win32_Foundation` and
 # `Win32_UI_WindowsAndMessaging`, so those two declare an edge rather than adding
 # a tree — the same reasoning the `image` and `arboard` notes above record.
-# Windows-only, by `[target.'cfg(windows)']` in `ondin-app`.
+# Windows-only, by `[target.'cfg(windows)']` in `mastik-app`.
 #
 # ⚠️ **Named rather than counted, and that is the fix rather than the style.** This
 # read *"carries the first two named here"* until 2026-09-06, which contradicted
@@ -190,13 +190,13 @@ libc = "0.2"
 # alternative was a date-library dependency with its own copy of the tz database.
 #
 # **`Win32_Security`, `Win32_System_JobObjects` and `Win32_System_Threading` are
-# `ondin.com`'s** (`src/bin/ondin-cli.rs`, §15 D971): a job object that ends the
-# `ondin.exe` it started when the console twin itself ends, so Ctrl+C at the
+# `mastik.com`'s** (`src/bin/mastik-cli.rs`, §15 D971): a job object that ends the
+# `mastik.exe` it started when the console twin itself ends, so Ctrl+C at the
 # prompt stops an export rather than leaving it writing. Three modules of
 # `extern` declarations — `CreateJobObjectW`'s signature names a `Security`
 # type and the extended limit struct a `Threading` one — and no code.
 #
-# **`Win32_System_Registry` and `Win32_UI_Shell` are the `.ondin` file type's**
+# **`Win32_System_Registry` and `Win32_UI_Shell` are the `.mastik` file type's**
 # (`file_type.rs`): the per-user registration Velopack's install hook writes, and
 # the shell notice that makes Explorer read it.
 #
@@ -230,7 +230,7 @@ windows-sys = { version = "0.52.0", features = [
 # is one download covering every weight where the static cuts are one each. This
 # decodes it back to sfnt so core's shaper (which only knows sfnt) can take it.
 woff2 = { package = "woff2-patched", version = "0.4.0" }
-# Spell check (`ondin-app`'s `spell`): the words, then the OS checker on each
+# Spell check (`mastik-app`'s `spell`): the words, then the OS checker on each
 # platform. Every one is already in the lock at these versions —
 # `unicode-segmentation` through egui, `windows` through `accesskit_windows`
 # (which turns on these three features too), `libloading` through `ash`, the
@@ -266,21 +266,21 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
   "NSWindow",
 ] }
 # The macOS window behind eframe's frame, for the traffic lights
-# (`ondin-app`'s `traffic_lights`). In the lock through winit at this version.
+# (`mastik-app`'s `traffic_lights`). In the lock through winit at this version.
 raw-window-handle = "0.6.2"
-# The icon *inside* `ondin.exe` — the one Explorer, a pinned taskbar button and a
+# The icon *inside* `mastik.exe` — the one Explorer, a pinned taskbar button and a
 # file association draw, none of which have a window to read a runtime icon from.
 # A **build** dependency, and the only one in the workspace: it shells out to the
 # Windows SDK's `rc.exe` and hands the linker a `.res`, so none of it survives
 # into the binary. `default-features = false` drops its `toml` feature, which
 # exists only to read `[package.metadata.winresource]` out of a Cargo.toml —
-# properties `crates/ondin-app/build.rs` sets explicitly instead, and the only
+# properties `crates/mastik-app/build.rs` sets explicitly instead, and the only
 # thing here that would have added a tree to the lock rather than an edge
 # (`version_check` is already in it; `toml` is not).
 winresource = { version = "0.1.31", default-features = false }
 
 # No debug symbols for dependencies. `"*"` is every package that is *not* a
-# workspace member, so ondin-core/render/export/app/mcp keep theirs in full and
+# workspace member, so mastik-core/render/export/app/mcp keep theirs in full and
 # only wgpu, vello, naga and friends lose them.
 #
 # This is a disk decision with a measurement behind it (2026-08-13): a 50 GB
@@ -299,7 +299,7 @@ winresource = { version = "0.1.31", default-features = false }
 debug = false
 opt-level = 3
 
-# `ondin-render` optimized even in a debug build.
+# `mastik-render` optimized even in a debug build.
 #
 # A second decision with a measurement behind it (2026-08-15). This crate holds
 # the per-pixel loops — the image-adjustment pass, the reduction that feeds its
@@ -318,11 +318,11 @@ opt-level = 3
 #
 # `opt-level` only — symbols and debug-assertions are untouched, so a panic here
 # still names its line. The cost was measured too, since it is the reason not to
-# do this: an edit to `ondin-render` alone rebuilds in 1.5–3.7 s, and the whole
+# do this: an edit to `mastik-render` alone rebuilds in 1.5–3.7 s, and the whole
 # app in about 4. That is the price of the crate no longer being worth stepping
 # through line by line — and the alternative was optimising the pass until it was
 # fast enough *unoptimized*, which is not a thing that can be done.
-[profile.dev.package.ondin-render]
+[profile.dev.package.mastik-render]
 opt-level = 3
 
 # **Do not set `panic = "abort"` on any profile here without reading §15 D239.**
@@ -336,7 +336,7 @@ opt-level = 3
 # here.
 #
 # It is not set anywhere today, and **the absence is now enforced rather than
-# merely asked for** (§15 D445): `crates/ondin-core/src/boolean.rs` carries a
+# merely asked for** (§15 D445): `crates/mastik-core/src/boolean.rs` carries a
 # `#[cfg(panic = "abort")] compile_error!` that stops the build with the reason
 # attached.
 #

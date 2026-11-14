@@ -93,7 +93,7 @@ is already done for round 1. Say so and stop, or take an explicit base SHA from 
 here was a safety net rather than a record. **That ground is gone** — the repository was reset and
 republished on 2026-09-16 and history is kept now — and in any case it never applied to a range
 review, whose whole subject is a fixed set of commits. Findings still record the enclosing item
-beside the line number (`crates/ondin-app/src/canvas.rs:5528 · fn snapped_point`), because a symbol
+beside the line number (`crates/mastik-app/src/canvas.rs:5528 · fn snapped_point`), because a symbol
 survives an insertion above it and a line number does not.
 
 Measure the range, and put the numbers in the plan rather than estimating from them:
@@ -117,27 +117,27 @@ project, a local bar narrower than the release's own passes a tree the release w
 1. `git status --short` empty. Reviewing a dirty tree reviews something that isn't shipping.
 2. `cargo fmt --all --check` → exit 0.
 3. `cargo clippy --workspace --all-targets` → clean, **then per package**:
-   `for p in ondin-core ondin-render ondin-export ondin-mcp ondin-app; do cargo clippy -p $p --all-targets; done`.
+   `for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do cargo clippy -p $p --all-targets; done`.
    The two spellings compile different code, so a warning only one prints is a warning nobody sees.
 4. `cargo test --workspace` → green.
 5. `cargo doc --workspace --no-deps --document-private-items` → exit 0. **The flag is not optional**:
    without it rustdoc checks no link on any private item, which here is most of them.
-6. `cargo check --release -p ondin-app` → the one gate not compiled with `debug_assertions`.
+6. `cargo check --release -p mastik-app` → the one gate not compiled with `debug_assertions`.
 7. `cargo test --workspace --release` → the only thing that *runs* under the release cfg (§15 D597).
 8. The two gated suites, run once and **recorded**:
-   `cargo test -p ondin-render --release -- --ignored` (GPU — this machine has one, so a
+   `cargo test -p mastik-render --release -- --ignored` (GPU — this machine has one, so a
    carried-forward "unverifiable here" is a claim to check rather than accept) and
-   `cargo test -p ondin-app fonts -- --ignored` (network). If either was not run, the ledger says
+   `cargo test -p mastik-app fonts -- --ignored` (network). If either was not run, the ledger says
    that path is **unverified** rather than quietly proceeding.
 9. Record `git rev-parse HEAD` and the base SHA at the top of the ledger.
 
 **A failure here is one of the run's few hard stops.** Report it and stop — don't fix it, and don't
 review past it. A red tree isn't shippable, so a review of it answers a question nobody asked.
 
-Two environment facts that have already cost a pass: on Windows, stop a running `ondin.exe` before
+Two environment facts that have already cost a pass: on Windows, stop a running `mastik.exe` before
 building; and **never launch the GUI** (CLAUDE.md) — it grabs focus and the mouse. A pass with a
-question about chrome answers it with a throwaway headless `#[test]` (`OndinApp::headless(&ctx)`,
-§15 D303) or with `ondin export`, and deletes the probe before returning.
+question about chrome answers it with a throwaway headless `#[test]` (`MastikApp::headless(&ctx)`,
+§15 D303) or with `mastik export`, and deletes the probe before returning.
 
 ## Phase 1 — cut the diff into slices
 
@@ -211,7 +211,7 @@ range, not a target.
 | New `#[ignore]` without a reason string | census | `bash $R ignore` (the `-` rows) → **0** (1 added, and it has a reason) | L6 |
 | New `///` runs over 52 lines, and whether each describes the item beneath it | **candidate list** — judgment deferred. The run lengths are mechanical. | `bash $R docruns` (`MIN=52` by default; a run counts when it contains an added line) → **0** | R2 (doc-comment theft) |
 | New `NodeKind` / `Operation` variants, and every predicate that should have gained an arm | **candidate list** — counts and sites only | — | R1 |
-| New `&mut self` decision methods on `OndinApp` | **candidate list** | — | R1 — no test can observe their call sites (§15 D269) |
+| New `&mut self` decision methods on `MastikApp` | **candidate list** | — | R1 — no test can observe their call sites (§15 D269) |
 
 *Release-only controls*, in the two-commit fixture. Each row must count what the head commit
 adds and must not count the unchanged lines:
@@ -352,7 +352,7 @@ A `general-purpose` subagent (Read/Grep/Glob plus Bash for `git` and probe harne
 nothing:
 
 ```
-You are running pass <ID> of an automated pre-release review of Ondin, covering the commit
+You are running pass <ID> of an automated pre-release review of Mastik, covering the commit
 range <base>..<head>. Read these first:
 
 - .claude/skills/codebase-review/reference.md — §1 lenses, §3 the verification gate, §4 the
@@ -392,7 +392,7 @@ lens's required evidence; verify each against §3 before it enters the ledger; w
 ranked, capped at 12.
 
 Anchor every finding on the enclosing item as well as the line —
-`crates/ondin-app/src/canvas.rs:5528 · fn snapped_point`. A symbol survives an insertion above it.
+`crates/mastik-app/src/canvas.rs:5528 · fn snapped_point`. A symbol survives an insertion above it.
 
 Every finding block carries one extra line above **Status**:
 
@@ -410,7 +410,7 @@ decide what blocks the tag.
 independently rather than inheriting them.
 
 Answering a question about chrome: NEVER launch the GUI. Write a throwaway headless #[test]
-(`OndinApp::headless(&ctx)`, §15 D303) or use `ondin export`, and DELETE the probe before you
+(`MastikApp::headless(&ctx)`, §15 D303) or use `mastik export`, and DELETE the probe before you
 return — `git status --short` must come back empty.
 
 Writing to <run-dir>/findings.md: append your block at the "**Status:** open" / "---" /

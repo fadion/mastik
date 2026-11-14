@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build an RPM around an already-built Ondin binary.
+# Build an RPM around an already-built Mastik binary.
 #
 #     packaging/linux/build-rpm.sh <version> <binary> <output-dir> [rpm-arch]
 #
@@ -35,13 +35,13 @@ mkdir -p "${STAGE}"/{BUILD,BUILDROOT,RPMS,SRPMS,SPECS}
 # `_rpmformat 4`: rpm 6 defaults to v6 packages, which rpm 4 clients (RHEL 8–10,
 # older Fedora) install without being able to verify the signature. rpm 4
 # ignores the macro.
-rpmbuild -bb "${HERE}/ondin.spec" \
+rpmbuild -bb "${HERE}/mastik.spec" \
     --define "_rpmformat 4" \
     --define "_topdir ${STAGE}" \
     --define "_sourcedir ${STAGE}/SOURCES" \
-    --define "ondin_version ${VERSION}" \
+    --define "mastik_version ${VERSION}" \
     --define "dist %{nil}" \
-    --define "_buildhost ondin.build" \
+    --define "_buildhost mastik.build" \
     --target "${RPM_ARCH}"
 
 mkdir -p "$OUTPUT_DIR"

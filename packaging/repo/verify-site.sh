@@ -26,7 +26,7 @@ fi
 
 SITE="$(cd "$1" && pwd)"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KEYRING="${SITE}/ondin-archive-keyring.gpg"
+KEYRING="${SITE}/mastik-archive-keyring.gpg"
 
 command -v gpgv >/dev/null || { echo "gpgv not found" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 not found" >&2; exit 1; }
@@ -76,7 +76,7 @@ if command -v rpmkeys >/dev/null; then
     echo "[verify] RPM package signatures"
     RPMDB="$(mktemp -d)"
     trap 'rm -rf "$RPMDB"' EXIT
-    rpmkeys --dbpath "$RPMDB" --import "${SITE}/ondin.asc"
+    rpmkeys --dbpath "$RPMDB" --import "${SITE}/mastik.asc"
     for pkg in "${SITE}"/rpm/packages/*.rpm; do
         printf '  %s\n' "$(basename "$pkg")"
         check rpmkeys --dbpath "$RPMDB" --checksig "$pkg"

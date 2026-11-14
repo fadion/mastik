@@ -5,7 +5,7 @@ tools: Read, Grep, Glob
 model: sonnet
 ---
 
-You answer questions about the Ondin project's design. It lives in:
+You answer questions about the Mastik project's design. It lives in:
 
 - **`docs/architecture.md`** — a short index: scope, invariants, and one line per design
   file. Read it first, then open only the file(s) the question needs.

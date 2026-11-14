@@ -1,4 +1,4 @@
-# Ondin — Decided non-goals
+# Mastik — Decided non-goals
 
 What is deliberately not being built. An item here is decided and not open work; do not re-report
 it as a gap. Post-v1 work with a design of its own (MCP, Command Mode) is in `roadmap.md`, and
@@ -119,7 +119,7 @@ multiplayer is one of its considerations.
 - **Native targets** (SwiftUI, Compose, Flutter, Floem) — an agent porting the HTML does it better (§15 D1098).
 - **Tailwind and CSS-in-JS in v1** (§15 D1098).
 - **Code layers, and importing HTML/CSS or framework code as layers** — too complex fully, messy partly; SVG import is untouched (§15 D1099).
-- **The code fidelity check in the app** — it needs an external browser and cannot check React or Vue; `ondin check code` stays the way to run it.
+- **The code fidelity check in the app** — it needs an external browser and cannot check React or Vue; `mastik check code` stays the way to run it.
 - **Live interaction states in present mode** — hover and press on the canvas are prototyping; the states exist for code export.
 - **Compiling the React and Vue output in CI** (`tsc`, `@vue/compiler-sfc`) — a Node toolchain in CI for a syntax check; the fidelity tests draw the HTML and the component walk.
 - **One `<main>` across a page and the components it uses in React and Vue** — a component is one file for every page using it, so each file counts its own main; a page's main beside a use holding one writes two.
@@ -140,7 +140,7 @@ multiplayer is one of its considerations.
 
 ## The assistant
 
-- **An embedded model, or a provider API key held by Ondin** — the harness holds the model, the account and the billing (`design/assistant.md` §1).
+- **An embedded model, or a provider API key held by Mastik** — the harness holds the model, the account and the billing (`design/assistant.md` §1).
 - **An approval prompt inside a turn** — a headless harness cannot pause for one; the access level is the approval.
 - **The agent's own tools** (shell, files, web) inside the assistant.
 - **Kits and the library through the assistant** — Phase 4 is never a chat's.

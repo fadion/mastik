@@ -1,4 +1,4 @@
-# A form control is built from the shared primitives in `crates/ondin-app/src/ui.rs`, which hold
+# A form control is built from the shared primitives in `crates/mastik-app/src/ui.rs`, which hold
 # the standard (`docs/design/app-chrome.md`, *Shared rules*). The raw egui constructors are refused
 # everywhere else; a site that has to use one says why in `#[expect(clippy::disallowed_methods,
 # reason = "…")]`, so every exception is named and greppable.

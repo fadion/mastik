@@ -10,7 +10,7 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
   wears a name tag and is picked by it or its edge; a frame inside another frame or a group is part of
   the design and picks as a group does (`app-selection.md`), so a design of nested frames is not a
   wall of names.
-- **Who wears a tag** is `app::wears_tag`, read by `OndinApp::tagged` (`FrameIndex::tagged`) and
+- **Who wears a tag** is `app::wears_tag`, read by `MastikApp::tagged` (`FrameIndex::tagged`) and
   `canvas::frame_label`: a frame, a main (frame or group) or a component set sitting on its page,
   and the variants of a set that does, whose tags are what tell them apart. A frame, main, set or
   instance inside another frame, a group, a main or an instance wears none, and picks as a group
@@ -33,16 +33,16 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
   border). Used by the select click, the context menu, and `canvas::hover_target` (via
   `pick_at_pointer` and `pick_preview`). `begin_select_drag` adds `selected_frame_at` on top. A
   press-drag in the edge strip moves the frame.
-- **Coincident tags**: `OndinApp::artboards` is depth-first paint order; tag readers walk
-  `OndinApp::tagged` and take the **last** match — the one painted on top and readable.
+- **Coincident tags**: `MastikApp::artboards` is depth-first paint order; tag readers walk
+  `MastikApp::tagged` and take the **last** match — the one painted on top and readable.
 
 ## Frame membership follows the artwork
 
 - Dragging a layer more than half out of its frame moves it to the canvas; more than half into one
   attaches it (area test, §15 D20). Commits as one transaction with the move.
 - Candidates for the destination frame exclude, **before** the topmost is chosen:
-  - the moved frame and every frame inside it (`OndinApp::frame_covering_except`);
-  - any layer moving with it (`OndinApp::moving_with`: the selection's outermost roots, or the moved
+  - the moved frame and every frame inside it (`MastikApp::frame_covering_except`);
+  - any layer moving with it (`MastikApp::moving_with`: the selection's outermost roots, or the moved
     copy alone on an Alt-drag);
   - frames the component rules refuse (`component::can_hold`, skipped via
     `canvas::covering_that_holds`, asked only where `FrameIndex::components` says the document has
@@ -56,7 +56,7 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
 - **An in-flow layout item leaves only once the pointer is out of its container**
   (`canvas::move_destination`), area deciding past that. Before it: a frame inside the item's own
   container covering most of the moved box takes it. After it: an item pressed on its overflowing part
-  stays while its moved box still meets the container's box (`OndinApp::box_meets`).
+  stays while its moved box still meets the container's box (`MastikApp::box_meets`).
 - Creation: `canvas::draw_target` gives a new layer (or frame) the topmost frame containing the press,
   else the current page's root.
 
@@ -79,20 +79,20 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
   the duplicates and duplicate again, and the step repeats, for one layer or several (measured on
   the first clone, since a selection moves as one). Duplicating any other set restarts at zero.
 - `Ctrl+V` offsets by Settings ▸ Canvas ▸ *Paste offset* on each axis (`CanvasPrefs::paste_offset`,
-  0–200, default 20; `OndinApp::paste_offset`), as do *Paste here* with no recorded box and the
+  0–200, default 20; `MastikApp::paste_offset`), as do *Paste here* with no recorded box and the
   layers panel's paste beside a row; 0 pastes on top. `Ctrl+Shift+V` offsets by nothing.
 - **Every copy lands one step above its original** (duplicate, paste, Alt-drag), under whatever was
   above it. Paste can name the slot because a captured subtree keeps the original's ids until
   `insert_subtrees` remaps them; if the original is gone or the parent differs, append.
 - **With one unlocked frame selected, `Ctrl+V` and `Ctrl+Shift+V` paste inside it**, on top
-  (`OndinApp::paste_into_selected_frame`, tried first by `paste` and `paste_in_place`); a layer
+  (`MastikApp::paste_into_selected_frame`, tried first by `paste` and `paste_in_place`); a layer
   copied from that frame still lands one step above its original. Each root is re-based through
   world space (`template_world`, `rebased_placements`): where the pasted box, offset applied,
   overlaps the frame it keeps its place; otherwise `Ctrl+V` centres it on the frame. The ordinary
   paste runs instead when the clipboard holds no layers, holds that frame or an ancestor of it (a
   duplicate, not a nesting), holds only layers copied from inside it, or `paste_is_held` refuses.
   *Paste here* and the panel's *Paste* do not take this path.
-- **Paste to replace** (`OndinApp::paste_to_replace`, the layer menu's row, no chord): each selected outermost
+- **Paste to replace** (`MastikApp::paste_to_replace`, the layer menu's row, no chord): each selected outermost
   unlocked layer is replaced by a copy of the **whole** clipboard, its union box centred on the
   target's box, in the target's slot of its parent. The union box is `clip_box`: the originals'
   boxes now while every one is still in the document, else the copy-time `clipboard_from`, so an
@@ -106,20 +106,20 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
 
 ## What the clipboard carries
 
-- `OndinApp::clipboard: Option<Clip>` holds subtrees **and** the image-table entries their fills use,
+- `MastikApp::clipboard: Option<Clip>` holds subtrees **and** the image-table entries their fills use,
   collected by `build::image_ids_in` in `copy_selection` at copy time. On paste `insert_all` prepends
   `build::missing_image_ops` (only what the target lacks), **before** the layers using them.
 - The clipboard survives opening another document (pasting a picture across documents is supported).
   Duplicate carries no entries.
 - **Through the system clipboard** (after a relaunch, or from another build or machine):
   `copy_selection` writes the system clipboard as text — layer names, then
-  `io::clip::FENCE`, then the JSON payload. Every paste door asks `OndinApp::take_clipboard`:
-  `Layers` (ours, or an adopted foreign payload), `Foreign`, or `Unreadable` (an Ondin copy this build
+  `io::clip::FENCE`, then the JSON payload. Every paste door asks `MastikApp::take_clipboard`:
+  `Layers` (ours, or an adopted foreign payload), `Foreign`, or `Unreadable` (an Mastik copy this build
   cannot read — never pasted as a text layer). A foreign parent id fails `Document::contains`, and a
   parent on another page is not taken either, so the paste lands at the current page's root.
 - **Kit instances carry their main** (§5.3e): `kit::carried` vault mains go in `Clip::kits`;
   `insert_all` and `paste_is_held` build through `kit::insert_carrying`. Refusals (`NeedsUpdate`,
-  `Circular`) are said by `insert_all` via `OndinApp::carry_refused`. Instances landing cut loose are
+  `Circular`) are said by `insert_all` via `MastikApp::carry_refused`. Instances landing cut loose are
   counted on the status line (*"· N instance(s) detached — its main is not in this document"*).
 
 ## Hand-kept lists of transient state

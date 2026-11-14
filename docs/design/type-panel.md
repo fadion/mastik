@@ -188,7 +188,7 @@ frame the drag ends. The release frame is the one `edit_valve` commits on.
 
 ### Box tab
 
-**Sizing.** `OndinApp::set_text_sizing(id, cell)` serves both the segmented control and the context
+**Sizing.** `MastikApp::set_text_sizing(id, cell)` serves both the segmented control and the context
 menu's three checkable rows (`context-menus.md` §5.6).
 
 - The switch adopts the shaped size, so the text does not move.

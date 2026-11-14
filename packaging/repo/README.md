@@ -1,7 +1,7 @@
 # The Linux package repositories
 
-Ondin publishes a signed **APT** repository and a signed **DNF/zypper**
-repository at <https://fadion.github.io/ondin>, so a `.deb` or `.rpm` install
+Mastik publishes a signed **APT** repository and a signed **DNF/zypper**
+repository at <https://fadion.github.io/mastik>, so a `.deb` or `.rpm` install
 is carried forward by `apt-get upgrade` / `dnf upgrade` instead of by re-running
 `install.sh`. This directory builds them; `.github/workflows/pages.yml` runs it
 after every tagged release.
@@ -38,7 +38,7 @@ clones this repository, forever, and deleting the files later would not shrink a
 single clone that already exists. An Actions deployment has no git history, so
 the published size is the only size: five releases' worth of packages against
 GitHub Pages' 1 GB limit, with a 100 GB/month bandwidth allowance above it.
-(Schemaic's run about 40 MB a release; Ondin's have not been measured yet —
+(Schemaic's run about 40 MB a release; Mastik's have not been measured yet —
 `du -sh` is the last line `build-site.sh` prints.)
 
 It also means **a repository that has gone wrong is repaired by running the
@@ -74,7 +74,7 @@ echo allow-loopback-pinentry > "$GNUPGHOME/gpg-agent.conf"
 printf '%s' 'YOUR-PASSPHRASE' > "$GNUPGHOME/pass" && chmod 600 "$GNUPGHOME/pass"
 
 gpg --batch --pinentry-mode loopback --passphrase-file "$GNUPGHOME/pass" \
-    --quick-generate-key "Ondin package signing <fadion@users.noreply.github.com>" \
+    --quick-generate-key "Mastik package signing <fadion@users.noreply.github.com>" \
     rsa4096 sign never
 ```
 
@@ -90,13 +90,13 @@ fpr=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}'
 echo "$fpr"   # the fingerprint — step 2 needs it
 
 gpg --batch --pinentry-mode loopback --passphrase-file "$GNUPGHOME/pass" \
-    --armor --export-secret-keys "$fpr" > ondin-signing-key.asc
+    --armor --export-secret-keys "$fpr" > mastik-signing-key.asc
 
-gh secret set GPG_PRIVATE_KEY --repo fadion/ondin < ondin-signing-key.asc
-gh secret set GPG_PASSPHRASE --repo fadion/ondin   # paste the passphrase
+gh secret set GPG_PRIVATE_KEY --repo fadion/mastik < mastik-signing-key.asc
+gh secret set GPG_PASSPHRASE --repo fadion/mastik   # paste the passphrase
 ```
 
-**Back `ondin-signing-key.asc` up somewhere you will still have it in two
+**Back `mastik-signing-key.asc` up somewhere you will still have it in two
 years, then delete the working copy.** Losing it means generating a new key, and
 every machine that has ever installed from this repository then fails
 verification on the next `apt update` until its user imports the replacement by
@@ -157,7 +157,7 @@ publish if either has drifted, which is the backstop, not the procedure.
 Once, so that deployments from Actions are accepted:
 
 ```bash
-gh api -X POST repos/fadion/ondin/pages -f build_type=workflow
+gh api -X POST repos/fadion/mastik/pages -f build_type=workflow
 ```
 
 Or Settings → Pages → Build and deployment → Source → **GitHub Actions**.
@@ -169,7 +169,7 @@ beside it. That is what v0.4.0's first publish hit; it was published by running
 **Pages** from `main` and the rule added afterwards:
 
 ```bash
-gh api -X POST repos/fadion/ondin/environments/github-pages/deployment-branch-policies -f name='v*' -f type=tag
+gh api -X POST repos/fadion/mastik/environments/github-pages/deployment-branch-policies -f name='v*' -f type=tag
 ```
 
 Or Settings → Environments → `github-pages` → Deployment branches and tags → add
@@ -200,7 +200,7 @@ To build the site by hand — needs `gh`, `apt-utils`, `createrepo-c`, `rpm`,
 
 ```bash
 export GPG_KEY_ID=<fingerprint> GPG_PASSPHRASE_FILE=/path/to/pass
-export ONDIN_REPO_URL=http://localhost:8000 ONDIN_RETAIN=2
+export MASTIK_REPO_URL=http://localhost:8000 MASTIK_RETAIN=2
 bash packaging/repo/build-site.sh /tmp/site
 bash packaging/repo/verify-site.sh /tmp/site
 ```
@@ -215,15 +215,15 @@ it — this is the end-to-end check:
 (cd /tmp/site && python3 -m http.server 8000) &
 docker run --rm -it --network host debian:12 bash -c '
   apt-get update && apt-get install -y curl ca-certificates
-  curl -fsSL http://localhost:8000/ondin-archive-keyring.gpg \
-    -o /usr/share/keyrings/ondin-archive-keyring.gpg
-  curl -fsSL http://localhost:8000/ondin.sources \
-    -o /etc/apt/sources.list.d/ondin.sources
-  apt-get update && apt-get install -y ondin && dpkg -L ondin'
+  curl -fsSL http://localhost:8000/mastik-archive-keyring.gpg \
+    -o /usr/share/keyrings/mastik-archive-keyring.gpg
+  curl -fsSL http://localhost:8000/mastik.sources \
+    -o /etc/apt/sources.list.d/mastik.sources
+  apt-get update && apt-get install -y mastik && dpkg -L mastik'
 ```
 
-⚠️ `ondin.sources` names the URL the site was built for, so build it with
-`ONDIN_REPO_URL=http://localhost:8000` as above for this to resolve. `install.sh`
+⚠️ `mastik.sources` names the URL the site was built for, so build it with
+`MASTIK_REPO_URL=http://localhost:8000` as above for this to resolve. `install.sh`
 itself always points at the real site, which makes this the check of the
 packages and the repository, not of the script.
 
@@ -232,12 +232,12 @@ packages and the repository, not of the script.
 Documented on the generated landing page. The parts that are interface, and
 cannot be reworded without breaking somebody:
 
-- `https://fadion.github.io/ondin/deb` and `/rpm` — written into every user's
+- `https://fadion.github.io/mastik/deb` and `/rpm` — written into every user's
   source list. Moving either one stops updates for every existing install,
   silently. This is the same class of permanence as the Velopack channel names.
-- `Origin: Ondin`, `Suite: stable` — what a Debian user writes in
-  `Unattended-Upgrade::Allowed-Origins` as `"Ondin:stable"`.
-- `/usr/share/keyrings/ondin-archive-keyring.gpg` — the path `Signed-By`
+- `Origin: Mastik`, `Suite: stable` — what a Debian user writes in
+  `Unattended-Upgrade::Allowed-Origins` as `"Mastik:stable"`.
+- `/usr/share/keyrings/mastik-archive-keyring.gpg` — the path `Signed-By`
   names in the published `.sources` file.
 
 `pages.yml` greps every one of these out of the files that carry them before it

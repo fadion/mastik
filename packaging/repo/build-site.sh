@@ -8,10 +8,10 @@
 # Environment:
 #   GPG_KEY_ID            required - fingerprint or uid of the signing key
 #   GPG_PASSPHRASE_FILE   optional - file holding that key's passphrase
-#   ONDIN_REPO_URL        base URL the site will be served from
-#   ONDIN_RETAIN          how many releases to keep (default 5)
-#   ONDIN_GH_REPO         owner/name to pull release assets from
-#   ONDIN_EXPECT_VERSION
+#   MASTIK_REPO_URL        base URL the site will be served from
+#   MASTIK_RETAIN          how many releases to keep (default 5)
+#   MASTIK_GH_REPO         owner/name to pull release assets from
+#   MASTIK_EXPECT_VERSION
 #                         optional - the release this build is for. The build
 #                         fails unless the site's newest release is that one,
 #                         so a transient download failure cannot publish a
@@ -38,9 +38,9 @@ REPO_ROOT="$(cd "${HERE}/../.." && pwd -P)"
 . "${HERE}/lib.sh"
 
 : "${GPG_KEY_ID:?set GPG_KEY_ID to the signing key fingerprint or uid}"
-BASE_URL="${ONDIN_REPO_URL:-https://fadion.github.io/ondin}"
-RETAIN="${ONDIN_RETAIN:-5}"
-GH_REPO="${ONDIN_GH_REPO:-fadion/ondin}"
+BASE_URL="${MASTIK_REPO_URL:-https://fadion.github.io/mastik}"
+RETAIN="${MASTIK_RETAIN:-5}"
+GH_REPO="${MASTIK_GH_REPO:-fadion/mastik}"
 
 command -v gh >/dev/null || { echo "gh CLI not found" >&2; exit 1; }
 
@@ -88,7 +88,7 @@ for tag in "${tags[@]}"; do
     # rate-limited case this guard exists for. Classifying it as benign put the
     # guard's own failure mode back inside it: the tag was skipped in silence,
     # `kept` reached RETAIN from the releases before it, and the documented
-    # `apt-get install ondin=<old>` rollback broke with nothing said. Measured
+    # `apt-get install mastik=<old>` rollback broke with nothing said. Measured
     # (for Schemaic) against `gh` 2.96.0: a missing release says exactly
     # `release not found`, and a real release with no matching asset says
     # `no assets match the file pattern` — two different sentences for two
@@ -127,7 +127,7 @@ fi
 # its own newest release is self-consistent and every verifier passes it. The
 # caller names the tag it is publishing for when it has one; `workflow_dispatch`,
 # which has none, passes nothing and this is a no-op.
-EXPECT="${ONDIN_EXPECT_VERSION:-}"
+EXPECT="${MASTIK_EXPECT_VERSION:-}"
 EXPECT="${EXPECT#v}"
 if [ -n "$EXPECT" ] && [ "$EXPECT" != "$latest_version" ]; then
     echo "::error::built a repository whose newest release is ${latest_version}, but this build is for ${EXPECT}" >&2
@@ -147,9 +147,9 @@ bash "${HERE}/build-rpm-repo.sh" "${STAGE}/rpm" "${OUT}/rpm"
 # release we support (inline armoured keys need apt 2.4, which Debian 11 and
 # Ubuntu 20.04 do not have); dnf's gpgkey= wants the armoured form and fetches
 # it over HTTPS itself.
-gpg --batch --yes --armor --export "$GPG_KEY_ID" > "${OUT}/ondin.asc"
-gpg --batch --yes --export "$GPG_KEY_ID" > "${OUT}/ondin-archive-keyring.gpg"
-[ -s "${OUT}/ondin.asc" ] || { echo "exported an empty public key" >&2; exit 1; }
+gpg --batch --yes --armor --export "$GPG_KEY_ID" > "${OUT}/mastik.asc"
+gpg --batch --yes --export "$GPG_KEY_ID" > "${OUT}/mastik-archive-keyring.gpg"
+[ -s "${OUT}/mastik.asc" ] || { echo "exported an empty public key" >&2; exit 1; }
 
 fingerprint="$(
     gpg --batch --with-colons --fingerprint "$GPG_KEY_ID" \
@@ -160,17 +160,17 @@ fingerprint="$(
 # tooling and muscle memory still expects a .list, and both name the same
 # keyring path so the two cannot disagree about trust. (pages.yml counts that
 # path in this file and expects exactly those two lines.)
-cat > "${OUT}/ondin.sources" <<EOF
+cat > "${OUT}/mastik.sources" <<EOF
 Types: deb
 URIs: ${BASE_URL}/deb
 Suites: stable
 Components: main
 Architectures: amd64
-Signed-By: /usr/share/keyrings/ondin-archive-keyring.gpg
+Signed-By: /usr/share/keyrings/mastik-archive-keyring.gpg
 EOF
 
-cat > "${OUT}/ondin.list" <<EOF
-deb [arch=amd64 signed-by=/usr/share/keyrings/ondin-archive-keyring.gpg] ${BASE_URL}/deb stable main
+cat > "${OUT}/mastik.list" <<EOF
+deb [arch=amd64 signed-by=/usr/share/keyrings/mastik-archive-keyring.gpg] ${BASE_URL}/deb stable main
 EOF
 
 # Both checks on: gpgcheck is the signature inside each package, repo_gpgcheck
@@ -182,16 +182,16 @@ EOF
 # reads it**: it writes its own from its constants, with `gpgkey=` naming the
 # key it verified on disk rather than this URL (`write_rpm_repo`). Keep the
 # other lines in step with that function.
-cat > "${OUT}/ondin.repo" <<EOF
-[ondin]
-name=Ondin
+cat > "${OUT}/mastik.repo" <<EOF
+[mastik]
+name=Mastik
 baseurl=${BASE_URL}/rpm
 enabled=1
 autorefresh=1
 type=rpm-md
 gpgcheck=1
 repo_gpgcheck=1
-gpgkey=${BASE_URL}/ondin.asc
+gpgkey=${BASE_URL}/mastik.asc
 EOF
 
 # The 512 rather than the 64: the page draws it at 42px, which is 84 device

@@ -30,7 +30,7 @@ Mask card, and how a failed boolean draws. Part of §9.4.
 - `boolean::MAX_BOOL_COORD` (10¹⁵⁰) is refused at `evaluate`: past ~10³⁰⁴ (scaled) flo_curves hangs.
   `build::GEOMETRY_LIMIT` bounds each stored number, but operands are in world space, where
   nested transforms multiply.
-- **Winding**: flo_curves is even-odd, Ondin fills non-zero. `from_flo` alternates each subpath's
+- **Winding**: flo_curves is even-odd, Mastik fills non-zero. `from_flo` alternates each subpath's
   direction with its nesting depth, so the result means the same under either rule (and is safe for
   SVG). Nesting is counted from `representative_point`: the bbox centre if inside, else a horizontal
   scan line through all segments, taking the midpoint of the first confirmed span. A subpath whose
@@ -55,7 +55,7 @@ Mask card, and how a failed boolean draws. Part of §9.4.
   its parts, which an even-odd read does not see. A straight edge shared only in part is first cut at
   the other's ends (`boolean::split_overlaps`, grouping segments by the line they lie on); a curved
   edge shared in part is not cut, and keeps its seam.
-- `ondin-core`'s `tests/boolean_suite.rs` checks shared, partly shared and nearly shared edges,
+- `mastik-core`'s `tests/boolean_suite.rs` checks shared, partly shared and nearly shared edges,
   touching corners, containment, identical operands and the shapes of `tests/common` under every
   operation against the definition, and for specks and stray edges.
 - `boolean::fold_operands`: `Union` and `Intersect` fold as a **balanced tree** (N log N on disjoint
@@ -134,7 +134,7 @@ Lock and the proportion lock are dropped deliberately. None of the four has a ch
 | `build::flatten` (`Ctrl+E`) | one boolean, one mirrored path, or two or more layers | one boolean → `Path` of its outline in place; one mirrored path (`build::is_mirrored_path`) → the same path with its mirror cleared, one `SetGeometry` (`flatten_mirror`), so point editing stops keeping it symmetric; a set → union in the parent's space at the topmost member's slot with the bottom member's paint (`build::flatten_union`, carries paint only) |
 | `build::outline` (*Outline shape*) | one Rect/Ellipse/Polygon/Star/Line/Spiral/Arc/Path | `Path` of its own outline (`local_path`), radii, smoothing and an ellipse's arc baked in; cut at the **drawn** (used) size, via a `Resolved` lookup |
 | `build::outline_stroke` (*Outline stroke*) | one Shape/Path/Boolean with a visible stroke | each visible stroke a `Path` filled with that stroke's brush (a bound brush stays bound), below |
-| `build::outline_text` (*Convert to path*) | one Text | `Path` from `ondin_core::text::outline` (glyph coords already node-local) |
+| `build::outline_text` (*Convert to path*) | one Text | `Path` from `mastik_core::text::outline` (glyph coords already node-local) |
 
 - Flatten refuses a single non-boolean other than a mirrored path (that is *Outline shape*'s verb — the two rows
   appear together only on a rounded mirrored path, where Flatten drops the mirror and *Outline shape*
@@ -170,7 +170,7 @@ Lock and the proportion lock are dropped deliberately. None of the four has a ch
 - **A stroke that leaves no ink is refused, not removed.** If any visible stroke with a width yields
   nothing (a butt-capped stroke of a dot), the whole operation is `EmptyGeometry`, rather than the
   layer losing that stroke with nothing drawn in its place.
-  `ondin-core`'s `tests/stroke_suite.rs` checks the closed shapes and open paths of
+  `mastik-core`'s `tests/stroke_suite.rs` checks the closed shapes and open paths of
   `tests/common` at three widths with each join, cap and alignment, dashed (centred, inside and
   outside), dotted and thin on the catalogue shrunk, and per side on a rectangle, against an
   independent oracle.
@@ -257,7 +257,7 @@ plain `Path` layers.
 `Tool::ShapeBuilder` (`Shift+M`, glyph `shape-builder`) is the first member of the rail's
 Builder slot, with the knife, above the eyedropper; it stays armed after each edit.
 
-- **Arming needs two closed shapes, or one and a cutter** (`OndinApp::builder_slot_usable`
+- **Arming needs two closed shapes, or one and a cutter** (`MastikApp::builder_slot_usable`
   on `shape_builder::can_arrange`, the test *Divide* dims on). Until then its rail member is
   drawn live, as the Knife beside it is, but its tooltip gives the reason and a click on it arms
   nothing, the palette's *Tool: Shape builder* row is dim, and `Shift+M` arms nothing; all three
@@ -265,7 +265,7 @@ Builder slot, with the knife, above the eyedropper; it stays armed after each ed
   key on the status line. Once armed, the button stays lit whatever the selection becomes.
 - **Selection chrome** while armed is the selection's box alone, dim: no member outlines, which
   would bury the face under the pointer, and no handles, since every press builds.
-- Faces are found once per selection and document revision (`OndinApp::builder_faces`), on the
+- Faces are found once per selection and document revision (`MastikApp::builder_faces`), on the
   frame the tool arms; hovering only looks up the face under the pointer.
 - **Hover**: a light white wash and a 2pt `color::POINT` edge on the face under the pointer.
 - **Drag**: a 3pt trail in `color::POINT` with a dot at the press. Faces join as the trail enters
@@ -400,7 +400,7 @@ layer menu it follows *Flatten* whenever exactly two layers are selected, dimmed
 here* row says *Blend shapes needs exactly two shapes* (`KIND_VERBS`).
 
 - **The card** is an inspector-lane popover placed as the Repeat card is
-  (`OndinApp::transform_popover_area`, level with the Transform card, `tools.md`): no modal, no
+  (`MastikApp::transform_popover_area`, level with the Transform card, `tools.md`): no modal, no
   click-away. Rows: head `ui::popover_head` *Blend shapes*; *Steps between* (`icon::DOTS_THREE`, 1
   to 200, default 5); the switch *Blend paint and opacity* (on); *Match points from*, a dropdown of
   the nine places (`canvas::NINE_POINTS`, the names the pivot's pill uses), default *Top left*; the
@@ -442,7 +442,7 @@ Four controls: the op dropdown plus three 28×28 icon buttons, `ACTION_GLYPH` 16
     tooltip — including refusing layers inside a `Boolean` (operands are not artwork), which is
     redundant for correctness (the dry run declines too) but load-bearing for the message.
   - Same verb on `Ctrl+Alt+M` and the context menu's *Use as mask*, which dims with the same sentence
-    via `OndinApp::mask_refusal` → `menu::Context::mask_refused`.
+    via `MastikApp::mask_refusal` → `menu::Context::mask_refused`.
 - **Group / Ungroup** (`icon::SELECTION_PLUS`, `icon::SELECTION_SLASH`), gated by `inspector::group_actions`:
   - Ungroup live when something selected is a `Group` or `Boolean`; both buttons call
     `app::ungroup_selection`, which builds through `build::ungroup_all` — one transaction however many
@@ -476,7 +476,7 @@ one transaction. There is no "mask group" flag; it is derived from the children 
 
 Performance: re-running the whole boolean per operand edit and per preview build is cheap enough with
 the balanced fold; per-operand caching is not to be built. Pixel tests live in
-`ondin-export/tests/boolean.rs` (a subtracted hole and an excluded overlap are each `alpha == 0`).
+`mastik-export/tests/boolean.rs` (a subtracted hole and an excluded overlap are each `alpha == 0`).
 
 ## Traps
 
@@ -492,9 +492,9 @@ the balanced fold; per-operand caching is not to be built. Pixel tests live in
 - *Outline stroke*'s ink must not be `kurbo::stroke`'s expansion, though that looks like the same
   thing in one call: read even-odd it double-counts the inner corners (a 100 square with a 10 stroke
   comes out 4100 instead of 4000). `outline_stroke_traces_the_ink_each_alignment_draws` and
-  `stroke_ink_covers_what_a_non_zero_expansion_fills` (`ondin-core/tests/build.rs`) pin it.
+  `stroke_ink_covers_what_a_non_zero_expansion_fills` (`mastik-core/tests/build.rs`) pin it.
 - *Blend shapes* must pair by arc length, not by matching anchor counts, though the latter looks
-  simpler. `the_middle_step_is_half_way_in_place_size_and_paint` (`ondin-core/tests/blend_shapes.rs`,
+  simpler. `the_middle_step_is_half_way_in_place_size_and_paint` (`mastik-core/tests/blend_shapes.rs`,
   a circle against a rounded square) checks the middle step's width.
 - `cancel_gesture` must not take the Blend card's standing preview for a gesture
   (`blend_preview_standing`, beside `repeat_preview_standing`), or a right-click on the canvas

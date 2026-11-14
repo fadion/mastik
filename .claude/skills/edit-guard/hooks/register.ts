@@ -11,7 +11,7 @@ import { type Kind, type Kinds, judge, pathspecs, refusal } from './judge.ts'
 
 /**
  * What the disk says of each path a `git add` or `git checkout` names, so a
- * directory and a branch are told apart (`git checkout crates/ondin-app` from
+ * directory and a branch are told apart (`git checkout crates/mastik-app` from
  * `git checkout feature/x`). A path that is not there is `none`; a disk that
  * cannot be asked throws, and the guard fails open.
  */

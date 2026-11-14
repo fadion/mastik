@@ -1,6 +1,6 @@
 # IO: save format, schema versions, library block
 
-The native `.ondin` file format (JSON, versioned DTO), its integrity checks, the migration ladder, and the library block that gives a document its identity.
+The native `.mastik` file format (JSON, versioned DTO), its integrity checks, the migration ladder, and the library block that gives a document its identity.
 
 ## 5.11 IO
 

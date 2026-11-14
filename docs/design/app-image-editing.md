@@ -14,7 +14,7 @@ Part of §9.4.
   one texture per picture across layers. Grey ramp while a thumbnail is missing or deferred. The hex
   field is a plain "Image" label.
 - **Clicking the chip or the label enters image editing** (tooltip *Edit this picture — crop it, move
-  it, scale it*), through `OndinApp::begin_image_edit`. The door is
+  it, scale it*), through `MastikApp::begin_image_edit`. The door is
   `inspector::row_edits_the_mode_s_picture`, which compares the row's slot with
   `edit::croppable_fill`'s answer, so a second image fill's row is inert. A locked layer (or locked
   group, via `query::is_effectively_locked`) closes the door, with a third tooltip state naming the
@@ -27,7 +27,7 @@ Part of §9.4.
 - A `POPOVER_W` `Foreground` `Area` in `menu_frame`, at `popover_anchor` taken from the **paint row's**
   rect, in the shared lane (`picker_lane_right`, which asks `edited_image`).
 - **No button and no close**: it appears with the mode and goes when `Enter`/`Escape` leaves it. There
-  is no click-away rule. `OndinApp` keeps only `image_tab: ImageCard` (the last tab, kept across
+  is no click-away rule. `MastikApp` keeps only `image_tab: ImageCard` (the last tab, kept across
   entries); which layer and paint is `canvas::edited_image`'s answer.
 - **The tab strip is the header**: a full-width two-cell `ui::segmented` with `ImageCard::title`
   labels. Controls are `CELL` = 26; both tracks (this and Settings' mode strip) ask for `TRACK_CELL`,
@@ -88,7 +88,7 @@ window onto its picture. There is no crop tool, rail button or `C` key.
   keyed off `self.tool`.
 - **Subject is derived**: `canvas::edited_image` — the tool plus a single selection whose first visible
   image fill (`edit::croppable_fill` → `Paint::image_fill`). Not stored.
-- **Four doors**, all calling `OndinApp::begin_image_edit(id)` (selects, takes the tool, prints the
+- **Four doors**, all calling `MastikApp::begin_image_edit(id)` (selects, takes the tool, prints the
   status line): double-click on a picture (after the group step), `Enter` on a selected one, *Edit
   image* at the head of `context-menus.md` §5.7, and a click on a fill row's chip or label.
 - **Lock**: `begin_image_edit` refuses a locked node (*"This layer is locked — unlock it to edit the
@@ -130,7 +130,7 @@ window onto its picture. There is no crop tool, rail button or `C` key.
 ## Pictures by drop and paste
 
 - `take_dropped_images` runs every frame from `update`, whatever the tool, **unless
-  `OndinApp::modal_is_up`**, reading `raw.dropped_files` (browser drags as bytes, file-manager drops
+  `MastikApp::modal_is_up`**, reading `raw.dropped_files` (browser drags as bytes, file-manager drops
   as paths). It and *Place image* (`place_image_action`) hand the files to `crate::import` as
   `Incoming` (name, bytes or path); neither reads a file on the frame. *Replace image*
   (`replace_image_action`, `start_replace_image`), a clipboard picture (`paste_image`,

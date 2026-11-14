@@ -46,7 +46,7 @@ marks the original that stays. Toggles live with the key.
   pixel under it moved 10 in CIE L* (`grid_ink::STEP`) with its hue kept: above L* 45
   (`grid_ink::DARKEN_ABOVE`) it darkens, by scaling its linear channels by `Y(L*−10)/Y`; at or
   below it lightens, mixing toward white in linear light by `(Y(L*+10) − Y)/(1 − Y)`. A fixed ink
-  vanishes over a mid-tone fill; this one reads over every fill. `ondin_render::grid_ink`
+  vanishes over a mid-tone fill; this one reads over every fill. `mastik_render::grid_ink`
   holds the rule (`adapt_rgba8`) and its compute pass, which `CanvasRenderer::shade_grid` runs
   every frame the grid shows, after the vision simulation (the grid is chrome over what is
   seen), into a third texture, `gridded`; `target` and `seen` are never written, so pans, patches
@@ -57,7 +57,7 @@ marks the original that stays. Toggles live with the key.
   run, adaptive falls back to these lines: headless (no GPU) and under pixel preview, whose
   texture is one texel a unit.
 - Not drawn under the ruler bars.
-- Both inks place a line by one rule, `grid_ink::on_line` over `OndinApp::grid_placed`'s
+- Both inks place a line by one rule, `grid_ink::on_line` over `MastikApp::grid_placed`'s
   `Lattice` (world 0's texel modulo the pitch, the zoom as pitch, the artwork area as the region):
   a line takes the device pixel holding its position, a half rounding up, so switching *Adaptive*
   never moves a line. It picks the pixels `rulers::snap_across_axis` gave a one-device-pixel line
@@ -73,7 +73,7 @@ marks the original that stays. Toggles live with the key.
   (the status bar's margin): a `ui::menu_frame` 220pt wide with 6pt padding. The map's height
   follows the page content's aspect, the card clamped to 90–160pt; an empty page keeps the last
   height. The floating status bar moves right by the card's width + 8pt
-  (`OndinApp::minimap_clearance`, which asks `size_preview_clearance` first), so the two share the
+  (`MastikApp::minimap_clearance`, which asks `size_preview_clearance` first), so the two share the
   bottom line. While the size preview shows, the minimap is hidden, not switched off, and the corner
   is the size preview's.
 - **What it draws**, the current page flat. The walk goes down through frames and groups while a
@@ -124,7 +124,7 @@ preview* (`ViewSwitch::SizePreview`, *Show size preview* in the palette and the 
   only while the card shows, so nothing is inherited across a time it was hidden. The pin is view
   state and never saved.
 - **Tiles.** For each size N, the layer's box (`preview_world_bounds`, so a drag is followed) is
-  squared on its longer side (`ondin_export::icon::square_of`, the icon export's framing) and drawn
+  squared on its longer side (`mastik_export::icon::square_of`, the icon export's framing) and drawn
   at N, centred in its column. A column is N + 28 wide, a ground strip the tallest size + 20, with
   no hairline (on the dark ground one reads as an inset). Several rows stack their strips with no
   names. A caption row under the strips names each size; a size every row's layer already is (its
@@ -165,8 +165,8 @@ preview* (`ViewSwitch::SizePreview`, *Show size preview* in the palette and the 
 *Tools ▸ Check contrast* (`Action::CheckContrast`, `menu::Item::CheckContrast`, `Group::View`, no
 chord): the Tools menu's first row, and a palette row reading *Stop checking contrast* while on.
 It measures the shown text layers, and with *Non-text* small shapes, against what is drawn behind
-them with `ondin_export::contrast::check_with`, the measurement `ondin check contrast` runs
-(`export.md`). `OndinApp::contrast` is view state: `reset_transient_state` turns it off whenever a
+them with `mastik_export::contrast::check_with`, the measurement `mastik check contrast` runs
+(`export.md`). `MastikApp::contrast` is view state: `reset_transient_state` turns it off whenever a
 document opens, it is never saved or exported, and present mode's own branch never draws it.
 Starting it ends the vision simulation, and starting that ends it, so the two bars never
 stack.
@@ -236,7 +236,7 @@ stack.
   that breaks another is no fix: *Nearest* must pass every mode's worst backdrop, and *Variables*
   lists only variables that pass in every mode, nearest the ink first. When no lightness at the
   hue passes everywhere the card offers only variables, the case modes exist for.
-- **What a fix edits** (`ondin_core::contrast::fix_transaction`, the `fix_contrast` verb's too): the
+- **What a fix edits** (`mastik_core::contrast::fix_transaction`, the `fix_contrast` verb's too): the
   runs and paints whose colour fails the finding,
   never the backdrop. A bound fill or stroke is judged by its variable's value in each mode against
   that mode's sample, so a variable that adapts to every mode is left bound. A run's own colour is
@@ -255,13 +255,13 @@ no chord): the Tools menu's row after *Check contrast*, and a palette row readin
 *Stop simulating vision* while on. Its search words keep the old name's (*colour blind*, *color
 blind*, *colour blindness*) so muscle memory still finds it. One frame of the canvas is shown as
 someone sees it with a condition of colour vision or of sight, at a severity
-(`ondin_render::vision`, `render.md`). `OndinApp::vision` is view state, as the contrast check is:
+(`mastik_render::vision`, `render.md`). `MastikApp::vision` is view state, as the contrast check is:
 off when a document opens (`reset_transient_state`), never saved or exported, never drawn in
 present mode. It is not a switch inside the contrast check: WCAG contrast is luminance, which the
 colour deficiencies barely move.
 
 - **Scope: one frame** (`vision_target`): the top-level frame of the first selected layer, else
-  `OndinApp::frame_in_view`, the frame-in-view rule `contrast_target` uses; a page with no frame
+  `MastikApp::frame_in_view`, the frame-in-view rule `contrast_target` uses; a page with no frame
   is simulated whole. Fixed for the mode's life, like the check's: a click on the bar's scope chip
   re-targets, and switching pages, or the frame going away (deleted or undone), re-targets to the
   frame in view.
@@ -274,7 +274,7 @@ colour deficiencies barely move.
   still as the percentage changes.
 - **The slider** writes the shown condition's severity live and saves it when the press ends. A
   right-click while it is held puts the severity back and the rest of the press does nothing
-  (`InFlight::vision_scrub`, restored by `OndinApp::cancel_gesture`), as every drag in the app
+  (`InFlight::vision_scrub`, restored by `MastikApp::cancel_gesture`), as every drag in the app
   cancels (`the_slider_sets_the_shown_condition_s_severity`).
 - **The condition menu**, from the head, 240pt (`MENU_W`): Protanopia, Deuteranopia, Tritanopia,
   Achromatopsia, a hairline, then Blurred vision, Contrast loss, Ghosting, Yellowing, each a
@@ -328,7 +328,7 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
 
 - Each head (zoom readout's too) is `ui::menu_head`: `hover()` ground on its 26pt rect, radius 5, held
   while its own menu is open.
-- `OndinApp::view_snap_tools_menus` draws the three heads, each tooltipped with its name and
+- `MastikApp::view_snap_tools_menus` draws the three heads, each tooltipped with its name and
   disabled while comparing (*‹Name› — not while comparing*); comparing also closes whichever is open.
 - View and Snap rows are `ui::menu_check`, a checkable `ui::menu_row` with no glyph, `ui::MENU_ROW_H`
   (24) tall, in `ui::menu_frame`. The accent tick sits in the glyph column and keeps it when off;
@@ -343,18 +343,18 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
     mode* — a verb, not a switch: a check row that never ticks, which closes the menu and dispatches
     `Action::Present`;
   - *Panels ▸* (`PANELS_ROW`, a `ui::submenu_check_row`), whose flyout
-    (`OndinApp::panels_flyout`, a `ui::flyout`) holds `ViewSwitch::VIEW_PANELS` labelled short: *Layers*, *History*,
+    (`MastikApp::panels_flyout`, a `ui::flyout`) holds `ViewSwitch::VIEW_PANELS` labelled short: *Layers*, *History*,
     *Minimap*, *Size preview*, *Toolbar*, *Messages*. *Minimap* follows *History* so the two about
     the layers pane stay together.
 
   Hovering or clicking *Panels* opens the flyout; hovering any other row closes it. A click in the
-  flyout toggles its pane and leaves both open: `OndinApp::dropdown`'s click-outside close skips
-  the area `OndinApp::flyout_id` names. The marquee's *Lasso select* is on no menu: `Q`, the palette,
+  flyout toggles its pane and leaves both open: `MastikApp::dropdown`'s click-outside close skips
+  the area `MastikApp::flyout_id` names. The marquee's *Lasso select* is on no menu: `Q`, the palette,
   the cheatsheet and the rail's Select slot carry it (`app-selection.md`). Nor is *Align by
   visual centre*: the Align card's head and the palette carry it (`tools.md`).
 - **Snap**: *Snap to shapes*, *Snap to guides* (ruler guides, and layout grids while shown), *Snap to
   grid*, *Snap to baselines* (last: no accelerator, not Illustrator's).
-- **Tools** (`OndinApp::tools_menu`, rows from `ToolsRow::ALL`) holds what works across the
+- **Tools** (`MastikApp::tools_menu`, rows from `ToolsRow::ALL`) holds what works across the
   document. Verbs on the selection stay in the context menu, document-level rows in the Document
   menu, view modes in View, inserting in the insert picker.
   - the checks, which change nothing: *Check contrast* and *Simulate vision*, each toggling its
@@ -373,10 +373,10 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   doors, *Find in text…* and *Replace text…*. A pick closes the menu, then acts. The palette keeps
   every row.
 - **Zoom** (`zoom_control`): a text field on top, unfocused at open, holding the live zoom as its
-  value; Enter applies `OndinApp::apply_typed_zoom` (`150`, `150%`, `37.5 %`; about the canvas
+  value; Enter applies `MastikApp::apply_typed_zoom` (`150`, `150%`, `37.5 %`; about the canvas
   centre, clamped like every zoom; anything else says *"Type a zoom percentage, like 150"*) and
   closes the menu — an untouched value applies nothing, since it reads the rounded zoom. Below it
-  *Zoom in*, *Zoom out*, *Actual size*, *Zoom to fit*, *Fit selection*. `OndinApp::zoom_entry`
+  *Zoom in*, *Zoom out*, *Actual size*, *Zoom to fit*, *Fit selection*. `MastikApp::zoom_entry`
   holds the typed text while the field has focus, `None` otherwise.
 - View and Snap render rows from `input::ViewSwitch`, the enum chords name, so label, order and state come from
   one place; the *Panels ▸* flyout alone drops the "Show" its labels need elsewhere. `input::BINDINGS` has no chord for *Snap to baselines*, *Show layout grid*, *Outline mode*,
@@ -391,7 +391,7 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   on every axis of a skewed or snapped layer. `RenderOverrides::set_outline` carries the ink, installed every frame
   by `draw_canvas` (present mode clears it). Hit testing and selection are unchanged. The eyedropper
   samples the canvas as drawn, so in outline view it picks up the ink.
-- **Pixel preview** (`OndinApp::pixel_preview`, `Ctrl+Alt+Y`, glyph `PIXEL_PREVIEW`) shows the anti-aliasing a viewer
+- **Pixel preview** (`MastikApp::pixel_preview`, `Ctrl+Alt+Y`, glyph `PIXEL_PREVIEW`) shows the anti-aliasing a viewer
   at 1x gets. The pixel grid (`grid.rs`) shows where pixels fall over artwork drawn at device
   resolution, where a half-pixel edge looks sharp; the preview shows it blur. `canvas::pixel_preview`
   takes whole world units from the unit at the view's corner, one more than the view spans so the
@@ -410,7 +410,7 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
     renderer.
 - The switches are **view state**, not document state. All but focus mode, outline view, pixel preview and align by visual centre are kept in `prefs.view`
   (`prefs::ViewPrefs`), written once a frame when one has changed
-  (`OndinApp::remember_view_switches`, which also catches side doors such as a guide pulled from a
+  (`MastikApp::remember_view_switches`, which also catches side doors such as a guide pulled from a
   ruler turning guides on), and a launch opens on them. All default on except *Lock guides*,
   *Show history*, *Show minimap*, *Show size preview*, *Lasso select*, outline view, pixel preview, align by visual centre and focus mode; a launch never opens in focus mode,
   outline view, pixel preview or align by visual centre. `prefs.view` also keeps what the rail's Frame and Pen slots last showed
@@ -428,7 +428,7 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   | Tab | Rows |
   | --- | --- |
   | **General** | **Layers** (*Show tree guides*, *Collapse groups on open*), **Appearance** (the theme track, *Show resource meter*; the library's Settings shares the theme row only) |
-  | **Library** | the library's Settings card below its theme row, drawn by the same `OndinApp::library_rows`: **Storage** (*Base folder*, the migrate switch and the stranded report, *Autosave* in sec, *Trash* in days, *Keep version history*, *Undo history* in steps, a 0 in any of the three named in a warning caption under it), **Library** (default page, view and sort), **Launch** (*Reopen the last file on launch*). A right-click puts a scrubbed number back: through `settings::Scrubbed` here, and on the dashboard's card, where the editor's cancel does not run, through `InFlight::library_scrub`, which the card answers itself. Save hands the draft to `apply_library_settings` only when this tab was edited, so a base folder moves the library the same way from either screen; the General tab's theme is the one written |
+  | **Library** | the library's Settings card below its theme row, drawn by the same `MastikApp::library_rows`: **Storage** (*Base folder*, the migrate switch and the stranded report, *Autosave* in sec, *Trash* in days, *Keep version history*, *Undo history* in steps, a 0 in any of the three named in a warning caption under it), **Library** (default page, view and sort), **Launch** (*Reopen the last file on launch*). A right-click puts a scrubbed number back: through `settings::Scrubbed` here, and on the dashboard's card, where the editor's cancel does not run, through `InFlight::library_scrub`, which the card answers itself. Save hands the draft to `apply_library_settings` only when this tab was edited, so a base folder moves the library the same way from either screen; the General tab's theme is the one written |
   | **Canvas** | **Wheel** (*Zoom with the scroll wheel* and its caption, `tools.md` *The wheel*), **Nudge** (*Step*, *Shift*), **Snapping** (*Snap distance*, px, `app-snapping.md`), **Paste** (*Paste offset*, px, `app-frames-and-copies.md`), **New layers** (*Frame fill*, default white, and *Shape fill*, default `CanvasPrefs::SHAPE_FILL` #D9D9D9, each a colour row with its reset, `PrefColour::FrameFill` / `ShapeFill`: what the frame tool and the rectangle, ellipse, polygon and star tools fill with; a chart keeps its white ground), **Guides and grid** (*Ruler guides colour* and *thickness*, *Adaptive pixel grid*, *Pixel grid colour*, dimmed with *Turn off Adaptive pixel grid to pick a colour* while adaptive is on; `app-rulers-guides.md`, `prefs::CanvasPrefs`) |
   | **Text** | no eyebrow, which would repeat the tab's name: *Default font* (the typography panel's family dropdown, its glyph `warn()` with a tooltip when the family is `Missing`, §5.4a), *Default size* (px, `text.md`), *Check spelling*; then **Web fonts** (the switch, the cache row) |
   | **Assets** | *Assets browser*, below |
@@ -441,7 +441,7 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   wears a dot after its label (`ui::segment_label_marked`, from `Settings::dirty_tabs`), so Save
   never surprises. `dirty_tabs` destructures the whole struct, so a new field cannot be left off
   every tab (`a_tab_holding_an_edit_wears_the_dot`).
-- `OndinApp::settings_tab` is the tab shown last this run, never saved. `toggle_settings(ctx,
+- `MastikApp::settings_tab` is the tab shown last this run, never saved. `toggle_settings(ctx,
   tab)`: `None` (the top-bar button, `Ctrl+,`, `menu::Item::Settings`) toggles the card, opening
   on the last tab; `Some(tab)` is a door into that tab and never closes it, turning an open card
   instead (the assets browser's *Open settings* → Assets, the assistant panel's → Assistant;
@@ -466,8 +466,8 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
 ### One open menu
 
 `app::TopMenu` holds one value — `None | View | Snap | Tools | Zoom | Document | KitUpdates` — so menus are
-mutually exclusive by construction. `OndinApp::dropdown` spells the closing half once (click outside,
-Escape). `OndinApp::context_menu` is the same one-slot shape; opening a context menu clears this field
+mutually exclusive by construction. `MastikApp::dropdown` spells the closing half once (click outside,
+Escape). `MastikApp::context_menu` is the same one-slot shape; opening a context menu clears this field
 and the floating popovers.
 
 ## The command palette (`palette.rs`)
@@ -568,7 +568,7 @@ modal that opens closes the palette. App actions only; typed syntax belongs to C
 ## Batch rename (`batch_rename.rs`)
 
 A box that renames many layers at once: the selection, the page or every page. The text rule is
-`ondin_core::rename`'s; `batch_rename::plan_into` picks, orders and numbers the layers.
+`mastik_core::rename`'s; `batch_rename::plan_into` picks, orders and numbers the layers.
 
 What the plan reads of the document — the layers of every
 page it can reach, in tree order, with name, bounds, glyph, a text layer's content (its words
@@ -598,7 +598,7 @@ worded for the scope that plan was made for (`Plan::scope`).
   closes it. Choosing it again while it is up keeps what was typed and takes only a search the
   Layers header hands it. Enter renames from Find or *Rename to* (with the order list open it does nothing);
   anywhere else it is the canvas's. The *Rename* button renames; *Cancel* or ✕ closes it, and
-  Escape closes it through `OndinApp::escape`'s rung below Find's (the order list, open, takes the
+  Escape closes it through `MastikApp::escape`'s rung below Find's (the order list, open, takes the
   press first). It is drawn outside the `!focus` guard, so it works in focus mode.
 - **Scope**, the *In* row: *Selection · This page · All pages*, a `ui::segmented` of equal cells
   (`scope_segments`, which Find shares) with the selection's count after *Selection*. The box's
@@ -680,7 +680,7 @@ worded for the scope that plan was made for (`Plan::scope`).
   text), template, from, step, pad and order are kept in `prefs.batch_rename` when a rename runs;
   the Layers header's search opens Find as plain text with both switches off.
 
-## Clean up (`clean_up_box.rs`, `ondin_core::clean_up`)
+## Clean up (`clean_up_box.rs`, `mastik_core::clean_up`)
 
 A box that takes away what a design no longer shows, in the selection, the page or every page, as
 one undo step. *Clean up* is also the path bar's card (`cleanup.rs`, `app-pen-and-nodes.md`): the
@@ -734,11 +734,11 @@ a `Finding` with `kept: Some(Kept)` and its reason.
   menu, the colour picker and the other cards over the canvas's top; choosing it again while it is
   up leaves its scope and switches as set. The commit button cleans up;
   Enter stays the canvas's (the box has no field to type in). *Cancel* or ✕ closes it, and Escape
-  through `OndinApp::escape`'s rung below batch rename's. The foot's note reads *Esc closes*. It is
+  through `MastikApp::escape`'s rung below batch rename's. The foot's note reads *Esc closes*. It is
   drawn outside the `!focus` guard.
 - **Head and scope.** `card_head` *Clean up*. The *In* row is batch rename's `scope_segments`,
   opening on *Selection* when something is selected, else on *This page*. *Selection* is the live
-  selection (`OndinApp::selected_layers`), except that at *Selection* a row's click, which selects
+  selection (`MastikApp::selected_layers`), except that at *Selection* a row's click, which selects
   that row's layer, pins the roots it looked under until the selection changes again, as Find's
   double-click does; a selection emptied under the box moves it to *This page*. *All pages* leaves drafts out
   but keeps the current page.
@@ -773,7 +773,7 @@ a `Finding` with `kept: Some(Kept)` and its reason.
 - **Doors.** *Tools ▸ Clean up…* (after *Batch rename…*) and the palette (`Item::CleanUp`, aliases
   *tidy*, *unused*, *hidden*, *empty*); `Action::CleanUp` has no chord.
 
-## Fill with content (`fill_box.rs`, `ondin_core::content_fill`)
+## Fill with content (`fill_box.rs`, `mastik_core::content_fill`)
 
 A box that fills the selection's text layers with realistic names, addresses, companies, text,
 numbers and dates, and its avatar shapes with a drawn picture, a different value per layer, as one
@@ -867,9 +867,9 @@ ImageSink>)` is the edit.
   shape's box (clamped to 8–2048 px) through `ImageSink::draw`, adds each image once and replaces the
   shape's fills with one image fill, dropping a photo's credit as a replace does
   (`credit::Replaced::Fills`). `draw` is a default method answering `None`; the app's
-  `canvas::Decoded` and `import_files::Pictures` draw with `ondin_render::rasterize_paths` and a PNG
+  `canvas::Decoded` and `import_files::Pictures` draw with `mastik_render::rasterize_paths` and a PNG
   encode (`canvas::art_png`). Without a sink that draws, avatars are left out.
-- **Locales**, one file each in `ondin-core/assets/content/` (en-US, en-GB, de, fr, es, it, pt-BR,
+- **Locales**, one file each in `mastik-core/assets/content/` (en-US, en-GB, de, fr, es, it, pt-BR,
   nl), `include_str!`'d uncompressed into `SOURCES`, whose order the locale list shows; each is
   named in English (*German*, *English (UK)*). A file holds `#` comments, `@key value` formats and
   `[section]` lists, with `\uXXXX` escapes; in a pattern `#` is a digit, `&` a digit 1–9 (a UK
@@ -906,7 +906,7 @@ ImageSink>)` is the edit.
   and a row's click pins the roots it looked under as Clean up's does. Opening it closes the
   palette, the context menu, the top-bar menu, the colour picker, the path bar's Clean up card and
   the other cards over the canvas's top; opening any of those closes it. Enter stays the canvas's.
-  *Cancel* or ✕ closes it, and Escape through `OndinApp::escape`'s rung below Clean up's (an open
+  *Cancel* or ✕ closes it, and Escape through `MastikApp::escape`'s rung below Clean up's (an open
   kind list takes the press first). It is drawn outside the `!focus` guard.
 - **Opening**: the box opens on any selection, none included, and follows the selection made
   after; while nothing is fillable the preview says *Select text layers, or frames that hold them*.
@@ -914,7 +914,7 @@ ImageSink>)` is the edit.
   until a locale is picked in the row, which holds it (`FillBox::locale_picked`); records, example
   emails, avatars and the default avatar style come from `prefs.fill_content`; the seed is the
   clock's, so each opening draws anew.
-- **Fill** ends a live text session first (`OndinApp::finish_text_first`) and plans again on what
+- **Fill** ends a live text session first (`MastikApp::finish_text_first`) and plans again on what
   that leaves: the session's buffer predates the fill, and its commit when the session ended would
   write over the value filled.
 - **Rows** (batch rename's `row`): *Locale*, a combo of the locales, the current one lit with a
@@ -1051,7 +1051,7 @@ Open-source icons and stock photos, inserted with their credit (`Node::credit`, 
   size*); and the asset cache row with *Clear*, the web-font row's twin, which empties at once as
   that one does. The rest is staged until *Save changes*; a key field left empty forgets its key.
 - **Credits…** (`icon::QUOTES`) is offered while the card would list something
-  (`OndinApp::has_credits`: a layer carries a credit whose licence asks to be shown). The Document
+  (`MastikApp::has_credits`: a layer carries a credit whose licence asks to be shown). The Document
   menu hides it otherwise, since most documents never carry a credit; the palette lists it disabled
   with the card's own words, *Nothing here asks to be credited* (`credit::NOTHING_OWED`). It opens a `settings::canvas_card` listing every page's
   credits whose licence asks for them (`Credit::required`), photos first: a photo a line, an icon
@@ -1067,7 +1067,7 @@ Open-source icons and stock photos, inserted with their credit (`Node::credit`, 
 ## Find and replace (`find.rs`)
 
 Find and replace in what text layers say; layer names are batch rename's. The rule is
-`ondin_core::find`, which shares batch rename's matcher (`rename::Rule`).
+`mastik_core::find`, which shares batch rename's matcher (`rename::Rule`).
 
 - **Core.** `Query::new(find, replace, match_case, whole_words, pattern, keep_case)`: the
   replacement is literal text unless `pattern` is set, when it is a rename `Template`, so `[1]`
@@ -1096,7 +1096,7 @@ Find and replace in what text layers say; layer names are batch rename's. The ru
   changes. An `Area` at the canvas's top right, 420 wide, 16 below the top (below the rulers when
   they show) and 16 left of `inspector_column`, or of the canvas's right edge in focus mode, where it
   is drawn too. The list shows ten rows at most, fewer when the canvas is short, and scrolls without
-  a bar. With Find empty there is no list and no rule under the fields. `OndinApp::find`
+  a bar. With Find empty there is no list and no rule under the fields. `MastikApp::find`
   (`FindBox`) is kept while closed, so the box reopens as it was left.
 - **Rows.** A caret folds the Replace row and the options under it; the fold is remembered. Find
   shows *N of M*, a warm *0* (a word took the field's room), or *Not a pattern* with the reason under it, then ↑ ↓ ✕.
@@ -1116,10 +1116,10 @@ Find and replace in what text layers say; layer names are batch rename's. The ru
   button widening the scope (*Search this page*, *Search all pages*).
 - **Keys.** `Enter` in Find steps to the next match and `Shift+Enter` to the previous, round the
   ends; `Enter` in Replace replaces. The fields keep the keyboard (`return_key(None)`). `Escape` is a
-  rung of `OndinApp::escape` just below a text edit, so a text edit opened from the box finishes
+  rung of `MastikApp::escape` just below a text edit, so a text edit opened from the box finishes
   first; the box reads no `Escape` of its own.
 - **Showing a match never selects it.** Stepping switches page (`go_to_page`) if it must, then pans
-  the match itself into view by the least amount with the zoom kept (`OndinApp::reveal`, which
+  the match itself into view by the least amount with the zoom kept (`MastikApp::reveal`, which
   `reveal_selection` also calls; the layer's bounds when the match cannot be laid out), so a long
   text's later lines come into view. A click on a row makes it current; a double-click edits that text
   with the match selected (`begin_edit_text`, then `TextEdit::select_range`).
@@ -1137,7 +1137,7 @@ Find and replace in what text layers say; layer names are batch rename's. The ru
 ## Colour review (`colour_review.rs`)
 
 Groups the near-identical colours of the selection or the document and merges a group into one
-colour, one undo step each. The rule is `ondin_core::color_review`.
+colour, one undo step each. The rule is `mastik_core::color_review`.
 
 - **Census.** `census(doc, roots)` counts every raw colour under `roots` — solid fills and strokes,
   gradient stops, drop and inner shadow colours, a text layer's `TextStyle::color` and its
@@ -1209,7 +1209,7 @@ colour, one undo step each. The rule is `ondin_core::color_review`.
   never bind, a field the variable's scope refuses does not, and nor does a layer in a mode where
   the variable draws another colour. With no group: *No near-identical colours at
   ‹threshold›* over how many colours the scope holds.
-- **Keys.** `Escape` is a rung of `OndinApp::escape` below Find's: the caret menu, then the naming,
+- **Keys.** `Escape` is a rung of `MastikApp::escape` below Find's: the caret menu, then the naming,
   then the card.
 
 ## The shortcut cheatsheet (`cheatsheet.rs`)
@@ -1257,7 +1257,7 @@ colour, one undo step each. The rule is `ondin_core::color_review`.
 
 ## Focus mode
 
-Focus mode (`OndinApp::focus`, `ViewSwitch::Focus`, `Ctrl+\`, the palette's *focus* or *zen*) is
+Focus mode (`MastikApp::focus`, `ViewSwitch::Focus`, `Ctrl+\`, the palette's *focus* or *zen*) is
 a normal editing mode with the panels out of the way. Present mode is a separate, view-only mode and
 none of the rules below are its.
 
@@ -1273,7 +1273,7 @@ none of the rules below are its.
 - It **overrides** the switches it reads (layers, toolbar) without changing them, so leaving
   restores the user's workspace. Every View row stays live in the canvas menu and the palette; the
   layer menu's *Rename* dims (*"Leave focus mode to rename"*), since its field is in the hidden panel.
-- Escape is handled **first** in `OndinApp::escape`. A context menu open in focus mode takes the
+- Escape is handled **first** in `MastikApp::escape`. A context menu open in focus mode takes the
   first Escape (R3 returns before `escape`), the second leaves the mode. The popover arm asks for a
   popover heard last frame (focus mode draws none). Kit dialogs are drawn outside the `!focus`
   guard so they get the first Escape.
@@ -1286,7 +1286,7 @@ Holding bare `\` shows the artwork with the canvas chrome hidden; letting go bri
 not toggled: a live selection that cannot be seen would take a nudge.
 
 - **The key** (`canvas::peek_key_held`, `peek_held`): held from the key's own press to its own
-  release, kept in `OndinApp::peek_key`, so auto-repeat changes nothing. The press counts without
+  release, kept in `MastikApp::peek_key`, so auto-repeat changes nothing. The press counts without
   `Ctrl`/`Cmd` (those spell the panel toggles' `\`); `Alt` is allowed, which some Mac layouts type
   `\` with. The press must type `\` (or `|` on the `\` key), so an ISO layout's `#` on that key is
   no peek. `peek_key` keeps the press's physical key, and the release counts on it however the
@@ -1296,7 +1296,7 @@ not toggled: a live selection that cannot be seen would take a nudge.
   Windows) the chord is *Show/hide layers* instead, and there is no peek: §12's `AltGr` question.
 - **A press made during the peek** sits out to its release (`gesture_cancelled`), so it does not
   come back as a click once the peek ends.
-- **Only from rest.** `OndinApp::canvas_ui` sets `OndinApp::peeking` each frame, and only in
+- **Only from rest.** `MastikApp::canvas_ui` sets `MastikApp::peeking` each frame, and only in
   `Mode::Normal` with no drag, no compare (which spends bare `\` on its own toggle) and no armed
   eyedropper: a gesture never loses its release to a peek, and in a text session `\` types.
 - **What shows.** `draw_canvas` draws the artwork texture (vision simulation, outline mode and pixel
@@ -1321,20 +1321,20 @@ the first segment of a component's. It hides names, not content.
   off. It names the mode rather than reading "Private": the app is personal and offline-first, and a
   bare "Private" read as a document not shared with a team.
 - **A preference, not a workspace switch** (`Prefs::private`), so a restart in the middle of a shared
-  screen comes back masked. `OndinApp::set_private` writes and
+  screen comes back masked. `MastikApp::set_private` writes and
   saves it, sets the switch at once and, turning on, drops whatever shows a real name for editing:
   the inline layer rename, the inspector's
   name buffer, batch rename, a page rename, layer search, the library's document rename and project
   edit.
 - **The switch is a thread-local** (`private::on`/`set`), copied from the preference once a frame at
-  the top of `OndinApp::ui`, so any view can mask without a handle on the app.
+  the top of `MastikApp::ui`, so any view can mask without a handle on the app.
 - **Masked as kind and place.** `private::layer` gives "‹Kind› ‹n›", n the layer's place among its
   siblings of that word ("Component" for a main, "Instance" for a linked copy, else
   `NodeKind::default_name`); `page` gives "Page ‹n›" by page order; `document` and `project` give
   "Document ‹n›" and "Project ‹n›" by place in the list drawn beside them (the tab strip, the
   library's entries or project list); `version` gives "Version ‹n›" by place in the version history.
   So one document can carry different numbers on different
-  surfaces. `OndinApp::shown_page_name`, `shown_title`, `shown_project_name` and
+  surfaces. `MastikApp::shown_page_name`, `shown_title`, `shown_project_name` and
   `Library::shown_project`/`shown_entry` are the drawn names; `page_name` stays the real one for
   comparing, renaming and file names. Kit names are document names (`kits::index::kits_in`,
   `binding::kit_label`, `kit_heading`).
@@ -1375,7 +1375,7 @@ the first segment of a component's. It hides names, not content.
 ## Present mode (`present.rs`)
 
 The document's top-level frames shown one at a time, page by page, fitted to a fullscreen window,
-with nothing of the editor around them and nothing to edit with. `OndinApp::presenting` holds a
+with nothing of the editor around them and nothing to edit with. `MastikApp::presenting` holds a
 `Presenting { frames, pages, entered_at, at, was_fullscreen, stepped_at, view, to_top }` while it
 runs (`pages` names each frame's page, index for index).
 
@@ -1392,7 +1392,7 @@ runs (`pages` names each frame's page, index for index).
   closes the context menu and palette, and sends `ViewportCommand::Fullscreen(true)`, remembering
   whether the window already was. With nothing to show, the status line says *"No frames to
   present"* and nothing changes.
-- **Its own branch of `OndinApp::ui`**, after the font poll and before keyboard routing: it runs
+- **Its own branch of `MastikApp::ui`**, after the font poll and before keyboard routing: it runs
   `disk_results`, `autosave_tick` and `recovery_tick`, draws `present_ui` in a frameless
   `CentralPanel` and returns. No other key, panel, overlay or command runs, so nothing else needs to
   know the mode exists. A modal up ends it first, since a modal holds every key (closing the window
@@ -1455,7 +1455,7 @@ runs (`pages` names each frame's page, index for index).
 - The cheatsheet's chord both opens it (at its door) and closes it (in `cheatsheet_ui`), in one
   frame's input; `just_opened` is all that stops the opening press closing it.
   `the_chord_opens_the_sheet_and_closes_it` pins it.
-- Find and replace's `Escape` rung sits below `self.text` in `OndinApp::escape`: above it, the press
+- Find and replace's `Escape` rung sits below `self.text` in `MastikApp::escape`: above it, the press
   that should finish an edit opened from a row closes the box instead.
   `editing_a_match_selects_it_and_escape_closes_one_thing` pins it.
 - The `return` after `present_ui` is what makes present mode view-only: without it the editor runs

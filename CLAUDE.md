@@ -1,4 +1,4 @@
-# Ondin — Claude Code notes
+# Mastik — Claude Code notes
 
 @AGENTS.md
 

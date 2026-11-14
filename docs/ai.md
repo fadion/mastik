@@ -1,4 +1,4 @@
-# Ondin — the assistant
+# Mastik — the assistant
 
 > **Status: what is left.** The assistant itself is built and its design is in `design/assistant.md`.
 > This file keeps only what is still unbuilt; when a part is built, its rules move there. A `§n`

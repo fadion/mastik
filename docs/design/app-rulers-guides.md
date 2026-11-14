@@ -6,8 +6,8 @@ scoped, copied, drawn and inspected, and the canvas's press-priority ladder. Sna
 
 ## 9.4 Rulers
 
-- Two 20pt bars, view state (`OndinApp::show_rulers`, on by default, `Shift+R`, *View ▸ Show
-  rulers*). Every reader asks `OndinApp::rulers_on()` (`show_rulers` alone; focus mode keeps the
+- Two 20pt bars, view state (`MastikApp::show_rulers`, on by default, `Shift+R`, *View ▸ Show
+  rulers*). Every reader asks `MastikApp::rulers_on()` (`show_rulers` alone; focus mode keeps the
   bars), so hit test and paint agree.
 - **Selection band**: a tinted `accent_900()` band spans the selection's world extent on each bar's
   axis, its two end coordinates in `accent_200()`, read through the preview layer. A tick number under a
@@ -23,9 +23,9 @@ scoped, copied, drawn and inspected, and the canvas's press-priority ladder. Sna
 ## Guides
 
 - Saved with the document (§5.5); **drawn as egui chrome, not scene content** — one hairline at any
-  zoom, above clipping frames, invisible to `ondin export`.
+  zoom, above clipping frames, invisible to `mastik export`.
 - **Only the current page's guides** are drawn, picked and snapped to: those it owns and those of
-  frames on it (`OndinApp::page_guides`).
+  frames on it (`MastikApp::page_guides`).
 - Not to be confused with `snap.rs::Guide`, a transient one-frame line explaining a snap.
 
 ### Switches
@@ -69,7 +69,7 @@ scoped, copied, drawn and inspected, and the canvas's press-priority ladder. Sna
 
 ### Clipboard, duplicate, Alt-copy
 
-- `OndinApp::guide_clipboard: Option<Vec<Guide>>` beside the layer `clipboard`, mutually exclusive by
+- `MastikApp::guide_clipboard: Option<Vec<Guide>>` beside the layer `clipboard`, mutually exclusive by
   hand (every copy clears the other). `property_clipboard` is a third, independent slot.
 - `app::pasted_guide(from, id, owner, step)` is the one placement rule for paste and duplicate: fresh
   id, axis and colour carried, position stepped by `GUIDE_PASTE_OFFSET` (a fixed 20, the default paste offset; not the Settings value, which may be 0
@@ -120,7 +120,7 @@ scoped, copied, drawn and inspected, and the canvas's press-priority ladder. Sna
 
 ## Press priority on the canvas
 
-An armed pan, then **any selection chrome** (`OndinApp::chrome_claims`), then the ruler bar (claims a
+An armed pan, then **any selection chrome** (`MastikApp::chrome_claims`), then the ruler bar (claims a
 press from every tool), then guide lines (Select tool only). A gesture already in flight keeps the
 pointer.
 
@@ -143,7 +143,7 @@ value the band **drew** there. The band may belong to an unselected container un
 - Cursor: resize arrows along the band's axis, turned by the container's world transform.
 - Right button or `Escape` cancels via `cancel_gesture`.
 - Release commits via `session.commit`, skipped where every written slot already **draws** the value.
-  A release that cuts a binding says *Detached ‹name›* (`OndinApp::band_drag_cut`, merged via
+  A release that cuts a binding says *Detached ‹name›* (`MastikApp::band_drag_cut`, merged via
   `said_detached`).
 
 ## Traps

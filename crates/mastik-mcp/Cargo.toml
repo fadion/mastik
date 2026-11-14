@@ -1,0 +1,15 @@
+[package]
+name = "mastik-mcp"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Thin adapter (invariant 10). No rendering or UI dependency (§3), which
+# `deps_forbidden` checks; no gate sees an unused dependency, so add a line here
+# only with the `use` that needs it.
+[dependencies]
+mastik-core = { path = "../mastik-core" }
+serde_json.workspace = true
+# Image answers travel as base64; the version `mastik-core` already uses.
+base64 = "0.22.1"
