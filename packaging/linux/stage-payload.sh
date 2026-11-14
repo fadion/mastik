@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Lay out the files an Mastik Linux package installs, under a given root.
+# Lay out the files a Mastik Linux package installs, under a given root.
 #
 #     packaging/linux/stage-payload.sh <version> <binary> <root>
 #

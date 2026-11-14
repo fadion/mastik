@@ -123,7 +123,7 @@ pub(crate) struct Deleted {
 
 /// What the system clipboard turned out to be holding, when a paste asks.
 ///
-/// Three answers rather than a `bool`: an Mastik copy this build cannot read must
+/// Three answers rather than a `bool`: a Mastik copy this build cannot read must
 /// stop the paste, or [`MastikApp::paste_text_as_layer`] would turn the payload's
 /// JSON into a text layer.
 enum Clipboard {

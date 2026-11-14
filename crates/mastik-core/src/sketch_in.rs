@@ -1769,7 +1769,7 @@ fn b(v: &Value, k: &str) -> bool {
 }
 
 /// Whether every layer below `layer`, through nested groups, resizes by its
-/// share of the box — no constraint, or 63 with nothing pinned — as an Mastik
+/// share of the box — no constraint, or 63 with nothing pinned — as a Mastik
 /// pinned group lays its contents. True for a layer with none.
 fn scales_with_its_box(layer: &Value) -> bool {
     arr(layer, "layers").iter().all(|l| {

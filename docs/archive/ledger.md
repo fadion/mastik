@@ -4213,7 +4213,7 @@ copied layers' names on the system clipboard. ~~The real payload is still the ca
 between two Mastik windows.*~~ **Done 2026-09-22 — D823**, and exactly as prescribed:
 `mastik_core::io::clip` is that subtree, the payload follows the names past a fence, and a copy made in
 one `mastik` window pastes as layers in another. **The names stay on the first line**, for this
-paragraph's reason and because they are what someone pasting an Mastik copy into a note wants to read —
+paragraph's reason and because they are what someone pasting a Mastik copy into a note wants to read —
 so the stand-in was extended rather than replaced.
 
 **D18 — The canvas ground is editable. *Superseded in part by D28 — it is saved now.*** Clicking
@@ -10108,7 +10108,7 @@ also buy paste between two Mastik windows."* Until now a copy captured subtrees 
 as an image and nothing else, so a payload that is to survive leaving this process has to be a
 string. It is the layer names, then `io::clip::FENCE` (`--- mastik clipboard ---`), then the JSON. The
 names stay on the first line for both of D17's reasons — `egui_winit` emits `Event::Paste` only for a
-non-empty clipboard, and someone pasting an Mastik copy into a note wants to read what they copied —
+non-empty clipboard, and someone pasting a Mastik copy into a note wants to read what they copied —
 so the payload *follows* the stand-in rather than replacing it. ⚠️ ~~**The fence is found with
 `rsplit_once` and not `split_once`**, so a layer actually named `--- mastik clipboard ---` does not
 truncate the heading and take the payload with it; a pathological name is not a reason for a paste to
@@ -39750,7 +39750,7 @@ strings, does not wait for that question. `wait_exit_then_apply_updates` launche
 `Update.exe apply --waitPid <pid>`, which waits **sixty seconds** for the process and then carries on
 regardless; on Windows it then `force_stop_package`s the install root — a `TerminateProcess` on every
 process running from it but its own — and on Linux and macOS it swaps the app under them and starts
-the new version beside them. So three routes ended an Mastik window with no question asked:
+the new version beside them. So three routes ended a Mastik window with no question asked:
 
 - **The chip, then *Cancel*.** The click launched the updater at once and sent `Close`; a user who
   answered *Unsaved changes* with *Cancel*, or took over a minute to answer, had the window killed

@@ -512,7 +512,7 @@ fn a_masters_layers_take_their_pins_as_insets() {
 }
 
 /// A master's group is pinned when every layer in it resizes by its share, as
-/// an Mastik pinned group scales its contents, so a resized instance stretches
+/// a Mastik pinned group scales its contents, so a resized instance stretches
 /// it; a group holding a layer of fixed width is left unpinned and reported.
 /// flip: `scales_with_its_box` answering true → fails at *"left unpinned"*.
 #[test]
@@ -776,7 +776,7 @@ fn an_override_path_repeating_a_step_lands_nowhere() {
 }
 
 /// A swatch is a colour variable a fill naming it is bound to; a shared style is
-/// an Mastik style its users are bound to while they match it.
+/// a Mastik style its users are bound to while they match it.
 #[test]
 fn swatches_and_shared_styles_become_variables_and_styles() {
     let red = color(1.0, 0.0, 0.0);

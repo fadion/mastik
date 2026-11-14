@@ -164,7 +164,7 @@ pub fn write_carrying(
 /// Read clipboard text back, if it is ours at all.
 ///
 /// `None` means no fence, so the text is somebody else's and the caller goes on
-/// to its other arms. `Some(Err(_))` means it is an Mastik copy that could not be
+/// to its other arms. `Some(Err(_))` means it is a Mastik copy that could not be
 /// read, to be reported: falling through would paste the payload as a text layer.
 pub fn read(text: &str) -> Option<Result<Payload, IoError>> {
     // `contains` rather than splitting keeps `Some(Err)` reachable: a truncated

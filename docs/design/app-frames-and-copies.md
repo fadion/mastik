@@ -114,7 +114,7 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
 - **Through the system clipboard** (after a relaunch, or from another build or machine):
   `copy_selection` writes the system clipboard as text — layer names, then
   `io::clip::FENCE`, then the JSON payload. Every paste door asks `MastikApp::take_clipboard`:
-  `Layers` (ours, or an adopted foreign payload), `Foreign`, or `Unreadable` (an Mastik copy this build
+  `Layers` (ours, or an adopted foreign payload), `Foreign`, or `Unreadable` (a Mastik copy this build
   cannot read — never pasted as a text layer). A foreign parent id fails `Document::contains`, and a
   parent on another page is not taken either, so the paste lands at the current page's root.
 - **Kit instances carry their main** (§5.3e): `kit::carried` vault mains go in `Clip::kits`;
