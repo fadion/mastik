@@ -145,7 +145,7 @@ fn env<'a>(selection: &'a [NodeId], labels: &'a FxHashMap<String, NodeId>) -> En
     }
 }
 
-/// Each `vm.md` §3 example (with registry names: `dup` and `rename` are not
+/// Each `command-mode.md` §3 example (with registry names: `dup` and `rename` are not
 /// verbs, so their lines stay as written) and the rule-3 operators.
 #[test]
 fn desugar_follows_the_four_rules() {
@@ -180,6 +180,20 @@ fn desugar_follows_the_four_rules() {
         ("t[1].x", "t[1].x"),
         ("align(\"left\", n)", "align(\"left\", n)"),
         ("group = 3", "group = 3"),
+        (".x += 5 -- nudge", "sel:adjust(\"x\", 5) -- nudge"),
+        (
+            ".x += 5; .y -= 2",
+            "sel:adjust(\"x\", 5); sel:adjust(\"y\", -2)",
+        ),
+        (
+            "for _, l in ipairs(sel) do l.x += 5 end",
+            "for _, l in ipairs(sel) do l:adjust(\"x\", 5) end",
+        ),
+        (
+            "if true then .x += 1 end",
+            "if true then sel:adjust(\"x\", 1) end",
+        ),
+        (".width = 50% -- half", "sel.width = percent(50) -- half"),
     ];
     for (line, luau) in cases {
         assert_eq!(desugar(line).luau, luau, "{line}");
@@ -392,7 +406,7 @@ fn a_verb_returns_what_it_created() {
     assert_eq!(out.value, Some(h.doc.get(group).unwrap().name().to_owned()));
 }
 
-/// The header reads the board's example, and a bad line is an error on it.
+/// The header reads the documented example, and a bad line is an error on it.
 #[test]
 fn the_header_reads_inputs() {
     let source = "--- Card grid\n--- Lays cards out.\n---@input cols integer = 3 -- Columns {1..12}\n\
@@ -669,6 +683,36 @@ fn print_collects_into_the_outcome() {
     )
     .unwrap();
     assert_eq!(out.printed, ["1\tA\t10", "2\tB\t50", "3\tC\t90"]);
+}
+
+/// Printing is held to `PRINT_CAP`, which Lua's memory limit does not count.
+/// flip: `State::say` keeping every line → fails at `unwrap_err`.
+#[test]
+fn printing_too_much_stops_the_run() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let src = "local s = string.rep('x', 400000) for i = 1, 10 do print(s) end";
+    let err = run_script(&mut h, &e, src).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Budget);
+    assert_eq!(err.message, "Stopped after printing more than 1 MB");
+}
+
+/// Luau's wording for a read-only table and for runaway recursion is said in the
+/// app's terms.
+#[test]
+fn luau_internal_errors_read_plainly() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let err = run_script(&mut h, &e, "sel[1] = 5").unwrap_err();
+    assert!(
+        err.message.starts_with("This table cannot be changed"),
+        "{}",
+        err.message
+    );
+    let err = run_script(&mut h, &e, "local function f() return f() + 1 end\nf()").unwrap_err();
+    assert_eq!(err.message, "A function called itself too deeply");
 }
 
 /// A Luau error lands on its line with the message alone.

@@ -66,12 +66,15 @@ The rewrites, in order, on one line:
    `sk.x = sel.x + 5`.
 3. **Compound assignment adjusts each layer by itself.** `<expr>.<prop> op= <rhs>` is
    `<expr>:adjust("<prop>", by)`: `+=` adds, `-=` adds the negation, and `*=`, `/=`, `//=`, `%=`,
-   `^=` map each layer's own value through a function. The footer says *each by itself*. This is
+   `^=` map each layer's own value through a function. Each statement on the line is rewritten by
+   itself: `<expr>` starts after the `;`, comment or block keyword before it and `<rhs>` ends at
+   the one after, so `.x += 5; .y -= 2` and `for … do l.x += 5 end` both work. The footer says
+   *each by itself*. This is
    the one place the tiers differ, and it is kept: in a script `sel.x += 15` is Luau's read of the
    shared value then a write, which raises on a selection that disagrees; a script spells the
    per-layer form `sel:adjust("x", 15)`.
 4. **Percent.** A number followed directly by `%`, with nothing after it but a closing bracket, a
-   comma or the end, is `percent(n)` (§5). `10 % 3` stays a remainder.
+   comma, a `;`, a comment, a block's closing keyword or the end, is `percent(n)` (§5). `10 % 3` stays a remainder.
 
 Anything else is Luau, verbatim. `LineKind` sorts the result: **Read** (no assignment, no verb
 call, no writing method) or **Write**; only a read is evaluated as it is typed.
@@ -125,7 +128,7 @@ decision 2):
 | `width`, `height` | the layer's own box | the `set_size` verb; `percent(n)` or `50%` sets the size's % mode (`set_layout_item`) only where the size field offers %, a resizable item of a flex or grid container, and is an error saying so elsewhere |
 | `rotation` | degrees, clockwise on the page | `edit::turned_to` |
 | `opacity`, `corner_radius`, `name`, `visible`, `locked`, `text`, `blend` | the layer's own | the matching verb |
-| `fill`, `stroke` | the one solid paint as `"#rrggbb"`, nil for none; anything else is no one value | `set_fills` / `set_strokes`; a text's style colour is cleared so the fill shows |
+| `fill`, `stroke` | the one solid paint as `"#rrggbb"` (`"#rrggbbaa"` when not opaque), nil for none; anything else is no one value | `set_fills` / `set_strokes`; a text's style colour is cleared so the fill shows |
 | `id`, `kind`, `parent`, `children`, `prev`, `next` | read-only | — |
 
 A name people guess (`alpha`, `colour`, `radius`) raises with the property it means as the fix.
@@ -177,7 +180,9 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
 - **No filesystem, network, clock or randomness.** A run is deterministic, as replayed operations
   are (§12 of `foundations.md`).
 - **Budgets**, counted by `set_interrupt` (Luau calls it at every call and loop iteration; the clock
-  is read every 256th) and `set_memory_limit` above what the fresh state holds:
+  is read every 256th, and at once after a verb or commit, which may be slow) and
+  `set_memory_limit` above what the fresh state holds. Printed output lives outside Lua's memory,
+  so a run may print at most 1 MB (`PRINT_CAP`):
 
   | Budget | Time | Steps | Memory |
   | --- | --- | --- | --- |
@@ -244,7 +249,7 @@ are not disclosed.
 **The header** is the run of `---` lines a script opens with: the first is its title, the rest its
 description, and each `---@input name type = default -- Label {lo..hi}` an input Mastik asks for in
 a form before the run, read in the script as `param.name` (an unknown one raises). Types: `number`,
-`integer`, `boolean`, `string`, `color` (`"#rrggbb"`), `choice(a, b, …)`. A missing default is the
+`integer`, `boolean`, `string`, `color` (`"#rrggbb"`, or `"#rrggbbaa"`), `choice(a, b, …)`. A missing default is the
 type's zero (the range's low end, the first choice); only a number or an integer takes a range. A
 header that does not parse fails the run at its line. The form draws each by its type: a
 `ui::value_field`, a swatch and its hex, a `ui::segmented` for up to three choices and a dropdown

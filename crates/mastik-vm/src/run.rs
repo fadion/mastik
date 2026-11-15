@@ -1,5 +1,5 @@
 //! The Luau runtime: one sandboxed state per evaluation, an environment whose
-//! `__index` resolves names in `vm.md` §4's order, layer collections as tables
+//! `__index` resolves names in `command-mode.md` §4's order, layer collections as tables
 //! with one shared metatable, verbs bound by their registry names, and budgets.
 //! Every callback reaches the host through one `RefCell<State>`, never borrowed
 //! across a call back into Lua (`adjust`'s function form), which would re-enter it.
@@ -78,13 +78,25 @@ pub(crate) const NAMES: &[(&str, &str)] = &[
     ("print", "Show values in the output"),
 ];
 
+/// The most a run may print, in bytes: the output is held in the host's memory,
+/// outside the Lua memory limit.
+const PRINT_CAP: usize = 1 << 20;
+
+/// Why a run stopped printing.
+const PRINTED_TOO_MUCH: &str = "Stopped after printing more than 1 MB";
+
 /// What the host and the run accumulate.
 struct State<'h> {
     host: &'h mut dyn Host,
     mode: Mode,
     printed: Vec<String>,
+    /// The bytes in `printed`, held to [`PRINT_CAP`].
+    printed_bytes: usize,
     created: Vec<NodeId>,
     selection: Option<Vec<NodeId>>,
+    /// Set by each host call, which may be slow: the interrupt then reads the
+    /// clock at once rather than at its next 256th step.
+    hosted: Rc<Cell<bool>>,
 }
 
 impl State<'_> {
@@ -93,7 +105,18 @@ impl State<'_> {
         if tx.0.is_empty() {
             return Ok(());
         }
+        self.hosted.set(true);
         self.host.commit(tx)
+    }
+
+    /// Keep `line` as printed output; `false` once the run has printed too much.
+    fn say(&mut self, line: String) -> bool {
+        self.printed_bytes += line.len();
+        if self.printed_bytes > PRINT_CAP {
+            return false;
+        }
+        self.printed.push(line);
+        true
     }
 
     /// Answer and commit verb `name`; what it created and the id of what else it made.
@@ -102,10 +125,13 @@ impl State<'_> {
         name: &str,
         args: serde_json::Value,
     ) -> Result<(Vec<NodeId>, Option<String>), String> {
+        self.hosted.set(true);
         let done = self.host.verb(name, &args)?;
         self.commit(done.tx)?;
-        if let Some(said) = done.said {
-            self.printed.push(said);
+        if let Some(said) = done.said
+            && !self.say(said)
+        {
+            return Err(PRINTED_TOO_MUCH.into());
         }
         self.created.extend(&done.created);
         Ok((done.created, done.made))
@@ -198,13 +224,16 @@ pub(crate) fn run(
     let fail = |e: mlua::Error| convert(e, original, budget);
     lua.sandbox(true).map_err(fail)?;
     let steps = Rc::new(Cell::new(0u64));
+    let hosted = Rc::new(Cell::new(false));
     let start = Instant::now();
+    let after_host = hosted.clone();
     lua.set_interrupt(move |_| {
         let n = steps.get() + 1;
         steps.set(n);
+        let clock = n.is_multiple_of(256) || after_host.replace(false);
         let over = if n > budget.steps {
             Some(format!("Stopped after {} steps", budget.steps))
-        } else if n.is_multiple_of(256) && start.elapsed() > budget.time {
+        } else if clock && start.elapsed() > budget.time {
             Some(format!("Stopped after {}", duration(budget.time)))
         } else {
             None
@@ -226,8 +255,10 @@ pub(crate) fn run(
         host,
         mode,
         printed: Vec::new(),
+        printed_bytes: 0,
         created: Vec::new(),
         selection: None,
+        hosted,
     });
     let outer = &state;
     let value = lua
@@ -305,8 +336,16 @@ pub(crate) fn run(
             })?;
             let print = scope.create_function(move |lua, args: MultiValue| {
                 let line: Vec<String> = args.iter().map(|v| printed(lua, state, v)).collect();
-                state.borrow_mut().printed.push(line.join("\t"));
-                Ok(())
+                if state.borrow_mut().say(line.join("\t")) {
+                    return Ok(());
+                }
+                Err(mlua::Error::external(Raised {
+                    kind: ErrorKind::Budget,
+                    message: PRINTED_TOO_MUCH.into(),
+                    line: current_line(lua),
+                    ident: None,
+                    fix: None,
+                }))
             })?;
             let percent = lua.create_function(|lua, n: f64| lua.create_any_userdata(Percent(n)))?;
             let params = params_table(&lua, scope, env)?;
@@ -427,7 +466,7 @@ fn json_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<Value> {
     })
 }
 
-/// A global `name`, in `vm.md` §4's order, and whether it may be kept for the
+/// A global `name`, in `command-mode.md` §4's order, and whether it may be kept for the
 /// rest of the run (a relative name or a layer may change as the run edits).
 #[allow(clippy::too_many_arguments)]
 fn resolve(
@@ -1218,11 +1257,12 @@ fn call_verb(
             .borrow_mut()
             .apply(name, serde_json::Value::Object(args))
             .map_err(|why| raise(lua, why))?;
-        if !c.is_empty() {
-            state.borrow_mut().selection = Some(c.clone());
-        }
         created.extend(c);
         made = made.or(m);
+    }
+    // What the call made across every run is selected, not only the last run's.
+    if !created.is_empty() {
+        state.borrow_mut().selection = Some(created.clone());
     }
     if !created.is_empty() {
         return Ok(Value::Table(coll(lua, &created)?));
@@ -1470,6 +1510,16 @@ fn convert(e: mlua::Error, text: &str, budget: Budget) -> VmError {
             return convert((**cause).clone(), text, budget);
         }
         other => (ErrorKind::Error, split_line(&other.to_string())),
+    };
+    // Luau's own wording for two cases a script meets, said in the app's terms.
+    let message = if message.contains("attempt to modify a readonly table") {
+        "This table cannot be changed: a collection's layers, `param` and the library are \
+         read-only"
+            .to_owned()
+    } else if message.contains("error in error handling") || message.contains("stack overflow") {
+        "A function called itself too deeply".to_owned()
+    } else {
+        message
     };
     VmError {
         kind,

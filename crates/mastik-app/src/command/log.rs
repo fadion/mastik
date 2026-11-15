@@ -172,13 +172,11 @@ impl Entry {
     }
 }
 
-/// The Luau a rendered command is: each `;`-separated property line through the
-/// bar's sugar, which for a rendered line is only subject elision and adjust.
+/// The Luau a rendered command is: the line through the bar's sugar, which for a
+/// rendered line is only subject elision and adjust, each `;`-separated
+/// statement by itself.
 fn luau_of(line: &str) -> String {
-    line.split("; ")
-        .map(|part| mastik_vm::desugar(part).luau)
-        .collect::<Vec<_>>()
-        .join("\n")
+    mastik_vm::desugar(line).luau
 }
 
 /// `s` as a Luau string literal.

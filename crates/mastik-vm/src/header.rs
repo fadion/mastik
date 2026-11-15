@@ -254,7 +254,9 @@ fn input(text: &str, at: usize, line: u32) -> Result<Input, VmError> {
                     hi.trim().parse::<f64>().ok()?,
                 ))
             });
-            let Some((lo, hi)) = parsed.filter(|(lo, hi)| lo <= hi) else {
+            let Some((lo, hi)) =
+                parsed.filter(|(lo, hi)| lo.is_finite() && hi.is_finite() && lo <= hi)
+            else {
                 return Err(bad(line, whole, "A range reads `{lo..hi}`, low first"));
             };
             if !matches!(ty, InputType::Number | InputType::Integer) {
