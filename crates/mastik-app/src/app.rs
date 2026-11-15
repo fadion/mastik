@@ -2077,6 +2077,8 @@ impl eframe::App for MastikApp {
         if self.tabs.active.is_some() {
             self.remember_view();
         }
+        // A library script typed in within its write delay is written now.
+        self.flush_library_write();
         self.disk_settle();
         self.drain_exports();
         // After the settle: Velopack's updater stops this process regardless.
@@ -8535,7 +8537,7 @@ impl MastikApp {
         }
     }
 
-    /// The **Tools** dropdown's rows: Navigate, *Scripts…* and the checks, which change nothing,
+    /// The **Tools** dropdown's rows: Navigate, *Scripts…*, the checks, which change nothing,
     /// then a hairline and the bulk edits, each opening its box with its chord beside it.
     /// Bare rows with no tick column: a check that is on says so in its own bar
     /// over the canvas. A pick closes the menu before it acts.
@@ -8640,6 +8642,7 @@ impl MastikApp {
             || self.tokens_import.is_some()
             || self.chart_import.is_some()
             || self.trace.is_some()
+            || self.scripts.modal_up()
     }
 
     /// Write the View and Snap switches and the rail's slots to `prefs` when one has

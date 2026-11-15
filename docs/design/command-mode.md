@@ -228,8 +228,9 @@ document records what its run committed and never needs it.
 
 - **The library folder.** A script's name is its file's stem, compared without case as Windows and
   macOS compare file names; `check_name` refuses a name that is not one plain file name on every
-  platform. Writes are atomic; a delete removes the file outright. `mastik.d.luau` (§10, *Types*)
-  sits beside the scripts and is never listed as one.
+  platform, and a name ending `.d`. Writes are atomic, and a pending write is flushed on exit. A
+  delete asks first (*Delete script?*), since it removes the file with no undo. `mastik.d.luau`
+  (§10, *Types*) sits beside the scripts and is never listed as one.
 - **Document scripts** change through `AddScript`, `RemoveScript`, `SetScriptName` and
   `SetScriptSource` (the two setters fold into an edit run) and the verbs `add_script`,
   `set_script`, `remove_script`.
@@ -244,7 +245,9 @@ box says who wrote it and what a script can and cannot do, and shows its source.
 the preferences (`Prefs::script_disclosed`), never in the file, so a sender cannot mark a script as
 shown: the SHA-256 of the source shown, keyed by `prefs::disclosure_key` (the document's or kit's id
 and the script's). A changed source is shown again. The person's own scripts (library, unsaved)
-are not disclosed.
+are not disclosed, and neither is a document script's text the person typed in the editor or
+copied into the document. The form and the disclosure are modal: the keymap waits while they
+are up.
 
 **The header** is the run of `---` lines a script opens with: the first is its title, the rest its
 description, and each `---@input name type = default -- Label {lo..hi}` an input Mastik asks for in
@@ -265,7 +268,8 @@ and a *Run ‹name›* row per saved script. One floating, resizable window: a l
 search field; sections *This document*, *Library*, *Kit · ‹name›*, *Unsaved*; *New script* and the
 folder button at its foot), the script's head (its name, renamed in place, where it lives, find,
 the ⋯ menu and *Run*), the code pane and an output pane listing the last runs under timed rules,
-errors in the error ink. `Ctrl+Enter` runs and `Ctrl+F` finds. The ⋯ menu: *Save to library* ·
+errors in the error ink. `Ctrl+Enter` runs. `Ctrl+F`, from the code pane, opens find: Enter
+selects the next match, wrapping to the top, and `Ctrl+F` then Enter goes on from there. The ⋯ menu: *Save to library* ·
 *Copy into this document* · *Duplicate* · *Rename* · *Show in folder* · *Delete* (not on a kit's).
 The code pane is `ui::code_editor`, inked from `mastik_vm::tokens`: keywords `star()`, numbers
 `saved()`, strings `warn()`, comments `text::faint()`, Mastik's own names `accent_300()`.

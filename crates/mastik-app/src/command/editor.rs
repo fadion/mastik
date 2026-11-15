@@ -23,6 +23,9 @@ const START: egui::Vec2 = egui::vec2(1000.0, 620.0);
 const LIST_W: f32 = 240.0;
 /// The script head's height, over the code.
 const HEAD_H: f32 = 44.0;
+/// The rename field's width in the head: room for a long name beside the
+/// head's note, find and *Run*.
+const RENAME_W: f32 = 200.0;
 /// The output pane's height.
 const OUTPUT_H: f32 = 132.0;
 /// How long typing in a library script rests before it is written to its file.
@@ -100,14 +103,23 @@ pub(crate) struct Scripts {
     bad: Option<(Which, usize)>,
     /// Put the caret on this line (0-based) next frame.
     jump: Option<usize>,
+    /// Select this byte range of the buffer next frame: find's match.
+    found: Option<std::ops::Range<usize>>,
     /// The ⋯ menu is open.
     menu: bool,
     /// A rename in progress: the new name as typed.
     renaming: Option<String>,
     /// Find, while open: the text sought.
     find: Option<String>,
+    /// Where find's next search starts, in bytes: just past the last match.
+    find_from: usize,
     form: Option<Form>,
     disclosure: Option<Disclosure>,
+    /// A library script whose deletion is being confirmed, by name.
+    deleting: Option<String>,
+    /// Counts each new text put into the code pane, salting its id
+    /// ([`Scripts::code_id`]).
+    shown: u64,
     /// The values each script's form last ran with, for the session, by
     /// [`values_key`].
     last_values: rustc_hash::FxHashMap<String, serde_json::Map<String, Value>>,
@@ -129,8 +141,22 @@ enum Act {
     ShowInFolder,
 }
 
+impl Scripts {
+    /// Whether a modal card is up over the canvas: the run form, the disclosure
+    /// or a library delete's confirmation.
+    pub(crate) fn modal_up(&self) -> bool {
+        self.form.is_some() || self.disclosure.is_some() || self.deleting.is_some()
+    }
+
+    /// The code pane's widget id: a fresh one for each script shown, so the
+    /// text edit's own undo never brings one script's text into another.
+    fn code_id(&self) -> egui::Id {
+        egui::Id::new(("script-code-edit", self.shown))
+    }
+}
+
 impl MastikApp {
-    /// Tools ▸ *Scripts…*: open the editor, or bring it forward.
+    /// Tools ▸ *Scripts…*: open the editor.
     pub(crate) fn open_scripts(&mut self) {
         self.scripts.open = true;
         // Never from a headless app, whose prefs are a throwaway: it would write
@@ -237,6 +263,7 @@ impl MastikApp {
     fn pick_script(&mut self, which: Which) {
         self.flush_library_write();
         self.scripts.buffer = self.script_source(&which).unwrap_or_default();
+        self.scripts.shown += 1;
         self.scripts.current = Some(which);
         self.scripts.menu = false;
         self.scripts.renaming = None;
@@ -312,7 +339,7 @@ impl MastikApp {
     }
 
     /// Write the library script being typed in, if it is waiting.
-    fn flush_library_write(&mut self) {
+    pub(crate) fn flush_library_write(&mut self) {
         let Some(Which::Library(name)) = self.scripts.current.clone() else {
             self.scripts.pending = None;
             return;
@@ -341,6 +368,7 @@ impl MastikApp {
                 }]);
                 self.session.name_step("Edit script", icon::FILE_CODE);
                 self.session.commit_run(tx, "edit-script");
+                self.authored(&which);
             }
             Which::Library(_) => self.scripts.pending = Some(Instant::now()),
             Which::Unsaved(i) => {
@@ -519,6 +547,7 @@ impl MastikApp {
     pub(crate) fn scripts_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
         self.script_form_ui(ctx, canvas);
         self.disclosure_ui(ctx, canvas);
+        self.script_delete_confirmation(ctx);
         if !self.scripts.open {
             return;
         }
@@ -536,6 +565,7 @@ impl MastikApp {
             match self.session.doc.script(*id) {
                 Some(s) if s.source != self.scripts.buffer => {
                     self.scripts.buffer = s.source.clone();
+                    self.scripts.shown += 1;
                 }
                 Some(_) => {}
                 None => {
@@ -603,6 +633,7 @@ impl MastikApp {
                         let code_h = (ui.available_height() - OUTPUT_H - 1.0).max(80.0);
                         let bad = s.bad.as_ref().filter(|(w, _)| *w == which).map(|(_, l)| *l);
                         let editable = !matches!(which, Which::Kit { .. });
+                        let code_id = s.code_id();
                         egui::ScrollArea::both()
                             .id_salt("script-code")
                             .max_height(code_h)
@@ -612,7 +643,7 @@ impl MastikApp {
                                 ui.add_space(10.0);
                                 let out = ui::code_editor(
                                     ui,
-                                    egui::Id::new("script-code-edit"),
+                                    code_id,
                                     &mut s.buffer,
                                     &inks,
                                     bad,
@@ -624,6 +655,21 @@ impl MastikApp {
                                     let mut state = out.state.clone();
                                     state.cursor.set_char_range(Some(
                                         egui::text::CCursorRange::one(egui::text::CCursor::new(at)),
+                                    ));
+                                    state.store(ui.ctx(), out.response.id);
+                                    out.response.request_focus();
+                                }
+                                if let Some(r) = s.found.take()
+                                    && r.end <= s.buffer.len()
+                                    && s.buffer.is_char_boundary(r.start)
+                                    && s.buffer.is_char_boundary(r.end)
+                                {
+                                    let at = |b: usize| {
+                                        egui::text::CCursor::new(s.buffer[..b].chars().count())
+                                    };
+                                    let mut state = out.state.clone();
+                                    state.cursor.set_char_range(Some(
+                                        egui::text::CCursorRange::two(at(r.start), at(r.end)),
                                     ));
                                     state.store(ui.ctx(), out.response.id);
                                     out.response.request_focus();
@@ -776,12 +822,11 @@ impl MastikApp {
                         self.session
                             .commit(Transaction(vec![Operation::RemoveScript { id }]));
                     }
+                    // A file goes with no undo, so it asks first.
                     Which::Library(name) => {
-                        self.scripts.pending = None;
-                        if let Err(e) = library::delete(&name) {
-                            self.session.fail(format!("Couldn't delete {name}: {e}"));
-                        }
-                        self.scripts.library = library::list();
+                        self.flush_library_write();
+                        self.scripts.deleting = Some(name);
+                        return;
                     }
                     Which::Unsaved(i) => {
                         if i < self.scripts.unsaved.len() {
@@ -792,8 +837,54 @@ impl MastikApp {
                 }
                 self.scripts.current = None;
                 self.scripts.buffer.clear();
+                self.scripts.shown += 1;
             }
             Act::ShowInFolder => library::show_folder(),
+        }
+    }
+
+    /// *Delete script?* for a library script: its file goes for good, so *Cancel*
+    /// and *Delete*. `Escape`, the backdrop and the ✕ cancel.
+    fn script_delete_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(name) = self.scripts.deleting.clone() else {
+            return;
+        };
+        let body =
+            format!("“{name}” is deleted from the library folder for good. This cannot be undone.");
+        let (mut delete, mut cancel) = (false, false);
+        let modal = settings::card("confirm-script-delete", ctx, |ui| {
+            ui.set_width(ui::menu_inner_w(320.0, settings::PAD));
+            if settings::modal_title(ui, "Delete script?") {
+                cancel = true;
+            }
+            settings::title_gap(ui);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(body)
+                        .size(ui::CONTROL_PT)
+                        .color(theme::text::muted()),
+                )
+                .wrap(),
+            );
+            match settings::danger_footer(ui, "Delete") {
+                Some(settings::Decision::Save) => delete = true,
+                Some(settings::Decision::Cancel) => cancel = true,
+                None => {}
+            }
+        });
+        if delete {
+            self.scripts.deleting = None;
+            if let Err(e) = library::delete(&name) {
+                self.session.fail(format!("Couldn't delete {name}: {e}"));
+            }
+            self.scripts.library = library::list();
+            if self.scripts.current == Some(Which::Library(name)) {
+                self.scripts.current = None;
+                self.scripts.buffer.clear();
+                self.scripts.shown += 1;
+            }
+        } else if cancel || modal.should_close() {
+            self.scripts.deleting = None;
         }
     }
 
@@ -804,12 +895,27 @@ impl MastikApp {
         let index = self.session.doc.scripts().len();
         self.session
             .name_step("Copy script into document", icon::FILE_CODE);
-        self.session
+        let kept = source.clone();
+        let added = self
+            .session
             .commit(Transaction(vec![Operation::AddScript {
                 script: Script { id, name, source },
                 index,
             }]))
-            .then_some(id)
+            .then_some(id)?;
+        // The person put this text here, so it needs no disclosure.
+        if let Some(key) = self.disclosure_key(&Which::Document(added)) {
+            self.prefs.mark_disclosed(&key, &kept);
+        }
+        Some(added)
+    }
+
+    /// Record a document script's source as the person's own once they write in
+    /// it, so its run shows no disclosure. Saved with the next prefs save.
+    fn authored(&mut self, which: &Which) {
+        if let Some(key) = self.disclosure_key(which) {
+            self.prefs.mark_disclosed(&key, &self.scripts.buffer);
+        }
     }
 
     /// The run form, while open: a field per input, *Cancel* and *Run*.
@@ -912,7 +1018,9 @@ impl MastikApp {
                             .corner_radius(5)
                             .inner_margin(egui::Margin::symmetric(0, 10))
                             .show(ui, |ui| {
-                                egui::ScrollArea::vertical()
+                                // Both ways: a line past the box's edge must not
+                                // hide what the script does.
+                                egui::ScrollArea::both()
                                     .id_salt("disclosed-code")
                                     .max_height(DISCLOSE_CODE_H)
                                     .show(ui, |ui| {
@@ -1327,12 +1435,18 @@ fn script_head(
     );
     let ui = &mut child;
     ui.spacing_mut().item_spacing.x = 8.0;
+    let mut cancelled = false;
     match &mut s.renaming {
         Some(text) => {
-            let resp = ui::text_field(ui, egui::vec2(200.0, ui::CONTROL_H), text, "Name");
-            resp.request_focus();
+            let resp = ui::text_field(ui, egui::vec2(RENAME_W, ui::CONTROL_H), text, "Name");
             if resp.lost_focus() {
-                *act = Some(Act::Rename(text.clone()));
+                // Escape cancels, as a layer's or a page's rename does.
+                cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if !cancelled {
+                    *act = Some(Act::Rename(text.clone()));
+                }
+            } else {
+                resp.request_focus();
             }
         }
         None => {
@@ -1344,10 +1458,13 @@ fn script_head(
                 )
                 .sense(egui::Sense::click()),
             );
-            if resp.double_clicked() && !matches!(which, Which::Kit { .. }) {
+            if ui::double_clicked(ui, &resp) && !matches!(which, Which::Kit { .. }) {
                 *act = Some(Act::StartRename);
             }
         }
+    }
+    if cancelled {
+        s.renaming = None;
     }
     let note = match edited {
         true => format!("{where_} · edited"),
@@ -1440,9 +1557,20 @@ fn script_head(
             }
         }
     });
+    let find_field = egui::Id::new("script-find-field");
+    // Only from inside the editor: on the canvas, Ctrl+F is the app's own Find.
+    let in_editor = ui
+        .ctx()
+        .memory(|m| m.has_focus(s.code_id()) || m.has_focus(find_field));
+    if in_editor
+        && ui
+            .ctx()
+            .input(|i| i.modifiers.command && i.key_pressed(egui::Key::F))
+    {
+        s.find = Some(s.find.take().unwrap_or_default());
+        ui.ctx().memory_mut(|m| m.request_focus(find_field));
+    }
     if let Some(find) = &mut s.find {
-        let (row, _) = ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
-        let _ = row;
         let area = egui::Area::new(egui::Id::new("script-find"))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.right_bottom() + egui::vec2(-280.0, 6.0));
@@ -1454,28 +1582,40 @@ fn script_head(
                     egui::vec2(260.0, ui::CONTROL_H),
                     find,
                     "Find in script",
-                    egui::Id::new("script-find-field"),
+                    find_field,
                 );
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     close = true;
                 }
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let needle = find.clone();
-                    if let Some(at) = s.buffer.find(&needle).filter(|_| !needle.is_empty()) {
-                        s.jump = Some(s.buffer[..at].matches('\n').count());
+                // Enter selects the next match after the last, wrapping to the
+                // top; Ctrl+F then Enter again goes on from there.
+                if resp.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    && !find.is_empty()
+                {
+                    let from = if s.buffer.is_char_boundary(s.find_from) {
+                        s.find_from
+                    } else {
+                        0
+                    };
+                    let at = s.buffer[from..]
+                        .find(find.as_str())
+                        .map(|i| from + i)
+                        .or_else(|| s.buffer.find(find.as_str()));
+                    match at {
+                        Some(at) => {
+                            s.find_from = at + find.len();
+                            s.found = Some(at..at + find.len());
+                        }
+                        None => s.find_from = 0,
                     }
                 }
             });
         });
         if close {
             s.find = None;
+            s.find_from = 0;
         }
-    }
-    if ui
-        .ctx()
-        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::F))
-    {
-        s.find = Some(s.find.take().unwrap_or_default());
     }
 }
 
@@ -1651,9 +1791,20 @@ mod tests {
             ..app.session.doc.meta().clone()
         };
         app.session.doc.set_meta(meta);
-        let script = app
-            .add_document_script("Nudge", source.to_owned())
-            .expect("fixture: the script was added");
+        // Committed directly, as a file would bring it: *Copy into this
+        // document* would mark it as the person's own.
+        let script = app.session.ids.mint_script();
+        assert!(
+            app.session.commit(Transaction(vec![Operation::AddScript {
+                script: Script {
+                    id: script,
+                    name: "Nudge".into(),
+                    source: source.to_owned(),
+                },
+                index: 0,
+            }])),
+            "fixture: the script was added"
+        );
         (app, card, script)
     }
 
@@ -1718,6 +1869,37 @@ mod tests {
             app.scripts.disclosure.is_some(),
             "a changed text is shown again"
         );
+    }
+
+    /// The disclosure is modal: a key meant for the canvas does not reach it.
+    /// flip: `modal_is_up` leaving out `Scripts::modal_up` → fails at "the
+    /// layer stays".
+    #[test]
+    fn the_disclosure_holds_the_keymap() {
+        use crate::command::tests::{key, pass};
+        let (mut app, card, script) = with_script("sel.x += 5", Some("doc-a"));
+        app.start_script_run(Which::Document(script));
+        assert!(app.scripts.disclosure.is_some(), "fixture: the box is up");
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let none = egui::Modifiers::NONE;
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(&ctx, &mut app, vec![key(egui::Key::Delete, none)], none);
+        assert!(app.session.doc.get(card).is_some(), "the layer stays");
+        assert!(app.scripts.disclosure.is_some(), "the box is still up");
+    }
+
+    /// Text the person typed into a document's script is theirs: its run needs
+    /// no disclosure.
+    /// flip: `store_buffer` not calling `authored` → fails at "typed here".
+    #[test]
+    fn a_script_typed_here_is_not_disclosed() {
+        let (mut app, _, script) = with_script("sel.x += 5", Some("doc-a"));
+        app.pick_script(Which::Document(script));
+        app.scripts.buffer = "sel.x += 7".into();
+        app.store_buffer();
+        app.start_script_run(Which::Document(script));
+        assert!(app.scripts.disclosure.is_none(), "typed here");
     }
 
     /// A document with no identity has no key to remember a disclosure under, so

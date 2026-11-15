@@ -161,7 +161,9 @@ impl MastikApp {
                 s: &mut self.session,
                 read_only: true,
             };
-            return match mastik_vm::eval_read(&mut h, &env, line) {
+            // Enter runs a read under the run budget, through the read-only host:
+            // the live read's budget is for every keystroke, not for Enter.
+            return match mastik_vm::run_line(&mut h, &env, line).map(|o| o.value) {
                 Ok(value) => {
                     if let Some(v) = &value {
                         ctx.copy_text(v.clone());
@@ -358,9 +360,12 @@ impl MastikApp {
                 bar.caret_to = Some(bar.text.len());
             }
             if keys.tab
-                && let Some((_, e)) = &bar.error
+                && let Some((said, e)) = &bar.error
+                && *said == bar.text
                 && let Some((r, fix)) = e.fix.clone()
                 && r.end <= bar.text.len()
+                && bar.text.is_char_boundary(r.start)
+                && bar.text.is_char_boundary(r.end)
             {
                 bar.text.replace_range(r.clone(), &fix);
                 bar.caret_to = Some(r.start + fix.len());
@@ -369,12 +374,26 @@ impl MastikApp {
         }
         if keys.enter {
             let line = bar.text.trim().to_owned();
+            // The error's spans count from the trimmed line; the field holds the
+            // spaces before it.
+            let lead = bar.text.len() - bar.text.trim_start().len();
             if !line.is_empty() {
                 match self.run_bar_line(ctx, &line) {
                     None => {
                         bar = Bar::default();
                     }
-                    Some(e) => bar.error = Some((bar.text.clone(), e)),
+                    Some(mut e) => {
+                        let shift = |r: &mut std::ops::Range<usize>| {
+                            *r = r.start + lead..r.end + lead;
+                        };
+                        if let Some(span) = e.span.as_mut() {
+                            shift(span);
+                        }
+                        if let Some((r, _)) = e.fix.as_mut() {
+                            shift(r);
+                        }
+                        bar.error = Some((bar.text.clone(), e));
+                    }
                 }
                 ctx.request_repaint();
             }
@@ -768,6 +787,8 @@ fn field(
     if let Some(span) = error.and_then(|e| e.span.clone())
         && span.end <= bar.text.len()
         && span.start < span.end
+        && bar.text.is_char_boundary(span.start)
+        && bar.text.is_char_boundary(span.end)
     {
         let x = |b: usize| {
             let c = bar.text[..b].chars().count();
@@ -1011,7 +1032,11 @@ fn lit_mono(
     let lit = egui::TextFormat::simple(font, hit);
     let mut at = 0;
     for r in hits {
-        if r.start < at || r.end > text.len() {
+        if r.start < at
+            || r.end > text.len()
+            || !text.is_char_boundary(r.start)
+            || !text.is_char_boundary(r.end)
+        {
             continue;
         }
         job.append(&text[at..r.start], 0.0, plain.clone());
@@ -1191,6 +1216,23 @@ pub(crate) mod tests {
             app.command_bar.as_ref().unwrap().text,
             ".width = 20",
             "Tab fixes it"
+        );
+    }
+
+    /// An error's fix lands on the right word when the line starts with spaces,
+    /// which the run trims.
+    /// flip: Enter storing the error without shifting its spans → fails at
+    /// "past the spaces".
+    #[test]
+    fn a_fix_lands_past_leading_spaces() {
+        let (ctx, mut app, _) = typed("  .widht = 20");
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        pass(&ctx, &mut app, vec![key(egui::Key::Tab, NONE)], NONE);
+        assert_eq!(
+            app.command_bar.as_ref().unwrap().text,
+            "  .width = 20",
+            "past the spaces"
         );
     }
 

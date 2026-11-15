@@ -2332,7 +2332,11 @@ pub fn code_editor(
         };
         let mut at = 0;
         for (r, ink) in inks(s) {
-            if r.start < at || r.end > s.len() || !s.is_char_boundary(r.start) {
+            if r.start < at
+                || r.end > s.len()
+                || !s.is_char_boundary(r.start)
+                || !s.is_char_boundary(r.end)
+            {
                 continue;
             }
             job.append(&s[at..r.start], 0.0, fmt(color::text()));
@@ -2369,7 +2373,7 @@ pub fn code_editor(
         if starts {
             let y = out.galley_pos.y + row.rect().center().y;
             let ink = match bad == Some(line) {
-                true => color::danger(),
+                true => color::error(),
                 false => theme::text::faint(),
             };
             p.text(
