@@ -875,27 +875,15 @@ impl MastikApp {
             }
         }
 
-        // Dock at the foot unless the selection reaches into that band.
+        // Docked at the foot always: a card that jumps away from the selection
+        // pulls the eye with it, and the canvas under it pans to reveal.
         let list_h = list_height(&list, self.session.command_log.entries().len());
         let height = list_h + HEAD_H + 1.0 + FIELD_H + 1.0 + FOOTER_H;
-        let ppp = ctx.pixels_per_point();
-        let band = egui::Rect::from_min_max(
-            egui::pos2(canvas.center().x - W / 2.0, canvas.bottom() - DOCK - height),
-            egui::pos2(canvas.center().x + W / 2.0, canvas.bottom()),
-        );
-        let covers = self.selection_bounds().is_some_and(|b| {
-            let a = self.to_screen(mastik_core::kurbo::Point::new(b.x0, b.y0), canvas, ppp);
-            let z = self.to_screen(mastik_core::kurbo::Point::new(b.x1, b.y1), canvas, ppp);
-            egui::Rect::from_two_pos(a, z).intersects(band)
-        });
         // Placed from the height worked out above rather than anchored: an anchor
         // reads last frame's size, so a growing list would push the foot down a
         // frame before it settled. The list is drawn into exactly that height.
         let outer = egui::vec2(W, height) + crate::settings::card_frame().total_margin().sum();
-        let top = match covers {
-            false => canvas.bottom() - DOCK - outer.y,
-            true => canvas.top() + DOCK,
-        };
+        let top = canvas.bottom() - DOCK - outer.y;
         // A plain area, not a modal: the canvas under it stays live, and only the
         // card takes the pointer. Not constrained: egui keeps an area on screen by
         // last frame's size, so a list that just shrank would shove the card up a

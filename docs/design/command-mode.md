@@ -362,8 +362,8 @@ everything a layer wears, not a `RenderOverrides` overlay.
 
 `:` opens it on Type (`Key::Colon`, shifted or not) from the editor whenever no text entry has the
 keyboard, closing the palette and any menu; it needs no mode of its own. It is a sibling of the
-palette's card: 640 wide, docked 24 above the canvas's foot, or 24 below its top when the selection
-reaches into that band. **It is a plain foreground `egui::Area`, not a modal**: the canvas under it
+palette's card: 640 wide, docked 24 above the canvas's foot always — it never jumps away from
+the selection, which pulls the eye; the canvas pans to reveal what it covers. **It is a plain foreground `egui::Area`, not a modal**: the canvas under it
 pans, zooms, hovers and selects, and a click there never moves the keys or closes the bar, so the
 mouse moves and points while the keys name and run. It is placed from the height it works out that
 frame, not anchored, since an anchor reads last frame's size and a growing list would push the foot
