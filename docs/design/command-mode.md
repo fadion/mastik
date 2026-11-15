@@ -272,14 +272,25 @@ marked.
 and a *Run ‹name›* row per saved script. One floating, resizable window that leaves the canvas
 live, hung as the canvas cards are (centred on the card lane, `ui::CANVAS_POPUP_TOP` under the
 canvas's top) and movable by its head: a list on the left (a
-search field; sections *This document*, *Library*, *Kit · ‹name›*, *Unsaved*; *New script* and the
-folder button at its foot), the script's head (its name, renamed in place, where it lives, find,
-the ⋯ menu and *Run*), the code pane and an output pane listing the last runs under timed rules,
-errors in the error ink. The list's rows are list rows (`MENU_ROW_H`, `ui::list_row_ground`) in the
-palette's row layout; with no script open the pane is a `ui::empty_state`. The body is laid out in
-fixed rects, so the window keeps the size it is given. `Ctrl+Enter` runs. `Ctrl+F`, from the code pane, opens find: Enter
-selects the next match, wrapping to the top, and `Ctrl+F` then Enter goes on from there. The ⋯ menu: *Save to library* ·
-*Copy into this document* · *Duplicate* · *Rename* · *Show in folder* · *Delete* (not on a kit's).
+`ui::search_box`; sections *This document*, *Library*, *Kit · ‹name›*, *Unsaved*; *+ New script*,
+a `ui::action_button`, and the folder button at its foot), the script's head (its name, where it
+lives, the find and ⋯ toggles and *Run*), the code pane and an output pane listing the last runs
+under timed rules, errors in the error ink. The list's rows are list rows (`MENU_ROW_H`,
+`ui::list_row_ground`) in the palette's row layout; with no script open the pane is a
+`ui::empty_state`. The body is laid out in fixed rects, so the window keeps the size it is given.
+`Ctrl+Enter` runs. The loupe in the head toggles find (`FieldButton::On` while it is open), as
+`Ctrl+F` from the code pane opens it: Enter selects the next match, wrapping to the top, and
+`Ctrl+F` then Enter goes on from there. The ⋯ menu, opened by the ⋯ (on while it is open) or by a
+right-click on a list row, which opens that script first (`context-menus.md` §6.10): *Save to
+library* · *Copy into this document* · *Duplicate*, a rule, *Rename* · *Show in folder* · *Delete*,
+each left out where it can never apply. **Save to library moves an unsaved script** into the
+library, open with its code focused, and leaves a document's or a kit's script where it is, copied.
+**Rename types over the list row** (`ui::label_edit`, as a page's or a layer's): from the menu, a
+double-click on the open script's row or `F2`/`Ctrl+R` on it; `Enter` and a press elsewhere keep
+the typed name, `Escape` the old one. **The window holds the keyboard** from a press on it, or its
+opening, until a press elsewhere (`Scripts::holds_keys`): the canvas takes no key meanwhile, only
+undo, redo and save passing as past a focused button (`input::passing_keys`), and while the menu is
+open it holds the keys as a context menu does, `Escape` closing it.
 The code pane is `ui::code_editor`, inked from `mastik_vm::tokens` in `theme::code`'s syntax inks:
 keywords, literals (numbers, `true`, `false`, `nil`), strings, the permitted standard library
 (`math`, `ipairs`, and a listed member after `math.`, `string.` or `table.`, from `run::LIBRARY`),

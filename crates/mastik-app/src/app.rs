@@ -2352,6 +2352,10 @@ impl MastikApp {
         } else if self.modal_is_up() {
             // A modal owns every key; `input::resolve` is no second guard, since a modal
             // of buttons does not make egui want the keyboard.
+        } else if self.scripts.holds_keys() {
+            // The Scripts window, pressed on last, keeps the keys from the canvas;
+            // its open menu holds them as a context menu does.
+            self.scripts_keys(&ctx);
         } else if popover_heard
             && self.a_popover_owns_escape()
             && ctx.input(|i| i.key_pressed(egui::Key::Escape))

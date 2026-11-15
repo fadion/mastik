@@ -30,9 +30,6 @@ const HEAD_INSET: f32 = 14.0;
 const FIND_W: f32 = 260.0;
 /// The output pane's head.
 const OUTPUT_HEAD_H: f32 = 30.0;
-/// The rename field's width in the head: room for a long name beside the
-/// head's note, find and *Run*.
-const RENAME_W: f32 = 200.0;
 /// The output pane's height until its edge is dragged. It drags down to its
 /// head alone, whose eyebrow then has the same air under it as over it.
 const OUTPUT_H: f32 = 132.0;
@@ -117,16 +114,27 @@ pub(crate) struct Scripts {
     bad: Option<(Which, usize)>,
     /// Put the caret on this line (0-based) next frame.
     jump: Option<usize>,
+    /// Give the code pane the keyboard next frame, the caret where it was.
+    focus_code: bool,
     /// Select this byte range of the buffer next frame: find's match.
     found: Option<std::ops::Range<usize>>,
-    /// The ⋯ menu is open.
-    menu: bool,
-    /// A rename in progress: the new name as typed.
+    /// The open script's menu, while open.
+    menu: Option<Menu>,
+    /// The menu's key this frame (`↑`/`↓`, `Enter`), read by the app's key
+    /// routing while the menu holds the keyboard.
+    pub(crate) menu_nav: Option<crate::menu::Nav>,
+    /// The window holds the keyboard: the last press landed on it, or it was
+    /// just opened. The canvas takes no keys meanwhile.
+    keys: bool,
+    /// A rename in progress, over the open script's list row: the new name as
+    /// typed.
     renaming: Option<String>,
     /// Find, while open: the text sought.
     find: Option<String>,
     /// Where find's next search starts, in bytes: just past the last match.
     find_from: usize,
+    /// Give find's field the keyboard once it can take it.
+    find_focus: bool,
     form: Option<Form>,
     disclosure: Option<Disclosure>,
     /// A library script whose deletion is being confirmed, by name.
@@ -160,10 +168,29 @@ struct Offer {
     layers: Vec<Option<mastik_core::NodeId>>,
 }
 
+/// The script menu: the ⋯ button's, or a list row's right-click's.
+struct Menu {
+    at: MenuAt,
+    /// The row the keys have lit, by its place among the menu's rows.
+    highlight: Option<usize>,
+}
+
+/// Where the script menu hangs.
+#[derive(Clone, Copy)]
+enum MenuAt {
+    /// Under the head's ⋯ button, whose rect it is.
+    Button(egui::Rect),
+    /// At a list row's right-click.
+    Press(egui::Pos2),
+}
+
 /// What the window asked for this frame.
+#[derive(Clone, PartialEq, Debug)]
 enum Act {
     Close,
     Pick(Which),
+    /// A list row's right-click: open that script, and its menu at the press.
+    RowMenu(Which, egui::Pos2),
     New,
     Run,
     OpenFolder,
@@ -183,6 +210,23 @@ impl Scripts {
         self.form.is_some() || self.disclosure.is_some() || self.deleting.is_some()
     }
 
+    /// Whether the window holds the keyboard, so the canvas takes no keys:
+    /// while its menu is open, and after a press on it until a press elsewhere.
+    pub(crate) fn holds_keys(&self) -> bool {
+        self.open && (self.keys || self.menu.is_some())
+    }
+
+    /// Whether the menu is open, holding the keyboard as a context menu does.
+    pub(crate) fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// `Escape` while the window holds the keyboard: it closes the menu, and
+    /// otherwise goes no further than the window's own controls.
+    pub(crate) fn escape_menu(&mut self) {
+        self.menu = None;
+    }
+
     /// The code pane's widget id: a fresh one for each script shown, so the
     /// text edit's own undo never brings one script's text into another.
     fn code_id(&self) -> egui::Id {
@@ -191,9 +235,34 @@ impl Scripts {
 }
 
 impl MastikApp {
-    /// Tools ▸ *Scripts…*: open the editor.
+    /// The keys while the Scripts window holds the keyboard
+    /// ([`Scripts::holds_keys`]): its menu's, as a context menu's, and past any
+    /// control that is no text entry the undo, redo and save chords, as past a
+    /// focused button; nothing reaches the canvas.
+    pub(crate) fn scripts_keys(&mut self, ctx: &egui::Context) {
+        if self.scripts.menu_open() {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.scripts.escape_menu();
+            } else {
+                self.scripts.menu_nav = crate::menu::read_nav(ctx);
+            }
+            return;
+        }
+        let typing = ctx
+            .memory(|m| m.focused())
+            .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
+        if typing {
+            return;
+        }
+        for action in crate::input::passing_keys(ctx, self.prefs.nudge) {
+            self.dispatch(ctx, action);
+        }
+    }
+
+    /// Tools ▸ *Scripts…*: open the editor, holding the keyboard.
     pub(crate) fn open_scripts(&mut self) {
         self.scripts.open = true;
+        self.scripts.keys = true;
         // Never from a headless app, whose prefs are a throwaway: it would write
         // into this machine's real scripts folder.
         if !self.prefs.ephemeral
@@ -343,7 +412,7 @@ impl MastikApp {
         self.scripts.buffer = self.script_source(&which).unwrap_or_default();
         self.scripts.shown += 1;
         self.scripts.current = Some(which);
-        self.scripts.menu = false;
+        self.scripts.menu = None;
         self.scripts.renaming = None;
     }
 
@@ -814,6 +883,8 @@ impl MastikApp {
         self.disclosure_ui(ctx, canvas);
         self.script_delete_confirmation(ctx);
         if !self.scripts.open {
+            self.scripts.keys = false;
+            self.scripts.menu = None;
             return;
         }
         if self
@@ -909,7 +980,7 @@ impl MastikApp {
                 return;
             };
             let name = header.clone().map(|h| h.0).unwrap_or_default();
-            script_head(ui, s, &which, &name, where_, edited_note, &mut act);
+            script_head(ui, s, &name, where_, edited_note, &mut act);
             ui::card_rule(ui);
             // The code and the output share what the head leaves, less the rule
             // between them; the output keeps at least its head.
@@ -951,6 +1022,9 @@ impl MastikApp {
                     {
                         put_selection(ui.ctx(), code_id, &s.buffer, sel);
                         ui.ctx().request_repaint();
+                    }
+                    if std::mem::take(&mut s.focus_code) {
+                        out.response.request_focus();
                     }
                     if let Some(line) = s.jump.take() {
                         let at = char_of_line(&s.buffer, line);
@@ -1030,6 +1104,28 @@ impl MastikApp {
                 s.output_h = Some((output_h - edge.drag_delta().y).clamp(OUTPUT_HEAD_H, max));
             }
         });
+        if let Some(which) = &current
+            && let Some(chosen) = script_menu(ctx, &mut self.scripts, which)
+        {
+            act = Some(chosen);
+        }
+        // A press on the window or one of its popups gives it the keyboard; a
+        // press anywhere else gives the keyboard back to the canvas.
+        let pressed = ctx.input(|i| {
+            i.pointer
+                .any_pressed()
+                .then(|| i.pointer.press_origin())
+                .flatten()
+        });
+        if let Some(at) = pressed {
+            let ours = [
+                id,
+                egui::Id::new(MENU_ID),
+                egui::Id::new(FIND_ID),
+                id.with("suggest"),
+            ];
+            self.scripts.keys = ctx.layer_id_at(at).is_some_and(|l| ours.contains(&l.id));
+        }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
             && self.scripts.current.is_some()
             && act.is_none()
@@ -1059,6 +1155,15 @@ impl MastikApp {
                 self.scripts.open = false;
             }
             Act::Pick(w) => self.pick_script(w),
+            Act::RowMenu(w, at) => {
+                if current.as_ref() != Some(&w) {
+                    self.pick_script(w);
+                }
+                self.scripts.menu = Some(Menu {
+                    at: MenuAt::Press(at),
+                    highlight: None,
+                });
+            }
             Act::New => self.add_unsaved(String::new()),
             Act::Run => {
                 if let Some(w) = current {
@@ -1076,7 +1181,18 @@ impl MastikApp {
                     Ok(()) => {
                         self.scripts.library = library::list();
                         self.session.info(format!("Saved {name} to the library"));
-                        self.pick_script(Which::Library(name));
+                        let saved = Which::Library(name);
+                        // An unsaved script is saved by this, so it leaves the
+                        // list, its form's values going with it; a document's or
+                        // a kit's stays where it is, copied.
+                        if let Which::Unsaved(serial) = w {
+                            self.scripts.unsaved.retain(|u| u.serial != serial);
+                            if let Some(values) = self.scripts.last_values.remove(&values_key(&w)) {
+                                self.scripts.last_values.insert(values_key(&saved), values);
+                            }
+                        }
+                        self.pick_script(saved);
+                        self.scripts.focus_code = true;
                     }
                     Err(e) => self.session.fail(format!("Couldn't save {name}: {e}")),
                 }
@@ -1120,7 +1236,8 @@ impl MastikApp {
                 self.scripts.renaming = None;
                 let new = new.trim().to_owned();
                 let Some(w) = current else { return };
-                if new.is_empty() {
+                // An empty or unchanged name keeps the old one, as a layer's does.
+                if new.is_empty() || self.script_named(&w).is_some_and(|(old, _)| old == new) {
                     return;
                 }
                 match w {
@@ -1445,8 +1562,20 @@ mod library {
     pub(crate) use crate::scripts::library::LibraryScript;
     use crate::scripts::library::{Library, ScriptError};
 
+    #[cfg(test)]
+    thread_local! {
+        /// Under test, the folder this thread's editor keeps its library in;
+        /// none until a test sets it, and never this machine's real folder.
+        pub(crate) static TEST_DIR: std::cell::RefCell<Option<std::path::PathBuf>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
     fn open() -> Result<Library, ScriptError> {
-        Library::open().ok_or_else(|| ScriptError::Missing("the scripts folder".into()))
+        #[cfg(test)]
+        let lib = TEST_DIR.with(|d| d.borrow().clone()).map(Library::new);
+        #[cfg(not(test))]
+        let lib = Library::open();
+        lib.ok_or_else(|| ScriptError::Missing("the scripts folder".into()))
     }
 
     pub(crate) fn list() -> Vec<LibraryScript> {
@@ -1661,7 +1790,7 @@ fn source_list(
                 ui,
                 egui::vec2(w, ui::CONTROL_H),
                 &mut s.search,
-                "Find a script",
+                "Search scripts",
                 egui::Id::new("script-search"),
             );
             ui.add_space(6.0);
@@ -1747,7 +1876,27 @@ fn source_list(
                         crate::palette::section_label(ui, &title);
                         for (which, name, note, glyph) in items {
                             let lit = s.current.as_ref() == Some(&which);
-                            if list_row(ui, glyph, &name, &note, lit).clicked() {
+                            let renaming = lit && s.renaming.is_some();
+                            let shown = if renaming { "" } else { name.as_str() };
+                            let resp = list_row(ui, glyph, shown, &note, lit);
+                            if renaming {
+                                row_rename(ui, s, resp.rect, act);
+                                continue;
+                            }
+                            let kit = matches!(which, Which::Kit { .. });
+                            // A double-click or the rename keys rename, as a
+                            // layers row does; a right-click opens the
+                            // script's menu at the press.
+                            // The first click of the double picked the row.
+                            if lit
+                                && !kit
+                                && (ui::double_clicked(ui, &resp) || ui::rename_key(ui, &resp))
+                            {
+                                s.renaming = Some(name.clone());
+                            } else if resp.secondary_clicked() {
+                                let at = resp.interact_pointer_pos().unwrap_or(resp.rect.center());
+                                *act = Some(Act::RowMenu(which, at));
+                            } else if resp.clicked() {
                                 *act = Some(Act::Pick(which));
                             }
                         }
@@ -1757,11 +1906,12 @@ fn source_list(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 let new_w = ui.available_width() - ui::CONTROL_H - 6.0;
-                if ui::label_button(
+                if ui::action_button(
                     ui,
+                    icon::PLUS,
                     "New script",
-                    egui::vec2(new_w, ui::CONTROL_H),
                     FieldButton::Off,
+                    egui::vec2(new_w, ui::CONTROL_H),
                 )
                 .clicked()
                 {
@@ -1779,6 +1929,54 @@ fn source_list(
 
 /// One row of the source list: the script, its name, its note and its source's glyph.
 type ListRow = (Which, String, String, &'static str);
+
+/// The rename field over the open script's list row `row`, where its name was
+/// drawn, as a page's: the name selected on its first frame, `Enter` and a
+/// press elsewhere keeping the typed name, `Escape` the old one.
+fn row_rename(ui: &mut egui::Ui, s: &mut Scripts, row: egui::Rect, act: &mut Option<Act>) {
+    let Some(text) = s.renaming.as_mut() else {
+        return;
+    };
+    let id = egui::Id::new("script-rename");
+    let field = egui::Rect::from_min_max(
+        egui::pos2(
+            row.left() + crate::palette::ROW_LABEL_X - ui::INLINE_EDIT_PAD_X,
+            row.top() + 3.0,
+        ),
+        egui::pos2(row.right() - 6.0, row.bottom() - 3.0),
+    );
+    // In a child, so the field's placing leaves the rows below where they are.
+    let mut child = ui.new_child(egui::UiBuilder::new().id(id.with("ui")).max_rect(field));
+    let first = ui::widget_rect(ui.ctx(), id).is_none();
+    let resp = ui::label_edit(&mut child, field, text, id);
+    if first {
+        resp.request_focus();
+        let all = egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(text.chars().count()),
+        );
+        let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        state.cursor.set_char_range(Some(all));
+        state.store(ui.ctx(), id);
+    }
+    let pressed_elsewhere = resp.has_focus()
+        && ui.input(|i| i.pointer.any_pressed())
+        && ui
+            .ctx()
+            .pointer_interact_pos()
+            .is_none_or(|p| !field.contains(p));
+    if pressed_elsewhere {
+        ui.ctx().memory_mut(|m| m.surrender_focus(id));
+        *act = Some(Act::Rename(text.clone()));
+    } else if resp.lost_focus() {
+        // Read before anything else: once focus is gone, only the key says
+        // which of the two it was.
+        match ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            true => s.renaming = None,
+            false => *act = Some(Act::Rename(text.clone())),
+        }
+    }
+}
 
 /// `4 inputs` for a script whose header declares some; empty otherwise.
 fn inputs_note(source: &str) -> String {
@@ -1831,12 +2029,11 @@ fn empty_pane(ui: &mut egui::Ui, act: &mut Option<Act>) {
     );
 }
 
-/// The script's head: its name (or the rename field), where it lives, find,
-/// the ⋯ menu and *Run*.
+/// The script's head: its name, where it lives, the ⋯ menu's and find's
+/// toggles, and *Run*; and find's field under it while open.
 fn script_head(
     ui: &mut egui::Ui,
     s: &mut Scripts,
-    which: &Which,
     name: &str,
     where_: &str,
     edited: bool,
@@ -1853,37 +2050,11 @@ fn script_head(
     );
     let ui = &mut child;
     ui.spacing_mut().item_spacing.x = 8.0;
-    let mut cancelled = false;
-    match &mut s.renaming {
-        Some(text) => {
-            let resp = ui::text_field(ui, egui::vec2(RENAME_W, ui::CONTROL_H), text, "Name");
-            if resp.lost_focus() {
-                // Escape cancels, as a layer's or a page's rename does.
-                cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                if !cancelled {
-                    *act = Some(Act::Rename(text.clone()));
-                }
-            } else {
-                resp.request_focus();
-            }
-        }
-        None => {
-            let resp = ui.add(
-                egui::Label::new(
-                    egui::RichText::new(name)
-                        .size(ui::HEAD_PT)
-                        .color(color::text()),
-                )
-                .sense(egui::Sense::click()),
-            );
-            if ui::double_clicked(ui, &resp) && !matches!(which, Which::Kit { .. }) {
-                *act = Some(Act::StartRename);
-            }
-        }
-    }
-    if cancelled {
-        s.renaming = None;
-    }
+    ui.label(
+        egui::RichText::new(name)
+            .size(ui::HEAD_PT)
+            .color(color::text()),
+    );
     let note = match edited {
         true => format!("{where_} · edited"),
         false => where_.to_owned(),
@@ -1901,83 +2072,43 @@ fn script_head(
         {
             *act = Some(Act::Run);
         }
+        // The ⋯ and the loupe are toggles, on while their menu or field is up,
+        // as a card head's ⋯ and the inspector's disclosure buttons are.
         let menu = ui::field_button(
             ui,
             icon::DOTS_THREE,
             ui::CONTROL_H,
-            match s.menu {
-                true => FieldButton::On,
-                false => FieldButton::Off,
-            },
-        );
+            FieldButton::on_if(s.menu.is_some()),
+        )
+        .on_hover_text("More");
         if menu.clicked() {
-            s.menu = !s.menu;
+            s.menu = match s.menu {
+                Some(_) => None,
+                None => Some(Menu {
+                    at: MenuAt::Button(menu.rect),
+                    highlight: None,
+                }),
+            };
         }
-        if ui::field_button(ui, icon::MAGNIFYING_GLASS, ui::CONTROL_H, FieldButton::Off)
-            .on_hover_text(crate::input::keys("Find · Ctrl+F"))
-            .clicked()
+        if ui::field_button(
+            ui,
+            icon::MAGNIFYING_GLASS,
+            ui::CONTROL_H,
+            FieldButton::on_if(s.find.is_some()),
+        )
+        .on_hover_text(crate::input::keys("Find · Ctrl+F"))
+        .clicked()
         {
-            s.find = Some(s.find.take().unwrap_or_default());
-        }
-        if s.menu {
-            let size = egui::vec2(crate::menu::MENU_W, ui::menu_height(6, 0));
-            let at = ui::dropdown_place(ui.ctx(), menu.rect, size, ui::MENU_GAP);
-            let mut chosen = None;
-            let resp = egui::Area::new(egui::Id::new("script-menu"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(at)
-                .show(ui.ctx(), |ui| {
-                    ui::menu_frame(ui::MENU_PAD).show(ui, |ui| {
-                        ui.set_width(ui::menu_inner_w(crate::menu::MENU_W, ui::MENU_PAD));
-                        ui::popup_rows(ui);
-                        let h = ui::MENU_ROW_H;
-                        let kit = matches!(which, Which::Kit { .. });
-                        let rows: [(&str, &str, Act, bool); 6] = [
-                            (
-                                icon::FOLDER_SIMPLE,
-                                "Save to library",
-                                Act::SaveToLibrary,
-                                !matches!(which, Which::Library(_)),
-                            ),
-                            (
-                                icon::FILE,
-                                "Copy into this document",
-                                Act::CopyToDocument,
-                                !matches!(which, Which::Document(_)),
-                            ),
-                            (icon::COPY, "Duplicate", Act::Duplicate, true),
-                            (icon::PENCIL_SIMPLE, "Rename", Act::StartRename, !kit),
-                            (
-                                icon::FOLDER_OPEN,
-                                "Show in folder",
-                                Act::ShowInFolder,
-                                matches!(which, Which::Library(_)),
-                            ),
-                            (icon::TRASH, "Delete", Act::Delete, !kit),
-                        ];
-                        for (glyph, label, a, live) in rows {
-                            let r = ui::disable_unless(ui, live, |ui| {
-                                ui::menu_item(ui, glyph, label, h)
-                            })
-                            .inner;
-                            if r.clicked() && live {
-                                chosen = Some(a);
-                            }
-                        }
-                    });
-                });
-            if chosen.is_some() {
-                s.menu = false;
-                *act = chosen;
-            } else if ui.ctx().input(|i| i.pointer.any_pressed())
-                && !resp.response.contains_pointer()
-                && !menu.contains_pointer()
-            {
-                s.menu = false;
+            match s.find {
+                Some(_) => close_find(s),
+                None => {
+                    s.find = Some(String::new());
+                    s.find_focus = true;
+                }
             }
         }
     });
-    let find_field = egui::Id::new("script-find-field");
+    let find_field = egui::Id::new(FIND_FIELD);
     // Only from inside the editor: on the canvas, Ctrl+F is the app's own Find.
     let in_editor = ui
         .ctx()
@@ -1988,7 +2119,7 @@ fn script_head(
             .input(|i| i.modifiers.command && i.key_pressed(egui::Key::F))
     {
         s.find = Some(s.find.take().unwrap_or_default());
-        ui.ctx().memory_mut(|m| m.request_focus(find_field));
+        s.find_focus = true;
     }
     if let Some(find) = &mut s.find {
         // Under the head's right end, kept on screen as a menu is.
@@ -1997,7 +2128,7 @@ fn script_head(
             ui::CONTROL_H + 2.0 * (ui::MENU_PAD + ui::MENU_BORDER),
         );
         let at = rect.right_bottom() + egui::vec2(-HEAD_INSET - size.x, ui::MENU_GAP);
-        let area = egui::Area::new(egui::Id::new("script-find"))
+        let area = egui::Area::new(egui::Id::new(FIND_ID))
             .order(egui::Order::Foreground)
             .fixed_pos(ui::menu_place(ui.ctx(), at, size));
         let mut close = false;
@@ -2010,6 +2141,14 @@ fn script_head(
                     "Find in script",
                     find_field,
                 );
+                // Asked until it holds: a new area's first frame only sizes
+                // itself, and a field there cannot take the keyboard.
+                if s.find_focus {
+                    match resp.has_focus() {
+                        true => s.find_focus = false,
+                        false => resp.request_focus(),
+                    }
+                }
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     close = true;
                 }
@@ -2039,10 +2178,121 @@ fn script_head(
             });
         });
         if close {
-            s.find = None;
-            s.find_from = 0;
+            close_find(s);
         }
     }
+}
+
+/// Find's area and its field.
+const FIND_ID: &str = "script-find";
+const FIND_FIELD: &str = "script-find-field";
+/// The script menu's area.
+const MENU_ID: &str = "script-menu";
+
+/// Close find, its next search starting from the top again.
+fn close_find(s: &mut Scripts) {
+    s.find = None;
+    s.find_from = 0;
+    s.find_focus = false;
+}
+
+/// One row of the script menu: what it does, its glyph and its label.
+type MenuItem = (Act, &'static str, &'static str);
+
+/// The script menu's rows for `which`, as groups a rule apart: the copies,
+/// then the script's own file and name. A row that can never apply to where
+/// the script lives is left out, as a context menu leaves it
+/// (`docs/context-menus.md`): a kit's script is read-only and has no file.
+fn menu_rows(which: &Which) -> Vec<Vec<MenuItem>> {
+    let (library, document, kit) = (
+        matches!(which, Which::Library(_)),
+        matches!(which, Which::Document(_)),
+        matches!(which, Which::Kit { .. }),
+    );
+    let copies = [
+        (!library).then_some((Act::SaveToLibrary, icon::FOLDER_SIMPLE, "Save to library")),
+        (!document).then_some((Act::CopyToDocument, icon::FILE, "Copy into this document")),
+        Some((Act::Duplicate, icon::COPY_SIMPLE, "Duplicate")),
+    ];
+    let own = [
+        (!kit).then_some((Act::StartRename, icon::CURSOR_TEXT, "Rename")),
+        library.then_some((Act::ShowInFolder, icon::FOLDER_OPEN, "Show in folder")),
+        (!kit).then_some((Act::Delete, icon::TRASH, "Delete")),
+    ];
+    [copies, own]
+        .into_iter()
+        .map(|g| g.into_iter().flatten().collect::<Vec<_>>())
+        .filter(|g| !g.is_empty())
+        .collect()
+}
+
+/// The script menu, while open, for the open script `which`: under the ⋯ or
+/// at a row's right-click, drawn with the context menus' rows and keys
+/// (`docs/context-menus.md` §8). A choice, `Enter` on the lit row, or a press
+/// outside it and its ⋯ closes it. Answers the choice.
+fn script_menu(ctx: &egui::Context, s: &mut Scripts, which: &Which) -> Option<Act> {
+    use crate::menu::{Nav, navigate_index, pointer_moved};
+    let menu = s.menu.as_mut()?;
+    let groups = menu_rows(which);
+    let rows: Vec<&MenuItem> = groups.iter().flatten().collect();
+    let mut chosen = None;
+    // The keys, as the tab menu's: an arrow moves the highlight, `Enter` runs
+    // it, a pointer move hands it back to the pointer.
+    match s.menu_nav.take() {
+        Some(Nav::Move(step)) => {
+            menu.highlight = navigate_index(rows.len(), menu.highlight, step);
+        }
+        Some(Nav::Activate) => {
+            chosen = menu
+                .highlight
+                .and_then(|i| rows.get(i))
+                .map(|r| r.0.clone())
+        }
+        Some(Nav::Open | Nav::Back) => {}
+        None if pointer_moved(ctx) => menu.highlight = None,
+        None => {}
+    }
+    let size = egui::vec2(
+        crate::menu::MENU_W,
+        ui::menu_height(rows.len(), groups.len() - 1),
+    );
+    let (pos, button) = match menu.at {
+        MenuAt::Button(r) => (ui::dropdown_place(ctx, r, size, ui::MENU_GAP), Some(r)),
+        MenuAt::Press(at) => (ui::menu_place(ctx, at, size), None),
+    };
+    let highlight = menu.highlight;
+    let area = egui::Area::new(egui::Id::new(MENU_ID))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            ui::menu_frame(ui::MENU_PAD).show(ui, |ui| {
+                ui.set_width(ui::menu_inner_w(crate::menu::MENU_W, ui::MENU_PAD));
+                ui.spacing_mut().item_spacing.y = 1.0;
+                let mut i = 0;
+                for (g, group) in groups.iter().enumerate() {
+                    if g > 0 {
+                        ui::menu_sep(ui);
+                    }
+                    for (a, glyph, label) in group {
+                        let mut row = ui::MenuRow::new(glyph, label).danger(*a == Act::Delete);
+                        if let Some(hl) = highlight {
+                            row = row.highlight(i == hl);
+                        }
+                        if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                            chosen = Some(a.clone());
+                        }
+                        i += 1;
+                    }
+                }
+            });
+        });
+    let outside = ctx.input(|i| i.pointer.any_pressed())
+        && !area.response.contains_pointer()
+        && !button.is_some_and(|r| ctx.pointer_interact_pos().is_some_and(|p| r.contains(p)));
+    if chosen.is_some() || outside {
+        s.menu = None;
+    }
+    chosen
 }
 
 /// The output pane, `h` tall with its head: each run under a rule with its
@@ -2723,5 +2973,339 @@ mod tests {
             app.session.status().text,
             "Nudge failed at line 3 — nothing changed"
         );
+    }
+
+    /// One frame of the app with `events`, answering what it painted.
+    fn painted(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::epaint::ClippedShape> {
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1320.0, 820.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame))
+            .shapes
+    }
+
+    /// Every shape in `shapes`, nested ones too.
+    fn flat(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::Shape> {
+        fn walk(s: &egui::Shape, out: &mut Vec<egui::Shape>) {
+            match s {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                s => out.push(s.clone()),
+            }
+        }
+        let mut out = Vec::new();
+        shapes.iter().for_each(|c| walk(&c.shape, &mut out));
+        out
+    }
+
+    /// Where the editor's head paints `glyph`, its right-most inside the window.
+    fn head_glyph(ctx: &egui::Context, app: &mut MastikApp, glyph: &str) -> egui::Pos2 {
+        let window = ctx
+            .memory(|m| m.area_rect(egui::Id::new("script-editor")))
+            .expect("fixture: the editor is drawn");
+        flat(&painted(ctx, app, Vec::new()))
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::Text(t) if t.galley.text() == glyph => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()).center())
+                }
+                _ => None,
+            })
+            .filter(|p| window.contains(*p))
+            .max_by(|a, b| a.x.total_cmp(&b.x))
+            .unwrap_or_else(|| panic!("fixture: {glyph:?} is in the head"))
+    }
+
+    /// Whether a button's ground under `at` wears the accent wash of
+    /// `FieldButton::On`, at rest or hovered.
+    fn lit_at(ctx: &egui::Context, app: &mut MastikApp, at: egui::Pos2) -> bool {
+        // The card's translucency premultiplies the fill, so it is compared
+        // with its alpha taken out.
+        let opaque = |c: egui::Color32| {
+            let a = c.a().max(1) as f32 / 255.0;
+            [c.r(), c.g(), c.b()].map(|v| v as f32 / a)
+        };
+        let near = |a: egui::Color32, b: egui::Color32| {
+            let (a, b) = (opaque(a), opaque(b));
+            (0..3).all(|i| (a[i] - b[i]).abs() < 3.0)
+        };
+        let on = [color::accent_900(), color::accent_800()];
+        flat(&painted(ctx, app, Vec::new())).iter().any(|s| {
+            matches!(s, egui::Shape::Rect(r) if r.rect.contains(at)
+                && r.rect.width() <= ui::CONTROL_H + 1.0
+                && r.fill.a() > 0
+                && on.iter().any(|c| near(*c, r.fill)))
+        })
+    }
+
+    /// The head's loupe opens find with the keyboard in its field and wears the
+    /// accent while find is open; a second click closes it.
+    /// flip: `script_head`'s loupe giving `FieldButton::Off` → fails at "the
+    /// loupe wears the accent"; its click only ever opening → fails at "a
+    /// second click closes it".
+    #[test]
+    fn the_loupe_toggles_find_and_wears_the_accent_while_open() {
+        let (ctx, mut app) = open_on("print(1)");
+        let loupe = head_glyph(&ctx, &mut app, icon::MAGNIFYING_GLASS);
+        assert!(!lit_at(&ctx, &mut app, loupe), "fixture: off at rest");
+        click_at(&ctx, &mut app, loupe);
+        assert!(app.scripts.find.is_some(), "a click opens find");
+        assert!(
+            ctx.memory(|m| m.has_focus(egui::Id::new(FIND_FIELD))),
+            "with the keyboard in its field"
+        );
+        assert!(lit_at(&ctx, &mut app, loupe), "the loupe wears the accent");
+        click_at(&ctx, &mut app, loupe);
+        assert!(app.scripts.find.is_none(), "a second click closes it");
+        assert!(!lit_at(&ctx, &mut app, loupe), "and the accent goes");
+    }
+
+    /// The ⋯ menu wears the accent while open, and `Escape` closes it without
+    /// reaching the canvas, whose selection stays.
+    /// flip: the key routing without its `holds_keys` branch → fails at
+    /// "Escape closed the menu".
+    #[test]
+    fn escape_closes_the_menu_and_not_the_selection() {
+        let (ctx, mut app) = open_on("print(1)");
+        let selected = app.session.selection.ids().to_vec();
+        assert_eq!(selected.len(), 1, "fixture: a layer is selected");
+        let dots = head_glyph(&ctx, &mut app, icon::DOTS_THREE);
+        click_at(&ctx, &mut app, dots);
+        assert!(app.scripts.menu_open(), "fixture: the menu is open");
+        assert!(lit_at(&ctx, &mut app, dots), "the ⋯ wears the accent");
+        press(&ctx, &mut app, egui::Key::Escape);
+        assert!(!app.scripts.menu_open(), "Escape closed the menu");
+        assert_eq!(
+            app.session.selection.ids(),
+            &selected[..],
+            "the selection stays"
+        );
+    }
+
+    /// After a press on the window the canvas takes no keys: `Delete` leaves
+    /// the selected layer, and `Ctrl+Z` still reaches the document. A press
+    /// outside the window gives the keys back.
+    /// flip: the key routing without its `holds_keys` branch → fails at "the
+    /// layer stays".
+    #[test]
+    fn the_window_keeps_the_keys_from_the_canvas_after_a_press_on_it() {
+        use crate::command::tests::key;
+        let (ctx, mut app) = open_on("print(1)");
+        let card = app.session.selection.ids()[0];
+        let window = ctx
+            .memory(|m| m.area_rect(egui::Id::new("script-editor")))
+            .unwrap();
+        // The output pane's air: a press there takes no focus.
+        click_at(
+            &ctx,
+            &mut app,
+            window.left_bottom() + egui::vec2(400.0, -20.0),
+        );
+        assert!(
+            ctx.memory(|m| m.focused()).is_none(),
+            "fixture: nothing has the focus"
+        );
+        assert!(app.scripts.holds_keys(), "the window holds the keys");
+        press(&ctx, &mut app, egui::Key::Delete);
+        assert!(app.session.doc.get(card).is_some(), "the layer stays");
+        let depth = app.session.history.undo_depth();
+        app.session.selection.clear();
+        let ctrl = egui::Modifiers::COMMAND;
+        crate::command::tests::pass(&ctx, &mut app, vec![key(egui::Key::Z, ctrl)], ctrl);
+        assert!(
+            app.session.history.undo_depth() < depth,
+            "Ctrl+Z still undoes"
+        );
+        let outside = egui::pos2(window.left() + 20.0, window.bottom() + 20.0);
+        assert!(
+            ctx.layer_id_at(outside)
+                .is_none_or(|l| l.id != egui::Id::new("script-editor")),
+            "fixture: the press lands outside"
+        );
+        click_at(&ctx, &mut app, outside);
+        assert!(!app.scripts.holds_keys(), "a press outside gives them back");
+    }
+
+    /// Points the editor's library at a fresh scratch folder for this thread.
+    fn scratch_library(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mastik-editor-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        library::TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
+        dir
+    }
+
+    /// *Save to library* on an unsaved script moves it: the library holds it,
+    /// open and with the keyboard in its code, and the unsaved row is gone. A
+    /// document's script stays in the document, copied.
+    /// flip: `scripts_act` not dropping the unsaved script → fails at "the
+    /// unsaved row is gone".
+    #[test]
+    fn saving_an_unsaved_script_to_the_library_moves_it() {
+        let dir = scratch_library("save");
+        let (ctx, mut app) = open_on("print(1)");
+        app.add_unsaved("print(2)".into());
+        assert_eq!(app.scripts.unsaved.len(), 1, "fixture: one unsaved");
+        app.scripts_act(Some(Act::SaveToLibrary));
+        let saved = Which::Library("Untitled 1".into());
+        assert_eq!(app.scripts.current, Some(saved.clone()), "it is open");
+        assert!(app.scripts.unsaved.is_empty(), "the unsaved row is gone");
+        assert_eq!(app.script_source(&saved).as_deref(), Some("print(2)"));
+        crate::command::tests::pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        assert!(
+            ctx.memory(|m| m.has_focus(app.scripts.code_id())),
+            "with the keyboard in its code"
+        );
+        let doc = Which::Document(app.session.doc.scripts()[0].id);
+        app.pick_script(doc.clone());
+        app.scripts_act(Some(Act::SaveToLibrary));
+        assert_eq!(
+            app.session.doc.scripts().len(),
+            1,
+            "the document's script stays"
+        );
+        assert_eq!(app.scripts.library.len(), 2, "and the library has its copy");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A right-click on a list row opens that script and its menu at the
+    /// press, with the ⋯ menu's rows; a row there acts on that script.
+    /// flip: `source_list` not answering `secondary_clicked` → fails at "the
+    /// menu opens".
+    #[test]
+    fn a_right_click_on_a_row_opens_its_menu() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = open_on("print(1)");
+        app.add_unsaved(String::new());
+        let unsaved = app.scripts.current.clone().unwrap();
+        let doc = Which::Document(app.session.doc.scripts()[0].id);
+        app.pick_script(unsaved);
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        let row = flat(&painted(&ctx, &mut app, Vec::new()))
+            .iter()
+            .find_map(|s| match s {
+                egui::Shape::Text(t) if t.galley.text() == "Nudge" => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()).center())
+                }
+                _ => None,
+            })
+            .expect("fixture: the document's row is drawn");
+        let none = egui::Modifiers::NONE;
+        let button = |pressed| egui::Event::PointerButton {
+            pos: row,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: none,
+        };
+        pass(&ctx, &mut app, vec![egui::Event::PointerMoved(row)], none);
+        pass(&ctx, &mut app, vec![button(true)], none);
+        pass(&ctx, &mut app, vec![button(false)], none);
+        pass(&ctx, &mut app, Vec::new(), none);
+        assert!(app.scripts.menu_open(), "the menu opens");
+        assert_eq!(app.scripts.current, Some(doc.clone()), "on that script");
+        let menu = ctx
+            .memory(|m| m.area_rect(egui::Id::new(MENU_ID)))
+            .expect("the menu is drawn");
+        assert!(
+            menu.left() - row.x < 2.0 && menu.top() - row.y < 2.0,
+            "at the press: {menu:?} for {row:?}"
+        );
+        let labels: Vec<String> = flat(&painted(&ctx, &mut app, Vec::new()))
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::Text(t) if menu.contains(t.pos) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        for (_, _, label) in menu_rows(&doc).into_iter().flatten() {
+            assert!(labels.iter().any(|l| l == label), "{label:?} in {labels:?}");
+        }
+    }
+
+    /// The script menu leaves out what can never apply: a kit's script has no
+    /// rename, file or delete, a library script no *Save to library*.
+    #[test]
+    fn the_menu_rows_follow_where_the_script_lives() {
+        let labels = |w: &Which| -> Vec<&str> {
+            menu_rows(w)
+                .into_iter()
+                .flatten()
+                .map(|(_, _, l)| l)
+                .collect()
+        };
+        let kit = Which::Kit {
+            kit: "k".into(),
+            kit_name: "Kit".into(),
+            id: ScriptId(mastik_core::NodeId { actor: 1, seq: 1 }),
+        };
+        assert_eq!(
+            labels(&kit),
+            ["Save to library", "Copy into this document", "Duplicate"]
+        );
+        assert_eq!(
+            labels(&Which::Library("a".into())),
+            [
+                "Copy into this document",
+                "Duplicate",
+                "Rename",
+                "Show in folder",
+                "Delete"
+            ]
+        );
+    }
+
+    /// Rename puts a field over the open script's list row, where its name
+    /// was, holding the name; `Enter` keeps what was typed, and `Escape` the
+    /// old name.
+    /// flip: `row_rename` committing on `Escape` → fails at "Escape keeps the
+    /// old name".
+    #[test]
+    fn rename_types_over_the_list_row() {
+        use crate::command::tests::pass;
+        let none = egui::Modifiers::NONE;
+        let (ctx, mut app) = open_on("print(1)");
+        let id = app.session.doc.scripts()[0].id;
+        app.scripts_act(Some(Act::StartRename));
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(&ctx, &mut app, Vec::new(), none);
+        let field = egui::Id::new("script-rename");
+        assert!(
+            ctx.memory(|m| m.has_focus(field)),
+            "the field has the keyboard"
+        );
+        let rect = ui::widget_rect(&ctx, field)
+            .expect("the field is drawn")
+            .rect;
+        let window = ctx
+            .memory(|m| m.area_rect(egui::Id::new("script-editor")))
+            .unwrap();
+        assert!(
+            rect.right() < window.left() + LIST_W,
+            "on the list's row: {rect:?}"
+        );
+        // Typed over the selected name.
+        pass(&ctx, &mut app, vec![egui::Event::Text("Grid".into())], none);
+        press(&ctx, &mut app, egui::Key::Enter);
+        assert_eq!(app.session.doc.script(id).unwrap().name, "Grid");
+        assert!(app.scripts.renaming.is_none(), "the field is gone");
+        app.scripts_act(Some(Act::StartRename));
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(&ctx, &mut app, vec![egui::Event::Text("Rows".into())], none);
+        press(&ctx, &mut app, egui::Key::Escape);
+        assert_eq!(
+            app.session.doc.script(id).unwrap().name,
+            "Grid",
+            "Escape keeps the old name"
+        );
+        assert!(app.scripts.renaming.is_none(), "the field is gone");
     }
 }

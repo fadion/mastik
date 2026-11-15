@@ -1225,9 +1225,7 @@ pub fn resolve(ctx: &egui::Context, mode: Mode, nudge: NudgeStep) -> Vec<Action>
         if text {
             return Vec::new();
         }
-        let mut out = normal_mode(ctx, nudge);
-        out.retain(|a| matches!(a, Action::Undo | Action::Redo | Action::Save));
-        return out;
+        return passing_keys(ctx, nudge);
     }
     match mode {
         // Insert mode is near exclusive: the canvas text editor owns every bare
@@ -1238,6 +1236,15 @@ pub fn resolve(ctx: &egui::Context, mode: Mode, nudge: NudgeStep) -> Vec<Action>
         Mode::Normal => normal_mode(ctx, nudge),
         Mode::Navigate => navigate_mode(ctx),
     }
+}
+
+/// The keys that pass a control holding the keyboard that is no text entry (a
+/// focused button or layers row, the Scripts window): undo, redo and save,
+/// which still reach the document.
+pub fn passing_keys(ctx: &egui::Context, nudge: NudgeStep) -> Vec<Action> {
+    let mut out = normal_mode(ctx, nudge);
+    out.retain(|a| matches!(a, Action::Undo | Action::Redo | Action::Save));
+    out
 }
 
 /// Pick's keymap: its own table rows and the history chords, and nothing the

@@ -2,7 +2,8 @@
 
 The menus as built, with the conditions that shape them. A peer of `shortcuts.md`. The code is
 `crates/mastik-app/src/menu.rs` (registry, builders), `canvas::canvas_context_menu`,
-`panels/layers.rs` and `pages.rs` (the doors), and `panels/binding.rs` (the inspector field menu, §6.7).
+`panels/layers.rs` and `pages.rs` (the doors), `panels/binding.rs` (the inspector field menu, §6.7)
+and `command/editor.rs` (the script menu, §6.10).
 
 **One registry, two doors.** Every row is an `Item` whose label, glyph, accelerator and group live
 once in `Item::spec`, the accelerator spelled from the row's chord in `input::BINDINGS` (by hand
@@ -24,8 +25,8 @@ variable*).
   press that cancelled spends the click, so no menu opens. An armed eyedropper counts as a gesture:
   the click disarms it and opens no menu, on the canvas or off it. The menu opens at the press position.
 - **R2** — A menu is claimed per region: the canvas, a layers row, the layers panel's background,
-  a row of the Pages section (§6.8), an inspector field (§6.7), a document's tab (§6.9), and a
-  library file card or list row (its ⋮ file menu, at the press; `library.md`). Widgets that already use the secondary button keep it (gradient
+  a row of the Pages section (§6.8), an inspector field (§6.7), a document's tab (§6.9), a
+  script's row in the Scripts window (§6.10), and a library file card or list row (its ⋮ file menu, at the press; `library.md`). Widgets that already use the secondary button keep it (gradient
   stop bar and the edited gradient's canvas handles, ruler).
 - **R3** — An open menu is `Escape`'s first rung, above focus mode: one press closes only the
   menu, or only its open submenu. While open the menu holds the keyboard (`input::resolve` does not run). The same
@@ -444,6 +445,28 @@ before the strip, with `library_keys_are_free` false while it is open. Both read
 live rows). The library's ⋮ menu, opened by the dots or a right-click, and its project dropdown
 answer the same keys (`dashboard::MenuKeys`, read in `dashboard_keys`). Opening it closes the editor's context menu, the library's ⋮ menu and
 project dropdown, and the caret's list.
+
+### 6.10 A script row (the script menu)
+
+A separate `Area` (`command::editor::script_menu`), the same menu the script head's ⋯ opens under
+it (`menu_rows` builds both), opened by a right-click on a row of the Scripts window's list, at the
+press. The right-click opens that script first, as a layers row's selects its layer (C2). Drawn
+with §8's row and frame functions, `MENU_W` wide. A row that can never apply to where the script
+lives is absent.
+
+| Row | Shown |
+|---|---|
+| Save to library | not on a library script. An unsaved script moves into the library; a document's or a kit's is copied |
+| Copy into this document | not on a document script |
+| Duplicate | always |
+| *—* | |
+| Rename | not on a kit's script; types over the row (`design/command-mode.md` §10) |
+| Show in folder | a library script only |
+| Delete | not on a kit's script; destructive styling. A library script's file asks first (*Delete script?*) |
+
+It closes on a choice and on a press outside it or its ⋯. It holds the keyboard: the editor's key
+routing has a branch for the Scripts window (`Scripts::holds_keys`), where `Escape` closes only the
+menu and §8's keys walk and run its rows (`read_nav` into `Scripts::menu_nav`).
 
 ---
 

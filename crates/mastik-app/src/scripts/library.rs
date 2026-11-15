@@ -67,6 +67,13 @@ impl Library {
     }
 
     /// The library in the real folder.
+    #[cfg_attr(
+        test,
+        expect(
+            dead_code,
+            reason = "under test the editor keeps its library in a scratch folder"
+        )
+    )]
     pub fn open() -> Option<Self> {
         folder().map(Self::new)
     }
