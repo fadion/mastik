@@ -2848,8 +2848,8 @@ use mastik_core::kurbo::Point;
 use mastik_core::{Operation, Transaction};
 
 /// The card's painted width, border included; `crate::ui::menu_inner_w` takes the
-/// border and padding back off for the rows.
-const MENU_W: f32 = 210.0;
+/// border and padding back off for the rows. The command log's menu wears it too.
+pub(crate) const MENU_W: f32 = 210.0;
 /// The row height, shared with the View menu.
 const ROW_H: f32 = crate::ui::MENU_ROW_H;
 /// One separator as `ui::menu_sep` allocates it; agreeing with it keeps [`height`] exact.

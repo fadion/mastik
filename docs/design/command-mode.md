@@ -338,7 +338,11 @@ stay bound as handles for the bar and scripts until the next `f`.
 the keyboard, closing the palette and any menu; it needs no mode of its own. It is a sibling of the
 palette's card: 640 wide, docked 24 above the canvas's foot, or 24 below its top when the selection
 reaches into that band. It is placed from the height it works out that frame, not anchored, since
-an anchor reads last frame's size and a growing list would push the foot down a frame early.
+an anchor reads last frame's size and a growing list would push the foot down a frame early; the
+list is drawn into exactly that height, and the area is not constrained to the screen, since egui
+constrains by last frame's size and would shove the card up on the frame its list shrinks. Its
+rows, section labels and footer are the palette's (`app-chrome.md`, *Shared rules*): a row's name
+is never cut for its note.
 
 - **The field**: monospace at the palette field's size (`HEAD_PT`), a `:` prompt in the accent, a
   read's live value (`= 20`) at the right edge.

@@ -9,26 +9,27 @@ pub(crate) mod host;
 pub(crate) mod log;
 
 use crate::app::MastikApp;
+use crate::palette::{
+    self, FIELD_H, FOOTER_H, FooterLine, PAD, ROW_GAP, ROW_GLYPH_X, ROW_H, ROW_LABEL_X, SECTION_H,
+};
 use crate::theme::{self, color, icon};
 use eframe::egui;
 use mastik_core::NodeId;
-use std::ops::Range;
 
 /// The card's width.
 const W: f32 = 640.0;
 /// Between the card and the canvas edge it docks to.
 const DOCK: f32 = 24.0;
-const FIELD_H: f32 = 42.0;
-const ROW_H: f32 = 30.0;
-const SECTION_H: f32 = 24.0;
-/// The list's inset inside the card, as the palette's.
-const PAD: f32 = 6.0;
 /// The most completion rows the list shows.
 const LIST_ROWS: usize = 8;
 /// The log lines the list shows while the field is empty.
 const LOG_ROWS: usize = 6;
-/// Where the field's text starts: after the prompt glyph.
-const TEXT_X: f32 = PAD + 8.0 + 16.0 + 10.0;
+/// Where the field's text starts: in the rows' label column.
+const TEXT_X: f32 = PAD + ROW_LABEL_X;
+/// Between a read's value and the field's right edge.
+const VALUE_INSET: f32 = 14.0;
+/// Between the line and a read's value.
+const VALUE_GAP: f32 = 10.0;
 
 /// The open bar.
 #[derive(Default)]
@@ -459,7 +460,8 @@ impl MastikApp {
         }
 
         // Dock at the foot unless the selection reaches into that band.
-        let height = card_height(&list, self.session.command_log.entries().len());
+        let list_h = list_height(&list, self.session.command_log.entries().len());
+        let height = list_h + FIELD_H + 1.0 + FOOTER_H;
         let ppp = ctx.pixels_per_point();
         let band = egui::Rect::from_min_max(
             egui::pos2(canvas.center().x - W / 2.0, canvas.bottom() - DOCK - height),
@@ -472,19 +474,21 @@ impl MastikApp {
         });
         // Placed from the height worked out above rather than anchored: an anchor
         // reads last frame's size, so a growing list would push the foot down a
-        // frame before it settled.
+        // frame before it settled. The list is drawn into exactly that height.
         let outer = egui::vec2(W, height) + crate::settings::card_frame().total_margin().sum();
         let top = match covers {
             false => canvas.bottom() - DOCK - outer.y,
             true => canvas.top() + DOCK,
         };
         // `Modal::default_area` less its centring anchor, which would win over
-        // the place.
+        // the place. Not constrained: egui keeps an area on screen by last
+        // frame's size, so a list that just shrank would shove the card up a frame.
         let area = egui::Area::new(egui::Id::new("command-bar"))
             .kind(egui::UiKind::Modal)
             .sense(egui::Sense::hover())
             .order(egui::Order::Foreground)
             .interactable(true)
+            .constrain(false)
             .fixed_pos(egui::pos2(canvas.center().x - outer.x / 2.0, top));
 
         let subject = self.bar_subject();
@@ -509,8 +513,8 @@ impl MastikApp {
                     List::None => {}
                     List::Log => {
                         let first = entries.len().saturating_sub(LOG_ROWS);
-                        list_frame(ui, |ui| {
-                            crate::palette::section_label(ui, "Log");
+                        list_frame(ui, list_h, |ui| {
+                            palette::section_label(ui, "Log");
                             for (i, e) in entries.iter().enumerate().skip(first) {
                                 let picked = bar
                                     .picked
@@ -527,14 +531,13 @@ impl MastikApp {
                                 }
                             }
                         });
-                        crate::ui::card_rule(ui);
                     }
                     List::Complete(c) => {
-                        list_frame(ui, |ui| {
+                        list_frame(ui, list_h, |ui| {
                             let mut section = None;
                             for (i, row) in c.rows.iter().take(LIST_ROWS).enumerate() {
                                 if section != Some(row.section) {
-                                    crate::palette::section_label(ui, section_title(row.section));
+                                    palette::section_label(ui, section_title(row.section));
                                     section = Some(row.section);
                                 }
                                 let layer = row_layers
@@ -547,7 +550,6 @@ impl MastikApp {
                                 }
                             }
                         });
-                        crate::ui::card_rule(ui);
                     }
                 }
                 let error = bar.error.as_ref().map(|(_, e)| e.clone());
@@ -648,11 +650,16 @@ impl MastikApp {
             n => format!("Copy {n} lines as script"),
         };
         let mut out = LogMenu::Open;
+        let size = egui::vec2(crate::menu::MENU_W, crate::ui::menu_height(2, 0));
         let resp = egui::Area::new(egui::Id::new("command-log-menu"))
             .order(egui::Order::Foreground)
-            .fixed_pos(at)
+            .fixed_pos(crate::ui::menu_place(ctx, at, size))
             .show(ctx, |ui| {
                 crate::ui::menu_frame(crate::ui::MENU_PAD).show(ui, |ui| {
+                    ui.set_width(crate::ui::menu_inner_w(
+                        crate::menu::MENU_W,
+                        crate::ui::MENU_PAD,
+                    ));
                     crate::ui::popup_rows(ui);
                     let h = crate::ui::MENU_ROW_H;
                     if crate::ui::menu_item(ui, icon::COPY, &copy, h).clicked() {
@@ -743,13 +750,12 @@ fn char_to_byte(s: &str, i: usize) -> usize {
     s.char_indices().nth(i).map_or(s.len(), |(b, _)| b)
 }
 
-/// The card's height for `list`, which the dock reads before it draws.
-fn card_height(list: &List, log_len: usize) -> f32 {
-    let rule = 1.0;
-    let base = FIELD_H + rule + palette_footer_h();
-    let list_h = match list {
-        List::None => 0.0,
-        List::Log => 2.0 * PAD + SECTION_H + log_len.min(LOG_ROWS) as f32 * (ROW_H + 1.0) + rule,
+/// The list's height above the field for `list`, its rule under it included,
+/// which the dock reads before the card draws.
+fn list_height(list: &List, log_len: usize) -> f32 {
+    let (sections, rows) = match list {
+        List::None => return 0.0,
+        List::Log => (1, log_len.min(LOG_ROWS)),
         List::Complete(c) => {
             let rows = c.rows.len().min(LIST_ROWS);
             let mut sections = 0;
@@ -760,25 +766,27 @@ fn card_height(list: &List, log_len: usize) -> f32 {
                     last = Some(row.section);
                 }
             }
-            2.0 * PAD + sections as f32 * SECTION_H + rows as f32 * (ROW_H + 1.0) + rule
+            (sections, rows)
         }
     };
-    base + list_h
+    let gaps = (sections + rows).saturating_sub(1);
+    let rule = 1.0;
+    2.0 * PAD + sections as f32 * SECTION_H + rows as f32 * ROW_H + gaps as f32 * ROW_GAP + rule
 }
 
-/// The palette's footer height, which the bar shares.
-fn palette_footer_h() -> f32 {
-    crate::palette::FOOTER_H
-}
-
-/// The list's inset frame.
-fn list_frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::NONE
-        .inner_margin(egui::Margin::same(PAD as i8))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 1.0;
-            add(ui);
-        });
+/// The list in its inset, drawn into exactly `h` (from [`list_height`]) with
+/// the rule under it, so a miscount can clip a row but never move the card.
+fn list_frame(ui: &mut egui::Ui, h: f32, add: impl FnOnce(&mut egui::Ui)) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, h - 1.0), egui::Sense::hover());
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink(PAD))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    child.spacing_mut().item_spacing.y = ROW_GAP;
+    add(&mut child);
+    crate::ui::card_rule(ui);
 }
 
 /// The monospace face at the palette field's size.
@@ -797,7 +805,7 @@ fn field(
     let (rect, _) = ui.allocate_exact_size(egui::vec2(W, FIELD_H), egui::Sense::empty());
     let p = ui.painter().clone();
     p.text(
-        egui::pos2(rect.left() + PAD + 8.0 + 8.0, rect.center().y),
+        egui::pos2(rect.left() + PAD + ROW_GLYPH_X, rect.center().y),
         egui::Align2::CENTER_CENTER,
         ":",
         mono(),
@@ -807,15 +815,18 @@ fn field(
         let g = p.layout_no_wrap(format!("= {v}"), mono(), theme::text::dim());
         let w = g.size().x;
         p.galley(
-            egui::pos2(rect.right() - 14.0 - w, rect.center().y - g.size().y / 2.0),
+            egui::pos2(
+                rect.right() - VALUE_INSET - w,
+                rect.center().y - g.size().y / 2.0,
+            ),
             g,
             theme::text::dim(),
         );
-        w + 24.0
+        w + VALUE_GAP
     });
     let text_rect = egui::Rect::from_min_max(
         egui::pos2(rect.left() + TEXT_X, rect.top()),
-        egui::pos2(rect.right() - 14.0 - value_w, rect.bottom()),
+        egui::pos2(rect.right() - VALUE_INSET - value_w, rect.bottom()),
     );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -874,88 +885,38 @@ fn field(
 
 /// A caption in the footer's place: the error, and *Tab fixes it* when it can.
 fn error_line(ui: &mut egui::Ui, e: &mastik_vm::VmError) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, palette_footer_h()), egui::Sense::empty());
-    let p = ui.painter();
-    let font = egui::FontId::proportional(crate::ui::CAPTION_PT);
-    let y = rect.center().y - 1.0;
-    p.text(
-        egui::pos2(rect.left() + 14.0 + 7.0, y),
-        egui::Align2::CENTER_CENTER,
-        icon::WARNING,
-        theme::icon_font(13.0),
-        color::error(),
+    palette::footer_line(
+        ui,
+        FooterLine {
+            glyph: Some((icon::WARNING, color::error())),
+            left: (&e.message, palette::caption_font(), color::error()),
+            right: e
+                .fix
+                .is_some()
+                .then_some(("Tab fixes it", theme::text::faint())),
+        },
     );
-    let mut right = rect.right() - 14.0;
-    if e.fix.is_some() {
-        let g = p.layout_no_wrap("Tab fixes it".into(), font.clone(), theme::text::faint());
-        right -= g.size().x;
-        p.galley(
-            egui::pos2(right, y - g.size().y / 2.0),
-            g,
-            theme::text::faint(),
-        );
-        right -= 16.0;
-    }
-    let left = rect.left() + 14.0 + 14.0 + 8.0;
-    let mut job = egui::text::LayoutJob::single_section(
-        e.message.clone(),
-        egui::TextFormat::simple(font, color::error()),
-    );
-    job.wrap = egui::text::TextWrapping {
-        max_width: (right - left).max(0.0),
-        max_rows: 1,
-        break_anywhere: true,
-        overflow_character: Some('…'),
-    };
-    let g = p.layout_job(job);
-    p.galley(egui::pos2(left, y - g.size().y / 2.0), g, color::error());
 }
 
 /// The footer: the Luau on the left, the subject or the read's note on the right.
 fn footer(ui: &mut egui::Ui, left: &str, right: &str) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, palette_footer_h()), egui::Sense::empty());
-    let p = ui.painter();
-    let y = rect.center().y - 1.0;
-    let font = egui::FontId::proportional(crate::ui::CAPTION_PT);
-    let right_g = p.layout_no_wrap(right.to_owned(), font.clone(), theme::text::muted());
-    let mut x = rect.right() - 14.0;
-    x -= right_g.size().x;
-    p.galley(
-        egui::pos2(x, y - right_g.size().y / 2.0),
-        right_g,
-        theme::text::muted(),
-    );
-    x -= 16.0;
-    let mut job = egui::text::LayoutJob::single_section(
-        left.to_owned(),
-        egui::TextFormat::simple(
-            egui::FontId::monospace(crate::ui::CAPTION_PT),
-            theme::text::dim(),
-        ),
-    );
-    job.wrap = egui::text::TextWrapping {
-        max_width: (x - rect.left() - 14.0).max(0.0),
-        max_rows: 1,
-        break_anywhere: true,
-        overflow_character: Some('…'),
-    };
-    let g = p.layout_job(job);
-    p.galley(
-        egui::pos2(rect.left() + 14.0, y - g.size().y / 2.0),
-        g,
-        theme::text::dim(),
+    palette::footer_line(
+        ui,
+        FooterLine {
+            left: (
+                left,
+                egui::FontId::monospace(crate::ui::CAPTION_PT),
+                theme::text::dim(),
+            ),
+            right: Some((right, theme::text::muted())),
+            ..Default::default()
+        },
     );
 }
 
-/// The ground a lit or picked row wears, as the palette's highlight.
-fn row_ground(ui: &egui::Ui, rect: egui::Rect, lit: bool) {
-    if lit {
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same(5),
-            crate::palette::highlight_fill(),
-        );
-    }
+/// A row's line of code: the monospace face at the rows' size.
+fn row_mono() -> egui::FontId {
+    egui::FontId::monospace(crate::ui::CONTROL_PT)
 }
 
 /// One log row: where it came from as a glyph, the line in the monospace face
@@ -965,64 +926,31 @@ fn log_row(ui: &mut egui::Ui, e: &log::Entry, picked: bool) -> egui::Response {
         egui::vec2(ui.available_width(), ROW_H),
         egui::Sense::click(),
     );
-    row_ground(ui, rect, picked);
     let p = ui.painter().clone();
+    palette::row_ground(&p, rect, picked, true);
     let glyph = match &e.source {
         log::Source::Bar => icon::TERMINAL_WINDOW,
         log::Source::Script(_) => icon::FILE_CODE,
         log::Source::Edit { glyph, .. } if !glyph.is_empty() => glyph.as_ref(),
         log::Source::Edit { .. } => icon::CURSOR,
     };
-    p.text(
-        egui::pos2(rect.left() + 16.0, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        theme::icon_font(15.0),
-        theme::text::dim(),
-    );
+    palette::row_glyph(&p, rect, glyph, theme::text::dim());
     let side = match &e.source {
         log::Source::Edit { label, .. } => label.clone(),
         log::Source::Script(_) => format!("Script · {}", e.result),
         log::Source::Bar => e.result.clone(),
     };
-    let side_col = if e.failed {
-        color::error()
-    } else {
-        theme::text::faint()
+    let side_ink = match e.failed {
+        true => color::error(),
+        false => theme::text::faint(),
     };
-    let side_g = p.layout_no_wrap(
-        side,
-        egui::FontId::proportional(crate::ui::CAPTION_PT),
-        side_col,
-    );
-    let side_x = rect.right() - 8.0 - side_g.size().x;
-    p.galley(
-        egui::pos2(side_x, rect.center().y - side_g.size().y / 2.0),
-        side_g,
-        side_col,
-    );
-    let (text, col) = match (&e.line, &e.source) {
-        (Some(line), log::Source::Bar) => (line.clone(), color::text()),
-        (Some(line), _) => (line.clone(), theme::text::dim()),
-        (None, _) => ("— no command yet —".to_owned(), theme::text::faint()),
+    let (text, ink) = match (&e.line, &e.source) {
+        (Some(line), log::Source::Bar) => (line.as_str(), color::text()),
+        (Some(line), _) => (line.as_str(), theme::text::dim()),
+        (None, _) => ("— no command yet —", theme::text::faint()),
     };
-    let label_x = rect.left() + 8.0 + 16.0 + 10.0;
-    let mut job = egui::text::LayoutJob::single_section(
-        text,
-        egui::TextFormat::simple(egui::FontId::monospace(crate::ui::CONTROL_PT), col),
-    );
-    job.wrap = egui::text::TextWrapping {
-        max_width: (side_x - 12.0 - label_x).max(0.0),
-        max_rows: 1,
-        break_anywhere: true,
-        overflow_character: Some('…'),
-    };
-    let g = p.layout_job(job);
-    p.galley(
-        egui::pos2(label_x, rect.center().y - g.size().y / 2.0),
-        g,
-        col,
-    );
+    let job = palette::lit_label(text, &[], row_mono(), ink, ink);
+    palette::row_texts(&p, rect, rect.right() - 8.0, job, Some((&side, side_ink)));
     resp
 }
 
@@ -1040,85 +968,39 @@ fn complete_row(
         egui::vec2(ui.available_width(), ROW_H),
         egui::Sense::click(),
     );
-    row_ground(ui, rect, lit);
     let p = ui.painter().clone();
+    palette::row_ground(&p, rect, lit, true);
     let glyph = match (row.section, layer) {
         (_, Some(node)) => crate::panels::layers::node_icon(node).0,
         (S::Verbs, _) => icon::TERMINAL_WINDOW,
         (S::Properties | S::Names, _) => icon::HASH,
         (S::Choices | S::Labels | S::Layers, None) => icon::CARET_RIGHT,
     };
-    p.text(
-        egui::pos2(rect.left() + 16.0, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        theme::icon_font(15.0),
-        if lit {
-            color::accent_200()
-        } else {
-            theme::text::dim()
-        },
-    );
-    let side_g = p.layout_no_wrap(
-        row.detail.clone(),
-        egui::FontId::proportional(crate::ui::CAPTION_PT),
-        theme::text::faint(),
-    );
-    let side_x = rect.right() - 8.0 - side_g.size().x;
-    p.galley(
-        egui::pos2(side_x, rect.center().y - side_g.size().y / 2.0),
-        side_g,
-        theme::text::faint(),
-    );
-    let label_x = rect.left() + 8.0 + 16.0 + 10.0;
+    let glyph_ink = match lit {
+        true => color::accent_200(),
+        false => theme::text::dim(),
+    };
+    palette::row_glyph(&p, rect, glyph, glyph_ink);
     let base = match (row.dim, lit) {
         (true, _) => theme::text::faint(),
         (false, true) => color::text(),
         (false, false) => theme::text::strong(),
     };
-    let mut job = lit_mono(&row.label, &row.matched, base, color::accent_300());
-    job.wrap.max_width = (side_x - 12.0 - label_x).max(0.0);
-    let g = p.layout_job(job);
-    p.galley(
-        egui::pos2(label_x, rect.center().y - g.size().y / 2.0),
-        g,
+    let job = palette::lit_label(
+        &row.label,
+        &row.matched,
+        row_mono(),
         base,
+        color::accent_300(),
+    );
+    palette::row_texts(
+        &p,
+        rect,
+        rect.right() - 8.0,
+        job,
+        Some((&row.detail, theme::text::faint())),
     );
     resp
-}
-
-/// `text` in the monospace face with `hits` in the accent.
-fn lit_mono(
-    text: &str,
-    hits: &[Range<usize>],
-    base: egui::Color32,
-    hit: egui::Color32,
-) -> egui::text::LayoutJob {
-    let font = egui::FontId::monospace(crate::ui::CONTROL_PT);
-    let mut job = egui::text::LayoutJob::default();
-    let plain = egui::TextFormat::simple(font.clone(), base);
-    let lit = egui::TextFormat::simple(font, hit);
-    let mut at = 0;
-    for r in hits {
-        if r.start < at
-            || r.end > text.len()
-            || !text.is_char_boundary(r.start)
-            || !text.is_char_boundary(r.end)
-        {
-            continue;
-        }
-        job.append(&text[at..r.start], 0.0, plain.clone());
-        job.append(&text[r.clone()], 0.0, lit.clone());
-        at = r.end;
-    }
-    job.append(&text[at..], 0.0, plain);
-    job.wrap = egui::text::TextWrapping {
-        max_rows: 1,
-        break_anywhere: true,
-        overflow_character: Some('…'),
-        ..Default::default()
-    };
-    job
 }
 
 #[cfg(test)]
@@ -1436,6 +1318,95 @@ pub(crate) mod tests {
             "docked {DOCK} above the canvas's foot: {tall:?}, canvas {:?}",
             app.canvas_rect
         );
+    }
+
+    /// The card keeps its foot where it docks on every frame: with a list of two
+    /// sections, and on the frame its list shrinks to nothing.
+    /// flip: the area left constrained → fails at "the frame it shrank". A
+    /// miscount in `list_height` does not bite: `list_frame` draws into that
+    /// height, so a miscount clips a row rather than moving the card.
+    #[test]
+    fn the_card_keeps_its_foot_as_its_list_changes() {
+        let (ctx, mut app, _) = typed("s");
+        let foot = |app: &MastikApp| app.canvas_rect.bottom() - DOCK;
+        let rect = |ctx: &egui::Context| {
+            ctx.memory(|m| m.area_rect(egui::Id::new("command-bar")))
+                .expect("the card is drawn")
+        };
+        let sections: std::collections::BTreeSet<_> = app
+            .command_bar
+            .as_ref()
+            .and_then(|b| b.completed.as_ref())
+            .map(|c| {
+                c.completion
+                    .rows
+                    .iter()
+                    .take(LIST_ROWS)
+                    .map(|r| r.section)
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(sections.len() >= 2, "fixture: two sections: {sections:?}");
+        let tall = rect(&ctx);
+        assert!(
+            (tall.bottom() - foot(&app)).abs() < 0.5,
+            "two sections: {tall:?}, foot {}",
+            foot(&app)
+        );
+        // The list is worked out before the field takes the keys, so it shrinks
+        // on the frame after the typing.
+        pass(&ctx, &mut app, vec![egui::Event::Text("qqzx".into())], NONE);
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        let short = rect(&ctx);
+        assert!(
+            short.height() < tall.height() - ROW_H,
+            "fixture: the list shrank"
+        );
+        assert!(
+            (short.bottom() - foot(&app)).abs() < 0.5,
+            "the frame it shrank: {short:?}, foot {}",
+            foot(&app)
+        );
+    }
+
+    /// A completion row keeps its whole label and cuts its note.
+    /// flip: `row_texts` laying the note out uncut → fails at "the note is cut".
+    #[test]
+    fn a_long_note_is_cut_before_the_label() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let row = mastik_vm::Row {
+            section: mastik_vm::Section::Verbs,
+            label: "set_blend_mode".into(),
+            detail: "Set how layers blend with what is under them; Pass through is \
+                     Normal on a layer that is not a frame or group"
+                .into(),
+            matched: Vec::new(),
+            dim: false,
+            suggestion: None,
+        };
+        let out = ctx.run_ui(Default::default(), |ui| {
+            ui.set_width(360.0);
+            complete_row(ui, None, &row, false);
+        });
+        let texts: Vec<_> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.clone()),
+                _ => None,
+            })
+            .collect();
+        let label = texts
+            .iter()
+            .find(|g| g.text().starts_with("set_blend_mode"))
+            .expect("the label is drawn");
+        assert!(!label.elided, "the label is whole");
+        let note = texts
+            .iter()
+            .find(|g| g.text().starts_with("Set how"))
+            .expect("the note is drawn");
+        assert!(note.elided, "the note is cut");
     }
 
     /// Counts read as the status line says them.

@@ -17,15 +17,34 @@ use std::ops::Range;
 
 /// The card's width.
 const W: f32 = 560.0;
-const FIELD_H: f32 = 42.0;
-const ROW_H: f32 = 30.0;
-const SECTION_H: f32 = 24.0;
-/// The footer's height, shared with the cheatsheet's.
+/// The field's height, the command bar's too.
+pub(crate) const FIELD_H: f32 = 42.0;
+/// A list row's height, the command bar's too.
+pub(crate) const ROW_H: f32 = 30.0;
+/// Between two list rows.
+pub(crate) const ROW_GAP: f32 = 1.0;
+/// A section label's height ([`section_label`]).
+pub(crate) const SECTION_H: f32 = 24.0;
+/// The footer's height, shared with the cheatsheet's and the command bar's.
 pub(crate) const FOOTER_H: f32 = 30.0;
 /// How far the footer's text sits above the footer's centre.
 const FOOTER_TEXT_LIFT: f32 = 1.0;
-/// The list's inset inside the card.
-const PAD: f32 = 6.0;
+/// The footer's text inset from the card's edges.
+const FOOTER_INSET: f32 = 14.0;
+/// A footer glyph's size (the command bar's error mark).
+const FOOTER_GLYPH_PT: f32 = 13.0;
+/// The list's inset inside the card, the command bar's too.
+pub(crate) const PAD: f32 = 6.0;
+/// A row's glyph centre, from the row's left edge.
+pub(crate) const ROW_GLYPH_X: f32 = 8.0 + 8.0;
+/// Where a row's label starts, from the row's left edge: past the glyph column.
+pub(crate) const ROW_LABEL_X: f32 = 8.0 + 16.0 + 10.0;
+/// A row's glyph size.
+const ROW_GLYPH_PT: f32 = 15.0;
+/// Between a row's label and its note, and before a chord chip.
+const ROW_NOTE_GAP: f32 = 12.0;
+/// The narrowest note worth showing cut: below this a row drops its note.
+const ROW_NOTE_MIN: f32 = 40.0;
 /// The layer rows the mixed list shows before offering the rest behind `Tab`.
 const LAYER_HITS: usize = 5;
 /// The rows *Recent* remembers.
@@ -372,7 +391,7 @@ const SWITCHES: [ViewSwitch; 21] = [
 ];
 
 /// The highlighted row's ground: the accent at 18%.
-pub(crate) fn highlight_fill() -> egui::Color32 {
+fn highlight_fill() -> egui::Color32 {
     color::accent_a(46)
 }
 
@@ -1244,20 +1263,25 @@ pub(crate) fn section_label(ui: &mut egui::Ui, title: &str) {
     );
 }
 
-/// `text` with `hits` in the accent, for one row's label.
-fn lit_label(
+/// `text` with `hits` in `hit`, for one row's label: one line, cut with an
+/// ellipsis at the width [`row_texts`] gives it.
+pub(crate) fn lit_label(
     text: &str,
     hits: &[Range<usize>],
-    size: f32,
+    font: egui::FontId,
     base: egui::Color32,
     hit: egui::Color32,
 ) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
-    let plain = egui::TextFormat::simple(egui::FontId::proportional(size), base);
-    let lit = egui::TextFormat::simple(egui::FontId::proportional(size), hit);
+    let plain = egui::TextFormat::simple(font.clone(), base);
+    let lit = egui::TextFormat::simple(font, hit);
     let mut at = 0;
     for r in hits {
-        if r.start < at || r.end > text.len() {
+        if r.start < at
+            || r.end > text.len()
+            || !text.is_char_boundary(r.start)
+            || !text.is_char_boundary(r.end)
+        {
             continue;
         }
         job.append(&text[at..r.start], 0.0, plain.clone());
@@ -1272,6 +1296,74 @@ fn lit_label(
         ..Default::default()
     };
     job
+}
+
+/// A list row's corner.
+const ROW_RADIUS: u8 = 5;
+
+/// A list row's ground while it is the highlighted one: the accent wash, or a
+/// neutral one on a row that cannot run. A row at rest has none.
+pub(crate) fn row_ground(p: &egui::Painter, rect: egui::Rect, lit: bool, live: bool) {
+    if lit {
+        let fill = match live {
+            true => highlight_fill(),
+            false => theme::color::text_a(20),
+        };
+        p.rect_filled(rect, egui::CornerRadius::same(ROW_RADIUS), fill);
+    }
+}
+
+/// A list row's glyph, centred in the glyph column.
+pub(crate) fn row_glyph(p: &egui::Painter, rect: egui::Rect, glyph: &str, ink: egui::Color32) {
+    p.text(
+        egui::pos2(rect.left() + ROW_GLYPH_X, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        theme::icon_font(ROW_GLYPH_PT),
+        ink,
+    );
+}
+
+/// A list row's label from the label column, and its caption-size `note`
+/// right-aligned against `right`. The label says what the row is, so it keeps
+/// its whole width and the note is cut first; a note left less than
+/// [`ROW_NOTE_MIN`] is dropped, and only a label wider than the row is cut.
+pub(crate) fn row_texts(
+    p: &egui::Painter,
+    rect: egui::Rect,
+    right: f32,
+    mut label: egui::text::LayoutJob,
+    note: Option<(&str, egui::Color32)>,
+) {
+    let label_x = rect.left() + ROW_LABEL_X;
+    let y = rect.center().y;
+    label.wrap.max_width = (right - label_x).max(0.0);
+    let label = p.layout_job(label);
+    let label_w = label.size().x;
+    p.galley(
+        egui::pos2(label_x, y - label.size().y / 2.0),
+        label,
+        color::text(),
+    );
+    let Some((note, ink)) = note.filter(|(n, _)| !n.is_empty()) else {
+        return;
+    };
+    let room = right - (label_x + label_w + ROW_NOTE_GAP);
+    if room < ROW_NOTE_MIN {
+        return;
+    }
+    let mut job = egui::text::LayoutJob::single_section(
+        note.to_owned(),
+        egui::TextFormat::simple(egui::FontId::proportional(crate::ui::CAPTION_PT), ink),
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: room,
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let g = p.layout_job(job);
+    p.galley(egui::pos2(right - g.size().x, y - g.size().y / 2.0), g, ink);
 }
 
 /// A chord as keycaps would read it in one chip: `Ctrl + K`, `⌘K` on macOS.
@@ -1306,48 +1398,28 @@ fn cmd_row(ui: &mut egui::Ui, c: &Cmd, lit: bool) -> egui::Response {
         egui::Sense::click(),
     );
     let p = ui.painter().clone();
-    if lit {
-        let fill = if c.enabled {
-            highlight_fill()
-        } else {
-            theme::color::text_a(20)
-        };
-        p.rect_filled(rect, egui::CornerRadius::same(5), fill);
-    }
     let live = c.enabled;
-    let glyph_col = match () {
-        _ if !live => theme::text::disabled(),
-        _ if lit => color::accent_200(),
-        _ => theme::text::dim(),
-    };
-    let glyph_at = egui::pos2(rect.left() + 8.0 + 8.0, rect.center().y);
+    row_ground(&p, rect, lit, live);
     match c.checked {
         Some(true) => {
-            p.text(
-                glyph_at,
-                egui::Align2::CENTER_CENTER,
-                icon::CHECK,
-                theme::icon_font(14.0),
-                if live {
-                    color::accent_300()
-                } else {
-                    theme::text::disabled()
-                },
-            );
+            let ink = match live {
+                true => color::accent_300(),
+                false => theme::text::disabled(),
+            };
+            row_glyph(&p, rect, icon::CHECK, ink);
         }
         Some(false) => {}
         None => {
-            p.text(
-                glyph_at,
-                egui::Align2::CENTER_CENTER,
-                c.glyph,
-                theme::icon_font(15.0),
-                glyph_col,
-            );
+            let ink = match () {
+                _ if !live => theme::text::disabled(),
+                _ if lit => color::accent_200(),
+                _ => theme::text::dim(),
+            };
+            row_glyph(&p, rect, c.glyph, ink);
         }
     }
 
-    // Right to left: chord, then the group or the need.
+    // Right to left: the chord, then the group or the need.
     let mut right = rect.right() - 8.0;
     if let Some(accel) = c.accel.filter(|_| !c.absent) {
         right -= chip(ui, right, rect.center().y, accel, live) + 8.0;
@@ -1357,24 +1429,10 @@ fn cmd_row(ui: &mut egui::Ui, c: &Cmd, lit: bool) -> egui::Response {
     } else {
         c.group.label()
     };
-    let side_g = p.layout_no_wrap(
-        side.to_string(),
-        egui::FontId::proportional(crate::ui::CAPTION_PT),
-        if live {
-            theme::text::faint()
-        } else {
-            theme::text::disabled()
-        },
-    );
-    let side_w = side_g.size().x;
-    p.galley(
-        egui::pos2(right - side_w, rect.center().y - side_g.size().y / 2.0),
-        side_g,
-        theme::text::faint(),
-    );
-    right -= side_w + 10.0;
-
-    let label_x = rect.left() + 8.0 + 16.0 + 10.0;
+    let side_ink = match live {
+        true => theme::text::faint(),
+        false => theme::text::disabled(),
+    };
     let (base, hit) = if live {
         (
             if lit {
@@ -1390,15 +1448,14 @@ fn cmd_row(ui: &mut egui::Ui, c: &Cmd, lit: bool) -> egui::Response {
             color::accent_300().gamma_multiply(0.6),
         )
     };
-    let mut job = lit_label(&c.label, &c.hits, crate::ui::CONTROL_PT, base, hit);
-    job.wrap.max_width = (right - label_x).max(0.0);
-    let galley = p.layout_job(job);
-    p.galley(
-        egui::pos2(label_x, rect.center().y - galley.size().y / 2.0),
-        galley,
-        base,
-    );
+    let job = lit_label(&c.label, &c.hits, row_font(), base, hit);
+    row_texts(&p, rect, right, job, Some((side, side_ink)));
     resp
+}
+
+/// A list row's label face.
+fn row_font() -> egui::FontId {
+    egui::FontId::proportional(crate::ui::CONTROL_PT)
 }
 
 /// One layer row: its kind glyph, its name with the match lit, its parents
@@ -1409,16 +1466,8 @@ fn layer_row(ui: &mut egui::Ui, l: &LayerHit, lit: bool) -> egui::Response {
         egui::Sense::click(),
     );
     let p = ui.painter().clone();
-    if lit {
-        p.rect_filled(rect, egui::CornerRadius::same(5), highlight_fill());
-    }
-    p.text(
-        egui::pos2(rect.left() + 16.0, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        l.glyph,
-        theme::icon_font(15.0),
-        l.tint,
-    );
+    row_ground(&p, rect, lit, true);
+    row_glyph(&p, rect, l.glyph, l.tint);
     let mut right = rect.right() - 8.0;
     let mark = if l.hidden {
         Some(icon::EYE_SLASH)
@@ -1437,11 +1486,11 @@ fn layer_row(ui: &mut egui::Ui, l: &LayerHit, lit: bool) -> egui::Response {
         );
         right -= 13.0 + 8.0;
     }
-    let label_x = rect.left() + 8.0 + 16.0 + 10.0;
+    let label_x = rect.left() + ROW_LABEL_X;
     let mut job = lit_label(
         &l.name,
         &l.hits,
-        crate::ui::CONTROL_PT,
+        row_font(),
         if lit {
             color::text()
         } else {
@@ -1492,11 +1541,9 @@ fn more_row(ui: &mut egui::Ui, n: usize, lit: bool) -> egui::Response {
         egui::Sense::click(),
     );
     let p = ui.painter().clone();
-    if lit {
-        p.rect_filled(rect, egui::CornerRadius::same(5), highlight_fill());
-    }
+    row_ground(&p, rect, lit, true);
     p.text(
-        egui::pos2(rect.left() + 8.0 + 16.0 + 10.0, rect.center().y),
+        egui::pos2(rect.left() + ROW_LABEL_X, rect.center().y),
         egui::Align2::LEFT_CENTER,
         if n == 1 {
             "1 more layer".to_string()
@@ -1563,47 +1610,90 @@ fn layers_chip(ui: &mut egui::Ui) {
 
 /// The target (or the highlighted row's reason) and the keys.
 fn footer(ui: &mut egui::Ui, why: Option<&str>, note: &str, layers_only: bool) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, FOOTER_H), egui::Sense::empty());
-    let p = ui.painter();
-    let font = egui::FontId::proportional(crate::ui::CAPTION_PT);
-    // The text's optical centre, a point above the box's.
-    let y = rect.center().y - FOOTER_TEXT_LIFT;
     let keys = if layers_only {
         "Enter select · Shift+Enter add · Tab commands · Esc close"
     } else {
         "↑↓ move · Enter run · Tab layers · Esc close"
     };
-    let keys_g = p.layout_no_wrap(
-        crate::input::keys(keys).into_owned(),
-        font.clone(),
-        theme::text::dim(),
-    );
-    let keys_w = keys_g.size().x;
-    p.galley(
-        egui::pos2(rect.right() - 14.0 - keys_w, y - keys_g.size().y / 2.0),
-        keys_g,
-        theme::text::dim(),
-    );
-    let (text, col) = match why {
-        Some(why) => (crate::input::keys(why), theme::text::muted()),
-        None => (note.into(), theme::text::muted()),
+    let text = match why {
+        Some(why) => crate::input::keys(why),
+        None => note.into(),
     };
-    let mut job = egui::text::LayoutJob::single_section(
-        text.to_string(),
-        egui::TextFormat::simple(font, col),
+    footer_line(
+        ui,
+        FooterLine {
+            left: (&text, caption_font(), theme::text::muted()),
+            right: Some((&crate::input::keys(keys), theme::text::dim())),
+            ..Default::default()
+        },
     );
+}
+
+/// The caption face a footer and a row's note are set in.
+pub(crate) fn caption_font() -> egui::FontId {
+    egui::FontId::proportional(crate::ui::CAPTION_PT)
+}
+
+/// What one card footer says: a glyph, the left text and the right text.
+pub(crate) struct FooterLine<'a> {
+    /// A glyph before the left text, in its ink.
+    pub(crate) glyph: Option<(&'a str, egui::Color32)>,
+    /// The left text, its face and its ink: cut first when the two meet.
+    pub(crate) left: (&'a str, egui::FontId, egui::Color32),
+    /// The right text and its ink, in the caption face, kept whole.
+    pub(crate) right: Option<(&'a str, egui::Color32)>,
+}
+
+impl Default for FooterLine<'_> {
+    fn default() -> Self {
+        Self {
+            glyph: None,
+            left: ("", caption_font(), theme::text::muted()),
+            right: None,
+        }
+    }
+}
+
+/// A canvas card's footer, [`FOOTER_H`] tall and as wide as the card: the
+/// palette's, the command bar's and its error caption. The right text is kept
+/// whole and the left is cut to the room left.
+pub(crate) fn footer_line(ui: &mut egui::Ui, line: FooterLine<'_>) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), FOOTER_H),
+        egui::Sense::empty(),
+    );
+    let p = ui.painter();
+    // The text's optical centre, a point above the box's.
+    let y = rect.center().y - FOOTER_TEXT_LIFT;
+    let mut right = rect.right() - FOOTER_INSET;
+    if let Some((text, ink)) = line.right {
+        let g = p.layout_no_wrap(text.to_owned(), caption_font(), ink);
+        right -= g.size().x;
+        p.galley(egui::pos2(right, y - g.size().y / 2.0), g, ink);
+        right -= 16.0;
+    }
+    let mut left = rect.left() + FOOTER_INSET;
+    if let Some((glyph, ink)) = line.glyph {
+        p.text(
+            egui::pos2(left, y),
+            egui::Align2::LEFT_CENTER,
+            glyph,
+            theme::icon_font(FOOTER_GLYPH_PT),
+            ink,
+        );
+        left += FOOTER_GLYPH_PT + 8.0;
+    }
+    let (text, font, ink) = line.left;
+    let mut job =
+        egui::text::LayoutJob::single_section(text.to_owned(), egui::TextFormat::simple(font, ink));
     job.wrap = egui::text::TextWrapping {
-        max_width: (rect.width() - 14.0 * 2.0 - keys_w - 16.0).max(0.0),
+        max_width: (right - left).max(0.0),
         max_rows: 1,
         break_anywhere: true,
         overflow_character: Some('…'),
     };
-    let galley = p.layout_job(job);
-    p.galley(
-        egui::pos2(rect.left() + 14.0, y - galley.size().y / 2.0),
-        galley,
-        col,
-    );
+    let g = p.layout_job(job);
+    p.galley(egui::pos2(left, y - g.size().y / 2.0), g, ink);
 }
 
 #[cfg(test)]
