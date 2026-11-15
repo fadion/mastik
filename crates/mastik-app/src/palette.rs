@@ -391,7 +391,7 @@ const SWITCHES: [ViewSwitch; 21] = [
 ];
 
 /// The highlighted row's ground: the accent at 18%.
-fn highlight_fill() -> egui::Color32 {
+pub(crate) fn highlight_fill() -> egui::Color32 {
     color::accent_a(46)
 }
 

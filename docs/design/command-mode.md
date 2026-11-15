@@ -295,8 +295,21 @@ head alone; the height is kept for the session.
 `mastik.d.luau` in the scripts folder when the editor opens (never from a headless app, whose
 preferences are a throwaway), so luau-lsp in an outside editor completes and checks against it.
 **In-app type checking is not built**: Luau's type checker is a separate analysis library that
-`mlua` does not expose. Completion in the bar and the editor covers Mastik's API only, from the
-same tables.
+`mlua` does not expose. Completion reads the same tables and does not infer types: a property is
+offered after any `.`, whatever stands before it.
+
+**Completion in the editor** is `mastik_vm::complete_script` over the whole script, in a dropdown
+hung `ui::MENU_GAP` under the word being completed (over it with no room below), drawing the bar's
+rows (`command::completion_rows`). It offers the script's own names (*This script*: its `local`s,
+functions, parameters and loop variables, and after `param.` the header's inputs), the language's
+names, the verbs, *Luau* (the keywords and the permitted library, and a library's members after
+`math.`, `string.` or `table.`), and the page's layers; properties after `.` and methods after `:`.
+Leap labels are left out, since they last a session, and so are verbs' argument words, which are
+the bar's sugar. It offers nothing in a string or a comment, on a number, or where a name is being
+declared (after `local`, `function`, `for`). It opens and shuts as the bar's list does, by one
+`command::suggest::Suggester`, and only while the code has the focus: `↑`/`↓` move, `Tab` takes
+the lit row and `Enter` too unless the word already reads as it, when `Enter` breaks the line;
+`Escape` shuts it for the word; `Ctrl+Space` opens it.
 
 ## 11. MCP and `/ai`
 

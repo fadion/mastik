@@ -25,7 +25,7 @@ mod sugar;
 #[cfg(test)]
 mod tests;
 
-pub use complete::{Completion, Row, Section, complete};
+pub use complete::{Completion, Row, Section, complete, complete_script};
 pub use defs::{Tok, definitions, names_used, tokens};
 pub use header::{Header, Input, InputType, header};
 pub use props::{METHODS, Method, PROPERTIES, PropType, Property};

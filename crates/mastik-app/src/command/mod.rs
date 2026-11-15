@@ -10,6 +10,7 @@
 pub(crate) mod editor;
 pub(crate) mod host;
 pub(crate) mod log;
+pub(crate) mod suggest;
 
 use crate::app::MastikApp;
 use crate::palette::{
@@ -18,6 +19,7 @@ use crate::palette::{
 use crate::theme::{self, color, icon};
 use eframe::egui;
 use mastik_core::NodeId;
+use suggest::{Suggest, Suggester};
 
 /// The card's width.
 const W: f32 = 640.0;
@@ -198,8 +200,6 @@ pub(crate) struct Bar {
     /// What the person had typed when `↑` first recalled, given back when `↓`
     /// walks past the newest line.
     draft: Option<String>,
-    /// The highlighted completion row.
-    highlight: usize,
     /// The last error, with the text it was for: an edit clears it.
     error: Option<(String, mastik_vm::VmError)>,
     /// The live read: the text and revision it was taken for, and its value.
@@ -213,11 +213,9 @@ pub(crate) struct Bar {
     caret_to: Option<usize>,
     /// The completion list as last worked out ([`MastikApp::bar_completion`]).
     completed: Option<Completed>,
-    /// Whether the completion list is up ([`Bar::follow_suggest`]).
-    suggest: Suggest,
-    /// The text as the field left it last frame, to tell typing from a
-    /// keystroke-free frame.
-    seen: String,
+    /// Whether the completion list is up, its lit row, and the text as the
+    /// field left it last frame.
+    suggest: Suggester,
     /// The layer the lit completion row names, which the canvas outlines.
     lit: Option<NodeId>,
     /// A word to write at the caret next frame ([`Bar::write_at_caret`]).
@@ -239,67 +237,7 @@ struct Live {
     from: Vec<NodeId>,
 }
 
-/// The completion list's state, as a code editor's suggest widget keeps it: it
-/// opens on typing a name or a trigger, follows the word being typed, and shuts
-/// when the caret leaves that word.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-enum Suggest {
-    #[default]
-    Off,
-    /// Up for the word starting at this byte.
-    On(usize),
-    /// Escape shut it for the word starting at this byte: typing on in that
-    /// word leaves it shut, as an editor's does.
-    Dismissed(usize),
-}
-
 impl Bar {
-    /// Move the suggest state on from what changed since last frame. Typing a
-    /// name's letter, `.` or `:`, or the space before a verb's argument opens
-    /// it; any other character shuts it; deleting keeps it while the word
-    /// stays, and a caret that leaves the word shuts it. `invoke` (`Ctrl+Space`)
-    /// opens it on the word at the caret whatever came before.
-    fn follow_suggest(&mut self, c: Option<&mastik_vm::Completion>, caret: usize, invoke: bool) {
-        let start = c.map(|c| c.replace.start);
-        if self.text != self.seen {
-            self.highlight = 0;
-            let grew = self.text.len() > self.seen.len();
-            self.suggest = match (c, start) {
-                (Some(c), Some(s)) if s <= caret && caret <= self.text.len() => {
-                    let word = &self.text[s..caret];
-                    let trigger = trigger_at(&self.text, s, c);
-                    match self.suggest {
-                        Suggest::Dismissed(a) if a == s => Suggest::Dismissed(a),
-                        _ if grew => {
-                            let typed = self.text[..caret].chars().next_back();
-                            let opens = match typed {
-                                Some(ch) if ch.is_alphanumeric() || ch == '_' => {
-                                    !word.starts_with(|d: char| d.is_ascii_digit())
-                                }
-                                _ => word.is_empty() && trigger,
-                            };
-                            match opens {
-                                true => Suggest::On(s),
-                                false => Suggest::Off,
-                            }
-                        }
-                        Suggest::On(a) if a == s && (caret > s || trigger) => Suggest::On(a),
-                        _ => Suggest::Off,
-                    }
-                }
-                _ => Suggest::Off,
-            };
-        }
-        if let Suggest::On(a) | Suggest::Dismissed(a) = self.suggest
-            && Some(a) != start
-        {
-            self.suggest = Suggest::Off;
-        }
-        if invoke && let Some(s) = start {
-            self.suggest = Suggest::On(s);
-        }
-    }
-
     /// The layer the lit completion row names (a label's, or a layer's by
     /// name), for the canvas to outline as it outlines a hovered Layers row.
     pub(crate) fn lit_layer(&self) -> Option<NodeId> {
@@ -316,7 +254,7 @@ impl Bar {
     /// labels for the word at the caret: the canvas shows the labels then,
     /// narrowed by these letters as Pick's first letter narrows them.
     pub(crate) fn labels_typed(&self) -> Option<String> {
-        if !matches!(self.suggest, Suggest::On(_)) || self.error.is_some() {
+        if !self.suggest.on() || self.error.is_some() {
             return None;
         }
         let c = self.completed.as_ref()?;
@@ -341,37 +279,12 @@ impl Bar {
         self.insert = Some(word);
     }
 
-    /// Escape on an open list: shut it for this word.
-    fn dismiss(&mut self) {
-        if let Suggest::On(a) = self.suggest {
-            self.suggest = Suggest::Dismissed(a);
-        }
-    }
-
     /// Take completion row `i` into the field, and shut the list.
     fn accept(&mut self, c: &mastik_vm::Completion, i: usize) {
-        let Some(row) = c.rows.get(i) else { return };
-        let r = c.replace.clone();
-        if r.end > self.text.len() {
-            return;
+        if let Some(at) = self.suggest.accept(&mut self.text, c, i) {
+            self.caret_to = Some(at);
         }
-        let insert = insert_of(row);
-        self.text.replace_range(r.clone(), insert);
-        self.caret_to = Some(r.start + insert.len());
-        self.highlight = 0;
-        self.suggest = Suggest::Off;
     }
-}
-
-/// Whether an empty word at `start` sits where a list opens on its own: just
-/// after `.` or `:`, or at a verb's argument, whose choices `c` holds.
-fn trigger_at(text: &str, start: usize, c: &mastik_vm::Completion) -> bool {
-    let before = text[..start].chars().next_back();
-    matches!(before, Some('.' | ':'))
-        || (!c.rows.is_empty()
-            && c.rows
-                .iter()
-                .all(|r| r.section == mastik_vm::Section::Choices))
 }
 
 /// A completion list and what it was worked out for — the text, the caret, the
@@ -560,7 +473,7 @@ impl MastikApp {
         bar.text.replace_range(range.clone(), &label);
         live.wrote = Some(range.start..range.start + label.len());
         // Written, not typed: the list does not open on it.
-        bar.seen = bar.text.clone();
+        bar.suggest.seen = bar.text.clone();
     }
 
     /// The leap labels lines may name, as the bar last dealt them.
@@ -762,7 +675,7 @@ impl MastikApp {
         }
         if keys.pick {
             self.set_picking(true);
-            bar.dismiss();
+            bar.suggest.dismiss();
         }
         let picking = self.pick_focus();
         // An edit of the text drops the error it was for and the recall.
@@ -791,7 +704,7 @@ impl MastikApp {
             caret += word.len();
             bar.caret_to = Some(caret);
             // Written, not typed: the list does not open on it.
-            bar.seen = bar.text.clone();
+            bar.suggest.seen = bar.text.clone();
         }
         self.pick_into_line(&mut bar, picking, caret);
         // The subject's pill first: it may give the subject a label.
@@ -802,7 +715,7 @@ impl MastikApp {
             subject_ids,
             labels: self.bar_labels(),
             names: Default::default(),
-            typing: match bar.suggest {
+            typing: match bar.suggest.state {
                 Suggest::On(s) => Some(s),
                 _ => None,
             },
@@ -833,8 +746,9 @@ impl MastikApp {
         }
         let completion = (!picking && !bar.text.trim().is_empty() && bar.recalled.is_none())
             .then(|| self.bar_completion(&mut bar, caret));
-        bar.follow_suggest(completion.as_ref(), caret, keys.suggest);
-        let suggesting = matches!(bar.suggest, Suggest::On(_))
+        bar.suggest
+            .follow(&bar.text, completion.as_ref(), caret, keys.suggest);
+        let suggesting = bar.suggest.on()
             && bar.error.is_none()
             && completion.as_ref().is_some_and(|c| !c.rows.is_empty());
 
@@ -844,7 +758,7 @@ impl MastikApp {
             if bar.log_menu.is_some() {
                 bar.log_menu = None;
             } else if suggesting {
-                bar.dismiss();
+                bar.suggest.dismiss();
             } else if bar.text.is_empty() {
                 self.end_bar_session();
                 return;
@@ -861,7 +775,7 @@ impl MastikApp {
                     _ => List::Log,
                 }
             }
-            Some(c) if suggesting && matches!(bar.suggest, Suggest::On(_)) => List::Complete(c),
+            Some(c) if suggesting => List::Complete(c),
             _ => List::None,
         };
         let rows = match &list {
@@ -869,13 +783,13 @@ impl MastikApp {
             _ => 0,
         };
         if rows > 0 {
-            bar.highlight = bar.highlight.min(rows - 1);
+            bar.suggest.highlight = bar.suggest.highlight.min(rows - 1);
         }
         let lit_of = |bar: &Bar| match &list {
             List::Complete(_) => bar
                 .completed
                 .as_ref()
-                .and_then(|c| c.layers.get(bar.highlight).copied().flatten()),
+                .and_then(|c| c.layers.get(bar.suggest.highlight).copied().flatten()),
             _ => None,
         };
 
@@ -885,19 +799,16 @@ impl MastikApp {
         let mut accepted = false;
         if let List::Complete(c) = &list {
             if keys.down {
-                bar.highlight = (bar.highlight + 1) % rows;
+                bar.suggest.step(rows, false);
             }
             if keys.up {
-                bar.highlight = (bar.highlight + rows - 1) % rows;
+                bar.suggest.step(rows, true);
             }
             // Enter takes the row only when it would change the word: on a word
             // already whole, it runs the line.
-            let changes = c
-                .rows
-                .get(bar.highlight)
-                .is_some_and(|row| bar.text.get(c.replace.clone()) != Some(insert_of(row)));
+            let changes = bar.suggest.changes(&bar.text, c);
             if keys.tab || (keys.enter && changes) {
-                bar.accept(c, bar.highlight);
+                bar.accept(c, bar.suggest.highlight);
                 accepted = true;
             }
         } else {
@@ -947,7 +858,7 @@ impl MastikApp {
             }
         }
         if keys.enter && !accepted {
-            bar.suggest = Suggest::Off;
+            bar.suggest.state = Suggest::Off;
             let line = bar.text.trim().to_owned();
             // The error's spans count from the trimmed line; the field holds the
             // spaces before it.
@@ -1009,7 +920,6 @@ impl MastikApp {
         let parsed = mastik_vm::desugar(bar.text.trim());
         let mut clicked_row: Option<usize> = None;
         let mut hovered_row: Option<usize> = None;
-        let moved = ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
         let row_layers = bar
             .completed
             .as_ref()
@@ -1048,27 +958,15 @@ impl MastikApp {
                     }
                     List::Complete(c) => {
                         list_frame(ui, list_h, |ui| {
-                            let mut section = None;
-                            for (i, row) in c.rows.iter().take(LIST_ROWS).enumerate() {
-                                if section != Some(row.section) {
-                                    palette::section_label(ui, section_title(row.section));
-                                    section = Some(row.section);
-                                }
-                                let layer = row_layers
+                            let layer_of = |i: usize| {
+                                row_layers
                                     .get(i)
                                     .copied()
                                     .flatten()
-                                    .and_then(|id| self.session.doc.get(id));
-                                let resp = complete_row(ui, layer, row, i == bar.highlight);
-                                if resp.clicked() {
-                                    clicked_row = Some(i);
-                                }
-                                // The highlight follows a moving pointer, as the
-                                // palette's does; a resting one leaves the keys theirs.
-                                if resp.hovered() && moved {
-                                    hovered_row = Some(i);
-                                }
-                            }
+                                    .and_then(|id| self.session.doc.get(id))
+                            };
+                            (clicked_row, hovered_row) =
+                                completion_rows(ui, &c.rows, bar.suggest.highlight, layer_of);
                         });
                     }
                 }
@@ -1080,8 +978,8 @@ impl MastikApp {
                 }
                 crate::ui::card_rule(ui);
                 // What the field changes from here on is typing, which next
-                // frame's `follow_suggest` reads against this.
-                bar.seen = bar.text.clone();
+                // frame's `Suggester::follow` reads against this.
+                bar.suggest.seen = bar.text.clone();
                 let sleep = picking.then_some(typed.as_str());
                 pointed_pill = field(ui, &mut bar, error, value.as_deref(), sleep, &pills);
                 crate::ui::card_rule(ui);
@@ -1128,13 +1026,13 @@ impl MastikApp {
         // A click writes the text, not typing: `seen` takes it so the list
         // does not open on it.
         if let Some(i) = hovered_row {
-            bar.highlight = i;
+            bar.suggest.highlight = i;
         }
         if let Some(i) = clicked_row
             && let List::Complete(c) = &list
         {
             bar.accept(c, i);
-            bar.seen = bar.text.clone();
+            bar.suggest.seen = bar.text.clone();
         }
         if let Some((i, shift)) = log_click {
             bar.picked = match (shift, bar.picked) {
@@ -1147,7 +1045,7 @@ impl MastikApp {
             {
                 bar.text = line;
                 bar.caret_to = Some(bar.text.len());
-                bar.seen = bar.text.clone();
+                bar.suggest.seen = bar.text.clone();
             }
         }
         if let Some((i, at)) = log_menu_at {
@@ -1174,7 +1072,7 @@ impl MastikApp {
                 }
             }
         }
-        bar.lit = match bar.suggest {
+        bar.lit = match bar.suggest.state {
             Suggest::On(_) => lit_of(&bar),
             _ => None,
         }
@@ -1263,14 +1161,6 @@ pub(crate) fn as_script(entries: &[log::Entry]) -> String {
     out
 }
 
-/// What taking `row` writes: an almost-match's suggestion, else its label.
-fn insert_of(row: &mastik_vm::Row) -> &str {
-    match (&row.suggestion, row.dim) {
-        (Some(s), true) => s,
-        _ => &row.label,
-    }
-}
-
 /// A completion section's eyebrow.
 fn section_title(s: mastik_vm::Section) -> &'static str {
     use mastik_vm::Section as S;
@@ -1281,6 +1171,8 @@ fn section_title(s: mastik_vm::Section) -> &'static str {
         S::Labels => "Labels",
         S::Layers => "Layers",
         S::Choices => "Choices",
+        S::Script => "This script",
+        S::Luau => "Luau",
     }
 }
 
@@ -1308,25 +1200,63 @@ fn char_to_byte(s: &str, i: usize) -> usize {
 /// The list's height above the field for `list`, its rule under it included,
 /// which the dock reads before the card draws.
 fn list_height(list: &List, log_len: usize) -> f32 {
-    let (sections, rows) = match list {
+    let inner = match list {
         List::None => return 0.0,
-        List::Log => (1, log_len.min(LOG_ROWS)),
-        List::Complete(c) => {
-            let rows = c.rows.len().min(LIST_ROWS);
-            let mut sections = 0;
-            let mut last = None;
-            for row in c.rows.iter().take(rows) {
-                if last != Some(row.section) {
-                    sections += 1;
-                    last = Some(row.section);
-                }
-            }
-            (sections, rows)
-        }
+        List::Log => stack_height(1, log_len.min(LOG_ROWS)),
+        List::Complete(c) => completion_height(&c.rows),
     };
-    let gaps = (sections + rows).saturating_sub(1);
     let rule = 1.0;
-    2.0 * PAD + sections as f32 * SECTION_H + rows as f32 * ROW_H + gaps as f32 * ROW_GAP + rule
+    2.0 * PAD + inner + rule
+}
+
+/// `sections` section labels and `rows` rows stacked with a gap between each.
+fn stack_height(sections: usize, rows: usize) -> f32 {
+    let gaps = (sections + rows).saturating_sub(1);
+    sections as f32 * SECTION_H + rows as f32 * ROW_H + gaps as f32 * ROW_GAP
+}
+
+/// What [`completion_rows`] draws `rows` into: the first [`LIST_ROWS`] and a
+/// label over each run of one section, insets left out.
+fn completion_height(rows: &[mastik_vm::Row]) -> f32 {
+    let shown = &rows[..rows.len().min(LIST_ROWS)];
+    let sections = 1 + shown
+        .windows(2)
+        .filter(|w| w[0].section != w[1].section)
+        .count();
+    match shown.is_empty() {
+        true => 0.0,
+        false => stack_height(sections, shown.len()),
+    }
+}
+
+/// The first [`LIST_ROWS`] completion rows, a section label over each run, row
+/// `lit` lit; `layer_of(i)` is row `i`'s layer, for its glyph. Answers the row
+/// clicked, and the row the pointer moved onto (the highlight follows a moving
+/// pointer, as the palette's does; a resting one leaves the keys theirs). The
+/// command bar's list and the script editor's draw it.
+fn completion_rows<'a>(
+    ui: &mut egui::Ui,
+    rows: &[mastik_vm::Row],
+    lit: usize,
+    layer_of: impl Fn(usize) -> Option<&'a mastik_core::Node>,
+) -> (Option<usize>, Option<usize>) {
+    let moved = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
+    let (mut clicked, mut hovered) = (None, None);
+    let mut section = None;
+    for (i, row) in rows.iter().take(LIST_ROWS).enumerate() {
+        if section != Some(row.section) {
+            palette::section_label(ui, section_title(row.section));
+            section = Some(row.section);
+        }
+        let resp = complete_row(ui, layer_of(i), row, i == lit);
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+        if resp.hovered() && moved {
+            hovered = Some(i);
+        }
+    }
+    (clicked, hovered)
 }
 
 /// The list in its inset, drawn into exactly `h` (from [`list_height`]) with
@@ -1712,7 +1642,7 @@ fn complete_row(
     let glyph = match (row.section, layer) {
         (_, Some(node)) => crate::panels::layers::node_icon(node).0,
         (S::Verbs, _) => icon::TERMINAL_WINDOW,
-        (S::Properties | S::Names, _) => icon::HASH,
+        (S::Properties | S::Names | S::Script | S::Luau, _) => icon::HASH,
         (S::Choices | S::Labels | S::Layers, None) => icon::CARET_RIGHT,
     };
     let glyph_ink = match lit {
@@ -2237,7 +2167,11 @@ pub(crate) mod tests {
     }
 
     fn suggest(app: &MastikApp) -> Suggest {
-        app.command_bar.as_ref().expect("the bar is open").suggest
+        app.command_bar
+            .as_ref()
+            .expect("the bar is open")
+            .suggest
+            .state
     }
 
     /// Type `text`, and the frame after it that reads the typing.
@@ -2248,7 +2182,7 @@ pub(crate) mod tests {
 
     /// A name's letters open the list and an operator shuts it, though the
     /// empty word after it has rows to offer.
-    /// flip: `follow_suggest` opening on any typed character → fails at "an
+    /// flip: `Suggester::follow` opening on any typed character → fails at "an
     /// operator shuts it".
     #[test]
     fn typing_a_name_opens_the_list_and_an_operator_shuts_it() {
@@ -2265,15 +2199,15 @@ pub(crate) mod tests {
 
     /// Escape hides the list and keeps the line; typing on in that word leaves
     /// it hidden, and `Ctrl+Space` brings it back.
-    /// flip: `follow_suggest` letting typing reopen a dismissed word → fails at
-    /// "stays hidden".
+    /// flip: `Suggester::follow` letting typing reopen a dismissed word → fails
+    /// at "stays hidden".
     #[test]
     fn escape_hides_the_list_for_the_word() {
         let (ctx, mut app, _) = typed(".wi");
         pass(&ctx, &mut app, vec![key(egui::Key::Escape, NONE)], NONE);
         let bar = app.command_bar.as_ref().expect("the bar stays open");
         assert_eq!(bar.text, ".wi", "the line stays");
-        assert!(matches!(bar.suggest, Suggest::Dismissed(_)), "hidden");
+        assert!(matches!(bar.suggest.state, Suggest::Dismissed(_)), "hidden");
         type_in(&ctx, &mut app, "d");
         assert!(
             matches!(suggest(&app), Suggest::Dismissed(_)),

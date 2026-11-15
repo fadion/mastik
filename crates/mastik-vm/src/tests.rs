@@ -698,6 +698,83 @@ fn tokens_mark_constants_builtins_and_calls() {
     );
 }
 
+/// The labels of `complete_script`'s rows for `source` with the cursor at its
+/// end, each with its section.
+fn script_rows(source: &str) -> Vec<(Section, String)> {
+    let (h, _) = three();
+    complete_script(&h.doc, h.page, source, source.len())
+        .rows
+        .into_iter()
+        .map(|r| (r.section, r.label))
+        .collect()
+}
+
+/// A script's completion offers its own locals, functions, parameters and
+/// loop variables, and Luau's keywords and library.
+/// flip: `declared` skipping `for` → fails at "a loop variable".
+#[test]
+fn script_completion_offers_the_scripts_own_names() {
+    let src = "local width_left, gap = 1, 2\nlocal function nudge(by, times)\n  for i, layer in ipairs(sel) do\n  end\nend\n";
+    let has = |typed: &str, section: Section, label: &str| {
+        script_rows(&format!("{src}{typed}")).contains(&(section, label.to_owned()))
+    };
+    assert!(has("wid", Section::Script, "width_left"), "a local");
+    assert!(has("ga", Section::Script, "gap"), "the second local");
+    assert!(has("nud", Section::Script, "nudge"), "a local function");
+    assert!(has("tim", Section::Script, "times"), "a parameter");
+    assert!(has("lay", Section::Script, "layer"), "a loop variable");
+    assert!(has("fun", Section::Luau, "function"), "a keyword");
+    assert!(has("ipa", Section::Luau, "ipairs"), "the library");
+    assert!(has("se", Section::Names, "sel"), "the language's names");
+    assert!(has("A", Section::Layers, "A"), "the page's layers");
+    let typed = script_rows(&format!("{src}lay"));
+    assert!(
+        !typed.contains(&(Section::Script, "lay".to_owned())),
+        "the word being typed is no name: {typed:?}"
+    );
+}
+
+/// After a dot a script's completion offers a header's inputs on `param`, a
+/// library's members on its name, and properties on anything else.
+#[test]
+fn script_completion_after_a_dot() {
+    let header = "---@input gap number = 8 -- Gap\n---@input tint color = #ff0000\n";
+    let rows = script_rows(&format!("{header}sel.x = param."));
+    assert_eq!(
+        rows,
+        [
+            (Section::Script, "gap".to_owned()),
+            (Section::Script, "tint".to_owned())
+        ]
+    );
+    assert_eq!(
+        script_rows("local n = math.flo"),
+        [(Section::Luau, "floor".to_owned())]
+    );
+    assert!(script_rows("sel.wid").contains(&(Section::Properties, "width".to_owned())));
+    assert!(
+        script_rows("sel:")
+            .iter()
+            .all(|(s, _)| *s == Section::Properties)
+    );
+}
+
+/// A script's completion offers nothing in a string, in a comment, on a number,
+/// or where a new name is being declared.
+/// flip: `complete_script` without its `quoted` check → fails at "in a string".
+#[test]
+fn script_completion_keeps_quiet_where_no_name_goes() {
+    assert_eq!(script_rows("print(\"se"), [], "in a string");
+    assert_eq!(script_rows("local s = \"a\" -- se"), [], "in a comment");
+    assert_eq!(script_rows("local se"), [], "naming a local");
+    assert_eq!(script_rows("function se"), [], "naming a function");
+    assert_eq!(script_rows("local n = 12"), [], "a number");
+    assert!(
+        !script_rows("print(\"a\") se").is_empty(),
+        "after a closed string"
+    );
+}
+
 /// Every library member highlighting and completion offer is one a script can
 /// reach in the sandbox, and `math`'s random numbers are not offered.
 #[test]

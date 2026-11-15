@@ -401,6 +401,14 @@ fn layer_chip(g: &Ground) -> bool {
         && [Color32::TRANSPARENT, color::accent_300()].contains(&g.stroke.color)
 }
 
+/// The lit row of a keyboard list in the palette's family (`palette::row_ground`):
+/// a palette row's height on the palette's highlight wash, with no hairline.
+fn palette_row(g: &Ground) -> bool {
+    (g.rect.height() - crate::palette::ROW_H).abs() <= SLOP
+        && g.fill == crate::palette::highlight_fill()
+        && g.stroke.width == 0.0
+}
+
 /// A `ui::slider`'s rail or its filled part: a rounded hairline track.
 fn slider_rail(g: &Ground) -> bool {
     (g.rect.height() - ui::SLIDER_RAIL_H).abs() <= SLOP && g.stroke == Stroke::NONE
@@ -430,6 +438,13 @@ const EXEMPT: &[Exempt] = &[
         why: "`ui::icon_button` (the rail, the top bar, card heads) is its own family \
               with its own lit state, outside the form-control standard",
         is: active_icon_button,
+    },
+    Exempt {
+        what: "palette row",
+        why: "the palette, the command bar's completion and the script editor's share \
+              `palette::row_ground`: a keyboard list whose one ground is the lit row's \
+              accent wash, which the arrows or a moving pointer move, not a hover state",
+        is: palette_row,
     },
 ];
 
@@ -1330,6 +1345,17 @@ fn sweep_on(theme: Theme) {
         a.open_script_editor_with("sel.x += 1".into());
     });
     check("script editor", app, found);
+    // The script editor's completion list, up on a word typed in the code.
+    let mut app = with_a_rect(&ctx);
+    let found = opened(&ctx, &mut app, |ctx, a| {
+        a.open_script_completion(ctx, "sel.x += 1\nse");
+    });
+    assert!(
+        ctx.memory(|m| m.area_rect(egui::Id::new("script-editor").with("suggest")))
+            .is_some(),
+        "fixture: the completion list is drawn"
+    );
+    check("script completion", app, found);
     // A script's run form, a field of every kind its header can ask for.
     let mut app = with_a_rect(&ctx);
     let found = opened(&ctx, &mut app, |_, a| {

@@ -141,6 +141,22 @@ pub(crate) struct Scripts {
     output_h: Option<f32>,
     /// The output pane's drag edge, lit after the pointer rests on it.
     output_edge: crate::app::EdgeDwell,
+    /// The code pane's completion list, which opens and shuts as the bar's.
+    suggest: super::suggest::Suggester,
+    /// The completion as last worked out, under what it was worked out for:
+    /// the text's hash, the caret, the document's revision and the page.
+    completed: Option<(
+        (u64, usize, u64, mastik_core::NodeId),
+        mastik_vm::Completion,
+    )>,
+}
+
+/// The completion list open over the code this frame: its rows (the word they
+/// replace starts where the list hangs) and the layer each shown row names, for
+/// its glyph.
+struct Offer {
+    completion: mastik_vm::Completion,
+    layers: Vec<Option<mastik_core::NodeId>>,
 }
 
 /// What the window asked for this frame.
@@ -210,6 +226,31 @@ impl MastikApp {
         if let Some(w) = self.scripts.current.clone() {
             self.start_script_run(w);
         }
+    }
+
+    /// The editor open on a new unsaved script holding `source`, its caret at
+    /// the end and the completion list up on the word there, as typing that
+    /// word would leave it: the control audit's fixture.
+    #[cfg(test)]
+    pub(crate) fn open_script_completion(&mut self, ctx: &egui::Context, source: &str) {
+        self.open_script_editor_with(source.into());
+        let id = self.scripts.code_id();
+        let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(source.chars().count()),
+            )));
+        state.store(ctx, id);
+        ctx.memory_mut(|m| m.request_focus(id));
+        let word = source
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .map(char::len_utf8)
+            .sum::<usize>();
+        self.scripts.suggest.state = super::suggest::Suggest::On(source.len() - word);
+        self.scripts.suggest.seen = source.to_owned();
     }
 
     /// The log's *Open in editor*: a new unsaved script holding `source`.
@@ -439,6 +480,111 @@ impl MastikApp {
         }
     }
 
+    /// The code pane's completion for this frame, before the pane draws: the
+    /// list follows what was typed last frame, and while it is up its keys are
+    /// taken before the text edit reads them — `↑`/`↓` move, `Tab` takes the
+    /// lit row and `Enter` too unless the word already reads as it (then Enter
+    /// breaks the line), `Escape` shuts it for the word; `Ctrl+Space` opens it.
+    /// Only while the code has the focus. Answers the list to draw.
+    fn script_suggest(&mut self, ctx: &egui::Context, code_id: egui::Id) -> Option<Offer> {
+        let focused = matches!(
+            self.scripts.current,
+            Some(Which::Document(_) | Which::Library(_) | Which::Unsaved(_))
+        ) && ctx.memory(|m| m.has_focus(code_id));
+        let caret = focused
+            .then(|| caret_byte(ctx, code_id, &self.scripts.buffer))
+            .flatten();
+        let completion = caret.map(|caret| {
+            let key = (
+                egui::util::hash(&self.scripts.buffer),
+                caret,
+                self.session.revision(),
+                self.session.page,
+            );
+            match &self.scripts.completed {
+                Some((k, c)) if *k == key => c.clone(),
+                _ => {
+                    let c = mastik_vm::complete_script(
+                        &self.session.doc,
+                        self.session.page,
+                        &self.scripts.buffer,
+                        caret,
+                    );
+                    self.scripts.completed = Some((key, c.clone()));
+                    c
+                }
+            }
+        });
+        let invoke =
+            focused && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Space));
+        let s = &mut self.scripts;
+        s.suggest
+            .follow(&s.buffer, completion.as_ref(), caret.unwrap_or(0), invoke);
+        let rows = completion
+            .as_ref()
+            .filter(|_| s.suggest.on())
+            .map_or(0, |c| c.rows.len().min(super::LIST_ROWS));
+        // What the pane changes from here on is typing, which next frame's
+        // `follow` reads against this.
+        s.suggest.seen = s.buffer.clone();
+        let completion = completion.filter(|_| rows > 0)?;
+        s.suggest.highlight = s.suggest.highlight.min(rows - 1);
+        let none = egui::Modifiers::NONE;
+        let changes = s.suggest.changes(&s.buffer, &completion);
+        let (up, down, take, escape) = ctx.input_mut(|i| {
+            (
+                i.consume_key(none, egui::Key::ArrowUp),
+                i.consume_key(none, egui::Key::ArrowDown),
+                i.consume_key(none, egui::Key::Tab)
+                    || (changes && i.consume_key(none, egui::Key::Enter)),
+                i.consume_key(none, egui::Key::Escape),
+            )
+        });
+        if up || down {
+            s.suggest.step(rows, up);
+        }
+        if escape {
+            s.suggest.dismiss();
+        }
+        if take {
+            let lit = s.suggest.highlight;
+            self.take_script_row(ctx, code_id, &completion, lit);
+            return None;
+        }
+        if !s.suggest.on() {
+            return None;
+        }
+        let shown = &completion.rows[..rows];
+        let layers = self.completion_layers(shown);
+        Some(Offer { completion, layers })
+    }
+
+    /// Take row `i` of `completion` into the code: the caret after what it
+    /// wrote, the list shut, the code focused, and the text stored as typing is.
+    fn take_script_row(
+        &mut self,
+        ctx: &egui::Context,
+        code_id: egui::Id,
+        completion: &mastik_vm::Completion,
+        i: usize,
+    ) {
+        let s = &mut self.scripts;
+        let Some(at) = s.suggest.accept(&mut s.buffer, completion, i) else {
+            return;
+        };
+        // Written, not typed: the list does not open on it.
+        s.suggest.seen = s.buffer.clone();
+        let mut state = egui::TextEdit::load_state(ctx, code_id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(s.buffer[..at].chars().count()),
+            )));
+        state.store(ctx, code_id);
+        ctx.memory_mut(|m| m.request_focus(code_id));
+        self.store_buffer();
+    }
+
     /// Start a run of `which`: the disclosure first for a document's or kit's
     /// script not shown here in this text, then the form for a script with
     /// inputs, then the run.
@@ -647,6 +793,9 @@ impl MastikApp {
         };
         let edited_note = self.scripts.pending.is_some();
         let doc_scripts: Vec<Script> = self.session.doc.scripts().to_vec();
+        let offer = self.script_suggest(ctx, self.scripts.code_id());
+        let doc = &self.session.doc;
+        let (mut row_clicked, mut row_hovered) = (None, None);
         let s = &mut self.scripts;
         let id = egui::Id::new("script-editor");
         // Hung as every card over the canvas is, by its top-left: the window is
@@ -714,12 +863,12 @@ impl MastikApp {
             // The pane's air around the text is the text's too: a press there
             // puts the caret at the end, or beside a line number at its line's
             // start. Sensed before the text edit, which takes the presses on it.
-            let blank = egui::Rect::from_min_size(
+            let code_view = egui::Rect::from_min_size(
                 ui.cursor().min,
                 egui::vec2(ui.available_width(), code_h),
             );
             let blank = editable.then(|| {
-                ui.interact(blank, code_id.with("blank"), egui::Sense::click())
+                ui.interact(code_view, code_id.with("blank"), egui::Sense::click())
                     .on_hover_cursor(egui::CursorIcon::Text)
             });
             let mut laid: Option<egui::text_edit::TextEditOutput> = None;
@@ -786,6 +935,18 @@ impl MastikApp {
                 state.store(ui.ctx(), out.response.id);
                 out.response.request_focus();
             }
+            if let (Some(offer), Some(out)) = (&offer, &laid) {
+                (row_clicked, row_hovered) = suggest_list(
+                    ui.ctx(),
+                    id,
+                    offer,
+                    out,
+                    &s.buffer,
+                    code_view,
+                    s.suggest.highlight,
+                    doc,
+                );
+            }
             let rule = ui::card_rule(ui);
             output_pane(ui, &s.output, output_h);
             let band = egui::Rect::from_center_size(
@@ -807,6 +968,12 @@ impl MastikApp {
         }
         if edited {
             self.store_buffer();
+        }
+        if let Some(i) = row_hovered {
+            self.scripts.suggest.highlight = i;
+        }
+        if let (Some(i), Some(offer)) = (row_clicked, &offer) {
+            self.take_script_row(ctx, self.scripts.code_id(), &offer.completion, i);
         }
         self.scripts_act(act);
     }
@@ -1291,6 +1458,14 @@ fn char_of_line(s: &str, line: usize) -> usize {
     s.chars().count()
 }
 
+/// The caret's byte offset in `text`, the text edit `id` holds; none before
+/// the edit has placed one.
+fn caret_byte(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<usize> {
+    egui::TextEdit::load_state(ctx, id)
+        .and_then(|s| s.cursor.char_range())
+        .map(|r| super::char_to_byte(text, r.primary.index.0))
+}
+
 /// The highlighting: the language's token kinds in the theme's inks.
 pub(crate) fn inks(source: &str) -> ui::CodeInks {
     mastik_vm::tokens(source)
@@ -1767,6 +1942,64 @@ fn output_pane(ui: &mut egui::Ui, runs: &[RunOut], h: f32) {
         });
 }
 
+/// The code pane's completion list's width.
+const SUGGEST_W: f32 = 380.0;
+
+/// The code pane's completion list: the bar's rows on a dropdown's ground,
+/// hung [`ui::MENU_GAP`] under the word being completed, or over it when below
+/// has no room; not drawn while that word is scrolled out of `code_view`.
+/// Answers the row clicked and the row the pointer moved onto.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the list reads the pane's laid-out text, the window's id and the document; \
+              bundling them would only move the list"
+)]
+fn suggest_list(
+    ctx: &egui::Context,
+    window: egui::Id,
+    offer: &Offer,
+    out: &egui::text_edit::TextEditOutput,
+    text: &str,
+    code_view: egui::Rect,
+    lit: usize,
+    doc: &mastik_core::Document,
+) -> (Option<usize>, Option<usize>) {
+    let c = &offer.completion;
+    let start = text.get(..c.replace.start).map_or(0, |t| t.chars().count());
+    let word = out
+        .galley
+        .pos_from_cursor(egui::text::CCursor::new(start))
+        .translate(out.galley_pos.to_vec2());
+    if !code_view.intersects(word) {
+        return (None, None);
+    }
+    let frame = ui::menu_frame(crate::palette::PAD);
+    let inner = egui::vec2(SUGGEST_W, super::completion_height(&c.rows));
+    let at = ui::dropdown_place(ctx, word, inner + frame.total_margin().sum(), ui::MENU_GAP);
+    egui::Area::new(window.with("suggest"))
+        .order(egui::Order::Foreground)
+        .constrain(false)
+        .fixed_pos(at)
+        .show(ctx, |ui| {
+            frame
+                .show(ui, |ui| {
+                    ui.set_width(inner.x);
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, crate::palette::ROW_GAP);
+                    let layer_of = |i: usize| {
+                        offer
+                            .layers
+                            .get(i)
+                            .copied()
+                            .flatten()
+                            .and_then(|id| doc.get(id))
+                    };
+                    super::completion_rows(ui, &c.rows, lit, layer_of)
+                })
+                .inner
+        })
+        .inner
+}
+
 /// One input's field, by its type: a value field for a number, a swatch and
 /// its hex for a colour, a segmented control for up to three choices and a
 /// dropdown beyond, a text field for a string. A boolean's switch row is the
@@ -2192,6 +2425,97 @@ mod tests {
             "the code keeps its least: {}",
             lowest - code.top()
         );
+    }
+
+    /// The editor on `source` with the caret at its end, the code focused by a
+    /// press under the text.
+    fn typing_at_end(source: &str) -> (egui::Context, MastikApp) {
+        let (ctx, mut app) = open_on(source);
+        let code = ctx
+            .read_response(app.scripts.code_id())
+            .expect("fixture: the code is drawn")
+            .rect;
+        click_at(
+            &ctx,
+            &mut app,
+            egui::pos2(code.center().x, code.bottom() + 40.0),
+        );
+        assert_eq!(
+            caret(&ctx, &app),
+            Some(source.chars().count()),
+            "fixture: the caret is at the end"
+        );
+        (ctx, app)
+    }
+
+    /// `text` typed into the focused code, and the frame after that reads it.
+    fn type_code(ctx: &egui::Context, app: &mut MastikApp, text: &str) {
+        use crate::command::tests::pass;
+        pass(
+            ctx,
+            app,
+            vec![egui::Event::Text(text.into())],
+            egui::Modifiers::NONE,
+        );
+        pass(ctx, app, Vec::new(), egui::Modifiers::NONE);
+    }
+
+    fn press(ctx: &egui::Context, app: &mut MastikApp, key: egui::Key) {
+        use crate::command::tests::{key as key_event, pass};
+        let none = egui::Modifiers::NONE;
+        pass(ctx, app, vec![key_event(key, none)], none);
+        pass(ctx, app, Vec::new(), none);
+    }
+
+    /// Typing a name in the code opens the list under it with the script's own
+    /// names, and `Tab` takes the lit row with the caret after it.
+    /// flip: `script_suggest` not taking `Tab` → fails at "Tab took the row".
+    #[test]
+    fn typing_in_the_code_opens_completion_and_tab_takes_it() {
+        let source = "local gap_x = 1\n";
+        let (ctx, mut app) = typing_at_end(source);
+        type_code(&ctx, &mut app, "gap");
+        assert!(app.scripts.suggest.on(), "a name opens the list");
+        let list = ctx
+            .memory(|m| m.area_rect(egui::Id::new("script-editor").with("suggest")))
+            .expect("the list is drawn");
+        let code = ctx.read_response(app.scripts.code_id()).unwrap().rect;
+        assert!(
+            list.top() > code.top() + ui::CODE_LINE_H,
+            "under the second line: {list:?}"
+        );
+        press(&ctx, &mut app, egui::Key::Tab);
+        assert_eq!(
+            app.scripts.buffer, "local gap_x = 1\ngap_x",
+            "Tab took the row"
+        );
+        assert_eq!(caret(&ctx, &app), Some(21), "the caret after it");
+        assert!(!app.scripts.suggest.on(), "and the list shut");
+    }
+
+    /// `Enter` on a word that already reads as the lit row breaks the line, and
+    /// `Escape` shuts the list for the word, leaving the text.
+    /// flip: `script_suggest` taking `Enter` when the row would change nothing →
+    /// fails at "Enter broke the line".
+    #[test]
+    fn enter_on_a_whole_word_breaks_the_line_and_escape_shuts_the_list() {
+        let (ctx, mut app) = typing_at_end("local gap = 1\n");
+        type_code(&ctx, &mut app, "gap");
+        assert!(app.scripts.suggest.on(), "fixture: the list is up");
+        press(&ctx, &mut app, egui::Key::Enter);
+        assert_eq!(
+            app.scripts.buffer, "local gap = 1\ngap\n",
+            "Enter broke the line"
+        );
+        type_code(&ctx, &mut app, "pri");
+        assert!(app.scripts.suggest.on(), "fixture: the list is up again");
+        press(&ctx, &mut app, egui::Key::Escape);
+        assert!(!app.scripts.suggest.on(), "Escape shut it");
+        assert_eq!(
+            app.scripts.buffer, "local gap = 1\ngap\npri",
+            "the text stays"
+        );
+        assert!(app.scripts.open, "the editor stays open");
     }
 
     /// A run that fails changes nothing, says where, and puts the editor on the line.
