@@ -77,6 +77,9 @@ const RULES: &[(&str, &[&str])] = &[
     // The harness layer drives child processes and parses their streams; no
     // rendering or UI belongs in it.
     ("mastik-ai", HEADLESS),
+    // Command Mode's language runs over the document alone; the bar and the
+    // editor that draw it are the app's.
+    ("mastik-vm", HEADLESS),
 ];
 
 /// What `mastik-core` may declare: §3's permitted list, which must stay set-equal
