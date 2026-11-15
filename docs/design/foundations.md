@@ -1,6 +1,6 @@
 # Foundations: scope, stack, workspace, milestones, readiness
 
-What Mastik is and is not, the pinned stack, the crate graph and its dependency rules, milestone status, and the seams reserved for multiplayer and Command Mode. (Original §1–§3, §10, §12–§14.)
+What Mastik is and is not, the pinned stack, the crate graph and its dependency rules, milestone status, the seams reserved for multiplayer, and Command Mode's decisions. (Original §1–§3, §10, §12–§14.)
 
 Mastik is a native, open-source 2D design tool (Figma-class scope, minimal v1) written in Rust, for Windows and Linux and as a release target for Apple Silicon Macs. The document model is API-first: the operation path that serves the UI also serves AI agents over MCP. Seams (identity, mutation path, renderer boundary, serialization) matter more than feature count. Items in `invariants.md` are non-negotiable; if a change would violate one, stop and surface the conflict.
 
@@ -32,6 +32,7 @@ Mastik is a native, open-source 2D design tool (Figma-class scope, minimal v1) w
 - Save/load: native versioned document format with deterministic bytes.
 - Export: SVG (semantic), PNG and JPEG (CPU renderer, no GPU needed), JSON snapshot (AI handoff).
 - MCP server (read/query/export, then write operations against the live document) and headless mode `mastik serve` (§8.2).
+- Command Mode: Navigate, the command bar and scripts in sandboxed Luau, stored in the library, a document or a kit and never run by the document (§13, `command-mode.md`).
 - Platforms: Windows, Linux, and Apple Silicon macOS. Nobody developing Mastik has a Mac; CI's macOS leg is its only compiler. v0.4.0 was the first release built by CI for every platform; no build has been run by hand on a Mac.
 
 ### Deferred (design for, do not build)
@@ -40,7 +41,6 @@ Mastik is a native, open-source 2D design tool (Figma-class scope, minimal v1) w
 - Hyphenation: a decided non-goal for v1 (§15 D399, `non-goals.md`), declined on price.
 - Persistent constraints in §13's sense (live relationships between arbitrary properties, a dependency graph). Layout insets are not this.
 - Real-time multiplayer: a real future goal. Operation and identity model are designed not to preclude it (§5.2, §12); the sync layer is not built.
-- Command Mode: the keyboard-driven modal workflow, Mastik's end-game identity. Designed in §13 and `vm.md`; v1 only reserves its seams.
 - Plugins; prototyping/animation.
 - Linked-image loading (§5.5a). Other image-feature non-goals are in §15 D191.
 - Web and mobile.
@@ -70,6 +70,7 @@ Versions are pinned in the root `Cargo.toml` `[workspace.dependencies]`; pre-1.0
 | Errors | `thiserror` | |
 | UI chrome | `egui` + `egui-wgpu` + `egui-winit` | §9.1 |
 | Font acquisition (app only) | `fontdb`, `ureq`, `dirs`, `woff2-patched` | §5.4a: system enumeration, catalog/face downloads, cache dirs, woff2→sfnt for variable web fonts. None may appear in `mastik-core` |
+| Scripting (`mastik-vm` only) | `mlua` (`=0.11.6`, features `luau`, `vendored`) | Command Mode's language (`command-mode.md` §2). `vendored` compiles Luau's C++, so **building the workspace needs a C++ toolchain** (MSVC on Windows). Pinned exactly in `mastik-vm/Cargo.toml`: the sandbox and interrupt behaviour the language rests on was checked against this version |
 
 **Two renderers, fixed roles.** GPU Vello renders the interactive canvas; `vello_cpu` renders every PNG (export, CI, headless) so exported output is deterministic across machines of one architecture and one pinned `vello_cpu`. The export path pins the SIMD level (`cpu.rs` `export_settings`) and spells out every rasterizer setting (`raster_settings`) instead of defaulting them. A stroked path is the primitive that moves when the SIMD level is merely detected. Both backends sit behind `ScenePainter` (§6). We do not depend on Linebender's renderer-abstraction layers (`imaging`, AnyRender); re-evaluate if maintaining two backends gets costly.
 
@@ -85,10 +86,13 @@ mastik/
    ├─ mastik-export/          # SVG, PDF, PNG, JPEG, WebP, JSON snapshot; code export (HTML/CSS, React, Vue); export plan and zip; the agent's page reads (`context`)
    ├─ mastik-mcp/             # MCP adapter: the wire, the tool table and schemas, the queue
    ├─ mastik-ai/              # the assistant's agent harnesses: find, seal, spawn, decode
+   ├─ mastik-vm/              # Command Mode's language: Luau sandbox, bar sugar, header, completion, `.d.luau`
    └─ mastik-app/             # `mastik` binary: GUI shell, tools, panels, `serve`/`export` subcommands
       └─ src/
          ├─ mcp/             # the MCP host: engine and handlers, window and `serve` hosts, endpoint, proxy, grants
-         └─ assistant/       # the assistant panel, its thread and prompt
+         ├─ assistant/       # the assistant panel, its thread and prompt
+         ├─ command/         # the command bar, its log, the VM's session host, the script editor
+         └─ scripts/         # the library folder of `.luau` scripts
 ```
 
 The MCP host lives in the app because its handlers commit through `EditorSession`, which is the app's (`mcp.md`, *The commit door*); `mastik-mcp` holds only what a host and a client share.
@@ -101,7 +105,8 @@ mastik-render ← mastik-core
 mastik-export ← mastik-core, mastik-render
 mastik-mcp    ← mastik-core
 mastik-ai     ← (no internal deps)
-mastik-app    ← mastik-core, mastik-render, mastik-export, mastik-mcp, mastik-ai
+mastik-vm     ← mastik-core
+mastik-app    ← mastik-core, mastik-render, mastik-export, mastik-mcp, mastik-ai, mastik-vm
 ```
 
 - `mastik-export` needs `mastik-render` because the SVG writer calls `mastik_render::effects` (`filter_matrix`, `any_ink`) so there is one implementation of the effect arithmetic (§6.4), and PNG/JPEG use the CPU renderer plus `image` (JPEG encoder) and `zip`. Consequence: an SVG-only build still pulls in `mastik-render`, `vello`, `vello_cpu` and `wgpu`. Moving those two helpers into core would make SVG core-only but would separate the colour-matrix order from the shaders it specifies; this was declined (§15 D783).
@@ -112,11 +117,11 @@ mastik-app    ← mastik-core, mastik-render, mastik-export, mastik-mcp, mastik-
 - `mastik-core` MUST NOT depend on `vello*`, `wgpu`, `winit`, `egui`, or any GPU/windowing/UI crate. It must build and pass all tests with no graphics context. Permitted: `kurbo`, `peniko`, `parley` (CPU-only text layout; needed for text bounds, hit-testing and the editing cursor), `rstar`, `serde`, `serde_json`, `rustc-hash`, `thiserror`, `base64` (embedded image bytes), `roxmltree` (XML half of SVG import), `regex` (batch rename's Find), `serde_path_to_error` and `serde_ignored` (a verb's model argument refused naming where it went wrong, and an unknown field refused rather than dropped), `skrifa` and `read-fonts` (font tables read directly), `flo_curves` (boolean solver), `i_overlay` (`=`-pinned; the polygon arithmetic behind *Offset path* and *Outline stroke*), `taffy` (`=`-pinned, features as above). This list must stay set-equal to `mastik-core/Cargo.toml`; `deps_forbidden.rs` holds a copy (`CORE_PERMITTED`) and fails when the manifest differs, while the transitive tree is still checked against a denylist.
 - Only `mastik-render` may depend on `vello` and `vello_cpu`. `wgpu` is shared with `mastik-app` because the GPU backend takes wgpu types and eframe owns the device.
 - Only `mastik-app` may depend on `egui`/`winit`.
-- `mastik-mcp` and `mastik-ai` contain no rendering or UI dependency.
+- `mastik-mcp`, `mastik-ai` and `mastik-vm` contain no rendering or UI dependency. `mastik-vm` alone declares `mlua`, which makes it the workspace's one C++ build (no test holds that).
 
 ### Enforcement
 
-`mastik-core/tests/deps_forbidden.rs` inspects the transitive `cargo tree`, read `--workspace` rather than `-p` (with `resolver = "3"` these resolve differently, and every compiling gate resolves workspace-wide). It is a table, `RULES`, one row per rule a dependency tree can express: `mastik-core`, `mastik-mcp` and `mastik-ai` against the headless list; `mastik-render` and `mastik-export` against a second, UI-only list (separate because `glutin_wgl_sys` arrives legitimately under `wgpu-hal` there). The tree is walked once per row.
+`mastik-core/tests/deps_forbidden.rs` inspects the transitive `cargo tree`, read `--workspace` rather than `-p` (with `resolver = "3"` these resolve differently, and every compiling gate resolves workspace-wide). It is a table, `RULES`, one row per rule a dependency tree can express: `mastik-core`, `mastik-mcp`, `mastik-ai` and `mastik-vm` against the headless list; `mastik-render` and `mastik-export` against a second, UI-only list (separate because `glutin_wgl_sys` arrives legitimately under `wgpu-hal` there). The tree is walked once per row.
 
 The vello rule is a separate test, `only_mastik_render_declares_vello`, which reads manifests: it is about what a crate may declare, not what a tree may contain. Neither test can express the other's rule.
 
@@ -150,33 +155,22 @@ What v1 locks in so a sync layer is possible without re-architecting:
 
 Not designed: conflict resolution, causality/ordering metadata, presence, network protocol.
 
-## 13. Command Mode (end-game vision; seams only)
+## 13. Command Mode
 
-A modal, keyboard-driven workflow where an operator navigates the node tree and edits at typing speed, using the same programmatic surface AI agents use over MCP. Not built; recorded so v1 reserves the seams.
-
-### Feature set
-
-- **Command line over the document.** An embedded bar evaluates property expressions into transactions: `.width = parent.width - 20`, `.x += 15`, `sk.x = .x + 5`. One command = one transaction = one undo step.
-- **Leap labels** (vimium/easymotion style). A shortcut overlays short home-row hint labels on nodes in view; typing a label selects the node. Labels double as CLI handles (`sk.width` addresses the node labelled `SK` without selecting it). Drawn as transient overlays via `RenderOverrides`; the candidate set is topmost hit-testable nodes (same policy as `hit_test`), not every ancestor. Each labelled node is outlined on its bounds, outset 3px, while the labels show: a group or frame dashed with a dark label, any other node solid with the yellow label, so a group is told from the layer inside it by lightness, not hue. The first typed letter keeps outlines only on the nodes it still matches and fades the rest. Outlines never take the selection's colour; each line is two inks, dark inside and light outside, so it reads on any artwork.
-- **Structural navigation.** `hjkl`/arrows move child / parent / next / previous sibling. Structural (children order = z-order), not spatial; leap labels are the spatial instrument.
-- **`/ai`.** The same bar accepts natural-language delegation, as a door into the assistant (`assistant.md`; `/ai` itself in `docs/ai.md`): a configured agent harness that reads through the same Snapshot (including `get_selection`) and writes through the same operations as any MCP client, so its edits are ordinary transactions and `undo` works. Mastik embeds no model. `/ai` waits on the bar; the assistant is built.
+A keyboard-driven way to walk the node tree and edit at typing speed, through the same verbs agents use over MCP. Built: **Navigate** (`` ` ``: `h`/`l` parent and child, `j`/`k` the Layers panel's row below and above, leap labels on `f`), the **command bar** (`:`, one line of Luau over the selection, one undo step) and **scripts** (the editor, the library folder, scripts stored in documents and kits). The design is in `command-mode.md`; the keys in `shortcuts.md` §15. `/ai` in the bar, a door into the assistant, is unbuilt (`docs/ai.md`).
 
 ### Decisions made
 
-1. **One-shot evaluation, not constraints.** Expressions are evaluated at commit and forgotten; `a.width = b.width - 5` copies a value. Persistent constraints are a separate future feature (a dependency graph); do not let the syntax grow into an accidental constraint engine. §5.3c's insets are not this: a fixed layout algorithm re-run from specified values.
-2. **World-space property projection.** The CLI speaks `x/y/width/height/rotation/opacity/fill…` in world space (Figma inspector semantics), projected onto local transforms and geometry ops by a facade in `mastik-core`, the same machinery as MCP's `place_at_world` (§8.4). This also enables a future MCP `eval` tool.
+1. **One-shot evaluation, not constraints.** Expressions are evaluated at commit and forgotten; `a.width = b.width - 5` copies a value. Persistent constraints are a separate future feature (a dependency graph); do not let the syntax grow into an accidental constraint engine. §5.3c's insets are not this: a fixed layout algorithm re-run from specified values. For the same reason a script may be stored in a document but is never run by it: no run on open, no re-run on a change (§15 D1100).
+2. **World-space property projection.** The language speaks `x/y/width/height/rotation/opacity/fill…` in world space (Figma inspector semantics), projected onto local transforms and geometry ops by a facade in `mastik-core` (`build::move_by_world`, `edit::turned_to`), the same machinery as MCP's `place_at_world` (§8.4).
 3. **Selection-relative addressing.** The selected node is the default subject (`.width = …`); `parent`, `prev`/`next` are relative; leap-label handles address other nodes. Lookup by layer name is a disambiguated fallback only (names are not unique).
-4. **Explicit modality.** Normal (navigate) / insert (text) / command (CLI) modes with a visible indicator, not a pile of context-dependent shortcuts.
+4. **The editor stays the normal mode.** Navigate is a toggle that swaps the keymap (`Mode::Navigate`, handed to `input::resolve` by `MastikApp::keymap_mode`) and leaves the canvas, panels and mouse as they are, with its sign on the status card. The bar needs no mode: `:` opens it from the editor or Navigate whenever no text entry has the keyboard. Text editing stays `Mode::TextInsert`.
 
-### Seams v1 reserves
+### Where it rests
 
-- **Mode-aware input routing** from the first keystroke, even with trivial modes (§9.3). Retrofitting modality onto a non-modal shell is expensive.
-- **Property projection facade in core**: world-space read/write of node properties, introduced with `place_at_world` and reused by the CLI.
-- **Transient overlays in `RenderOverrides`** (§6.2): hint labels are another overlay consumer.
-
-Expression grammar, multi-select semantics and scripting are designed in `vm.md` (none of it built): Luau via `mlua` (Lua 5.4 has no compound assignment, which `.x += 15` needs); a terse bar grammar that desugars textually to Luau; `sel` is always a collection, and a read across a disagreeing selection reuses core's `PaintShown::Mixed` / `shared_corner_radius` answer; a script is one working copy, one commit, one undo step (one clone of the document per script, so reads see writes). A script may be stored in the `.mastik` file but is never run by it (no run on open, no re-run on change; §15 D1100), because a script the document re-runs is exactly the accidental constraint engine decision 1 forbids. MCP keeps typed read and single-edit tools and routes bulk work through one `eval` tool.
-
-Not designed: the keybinding scheme, and how `/ai`'s request and reply look in the bar.
+- **Mode-aware input routing** (§9.3): `input::resolve` takes the keymap's mode, so Navigate is one more arm of the same match.
+- **The world-space facade in core** (decision 2), shared by the language and MCP.
+- **Leap labels are egui chrome**, painted in `draw_canvas` over everything a layer wears, not a `RenderOverrides` overlay.
 
 ## 14. Deferred decisions
 

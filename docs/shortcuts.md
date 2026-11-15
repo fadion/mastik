@@ -41,6 +41,7 @@ the unshifted key plus Shift. `egui::Key` has variants for `!` `?` `:` `|` `{` `
 |---|---|---|---|
 | `Shift+1` | `!` | `Key::Exclamationmark` | accept both — ✅ (§3) |
 | `Ctrl+Shift+;` | `:` | `Key::Colon` | accept both — ✅ (§6) |
+| `Shift+;` | `:` | `Key::Colon` | the command bar, Shift or not, since some layouts type `:` bare — ✅ (§8, §15) |
 | `Ctrl+Shift+\` | `\|` | `Key::Pipe` | accept both — ✅ (§6) |
 | `Ctrl+Shift+/` | `?` | `Key::Questionmark` | accept both — ✅ (§8) |
 | `Ctrl+Shift+[` `]` | `{` `}` | `Key::Open/CloseCurlyBracket` | ✅ |
@@ -323,6 +324,9 @@ when a sentence happened to be copied elsewhere. The event arm only silences the
 | `Ctrl+Shift+K` | place image | ✅ Figma's (`architecture.md` §5.5a) |
 | `Ctrl+K` | **command palette** | ✅ editor only, this file's choice; the library keeps `Ctrl+K` for its file search. Opens and closes (`Action::Palette`, a `BINDINGS` row read in both modes, so in a text session too; while open, `palette::read_keys` reads it). `Ctrl` without Alt and Shift |
 | `Ctrl+/` | **command palette** | ✅ Figma's quick actions, alias; Shift up, so it never reads as `Ctrl+Shift+/` |
+| `:` | **command bar** | ✅ `Action::CommandBar`, read in code as typed (`Key::Colon`, with or without Shift), in the editor and Navigate while no text entry has the keyboard (`design/command-mode.md`). While open the bar holds the keyboard as the palette does (`command::read_keys`): `Tab`, `↑`/`↓`, `Enter`, `Escape` |
+| `` ` `` | **Navigate on / off** | ✅ `Action::Navigate`; the Tools menu's *Navigate* and the palette's row are its doors where `` ` `` is a dead key. Its own keys are §15 |
+| `Ctrl+Enter` | **run the script** | ✅ in the script editor only, read by the editor's window (`command/editor.rs`); `Ctrl+F` there finds in the script |
 | `Ctrl+Shift+A` | **the assistant** | ✅ `Action::Assistant`: opens or closes the assistant's panel and attaches nothing, as its rail button and the palette's *Assistant* do (`design/assistant.md` §6). In private mode the status line says it is not available. Not plain `Shift+A`, which adds flex layout (§11). The cheatsheet lists it under File |
 | `Ctrl+Shift+/` · ⌃⇧/ on macOS | **shortcut cheatsheet** | ✅ `Key::Questionmark` too (§0). Editor (both modes) and library (`dashboard_keys`); the chord again closes it, read in `cheatsheet_ui` because `resolve` does not run under a modal |
 
@@ -622,6 +626,29 @@ The command palette also lists both (*Insert*, *Publish kit…*). `Ctrl+Alt+P` i
 | Key | Action | |
 |---|---|---|
 | `Shift+S` | open the styles and variables browser | ✅ `Action::VariablesBrowser` (exactly Shift, §15 D1040), beside `Shift+I`: it, the insert picker and the assets browser (no chord) swap in place at the foot of the vertical toolbar, one at a time; also toggled by the rail's swatches button. Free: §1's `S` is read with no Shift; `Alt+S` and `Ctrl+Alt+S` need Alt; `Ctrl+Shift+S` is inert. `shift_s_opens_the_variables_browser_and_leaves_s_alone`. ⚠️ `Shift+I`'s caveat holds: right after opening, the chord types a capital *S* in the search |
+
+## 15. Navigate
+
+`` ` `` turns it on (§8). While on, `input::resolve` reads `Mode::Navigate`: these rows
+(`BINDINGS` rows in `Scope::Navigate`), the undo and redo chords and the cheatsheet's, and nothing
+else, so a tool letter rests (`design/command-mode.md`, *Navigate*).
+
+| Key | Action |
+|---|---|
+| `h` `←` / `l` `→` | parent / child: the child last stood on, else the topmost |
+| `j` `↓` / `k` `↑` | the Layers panel's row below / above |
+| `Shift` + any of those | the same step, adding the layer to the selection |
+| `f` / `Shift+F` | leap labels on the layers in view / inside the current layer |
+| `Enter` · `i` | step in, as §11's `Enter` |
+| `:` | the command bar on the selection |
+| `.` | run the last line typed in the bar again |
+| `Shift+2` | zoom to the current layer (physical `Num2`, §0) |
+| `u` | undo |
+| `` ` `` · `Escape` | leave, keeping the selection and giving back the tool |
+
+**While labels show they take the keys in place of the table** (`MastikApp::leap_keys`): the first
+home-row letter narrows, the second selects (`Shift` adds), `Backspace` takes the first back,
+`Escape` hides the labels and leaves Navigate on.
 
 ---
 

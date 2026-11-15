@@ -61,7 +61,7 @@ jobs:
       - name: Clippy per package (warnings = errors)
         run: |
           set -euo pipefail
-          for p in mastik-core mastik-render mastik-export mastik-mcp mastik-app; do
+          for p in mastik-core mastik-render mastik-export mastik-mcp mastik-ai mastik-vm mastik-app; do
             cargo clippy -p "$p" --all-targets -- -D warnings
           done
       # The gate that checks the record against the code: each crate root denies

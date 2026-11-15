@@ -1,7 +1,8 @@
 //! Mode-aware input routing (§9.3, §13 "seams v1 must reserve").
 //!
 //! Every keystroke resolves against an explicit [`Mode`] before it becomes an
-//! [`Action`]; Command Mode (§13) would be a third arm of the same match.
+//! [`Action`]; Navigate is the third arm. The command bar needs no mode: `:`
+//! opens it, and it owns the keyboard while open.
 //!
 //! Chrome focus is part of routing: if egui owns the keyboard (a focused text
 //! field), the canvas sees nothing.
@@ -11,8 +12,8 @@ use eframe::egui;
 use mastik_core::build;
 use mastik_core::kurbo::Vec2;
 
-/// The editing mode. vim-for-design: navigate, insert, and (later) command,
-/// with a visible indicator — not a pile of context-dependent shortcuts.
+/// The editing mode: normal, text insert and Navigate, each with a visible
+/// indicator — not a pile of context-dependent shortcuts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Mode {
     /// Selecting, drawing, transforming. Single-key tool switches live here.
@@ -20,7 +21,10 @@ pub enum Mode {
     Normal,
     /// Typing into a text node on the canvas. Keys are content, not commands.
     TextInsert,
-    // Command — the embedded CLI (§13) — slots in here.
+    /// Walking the layer tree from the keyboard (`crate::navigate`). A keymap, not
+    /// a canvas state: `MastikApp::mode` stays `Normal` and the canvas behaves as
+    /// in it; `MastikApp::keymap_mode` answers this while Navigate is on.
+    Navigate,
 }
 
 impl Mode {
@@ -29,6 +33,77 @@ impl Mode {
         match self {
             Mode::Normal => "NORMAL",
             Mode::TextInsert => "INSERT",
+            Mode::Navigate => "NAVIGATE",
+        }
+    }
+}
+
+/// A structural step in Navigate: the Layers panel's rows, not the canvas's space.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Step {
+    /// `h`, `←`: the layer the current one sits in.
+    Parent,
+    /// `l`, `→`: the child last visited from here, else the top row inside.
+    Child,
+    /// `j`, `↓`: the row below — the next layer back in z-order.
+    Next,
+    /// `k`, `↑`: the row above.
+    Prev,
+}
+
+/// A key of Navigate's keymap ([`Mode::Navigate`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Nav {
+    /// Move the current layer; `true` with Shift, which adds it to the selection.
+    Step(Step, bool),
+    /// `f` labels every layer in view, `F` (`inside`) those inside the current one.
+    Labels { inside: bool },
+    /// `Enter`, `i`: [`Action::Enter`], from Navigate.
+    StepIn,
+    /// `Shift+2`: fit the current layer in the view.
+    Zoom,
+    /// `u`: undo.
+    Undo,
+    /// `:`: the command bar, on the current layer.
+    Command,
+    /// `.`: the last line typed in the bar again, on the current layer.
+    Repeat,
+    /// `` ` ``, `Esc`: back to the editor.
+    Leave,
+}
+
+impl Nav {
+    /// The cheatsheet's rows, in its order; the Shift steps share one hand row.
+    pub(crate) const SHEET: [Nav; 12] = [
+        Nav::Step(Step::Parent, false),
+        Nav::Step(Step::Child, false),
+        Nav::Step(Step::Next, false),
+        Nav::Step(Step::Prev, false),
+        Nav::Labels { inside: false },
+        Nav::Labels { inside: true },
+        Nav::StepIn,
+        Nav::Command,
+        Nav::Repeat,
+        Nav::Zoom,
+        Nav::Undo,
+        Nav::Leave,
+    ];
+
+    /// The cheatsheet's label for the key.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Nav::Step(Step::Parent, _) => "Parent layer",
+            Nav::Step(Step::Child, _) => "Child layer",
+            Nav::Step(Step::Next, _) => "Next layer (row below)",
+            Nav::Step(Step::Prev, _) => "Previous layer (row above)",
+            Nav::Labels { inside: false } => "Label the layers in view",
+            Nav::Labels { inside: true } => "Label the layers inside",
+            Nav::StepIn => "Step in",
+            Nav::Zoom => "Zoom to the layer",
+            Nav::Undo => "Undo",
+            Nav::Command => "Command bar on the layer",
+            Nav::Repeat => "Repeat the last bar line",
+            Nav::Leave => "Leave Navigate",
         }
     }
 }
@@ -105,6 +180,9 @@ pub enum Action {
     ExportEditable(crate::panels::EditableFormat),
     /// `Ctrl+K` and `Ctrl+/` — open the command palette, or close it.
     Palette,
+    /// `:` — open the command bar (`crate::command`). Shifted `;` reaches egui as
+    /// `Key::Colon`, so the chord is read in code after the table.
+    CommandBar,
     /// `Ctrl+Shift+/` — the shortcut cheatsheet.
     Cheatsheet,
     Copy,
@@ -352,6 +430,16 @@ pub enum Action {
     BlendChord(u8),
     /// One of the styling chords a live text session admits — see [`TextChord`].
     TextStyle(TextChord),
+    /// `` ` `` — Navigate on or off (`MastikApp::toggle_navigate`); the Tools menu
+    /// and the palette carry it for layouts where `` ` `` is a dead key.
+    Navigate,
+    /// A key of Navigate's own keymap — see [`Nav`].
+    Nav(Nav),
+    /// Tools ▸ *Scripts…*: the script editor (`crate::command::editor`). No chord.
+    OpenScripts,
+    /// A saved script from the palette's *Scripts* rows, run as the editor's
+    /// *Run* does: by its place among the scripts the palette listed.
+    RunScript(usize),
 }
 
 /// A workspace switch: something the View or Snap menu shows a tick against
@@ -583,15 +671,22 @@ enum Scope {
     Normal,
     /// A live text session only, where a chord styles the text.
     Text,
+    /// `Normal` and `Text`.
     Both,
+    /// Navigate only, where every other key rests.
+    Navigate,
+    /// Every mode: the history chords.
+    Every,
 }
 
 impl Scope {
     fn admits(self, mode: Mode) -> bool {
         match self {
-            Self::Both => true,
+            Self::Every => true,
+            Self::Both => mode != Mode::Navigate,
             Self::Normal => mode == Mode::Normal,
             Self::Text => mode == Mode::TextInsert,
+            Self::Navigate => mode == Mode::Navigate,
         }
     }
 }
@@ -682,11 +777,23 @@ const BINDINGS: &[Binding] = {
     const fn text(mods: Mods, key: K, chord: TextChord) -> Binding {
         bind(mods, key, A::TextStyle(chord)).in_scope(Scope::Text)
     }
+    const fn nav(mods: Mods, key: K, nav: Nav) -> Binding {
+        bind(mods, key, A::Nav(nav)).in_scope(Scope::Navigate)
+    }
+    /// A Navigate step's Shift twin, which extends the selection: unshown, as the
+    /// cheatsheet's one hand row says it for all four.
+    const fn extend(key: K, step: Step) -> Binding {
+        nav(SHIFT, key, Nav::Step(step, true)).unshown()
+    }
+    const fn every(b: Binding) -> Binding {
+        b.in_scope(Scope::Every)
+    }
     &[
-        // File and history; the four a text session also admits finish it first.
-        both(bind(CTRL, K::Z, A::Undo)),
-        both(bind(CTRL_SHIFT, K::Z, A::Redo)),
-        both(bind(CTRL, K::Y, A::Redo)),
+        // File and history; the four a text session also admits finish it first,
+        // and Navigate keeps undo and redo.
+        every(bind(CTRL, K::Z, A::Undo)),
+        every(bind(CTRL_SHIFT, K::Z, A::Redo)),
+        every(bind(CTRL, K::Y, A::Redo)),
         both(bind(CTRL, K::S, A::Save)),
         both(bind(CTRL, K::O, A::Open)),
         bind(CTRL, K::N, A::NewDocument),
@@ -729,6 +836,8 @@ const BINDINGS: &[Binding] = {
         bind(CTRL, K::Num2, A::ZoomSelection),
         // The workspace switches.
         bind(SHIFT, K::R, A::ToggleView(ViewSwitch::Rulers)),
+        // `:`, which reaches egui as `Key::Colon` and is read there in code.
+        bind(SHIFT, K::Semicolon, A::CommandBar),
         bind(CTRL, K::Semicolon, A::ToggleView(ViewSwitch::Guides)),
         bind(CTRL_ALT, K::Semicolon, A::ToggleView(ViewSwitch::GuideLock)),
         bind(CTRL_ALT, K::Y, A::ToggleView(ViewSwitch::PixelPreview)),
@@ -798,6 +907,38 @@ const BINDINGS: &[Binding] = {
         bind(NONE, K::I, A::ChooseTool(Tool::Eyedropper)),
         // Illustrator's chart letter; draws the kind the rail's chart slot shows.
         bind(NONE, K::J, A::ChooseTool(Tool::Chart)),
+        // Navigate: on from the editor, and its own keymap while on. `:` and `.`
+        // are the command bar's.
+        bind(NONE, K::Backtick, A::Navigate),
+        nav(NONE, K::H, Nav::Step(Step::Parent, false)),
+        nav(NONE, K::ArrowLeft, Nav::Step(Step::Parent, false)),
+        nav(NONE, K::L, Nav::Step(Step::Child, false)),
+        nav(NONE, K::ArrowRight, Nav::Step(Step::Child, false)),
+        nav(NONE, K::J, Nav::Step(Step::Next, false)),
+        nav(NONE, K::ArrowDown, Nav::Step(Step::Next, false)),
+        nav(NONE, K::K, Nav::Step(Step::Prev, false)),
+        nav(NONE, K::ArrowUp, Nav::Step(Step::Prev, false)),
+        extend(K::H, Step::Parent),
+        extend(K::ArrowLeft, Step::Parent),
+        extend(K::L, Step::Child),
+        extend(K::ArrowRight, Step::Child),
+        extend(K::J, Step::Next),
+        extend(K::ArrowDown, Step::Next),
+        extend(K::K, Step::Prev),
+        extend(K::ArrowUp, Step::Prev),
+        nav(NONE, K::F, Nav::Labels { inside: false }),
+        nav(SHIFT, K::F, Nav::Labels { inside: true }),
+        nav(NONE, K::Enter, Nav::StepIn),
+        nav(NONE, K::I, Nav::StepIn),
+        nav(SHIFT, K::Num2, Nav::Zoom),
+        nav(NONE, K::U, Nav::Undo),
+        // Shifted `;` reaches egui as `Key::Colon`; a layout that types it bare
+        // sends no Shift.
+        nav(SHIFT, K::Colon, Nav::Command),
+        nav(NONE, K::Colon, Nav::Command).unshown(),
+        nav(NONE, K::Period, Nav::Repeat),
+        nav(NONE, K::Backtick, Nav::Leave),
+        nav(NONE, K::Escape, Nav::Leave),
         // A live text session's styling chords (`docs/shortcuts.md` §10).
         text(CTRL, K::B, TextChord::Bold),
         text(CTRL, K::I, TextChord::Italic),
@@ -1108,7 +1249,30 @@ pub fn resolve(ctx: &egui::Context, mode: Mode, nudge: NudgeStep) -> Vec<Action>
         // it clear of `StepPoint`.
         Mode::TextInsert => text_insert_mode(ctx),
         Mode::Normal => normal_mode(ctx, nudge),
+        Mode::Navigate => navigate_mode(ctx),
     }
+}
+
+/// Navigate's keymap: its own table rows and the history chords, and nothing the
+/// editor binds besides — a tool letter rests. The cheatsheet's chord stays, so
+/// the keys can be looked up from inside the mode.
+fn navigate_mode(ctx: &egui::Context) -> Vec<Action> {
+    ctx.input(|i| {
+        let mut out = Vec::new();
+        table_chords(i, Mode::Navigate, &mut out);
+        if cheatsheet_pressed(i) {
+            out.push(Action::Cheatsheet);
+        }
+        out
+    })
+}
+
+/// Navigate's cheatsheet rows: each [`Nav::SHEET`] key's label and its spellings
+/// from [`BINDINGS`], so the sheet and the keymap cannot disagree.
+pub(crate) fn navigate_rows() -> impl Iterator<Item = (Nav, Vec<&'static str>)> {
+    Nav::SHEET
+        .into_iter()
+        .map(|n| (n, chords(Action::Nav(n)).collect()))
 }
 
 /// A styling chord read **inside a live text session** (`docs/shortcuts.md` §10).
@@ -1440,6 +1604,12 @@ fn normal_mode(ctx: &egui::Context, nudge: NudgeStep) -> Vec<Action> {
         on(
             plain && m.shift && i.key_pressed(egui::Key::Exclamationmark),
             Action::ZoomFit,
+            &mut out,
+        );
+        // `:` as typed, Shift or not: the layouts that type it unshifted send it so.
+        on(
+            plain && i.key_pressed(egui::Key::Colon),
+            Action::CommandBar,
             &mut out,
         );
 

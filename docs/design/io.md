@@ -6,7 +6,7 @@ The native `.mastik` file format (JSON, versioned DTO), its integrity checks, th
 
 ### Format and the two readers
 
-- Native format is JSON, currently **v16** (`io::CURRENT_SCHEMA_VERSION`). `schema.rs` defines a versioned DTO decoupled from the in-memory types.
+- Native format is JSON, currently **v17** (`io::CURRENT_SCHEMA_VERSION`). `schema.rs` defines a versioned DTO decoupled from the in-memory types.
 - `io::clip` writes a copied subtree for the system clipboard through the same `NodeDto` and `ImageDto` a file uses (`from_node`/`into_node`, `from_entry`/`into_entry` are lifted out of `DocumentDto` for this), so every normalization applies to a pasted layer too. Refuse a second projection beside `NodeDto`: a field added to one and not the other compiles, saves and loads.
 - The clipboard deliberately does **not** share the migration ladder. `io::clip::read` compares `schema_version` for equality and refuses anything else: a file is an archive and must open in a build written years later; a clipboard is a handoff between two processes running now. Do not route `clip` through `migrate.rs`.
 - `io::clip::read` carries envelope checks of its own (§15 D833–D836, D852):
@@ -35,7 +35,7 @@ The in-memory walks (`subtree_ids`, `paint_path`, `resolve`) carry no visited se
 - every parent/child pair obeys the same kind rules operations do;
 - no frame under a boolean or a mask (§5.3, §15 D876), checked as a flag per stack entry on the reachability walk;
 - no item id twice in one of a node's item lists (`Node::check_item_ids`). A repeated property id in `props` is **re-keyed, never refused** (`item::rekey_repeats`, lowest positional id the list lacks, deterministic) because an old development build wrote such files;
-- variables and styles: `variable::check` and `style::check` run after the tree checks; a dangling binding is refused (it has no value to draw); a repeated style id is refused.
+- variables and styles: `variable::check` and `style::check` run after the tree checks; a dangling binding is refused (it has no value to draw); a repeated style id is refused, and so is a repeated script id (`RemoveScript` would take the first and leave the second unreachable).
 
 Reachability and the duplicate check are what make cycles and orphan components impossible; without them a hand-edited file could hang the app.
 
@@ -74,6 +74,7 @@ Fields in that form, and the particular rule each adds:
 | `Node::clip` | Named default says "yes", so it is re-checked against the kind on load (`dto.clip && dto.kind.clips_children()`). It is also normalized on the way **out** (`DocumentDto::from_document`), because `op_set_clip` accepts an inert flag on purpose. The loader's copy stays to guard hand-edited files. |
 | `NodeDto::fill_hidden_in_export` | Skipped when false. Normalized against `kind.clips_children()` on save and on load, as `clip` is, since `op_set_fill_hidden_in_export` accepts an inert flag. Part of v16. |
 | `DocumentDto::guides` | Absent means none. |
+| `DocumentDto::scripts` | The stored scripts (`command-mode.md` §10), `[{id, name, source}]` in list order, ids in the node wire form; absent means none. Part of v17. |
 | `DocumentDto::tokens_link` | Absent means linked to no tokens file (`styles-variables.md`, *Design tokens*). After `images`, before `published`. Its `into`, the collection the root tokens landed in, is skipped when absent, which reads as the collection on show. Not in the library block (§5.11a): the scan reads a file's first 4 KB, and the applied copy can be any size. |
 | `Node::proportions_locked` | Bare default; no normalization (inert on every kind). |
 | `Node::pivot` | `skip_serializing_if = "Option::is_none"`; the loader must not re-decide which `Pivot` variant a kind gets (§5.3). |
@@ -116,6 +117,7 @@ A bump **is** required when a field's meaning changes or its default would silen
 | v13 to v14 | A mirrored path's axes (§5.3) | `migrate_13_to_14`: number only, published document moving with it; v13 had shipped, so the key could not join it, and a v13 reader would drop the axes and edit the path as a plain one. `NodeKind::Path::mirror` is skipped when neither axis. The `Spiral` and `Arc` kinds (§5.3) share v14 unbumped, saved as `{"Spiral": {"size", "turns"}}` and `{"Arc": {"end", "sweep"}}`; a v13 reader refuses the file by its version rather than failing on a kind it does not know. `NodeDto::credit` (§5.3) shares it too. |
 | v14 to v15 | A frame's width queries (§5.3f); a layer's HTML element (§5.3) | `migrate_14_to_15`: the number, published document moving with it, and a set's `element` moved onto its variant roots (`set_element_onto_roots`, in the published document too), where v15 keeps a layer's element: a set with an interaction state writes `"button"` (the old key absent or `"button"`) or `"a"` (`"link"`) on each `component: true` child and on every node showing one, however nested — down its links to the first swap, whose target it shows (`swap::shown_main`'s rule) — so a copy does not read as overriding its main's element; Plain writes nothing; a set without states never read it, so it is dropped. A v14 reader would drop the queries and save every instance back picking by nothing. `NodeDto::element` and `href` share v15. `NodeDto::queries` is skipped when empty, each query a map of mode id to minimum width. A grid repeat's `"auto-fill"`/`"auto-fit"` count shares v15 (a counted repeat stays a bare number), as do `Grid::areas` (`{"name", "columns": [start, end], "rows"}`, skipped when empty) and `LayoutItem::grid_area` (a name, skipped when none) and `LayoutItem::aspect_ratio` (`{"ratio", "side": "Width"|"Height"}`, skipped when none). `NodeDto::chart` (`charts.md`) shares it too, skipped when none: a description `Chart::validate` refuses, a chart off a frame or where `chart::check` bars one, or a guide on a chart refuses the file; a guide on one of a chart's parts moves onto the nearest frame or page above the chart at the place it drew (`off_chart`). Its parts' ids are written as node ids are, beside the `generated` stamp and the `minted` part-id mark (skipped at 0). |
 | v15 to v16 | A frame's fill left out of exports (`export.md`, *Plan*) | `migrate_15_to_16`: number only, published document moving with it; v15 had shipped, so the key could not join it, and a v15 reader would drop the flag and save the fill back into every export. `NodeDto::fill_hidden_in_export` is skipped when false. |
+| v16 to v17 | The document's scripts (`command-mode.md` §10) | `migrate_16_to_17`: number only, published document moving with it; v16 had shipped, and a v16 reader would drop the scripts on its next save. `DocumentDto::scripts` is skipped when empty. |
 
 ## 5.11a The library block
 

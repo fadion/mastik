@@ -6,15 +6,16 @@
 
 ## `/ai`
 
-Command Mode's `/ai` (`vm.md` §11) is a later door into the same assistant: a request typed in the
-bar goes to the configured harness, and what it proposes lands as one undoable step. It waits on
-Command Mode's bar.
+Command Mode's `/ai` is a later door into the same assistant: a request typed in the command bar
+(`design/command-mode.md`) goes to the configured harness, and what it proposes lands as one
+undoable step. The bar is built; `/ai` in it is not.
 
 ## Script blocks in replies
 
-A Luau code block in a reply gains *Open in script editor* once the script editor (`vm.md` §10)
-exists. Until then it renders as any other code block.
+A Luau code block in a reply is to gain *Open in script editor* (the editor is built,
+`design/command-mode.md` §10). Until then it renders as any other code block.
 
 ## Open questions
 
-1. **`/ai`'s look in the bar** (`vm.md` §13, question 7).
+1. **`/ai`'s look in the bar**: how a request and its proposed script show there. Its mechanics are
+   the assistant's: the configured harness, its sign-in, its streaming.

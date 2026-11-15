@@ -1,0 +1,1773 @@
+//! The script editor (Tools ▸ *Scripts…*): one floating window listing the
+//! scripts from four places — this document, the library folder, the kits this
+//! document uses, and the session's unsaved ones — with a code pane, an output
+//! pane, and *Run*. A run is one undo step named after the script; a script
+//! with a header asks for its inputs first, and one that came with a document or
+//! a kit shows its source before its first run on this machine.
+
+use super::host;
+use super::log;
+use crate::app::MastikApp;
+use crate::settings::{self, CardHold};
+use crate::theme::{self, color, icon};
+use crate::ui::{self, FieldButton};
+use eframe::egui;
+use mastik_core::script::{Script, ScriptId};
+use mastik_core::{Operation, Transaction};
+use serde_json::Value;
+use std::time::Instant;
+
+/// The window's size when it first opens; it keeps what the person makes it.
+const START: egui::Vec2 = egui::vec2(1000.0, 620.0);
+/// The source list's width.
+const LIST_W: f32 = 240.0;
+/// The script head's height, over the code.
+const HEAD_H: f32 = 44.0;
+/// The output pane's height.
+const OUTPUT_H: f32 = 132.0;
+/// How long typing in a library script rests before it is written to its file.
+const WRITE_AFTER: std::time::Duration = std::time::Duration::from_millis(600);
+/// The run form's width.
+const FORM_W: f32 = 300.0;
+/// The disclosure's width, and the most of the source it shows before scrolling.
+const DISCLOSE_W: f32 = 472.0;
+const DISCLOSE_CODE_H: f32 = 220.0;
+
+/// Where a script lives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Which {
+    /// Saved in this document.
+    Document(ScriptId),
+    /// A `.luau` file in the library folder, by name.
+    Library(String),
+    /// Carried by a kit this document uses: the kit's id and name, and the script.
+    Kit {
+        kit: String,
+        kit_name: String,
+        id: ScriptId,
+    },
+    /// Typed this session and not saved, by its place in the unsaved list.
+    Unsaved(usize),
+}
+
+/// A script typed this session and saved nowhere.
+#[derive(Clone, Debug)]
+struct Unsaved {
+    name: String,
+    source: String,
+}
+
+/// One run's output, under a rule with its time.
+#[derive(Clone, Debug)]
+struct RunOut {
+    at: String,
+    secs: f32,
+    lines: Vec<(String, bool)>,
+}
+
+/// The run form: a script's inputs as fields, before it runs.
+struct Form {
+    which: Which,
+    name: String,
+    source: String,
+    header: mastik_vm::Header,
+    values: serde_json::Map<String, Value>,
+}
+
+/// The box a document's or kit's script shows before its first run here.
+struct Disclosure {
+    which: Which,
+    name: String,
+    source: String,
+}
+
+/// The editor's state, kept for the session whether the window is open or not.
+#[derive(Default)]
+pub(crate) struct Scripts {
+    pub(crate) open: bool,
+    current: Option<Which>,
+    /// The text in the code pane: a library, kit or unsaved script's, or a
+    /// document script's as the document holds it.
+    buffer: String,
+    unsaved: Vec<Unsaved>,
+    search: String,
+    /// The library folder's scripts, read when the window opens and after a write.
+    library: Vec<library::LibraryScript>,
+    /// When the library script being typed in was last changed, until written.
+    pending: Option<Instant>,
+    output: Vec<RunOut>,
+    /// The line the last run failed at, for the script it ran.
+    bad: Option<(Which, usize)>,
+    /// Put the caret on this line (0-based) next frame.
+    jump: Option<usize>,
+    /// The ⋯ menu is open.
+    menu: bool,
+    /// A rename in progress: the new name as typed.
+    renaming: Option<String>,
+    /// Find, while open: the text sought.
+    find: Option<String>,
+    form: Option<Form>,
+    disclosure: Option<Disclosure>,
+    /// The values each script's form last ran with, for the session, by
+    /// [`values_key`].
+    last_values: rustc_hash::FxHashMap<String, serde_json::Map<String, Value>>,
+}
+
+/// What the window asked for this frame.
+enum Act {
+    Close,
+    Pick(Which),
+    New,
+    Run,
+    OpenFolder,
+    SaveToLibrary,
+    CopyToDocument,
+    Duplicate,
+    StartRename,
+    Rename(String),
+    Delete,
+    ShowInFolder,
+}
+
+impl MastikApp {
+    /// Tools ▸ *Scripts…*: open the editor, or bring it forward.
+    pub(crate) fn open_scripts(&mut self) {
+        self.scripts.open = true;
+        // Never from a headless app, whose prefs are a throwaway: it would write
+        // into this machine's real scripts folder.
+        if !self.prefs.ephemeral
+            && let Err(e) = library::write_definitions()
+        {
+            ::log::warn!(target: "mastik", "the scripts folder's definitions: {e}");
+        }
+        self.scripts.library = library::list();
+        if self.scripts.current.is_none() {
+            let first = self
+                .session
+                .doc
+                .scripts()
+                .first()
+                .map(|s| Which::Document(s.id))
+                .or_else(|| {
+                    self.scripts
+                        .library
+                        .first()
+                        .map(|s| Which::Library(s.name.clone()))
+                });
+            if let Some(w) = first {
+                self.pick_script(w);
+            }
+        }
+    }
+
+    /// The log's *Open in editor*: a new unsaved script holding `source`.
+    pub(crate) fn open_script_editor_with(&mut self, source: String) {
+        self.open_scripts();
+        let n = self.scripts.unsaved.len();
+        let name = self.unsaved_name();
+        self.scripts.unsaved.push(Unsaved { name, source });
+        self.pick_script(Which::Unsaved(n));
+    }
+
+    /// Every saved script, in the palette's order: this document's, the
+    /// library's as last read, then each kit's that its shelf has read.
+    fn saved_scripts(&self) -> Vec<(Which, String)> {
+        let mut out: Vec<(Which, String)> = self
+            .session
+            .doc
+            .scripts()
+            .iter()
+            .map(|s| (Which::Document(s.id), s.name.clone()))
+            .collect();
+        out.extend(
+            self.scripts
+                .library
+                .iter()
+                .map(|s| (Which::Library(s.name.clone()), s.name.clone())),
+        );
+        for used in self.kits_used() {
+            for s in self.kit_scripts(&used.kit) {
+                out.push((
+                    Which::Kit {
+                        kit: used.kit.clone(),
+                        kit_name: used.name.clone(),
+                        id: s.id,
+                    },
+                    s.name,
+                ));
+            }
+        }
+        out
+    }
+
+    /// The saved scripts' names, for the palette's *Run* rows.
+    pub(crate) fn saved_script_names(&self) -> Vec<String> {
+        self.saved_scripts().into_iter().map(|(_, n)| n).collect()
+    }
+
+    /// Read the library folder again, as the palette opens.
+    pub(crate) fn refresh_script_library(&mut self) {
+        self.scripts.library = library::list();
+    }
+
+    /// The palette's *Run* row `i`: start that script's run.
+    pub(crate) fn run_listed_script(&mut self, i: usize) {
+        if let Some((which, _)) = self.saved_scripts().into_iter().nth(i) {
+            self.start_script_run(which);
+        }
+    }
+
+    /// `Untitled N`, the next free among every listed script.
+    fn unsaved_name(&self) -> String {
+        let mut taken: Vec<Script> = self.session.doc.scripts().to_vec();
+        for (i, u) in self.scripts.unsaved.iter().enumerate() {
+            taken.push(Script {
+                id: ScriptId(mastik_core::NodeId {
+                    actor: 0,
+                    seq: i as u64,
+                }),
+                name: u.name.clone(),
+                source: String::new(),
+            });
+        }
+        mastik_core::script::free_name(&taken, &format!("{} 1", mastik_core::script::UNTITLED))
+    }
+
+    /// Show `which` in the code pane, writing any library edit still waiting.
+    fn pick_script(&mut self, which: Which) {
+        self.flush_library_write();
+        self.scripts.buffer = self.script_source(&which).unwrap_or_default();
+        self.scripts.current = Some(which);
+        self.scripts.menu = false;
+        self.scripts.renaming = None;
+    }
+
+    /// `which`'s name and source as they stand.
+    fn script_named(&self, which: &Which) -> Option<(String, String)> {
+        match which {
+            Which::Document(id) => self
+                .session
+                .doc
+                .script(*id)
+                .map(|s| (s.name.clone(), s.source.clone())),
+            Which::Library(name) => self
+                .scripts
+                .library
+                .iter()
+                .find(|s| s.name == *name)
+                .map(|s| (s.name.clone(), s.source.clone())),
+            Which::Kit { kit, id, .. } => self
+                .kit_scripts(kit)
+                .into_iter()
+                .find(|s| s.id == *id)
+                .map(|s| (s.name, s.source)),
+            Which::Unsaved(i) => self
+                .scripts
+                .unsaved
+                .get(*i)
+                .map(|u| (u.name.clone(), u.source.clone())),
+        }
+    }
+
+    fn script_source(&self, which: &Which) -> Option<String> {
+        self.script_named(which).map(|(_, s)| s)
+    }
+
+    /// The scripts kit `kit` carries, from its published state, which the kit's
+    /// shelf reads when first asked.
+    fn kit_scripts(&self, kit: &str) -> Vec<Script> {
+        let own = self.session.doc.meta().id.clone();
+        let Some(entry) = crate::kits::index::kits_in(&self.library, own.as_deref())
+            .into_iter()
+            .find(|k| k.id == kit)
+        else {
+            return Vec::new();
+        };
+        self.kit_shelf
+            .current(&entry)
+            .map(|p| p.document().scripts().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// The kits this document uses, each with its scripts; a kit not read yet is
+    /// asked for, and lists its scripts once its shelf has them.
+    fn kits_with_scripts(&mut self) -> Vec<(String, String, Vec<Script>)> {
+        let own = self.session.doc.meta().id.clone();
+        let listed = crate::kits::index::kits_in(&self.library, own.as_deref());
+        let mut out = Vec::new();
+        for used in self.kits_used() {
+            let Some(entry) = listed.iter().find(|k| k.id == used.kit) else {
+                continue;
+            };
+            if self.kit_shelf.current(entry).is_none() {
+                self.kit_shelf.ask(entry);
+                continue;
+            }
+            let scripts = self.kit_scripts(&used.kit);
+            if !scripts.is_empty() {
+                out.push((used.kit.clone(), used.name.clone(), scripts));
+            }
+        }
+        out
+    }
+
+    /// Write the library script being typed in, if it is waiting.
+    fn flush_library_write(&mut self) {
+        let Some(Which::Library(name)) = self.scripts.current.clone() else {
+            self.scripts.pending = None;
+            return;
+        };
+        if self.scripts.pending.take().is_none() {
+            return;
+        }
+        match library::write(&name, &self.scripts.buffer) {
+            Ok(()) => self.scripts.library = library::list(),
+            Err(e) => self.session.fail(format!("Couldn't save {name}: {e}")),
+        }
+    }
+
+    /// Put the code pane's text where the script lives: a document script as an
+    /// *Edit script* step that folds while typing continues, a library script
+    /// after a rest, an unsaved one at once. A kit's script is read-only.
+    fn store_buffer(&mut self) {
+        let Some(which) = self.scripts.current.clone() else {
+            return;
+        };
+        match which {
+            Which::Document(id) => {
+                let tx = Transaction(vec![Operation::SetScriptSource {
+                    id,
+                    source: self.scripts.buffer.clone(),
+                }]);
+                self.session.name_step("Edit script", icon::FILE_CODE);
+                self.session.commit_run(tx, "edit-script");
+            }
+            Which::Library(_) => self.scripts.pending = Some(Instant::now()),
+            Which::Unsaved(i) => {
+                if let Some(u) = self.scripts.unsaved.get_mut(i) {
+                    u.source = self.scripts.buffer.clone();
+                }
+            }
+            Which::Kit { .. } => {}
+        }
+    }
+
+    /// Start a run of `which`: the disclosure first for a document's or kit's
+    /// script not shown here in this text, then the form for a script with
+    /// inputs, then the run.
+    pub(crate) fn start_script_run(&mut self, which: Which) {
+        self.flush_library_write();
+        let Some((name, source)) = self.script_named(&which) else {
+            return;
+        };
+        // A document or kit script with no key (a file whose id was taken out) is
+        // shown every time: nothing can mark it, so it never runs unseen.
+        let shown_before = match &which {
+            Which::Document(_) | Which::Kit { .. } => self
+                .disclosure_key(&which)
+                .is_some_and(|key| self.prefs.disclosed(&key, &source)),
+            Which::Library(_) | Which::Unsaved(_) => true,
+        };
+        if !shown_before {
+            self.scripts.disclosure = Some(Disclosure {
+                which,
+                name,
+                source,
+            });
+            return;
+        }
+        self.script_form_or_run(which, name, source);
+    }
+
+    /// The key the first-run disclosure is remembered under on this machine, for
+    /// a script that came with a document or a kit; `None` for the person's own,
+    /// and for a document with no identity, whose scripts are shown every run.
+    fn disclosure_key(&self, which: &Which) -> Option<String> {
+        match which {
+            Which::Document(id) => {
+                crate::prefs::disclosure_key(self.session.doc.meta().id.as_deref(), *id)
+            }
+            Which::Kit { kit, id, .. } => crate::prefs::disclosure_key(Some(kit), *id),
+            Which::Library(_) | Which::Unsaved(_) => None,
+        }
+    }
+
+    /// Open the form for a script with inputs, else run it.
+    fn script_form_or_run(&mut self, which: Which, name: String, source: String) {
+        let header = match mastik_vm::header(&source) {
+            Ok(h) => h,
+            Err(e) => return self.script_failed(&which, &name, &e, 0.0),
+        };
+        if header.inputs.is_empty() {
+            return self.run_script_now(which, name, source, Default::default());
+        }
+        let mut values = self
+            .scripts
+            .last_values
+            .get(&values_key(&which))
+            .cloned()
+            .unwrap_or_default();
+        for input in &header.inputs {
+            values
+                .entry(input.name.clone())
+                .or_insert_with(|| input.default.clone());
+        }
+        self.scripts.form = Some(Form {
+            which,
+            name,
+            source,
+            header,
+            values,
+        });
+    }
+
+    /// Run a script now, as one undo step named after it, and report.
+    fn run_script_now(
+        &mut self,
+        which: Which,
+        name: String,
+        source: String,
+        params: serde_json::Map<String, Value>,
+    ) {
+        let selection = self.session.selection.ids().to_vec();
+        let labels: rustc_hash::FxHashMap<String, mastik_core::NodeId> = self
+            .leap_labels()
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        let env = mastik_vm::Env {
+            selection: &selection,
+            labels: &labels,
+            params,
+        };
+        let started = Instant::now();
+        let ran = host::run_as_step(&mut self.session, &name, icon::FILE_CODE, |h| {
+            mastik_vm::run_script(h, &env, &source)
+        });
+        let secs = started.elapsed().as_secs_f32();
+        match ran {
+            Ok((outcome, counts, serial)) => {
+                let said = counts.said().unwrap_or_else(|| "nothing changed".into());
+                let mut lines: Vec<(String, bool)> =
+                    outcome.printed.iter().map(|l| (l.clone(), false)).collect();
+                lines.push((format!("{name} · {said}"), false));
+                self.push_output(lines, secs);
+                if let Some(ids) = outcome.selection {
+                    self.session.selection.set(ids);
+                }
+                self.session.info(format!("{name} · {said}"));
+                self.session
+                    .command_log
+                    .push(log::Entry::script(&name, said, false, serial));
+                if matches!(self.scripts.bad, Some((ref w, _)) if *w == which) {
+                    self.scripts.bad = None;
+                }
+            }
+            Err(e) => self.script_failed(&which, &name, &e, secs),
+        }
+    }
+
+    /// Report a failed run: the output pane, the status line and the log, and
+    /// the editor opened at the line it failed on.
+    fn script_failed(&mut self, which: &Which, name: &str, e: &mastik_vm::VmError, secs: f32) {
+        let said = match (e.kind, e.line) {
+            (mastik_vm::ErrorKind::Budget, _) => {
+                format!(
+                    "{name} stopped: {} — nothing changed",
+                    lower_first(&e.message)
+                )
+            }
+            (_, Some(line)) => format!("{name} failed at line {line} — nothing changed"),
+            (_, None) => format!("{name} failed — nothing changed"),
+        };
+        let first = match e.line {
+            Some(line) => format!("Line {line}: {}", e.message),
+            None => e.message.clone(),
+        };
+        self.push_output(vec![(first, true), ("Nothing changed.".into(), true)], secs);
+        self.session.fail(said);
+        self.session
+            .command_log
+            .push(log::Entry::script(name, e.message.clone(), true, None));
+        if let Some(line) = e.line {
+            let at = line.saturating_sub(1) as usize;
+            self.scripts.bad = Some((which.clone(), at));
+            self.scripts.jump = Some(at);
+        }
+        self.scripts.open = true;
+        if self.scripts.current.as_ref() != Some(which) {
+            self.pick_script(which.clone());
+        }
+    }
+
+    /// Add a run's lines to the output pane, under a rule with the time.
+    fn push_output(&mut self, lines: Vec<(String, bool)>, secs: f32) {
+        let now = crate::library::clock::now();
+        let local = now as i64 + crate::library::clock::local_offset(now);
+        let day = local.rem_euclid(86_400);
+        let at = format!("{:02}:{:02}", day / 3600, (day % 3600) / 60);
+        self.scripts.output.push(RunOut { at, secs, lines });
+        // The pane keeps the last few runs; older ones scroll away for good.
+        let keep = 20;
+        let len = self.scripts.output.len();
+        if len > keep {
+            self.scripts.output.drain(..len - keep);
+        }
+    }
+
+    /// Draw the editor, the form and the disclosure, and act on this frame.
+    pub(crate) fn scripts_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
+        self.script_form_ui(ctx, canvas);
+        self.disclosure_ui(ctx, canvas);
+        if !self.scripts.open {
+            return;
+        }
+        if self
+            .scripts
+            .pending
+            .is_some_and(|at| at.elapsed() >= WRITE_AFTER)
+        {
+            self.flush_library_write();
+        } else if self.scripts.pending.is_some() {
+            ctx.request_repaint_after(WRITE_AFTER);
+        }
+        // A document script changed under the pane (an undo): show it as it is.
+        if let Some(Which::Document(id)) = &self.scripts.current {
+            match self.session.doc.script(*id) {
+                Some(s) if s.source != self.scripts.buffer => {
+                    self.scripts.buffer = s.source.clone();
+                }
+                Some(_) => {}
+                None => {
+                    self.scripts.current = None;
+                    self.scripts.buffer.clear();
+                }
+            }
+        }
+        let kits = self.kits_with_scripts();
+        let mut act: Option<Act> = None;
+        let mut edited = false;
+        let current = self.scripts.current.clone();
+        let header = current.as_ref().and_then(|w| self.script_named(w));
+        let where_ = match &current {
+            Some(Which::Document(_)) => "in this document",
+            Some(Which::Library(_)) => "in the library",
+            Some(Which::Kit { .. }) => "in a kit · read only",
+            Some(Which::Unsaved(_)) => "unsaved",
+            None => "",
+        };
+        let edited_note = self.scripts.pending.is_some();
+        let doc_scripts: Vec<Script> = self.session.doc.scripts().to_vec();
+        let s = &mut self.scripts;
+        let window = egui::Window::new("Scripts")
+            .id(egui::Id::new("script-editor"))
+            .title_bar(false)
+            .resizable(true)
+            .collapsible(false)
+            .default_size(START)
+            .min_size(egui::vec2(640.0, 360.0))
+            .default_pos(canvas.center() - START / 2.0)
+            .frame(crate::settings::card_frame().inner_margin(egui::Margin::ZERO));
+        window.show(ctx, |ui| {
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            if settings::card_head(ui, ui.available_width(), "Scripts") {
+                act = Some(Act::Close);
+            }
+            ui::card_rule(ui);
+            let body = ui.available_rect_before_wrap();
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(LIST_W, body.height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| source_list(ui, s, &doc_scripts, &kits, &mut act),
+                );
+                let (rule, _) =
+                    ui.allocate_exact_size(egui::vec2(1.0, body.height()), egui::Sense::hover());
+                ui.painter().vline(
+                    rule.center().x,
+                    rule.y_range(),
+                    egui::Stroke::new(1.0, color::card_border()),
+                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), body.height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        let Some(which) = current.clone() else {
+                            empty_pane(ui, &mut act);
+                            return;
+                        };
+                        let name = header.clone().map(|h| h.0).unwrap_or_default();
+                        script_head(ui, s, &which, &name, where_, edited_note, &mut act);
+                        ui::card_rule(ui);
+                        let code_h = (ui.available_height() - OUTPUT_H - 1.0).max(80.0);
+                        let bad = s.bad.as_ref().filter(|(w, _)| *w == which).map(|(_, l)| *l);
+                        let editable = !matches!(which, Which::Kit { .. });
+                        egui::ScrollArea::both()
+                            .id_salt("script-code")
+                            .max_height(code_h)
+                            .min_scrolled_height(code_h)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.add_space(10.0);
+                                let out = ui::code_editor(
+                                    ui,
+                                    egui::Id::new("script-code-edit"),
+                                    &mut s.buffer,
+                                    &inks,
+                                    bad,
+                                    editable,
+                                );
+                                edited |= out.response.changed();
+                                if let Some(line) = s.jump.take() {
+                                    let at = char_of_line(&s.buffer, line);
+                                    let mut state = out.state.clone();
+                                    state.cursor.set_char_range(Some(
+                                        egui::text::CCursorRange::one(egui::text::CCursor::new(at)),
+                                    ));
+                                    state.store(ui.ctx(), out.response.id);
+                                    out.response.request_focus();
+                                }
+                                if ui.input(|i| {
+                                    i.modifiers.command && i.key_pressed(egui::Key::Enter)
+                                }) && out.response.has_focus()
+                                {
+                                    act = Some(Act::Run);
+                                }
+                            });
+                        ui::card_rule(ui);
+                        output_pane(ui, &s.output);
+                    },
+                );
+            });
+        });
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
+            && self.scripts.current.is_some()
+            && act.is_none()
+            && !ctx.egui_wants_keyboard_input()
+        {
+            act = Some(Act::Run);
+        }
+        if edited {
+            self.store_buffer();
+        }
+        self.scripts_act(act);
+    }
+
+    /// Act on what the window asked for.
+    fn scripts_act(&mut self, act: Option<Act>) {
+        let Some(act) = act else { return };
+        let current = self.scripts.current.clone();
+        match act {
+            Act::Close => {
+                self.flush_library_write();
+                self.scripts.open = false;
+            }
+            Act::Pick(w) => self.pick_script(w),
+            Act::New => {
+                let n = self.scripts.unsaved.len();
+                let name = self.unsaved_name();
+                self.scripts.unsaved.push(Unsaved {
+                    name,
+                    source: String::new(),
+                });
+                self.pick_script(Which::Unsaved(n));
+            }
+            Act::Run => {
+                if let Some(w) = current {
+                    self.start_script_run(w);
+                }
+            }
+            Act::OpenFolder => library::show_folder(),
+            Act::SaveToLibrary => {
+                let Some(w) = current else { return };
+                let Some((name, source)) = self.script_named(&w) else {
+                    return;
+                };
+                let name = library::unique_name(&name);
+                match library::write(&name, &source) {
+                    Ok(()) => {
+                        self.scripts.library = library::list();
+                        self.session.info(format!("Saved {name} to the library"));
+                        self.pick_script(Which::Library(name));
+                    }
+                    Err(e) => self.session.fail(format!("Couldn't save {name}: {e}")),
+                }
+            }
+            Act::CopyToDocument => {
+                let Some(w) = current else { return };
+                let Some((name, source)) = self.script_named(&w) else {
+                    return;
+                };
+                if let Some(id) = self.add_document_script(&name, source) {
+                    self.pick_script(Which::Document(id));
+                }
+            }
+            Act::Duplicate => {
+                let Some(w) = current else { return };
+                let Some((name, source)) = self.script_named(&w) else {
+                    return;
+                };
+                match w {
+                    Which::Library(_) => match library::duplicate(&name) {
+                        Ok(copy) => {
+                            self.scripts.library = library::list();
+                            self.pick_script(Which::Library(copy));
+                        }
+                        Err(e) => self.session.fail(format!("Couldn't duplicate {name}: {e}")),
+                    },
+                    Which::Unsaved(_) => {
+                        let n = self.scripts.unsaved.len();
+                        let name = self.unsaved_name();
+                        self.scripts.unsaved.push(Unsaved { name, source });
+                        self.pick_script(Which::Unsaved(n));
+                    }
+                    Which::Document(_) | Which::Kit { .. } => {
+                        if let Some(id) = self.add_document_script(&name, source) {
+                            self.pick_script(Which::Document(id));
+                        }
+                    }
+                }
+            }
+            Act::StartRename => {
+                if let Some((name, _)) = current.as_ref().and_then(|w| self.script_named(w)) {
+                    self.scripts.renaming = Some(name);
+                }
+            }
+            Act::Rename(new) => {
+                self.scripts.renaming = None;
+                let new = new.trim().to_owned();
+                let Some(w) = current else { return };
+                if new.is_empty() {
+                    return;
+                }
+                match w {
+                    Which::Document(id) => {
+                        self.session.name_step("Rename script", icon::FILE_CODE);
+                        self.session
+                            .commit(Transaction(vec![Operation::SetScriptName {
+                                id,
+                                name: new,
+                            }]));
+                    }
+                    Which::Library(old) => {
+                        self.flush_library_write();
+                        match library::rename(&old, &new) {
+                            Ok(()) => {
+                                self.scripts.library = library::list();
+                                self.scripts.current = Some(Which::Library(new));
+                            }
+                            Err(e) => self.session.fail(format!("Couldn't rename {old}: {e}")),
+                        }
+                    }
+                    Which::Unsaved(i) => {
+                        if let Some(u) = self.scripts.unsaved.get_mut(i) {
+                            u.name = new;
+                        }
+                    }
+                    Which::Kit { .. } => {}
+                }
+            }
+            Act::Delete => {
+                let Some(w) = current else { return };
+                match w {
+                    Which::Document(id) => {
+                        self.session.name_step("Delete script", icon::FILE_CODE);
+                        self.session
+                            .commit(Transaction(vec![Operation::RemoveScript { id }]));
+                    }
+                    Which::Library(name) => {
+                        self.scripts.pending = None;
+                        if let Err(e) = library::delete(&name) {
+                            self.session.fail(format!("Couldn't delete {name}: {e}"));
+                        }
+                        self.scripts.library = library::list();
+                    }
+                    Which::Unsaved(i) => {
+                        if i < self.scripts.unsaved.len() {
+                            self.scripts.unsaved.remove(i);
+                        }
+                    }
+                    Which::Kit { .. } => return,
+                }
+                self.scripts.current = None;
+                self.scripts.buffer.clear();
+            }
+            Act::ShowInFolder => library::show_folder(),
+        }
+    }
+
+    /// Put a copy of a script into this document, as one undo step; answers its id.
+    fn add_document_script(&mut self, name: &str, source: String) -> Option<ScriptId> {
+        let id = self.session.ids.mint_script();
+        let name = mastik_core::script::free_name(self.session.doc.scripts(), name);
+        let index = self.session.doc.scripts().len();
+        self.session
+            .name_step("Copy script into document", icon::FILE_CODE);
+        self.session
+            .commit(Transaction(vec![Operation::AddScript {
+                script: Script { id, name, source },
+                index,
+            }]))
+            .then_some(id)
+    }
+
+    /// The run form, while open: a field per input, *Cancel* and *Run*.
+    fn script_form_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
+        let Some(mut form) = self.scripts.form.take() else {
+            return;
+        };
+        let enter =
+            ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !ctx.egui_wants_keyboard_input();
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let mut decided: Option<bool> = None;
+        let outside =
+            settings::canvas_card(ctx, "script-form", canvas, FORM_W, CardHold::Modal, |ui| {
+                if settings::card_head(ui, FORM_W, &form.name) {
+                    decided = Some(false);
+                }
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(settings::CANVAS_CARD_PAD as i8, 4))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 8.0;
+                        let w = FORM_W - 2.0 * settings::CANVAS_CARD_PAD;
+                        if !form.header.description.is_empty() {
+                            caption(ui, &form.header.description);
+                        }
+                        for input in &form.header.inputs {
+                            let label = input.label.clone().unwrap_or_else(|| input.name.clone());
+                            let value =
+                                form.values.entry(input.name.clone()).or_insert(Value::Null);
+                            ui::labelled(ui, &label, |ui| input_field(ui, w, input, value));
+                        }
+                    });
+                let foot = settings::card_foot(
+                    ui,
+                    FORM_W,
+                    "",
+                    &[("Cancel", FieldButton::Off), ("Run", FieldButton::Primary)],
+                    None,
+                );
+                match foot {
+                    Some(0) => decided = Some(false),
+                    Some(_) => decided = Some(true),
+                    None => {}
+                }
+            });
+        if escape || outside {
+            decided = Some(false);
+        }
+        if enter {
+            decided = Some(true);
+        }
+        match decided {
+            None => self.scripts.form = Some(form),
+            Some(false) => {}
+            Some(true) => {
+                self.scripts
+                    .last_values
+                    .insert(values_key(&form.which), form.values.clone());
+                self.run_script_now(form.which, form.name, form.source, form.values);
+            }
+        }
+    }
+
+    /// The first-run disclosure: who wrote the script, what a script can and
+    /// cannot do, its source, and *Run*.
+    fn disclosure_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
+        let Some(d) = self.scripts.disclosure.take() else {
+            return;
+        };
+        let title = match &d.which {
+            Which::Kit { kit_name, .. } => {
+                format!("“{}” came with the kit “{kit_name}”", d.name)
+            }
+            _ => format!("“{}” came with this document", d.name),
+        };
+        let mut decided: Option<u8> = None;
+        let lines = d.source.lines().count().max(1);
+        let names = mastik_vm::names_used(&d.source);
+        let mut shown = d.source.clone();
+        let outside = settings::canvas_card(
+            ctx,
+            "script-disclosure",
+            canvas,
+            DISCLOSE_W,
+            CardHold::Modal,
+            |ui| {
+                if settings::card_head(ui, DISCLOSE_W, &title) {
+                    decided = Some(0);
+                }
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(settings::CANVAS_CARD_PAD as i8, 4))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 12.0;
+                        ui.label(
+                            egui::RichText::new(DISCLOSURE)
+                                .size(ui::CONTROL_PT)
+                                .color(theme::text::strong()),
+                        );
+                        egui::Frame::NONE
+                            .fill(color::field())
+                            .corner_radius(5)
+                            .inner_margin(egui::Margin::symmetric(0, 10))
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("disclosed-code")
+                                    .max_height(DISCLOSE_CODE_H)
+                                    .show(ui, |ui| {
+                                        ui::code_editor(
+                                            ui,
+                                            egui::Id::new("disclosed-code-text"),
+                                            &mut shown,
+                                            &inks,
+                                            None,
+                                            false,
+                                        );
+                                    });
+                            });
+                        let listed = names.join(", ");
+                        let lines = match lines {
+                            1 => "1 line".to_owned(),
+                            n => format!("{n} lines"),
+                        };
+                        caption(
+                            ui,
+                            &match listed.is_empty() {
+                                true => lines,
+                                false => format!("{lines} · names: {listed}"),
+                            },
+                        );
+                    });
+                let foot = settings::card_foot_with(
+                    ui,
+                    DISCLOSE_W,
+                    &[("Cancel", FieldButton::Off), ("Run", FieldButton::Primary)],
+                    None,
+                    |ui, row| {
+                        let mut child = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(row)
+                                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        );
+                        if settings::text_button(&mut child, "Open in editor", FieldButton::Off)
+                            .clicked()
+                        {
+                            decided = Some(2);
+                        }
+                    },
+                );
+                match foot {
+                    Some(0) => decided = Some(0),
+                    Some(_) => decided = Some(1),
+                    None => {}
+                }
+            },
+        );
+        if outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            decided = Some(0);
+        }
+        match decided {
+            None => self.scripts.disclosure = Some(d),
+            Some(0) => {}
+            Some(2) => {
+                self.open_scripts();
+                self.pick_script(d.which);
+            }
+            Some(_) => {
+                if let Some(key) = self.disclosure_key(&d.which) {
+                    self.prefs.mark_disclosed(&key, &d.source);
+                    self.prefs.save();
+                }
+                self.script_form_or_run(d.which, d.name, d.source);
+            }
+        }
+    }
+}
+
+/// The library folder as the editor uses it: this machine's scripts folder, and
+/// no scripts when there is no folder to keep them in.
+mod library {
+    pub(crate) use crate::scripts::library::LibraryScript;
+    use crate::scripts::library::{Library, ScriptError};
+
+    fn open() -> Result<Library, ScriptError> {
+        Library::open().ok_or_else(|| ScriptError::Missing("the scripts folder".into()))
+    }
+
+    pub(crate) fn list() -> Vec<LibraryScript> {
+        open().map(|l| l.list()).unwrap_or_default()
+    }
+
+    /// Bring the folder's API definitions up to this version's.
+    pub(crate) fn write_definitions() -> Result<(), ScriptError> {
+        open()?.write_definitions(&mastik_vm::definitions())
+    }
+
+    pub(crate) fn write(name: &str, source: &str) -> Result<(), ScriptError> {
+        open()?.write(name, source).map(|_| ())
+    }
+
+    pub(crate) fn rename(from: &str, to: &str) -> Result<(), ScriptError> {
+        open()?.rename(from, to).map(|_| ())
+    }
+
+    pub(crate) fn duplicate(name: &str) -> Result<String, ScriptError> {
+        open()?.duplicate(name)
+    }
+
+    pub(crate) fn delete(name: &str) -> Result<(), ScriptError> {
+        open()?.delete(name)
+    }
+
+    /// `wanted`, numbered past the library's scripts that have it.
+    pub(crate) fn unique_name(wanted: &str) -> String {
+        open().map_or_else(|_| wanted.to_owned(), |l| l.unique_name(wanted))
+    }
+
+    /// Open the folder in the system's file manager.
+    pub(crate) fn show_folder() {
+        if let Ok(l) = open() {
+            l.reveal();
+        }
+    }
+}
+
+/// What the disclosure says before the source.
+const DISCLOSURE: &str = "Whoever made this file wrote it, not you. Read it before running it. \
+    A script can change this document — its layers, styles, variables and components — and \
+    nothing else: it can't open files, reach the network, or keep running after it finishes, \
+    and its run is one step you can undo.";
+
+/// What a script's last form values are kept under: the script itself, not its
+/// name, which a library and a document script may share.
+fn values_key(which: &Which) -> String {
+    format!("{which:?}")
+}
+
+/// A faint caption line in the card's caption size.
+fn caption(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(ui::CAPTION_PT)
+            .color(theme::text::faint()),
+    );
+}
+
+/// `s` with its first letter lowered, to run on after a name.
+fn lower_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_lowercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// The char index where line `line` (0-based) of `s` starts.
+fn char_of_line(s: &str, line: usize) -> usize {
+    let mut chars = 0;
+    for (i, l) in s.split('\n').enumerate() {
+        if i == line {
+            return chars;
+        }
+        chars += l.chars().count() + 1;
+    }
+    s.chars().count()
+}
+
+/// The highlighting: the language's token kinds in the theme's inks.
+pub(crate) fn inks(source: &str) -> ui::CodeInks {
+    mastik_vm::tokens(source)
+        .into_iter()
+        .filter_map(|(r, t)| {
+            let ink = match t {
+                mastik_vm::Tok::Keyword => color::star(),
+                mastik_vm::Tok::Number => color::saved(),
+                mastik_vm::Tok::String => color::warn(),
+                mastik_vm::Tok::Comment => theme::text::faint(),
+                mastik_vm::Tok::Api => color::accent_300(),
+                mastik_vm::Tok::Plain => return None,
+            };
+            Some((r, ink))
+        })
+        .collect()
+}
+
+/// The list of scripts: a search field, a section per source, *New script* and
+/// the folder button at the foot.
+fn source_list(
+    ui: &mut egui::Ui,
+    s: &mut Scripts,
+    doc: &[Script],
+    kits: &[(String, String, Vec<Script>)],
+    act: &mut Option<Act>,
+) {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            let w = ui.available_width();
+            ui::search_box(
+                ui,
+                egui::vec2(w, ui::CONTROL_H),
+                &mut s.search,
+                "Find a script",
+                egui::Id::new("script-search"),
+            );
+            ui.add_space(6.0);
+            let needle = s.search.trim().to_lowercase();
+            let hit = |name: &str| needle.is_empty() || name.to_lowercase().contains(&needle);
+            let list_h = ui.available_height() - ui::CONTROL_H - 8.0;
+            egui::ScrollArea::vertical()
+                .id_salt("script-list")
+                .max_height(list_h.max(40.0))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let rows: Vec<(&str, Vec<ListRow>)> = vec![
+                        (
+                            "This document",
+                            doc.iter()
+                                .map(|sc| {
+                                    (
+                                        Which::Document(sc.id),
+                                        sc.name.clone(),
+                                        inputs_note(&sc.source),
+                                        icon::FILE,
+                                    )
+                                })
+                                .collect(),
+                        ),
+                        (
+                            "Library",
+                            s.library
+                                .iter()
+                                .map(|l| {
+                                    (
+                                        Which::Library(l.name.clone()),
+                                        l.name.clone(),
+                                        inputs_note(&l.source),
+                                        icon::FOLDER_SIMPLE,
+                                    )
+                                })
+                                .collect(),
+                        ),
+                    ];
+                    let kit_rows = kits.iter().map(|(kit, name, scripts)| {
+                        (
+                            format!("Kit · {name}"),
+                            scripts
+                                .iter()
+                                .map(|sc| {
+                                    (
+                                        Which::Kit {
+                                            kit: kit.clone(),
+                                            kit_name: name.clone(),
+                                            id: sc.id,
+                                        },
+                                        sc.name.clone(),
+                                        inputs_note(&sc.source),
+                                        icon::PACKAGE,
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    });
+                    let unsaved: Vec<_> = s
+                        .unsaved
+                        .iter()
+                        .enumerate()
+                        .map(|(i, u)| {
+                            (
+                                Which::Unsaved(i),
+                                u.name.clone(),
+                                String::new(),
+                                icon::FILE_CODE,
+                            )
+                        })
+                        .collect();
+                    let sections = rows
+                        .into_iter()
+                        .map(|(t, r)| (t.to_owned(), r))
+                        .chain(kit_rows)
+                        .chain(std::iter::once(("Unsaved".to_owned(), unsaved)));
+                    for (title, items) in sections {
+                        let items: Vec<_> = items.into_iter().filter(|r| hit(&r.1)).collect();
+                        if items.is_empty() {
+                            continue;
+                        }
+                        crate::palette::section_label(ui, &title);
+                        for (which, name, note, glyph) in items {
+                            let lit = s.current.as_ref() == Some(&which);
+                            if list_row(ui, glyph, &name, &note, lit).clicked() {
+                                *act = Some(Act::Pick(which));
+                            }
+                        }
+                    }
+                });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let new_w = ui.available_width() - ui::CONTROL_H - 6.0;
+                if ui::label_button(
+                    ui,
+                    "New script",
+                    egui::vec2(new_w, ui::CONTROL_H),
+                    FieldButton::Off,
+                )
+                .clicked()
+                {
+                    *act = Some(Act::New);
+                }
+                if ui::field_button(ui, icon::FOLDER_OPEN, ui::CONTROL_H, FieldButton::Off)
+                    .on_hover_text("Open the scripts folder")
+                    .clicked()
+                {
+                    *act = Some(Act::OpenFolder);
+                }
+            });
+        });
+}
+
+/// One row of the source list: the script, its name, its note and its source's glyph.
+type ListRow = (Which, String, String, &'static str);
+
+/// `4 inputs` for a script whose header declares some; empty otherwise.
+fn inputs_note(source: &str) -> String {
+    match mastik_vm::header(source).map(|h| h.inputs.len()) {
+        Ok(0) | Err(_) => String::new(),
+        Ok(1) => "1 input".into(),
+        Ok(n) => format!("{n} inputs"),
+    }
+}
+
+/// One script row: its source's glyph, its name, its note.
+fn list_row(ui: &mut egui::Ui, glyph: &str, name: &str, note: &str, lit: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ui::MENU_ROW_H + 6.0),
+        egui::Sense::click(),
+    );
+    ui::list_row_ground(ui.painter(), rect, lit, resp.hovered());
+    let p = ui.painter();
+    p.text(
+        egui::pos2(rect.left() + 14.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        theme::icon_font(14.0),
+        theme::text::dim(),
+    );
+    let mut right = rect.right() - 8.0;
+    if !note.is_empty() {
+        let g = p.layout_no_wrap(
+            note.to_owned(),
+            egui::FontId::proportional(ui::CAPTION_PT),
+            theme::text::faint(),
+        );
+        right -= g.size().x;
+        p.galley(
+            egui::pos2(right, rect.center().y - g.size().y / 2.0),
+            g,
+            theme::text::faint(),
+        );
+        right -= 8.0;
+    }
+    let mut job = egui::text::LayoutJob::single_section(
+        name.to_owned(),
+        egui::TextFormat::simple(egui::FontId::proportional(ui::CONTROL_PT), color::text()),
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: (right - rect.left() - 30.0).max(0.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let g = p.layout_job(job);
+    p.galley(
+        egui::pos2(rect.left() + 30.0, rect.center().y - g.size().y / 2.0),
+        g,
+        color::text(),
+    );
+    resp
+}
+
+/// The pane's state with no script open.
+fn empty_pane(ui: &mut egui::Ui, act: &mut Option<Act>) {
+    ui.add_space(24.0);
+    ui.horizontal(|ui| {
+        ui.add_space(16.0);
+        ui::empty_note(ui, "No script open. Pick one, or start a new script.");
+    });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.add_space(16.0);
+        if settings::text_button(ui, "New script", FieldButton::Off).clicked() {
+            *act = Some(Act::New);
+        }
+    });
+}
+
+/// The script's head: its name (or the rename field), where it lives, find,
+/// the ⋯ menu and *Run*.
+fn script_head(
+    ui: &mut egui::Ui,
+    s: &mut Scripts,
+    which: &Which,
+    name: &str,
+    where_: &str,
+    edited: bool,
+    act: &mut Option<Act>,
+) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), HEAD_H),
+        egui::Sense::hover(),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(14.0, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let ui = &mut child;
+    ui.spacing_mut().item_spacing.x = 8.0;
+    match &mut s.renaming {
+        Some(text) => {
+            let resp = ui::text_field(ui, egui::vec2(200.0, ui::CONTROL_H), text, "Name");
+            resp.request_focus();
+            if resp.lost_focus() {
+                *act = Some(Act::Rename(text.clone()));
+            }
+        }
+        None => {
+            let resp = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(name)
+                        .size(ui::HEAD_PT)
+                        .color(color::text()),
+                )
+                .sense(egui::Sense::click()),
+            );
+            if resp.double_clicked() && !matches!(which, Which::Kit { .. }) {
+                *act = Some(Act::StartRename);
+            }
+        }
+    }
+    let note = match edited {
+        true => format!("{where_} · edited"),
+        false => where_.to_owned(),
+    };
+    ui.label(
+        egui::RichText::new(note)
+            .size(ui::CAPTION_PT)
+            .color(theme::text::faint()),
+    );
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if settings::text_button(ui, "Run", FieldButton::Primary)
+            .on_hover_text(crate::input::keys("Run the script · Ctrl+Enter"))
+            .clicked()
+        {
+            *act = Some(Act::Run);
+        }
+        let menu = ui::field_button(
+            ui,
+            icon::DOTS_THREE,
+            ui::CONTROL_H,
+            match s.menu {
+                true => FieldButton::On,
+                false => FieldButton::Off,
+            },
+        );
+        if menu.clicked() {
+            s.menu = !s.menu;
+        }
+        if ui::field_button(ui, icon::MAGNIFYING_GLASS, ui::CONTROL_H, FieldButton::Off)
+            .on_hover_text(crate::input::keys("Find · Ctrl+F"))
+            .clicked()
+        {
+            s.find = Some(s.find.take().unwrap_or_default());
+        }
+        if s.menu {
+            let at = menu.rect.left_bottom() + egui::vec2(0.0, ui::MENU_GAP);
+            let mut chosen = None;
+            let resp = egui::Area::new(egui::Id::new("script-menu"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(at)
+                .show(ui.ctx(), |ui| {
+                    ui::menu_frame(ui::MENU_PAD).show(ui, |ui| {
+                        ui::popup_rows(ui);
+                        let h = ui::MENU_ROW_H;
+                        let kit = matches!(which, Which::Kit { .. });
+                        let rows: [(&str, &str, Act, bool); 6] = [
+                            (
+                                icon::FOLDER_SIMPLE,
+                                "Save to library",
+                                Act::SaveToLibrary,
+                                !matches!(which, Which::Library(_)),
+                            ),
+                            (
+                                icon::FILE,
+                                "Copy into this document",
+                                Act::CopyToDocument,
+                                !matches!(which, Which::Document(_)),
+                            ),
+                            (icon::COPY, "Duplicate", Act::Duplicate, true),
+                            (icon::PENCIL_SIMPLE, "Rename", Act::StartRename, !kit),
+                            (
+                                icon::FOLDER_OPEN,
+                                "Show in folder",
+                                Act::ShowInFolder,
+                                matches!(which, Which::Library(_)),
+                            ),
+                            (icon::TRASH, "Delete", Act::Delete, !kit),
+                        ];
+                        for (glyph, label, a, live) in rows {
+                            let r = ui::disable_unless(ui, live, |ui| {
+                                ui::menu_item(ui, glyph, label, h)
+                            })
+                            .inner;
+                            if r.clicked() && live {
+                                chosen = Some(a);
+                            }
+                        }
+                    });
+                });
+            if chosen.is_some() {
+                s.menu = false;
+                *act = chosen;
+            } else if ui.ctx().input(|i| i.pointer.any_pressed())
+                && !resp.response.contains_pointer()
+                && !menu.contains_pointer()
+            {
+                s.menu = false;
+            }
+        }
+    });
+    if let Some(find) = &mut s.find {
+        let (row, _) = ui.allocate_exact_size(egui::vec2(0.0, 0.0), egui::Sense::hover());
+        let _ = row;
+        let area = egui::Area::new(egui::Id::new("script-find"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.right_bottom() + egui::vec2(-280.0, 6.0));
+        let mut close = false;
+        area.show(ui.ctx(), |ui| {
+            ui::menu_frame(ui::MENU_PAD).show(ui, |ui| {
+                let resp = ui::search_box(
+                    ui,
+                    egui::vec2(260.0, ui::CONTROL_H),
+                    find,
+                    "Find in script",
+                    egui::Id::new("script-find-field"),
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    close = true;
+                }
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    let needle = find.clone();
+                    if let Some(at) = s.buffer.find(&needle).filter(|_| !needle.is_empty()) {
+                        s.jump = Some(s.buffer[..at].matches('\n').count());
+                    }
+                }
+            });
+        });
+        if close {
+            s.find = None;
+        }
+    }
+    if ui
+        .ctx()
+        .input(|i| i.modifiers.command && i.key_pressed(egui::Key::F))
+    {
+        s.find = Some(s.find.take().unwrap_or_default());
+    }
+}
+
+/// The output pane: each run under a rule with its time, errors in the red.
+fn output_pane(ui: &mut egui::Ui, runs: &[RunOut]) {
+    let w = ui.available_width();
+    let (head, _) = ui.allocate_exact_size(egui::vec2(w, 30.0), egui::Sense::hover());
+    let p = ui.painter();
+    ui::paint_eyebrow(
+        p,
+        egui::pos2(head.left() + 14.0, head.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Output",
+    );
+    if let Some(last) = runs.last() {
+        p.text(
+            egui::pos2(head.right() - 14.0, head.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("Last run {} · {:.2} s", last.at, last.secs),
+            egui::FontId::proportional(ui::CAPTION_PT),
+            theme::text::faint(),
+        );
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("script-output")
+        .max_height(OUTPUT_H - 30.0)
+        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let font = egui::FontId::monospace(ui::CODE_PT - 0.5);
+            for run in runs {
+                for (text, ink) in
+                    std::iter::once((format!("— run at {} —", run.at), theme::text::faint())).chain(
+                        run.lines.iter().map(|(l, bad)| {
+                            (l.clone(), if *bad { color::error() } else { color::text() })
+                        }),
+                    )
+                {
+                    ui.horizontal(|ui| {
+                        ui.add_space(14.0);
+                        ui.label(egui::RichText::new(text).font(font.clone()).color(ink));
+                    });
+                }
+            }
+            ui.add_space(6.0);
+        });
+}
+
+/// One input's field, by its type: a value field for a number, a swatch and
+/// its hex for a colour, a segmented control for up to three choices and a
+/// dropdown beyond, a switch for a boolean, a text field for a string.
+fn input_field(ui: &mut egui::Ui, w: f32, input: &mastik_vm::Input, value: &mut Value) {
+    use mastik_vm::InputType as T;
+    let size = egui::vec2(w, ui::CONTROL_H);
+    match &input.ty {
+        T::Number | T::Integer => {
+            let mut v = value.as_f64().unwrap_or(0.0);
+            let whole = matches!(input.ty, T::Integer);
+            let scrub = match input.range {
+                Some((lo, hi)) => ui::Scrub::whole(1.0).range(lo..=hi),
+                None => ui::Scrub::whole(1.0),
+            };
+            let decimals = if whole { 0 } else { 2 };
+            ui::value_field(ui, size, ui::Prefix::Text("#"), &mut v, scrub, |d| {
+                d.custom_formatter(ui::number(decimals))
+            });
+            if let Some((lo, hi)) = input.range {
+                v = v.clamp(lo, hi);
+            }
+            *value = match whole {
+                true => Value::from(v.round() as i64),
+                false => Value::from(v),
+            };
+        }
+        T::Boolean => {
+            let on = value.as_bool().unwrap_or(false);
+            if ui::switch_row(ui, "On", on, settings::SWITCH_H).clicked() {
+                *value = Value::Bool(!on);
+            }
+        }
+        T::String => {
+            let mut s = value.as_str().unwrap_or_default().to_owned();
+            if ui::text_field(ui, size, &mut s, "").changed() {
+                *value = Value::String(s);
+            }
+        }
+        T::Color => {
+            let mut s = value
+                .as_str()
+                .unwrap_or("#000000")
+                .trim_start_matches('#')
+                .to_owned();
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let ink = parse_hex(&s).unwrap_or(egui::Color32::BLACK);
+                ui::swatch(ui, ui::CONTROL_H, color::field(), ui::Swatch::Solid(ink));
+                let rest = egui::vec2(ui.available_width(), ui::CONTROL_H);
+                if ui::text_field(ui, rest, &mut s, "FFFFFF").changed() {
+                    *value = Value::String(format!("#{}", s.trim().trim_start_matches('#')));
+                }
+            });
+        }
+        T::Choice(words) => {
+            let at = value
+                .as_str()
+                .and_then(|v| words.iter().position(|w| w == v))
+                .unwrap_or(0);
+            if words.len() <= 3 {
+                if let Some(i) =
+                    ui::segmented(ui, w, ui::SEGMENT_CELL_H, words.len(), at, |p, i, r, on| {
+                        ui::segment_label(p, r, &title_case(&words[i]), on);
+                    })
+                {
+                    *value = Value::String(words[i].clone());
+                }
+            } else {
+                let mut picked = at;
+                egui::ComboBox::from_id_salt(("script-input", &input.name))
+                    .width(w)
+                    .icon(ui::combo_chevron)
+                    .selected_text(title_case(&words[at]))
+                    .show_ui(ui, |ui| {
+                        ui::menu_rows(ui);
+                        for (i, word) in words.iter().enumerate() {
+                            ui.selectable_value(&mut picked, i, title_case(word));
+                        }
+                    });
+                *value = Value::String(words[picked].clone());
+            }
+        }
+    }
+}
+
+/// `rows` as a choice reads in the form: `Rows`.
+fn title_case(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// `#rrggbb` or `rrggbb` as a colour.
+fn parse_hex(s: &str) -> Option<egui::Color32> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(s, 16).ok()?;
+    Some(egui::Color32::from_rgb(
+        (n >> 16) as u8,
+        (n >> 8) as u8,
+        n as u8,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::palette::tests::add_rect;
+
+    /// A headless app with one selected rectangle and a document script holding
+    /// `source`; the document has `id` as its identity.
+    fn with_script(source: &str, id: Option<&str>) -> (MastikApp, mastik_core::NodeId, ScriptId) {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let card = add_rect(&mut app);
+        app.session.selection.set_one(card);
+        let meta = mastik_core::DocumentMeta {
+            id: id.map(str::to_owned),
+            ..app.session.doc.meta().clone()
+        };
+        app.session.doc.set_meta(meta);
+        let script = app
+            .add_document_script("Nudge", source.to_owned())
+            .expect("fixture: the script was added");
+        (app, card, script)
+    }
+
+    /// [`with_script`] in a document with an identity, its script already shown
+    /// on this machine, so a run goes straight to the form or the run.
+    fn shown_script(source: &str) -> (MastikApp, mastik_core::NodeId, ScriptId) {
+        let (mut app, card, script) = with_script(source, Some("doc-a"));
+        let key = app.disclosure_key(&Which::Document(script)).unwrap();
+        app.prefs.mark_disclosed(&key, source);
+        (app, card, script)
+    }
+
+    fn left(app: &MastikApp, id: mastik_core::NodeId) -> f64 {
+        app.session.resolved.world_bounds(id).expect("a box").x0
+    }
+
+    /// A run is one undo step named after the script with the script glyph, its
+    /// report in the log and the status line.
+    /// flip: `run_script_now` naming the step after nothing (`""`) → fails at
+    /// "named after the script".
+    #[test]
+    fn a_run_is_one_step_named_after_the_script() {
+        let (mut app, card, script) =
+            shown_script("for _, n in ipairs(sel) do n.x += 1; n.x += 1 end");
+        let (x, depth) = (left(&app, card), app.session.history.undo_depth());
+        app.start_script_run(Which::Document(script));
+        assert_eq!(left(&app, card), x + 2.0);
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+        let top = app.session.history.done().next_back().unwrap();
+        assert_eq!(top.note.label, "Nudge", "named after the script");
+        assert_eq!(top.note.glyph, icon::FILE_CODE);
+        let last = app.session.command_log.entries().last().unwrap();
+        assert_eq!(last.source, log::Source::Script("Nudge".into()));
+        assert_eq!(app.session.status().text, "Nudge · 1 layer changed");
+    }
+
+    /// A script that came with a document with an identity shows its source
+    /// before it runs, and not again once *Run* there has recorded it; a change
+    /// to its text brings the box back.
+    /// flip: `disclosure_key` answering `None` for a document script → fails at
+    /// "the box comes first".
+    #[test]
+    fn a_documents_script_is_disclosed_before_its_first_run() {
+        let (mut app, card, script) = with_script("sel.x += 5", Some("doc-a"));
+        let x = left(&app, card);
+        app.start_script_run(Which::Document(script));
+        assert!(app.scripts.disclosure.is_some(), "the box comes first");
+        assert_eq!(left(&app, card), x, "nothing ran yet");
+        let d = app.scripts.disclosure.take().unwrap();
+        let key = app.disclosure_key(&d.which).unwrap();
+        app.prefs.mark_disclosed(&key, &d.source);
+        app.start_script_run(Which::Document(script));
+        assert!(app.scripts.disclosure.is_none(), "shown once is enough");
+        assert_eq!(left(&app, card), x + 5.0);
+        app.session
+            .commit(Transaction(vec![Operation::SetScriptSource {
+                id: script,
+                source: "sel.x += 6".into(),
+            }]));
+        app.start_script_run(Which::Document(script));
+        assert!(
+            app.scripts.disclosure.is_some(),
+            "a changed text is shown again"
+        );
+    }
+
+    /// A document with no identity has no key to remember a disclosure under, so
+    /// its script is shown before every run rather than never.
+    /// flip: `start_script_run` treating a missing key as shown → fails at
+    /// "shown, with no key".
+    #[test]
+    fn a_script_with_no_key_is_shown_every_run() {
+        let (mut app, card, script) = with_script("sel.x += 5", None);
+        assert_eq!(
+            app.disclosure_key(&Which::Document(script)),
+            None,
+            "fixture"
+        );
+        let x = left(&app, card);
+        app.start_script_run(Which::Document(script));
+        assert!(app.scripts.disclosure.is_some(), "shown, with no key");
+        assert_eq!(left(&app, card), x);
+    }
+
+    /// A script with a header opens its form first, and the form's values reach
+    /// the run as `param`.
+    /// flip: `script_form_or_run` running a script that has inputs → fails at
+    /// "the form comes first".
+    #[test]
+    fn a_header_asks_for_its_inputs_first() {
+        let source = "---@input by number = 3 -- By\nsel.x += param.by";
+        let (mut app, card, script) = shown_script(source);
+        let x = left(&app, card);
+        app.start_script_run(Which::Document(script));
+        let mut form = app.scripts.form.take().expect("the form comes first");
+        assert_eq!(left(&app, card), x);
+        form.values.insert("by".into(), Value::from(7.0));
+        app.run_script_now(form.which, form.name, form.source, form.values);
+        assert_eq!(left(&app, card), x + 7.0);
+    }
+
+    /// A run that fails changes nothing, says where, and puts the editor on the line.
+    #[test]
+    fn a_failed_run_changes_nothing_and_opens_the_line() {
+        let (mut app, card, script) = shown_script("sel.x += 4\n\nsel.radius = 3");
+        let (x, depth) = (left(&app, card), app.session.history.undo_depth());
+        app.start_script_run(Which::Document(script));
+        assert_eq!(left(&app, card), x);
+        assert_eq!(app.session.history.undo_depth(), depth);
+        assert!(app.scripts.open);
+        assert_eq!(app.scripts.jump, Some(2), "the third line");
+        assert_eq!(
+            app.session.status().text,
+            "Nudge failed at line 3 — nothing changed"
+        );
+    }
+}

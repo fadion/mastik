@@ -372,7 +372,7 @@ const SWITCHES: [ViewSwitch; 21] = [
 ];
 
 /// The highlighted row's ground: the accent at 18%.
-fn highlight_fill() -> egui::Color32 {
+pub(crate) fn highlight_fill() -> egui::Color32 {
     color::accent_a(46)
 }
 
@@ -422,6 +422,7 @@ impl MastikApp {
         self.export_row_open = None;
         self.type_menu = None;
         self.close_fix();
+        self.refresh_script_library();
         let target = self.palette_target();
         let publish_why = match self.kit_changes() {
             None => Some("Make this document a kit first"),
@@ -768,6 +769,18 @@ impl MastikApp {
             vision.label = crate::vision::STOP_VISION.into();
         }
         push(&mut out, vision);
+        let mut navigate = Cmd::verb(Item::Navigate, None);
+        if self.navigating() {
+            navigate.label = crate::navigate::STOP_NAVIGATE.into();
+        }
+        push(&mut out, navigate);
+        push(&mut out, Cmd::verb(Item::CommandBar, None));
+        push(&mut out, Cmd::verb(Item::Scripts, None));
+        for (i, name) in self.saved_script_names().into_iter().enumerate() {
+            let mut run = Cmd::verb(Item::RunScript(i), None);
+            run.label = format!("Run {name}");
+            push(&mut out, run);
+        }
         push(&mut out, Cmd::verb(Item::ColourReview, None));
         push(&mut out, Cmd::verb(Item::BatchRename, None));
         push(&mut out, Cmd::verb(Item::CleanUp, None));
@@ -1218,7 +1231,7 @@ fn palette_field(ui: &mut egui::Ui, pal: &mut Palette) {
 }
 
 /// A section's eyebrow, sat 5pt above the section's first row.
-fn section_label(ui: &mut egui::Ui, title: &str) {
+pub(crate) fn section_label(ui: &mut egui::Ui, title: &str) {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), SECTION_H),
         egui::Sense::empty(),

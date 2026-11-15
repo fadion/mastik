@@ -154,6 +154,11 @@ pub mod color {
         danger_700,
         /// [`danger_900`]'s ink.
         danger_200,
+        /// **The leap-label ink** (`crate::navigate`): a labelled layer's pill and
+        /// the outer line of its outline, with [`LEAP_INK`] for the dark half.
+        /// Yellow, the one hue the selection, key, component and measure marks
+        /// leave free, and light so a dark group label reads apart by lightness.
+        leap,
     }
 
     /// The dark palette. Grounds are `color-mix(in srgb, var(--color-text) N%,
@@ -199,6 +204,7 @@ pub mod color {
         danger_800: Color32::from_rgb(101, 52, 48),
         danger_700: Color32::from_rgb(148, 76, 71),
         danger_200: Color32::from_rgb(243, 201, 198),
+        leap: Color32::from_rgb(0xf7, 0xd4, 0x4c),
     };
 
     /// The light palette, the dark one's mirror: grounds are the text mixed
@@ -247,6 +253,9 @@ pub mod color {
         danger_800: Color32::from_rgb(246, 214, 211),
         danger_700: Color32::from_rgb(226, 150, 144),
         danger_200: Color32::from_rgb(130, 35, 30),
+        // A shade deeper than the dark theme's, as `warn` and `star` are; still
+        // light enough to carry `LEAP_INK`.
+        leap: Color32::from_rgb(0xf0, 0xc4, 0x1e),
     };
 
     /// The chrome's two palettes.
@@ -438,6 +447,10 @@ pub mod color {
     pub const MEASURE: Color32 = Color32::from_rgb(0xf2, 0x6d, 0x6d);
     /// Ink on [`MEASURE`], for [`BADGE_INK`]'s reason: the pill's ground is light.
     pub const MEASURE_INK: Color32 = Color32::from_rgb(0x2b, 0x0c, 0x0c);
+
+    /// The dark half of a leap label (`crate::navigate`): ink on a [`leap`] pill,
+    /// a group's or frame's pill itself, and the inner line of every outline.
+    pub const LEAP_INK: Color32 = Color32::from_rgb(0x26, 0x20, 0x08);
 
     /// The ground of an *unselected* point marker in the node tool.
     ///
@@ -1194,6 +1207,15 @@ pub mod icon {
     pub const STOP: &str = "\u{e46c}";
     /// *Regenerate*: ask the last question again.
     pub const ARROW_CLOCKWISE: &str = "\u{e036}";
+    /// *Navigate*, walking the layer tree from the keyboard: a box branching to
+    /// two boxes.
+    pub const TREE_STRUCTURE: &str = "\u{f069}";
+    /// Command Mode's bar: its lines in the log, the verbs it completes, and the
+    /// undo steps it makes. A window with a prompt.
+    pub const TERMINAL_WINDOW: &str = "\u{f06a}";
+    /// A script: Tools ▸ *Scripts…*, a run's undo step and log line, the editor's
+    /// head. A page with angle brackets on it, [`CODE`] being a tag.
+    pub const FILE_CODE: &str = "\u{f06b}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1493,6 +1515,9 @@ pub mod icon {
         ("sparkle", SPARKLE),
         ("stop", STOP),
         ("arrow-clockwise", ARROW_CLOCKWISE),
+        ("tree-structure", TREE_STRUCTURE),
+        ("terminal-window", TERMINAL_WINDOW),
+        ("file-code", FILE_CODE),
     ];
 }
 

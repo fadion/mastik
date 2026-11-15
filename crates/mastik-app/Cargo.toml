@@ -34,6 +34,9 @@ mastik-render = { path = "../mastik-render" }
 mastik-export = { path = "../mastik-export" }
 mastik-mcp = { path = "../mastik-mcp" }
 mastik-ai = { path = "../mastik-ai" }
+mastik-vm = { path = "../mastik-vm" }
+# The map `mastik_vm::Env` takes its labels in; already in the tree through core.
+rustc-hash.workspace = true
 # eframe (default features) brings egui + egui-wgpu + winit at matching versions.
 # `persistence` is for the window's size, position and maximized state alone
 # (`main::run_gui`): eframe clamps a restored position to the monitors present.

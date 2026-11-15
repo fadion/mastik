@@ -95,6 +95,7 @@ mod clean_up_box;
 mod cleanup;
 mod colour_review;
 mod colour_text;
+mod command;
 mod compare;
 mod contrast;
 #[cfg(test)]
@@ -130,6 +131,7 @@ mod menu;
 mod meter;
 mod minimap;
 mod mirror;
+mod navigate;
 mod one_window;
 #[cfg(target_os = "macos")]
 mod open_event;
@@ -151,6 +153,7 @@ mod reader;
 mod render_cli;
 mod repeat;
 mod rulers;
+mod scripts;
 mod session;
 mod settings;
 mod shape_builder;

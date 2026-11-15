@@ -17,8 +17,8 @@ by re-running the same agent task on the old and new build.
   proxy's reconnect.
 - **Revert one step** — for the assistant (`design/assistant.md`): undo an agent's own step under
   later edits that touch other layers.
-- **A script tool** — Command Mode (`vm.md`) exposed to agents, so a loop runs in one call. Waits on
-  Command Mode.
+- **A script tool** — Command Mode's language (`mastik-vm`, `design/command-mode.md`) exposed to
+  agents as one tool, so a loop runs in one call.
 
 ## Now · Library
 
@@ -60,11 +60,9 @@ library knows nothing of what a document holds. A card shows its cover, name and
 
 ## Now
 
-- **Command Mode** — `architecture.md` §13, `vm.md`. Its verbs are the registry's (`mastik_core::verbs`, built). Scripts
-  stored inert, never run by the document (§15 D1100). Open in `vm.md` §13: the editor's UI, the
-  parameter header, `mlua` exposing Luau's analysis, files outside the document (parked), first-run
-  disclosure, schema place, kit scripts. `/ai`, its door into the assistant, and a reply's *Open in
-  script editor* (`ai.md`) come with it.
+- **`/ai`** — a request typed in the command bar goes to the assistant's configured harness, and
+  what it proposes lands as one undoable step (`ai.md`). With it, a Luau block in an assistant reply
+  gains *Open in script editor*. Open: how the request and its proposed script look in the bar.
 
 ## Later · Platform and dependencies
 
@@ -108,6 +106,8 @@ Ideas worth weighing, not yet decided or scheduled.
 - **A stored, user-placed transform origin for a multi-selection** — unparks when a user asks for it.
 - UI toolkit revisit (gpui / Xilem), `architecture.md` §9.1.
 - MCP transport hardening (auth, TCP/remote).
+- **Scripts reaching outside the document** — writing files, reading images; two shapes, neither
+  ruled (`vm.md`).
 - **ACP as the assistant's transport** — until Claude Code speaks it without an adapter
   (`design/assistant.md` §2).
 - `vello_hybrid` as a third backend if low-end GPUs demand it.

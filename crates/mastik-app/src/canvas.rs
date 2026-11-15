@@ -2117,7 +2117,8 @@ impl MastikApp {
                     }
                 }
                 Mode::TextInsert => self.text_mode_input(ui, &resp, rect, ppp),
-                Mode::Normal => self.normal_mode_input(ui, &resp, rect, ppp),
+                // `mode` never holds Navigate, a keymap only (`MastikApp::keymap_mode`).
+                Mode::Normal | Mode::Navigate => self.normal_mode_input(ui, &resp, rect, ppp),
             }
         }
 
@@ -10534,6 +10535,9 @@ impl MastikApp {
         // Over the selection chrome, so no hairline crosses the number.
         self.draw_measures(ui, painter, rect, ppp, resp);
 
+        // Navigate's leap labels, over everything a layer wears.
+        self.draw_leap_labels(painter, rect, ppp);
+
         // Snap lines for the live gesture; the pen's come from the hover position,
         // from before its first anchor too.
         let pen_hover = self.pen.is_some() || self.tool == Tool::Pen;
@@ -11315,7 +11319,7 @@ impl MastikApp {
 
 /// A spelling squiggle from `a` to `b` in screen points: a zigzag of a fixed
 /// size whatever the zoom, so it reads as chrome, not as the text's own ink.
-fn paint_squiggle(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2) {
+pub(crate) fn paint_squiggle(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2) {
     const STEP: f32 = 2.0;
     const RISE: f32 = 1.5;
     let along = b - a;

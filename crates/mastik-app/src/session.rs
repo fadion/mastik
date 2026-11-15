@@ -255,8 +255,7 @@ impl Selection {
     pub fn contains(&self, id: NodeId) -> bool {
         self.ids.contains(&id)
     }
-    /// The node when exactly one is selected — the inspector's subject and the
-    /// default subject for a future command line (§13 decision 3).
+    /// The node when exactly one is selected — the inspector's subject.
     pub fn single(&self) -> Option<NodeId> {
         match self.ids.as_slice() {
             [id] => Some(*id),
@@ -628,6 +627,8 @@ pub struct EditorSession {
     /// document is read-only meanwhile: a commit, an undo and a redo are refused
     /// here, behind the doors the app closes itself.
     pub compare: Option<Box<crate::compare::Compare>>,
+    /// The command bar's log for this document, for the session (`crate::command::log`).
+    pub command_log: crate::command::log::Log,
 }
 
 /// **The flex-item properties a resize changed on the user's behalf** — the
@@ -874,6 +875,7 @@ impl EditorSession {
             status: Status::default(),
             status_pass: 0,
             compare: None,
+            command_log: Default::default(),
         }
     }
 

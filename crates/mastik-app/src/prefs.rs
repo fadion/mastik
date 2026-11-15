@@ -690,6 +690,11 @@ pub struct Prefs {
     /// Colour review's threshold (`crate::colour_review`), kept across documents:
     /// how near counts as near is a habit, not a fact about one file.
     pub colour_review: mastik_core::color_review::Threshold,
+    /// For each document script this machine has shown before its first run, the
+    /// SHA-256 of the source shown, keyed by [`disclosure_key`]. Here, never in
+    /// the file, so a sender cannot mark a script as already shown; a changed
+    /// source is shown again.
+    pub script_disclosed: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Prefs {
@@ -754,6 +759,7 @@ impl Default for Prefs {
             assets: AssetPrefs::default(),
             assistant: Default::default(),
             colour_review: Default::default(),
+            script_disclosed: Default::default(),
         }
     }
 }
@@ -773,6 +779,19 @@ impl Prefs {
         } else {
             Self::TEXT_SIZE_DEFAULT
         }
+    }
+
+    /// Whether the script `key` names ([`disclosure_key`]) was shown before its
+    /// first run with exactly this `source`.
+    pub fn disclosed(&self, key: &str, source: &str) -> bool {
+        self.script_disclosed.get(key) == Some(&source_hash(source))
+    }
+
+    /// Record that the script `key` names was shown with `source`. The caller
+    /// saves, as for every other field.
+    pub fn mark_disclosed(&mut self, key: &str, source: &str) {
+        self.script_disclosed
+            .insert(key.to_owned(), source_hash(source));
     }
 
     /// Read them, or `Default` if there is nothing readable there — recording
@@ -849,8 +868,35 @@ impl Prefs {
     }
 }
 
+/// The folder `prefs.json` lives in, which the library scripts sit beside.
+pub fn folder() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("mastik"))
+}
+
 fn path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("mastik").join("prefs.json"))
+    Some(folder()?.join("prefs.json"))
+}
+
+/// The key a document script's disclosure is recorded under: the identity of the
+/// document or kit carrying it ([`mastik_core::DocumentMeta::id`], a kit's id) and
+/// the script's id. `None` for a document with no identity yet, whose scripts are
+/// always shown.
+pub fn disclosure_key(owner: Option<&str>, script: mastik_core::ScriptId) -> Option<String> {
+    let owner = owner.filter(|id| !id.is_empty())?;
+    Some(format!("{owner}/{}", script.0.to_wire()))
+}
+
+/// The SHA-256 of a script's source, in hex. A cryptographic hash, because the
+/// source and both halves of the key come from the sender: a weak one would let
+/// a changed script pass as the one already shown.
+fn source_hash(source: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, source.as_bytes());
+    let mut hex = String::with_capacity(64);
+    for b in digest.as_ref() {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
 }
 
 #[cfg(test)]
@@ -882,6 +928,34 @@ mod tests {
         assert_eq!(back.vision, new.vision);
         let none: Prefs = serde_json::from_str("{}").unwrap();
         assert_eq!(none.vision.condition(), Condition::Deuteranopia);
+    }
+
+    /// A script is disclosed only under its own key and only with the source
+    /// shown; a changed source, another script or another document is shown
+    /// again, a document with no identity always is, and the record survives a
+    /// round trip while a file from before it reads as nothing shown.
+    /// flip: `disclosed` comparing the key alone → fails at "a changed source".
+    #[test]
+    fn a_script_is_disclosed_per_key_and_source() {
+        let id = |seq| mastik_core::ScriptId(mastik_core::NodeId { actor: 7, seq });
+        let doc = Some("doc-a");
+        let key = disclosure_key(doc, id(1)).expect("a document with an id has a key");
+        let mut prefs = Prefs::default();
+        assert!(!prefs.disclosed(&key, "print(1)"), "nothing shown yet");
+        prefs.mark_disclosed(&key, "print(1)");
+        assert!(prefs.disclosed(&key, "print(1)"));
+        assert!(!prefs.disclosed(&key, "print(2)"), "a changed source");
+        let other = disclosure_key(doc, id(2)).unwrap();
+        assert!(!prefs.disclosed(&other, "print(1)"), "another script");
+        let moved = disclosure_key(Some("doc-b"), id(1)).unwrap();
+        assert!(!prefs.disclosed(&moved, "print(1)"), "another document");
+        assert_eq!(disclosure_key(None, id(1)), None);
+        assert_eq!(disclosure_key(Some(""), id(1)), None);
+
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert!(back.disclosed(&key, "print(1)"), "kept across a launch");
+        let old: Prefs = serde_json::from_str("{}").unwrap();
+        assert!(old.script_disclosed.is_empty());
     }
 
     /// A file from before the view switches were kept opens with all of them on, and

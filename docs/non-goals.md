@@ -1,12 +1,10 @@
 # Mastik — Decided non-goals
 
 What is deliberately not being built. An item here is decided and not open work; do not re-report
-it as a gap. Post-v1 work with a design of its own (MCP, Command Mode) is in `roadmap.md`, and
-multiplayer is one of its considerations.
+it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its considerations.
 
 ## Scope
 
-- **MCP and Command Mode in v1** — designed (`architecture.md` §8, §13, `vm.md`), built after the editor.
 - **Prototyping.**
 - **Plugins.**
 - **Multiplayer** — kept possible by the model (`architecture.md` §12), not built.
@@ -146,6 +144,15 @@ multiplayer is one of its considerations.
 - **Kits and the library through the assistant** — Phase 4 is never a chat's.
 - **A chat saved in the document** — a chat is the person's, not the work's.
 - **Gemini CLI as a harness** — Google withdrew its OAuth sign-in for individuals in favour of Antigravity, which is driven.
+
+## Command Mode
+
+- **Constraints or reactivity** — an expression is evaluated once and forgotten (`foundations.md` §13 decision 1).
+- **A script run by the document** — on open, on a change, or on any trigger but the person's own (§15 D1100); a script the document re-runs is a constraint engine.
+- **Links between a document's scripts and the library's** — they exchange copies; a kit's scripts are the one link (`command-mode.md` §10).
+- **Plugins or UI extension from a script** — a script edits the document; panels, tools and chrome are a different feature with a different security design.
+- **Async, coroutines, or a run that yields across frames** (`command-mode.md` §8).
+- **Binding the interaction layer** — gestures, previews and `RenderOverrides` have no scriptable form; a script says a committed outcome (`command-mode.md` §6).
 
 ## Tests and goldens
 

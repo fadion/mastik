@@ -406,6 +406,11 @@ pub fn pill_ink(hue: egui::Color32) -> egui::Color32 {
         color::COMPONENT_INK
     } else if hue == color::MEASURE {
         color::MEASURE_INK
+    } else if hue == color::LEAP_INK {
+        // A group's leap label: the two leap inks swapped.
+        color::leap()
+    } else if hue == color::leap() {
+        color::LEAP_INK
     } else {
         color::BADGE_INK
     }
@@ -443,13 +448,44 @@ pub fn canvas_pill_padded(
     hue: egui::Color32,
     pad: egui::Vec2,
 ) -> egui::Rect {
+    canvas_pill_led(painter, at, align, text, hue, pad, 0)
+}
+
+/// [`canvas_pill_padded`] with its first `lead` characters faded: a leap label
+/// showing which of its letters are already typed.
+pub fn canvas_pill_led(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    hue: egui::Color32,
+    pad: egui::Vec2,
+    lead: usize,
+) -> egui::Rect {
     let ink = pill_ink(hue);
-    let g = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(BADGE_PT), ink);
+    let font = egui::FontId::proportional(BADGE_PT);
+    let g = if lead == 0 {
+        painter.layout_no_wrap(text.to_owned(), font, ink)
+    } else {
+        let split = text.char_indices().nth(lead).map_or(text.len(), |(i, _)| i);
+        let mut job = egui::text::LayoutJob::default();
+        for (part, c) in [
+            (&text[..split], ink.gamma_multiply(PILL_LEAD_FADE)),
+            (&text[split..], ink),
+        ] {
+            job.append(part, 0.0, egui::TextFormat::simple(font.clone(), c));
+        }
+        painter.layout_job(job)
+    };
     let rect = align.anchor_size(at, g.size() + pad * 2.0);
     painter.rect_filled(rect, egui::CornerRadius::same(4), hue);
     painter.galley(rect.min + pad, g, ink);
     rect
 }
+
+/// How strongly [`canvas_pill_led`] draws its typed lead: enough to read, plainly
+/// behind the letters still to type.
+const PILL_LEAD_FADE: f32 = 0.4;
 
 /// The shadow under chrome that floats over the canvas and stays: an inspector
 /// card, the path bar, a [`float_button`]. Lighter than [`MENU_SHADOW`], which
@@ -2258,6 +2294,104 @@ pub fn text_field(
                 .hint_text(egui::RichText::new(hint).size(pt)),
         )
     })
+}
+
+/// The ink each run of a [`code_editor`]'s text takes, by byte range; the rest
+/// is `color::text()`.
+pub type CodeInks = Vec<(std::ops::Range<usize>, egui::Color32)>;
+
+/// The type size of code in the script editor and its output.
+pub const CODE_PT: f32 = 12.0;
+
+/// Between two lines of code: the line height of [`CODE_PT`] monospace.
+pub const CODE_LINE_H: f32 = 19.0;
+
+/// The line-number gutter's width, its numbers right-aligned in it.
+pub const CODE_GUTTER_W: f32 = 44.0;
+
+/// The script editor's text: monospace at [`CODE_PT`], unwrapped, its runs inked
+/// by `inks`, with a gutter of line numbers. `bad` (0-based) numbers its line in
+/// the danger ink and squiggles it; `editable` false shows the text for reading.
+/// No ground of its own: it fills the pane it is given, which scrolls it.
+pub fn code_editor(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    text: &mut String,
+    inks: &dyn Fn(&str) -> CodeInks,
+    bad: Option<usize>,
+    editable: bool,
+) -> egui::text_edit::TextEditOutput {
+    let font = egui::FontId::monospace(CODE_PT);
+    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+        let s = buf.as_str();
+        let mut job = egui::text::LayoutJob::default();
+        let fmt = |ink| {
+            let mut f = egui::TextFormat::simple(font.clone(), ink);
+            f.line_height = Some(CODE_LINE_H);
+            f
+        };
+        let mut at = 0;
+        for (r, ink) in inks(s) {
+            if r.start < at || r.end > s.len() || !s.is_char_boundary(r.start) {
+                continue;
+            }
+            job.append(&s[at..r.start], 0.0, fmt(color::text()));
+            job.append(&s[r.clone()], 0.0, fmt(ink));
+            at = r.end;
+        }
+        job.append(&s[at..], 0.0, fmt(color::text()));
+        job.wrap.max_width = f32::INFINITY;
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+    let (gutter, out) = ui
+        .horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let (gutter, _) =
+                ui.allocate_exact_size(egui::vec2(CODE_GUTTER_W, 0.0), egui::Sense::empty());
+            let out = egui::TextEdit::multiline(text)
+                .id(id)
+                .frame(egui::Frame::NONE)
+                .code_editor()
+                .lock_focus(true)
+                .interactive(editable)
+                .desired_width(f32::INFINITY)
+                .desired_rows(1)
+                .margin(egui::Margin::symmetric(10, 0))
+                .layouter(&mut layouter)
+                .show(ui);
+            (gutter, out)
+        })
+        .inner;
+    let p = ui.painter();
+    let mut line = 0usize;
+    let mut starts = true;
+    for row in &out.galley.rows {
+        if starts {
+            let y = out.galley_pos.y + row.rect().center().y;
+            let ink = match bad == Some(line) {
+                true => color::danger(),
+                false => theme::text::faint(),
+            };
+            p.text(
+                egui::pos2(gutter.right() - 10.0, y),
+                egui::Align2::RIGHT_CENTER,
+                (line + 1).to_string(),
+                egui::FontId::monospace(CODE_PT - 1.0),
+                ink,
+            );
+            if bad == Some(line) && !row.row.glyphs.is_empty() {
+                let r = row.rect().translate(out.galley_pos.to_vec2());
+                crate::canvas::paint_squiggle(
+                    p,
+                    egui::pos2(r.left(), r.bottom() - 1.0),
+                    egui::pos2(r.right(), r.bottom() - 1.0),
+                );
+            }
+            line += 1;
+        }
+        starts = row.ends_with_newline;
+    }
+    out
 }
 
 /// What a [`text_field_glyph`] holds besides its text.

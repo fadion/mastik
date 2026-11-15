@@ -465,6 +465,15 @@ pub enum Item {
     CheckContrast,
     /// `Action::SimulateVision`: the vision simulation, on or off.
     SimulateVision,
+    /// `Action::Navigate`: walking the layer tree from the keyboard, on or off.
+    Navigate,
+    /// `Action::CommandBar`: the command bar.
+    CommandBar,
+    /// `Action::OpenScripts`: the script editor.
+    Scripts,
+    /// `Action::RunScript`: a saved script, by its place in the palette's list;
+    /// the palette writes the script's name over the label.
+    RunScript(usize),
     Tool(Tool),
     PlaceImage,
     ZoomIn,
@@ -1329,6 +1338,10 @@ impl Item {
             Item::Present => s("Present mode", icon::PLAY, None, Group::View),
             Item::CheckContrast => s("Check contrast", icon::CIRCLE_HALF, None, Group::View),
             Item::SimulateVision => s("Simulate vision", icon::EYE, None, Group::View),
+            Item::Navigate => s("Navigate", icon::TREE_STRUCTURE, None, Group::Tools),
+            Item::CommandBar => s("Command bar", icon::TERMINAL_WINDOW, None, Group::Tools),
+            Item::Scripts => s("Scripts…", icon::FILE_CODE, None, Group::Tools),
+            Item::RunScript(_) => s("Run script", icon::FILE_CODE, None, Group::Tools),
         }
     }
 
@@ -1395,6 +1408,10 @@ impl Item {
             Item::Cheatsheet => &["shortcuts", "keys", "keymap", "help"],
             Item::Present => &["play", "slideshow", "presentation", "fullscreen"],
             Item::CheckContrast => &["accessibility", "a11y", "wcag", "apca", "legibility"],
+            Item::Navigate => &["keyboard", "tree", "hjkl", "vim", "labels", "leap", "hints"],
+            Item::CommandBar => &["command mode", "cli", "expression", "calculator", "luau"],
+            Item::Scripts => &["script", "luau", "lua", "code", "automate", "macro", "run"],
+            Item::RunScript(_) => &["script", "run"],
             // The old name's words stay, so muscle memory still finds it.
             Item::SimulateVision => &[
                 "accessibility",
@@ -1538,6 +1555,10 @@ impl Item {
             Item::Present => Action::Present,
             Item::CheckContrast => Action::CheckContrast,
             Item::SimulateVision => Action::SimulateVision,
+            Item::Navigate => Action::Navigate,
+            Item::CommandBar => Action::CommandBar,
+            Item::Scripts => Action::OpenScripts,
+            Item::RunScript(i) => Action::RunScript(i),
             Item::ViewSwitch(sw) => Action::ToggleView(sw),
             Item::ZoomFit => Action::ZoomFit,
             Item::ZoomSelection => Action::ZoomSelection,
@@ -3851,6 +3872,10 @@ impl MastikApp {
             | Item::Present
             | Item::CheckContrast
             | Item::SimulateVision
+            | Item::Navigate
+            | Item::CommandBar
+            | Item::Scripts
+            | Item::RunScript(_)
             | Item::Tool(_)
             | Item::PlaceImage
             | Item::ZoomIn

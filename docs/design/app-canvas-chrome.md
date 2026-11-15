@@ -163,7 +163,7 @@ preview* (`ViewSwitch::SizePreview`, *Show size preview* in the palette and the 
 ## The contrast check mode (`contrast.rs`)
 
 *Tools ▸ Check contrast* (`Action::CheckContrast`, `menu::Item::CheckContrast`, `Group::View`, no
-chord): the Tools menu's first row, and a palette row reading *Stop checking contrast* while on.
+chord): the Tools menu's first check, and a palette row reading *Stop checking contrast* while on.
 It measures the shown text layers, and with *Non-text* small shapes, against what is drawn behind
 them with `mastik_export::contrast::check_with`, the measurement `mastik check contrast` runs
 (`export.md`). `MastikApp::contrast` is view state: `reset_transient_state` turns it off whenever a
@@ -357,6 +357,8 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
 - **Tools** (`MastikApp::tools_menu`, rows from `ToolsRow::ALL`) holds what works across the
   document. Verbs on the selection stay in the context menu, document-level rows in the Document
   menu, view modes in View, inserting in the insert picker.
+  - Command Mode's doors: *Navigate* (`` ` ``; *Stop navigating* while on) and *Scripts…*, the
+    script editor (`command-mode.md`). The command bar has no row here: `:` and the palette open it;
   - the checks, which change nothing: *Check contrast* and *Simulate vision*, each toggling its
     mode (never remembered) and named *Stop checking contrast* / *Stop simulating vision* while on,
     the palette's and the bar ✕'s words (`contrast::STOP_CONTRAST`, `vision::STOP_VISION`), then
@@ -368,7 +370,7 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
 
   Every row is a bare `ui::menu_row` (an empty glyph, never checked), its label at the row's own
   inset: nothing in the menu ticks, and a check that is on says so in its own bar over the canvas.
-  The bulk edits show their chords from the keymap (`Item::spec().accel`).
+  *Navigate* and the bulk edits show their chords from the keymap (`Item::spec().accel`).
   *Find and replace…* is this menu's own label (`ToolsRow::label`): the palette names the box's two
   doors, *Find in text…* and *Replace text…*. A pick closes the menu, then acts. The palette keeps
   every row.
@@ -475,8 +477,9 @@ and the floating popovers.
 `Ctrl+K`, alias `Ctrl+/` (`shortcuts.md` §8), in the editor only: in the library `Ctrl+K` stays the
 file search, and the library screen clears an open palette. Both chords are `input::BINDINGS` rows
 read in both modes. With a modal up the chord does nothing, and a
-modal that opens closes the palette. App actions only; typed syntax belongs to Command Mode
-(`vm.md`).
+modal that opens closes the palette. App actions only; typed syntax belongs to the command bar
+(`command-mode.md`), which the palette's *Command bar* row opens beside *Scripts…*, *Navigate* and a
+*Run ‹name›* row per saved script.
 
 - **One registry.** A row is a `menu::Item`, with the context menu's label, glyph, chord, tick and
   dim reason. The app verbs no context menu shows are `Item`s too (undo and redo, save, new file,
@@ -1230,11 +1233,12 @@ colour, one undo step each. The rule is `mastik_core::color_review`.
   so the chord test, which drives the keymap, cannot cover them. Layer's *Opacity 10–100%* and
   *Blend mode* (`Shift+3–9`) rows are hand-written too: a digit is a value, not a registry verb.
 - **Sections** (`sections`): Tools, Zoom, Pages, Edit, Structure, Arrange, Layer, View, Components and
-  kits, File, Tabs, Text editing, Mouse, Library, dealt in order into three columns, each filled to about
+  kits, File, Tabs, Text editing, Navigate, Mouse, Library, dealt in order into three columns, each filled to about
   its share; a section is never split. *Lasso select* sits in Tools, beside the tools whose marquee
   it shapes. A narrow window deals into two or one, so no column is under
   220 wide (`column_count`). Opened from the library, its section leads, followed by an *In a
-  file* divider; opened in a text session, the text keys lead.
+  file* divider; opened in a text session, the text keys lead, and in Navigate, Navigate's
+  (`input::navigate_rows`, spelled from `BINDINGS`).
 - **Filter and hold.** Every filter word must start a label word or a key name. Holding modifiers
   with an empty filter dims every row whose chord does not use exactly those modifiers — only once
   every modifier has been let go since the sheet opened, so the opening chord's own keys do not.

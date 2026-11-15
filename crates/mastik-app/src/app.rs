@@ -551,6 +551,9 @@ pub struct MastikApp {
     pub(crate) canvas: CanvasRenderer,
     /// Explicit editing mode — every keystroke routes through it (§9.3).
     pub(crate) mode: Mode,
+    /// Navigate, the keyboard walk through the tree, and its leap labels
+    /// (`crate::navigate`).
+    pub(crate) navigate: crate::navigate::Navigate,
     pub(crate) tool: Tool,
     pub(crate) drag: Drag,
     /// The copy an Alt-drag is carrying, prepared once when Alt went down.
@@ -1099,6 +1102,10 @@ pub struct MastikApp {
     pub(crate) context_menu: Option<ContextMenu>,
     /// The open command palette (`crate::palette`).
     pub(crate) palette: Option<crate::palette::Palette>,
+    /// The open command bar (`crate::command`).
+    pub(crate) command_bar: Option<crate::command::Bar>,
+    /// The script editor and its run form, for the session (`crate::command::editor`).
+    pub(crate) scripts: crate::command::editor::Scripts,
     /// The open shortcut cheatsheet (`crate::cheatsheet`); a modal on either screen.
     pub(crate) cheatsheet: Option<crate::cheatsheet::Cheatsheet>,
     /// A card a palette row asked to show: the inspector opens it and scrolls to it
@@ -1261,6 +1268,8 @@ pub enum TopMenu {
 /// A row of the top bar's Tools menu ([`MastikApp::tools_menu`]), in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolsRow {
+    Navigate,
+    Scripts,
     CheckContrast,
     SimulateVision,
     ColourReview,
@@ -1271,7 +1280,9 @@ enum ToolsRow {
 }
 
 impl ToolsRow {
-    const ALL: [ToolsRow; 7] = [
+    const ALL: [ToolsRow; 9] = [
+        ToolsRow::Navigate,
+        ToolsRow::Scripts,
         ToolsRow::CheckContrast,
         ToolsRow::SimulateVision,
         ToolsRow::ColourReview,
@@ -1291,6 +1302,7 @@ impl ToolsRow {
             .chain([
                 (crate::contrast::STOP_CONTRAST, None),
                 (crate::vision::STOP_VISION, None),
+                (crate::navigate::STOP_NAVIGATE, ToolsRow::Navigate.accel()),
             ])
             .collect()
     }
@@ -1300,6 +1312,8 @@ impl ToolsRow {
     fn label(self) -> &'static str {
         use crate::menu::Item;
         match self {
+            ToolsRow::Navigate => Item::Navigate.spec().label,
+            ToolsRow::Scripts => Item::Scripts.spec().label,
             ToolsRow::CheckContrast => Item::CheckContrast.spec().label,
             ToolsRow::SimulateVision => Item::SimulateVision.spec().label,
             ToolsRow::ColourReview => Item::ColourReview.spec().label,
@@ -1310,10 +1324,11 @@ impl ToolsRow {
         }
     }
 
-    /// The chord a bulk edit shows, from the keymap; the checks have none.
+    /// The chord a bulk edit and Navigate show, from the keymap; the checks have none.
     fn accel(self) -> Option<&'static str> {
         use crate::menu::Item;
         match self {
+            ToolsRow::Navigate => Item::Navigate.spec().accel,
             ToolsRow::FindReplace => Item::FindText.spec().accel,
             ToolsRow::BatchRename => Item::BatchRename.spec().accel,
             _ => None,
@@ -1760,6 +1775,7 @@ impl MastikApp {
             segment_walks: Default::default(),
             canvas,
             mode: Mode::Normal,
+            navigate: Default::default(),
             tool: Tool::Select,
             drag: Drag::None,
             alt_clone: None,
@@ -1907,6 +1923,8 @@ impl MastikApp {
             unsharing_kit: None,
             context_menu: None,
             palette: None,
+            command_bar: None,
+            scripts: Default::default(),
             cheatsheet: None,
             reveal_card: None,
             cards_drawn: Vec::new(),
@@ -2297,8 +2315,12 @@ impl MastikApp {
         // Before the keymap, which would read the fix card's Enter as "edit the text".
         self.contrast_claim_keys(&ctx);
         let mut palette_keys = crate::palette::Keys::default();
+        let mut bar_keys = crate::command::Keys::default();
         let popover_heard = std::mem::take(&mut self.popover_heard);
-        if self.palette.is_some() && !self.modal_is_up() {
+        if self.command_bar.is_some() && !self.modal_is_up() {
+            // The bar owns the keyboard as the palette does.
+            bar_keys = crate::command::read_keys(&ctx);
+        } else if self.palette.is_some() && !self.modal_is_up() {
             // The palette owns the keyboard: its keys leave `Events` before its
             // field can read them, and nothing reaches `input::resolve`.
             palette_keys = crate::palette::read_keys(&ctx);
@@ -2344,8 +2366,11 @@ impl MastikApp {
                 self.tab_key(key);
             } else {
                 self.compare_overlay_key(&ctx);
-                for action in input::resolve(&ctx, self.mode, self.prefs.nudge) {
-                    self.dispatch(&ctx, action);
+                // Leap labels on the canvas take the letters in place of the keymap.
+                if !self.leap_keys(&ctx) {
+                    for action in input::resolve(&ctx, self.keymap_mode(), self.prefs.nudge) {
+                        self.dispatch(&ctx, action);
+                    }
                 }
             }
         }
@@ -2477,6 +2502,10 @@ impl MastikApp {
         self.context_menu_ui(&ctx, nav);
         // Unguarded: its chord works in focus mode, over the canvas alone.
         self.palette_ui(&ctx, canvas, palette_keys);
+        crate::command::log::Log::watch(&mut self.session);
+        // Unguarded, as the palette: `:` works in focus mode.
+        self.command_bar_ui(&ctx, canvas, bar_keys);
+        self.scripts_ui(&ctx, canvas);
         // Unguarded: it is not in a panel, so it works in focus mode.
         self.batch_rename_ui(&ctx, canvas);
         self.clean_up_ui(&ctx, canvas);
@@ -2675,6 +2704,7 @@ impl MastikApp {
             // The top bar's door; it cannot arrive with the modal already up.
             Action::OpenSettings => self.toggle_settings(ctx, None),
             Action::Palette => self.toggle_palette(ctx),
+            Action::CommandBar => self.open_command_bar(),
             Action::Cheatsheet => self.open_cheatsheet(crate::cheatsheet::Opened::Editor),
             // No dialog once a destination is known this session.
             Action::ExportAll => self.export_all(crate::panels::ExportAll::Asking),
@@ -2829,6 +2859,10 @@ impl MastikApp {
             Action::OpacityDigit(d) => self.opacity_digit(ctx, d),
             Action::BlendChord(d) => self.blend_chord(d),
             Action::TextStyle(chord) => self.text_chord(chord),
+            Action::Navigate => self.toggle_navigate(),
+            Action::OpenScripts => self.open_scripts(),
+            Action::RunScript(i) => self.run_listed_script(i),
+            Action::Nav(nav) => self.nav_action(ctx, nav),
         }
         ctx.request_repaint();
     }
@@ -8501,8 +8535,8 @@ impl MastikApp {
         }
     }
 
-    /// The **Tools** dropdown's rows: the checks, which change nothing, then a
-    /// hairline and the bulk edits, each opening its box with its chord beside it.
+    /// The **Tools** dropdown's rows: Navigate, *Scripts…* and the checks, which change nothing,
+    /// then a hairline and the bulk edits, each opening its box with its chord beside it.
     /// Bare rows with no tick column: a check that is on says so in its own bar
     /// over the canvas. A pick closes the menu before it acts.
     fn tools_menu(&mut self, ui: &mut egui::Ui) {
@@ -8523,6 +8557,7 @@ impl MastikApp {
                     crate::contrast::STOP_CONTRAST
                 }
                 ToolsRow::SimulateVision if self.vision.is_some() => crate::vision::STOP_VISION,
+                ToolsRow::Navigate if self.navigating() => crate::navigate::STOP_NAVIGATE,
                 _ => row.label(),
             };
             let style = crate::ui::MenuRow::new("", label)
@@ -8538,6 +8573,8 @@ impl MastikApp {
             }
             self.open_menu = TopMenu::None;
             match row {
+                ToolsRow::Navigate => self.toggle_navigate(),
+                ToolsRow::Scripts => self.open_scripts(),
                 ToolsRow::CheckContrast => self.toggle_contrast(),
                 ToolsRow::SimulateVision => self.toggle_vision(),
                 ToolsRow::ColourReview => self.open_colour_review(),
@@ -8870,7 +8907,8 @@ impl MastikApp {
     }
 
     /// The floating status bar at the canvas's bottom left, to the minimap's right when
-    /// that shows: the mode when not the default, and the last status message for [`status_hold`], then a fade.
+    /// that shows: the mode when not the default (Navigate's with its path and hint),
+    /// and the last status message for [`status_hold`], then a fade.
     /// *View ▸ Show messages* hides the message, never the mode. Drawn in focus
     /// mode too (its Escape hint). Truncated so it never runs under the inspector.
     ///
@@ -8879,7 +8917,8 @@ impl MastikApp {
     /// time every click and drop passes through it to the canvas.
     fn status_bar(&self, ctx: &egui::Context, canvas: egui::Rect) -> bool {
         let status = self.session.status();
-        let moded = self.mode != Mode::Normal;
+        let mode = self.keymap_mode();
+        let moded = mode != Mode::Normal;
         let exporting = self.exporting();
         let age = status.at.elapsed().as_secs_f32();
         let hold = status_hold(status).as_secs_f32();
@@ -8931,11 +8970,19 @@ impl MastikApp {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
                             if moded {
+                                // Navigate wears the amber, as it is its only sign.
+                                let ink = match mode {
+                                    Mode::Navigate => color::warn(),
+                                    _ => color::accent_300(),
+                                };
                                 ui.label(
-                                    egui::RichText::new(self.mode.label())
+                                    egui::RichText::new(mode.label())
                                         .size(crate::ui::EYEBROW_PT)
-                                        .color(color::accent_300()),
+                                        .color(ink),
                                 );
+                            }
+                            if mode == Mode::Navigate {
+                                self.navigate_pill(ui);
                             }
                             if message {
                                 ui.add(
