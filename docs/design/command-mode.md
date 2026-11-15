@@ -279,12 +279,18 @@ canvas's top) and movable by its head: a list on the left (a
 a `ui::action_button`, and the folder button at its foot), the script's head (its name, where it
 lives, its problem counts, the find and ⋯ toggles and *Run*), the code pane and an output pane
 listing the last runs under timed rules, errors in the error ink. The list's rows are list rows (`MENU_ROW_H`,
-`ui::list_row_ground`) in the palette's row layout; with no script open the pane is a
+`ui::list_row_ground`) in the palette's row layout, except that a row's note (*2 inputs*) keeps its
+room and a long name is cut instead, shown whole in the row's tooltip
+(`palette::row_texts_note_kept`); with no script open the pane is a
 `ui::empty_state`. The body is laid out in fixed rects, so the window keeps the size it is given.
 `Ctrl+Enter` runs, or puts the caret on the syntax error that holds the run. The loupe in the head
-toggles find (`FieldButton::On` while it is open), as
-`Ctrl+F` from the code pane opens it: Enter selects the next match, wrapping to the top, and
-`Ctrl+F` then Enter goes on from there. The ⋯ menu, opened by the ⋯ (on while it is open) or by a
+toggles find (`FieldButton::On` while it is open), as `Ctrl+F` from the code pane opens it. **Find
+reads as the canvas Find, smaller**: its field (`find::field`) with *3 of 12* at its end (a warm
+*0* for none), the previous and next arrows and ✕ beside it. Matches ignore case; each is washed in
+the accent in the code and the current one ringed and scrolled into view. A new text starts at the
+first match at or after the caret; `Enter` steps on and `Shift+Enter` back, wrapping, with the
+keyboard kept in the field; `Escape` or ✕ closes find and selects the current match in the code.
+The ⋯ menu, opened by the ⋯ (on only while it is the ⋯'s own menu) or by a
 right-click on a list row, which opens that script first (`context-menus.md` §6.10): *Save to
 library* · *Copy into this document* · *Duplicate*, a rule, *Rename* · *Show in folder* · *Delete*,
 each left out where it can never apply. **Save to library moves an unsaved script** into the
@@ -397,7 +403,7 @@ sized from their laid-out text each frame.
   a name it takes a dotted `accent_300()` underline and the pointing hand; `Ctrl`+click, or `F12` at
   the caret, selects the declaration and washes its line in the accent, fading over 600 ms,
   scrolling only when the line is out of view, to a third of the way down. Mastik's names, the
-  library and keywords never underline.
+  library and keywords never underline, and neither does a declaration itself, which leads nowhere.
 
 ## 11. MCP and `/ai`
 

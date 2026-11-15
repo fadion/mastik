@@ -1075,8 +1075,9 @@ fn footer(ui: &mut egui::Ui, f: &FindBox) {
 
 /// A field with a glyph before it and an optional note at its end, `w` wide,
 /// `toggles_w` left free at its right for [`toggles`]; with the rect it fills.
+/// The script editor's find uses it too, so the two finds read alike.
 #[allow(clippy::too_many_arguments)]
-fn field(
+pub(crate) fn field(
     ui: &mut egui::Ui,
     id: &str,
     text: &mut String,

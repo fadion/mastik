@@ -1372,6 +1372,54 @@ pub(crate) fn row_texts(
     p.galley(egui::pos2(right - g.size().x, y - g.size().y / 2.0), g, ink);
 }
 
+/// [`row_texts`] for a row whose note is short and says something about the
+/// row (the script list's *2 inputs*): the note keeps its width and the label
+/// is cut to what is left, down to half the row. Answers whether the label was
+/// cut, so the row can show it whole in a tooltip.
+pub(crate) fn row_texts_note_kept(
+    p: &egui::Painter,
+    rect: egui::Rect,
+    right: f32,
+    label: egui::text::LayoutJob,
+    note: Option<(&str, egui::Color32)>,
+) -> bool {
+    let label_x = rect.left() + ROW_LABEL_X;
+    let note_w = note.filter(|(n, _)| !n.is_empty()).map_or(0.0, |(n, ink)| {
+        p.layout_no_wrap(
+            n.to_owned(),
+            egui::FontId::proportional(crate::ui::CAPTION_PT),
+            ink,
+        )
+        .size()
+        .x + ROW_NOTE_GAP
+    });
+    let whole = right - label_x;
+    let room = (whole - note_w).max(whole / 2.0);
+    let full_w = p
+        .layout_job(egui::text::LayoutJob {
+            wrap: egui::text::TextWrapping::no_max_width(),
+            ..label.clone()
+        })
+        .size()
+        .x;
+    row_texts(p, rect, label_x + room, label, None);
+    if let Some((n, ink)) = note.filter(|(n, _)| !n.is_empty()) {
+        let g = p.layout_no_wrap(
+            n.to_owned(),
+            egui::FontId::proportional(crate::ui::CAPTION_PT),
+            ink,
+        );
+        if g.size().x <= whole - room - ROW_NOTE_GAP + 0.5 {
+            p.galley(
+                egui::pos2(right - g.size().x, rect.center().y - g.size().y / 2.0),
+                g,
+                ink,
+            );
+        }
+    }
+    full_w > room + 0.5
+}
+
 /// A chord as keycaps would read it in one chip: `Ctrl + K`, `⌘K` on macOS.
 fn chip(ui: &egui::Ui, right: f32, y: f32, accel: &str, live: bool) -> f32 {
     let p = ui.painter();

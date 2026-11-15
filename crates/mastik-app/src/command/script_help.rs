@@ -84,7 +84,7 @@ fn byte_of(text: &str, c: usize) -> usize {
 
 /// The screen rect `range` of `text` takes in the laid-out pane (one row: a
 /// name, a token, a line's text).
-fn span_rect(
+pub(crate) fn span_rect(
     out: &egui::text_edit::TextEditOutput,
     text: &str,
     range: &Range<usize>,
@@ -326,10 +326,12 @@ impl Help {
         });
         let ctrl = ctx.input(|i| i.modifiers.command);
 
-        // Ctrl over one of the script's own names: a dotted underline and the hand.
+        // Ctrl over a use of one of the script's own names: a dotted underline
+        // and the hand. A declaration itself leads nowhere, so it stays plain.
         if ctrl
             && let Some(b) = under
             && let Some((name, decl)) = mastik_vm::declaration_at(text, b)
+            && name != decl
         {
             let r = span_rect(out, text, &name);
             let y = r.bottom() - 1.0;

@@ -131,8 +131,14 @@ pub(crate) struct Scripts {
     renaming: Option<String>,
     /// Find, while open: the text sought.
     find: Option<String>,
-    /// Where find's next search starts, in bytes: just past the last match.
-    find_from: usize,
+    /// Find's matches in the buffer this frame, ignoring case.
+    find_hits: Vec<std::ops::Range<usize>>,
+    /// The current match, by its place in `find_hits`.
+    find_current: usize,
+    /// Scroll the current match into view next frame.
+    find_reveal: bool,
+    /// The hash of the text and the sought text `find_hits` were found for.
+    find_key: u64,
     /// Give find's field the keyboard once it can take it.
     find_focus: bool,
     form: Option<Form>,
@@ -1108,6 +1114,7 @@ impl MastikApp {
                     {
                         act = Some(Act::Run);
                     }
+                    paint_find_marks(ui, s, &out);
                     let list = offer
                         .as_ref()
                         .and_then(|_| ui.ctx().memory(|m| m.area_rect(id.with("suggest"))));
@@ -1949,8 +1956,12 @@ fn source_list(
                         for (which, name, note, glyph) in items {
                             let lit = s.current.as_ref() == Some(&which);
                             let renaming = lit && s.renaming.is_some();
-                            let shown = if renaming { "" } else { name.as_str() };
-                            let resp = list_row(ui, glyph, shown, &note, lit);
+                            // The field covers the name and the note while it is up.
+                            let (shown, note) = match renaming {
+                                true => ("", ""),
+                                false => (name.as_str(), note.as_str()),
+                            };
+                            let resp = list_row(ui, glyph, shown, note, lit);
                             if renaming {
                                 row_rename(ui, s, resp.rect, act);
                                 continue;
@@ -2061,7 +2072,8 @@ fn inputs_note(source: &str) -> String {
 
 /// One script row: a list row's height and ground, which answer the pointer,
 /// in the palette's row layout under the palette's section labels: its
-/// source's glyph, its name, its note.
+/// source's glyph, its name, its note. The note keeps its room and a long name
+/// is cut, shown whole in the row's tooltip.
 fn list_row(ui: &mut egui::Ui, glyph: &str, name: &str, note: &str, lit: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ui::MENU_ROW_H),
@@ -2072,14 +2084,17 @@ fn list_row(ui: &mut egui::Ui, glyph: &str, name: &str, note: &str, lit: bool) -
     crate::palette::row_glyph(p, rect, glyph, theme::text::dim());
     let font = egui::FontId::proportional(ui::CONTROL_PT);
     let label = crate::palette::lit_label(name, &[], font, color::text(), color::text());
-    crate::palette::row_texts(
+    let cut = crate::palette::row_texts_note_kept(
         p,
         rect,
         rect.right() - 8.0,
         label,
         Some((note, theme::text::faint())),
     );
-    resp
+    match cut {
+        true => resp.on_hover_text(name),
+        false => resp,
+    }
 }
 
 /// Above the empty pane's state.
@@ -2167,18 +2182,23 @@ fn script_head(
             *act = Some(Act::Run);
         }
         // The ⋯ and the loupe are toggles, on while their menu or field is up,
-        // as a card head's ⋯ and the inspector's disclosure buttons are.
+        // as a card head's ⋯ and the inspector's disclosure buttons are. A
+        // row's right-click menu is not the ⋯'s, so it leaves the ⋯ off.
+        let from_button = s
+            .menu
+            .as_ref()
+            .is_some_and(|m| matches!(m.at, MenuAt::Button(_)));
         let menu = ui::field_button(
             ui,
             icon::DOTS_THREE,
             ui::CONTROL_H,
-            FieldButton::on_if(s.menu.is_some()),
+            FieldButton::on_if(from_button),
         )
         .on_hover_text("More");
         if menu.clicked() {
-            s.menu = match s.menu {
-                Some(_) => None,
-                None => Some(Menu {
+            s.menu = match from_button {
+                true => None,
+                false => Some(Menu {
                     at: MenuAt::Button(menu.rect),
                     highlight: None,
                 }),
@@ -2215,64 +2235,185 @@ fn script_head(
         s.find = Some(s.find.take().unwrap_or_default());
         s.find_focus = true;
     }
-    if let Some(find) = &mut s.find {
-        // Under the head's right end, kept on screen as a menu is.
-        let size = egui::vec2(
-            FIND_W + 2.0 * (ui::MENU_PAD + ui::MENU_BORDER),
-            ui::CONTROL_H + 2.0 * (ui::MENU_PAD + ui::MENU_BORDER),
-        );
-        let at = rect.right_bottom() + egui::vec2(-HEAD_INSET - size.x, ui::MENU_GAP);
-        let area = egui::Area::new(egui::Id::new(FIND_ID))
-            .order(egui::Order::Foreground)
-            .fixed_pos(ui::menu_place(ui.ctx(), at, size));
-        let mut close = false;
-        area.show(ui.ctx(), |ui| {
+    if s.find.is_some() {
+        find_row(ui, s, rect);
+    }
+}
+
+/// Find's row under the head's right end, kept on screen as a menu is: the
+/// canvas Find's field with the count at its end, its previous and next arrows
+/// and its close. Every match is marked in the code (`paint_find_marks`) and
+/// the field keeps the keyboard: `Enter` steps on, `Shift+Enter` back, and
+/// closing (`Escape` or ✕) selects the current match in the code.
+fn find_row(ui: &mut egui::Ui, s: &mut Scripts, head: egui::Rect) {
+    const BTN: f32 = 26.0;
+    const GAP: f32 = 6.0;
+    let ctx = ui.ctx().clone();
+    let field_id = egui::Id::new(FIND_FIELD);
+    // Asked before the field is drawn: `Enter` steps while it has the keyboard,
+    // and the field keeps it.
+    let in_field = ctx.memory(|m| m.has_focus(field_id));
+    let (enter, shift, escape) = ctx.input(|i| {
+        (
+            i.key_pressed(egui::Key::Enter),
+            i.modifiers.shift,
+            i.key_pressed(egui::Key::Escape),
+        )
+    });
+    let mut step: Option<isize> = (enter && in_field).then_some(if shift { -1 } else { 1 });
+    let mut close = false;
+    let size = egui::vec2(
+        FIND_W + 3.0 * BTN + 2.0 * GAP + 2.0 + 2.0 * (ui::MENU_PAD + ui::MENU_BORDER),
+        ui::CONTROL_H + 2.0 * (ui::MENU_PAD + ui::MENU_BORDER),
+    );
+    let at = head.right_bottom() + egui::vec2(-HEAD_INSET - size.x, ui::MENU_GAP);
+    let before = s.find.clone().unwrap_or_default();
+    let n = s.find_hits.len();
+    let count = match (before.is_empty(), n) {
+        (true, _) => String::new(),
+        (false, 0) => "0".to_owned(),
+        (false, n) => format!("{} of {n}", s.find_current.min(n - 1) + 1),
+    };
+    egui::Area::new(egui::Id::new(FIND_ID))
+        .order(egui::Order::Foreground)
+        .fixed_pos(ui::menu_place(&ctx, at, size))
+        .show(&ctx, |ui| {
             ui::menu_frame(ui::MENU_PAD).show(ui, |ui| {
-                let resp = ui::search_box(
-                    ui,
-                    egui::vec2(FIND_W, ui::CONTROL_H),
-                    find,
-                    "Find in script",
-                    find_field,
-                );
-                // Asked until it holds: a new area's first frame only sizes
-                // itself, and a field there cannot take the keyboard.
-                if s.find_focus {
-                    match resp.has_focus() {
-                        true => s.find_focus = false,
-                        false => resp.request_focus(),
-                    }
-                }
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    close = true;
-                }
-                // Enter selects the next match after the last, wrapping to the
-                // top; Ctrl+F then Enter again goes on from there.
-                if resp.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && !find.is_empty()
-                {
-                    let from = if s.buffer.is_char_boundary(s.find_from) {
-                        s.find_from
-                    } else {
-                        0
-                    };
-                    let at = s.buffer[from..]
-                        .find(find.as_str())
-                        .map(|i| from + i)
-                        .or_else(|| s.buffer.find(find.as_str()));
-                    match at {
-                        Some(at) => {
-                            s.find_from = at + find.len();
-                            s.found = Some(at..at + find.len());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let Some(find) = s.find.as_mut() else { return };
+                    let (resp, _) = crate::find::field(
+                        ui,
+                        FIND_FIELD,
+                        find,
+                        "Find in script",
+                        icon::MAGNIFYING_GLASS,
+                        FIND_W,
+                        &count,
+                        n == 0 && !find.is_empty(),
+                        0.0,
+                    );
+                    // Asked until it holds: a new area's first frame only sizes
+                    // itself, and a field there cannot take the keyboard.
+                    if s.find_focus {
+                        match resp.has_focus() {
+                            true => s.find_focus = false,
+                            false => resp.request_focus(),
                         }
-                        None => s.find_from = 0,
                     }
-                }
+                    // egui lets go of the field on `Escape` before it is drawn.
+                    if escape && resp.lost_focus() {
+                        close = true;
+                    }
+                    let live = n > 0;
+                    ui.add_space(GAP);
+                    if ui::icon_button(ui, icon::CARET_LEFT, BTN, 14.0, false, live)
+                        .on_hover_text(crate::input::keys("Previous match (Shift+Enter)"))
+                        .clicked()
+                        && live
+                    {
+                        step = Some(-1);
+                    }
+                    ui.add_space(2.0);
+                    if ui::icon_button(ui, icon::CARET_RIGHT, BTN, 14.0, false, live)
+                        .on_hover_text("Next match (Enter)")
+                        .clicked()
+                        && live
+                    {
+                        step = Some(1);
+                    }
+                    ui.add_space(GAP);
+                    if ui::icon_button(ui, icon::X, BTN, 13.0, false, true)
+                        .on_hover_text("Close (Esc)")
+                        .clicked()
+                    {
+                        close = true;
+                    }
+                });
             });
         });
-        if close {
-            close_find(s);
+    let now = s.find.clone().unwrap_or_default();
+    let key = egui::util::hash((&s.buffer, &now));
+    if key != s.find_key {
+        s.find_key = key;
+        s.find_hits = find_matches(&s.buffer, &now);
+        if now != before {
+            // A new text starts at the first match at or after the caret.
+            let caret = caret_byte(&ctx, s.code_id(), &s.buffer).unwrap_or(0);
+            s.find_current = s
+                .find_hits
+                .iter()
+                .position(|r| r.start >= caret)
+                .unwrap_or(0);
+            s.find_reveal = !s.find_hits.is_empty();
+        }
+        s.find_current = s.find_current.min(s.find_hits.len().saturating_sub(1));
+    }
+    if let Some(by) = step
+        && !s.find_hits.is_empty()
+    {
+        let n = s.find_hits.len() as isize;
+        s.find_current = (s.find_current as isize + by).rem_euclid(n) as usize;
+        s.find_reveal = true;
+    }
+    if close {
+        if let Some(r) = s.find_hits.get(s.find_current).cloned() {
+            s.found = Some(r);
+        } else {
+            s.focus_code = true;
+        }
+        close_find(s);
+    }
+}
+
+/// Every place `needle` stands in `text`, ignoring ASCII case, not overlapping.
+fn find_matches(text: &str, needle: &str) -> Vec<std::ops::Range<usize>> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let (hay, n) = (text.as_bytes(), needle.as_bytes());
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + n.len() <= hay.len() {
+        if hay[i..i + n.len()].eq_ignore_ascii_case(n)
+            && text.is_char_boundary(i)
+            && text.is_char_boundary(i + n.len())
+        {
+            out.push(i..i + n.len());
+            i += n.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Find's matches over the laid-out code, as the canvas Find marks them: each
+/// in the accent wash, the current one ringed; the current one scrolled into
+/// view when find moved to it.
+fn paint_find_marks(ui: &mut egui::Ui, s: &mut Scripts, out: &egui::text_edit::TextEditOutput) {
+    if s.find.is_none() {
+        return;
+    }
+    for (i, r) in s.find_hits.iter().enumerate() {
+        if r.end > s.buffer.len() {
+            continue;
+        }
+        let rect = super::script_help::span_rect(out, &s.buffer, r);
+        let current = i == s.find_current;
+        let stroke = match current {
+            true => egui::Stroke::new(1.5, color::accent()),
+            false => egui::Stroke::NONE,
+        };
+        ui.painter().rect(
+            rect,
+            2.0,
+            color::accent().gamma_multiply_u8(77),
+            stroke,
+            egui::StrokeKind::Outside,
+        );
+        if current && std::mem::take(&mut s.find_reveal) {
+            ui.scroll_to_rect(rect, Some(egui::Align::Center));
         }
     }
 }
@@ -2286,7 +2427,10 @@ const MENU_ID: &str = "script-menu";
 /// Close find, its next search starting from the top again.
 fn close_find(s: &mut Scripts) {
     s.find = None;
-    s.find_from = 0;
+    s.find_hits.clear();
+    s.find_current = 0;
+    s.find_reveal = false;
+    s.find_key = 0;
     s.find_focus = false;
 }
 
@@ -3163,6 +3307,95 @@ mod tests {
         assert!(!lit_at(&ctx, &mut app, loupe), "and the accent goes");
     }
 
+    /// A long name is cut so the row's note keeps its place, and the rename
+    /// field hides the note with the name.
+    /// flip: `list_row` drawing with `palette::row_texts` (the note cut first)
+    /// → fails at "the note stays".
+    #[test]
+    fn a_long_name_keeps_the_rows_note_and_rename_hides_it() {
+        let long = "Renaming it to something that does not fit the list";
+        let (ctx, mut app) = open_on("---@input gap number = 4\nprint(param.gap)");
+        let id = app.session.doc.scripts()[0].id;
+        app.scripts_act(Some(Act::Rename(long.into())));
+        assert_eq!(
+            app.session.doc.script(id).unwrap().name,
+            long,
+            "fixture: renamed"
+        );
+        let texts = |ctx: &egui::Context, app: &mut MastikApp| -> Vec<(String, bool)> {
+            flat(&painted(ctx, app, Vec::new()))
+                .iter()
+                .filter_map(|s| match s {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.galley.elided)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let shown = texts(&ctx, &mut app);
+        assert!(shown.iter().any(|(t, _)| t == "1 input"), "the note stays");
+        assert!(
+            shown
+                .iter()
+                .any(|(t, cut)| *cut && long.starts_with(t.trim_end_matches('…'))),
+            "the name is cut: {shown:?}"
+        );
+        app.scripts_act(Some(Act::StartRename));
+        let shown = texts(&ctx, &mut app);
+        assert!(
+            !shown.iter().any(|(t, _)| t == "1 input"),
+            "the field hides the note"
+        );
+    }
+
+    /// Find counts every match, ignoring case; `Enter` and `Shift+Enter` step
+    /// with the keyboard kept in the field; `Escape` closes it and selects the
+    /// current match in the code.
+    /// flip: `find_row` not reading `Enter` while the field has the keyboard →
+    /// fails at "Enter steps on".
+    #[test]
+    fn find_steps_through_its_matches_and_keeps_the_keyboard() {
+        use crate::command::tests::{key, pass};
+        let (ctx, mut app) = open_on("sel.x = 1\nSel.y = sel.x");
+        let loupe = head_glyph(&ctx, &mut app, icon::MAGNIFYING_GLASS);
+        click_at(&ctx, &mut app, loupe);
+        let none = egui::Modifiers::NONE;
+        pass(&ctx, &mut app, vec![egui::Event::Text("sel".into())], none);
+        pass(&ctx, &mut app, Vec::new(), none);
+        assert_eq!(
+            app.scripts.find_hits,
+            [0..3, 10..13, 18..21],
+            "three, any case"
+        );
+        assert_eq!(app.scripts.find_current, 0, "fixture: the first");
+        press(&ctx, &mut app, egui::Key::Enter);
+        assert_eq!(app.scripts.find_current, 1, "Enter steps on");
+        assert!(
+            ctx.memory(|m| m.has_focus(egui::Id::new(FIND_FIELD))),
+            "the field keeps the keyboard"
+        );
+        let shift = egui::Modifiers::SHIFT;
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, shift)], shift);
+        pass(&ctx, &mut app, Vec::new(), none);
+        assert_eq!(app.scripts.find_current, 0, "Shift+Enter steps back");
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, shift)], shift);
+        assert_eq!(app.scripts.find_current, 2, "and wraps");
+        pass(&ctx, &mut app, Vec::new(), none);
+        assert!(
+            ctx.memory(|m| m.has_focus(egui::Id::new(FIND_FIELD))),
+            "the field still has the keyboard"
+        );
+        press(&ctx, &mut app, egui::Key::Escape);
+        assert!(app.scripts.find.is_none(), "Escape closes find");
+        pass(&ctx, &mut app, Vec::new(), none);
+        let sel = egui::TextEdit::load_state(&ctx, app.scripts.code_id())
+            .and_then(|s| s.cursor.char_range())
+            .map(|r| {
+                let (a, b) = (r.primary.index.0, r.secondary.index.0);
+                a.min(b)..a.max(b)
+            });
+        assert_eq!(sel, Some(18..21), "the current match selected in the code");
+    }
+
     /// The ⋯ menu wears the accent while open, and `Escape` closes it without
     /// reaching the canvas, whose selection stays.
     /// flip: the key routing without its `holds_keys` branch → fails at
@@ -3305,6 +3538,8 @@ mod tests {
         pass(&ctx, &mut app, Vec::new(), none);
         assert!(app.scripts.menu_open(), "the menu opens");
         assert_eq!(app.scripts.current, Some(doc.clone()), "on that script");
+        let dots = head_glyph(&ctx, &mut app, icon::DOTS_THREE);
+        assert!(!lit_at(&ctx, &mut app, dots), "the ⋯ stays off");
         let menu = ctx
             .memory(|m| m.area_rect(egui::Id::new(MENU_ID)))
             .expect("the menu is drawn");
