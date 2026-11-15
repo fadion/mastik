@@ -41,9 +41,9 @@ Mastik is a native, open-source 2D design tool (Figma-class scope, minimal v1) w
 - Hyphenation: a decided non-goal for v1 (§15 D399, `non-goals.md`), declined on price.
 - Persistent constraints in §13's sense (live relationships between arbitrary properties, a dependency graph). Layout insets are not this.
 - Real-time multiplayer: a real future goal. Operation and identity model are designed not to preclude it (§5.2, §12); the sync layer is not built.
-- Plugins; prototyping/animation.
+- Plugins.
 - Linked-image loading (§5.5a). Other image-feature non-goals are in §15 D191.
-- Web and mobile.
+- Web and mobile. The exported prototype player runs in a browser (`prototyping.md`); the editor does not.
 
 ### Non-goals
 

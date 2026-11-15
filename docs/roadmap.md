@@ -64,6 +64,13 @@ library knows nothing of what a document holds. A card shows its cover, name and
   what it proposes lands as one undoable step (`ai.md`). With it, a Luau block in an assistant reply
   gains *Open in script editor*. Open: how the request and its proposed script look in the bar.
 
+## Now · Prototyping
+
+A release of its own, after the work above: the document played, with interactions, flows,
+variables and scripts during play, smart animate and springs, a player over the canvas, detached
+into its own window or fullscreen, and export as one HTML file running the player in WebAssembly.
+The design and its open questions are in `prototyping.md`.
+
 ## Later · Platform and dependencies
 
 - **egui 0.36** is blocked by vello requiring wgpu 29 (check — last asked 2026-09-03). Re-derive

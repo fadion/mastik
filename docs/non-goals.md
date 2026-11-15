@@ -5,7 +5,6 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 
 ## Scope
 
-- **Prototyping.**
 - **Plugins.**
 - **Multiplayer** — kept possible by the model (`architecture.md` §12), not built.
 - **A comment tool.**
@@ -119,9 +118,17 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **Tailwind and CSS-in-JS in v1** (§15 D1098).
 - **Code layers, and importing HTML/CSS or framework code as layers** — too complex fully, messy partly; SVG import is untouched (§15 D1099).
 - **The code fidelity check in the app** — it needs an external browser and cannot check React or Vue; `mastik check code` stays the way to run it.
-- **Live interaction states in present mode** — hover and press on the canvas are prototyping; the states exist for code export.
 - **Compiling the React and Vue output in CI** (`tsc`, `@vue/compiler-sfc`) — a Node toolchain in CI for a syntax check; the fidelity tests draw the HTML and the component walk.
 - **One `<main>` across a page and the components it uses in React and Vue** — a component is one file for every page using it, so each file counts its own main; a page's main beside a use holding one writes two.
+
+## Prototyping
+
+- **A keyframe timeline** — transitions, smart animate, springs and looping states cover an app's motion; a timeline is a motion tool (`prototyping.md`).
+- **A node graph of patches** — triggers, actions, conditions and Luau scripts carry the logic without a second language.
+- **Several devices and sensors talking to each other** — one player, one screen.
+- **Rive and Lottie export** — the player is the prototype's output; motion assets are another product.
+- **Comments in the player** — the comment tool is a non-goal, in the player as on the canvas.
+- **Hosted links** — the export is one HTML file the designer sends or hosts anywhere; Mastik runs no server.
 
 ## Charts
 

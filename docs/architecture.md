@@ -68,7 +68,7 @@ Read the file for the exact wording before relying on one.
 
 Also in `docs/`: `shortcuts.md` (the keymap), `context-menus.md` (the menus), `vm.md` (Command
 Mode's open question: scripts reaching outside the document), `ai.md` (the assistant's unbuilt
-parts: `/ai`).
+parts: `/ai`), `prototyping.md` (prototyping, decided and not yet built).
 
 ## Keeping this true
 
