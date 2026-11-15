@@ -991,30 +991,47 @@ fn a_fill_hidden_in_export_round_trips_and_is_absent_while_off() {
     assert_eq!(doc, loaded);
 }
 
-/// A file carrying the export-fill flag is v16, so a v15 build refuses it rather
-/// than dropping the flag; a v15 file loads and saves as v16 with nothing else moved.
-/// flip: `CURRENT_SCHEMA_VERSION` left at 15 → fails at "saved as v16".
+/// A v15 file climbs through v16, the export-fill flag's number-only step, to
+/// the current version with nothing else moved.
+/// flip: `migrate_15_to_16` dropped from the ladder → fails at the load.
 #[test]
-fn the_export_fill_flag_is_a_v16_field_and_a_v15_file_climbs_to_it() {
-    let (mut doc, root) = rich_document();
-    let frame = doc.get(root).unwrap().children()[0];
-    doc.apply(&Transaction(vec![Operation::SetFillHiddenInExport {
-        id: frame,
-        hidden: true,
+fn a_v15_file_climbs_through_the_export_fill_flags_step() {
+    let (plain, _) = rich_document();
+    let mut old: serde_json::Value = serde_json::from_slice(&io::save(&plain).unwrap()).unwrap();
+    old["schema_version"] = serde_json::json!(15);
+    let loaded = io::load(&serde_json::to_vec(&old).unwrap()).unwrap();
+    assert_eq!(loaded.schema_version(), io::CURRENT_SCHEMA_VERSION);
+    assert_eq!(loaded, plain, "number-only steps");
+}
+
+/// A file carrying scripts is v17, so a v16 build refuses it rather than
+/// dropping the scripts on its next save; a v16 file loads and saves as v17
+/// with nothing else moved.
+/// flip: `CURRENT_SCHEMA_VERSION` left at 16 → fails at "saved as v17".
+#[test]
+fn scripts_are_a_v17_field_and_a_v16_file_climbs_to_it() {
+    let (mut doc, _) = rich_document();
+    doc.apply(&Transaction(vec![Operation::AddScript {
+        script: mastik_core::Script {
+            id: mastik_core::IdSource::new(0xAD).mint_script(),
+            name: "Tidy".into(),
+            source: "print(1)".into(),
+        },
+        index: 0,
     }]))
     .unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&io::save(&doc).unwrap()).unwrap();
     assert_eq!(
         saved["schema_version"],
-        serde_json::json!(16),
-        "saved as v16"
+        serde_json::json!(17),
+        "saved as v17"
     );
 
     let (plain, _) = rich_document();
     let mut old: serde_json::Value = serde_json::from_slice(&io::save(&plain).unwrap()).unwrap();
-    old["schema_version"] = serde_json::json!(15);
+    old["schema_version"] = serde_json::json!(16);
     let loaded = io::load(&serde_json::to_vec(&old).unwrap()).unwrap();
-    assert_eq!(loaded.schema_version(), 16);
+    assert_eq!(loaded.schema_version(), 17);
     assert_eq!(loaded, plain, "a number-only step");
 }
 

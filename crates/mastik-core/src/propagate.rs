@@ -169,7 +169,12 @@ fn mode(op: &Operation) -> Mode {
         | Operation::SetDocLink { .. }
         // A chart never sits in a main or a copy (`chart::check`).
         | Operation::SetChart { .. }
-        | Operation::SetChartParts { .. } => Mode::Skip,
+        | Operation::SetChartParts { .. }
+        // A script is the document's, never a node's.
+        | Operation::AddScript { .. }
+        | Operation::RemoveScript { .. }
+        | Operation::SetScriptName { .. }
+        | Operation::SetScriptSource { .. } => Mode::Skip,
     }
 }
 

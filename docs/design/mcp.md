@@ -84,7 +84,8 @@ other collections' modes kept), `move_mode(mode, index)`, `add_collection(name?)
 `duplicate_collection(collection, name?)`, `delete_collection(collection)`, `set_by_width(collection, on)`,
 `set_breakpoint(mode, width)`, `set_width_query(node, on, collection?)`, `set_scope(variable, scope?)`,
 `bind_variable(nodes, field, variable?)`, `add_style(slot, name, value)`, `remove_style(id)`,
-`rename_style(id, name)`, `set_style_value(id, value)`, `apply_style(id, slot, style?)`.
+`rename_style(id, name)`, `set_style_value(id, value)`, `apply_style(id, slot, style?)`,
+`add_script(name, source)`, `set_script(script, name?, source?)`, `remove_script(script)`.
 
 Phase 4 — kits and the library (the app's own actions, some outside undo):
 `list_documents()`, `create_document(name, project?) -> Path`, `list_kits()`, `get_kit(kit)`,

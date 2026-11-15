@@ -1756,6 +1756,11 @@ impl RenderOverrides {
             | Operation::SetEffectsStyle { .. }
             | Operation::SetTypeStyle { .. }
             | Operation::SetLayoutStyle { .. } => {}
+            // A stored script is never run by the document, so it draws nothing.
+            Operation::AddScript { .. }
+            | Operation::RemoveScript { .. }
+            | Operation::SetScriptName { .. }
+            | Operation::SetScriptSource { .. } => {}
             // A corner's binding previews as the radii it will draw: the bound corners
             // are resolved through the document (the mode in force is not previewed)
             // over the literal kind earlier ops left, `vars` being the whole binding.

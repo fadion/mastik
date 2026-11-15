@@ -44,6 +44,7 @@ pub(crate) fn migrate(mut value: Value) -> Result<Value, IoError> {
             13 => migrate_13_to_14(&mut value),
             14 => migrate_14_to_15(&mut value),
             15 => migrate_15_to_16(&mut value),
+            16 => migrate_16_to_17(&mut value),
             other => return Err(IoError::UnsupportedVersion(other)),
         }
     }
@@ -439,6 +440,21 @@ fn migrate_15_to_16(value: &mut Value) {
         .filter(|d| d.is_object())
     {
         inner["schema_version"] = Value::from(16u32);
+    }
+}
+
+/// v16 → v17: the document's scripts (`DocumentDto::scripts`). A number and
+/// nothing else: a v16 file holds none. The bump is for the older build, which
+/// would drop the scripts on its next save. The published document's number
+/// moves too.
+fn migrate_16_to_17(value: &mut Value) {
+    value["schema_version"] = Value::from(17u32);
+    if let Some(inner) = value
+        .get_mut("published")
+        .and_then(|p| p.get_mut("document"))
+        .filter(|d| d.is_object())
+    {
+        inner["schema_version"] = Value::from(17u32);
     }
 }
 

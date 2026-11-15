@@ -73,6 +73,7 @@ pub mod rename;
 pub mod repeat;
 pub mod reset;
 pub mod resolve;
+pub mod script;
 pub mod shape_builder;
 pub mod sketch_in;
 pub mod style;
@@ -154,6 +155,7 @@ pub use query::{
     is_within, local_box, nodes_in_view, outline_at, pivot_world, touches_loop,
 };
 pub use resolve::Resolved;
+pub use script::{Script, ScriptId};
 pub use text::{
     DecorationInk, FaceFeature, FamilyPreview, FontAxis, FontVariant, GlyphRun, NamedInstance,
     TextEdit, TextLayout, TextParts, paragraph_bounds,

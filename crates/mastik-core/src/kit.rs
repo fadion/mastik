@@ -458,6 +458,9 @@ pub fn freeze(doc: &Document) -> Option<Published> {
         images,
         variables,
         styles,
+        // The kit's scripts, which a consumer lists from the published state so
+        // they follow the kit's updates.
+        doc.scripts().to_vec(),
         Default::default(),
         None,
     );
@@ -574,6 +577,9 @@ pub struct Changes {
     /// The variables or styles the mains read changed — a value, a name, a mode
     /// (§15 D1064): a change every consumer draws though no node of a main moved.
     pub tokens: bool,
+    /// The kit's scripts changed — the ones its consumers list and run, so worth
+    /// a publish though no component changed.
+    pub scripts: bool,
 }
 
 impl Changes {
@@ -583,9 +589,9 @@ impl Changes {
     }
 
     /// Whether a publish would carry anything: a component, the kit's name, the
-    /// order of its components, or the variables and styles they read.
+    /// order of its components, the variables and styles they read, or a script.
     pub fn any(&self) -> bool {
-        self.count() > 0 || self.renamed || self.reordered || self.tokens
+        self.count() > 0 || self.renamed || self.reordered || self.tokens || self.scripts
     }
 }
 
@@ -649,6 +655,8 @@ pub fn changes(doc: &Document) -> Changes {
         .unwrap_or_default()
     };
     out.tokens = tables(now.as_ref()) != tables(before);
+    let scripts = |p: Option<&Published>| p.map(|p| p.document().scripts().to_vec());
+    out.scripts = scripts(now.as_ref()).unwrap_or_default() != scripts(before).unwrap_or_default();
     out
 }
 
@@ -765,6 +773,7 @@ fn empty_published(doc: &Document) -> Published {
             FxHashMap::default(),
             Default::default(),
             Default::default(),
+            Vec::new(),
             Default::default(),
             None,
         ),

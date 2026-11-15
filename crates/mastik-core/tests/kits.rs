@@ -186,6 +186,33 @@ fn a_publish_freezes_every_set_and_main_with_its_frame() {
     );
 }
 
+/// A publish carries the kit's scripts, in their order, so a consumer lists them
+/// from the published state; a kit with none publishes none.
+///
+/// flip: `freeze` passing an empty list for the scripts → fails at the
+/// `assert_eq!`.
+#[test]
+fn a_publish_carries_the_kits_scripts() {
+    let mut k = kit();
+    assert!(published(&k).document().scripts().is_empty());
+    let mut ids = IdSource::new(0xAD);
+    for (i, name) in ["Tidy", "Card grid"].into_iter().enumerate() {
+        let script = mastik_core::Script {
+            id: ids.mint_script(),
+            name: name.into(),
+            source: format!("print({i})"),
+        };
+        k.doc
+            .apply(&Transaction(vec![Operation::AddScript {
+                script,
+                index: i,
+            }]))
+            .unwrap();
+    }
+    let frozen = kit::freeze(&k.doc).expect("the kit has mains");
+    assert_eq!(frozen.document().scripts(), k.doc.scripts());
+}
+
 /// The plain insert: L's *Icon* lands in D's vault with its origin, an instance of
 /// it lands in D's tree, and the whole of it is one transaction — undone in one
 /// step, the vault going with it.
@@ -1315,6 +1342,31 @@ fn a_regroup_and_a_rename_are_worth_a_publish() {
     let c = kit::changes(&k.doc);
     assert_eq!(c.count(), 0, "no component changed");
     assert!(c.renamed && c.any(), "but the name did");
+}
+
+/// **A script is worth a publish**: a kit whose only change since its last
+/// publish is a new script has something to publish, though no component changed.
+///
+/// Flip, run: `changes` without the scripts comparison fails *"the script is"*.
+#[test]
+fn a_script_is_worth_a_publish() {
+    let mut k = kit();
+    kit::publish(&mut k.doc, None, 1).unwrap();
+    assert!(!kit::changes(&k.doc).any(), "fixture: just published");
+    let id = IdSource::new(0xAD).mint_script();
+    k.doc
+        .apply(&Transaction(vec![Operation::AddScript {
+            script: mastik_core::Script {
+                id,
+                name: "Tidy".into(),
+                source: "print(1)".into(),
+            },
+            index: 0,
+        }]))
+        .unwrap();
+    let c = kit::changes(&k.doc);
+    assert_eq!(c.count(), 0, "no component changed");
+    assert!(c.scripts && c.any(), "the script is");
 }
 
 /// Accept `k`'s current publish into `d`, through the commit's own passes

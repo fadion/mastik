@@ -126,7 +126,7 @@ pub const PHASE_2: [&str; 79] = [
 /// still in use is refused at the commit. `create_instance`, `add_variable`,
 /// `add_mode`, `add_collection`, `duplicate_collection` and `add_style` return
 /// the new ids.
-pub const PHASE_3: [&str; 49] = [
+pub const PHASE_3: [&str; 52] = [
     "make_component",
     "duplicate_as_component",
     "create_instance",
@@ -176,6 +176,9 @@ pub const PHASE_3: [&str; 49] = [
     "rename_style",
     "set_style_value",
     "apply_style",
+    "add_script",
+    "set_script",
+    "remove_script",
 ];
 
 /// Phase 4 — kits and the library, the app's own actions (§8.4).

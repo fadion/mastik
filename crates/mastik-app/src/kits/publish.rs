@@ -270,13 +270,14 @@ impl MastikApp {
                         mark.version,
                         // And what else travels (§15 D1064's variables and
                         // styles beside the name and the order).
-                        if c.renamed || c.reordered || c.tokens {
+                        if c.renamed || c.reordered || c.tokens || c.scripts {
                             format!(
                                 ", and {}",
                                 joined(&[
                                     (c.renamed, "the kit's name"),
                                     (c.reordered, "their order"),
                                     (c.tokens, "the variables and styles they read"),
+                                    (c.scripts, "the kit's scripts"),
                                 ])
                             )
                         } else {
@@ -439,6 +440,7 @@ pub(crate) fn published_said(
             (c.renamed, "its new name"),
             (c.reordered, "its components' new order"),
             (c.tokens, "its variables and styles"),
+            (c.scripts, "its scripts"),
         ])
     });
     let drafts = match carried {

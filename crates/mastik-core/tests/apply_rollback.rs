@@ -10,8 +10,8 @@ use mastik_core::style::{Style, StyleId, StyleValue};
 use mastik_core::{
     Brush, Cell, CharSpans, Described, Document, Fill, Guide, GuideAxis, GuideId, IdSource,
     ImageEntry, ImageFormat, ImageId, ImageSource, Mode, ModeId, NodeId, NodeKind, Operation,
-    ParaSpans, TextSizing, TextStyle, Transaction, VarId, VarKind, Variable, image_brush,
-    keyed_by_position,
+    ParaSpans, Script, ScriptId, TextSizing, TextStyle, Transaction, VarId, VarKind, Variable,
+    image_brush, keyed_by_position,
 };
 
 fn rect(w: f64) -> NodeKind {
@@ -62,6 +62,14 @@ fn number_var(id: VarId, name: &str, cells: &[(ModeId, f64)]) -> Variable {
     }
 }
 
+fn script(id: ScriptId, name: &str) -> Script {
+    Script {
+        id,
+        name: name.into(),
+        source: "print(1)".into(),
+    }
+}
+
 fn fill_style(id: StyleId, name: &str) -> Style {
     Style {
         id,
@@ -74,7 +82,7 @@ fn fill_style(id: StyleId, name: &str) -> Style {
 }
 
 /// A document with something in every table an operation writes — nodes, a
-/// mode, a variable, a style, an image, a guide — and a transaction of ops
+/// mode, a variable, a style, an image, a guide, a script — and a transaction of ops
 /// across all of them, each valid after the ones before it, that the document
 /// takes whole.
 struct Fixture {
@@ -95,6 +103,7 @@ fn fixture() -> Fixture {
     let (frame, a, b, text) = (ids.mint(), ids.mint(), ids.mint(), ids.mint());
     let (light, v0, s0) = (ids.mint_mode(), ids.mint_var(), ids.mint_style());
     let (img0, g0) = (ImageId("sha:zero".into()), GuideId(ids.mint()));
+    let sc0 = ids.mint_script();
     let guide = |id, position| Guide {
         id,
         axis: GuideAxis::Horizontal,
@@ -164,8 +173,13 @@ fn fixture() -> Fixture {
         Operation::AddGuide {
             guide: guide(g0, 10.0),
         },
+        Operation::AddScript {
+            script: script(sc0, "Tidy"),
+            index: 0,
+        },
     ]))
     .expect("the starting document");
+    let sc1 = ids.mint_script();
 
     let (c, page2, on_page2) = (ids.mint(), ids.mint(), ids.mint());
     let (g1, img1, dark) = (
@@ -282,6 +296,15 @@ fn fixture() -> Fixture {
             style: Some(s0),
         },
         Operation::RemoveStyle { id: s1 },
+        Operation::AddScript {
+            script: script(sc1, "Grid"),
+            index: 0,
+        },
+        Operation::SetScriptSource {
+            id: sc0,
+            source: "print(2)".into(),
+        },
+        Operation::RemoveScript { id: sc0 },
         Operation::OpenVault { id: vault },
         Operation::DeleteNode { id: on_page2 },
         Operation::RemovePage { id: page2 },

@@ -1247,7 +1247,7 @@ pub fn call(ctx: &mut Ctx<'_>, name: &str, args: &Value) -> Result<Done, VerbErr
     (verb.run)(ctx, &args)
 }
 
-/// `args` with each variable, style, collection or mode given by its name
+/// `args` with each variable, style, collection, mode or script given by its name
 /// taken as its id, and a variable's `value` given bare (`"#ff7a1a"`, `16`)
 /// written as the cell of the variable's kind.
 fn by_names(doc: &Document, verb: &'static Verb, args: &Value) -> Result<Value, VerbError> {
@@ -1297,7 +1297,7 @@ fn by_names(doc: &Document, verb: &'static Verb, args: &Value) -> Result<Value, 
     Ok(args)
 }
 
-/// The id of the `what` (variable, style, collection, mode) called `name`, or
+/// The id of the `what` (variable, style, collection, mode, script) called `name`, or
 /// why there is not exactly one.
 fn id_named(doc: &Document, what: &str, name: &str) -> Result<Value, String> {
     let vars = doc.variables();
@@ -1333,6 +1333,16 @@ fn id_named(doc: &Document, what: &str, name: &str) -> Result<Value, String> {
                 (
                     m.name.clone(),
                     serde_json::to_value(m.id).unwrap_or_default(),
+                )
+            })
+            .collect(),
+        "script" => doc
+            .scripts()
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    serde_json::to_value(s.id).unwrap_or_default(),
                 )
             })
             .collect(),
@@ -1642,6 +1652,24 @@ fn own_style<'d>(ctx: &Ctx<'d>, a: &Args<'_>) -> Result<&'d crate::style::Style,
         return Err(a.invalid("style", "a kit's style is read-only here"));
     }
     Ok(st)
+}
+
+/// The stored script the `script` argument names.
+fn own_script(ctx: &Ctx<'_>, a: &Args<'_>) -> Result<crate::script::ScriptId, VerbError> {
+    let id: crate::script::ScriptId = a.id("script")?;
+    ctx.doc
+        .script(id)
+        .map(|s| s.id)
+        .ok_or_else(|| a.invalid("script", "no script has that id"))
+}
+
+/// The `name` argument trimmed, refused when nothing is left.
+fn script_name(a: &Args<'_>) -> Result<String, VerbError> {
+    let name = a.text("name").map(str::trim).unwrap_or_default();
+    if name.is_empty() {
+        return Err(a.invalid("name", "a script needs a name"));
+    }
+    Ok(name.to_owned())
 }
 
 /// The variable the `variable` argument names, the document's own: a kit's is
@@ -4177,6 +4205,67 @@ pub static VERBS: &[Verb] = &[
                 .map(|n| crate::style::bind_op(n, slot, style))
                 .collect();
             Ok(Done::ops(ops))
+        },
+    },
+    // --- scripts ----------------------------------------------------------------
+    Verb {
+        name: "add_script",
+        doc: "Store a Luau script in the document, last in its list; answers its id. A stored script never runs by itself",
+        params: &[
+            req("name", TEXT, "its name in the script list"),
+            req("source", TEXT, "its Luau source"),
+        ],
+        run: |ctx, a| {
+            let name = script_name(a)?;
+            let id = ctx.ids.mint_script();
+            let script = crate::script::Script {
+                id,
+                name,
+                source: a.text("source").unwrap_or_default().to_owned(),
+            };
+            let index = ctx.doc.scripts().len();
+            Ok(Done::making(
+                vec![Operation::AddScript { script, index }],
+                id.0.to_wire(),
+            ))
+        },
+    },
+    Verb {
+        name: "set_script",
+        doc: "Rename a stored script or replace its source",
+        params: &[
+            req("script", ParamKind::Id("script"), "the script"),
+            opt("name", TEXT, "its new name"),
+            opt("source", TEXT, "its new Luau source, whole"),
+        ],
+        run: |ctx, a| {
+            let id = own_script(ctx, a)?;
+            let mut ops = Vec::new();
+            if a.get("name").is_some() {
+                ops.push(Operation::SetScriptName {
+                    id,
+                    name: script_name(a)?,
+                });
+            }
+            if let Some(source) = a.text("source") {
+                ops.push(Operation::SetScriptSource {
+                    id,
+                    source: source.to_owned(),
+                });
+            }
+            if ops.is_empty() {
+                return Err(a.invalid("script", "give a `name` or a `source` to set"));
+            }
+            Ok(Done::ops(ops))
+        },
+    },
+    Verb {
+        name: "remove_script",
+        doc: "Remove a stored script from the document",
+        params: &[req("script", ParamKind::Id("script"), "the script")],
+        run: |ctx, a| {
+            let id = own_script(ctx, a)?;
+            Ok(Done::ops(vec![Operation::RemoveScript { id }]))
         },
     },
     // --- pages ----------------------------------------------------------------

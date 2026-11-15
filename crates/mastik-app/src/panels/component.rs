@@ -1284,7 +1284,12 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         | O::SetHref { .. }
         // A chart never sits in a main or a copy.
         | O::SetChart { .. }
-        | O::SetChartParts { .. } => None,
+        | O::SetChartParts { .. }
+        // A script is the document's, never a layer's.
+        | O::AddScript { .. }
+        | O::RemoveScript { .. }
+        | O::SetScriptName { .. }
+        | O::SetScriptSource { .. } => None,
     }
 }
 

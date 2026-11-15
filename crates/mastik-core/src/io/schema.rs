@@ -60,6 +60,12 @@ pub(crate) struct DocumentDto {
     /// document with none. New in v8.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub styles: Vec<crate::style::Style>,
+    /// The stored scripts (`crate::script`) in list order, absent in a document
+    /// with none. Additive, so no version bump is owed: nothing else in the file
+    /// refers to a script, so an older reader skips the key and draws the same
+    /// document (its next save drops the scripts).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scripts: Vec<crate::script::Script>,
     /// The image table, sorted by id on save (invariant 9).
     ///
     /// Near the end for diffs: an embedded image is the largest and least-changing
@@ -858,6 +864,7 @@ impl DocumentDto {
             guides,
             variables: VariablesDto::from_table(doc.variables()),
             styles: doc.styles().iter().cloned().collect(),
+            scripts: doc.scripts().to_vec(),
             images,
             meta: doc.meta().clone(),
             tokens_link: doc.tokens_link().cloned(),
@@ -1000,6 +1007,18 @@ impl DocumentDto {
         crate::style::check(&styles, &variables, nodes.values(), in_vault)
             .map_err(|rule| IoError::Integrity(rule.to_string()))?;
 
+        // A script id twice would make `RemoveScript` take the first and leave
+        // the second unreachable by id.
+        let mut seen_scripts = FxHashSet::default();
+        for s in &self.scripts {
+            if !seen_scripts.insert(s.id) {
+                return Err(IoError::Integrity(format!(
+                    "duplicate script id {:?}",
+                    s.id
+                )));
+            }
+        }
+
         // The published state is a document of its own, held to the same rules,
         // one level deep only: refusing a nested one bounds the recursion.
         let published = match self.published {
@@ -1027,6 +1046,7 @@ impl DocumentDto {
             images,
             variables,
             styles,
+            self.scripts,
             // Taken as written, with nothing minted: a loader that filled in a
             // missing id would make `load` non-deterministic, so the library mints
             // it at first save (`crate::meta::DocumentMeta::id`). `sanitized` is

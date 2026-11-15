@@ -74,6 +74,9 @@ pub struct Document {
     /// transaction. Its values are copied onto the layers bound to it, so nothing
     /// that draws reads it.
     styles: crate::style::Styles,
+    /// The scripts stored in this document, in list order (`crate::script`).
+    /// Never run by the document, so nothing that draws or checks reads them.
+    scripts: Vec<crate::script::Script>,
     /// The document's library identity — typed name, project, creation stamp
     /// (`crate::meta`).
     ///
@@ -138,6 +141,7 @@ impl Document {
             images: FxHashMap::default(),
             variables: Default::default(),
             styles: Default::default(),
+            scripts: Vec::new(),
             // Empty, not minted: a document that has never been through the
             // library has no id, and `Document::new` is also what every test
             // fixture and the starter document use. Minting here would put a
@@ -424,6 +428,16 @@ impl Document {
     /// The document's styles (§5.3f, `crate::style`).
     pub fn styles(&self) -> &crate::style::Styles {
         &self.styles
+    }
+
+    /// The scripts stored in this document, in list order (`crate::script`).
+    pub fn scripts(&self) -> &[crate::script::Script] {
+        &self.scripts
+    }
+
+    /// One stored script, or `None` for an id this document does not hold.
+    pub fn script(&self, id: crate::script::ScriptId) -> Option<&crate::script::Script> {
+        self.scripts.iter().find(|s| s.id == id)
     }
 
     /// The mode of collection `c` in force at `id` (§5.3f): the one the nearest
@@ -1353,8 +1367,8 @@ impl Document {
     /// Build a document from already-validated parts (used by IO on load).
     /// Performs no validation itself — the caller (io::schema) checks integrity.
     ///
-    /// One argument per field a file stores, which is why there are ten: a
-    /// struct of the same ten fields would be this signature with a name.
+    /// One argument per field a file stores: a struct of the same fields would
+    /// be this signature with a name.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         schema_version: u32,
@@ -1365,6 +1379,7 @@ impl Document {
         images: FxHashMap<ImageId, ImageEntry>,
         variables: crate::variable::Variables,
         styles: crate::style::Styles,
+        scripts: Vec<crate::script::Script>,
         meta: DocumentMeta,
         published: Option<crate::kit::Published>,
     ) -> Self {
@@ -1377,6 +1392,7 @@ impl Document {
             images,
             variables,
             styles,
+            scripts,
             meta,
             published: published.map(std::sync::Arc::new),
             tokens_link: None,
@@ -1563,6 +1579,7 @@ impl Document {
             images: FxHashMap::default(),
             variables: Default::default(),
             styles: Default::default(),
+            scripts: Vec::new(),
             meta: DocumentMeta::default(),
             published: None,
             tokens_link: None,
@@ -2015,6 +2032,40 @@ impl Document {
                     .ok_or(OpError::NoSuchStyle(*id))?;
                 let old = std::mem::replace(&mut s.name, name.clone());
                 Ok(Operation::SetStyleName { id: *id, name: old })
+            }
+            // ── The scripts (`crate::script`) ── never run and never drawn, so
+            // these dirty nothing.
+            Operation::AddScript { script, index } => {
+                if self.scripts.iter().any(|s| s.id == script.id) {
+                    return Err(OpError::DuplicateScript(script.id));
+                }
+                if *index > self.scripts.len() {
+                    return Err(OpError::IndexOutOfRange);
+                }
+                self.scripts.insert(*index, script.clone());
+                Ok(Operation::RemoveScript { id: script.id })
+            }
+            Operation::RemoveScript { id } => {
+                let index = self
+                    .scripts
+                    .iter()
+                    .position(|s| s.id == *id)
+                    .ok_or(OpError::NoSuchScript(*id))?;
+                let script = self.scripts.remove(index);
+                Ok(Operation::AddScript { script, index })
+            }
+            Operation::SetScriptName { id, name } => {
+                let s = self.script_mut(*id)?;
+                let old = std::mem::replace(&mut s.name, name.clone());
+                Ok(Operation::SetScriptName { id: *id, name: old })
+            }
+            Operation::SetScriptSource { id, source } => {
+                let s = self.script_mut(*id)?;
+                let old = std::mem::replace(&mut s.source, source.clone());
+                Ok(Operation::SetScriptSource {
+                    id: *id,
+                    source: old,
+                })
             }
             // Nothing is dirtied: a description is never drawn.
             Operation::SetDescription { of, text } => {
@@ -3404,6 +3455,17 @@ impl Document {
         Ok(Operation::MovePage { id, index: old })
     }
 
+    /// The stored script `id`, to write one of its fields.
+    fn script_mut(
+        &mut self,
+        id: crate::script::ScriptId,
+    ) -> Result<&mut crate::script::Script, OpError> {
+        self.scripts
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or(OpError::NoSuchScript(id))
+    }
+
     // --- guides -----------------------------------------------------------
     //
     // None of these touch `dirty`: a guide is egui chrome over the canvas, not
@@ -3852,6 +3914,7 @@ struct Tables {
     images: FxHashMap<ImageId, ImageEntry>,
     variables: crate::variable::Variables,
     styles: crate::style::Styles,
+    scripts: Vec<crate::script::Script>,
 }
 
 impl<'a> InPlace<'a> {
@@ -3863,6 +3926,7 @@ impl<'a> InPlace<'a> {
             images: doc.images.clone(),
             variables: doc.variables.clone(),
             styles: doc.styles.clone(),
+            scripts: doc.scripts.clone(),
         };
         #[cfg(debug_assertions)]
         let before = doc.clone();
@@ -3894,6 +3958,7 @@ impl Drop for InPlace<'_> {
         doc.images = tables.images;
         doc.variables = tables.variables;
         doc.styles = tables.styles;
+        doc.scripts = tables.scripts;
         // Not while unwinding: a second panic would abort.
         #[cfg(debug_assertions)]
         if !std::thread::panicking() && *doc != self.before {
@@ -3952,6 +4017,7 @@ pub fn reserve_existing_ids(doc: &Document, ids: &mut IdSource) {
         .chain(doc.variables.ids())
         // And styles (§15 D1062).
         .chain(doc.styles.ids())
+        .chain(doc.scripts.iter().map(|s| s.id.0))
         .filter(|id| id.actor == actor)
         .map(|id| id.seq)
         .max();

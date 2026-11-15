@@ -2974,7 +2974,30 @@ fn every_no_op_of_absorb_is_a_no_op_and_two_of_them_still_change_ink() {
         },
     ];
 
+    // A stored script is never run by the document, so it draws nothing.
+    let script = mastik_core::ScriptId(ids.mint());
+    let scripts = [
+        Operation::AddScript {
+            script: mastik_core::Script {
+                id: script,
+                name: "s".into(),
+                source: String::new(),
+            },
+            index: 0,
+        },
+        Operation::RemoveScript { id: script },
+        Operation::SetScriptName {
+            id: script,
+            name: "t".into(),
+        },
+        Operation::SetScriptSource {
+            id: script,
+            source: "print(1)".into(),
+        },
+    ];
+
     assert_eq!(styles.len(), 10, "and the styles' ten");
+    assert_eq!(scripts.len(), 4, "and the scripts' four");
     assert_eq!(chrome.len(), 20, "the chrome list is twenty operations");
     assert_eq!(images.len(), 2, "and the image pair is two");
     assert_eq!(
@@ -2990,6 +3013,7 @@ fn every_no_op_of_absorb_is_a_no_op_and_two_of_them_still_change_ink() {
         .chain(table_chrome.iter())
         .chain(table_ink.iter())
         .chain(styles.iter())
+        .chain(scripts.iter())
     {
         let ov = RenderOverrides::from_transaction(&f.doc, &res, &Transaction(vec![op.clone()]))
             .unwrap_or_else(|| panic!("{op:?} must be absorbed rather than refused"));
@@ -3007,6 +3031,7 @@ fn every_no_op_of_absorb_is_a_no_op_and_two_of_them_still_change_ink() {
         .iter()
         .chain(table_chrome.iter())
         .chain(styles.iter())
+        .chain(scripts.iter())
     {
         assert!(!op.changes_ink(), "{op:?} is chrome and draws nothing");
     }

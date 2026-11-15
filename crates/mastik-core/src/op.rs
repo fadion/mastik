@@ -617,6 +617,28 @@ pub enum Operation {
         id: NodeId,
         style: Option<crate::style::StyleId>,
     },
+    /// Put a script into the document's list at `index` (`crate::script`).
+    /// Inverts to [`Self::RemoveScript`], and that back to this carrying the
+    /// whole script and its place.
+    AddScript {
+        script: crate::script::Script,
+        index: usize,
+    },
+    /// Take a script out of the document's list.
+    RemoveScript {
+        id: crate::script::ScriptId,
+    },
+    /// Rename a script.
+    SetScriptName {
+        id: crate::script::ScriptId,
+        name: String,
+    },
+    /// A script's whole source. Folds into an edit run ([`Self::shape_key`]), so
+    /// typing into a script is one undo step per run.
+    SetScriptSource {
+        id: crate::script::ScriptId,
+        source: String,
+    },
 }
 
 impl Operation {
@@ -735,7 +757,12 @@ impl Operation {
             // A description is text beside the thing, never a field a copy
             // follows or an edit merges on; so is a link.
             | Operation::SetDescription { .. }
-            | Operation::SetDocLink { .. } => None,
+            | Operation::SetDocLink { .. }
+            // The scripts list is document-level: these name a script.
+            | Operation::AddScript { .. }
+            | Operation::RemoveScript { .. }
+            | Operation::SetScriptName { .. }
+            | Operation::SetScriptSource { .. } => None,
         }
     }
 
@@ -826,6 +853,9 @@ impl Operation {
     ///
     /// The other guide operations stay out: `AddGuide` and `RemoveGuide` are
     /// structural, and nothing repeats a colour or a scope.
+    ///
+    /// `SetScriptName` and `SetScriptSource` are admitted the same way, each an
+    /// absolute overwrite of one field: typing into a script folds into one step.
     pub fn shape_key(
         &self,
     ) -> Option<(
@@ -835,6 +865,7 @@ impl Operation {
     )> {
         let subject = match self {
             Operation::SetGuidePosition { id, .. } => id.0,
+            Operation::SetScriptName { id, .. } | Operation::SetScriptSource { id, .. } => id.0,
             other => other.overwrites()?,
         };
         let field = match self {
@@ -934,7 +965,12 @@ impl Operation {
             | Operation::SetStrokeStyle { .. }
             | Operation::SetEffectsStyle { .. }
             | Operation::SetTypeStyle { .. }
-            | Operation::SetLayoutStyle { .. } => false,
+            | Operation::SetLayoutStyle { .. }
+            // A stored script is never run by the document, so it draws nothing.
+            | Operation::AddScript { .. }
+            | Operation::RemoveScript { .. }
+            | Operation::SetScriptName { .. }
+            | Operation::SetScriptSource { .. } => false,
             Operation::CreateNode { .. }
             | Operation::DeleteNode { .. }
             | Operation::InsertSubtree { .. }
@@ -1055,7 +1091,15 @@ impl Operation {
             | Operation::AddCollection { .. }
             | Operation::RemoveCollection { .. }
             | Operation::AddStyle { .. }
-            | Operation::RemoveStyle { .. } => false,
+            | Operation::RemoveStyle { .. }
+            | Operation::AddScript { .. }
+            | Operation::RemoveScript { .. } => false,
+            Operation::SetScriptName { id, name } => {
+                doc.script(*id).is_some_and(|s| s.name == *name)
+            }
+            Operation::SetScriptSource { id, source } => {
+                doc.script(*id).is_some_and(|s| s.source == *source)
+            }
             Operation::MovePage { id, index } => doc.page_index(*id) == Some(*index),
             Operation::SetPageDraft { id, draft } => {
                 doc.page(*id).is_some_and(|p| p.draft == *draft)
@@ -1727,6 +1771,10 @@ pub enum OpError {
     NoSuchStyle(crate::style::StyleId),
     #[error("duplicate style id: {0:?}")]
     DuplicateStyle(crate::style::StyleId),
+    #[error("no such script: {0:?}")]
+    NoSuchScript(crate::script::ScriptId),
+    #[error("duplicate script id: {0:?}")]
+    DuplicateScript(crate::script::ScriptId),
     #[error("duplicate guide id: {0:?}")]
     DuplicateGuide(GuideId),
     #[error("no such image: {0}")]
@@ -1931,8 +1979,27 @@ mod changes_ink_tests {
                 id,
                 href: String::new(),
             },
+            Operation::AddScript {
+                script: crate::script::Script {
+                    id: crate::script::ScriptId(id),
+                    name: "s".into(),
+                    source: String::new(),
+                },
+                index: 0,
+            },
+            Operation::RemoveScript {
+                id: crate::script::ScriptId(id),
+            },
+            Operation::SetScriptName {
+                id: crate::script::ScriptId(id),
+                name: "t".into(),
+            },
+            Operation::SetScriptSource {
+                id: crate::script::ScriptId(id),
+                source: "print(1)".into(),
+            },
         ];
-        assert_eq!(invisible.len(), 43, "the whole false arm");
+        assert_eq!(invisible.len(), 47, "the whole false arm");
         for op in &invisible {
             assert!(
                 !op.changes_ink(),
