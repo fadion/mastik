@@ -868,14 +868,27 @@ pub fn painted_size(ctx: &egui::Context, id: egui::Id) -> Option<egui::Vec2> {
     egui::AreaState::load(ctx, id).and_then(|s| s.size)
 }
 
-/// Where a menu of `size` opened at `at` actually goes, so that all of it stays
-/// on screen (`docs/context-menus.md` §8). `egui::Area::fixed_pos` neither flips
-/// nor clamps: flip, then round, then clamp, since rounding a clamped value can
-/// push it off screen (`a_menu_is_clamped_after_it_is_rounded_and_not_before`).
-pub fn menu_place(ctx: &egui::Context, at: egui::Pos2, size: egui::Vec2) -> egui::Pos2 {
+/// The part of the screen a card `size` big is placed in: [`SCREEN_MARGIN`] in
+/// from each edge, so a card at an edge does not read as cut off by it. On an
+/// axis the card nearly fills, the margin shrinks to what is left, to none.
+fn placing_rect(ctx: &egui::Context, size: egui::Vec2) -> egui::Rect {
     // `content_rect`, not `viewport_rect`: it excludes the strip an OS status bar
     // or notch may cover.
     let screen = ctx.content_rect();
+    let margin = |extent: f32, side: f32| ((extent - side) / 2.0).clamp(0.0, SCREEN_MARGIN);
+    screen.shrink2(egui::vec2(
+        margin(screen.width(), size.x),
+        margin(screen.height(), size.y),
+    ))
+}
+
+/// Where a menu of `size` opened at `at` actually goes, so that all of it stays
+/// on screen, [`SCREEN_MARGIN`] in from its edges (`docs/context-menus.md` §8).
+/// `egui::Area::fixed_pos` neither flips nor clamps: flip, then round, then
+/// clamp, since rounding a clamped value can push it past the bound
+/// (`a_menu_is_clamped_after_it_is_rounded_and_not_before`).
+pub fn menu_place(ctx: &egui::Context, at: egui::Pos2, size: egui::Vec2) -> egui::Pos2 {
+    let screen = placing_rect(ctx, size);
     let mut pos = at;
     if pos.x + size.x > screen.right() {
         pos.x = at.x - size.x;
@@ -900,7 +913,8 @@ pub fn dropdown_place(
     size: egui::Vec2,
     gap: f32,
 ) -> egui::Pos2 {
-    let screen = ctx.content_rect();
+    // `menu_place`'s bound, or its flip would undo the choice made here.
+    let screen = placing_rect(ctx, size);
     let x = match under.left() + size.x > screen.right() {
         true => under.right() - size.x,
         false => under.left(),
@@ -949,7 +963,9 @@ pub fn flyout_place(
     size: egui::Vec2,
     pad: f32,
 ) -> egui::Pos2 {
-    let screen = ctx.content_rect();
+    // `menu_place`'s bound, or its flip would throw a list shifted up here above
+    // its row.
+    let screen = placing_rect(ctx, size);
     // The card's padding and border, so its first row lines up with `row`.
     let lift = pad + MENU_BORDER;
     let x = match row.right() + 4.0 + size.x > screen.right() {
@@ -12286,11 +12302,11 @@ mod context_menu_chrome_tests {
         );
     }
 
-    /// `menu_place` clamps after it rounds (at ppp 1.5 the limit 1263 rounds outward to 1263.333); an ordinary placement still snaps.
+    /// `menu_place` clamps after it rounds (at ppp 1.5 the limit 1251 rounds outward to 1251.333); an ordinary placement still snaps.
     ///
     /// `at` is outside the viewport on purpose: on screen, the clamp can never bite after a flip.
     ///
-    /// flip: `snap(pos.clamp(…))` → the clamped assertion fails (1263.3334 against 1263.0).
+    /// flip: `snap(pos.clamp(…))` → the clamped assertion fails (1251.3334 against 1251.0).
     #[test]
     fn a_menu_is_clamped_after_it_is_rounded_and_not_before() {
         let ctx = ctx_at(1.5);
@@ -12310,12 +12326,12 @@ mod context_menu_chrome_tests {
             );
             out
         };
-        let limit = 1400.0 - size.x;
+        let limit = 1400.0 - SCREEN_MARGIN - size.x;
 
         assert_ne!(
             (limit * 1.5).round() / 1.5,
             limit,
-            "the fixture: 1263 must not be on the 1.5x pixel grid"
+            "the fixture: 1251 must not be on the 1.5x pixel grid"
         );
 
         let placed = place(egui::pos2(1450.0, 100.0));
@@ -12336,10 +12352,10 @@ mod context_menu_chrome_tests {
         );
     }
 
-    /// A submenu with no room below its row ends at the screen's bottom, its
-    /// height still beside the row.
+    /// A submenu with no room below its row ends the screen margin short of the
+    /// screen's bottom, its height still beside the row.
     /// flip: passing `row.top() - lift` to `menu_place` unclamped → fails at the
-    /// bottom assertion (694 against 820).
+    /// bottom assertion (694 against 808).
     #[test]
     fn a_submenu_short_of_room_shifts_up_beside_its_row() {
         let ctx = ctx_at(1.0);
@@ -12356,7 +12372,7 @@ mod context_menu_chrome_tests {
             },
             |ui| at = flyout_place(ui.ctx(), row, size, 6.0),
         );
-        assert_eq!(at.y + size.y, 820.0);
+        assert_eq!(at.y + size.y, 820.0 - SCREEN_MARGIN);
         assert!(at.y <= row.top() && row.bottom() <= at.y + size.y);
     }
 }
