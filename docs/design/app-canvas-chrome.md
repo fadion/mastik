@@ -196,8 +196,10 @@ stack.
   placed first, then the rest in reading order, so a crowd drops passes before failures. A badge
   that overlaps earlier ones moves down below the lowest it touches (`place`), but no further
   than the layer's own height, or one badge row for a shorter layer; past that, or past the
-  canvas's bottom, it is not drawn, and a failure keeps its outline. Badges are painted in the
-  canvas panel's own layer
+  canvas's bottom, it is not drawn, and a failure keeps its outline. A top-level frame narrower
+  on screen than `SUMMARY_W` (200pt) shows one badge on its name tag's row instead of its
+  layers' badges: *N failing* in red, else *All N pass* (hidden with *Show passing* off). A click
+  on it zooms to the frame. Badges are painted in the canvas panel's own layer
   after `canvas_ui`, so every floating card covers them.
 
   | Mark | Badge |

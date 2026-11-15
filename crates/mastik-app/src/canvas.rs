@@ -9239,7 +9239,7 @@ impl MastikApp {
 
     /// Where a frame's name tag sits, and its text: above the top-left corner and
     /// *outside* the frame, so it never covers artwork.
-    fn frame_label(
+    pub(crate) fn frame_label(
         &self,
         ui: &egui::Ui,
         id: NodeId,

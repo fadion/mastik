@@ -46,6 +46,9 @@ const CHIP: egui::Color32 = egui::Color32::from_rgba_premultiplied(25, 25, 28, 2
 const RATIO_PT: f32 = 15.0; // text-size: above the titles on purpose
 /// A badge's distance above the layer it names.
 const BADGE_LIFT: f32 = 3.0;
+/// A frame narrower than this on screen, about two failing badges side by side,
+/// shows one summary badge rather than a badge per layer.
+const SUMMARY_W: f32 = 200.0;
 /// The fix card's width.
 const CARD_W: f32 = 270.0;
 /// The most colour variables the fix card lists.
@@ -494,7 +497,9 @@ impl MastikApp {
 
     /// The badges and failure outlines, painted over the artwork in the canvas's
     /// own layer, so every floating card stays above them. A failing badge is a
-    /// widget registered after the canvas, so it wins the pointer over it.
+    /// widget registered after the canvas, so it wins the pointer over it. A frame
+    /// too small on screen for its badges gets one summary, a click on which
+    /// zooms to the frame.
     pub(crate) fn contrast_badges(&mut self, ui: &mut egui::Ui) {
         let Some(c) = &self.contrast else { return };
         let canvas = self.canvas_rect;
@@ -514,6 +519,9 @@ impl MastikApp {
         // Failures claim their places first, so a crowd drops passes, not them.
         let mut order = c.subjects.clone();
         order.sort_by_key(|id| !matches!(c.marks.get(id), Some(Mark::Measured(f)) if !f.passes()));
+        let doc = &self.session.doc;
+        let mut far: HashMap<NodeId, bool> = HashMap::new();
+        let mut tallies: Vec<(NodeId, Tally)> = Vec::new();
         for id in order {
             if dragging && self.moving(id) {
                 continue;
@@ -530,6 +538,40 @@ impl MastikApp {
             }
             let stale = c.stale.contains(&id);
             spinning |= stale;
+            let top = top_level(doc, c.page, id);
+            let summed = *far.entry(top).or_insert_with(|| {
+                doc.get(top)
+                    .is_some_and(|n| matches!(n.kind(), mastik_core::NodeKind::Artboard { .. }))
+                    && self
+                        .session
+                        .preview_world_bounds(top)
+                        .is_some_and(|b| self.to_screen_rect(b).width() < SUMMARY_W)
+            });
+            if summed {
+                let at = match tallies.iter().position(|(t, _)| *t == top) {
+                    Some(i) => i,
+                    None => {
+                        tallies.push((top, Tally::default()));
+                        tallies.len() - 1
+                    }
+                };
+                let t = &mut tallies[at].1;
+                t.stale |= stale;
+                match mark {
+                    Mark::Measured(f) if f.passes() => t.passes += 1,
+                    Mark::Measured(_) => {
+                        t.fails += 1;
+                        painter.rect_stroke(
+                            layer.expand(3.0),
+                            2.0,
+                            egui::Stroke::new(1.5, fade(FAIL_LINE, stale)),
+                            egui::StrokeKind::Middle,
+                        );
+                    }
+                    Mark::Skipped(_) | Mark::Nothing => {}
+                }
+                continue;
+            }
             let (kind, text) = match mark {
                 Mark::Measured(f) if f.passes() => {
                     if !show_passing {
@@ -586,12 +628,62 @@ impl MastikApp {
             }
             paint_badge(&painter, r, kind, galley, stale, hovered, now);
         }
+        let mut zoom = None;
+        for (top, t) in tallies {
+            let (kind, text) = if t.fails > 0 {
+                (Kind::Fail, format!("{} failing", t.fails))
+            } else if show_passing && t.passes > 0 {
+                (Kind::Pass, format!("All {} pass", t.passes))
+            } else {
+                continue;
+            };
+            let Some(world) = self.session.preview_world_bounds(top) else {
+                continue;
+            };
+            let galley = painter.layout_no_wrap(
+                text,
+                egui::FontId::proportional(crate::ui::BADGE_PT),
+                egui::Color32::PLACEHOLDER,
+            );
+            let size = egui::vec2(
+                6.0 + 11.0 + 4.0 + galley.size().x + 6.0,
+                crate::ui::BADGE_FIELD_H,
+            );
+            // On the name tag's row, after it; above the corner when there is none.
+            let min = match self.frame_label(ui, top, canvas, self.canvas_ppp.max(0.01)) {
+                Some((tag, _)) => egui::pos2(tag.right() + 6.0, tag.center().y - size.y / 2.0),
+                None => {
+                    let frame = self.to_screen_rect(world);
+                    egui::pos2(frame.left(), frame.top() - BADGE_LIFT - size.y)
+                }
+            };
+            let r = egui::Rect::from_min_size(min, size);
+            if !r.intersects(canvas) {
+                continue;
+            }
+            #[cfg(test)]
+            seen.push((top, r));
+            let resp = ui
+                .interact(
+                    r,
+                    ui.id().with(("contrast-summary", top)),
+                    egui::Sense::click(),
+                )
+                .on_hover_text("Zoom to frame");
+            if resp.clicked() {
+                zoom = Some(world);
+            }
+            paint_badge(&painter, r, kind, galley, t.stale, resp.hovered(), now);
+        }
         if spinning {
             ui.ctx().request_repaint();
         }
         #[cfg(test)]
         if let Some(c) = &mut self.contrast {
             c.badges_seen = seen;
+        }
+        if let Some(world) = zoom {
+            self.zoom_to(Some(world));
         }
         if let Some((id, anchor)) = clicked {
             self.session.selection.set_one(id);
@@ -1308,6 +1400,14 @@ fn place(placed: &[egui::Rect], mut r: egui::Rect, reach: f32, bottom: f32) -> O
         }
     }
     (r.top() <= bottom).then_some(r)
+}
+
+/// A summarised frame's marks, counted for its one badge.
+#[derive(Clone, Copy, Debug, Default)]
+struct Tally {
+    fails: usize,
+    passes: usize,
+    stale: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2472,5 +2572,40 @@ mod tests {
         let grey = at(f.grey).expect("the failure has a badge");
         let black = at(f.black).expect("fixture: the pass is pushed, not dropped");
         assert!(grey.top() < black.top(), "the failure keeps its place");
+    }
+
+    /// Zoomed out until the frame is narrower than `SUMMARY_W`, the frame shows
+    /// one badge in place of its layers'; a click on it zooms back to the frame.
+    /// flip: `SUMMARY_W` at 0 → fails at "summarised".
+    #[test]
+    fn a_far_frame_shows_one_summary_that_zooms_in() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.toggle_contrast();
+        settle(&ctx, &mut f.app);
+        f.app
+            .zoom_to(Some(Rect::new(-3000.0, -3000.0, 3300.0, 3200.0)));
+        frame(&ctx, &mut f.app, Vec::new());
+        let seen = |app: &MastikApp| app.contrast.as_ref().unwrap().badges_seen.clone();
+        let far = seen(&f.app);
+        let (_, r) = *far
+            .iter()
+            .find(|(id, _)| *id == f.card)
+            .expect("summarised");
+        assert!(
+            !far.iter().any(|(id, _)| *id == f.grey || *id == f.black),
+            "no layer badges: {far:?}"
+        );
+        let p = r.center();
+        frame(&ctx, &mut f.app, vec![egui::Event::PointerMoved(p)]);
+        frame(&ctx, &mut f.app, vec![button(p, true)]);
+        frame(&ctx, &mut f.app, vec![button(p, false)]);
+        frame(&ctx, &mut f.app, Vec::new());
+        let near = seen(&f.app);
+        assert!(
+            near.iter().any(|(id, _)| *id == f.grey),
+            "zoomed in to the layer badges: {near:?}"
+        );
+        assert!(!near.iter().any(|(id, _)| *id == f.card));
     }
 }
