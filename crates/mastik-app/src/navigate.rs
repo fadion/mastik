@@ -203,7 +203,7 @@ impl MastikApp {
         &self.navigate.labels
     }
 
-    /// `` ` ``, the Tools menu's *Pick layers* and the palette's: the bar on its
+    /// `` ` `` and the palette's *Pick layers*: the bar on its
     /// Pick focus, opening it first when it is shut.
     pub(crate) fn pick_layers(&mut self) {
         self.open_command_bar();

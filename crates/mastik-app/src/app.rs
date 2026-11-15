@@ -1267,7 +1267,6 @@ pub enum TopMenu {
 /// A row of the top bar's Tools menu ([`MastikApp::tools_menu`]), in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolsRow {
-    Navigate,
     Scripts,
     CheckContrast,
     SimulateVision,
@@ -1279,8 +1278,7 @@ enum ToolsRow {
 }
 
 impl ToolsRow {
-    const ALL: [ToolsRow; 9] = [
-        ToolsRow::Navigate,
+    const ALL: [ToolsRow; 8] = [
         ToolsRow::Scripts,
         ToolsRow::CheckContrast,
         ToolsRow::SimulateVision,
@@ -1310,7 +1308,6 @@ impl ToolsRow {
     fn label(self) -> &'static str {
         use crate::menu::Item;
         match self {
-            ToolsRow::Navigate => Item::Navigate.spec().label,
             ToolsRow::Scripts => Item::Scripts.spec().label,
             ToolsRow::CheckContrast => Item::CheckContrast.spec().label,
             ToolsRow::SimulateVision => Item::SimulateVision.spec().label,
@@ -1322,11 +1319,10 @@ impl ToolsRow {
         }
     }
 
-    /// The chord a bulk edit and *Pick layers* show, from the keymap; the checks have none.
+    /// The chord a bulk edit shows, from the keymap; the checks have none.
     fn accel(self) -> Option<&'static str> {
         use crate::menu::Item;
         match self {
-            ToolsRow::Navigate => Item::Navigate.spec().accel,
             ToolsRow::FindReplace => Item::FindText.spec().accel,
             ToolsRow::BatchRename => Item::BatchRename.spec().accel,
             _ => None,
@@ -8541,7 +8537,7 @@ impl MastikApp {
         }
     }
 
-    /// The **Tools** dropdown's rows: *Pick layers*, *Scripts…*, the checks, which change nothing,
+    /// The **Tools** dropdown's rows: *Scripts…*, the checks, which change nothing,
     /// then a hairline and the bulk edits, each opening its box with its chord beside it.
     /// Bare rows with no tick column: a check that is on says so in its own bar
     /// over the canvas. A pick closes the menu before it acts.
@@ -8578,7 +8574,6 @@ impl MastikApp {
             }
             self.open_menu = TopMenu::None;
             match row {
-                ToolsRow::Navigate => self.pick_layers(),
                 ToolsRow::Scripts => self.open_scripts(),
                 ToolsRow::CheckContrast => self.toggle_contrast(),
                 ToolsRow::SimulateVision => self.toggle_vision(),

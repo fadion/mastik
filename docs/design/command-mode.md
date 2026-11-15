@@ -300,7 +300,7 @@ In `non-goals.md`, *Command Mode*.
 ## Pick (`navigate.rs`)
 
 **The bar has two focuses.** In **Type** (`:`) its field has the keys. In **Pick** the canvas has
-them: `` ` `` from the editor, Tools ▸ *Pick layers* or the palette's *Pick layers* opens the bar
+them: `` ` `` from the editor or the palette's *Pick layers* opens the bar
 on it, and `` ` `` switches to it from Type unless the caret is inside a string, where it is Luau's
 own backtick. Picking belongs to the bar because it serves someone who has left the mouse to type
 and must name layers without it; on its own, a keyboard walk never beats the mouse in a design
