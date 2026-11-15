@@ -452,6 +452,18 @@ pub mod color {
     /// a group's or frame's pill itself, and the inner line of every outline.
     pub const LEAP_INK: Color32 = Color32::from_rgb(0x26, 0x20, 0x08);
 
+    /// The hues the command bar gives the layers a line names other than its
+    /// subject (which wears [`leap`]), in order of first mention, cycling: a
+    /// layer's pill in the field and its outline on the canvas share one, so the
+    /// line says which layer is which. Light, so [`BADGE_INK`] reads on them, and
+    /// clear of [`SELECT`], [`KEY`], [`COMPONENT`], [`MEASURE`] and [`leap`].
+    pub const REFERENCE: [Color32; 4] = [
+        Color32::from_rgb(0x5e, 0xd6, 0x8a),
+        Color32::from_rgb(0xf5, 0x9e, 0x52),
+        Color32::from_rgb(0x4f, 0xd1, 0xc5),
+        Color32::from_rgb(0xf4, 0x9a, 0xc8),
+    ];
+
     /// The ground of an *unselected* point marker in the node tool.
     ///
     /// Opaque rather than hollow like a resize handle (§15 D14): the anchor *is*

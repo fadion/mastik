@@ -42,6 +42,10 @@ const FOCUS_W: f32 = 112.0;
 const HEAD_GAP: f32 = 12.0;
 /// Between a pill in the field and the text beside it.
 const PILL_GAP: f32 = 3.0;
+/// How far into a `.`'s monospace cell a pill before it may reach, as a share
+/// of the advance: the dot sits mid-cell, so without it a pill reads detached
+/// from the property it opens.
+const DOT_TUCK: f32 = 0.3;
 /// How strongly the field's pills draw while the bar picks and the line sleeps.
 const ASLEEP: f32 = 0.5;
 
@@ -52,6 +56,8 @@ const ASLEEP: f32 = 0.5;
 struct Pills {
     /// The subject's letters (`SK`, `SK +2`) and what it is, for its tooltip.
     subject: Option<(String, String)>,
+    /// The selection: a label naming one of these wears the subject's yellow.
+    subject_ids: Vec<NodeId>,
     /// The labels a line may name.
     labels: rustc_hash::FxHashMap<String, NodeId>,
     /// The names of the labels' layers, for their tooltips.
@@ -70,6 +76,28 @@ impl Pills {
             .filter(|r| Some(r.start) != self.typing)
             .filter_map(|r| Some((r.clone(), *self.labels.get(&text[r])?)))
             .collect()
+    }
+
+    /// Each layer `text` names, with its hue: the subject's yellow for a
+    /// selected layer, else the next of `color::REFERENCE` in order of first
+    /// mention, so one layer keeps one hue however often it is named.
+    fn hues(&self, text: &str) -> Vec<(NodeId, egui::Color32)> {
+        let mut out: Vec<(NodeId, egui::Color32)> = Vec::new();
+        let mut next = 0;
+        for (_, id) in self.named(text) {
+            if out.iter().any(|(o, _)| *o == id) {
+                continue;
+            }
+            let hue = match self.subject_ids.contains(&id) {
+                true => color::leap(),
+                false => {
+                    next += 1;
+                    color::REFERENCE[(next - 1) % color::REFERENCE.len()]
+                }
+            };
+            out.push((id, hue));
+        }
+        out
     }
 
     /// The dots that read as the subject, but one that opens the line, which the
@@ -119,17 +147,22 @@ fn pill_galley(
     ink: egui::Color32,
 ) -> std::sync::Arc<egui::Galley> {
     let p = ui.painter();
+    let tuck = DOT_TUCK * mono_advance(p);
     // (range, room before, room after, hidden)
     let mut pieces: Vec<(std::ops::Range<usize>, f32, f32, bool)> = pills
         .named(text)
         .into_iter()
         .map(|(r, _)| {
             let room = pill_room(p, &text[r.clone()]);
-            (r, room, room, true)
+            let after = match text[r.end..].starts_with('.') {
+                true => (room - tuck).max(0.0),
+                false => room,
+            };
+            (r, room, after, true)
         })
         .collect();
     if let Some((letters, _)) = &pills.subject {
-        let room = PILL_GAP + pill_size(p, letters).x + 1.0;
+        let room = PILL_GAP + pill_size(p, letters).x - tuck;
         pieces.extend(
             pills
                 .subject_dots(text)
@@ -199,6 +232,9 @@ pub(crate) struct Bar {
     lit: Option<NodeId>,
     /// A word to write at the caret next frame ([`Bar::write_at_caret`]).
     insert: Option<String>,
+    /// The layers the line names other than the selection, with the hue each
+    /// wears in the field, for the canvas to outline in it.
+    references: Vec<(NodeId, egui::Color32)>,
 }
 
 /// The completion list's state, as a code editor's suggest widget keeps it: it
@@ -266,6 +302,12 @@ impl Bar {
     /// name), for the canvas to outline as it outlines a hovered Layers row.
     pub(crate) fn lit_layer(&self) -> Option<NodeId> {
         self.lit
+    }
+
+    /// The layers the line names other than the selection, each with its pill's
+    /// hue, for the canvas to outline in that hue.
+    pub(crate) fn references(&self) -> &[(NodeId, egui::Color32)] {
+        &self.references
     }
 
     /// The letters typed of a leap label, lowercase, while the list offers
@@ -701,6 +743,7 @@ impl MastikApp {
         let subject = self.subject_pill();
         let mut pills = Pills {
             subject,
+            subject_ids: self.bar_selection(),
             labels: self.bar_labels(),
             names: Default::default(),
             typing: match bar.suggest {
@@ -731,6 +774,13 @@ impl MastikApp {
             bar.text.replace_range(r.clone(), "");
             caret = r.start;
             bar.caret_to = Some(caret);
+        } else if backspace && caret == 0 && pills.subject.is_some() {
+            // The subject's pill sits before the line's start: taking it is
+            // taking the selection away.
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace));
+            self.session.selection.clear();
+            pills.subject = None;
+            pills.subject_ids.clear();
         }
         let completion = (!picking && !bar.text.trim().is_empty() && bar.recalled.is_none())
             .then(|| self.bar_completion(&mut bar, caret));
@@ -1083,6 +1133,11 @@ impl MastikApp {
             _ => None,
         }
         .or(pointed_pill);
+        bar.references = pills
+            .hues(&bar.text)
+            .into_iter()
+            .filter(|(id, _)| !pills.subject_ids.contains(id))
+            .collect();
         self.command_bar = Some(bar);
     }
 
@@ -1350,18 +1405,19 @@ fn field(
     if sleep.is_some() {
         p.multiply_opacity(ASLEEP);
     }
-    let pill = |p: &egui::Painter, at: egui::Pos2, align: egui::Align2, letters: &str| {
+    let pill = |p: &egui::Painter, at: egui::Pos2, align: egui::Align2, letters: &str, hue| {
         let pad = crate::navigate::LABEL_PAD;
-        crate::ui::pill_shapes(p, at, align, letters, color::leap(), pad, 0)
+        crate::ui::pill_shapes(p, at, align, letters, hue, pad, 0)
     };
     let mut text_left = rect.left() + TEXT_X;
     let mut tips: Vec<(egui::Rect, String, Option<NodeId>)> = Vec::new();
     match &pills.subject {
         Some((letters, what)) => {
             let at = egui::pos2(rect.left() + FOOTER_INSET, rect.center().y);
-            let (r, shapes) = pill(&p, at, egui::Align2::LEFT_CENTER, letters);
+            let (r, shapes) = pill(&p, at, egui::Align2::LEFT_CENTER, letters, color::leap());
             p.extend(shapes);
-            text_left = text_left.max(r.right() + 2.0 * PILL_GAP);
+            // Close against the pill, so the line reads as the subject's own.
+            text_left = r.right() + PILL_GAP - 1.0;
             tips.push((r, what.clone(), None));
         }
         None => {
@@ -1487,19 +1543,31 @@ fn field(
     let advance = mono_advance(&p);
     let clipped = p.with_clip_rect(text_rect.intersect(p.clip_rect()));
     let mut shapes = Vec::new();
+    let hues = pills.hues(text);
     for (r, id) in pills.named(text) {
         let span = text[r.clone()].chars().count() as f32 * advance;
         let at = egui::pos2(x_of(r.start) + span / 2.0, y);
         let letters = text[r].to_uppercase();
-        let (rect, s) = pill(&clipped, at, egui::Align2::CENTER_CENTER, &letters);
+        let hue = hues
+            .iter()
+            .find(|(h, _)| *h == id)
+            .map_or(color::leap(), |(_, c)| *c);
+        let (rect, s) = pill(&clipped, at, egui::Align2::CENTER_CENTER, &letters, hue);
         shapes.extend(s);
         let name = pills.names.get(&id).cloned().unwrap_or_default();
         tips.push((rect.intersect(text_rect), name, Some(id)));
     }
     if let Some((letters, what)) = &pills.subject {
+        let tuck = DOT_TUCK * advance;
         for d in pills.subject_dots(text) {
-            let at = egui::pos2(x_of(d) - 1.0, y);
-            let (rect, s) = pill(&clipped, at, egui::Align2::RIGHT_CENTER, letters);
+            let at = egui::pos2(x_of(d) + tuck, y);
+            let (rect, s) = pill(
+                &clipped,
+                at,
+                egui::Align2::RIGHT_CENTER,
+                letters,
+                color::leap(),
+            );
             shapes.extend(s);
             tips.push((rect.intersect(text_rect), what.clone(), None));
         }
@@ -1717,6 +1785,7 @@ pub(crate) mod tests {
         let id = mastik_core::IdSource::new(1).mint();
         let mut pills = Pills {
             subject: Some(("SK".into(), "Card".into())),
+            subject_ids: Vec::new(),
             labels: [("fj".to_owned(), id), ("d".to_owned(), id)]
                 .into_iter()
                 .collect(),
@@ -1737,6 +1806,39 @@ pub(crate) mod tests {
         );
         pills.typing = Some(17);
         assert_eq!(pills.named(line).len(), 1, "still typed");
+    }
+
+    /// A selected layer named in the line wears the subject's yellow; the others
+    /// take the reference hues in order of first mention, one hue per layer
+    /// however often it is named.
+    ///
+    /// flip: `Pills::hues` giving each mention its own hue → fails at "one hue
+    /// per layer".
+    #[test]
+    fn named_layers_take_hues_by_first_mention() {
+        let mut ids = mastik_core::IdSource::new(1);
+        let [sel, a, b] = [ids.mint(), ids.mint(), ids.mint()];
+        let labels = [("sk", sel), ("fj", a), ("dk", b)]
+            .into_iter()
+            .map(|(l, id)| (l.to_owned(), id))
+            .collect();
+        let pills = Pills {
+            subject: Some(("SK".into(), "Card".into())),
+            subject_ids: vec![sel],
+            labels,
+            names: Default::default(),
+            typing: None,
+        };
+        let hues = pills.hues(".x = dk.x + sk.x - fj.x + dk.y");
+        assert_eq!(
+            hues,
+            [
+                (b, color::REFERENCE[0]),
+                (sel, color::leap()),
+                (a, color::REFERENCE[1]),
+            ],
+            "one hue per layer"
+        );
     }
 
     /// `:`, a line and Enter: the selection moves, as one undo step named *Edit*

@@ -776,7 +776,7 @@ impl MastikApp {
             if let Some(b) = b
                 && matched(d)
             {
-                outline(painter, *b, d.container);
+                outline(painter, *b, d.container, color::leap());
             }
         }
         let font = egui::FontId::proportional(crate::ui::BADGE_PT);
@@ -833,10 +833,35 @@ impl MastikApp {
     }
 }
 
-/// A labelled layer's outline: two inks a line, dark inside and the leap yellow
-/// outside, so it reads on any artwork; dashed for a group or frame.
-fn outline(painter: &egui::Painter, b: egui::Rect, dashed: bool) {
-    for (r, ink) in [(b, color::LEAP_INK), (b.expand(1.0), color::leap())] {
+impl MastikApp {
+    /// While the bar is open, each layer its line names other than the
+    /// selection, outlined in the hue its pill wears, so the line and the canvas
+    /// say which layer is which. Under the labels.
+    pub(crate) fn draw_line_references(&self, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
+        let Some(bar) = self.command_bar.as_ref() else {
+            return;
+        };
+        for (id, hue) in bar.references() {
+            let Some(b) = self.session.preview_world_bounds(*id) else {
+                continue;
+            };
+            let a = self.to_screen(Point::new(b.x0, b.y0), rect, ppp);
+            let z = self.to_screen(Point::new(b.x1, b.y1), rect, ppp);
+            outline(
+                painter,
+                egui::Rect::from_two_pos(a, z).expand(OUTSET),
+                false,
+                *hue,
+            );
+        }
+    }
+}
+
+/// A labelled layer's outline: two inks a line, dark inside and `hue` outside
+/// (the leap yellow for a label), so it reads on any artwork; dashed for a group
+/// or frame.
+fn outline(painter: &egui::Painter, b: egui::Rect, dashed: bool, hue: egui::Color32) {
+    for (r, ink) in [(b, color::LEAP_INK), (b.expand(1.0), hue)] {
         let stroke = egui::Stroke::new(1.0, ink);
         let corners = [
             r.left_top(),
@@ -1581,6 +1606,22 @@ mod tests {
         tap(&ctx, &mut f.app, egui::Key::Backspace);
         let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
         assert_eq!(text.as_deref(), Some(".x = "));
+    }
+
+    /// `Backspace` at the line's start takes the subject's pill: the selection
+    /// goes, and the bar stays open.
+    ///
+    /// flip: dropping the bar's subject-pill `Backspace` → fails at "the
+    /// selection goes".
+    #[test]
+    fn backspace_at_the_start_takes_the_subject() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        bar_with(&ctx, &mut f, "");
+        assert_eq!(selected(&f.app), [f.b], "fixture: b is the subject");
+        tap(&ctx, &mut f.app, egui::Key::Backspace);
+        assert!(selected(&f.app).is_empty(), "the selection goes");
+        assert!(f.app.command_bar.is_some(), "the bar stays open");
     }
 
     /// The singles are the nine home-row letters, each once, index fingers first.

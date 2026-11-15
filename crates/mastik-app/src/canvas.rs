@@ -10602,6 +10602,7 @@ impl MastikApp {
             .command_bar
             .as_ref()
             .and_then(|_| self.pointed_at(ui, rect, ppp, resp));
+        self.draw_line_references(painter, rect, ppp);
         self.draw_leap_labels(painter, rect, ppp, pointed);
 
         // Snap lines for the live gesture; the pen's come from the hover position,

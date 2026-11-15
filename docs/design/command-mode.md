@@ -384,8 +384,15 @@ rules*): a row's name is never cut for its note.
   before it, so `.x = fj.x - .x` reads *SK.x = FJ.x − SK.x*; a free name that is a label
   (`mastik_vm::marks`) is drawn as its pill, its letters hidden and room made around them by the
   field's layouter, except the word the completion list is open on, which is still being typed.
-  Hovering a pill names its layer and outlines it on the canvas; `Backspace` just after a label
-  pill takes the whole label. The line's text stays plain Luau with the labels as words. In Pick it
+  The line's text sits close against the subject's pill, and a pill before a `.` reaches into the
+  dot's empty half-cell (`DOT_TUCK`), so `SK.x` reads as one thing. **Colour says which layer is
+  which**: the subject, and any label naming a selected layer, wear the leap yellow; every other
+  layer named takes the next of `color::REFERENCE` (green, orange, teal, pink) in order of first
+  mention, one hue per layer however often it is named, and is outlined on the canvas in that hue
+  while the bar is open (`draw_line_references`), as a spreadsheet colours a formula's ranges.
+  Hovering a pill names its layer and outlines it as a hovered Layers row; `Backspace` just after a
+  label pill takes the whole label, and at the line's start takes the subject's pill, clearing the
+  selection. The line's text stays plain Luau with the labels as words. In Pick it
   sleeps: the line is kept, dimmed and not focusable, the hint reads *Picking: type a label*, and
   the right edge shows a first letter typed in the leap ink.
 - **The footer**: in Type, the desugared Luau, *each by itself* after a rule-3 line, and on the
