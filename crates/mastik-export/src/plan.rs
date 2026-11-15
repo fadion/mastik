@@ -256,12 +256,28 @@ pub(crate) fn acting_extras(spec: &mastik_core::ExportSpec) -> bool {
         || spec.each_variant
 }
 
-/// The document an export of `roots` draws: `doc` with the fills of every frame
-/// under them set to stay out of exports (`Node::fill_hidden_in_export`) taken
-/// off, and its `Resolved`; `None` when there is no such frame, so the caller
+/// The document an export of `roots` draws: `doc` with [`strip_fills`] applied,
+/// and its `Resolved`; `None` when there is nothing to strip, so the caller
 /// draws `doc` itself. One copy every writer draws from, so PNG, JPEG, SVG, PDF
 /// and icon files agree, and a frame's own background (`Frame`) reads none.
 pub fn for_export(doc: &Document, roots: &[NodeId]) -> Option<(Document, Resolved)> {
+    let ops = strip_fills(doc, roots);
+    if ops.is_empty() {
+        return None;
+    }
+    let mut copy = doc.clone();
+    // Two setters on nodes just read from `doc`: nothing for `apply` to refuse.
+    let applied = copy.apply(&Transaction(ops));
+    debug_assert!(applied.is_ok(), "stripping fills was refused: {applied:?}");
+    applied.ok()?;
+    let res = Resolved::rebuild(&copy);
+    Some((copy, res))
+}
+
+/// The operations that take off the fills of every frame under `roots` set to
+/// stay out of exports (`Node::fill_hidden_in_export`); empty when there is no
+/// such frame. For a caller folding them into a copy it makes anyway.
+pub fn strip_fills(doc: &Document, roots: &[NodeId]) -> Vec<Operation> {
     let mut ops = Vec::new();
     let mut stack: Vec<NodeId> = roots.to_vec();
     while let Some(id) = stack.pop() {
@@ -276,16 +292,7 @@ pub fn for_export(doc: &Document, roots: &[NodeId]) -> Option<(Document, Resolve
             });
         }
     }
-    if ops.is_empty() {
-        return None;
-    }
-    let mut copy = doc.clone();
-    // Two setters on nodes just read from `doc`: nothing for `apply` to refuse.
-    let applied = copy.apply(&Transaction(ops));
-    debug_assert!(applied.is_ok(), "stripping fills was refused: {applied:?}");
-    applied.ok()?;
-    let res = Resolved::rebuild(&copy);
-    Some((copy, res))
+    ops
 }
 
 /// The layers a file of `node` draws: a slice's region's origins, else itself.

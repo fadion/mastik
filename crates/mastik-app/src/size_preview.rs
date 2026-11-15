@@ -184,7 +184,7 @@ fn render(
     store: &mut ImageStore,
     want: &Want,
 ) -> Vec<Vec<(Vec<u8>, u32)>> {
-    let hidden: Vec<Operation> = want
+    let mut ops: Vec<Operation> = want
         .rows
         .iter()
         .filter(|(id, _)| doc.get(*id).is_some_and(|n| !n.visible()))
@@ -193,9 +193,13 @@ fn render(
             visible: true,
         })
         .collect();
-    let shown = (!hidden.is_empty()).then(|| {
+    // A frame whose fill stays out of exports is drawn without it, as its files
+    // are, so the grounds show what the shipped icon is transparent over.
+    let ids: Vec<NodeId> = want.rows.iter().map(|(id, _)| *id).collect();
+    ops.extend(mastik_export::plan::strip_fills(doc, &ids));
+    let shown = (!ops.is_empty()).then(|| {
         let mut copy = doc.clone();
-        let _ = copy.apply(&Transaction(hidden));
+        let _ = copy.apply(&Transaction(ops));
         // This thread's text engine holds Inter alone until it is given the
         // document's faces.
         mastik_core::text::register_font_data(&res.text_fonts());
@@ -999,6 +1003,84 @@ mod tests {
         assert_eq!(*px, 8);
         let centre = ((4 * 8 + 4) * 4 + 3) as usize;
         assert_eq!(rgba[centre], 255, "the dot is drawn");
+    }
+
+    /// A frame whose fill stays out of exports is drawn without it, its content
+    /// kept; with the flag off its fill is drawn.
+    /// flip: `render` leaving out `plan::strip_fills` → fails at "corner, fill out".
+    #[test]
+    fn a_frame_drops_the_fill_its_exports_leave_out() {
+        use mastik_core::kurbo::{Affine, Size};
+        use mastik_core::{Brush, Fill, IdSource, NodeKind, keyed_by_position};
+        for hidden in [true, false] {
+            let mut ids = IdSource::new(0x5A1);
+            let root = ids.mint();
+            let mut doc = Document::new(root);
+            let (frame, dot) = (ids.mint(), ids.mint());
+            let fill = |id, color| Operation::SetFills {
+                id,
+                fills: keyed_by_position([Fill {
+                    brush: Brush::Solid(color).into(),
+                    visible: true,
+                }]),
+            };
+            let ops = vec![
+                Operation::CreateNode {
+                    id: frame,
+                    parent: root,
+                    index: 0,
+                    kind: NodeKind::Artboard {
+                        size: Size::new(8.0, 8.0),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: Some(Affine::IDENTITY),
+                    name: None,
+                },
+                fill(frame, mastik_core::peniko::Color::WHITE),
+                Operation::CreateNode {
+                    id: dot,
+                    parent: frame,
+                    index: 0,
+                    kind: NodeKind::Rect {
+                        size: Size::new(4.0, 4.0),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: Some(Affine::translate((2.0, 2.0))),
+                    name: None,
+                },
+                fill(dot, mastik_core::peniko::Color::BLACK),
+                Operation::SetFillHiddenInExport { id: frame, hidden },
+            ];
+            doc.apply(&Transaction(ops)).expect("the fixture");
+            assert_eq!(
+                doc.get(frame).map(|n| n.fill_hidden_in_export()),
+                Some(hidden)
+            );
+            let res = Resolved::rebuild(&doc);
+            let want = Want {
+                rows: vec![(frame, Rect::new(0.0, 0.0, 8.0, 8.0))],
+                sizes: vec![8],
+                pixels: true,
+                ppp: 1.0f32.to_bits(),
+                revision: 0,
+            };
+            let tiles = render(
+                &doc,
+                &res,
+                &RenderOverrides::default(),
+                &mut ImageStore::new(),
+                &want,
+            );
+            let rgba = &tiles[0][0].0;
+            let alpha = |x: usize, y: usize| rgba[(y * 8 + x) * 4 + 3];
+            assert_eq!(alpha(4, 4), 255, "hidden {hidden}: the content is drawn");
+            match hidden {
+                true => assert_eq!(alpha(0, 0), 0, "corner, fill out"),
+                false => assert_eq!(alpha(0, 0), 255, "corner, fill drawn"),
+            }
+        }
     }
 
     /// Sizes tick in order, a seventh and the last one going out are refused.
