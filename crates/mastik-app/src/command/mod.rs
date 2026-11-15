@@ -33,9 +33,7 @@ const VALUE_INSET: f32 = 14.0;
 const VALUE_GAP: f32 = 10.0;
 /// The head row: a control's height in the card's inset.
 const HEAD_H: f32 = crate::ui::CONTROL_H + 2.0 * PAD;
-/// The focus control's width in the head row: two cells, *Type* and *Pick*.
-const FOCUS_W: f32 = 112.0;
-/// Between the head row's parts: the focus control, the path, the subject.
+/// Between the head row's parts: the focus toggle, the path, the subject.
 const HEAD_GAP: f32 = 12.0;
 /// Between a pill in the field and the text beside it.
 const PILL_GAP: f32 = 2.0;
@@ -1348,9 +1346,9 @@ fn mono() -> egui::FontId {
     egui::FontId::monospace(crate::ui::HEAD_PT)
 }
 
-/// The head row: the focus as a two-cell segmented control, the path to where
-/// the selection sits, and the subject a line acts on with its kind's glyph.
-/// Answers a click on a focus cell: `true` for *Pick*.
+/// The head row: the focus as one icon toggle (`icon::LEAP_LABEL`, on while the
+/// bar picks), the path to where the selection sits, and the subject a line
+/// acts on with its kind's glyph. Answers a click on the toggle: `true` to pick.
 fn head(
     ui: &mut egui::Ui,
     picking: bool,
@@ -1365,16 +1363,22 @@ fn head(
             .max_rect(inner)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    let clicked = crate::ui::segmented_tipped(
+    // A card head's action icon, on while the bar picks; a click toggles it.
+    let tip = match picking {
+        true => "Back to typing (`)",
+        false => "Pick layers by label (`)",
+    };
+    let clicked = crate::ui::icon_button(
         &mut child,
-        FOCUS_W,
-        crate::ui::SEGMENT_CELL_H,
-        2,
-        usize::from(picking),
-        |_| true,
-        |i| ["Type a line (:)", "Pick layers by label (`)"][i],
-        |p, i, r, on| crate::ui::segment_label(p, r, ["Type", "Pick"][i], on),
-    );
+        icon::LEAP_LABEL,
+        crate::ui::HEAD_ACTION_W,
+        crate::ui::HEAD_ACTION_GLYPH_PT,
+        picking,
+        true,
+    )
+    .on_hover_text(tip)
+    .clicked()
+    .then_some(!picking);
     let p = ui.painter().clone();
     let y = rect.center().y;
     let font = egui::FontId::proportional(crate::ui::SMALL_PT);
@@ -1398,7 +1402,10 @@ fn head(
         right = r.left();
     }
     let room = egui::Rect::from_min_max(
-        egui::pos2(inner.left() + FOCUS_W + HEAD_GAP, rect.top()),
+        egui::pos2(
+            inner.left() + crate::ui::HEAD_ACTION_W + HEAD_GAP,
+            rect.top(),
+        ),
         egui::pos2(right - HEAD_GAP, rect.bottom()),
     );
     let clipped = p.with_clip_rect(room.intersect(p.clip_rect()));
@@ -1428,7 +1435,7 @@ fn head(
         );
         x = r.right() + 4.0;
     }
-    clicked.map(|i| i == 1)
+    clicked
 }
 
 /// The field: the subject's pill, or with nothing selected the `:` prompt in the

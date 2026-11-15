@@ -379,7 +379,9 @@ list shrinks. Its rows, section labels and footer are the palette's (`app-chrome
 rules*): a row's name is never cut for its note.
 
 - **The head row**, above the field (`CONTROL_H` in the card's inset, a rule under it): the focus as
-  a two-cell `ui::segmented_tipped` (*Type*, *Pick*; a click switches), the path from the page to
+  one icon toggle, a card head's action icon (`ui::icon_button`, `HEAD_ACTION_W`) wearing
+  `icon::LEAP_LABEL` — a layer's outline with its label on the corner, what Pick draws — on while
+  the bar picks and a click switching focus, so the row gives its width to the path; the path from the page to
   the current layer's parent, and on the right the subject with its kind's glyph (*Card*, *Card and
   2 more*, *Nothing selected*), so it is plain which layer a line acts on and where it sits.
 - **The field**: the card's whole width from the head row's inset, with no prompt column;

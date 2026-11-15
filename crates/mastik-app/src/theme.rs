@@ -1219,9 +1219,10 @@ pub mod icon {
     pub const STOP: &str = "\u{e46c}";
     /// *Regenerate*: ask the last question again.
     pub const ARROW_CLOCKWISE: &str = "\u{e036}";
-    /// *Navigate*, walking the layer tree from the keyboard: a box branching to
-    /// two boxes.
-    pub const TREE_STRUCTURE: &str = "\u{f069}";
+    /// *Pick layers*: the command bar's Pick, which labels what a click could
+    /// reach. What it draws on the canvas: a layer's outline with its label on
+    /// the top-left corner.
+    pub const LEAP_LABEL: &str = "\u{f069}";
     /// Command Mode's bar: its lines in the log, the verbs it completes, and the
     /// undo steps it makes. A window with a prompt.
     pub const TERMINAL_WINDOW: &str = "\u{f06a}";
@@ -1527,7 +1528,7 @@ pub mod icon {
         ("sparkle", SPARKLE),
         ("stop", STOP),
         ("arrow-clockwise", ARROW_CLOCKWISE),
-        ("tree-structure", TREE_STRUCTURE),
+        ("leap-label", LEAP_LABEL),
         ("terminal-window", TERMINAL_WINDOW),
         ("file-code", FILE_CODE),
     ];

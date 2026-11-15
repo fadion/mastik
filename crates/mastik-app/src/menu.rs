@@ -1338,7 +1338,7 @@ impl Item {
             Item::Present => s("Present mode", icon::PLAY, None, Group::View),
             Item::CheckContrast => s("Check contrast", icon::CIRCLE_HALF, None, Group::View),
             Item::SimulateVision => s("Simulate vision", icon::EYE, None, Group::View),
-            Item::Navigate => s("Pick layers", icon::TREE_STRUCTURE, None, Group::Tools),
+            Item::Navigate => s("Pick layers", icon::LEAP_LABEL, None, Group::Tools),
             Item::CommandBar => s("Command bar", icon::TERMINAL_WINDOW, None, Group::Tools),
             Item::Scripts => s("Scripts…", icon::FILE_CODE, None, Group::Tools),
             Item::RunScript(_) => s("Run script", icon::FILE_CODE, None, Group::Tools),

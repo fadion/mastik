@@ -1461,6 +1461,8 @@ pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
 /// [`section_head`] can carry.
 pub const CARD_MARGIN_X: f32 = 14.0;
 pub const HEAD_ACTION_W: f32 = 20.0;
+/// The glyph size of a head's action icon on its [`HEAD_ACTION_W`] box.
+pub const HEAD_ACTION_GLYPH_PT: f32 = 15.0;
 
 /// Empty space around a header's action icon that presses to the icon rather
 /// than to the header behind it.
@@ -1800,7 +1802,7 @@ pub fn section_head_full(
                             ui,
                             icon::DOTS_THREE,
                             egui::Vec2::splat(HEAD_ACTION_W),
-                            15.0,
+                            HEAD_ACTION_GLYPH_PT,
                             false,
                             true,
                             pad,
@@ -1828,7 +1830,7 @@ pub fn section_head_full(
                             ui,
                             a.glyph,
                             egui::Vec2::splat(HEAD_ACTION_W),
-                            15.0,
+                            HEAD_ACTION_GLYPH_PT,
                             a.active,
                             a.enabled,
                             pad,

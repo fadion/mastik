@@ -284,7 +284,7 @@
  { "name": "size-preview", "codepoint": "U+F068", "stroke": "M2.5 2.5H13.5V13.5H2.5ZM2.5 6.5H9.5V13.5M2.5 10.5H5.5V13.5" },
  { "name": "stop", "codepoint": "U+E46C", "fill": "M5 3.5H11a1.5 1.5 0 0 1 1.5 1.5V11a1.5 1.5 0 0 1 -1.5 1.5H5a1.5 1.5 0 0 1 -1.5 -1.5V5a1.5 1.5 0 0 1 1.5 -1.5Z" },
  { "name": "arrow-clockwise", "codepoint": "U+E036", "stroke": "M10.5 6.5H13.5V3.5M11.89 11.89A5.5 5.5 0 1 1 11.89 4.11L13.5 6.5" },
- { "name": "tree-structure", "codepoint": "U+F069", "stroke": "M1.5 5.5H5.5V9.5H1.5ZM10.5 1.5H14.5V5.5H10.5ZM10.5 9.5H14.5V13.5H10.5ZM5.5 7.5H7.5M7.5 3.5V11.5M7.5 3.5H10.5M7.5 11.5H10.5" },
+ { "name": "leap-label", "codepoint": "U+F069", "stroke": "M5.5 4.5H12.5a1 1 0 0 1 1 1V12.5a1 1 0 0 1 -1 1H5.5a1 1 0 0 1 -1 -1V5.5a1 1 0 0 1 1 -1ZM2.5 2.5H8.5a1 1 0 0 1 1 1V5.5a1 1 0 0 1 -1 1H2.5a1 1 0 0 1 -1 -1V3.5a1 1 0 0 1 1 -1Z", "fill": "M2.5 2.5H8.5a1 1 0 0 1 1 1V5.5a1 1 0 0 1 -1 1H2.5a1 1 0 0 1 -1 -1V3.5a1 1 0 0 1 1 -1Z" },
  { "name": "terminal-window", "codepoint": "U+F06A", "stroke": "M1.5 3.5A1 1 0 0 1 2.5 2.5H13.5A1 1 0 0 1 14.5 3.5V12.5A1 1 0 0 1 13.5 13.5H2.5A1 1 0 0 1 1.5 12.5ZM4.5 6L6.5 8L4.5 10M8.5 10.5H11.5" },
  { "name": "file-code", "codepoint": "U+F06B", "stroke": "M3.5 1.5H9.5L12.5 4.5V14.5H3.5ZM9.5 1.5V4.5H12.5M6.5 7.5L5 9.5L6.5 11.5M9.5 7.5L11 9.5L9.5 11.5" }
 ]
