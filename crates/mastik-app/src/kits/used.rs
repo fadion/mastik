@@ -121,7 +121,7 @@ impl MastikApp {
         let title = format!("Kits used in {}", self.shown_title());
         let library = kits_in(&self.library, self.session.doc.meta().id.as_deref());
         let mut act: Option<Act> = None;
-        let modal = crate::settings::card("kits-used", ctx, |ui| {
+        let modal = crate::settings::movable_card("kits-used", ctx, |ui| {
             ui.set_width(crate::ui::menu_inner_w(420.0, crate::settings::PAD));
             if crate::settings::modal_title(ui, &title) {
                 act = Some(Act::Close);

@@ -1104,7 +1104,7 @@ impl MastikApp {
         let numbering = b.s.numbering;
         let mut scrubbing = false;
         let hold = crate::settings::CardHold::Open;
-        crate::settings::canvas_card(ctx, "batch-rename", canvas, W, hold, |ui| {
+        crate::settings::movable_canvas_card(ctx, "batch-rename", canvas, W, hold, |ui| {
             if crate::settings::card_head(ui, W, "Batch rename") {
                 act = Act::Cancel;
             }

@@ -2141,10 +2141,11 @@ impl MastikApp {
         self.remember_view_switches();
         self.remember_tabs();
 
-        // Before any card: the editor's centre on the canvas, as the palette does.
-        let canvas = (self.view != View::Dashboard && self.canvas_rect.is_positive())
-            .then(|| self.canvas_rect.center());
-        crate::settings::set_card_centre(&ctx, canvas);
+        // Before any card: the editor's cards centre on the canvas short of the
+        // inspector's column, which floats over the canvas's right.
+        let lane = (self.view != View::Dashboard && self.canvas_rect.is_positive())
+            .then(|| self.card_lane(&ctx));
+        crate::ui::set_card_lane(&ctx, lane);
 
         // Above the view branch: a launch can land on either screen.
         self.recovery_modal(&ctx);
@@ -9436,6 +9437,17 @@ impl MastikApp {
         )
     }
 
+    /// The part of the canvas cards centre across: up to the inspector's cards,
+    /// or the whole canvas in focus mode, which hides them.
+    pub(crate) fn card_lane(&self, ctx: &egui::Context) -> egui::Rect {
+        let canvas = self.canvas_rect;
+        if self.focus {
+            return canvas;
+        }
+        let column = Self::inspector_column(ctx.content_rect());
+        canvas.with_max_x(column.left().clamp(canvas.left(), canvas.right()))
+    }
+
     /// The x an inspector popover starts at.
     pub(crate) fn popover_left(ctx: &egui::Context, width: f32) -> f32 {
         let screen = ctx.input(|i| i.content_rect());
@@ -12854,6 +12866,26 @@ mod popover_lane_tests {
             "with nothing open the picker goes beside the cards"
         );
         let _ = TopMenu::None;
+    }
+
+    /// Cards centre between the canvas's left edge and the inspector's cards, or
+    /// across the whole canvas in focus mode, which hides the inspector.
+    /// flip: `card_lane` returning the canvas → fails at "short of the inspector".
+    #[test]
+    fn cards_centre_short_of_the_inspector() {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let screen = ctx.content_rect();
+        app.canvas_rect = screen.with_min_x(screen.left() + 240.0);
+        let lane = app.card_lane(&ctx);
+        assert_eq!(lane.left(), app.canvas_rect.left());
+        assert_eq!(
+            lane.right(),
+            MastikApp::inspector_column(screen).left(),
+            "short of the inspector"
+        );
+        app.focus = true;
+        assert_eq!(app.card_lane(&ctx), app.canvas_rect, "focus mode");
     }
 }
 

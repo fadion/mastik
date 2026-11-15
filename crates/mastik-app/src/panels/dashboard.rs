@@ -3788,7 +3788,7 @@ impl MastikApp {
         }
         let before = d.numbers();
 
-        let modal = settings::card("library-settings", ctx, |ui| {
+        let modal = settings::movable_card("library-settings", ctx, |ui| {
             // The editor's Settings width, so the rows' value column is the same one.
             ui.set_width(ui::menu_inner_w(settings::SETTINGS_W, settings::PAD));
             // Zero, so every vertical gap is written out (`settings::SECTION_AIR`).

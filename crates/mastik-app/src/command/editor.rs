@@ -640,14 +640,23 @@ impl MastikApp {
         let edited_note = self.scripts.pending.is_some();
         let doc_scripts: Vec<Script> = self.session.doc.scripts().to_vec();
         let s = &mut self.scripts;
+        let id = egui::Id::new("script-editor");
+        // Hung as every card over the canvas is, by its top-left: the window is
+        // resizable, so its width is last frame's.
+        let w = ctx
+            .memory(|m| m.area_rect(id))
+            .map_or(START.x, |r| r.width());
+        let x = ui::card_lane(ctx).unwrap_or(canvas).center().x - w / 2.0;
+        let at = egui::pos2(x, canvas.top() + ui::CANVAS_POPUP_TOP) + ui::card_drag(ctx, id);
         let window = egui::Window::new("Scripts")
-            .id(egui::Id::new("script-editor"))
+            .id(id)
             .title_bar(false)
             .resizable(true)
             .collapsible(false)
+            .movable(false)
             .default_size(START)
             .min_size(egui::vec2(640.0, 360.0))
-            .default_pos(canvas.center() - START / 2.0)
+            .current_pos(at)
             .frame(crate::settings::card_frame().inner_margin(egui::Margin::ZERO));
         window.show(ctx, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;

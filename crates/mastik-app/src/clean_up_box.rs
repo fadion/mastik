@@ -270,7 +270,7 @@ impl MastikApp {
         let doc = &self.session.doc;
         let page = self.session.page;
         let hold = crate::settings::CardHold::Open;
-        crate::settings::canvas_card(ctx, "clean-up", canvas, W, hold, |ui| {
+        crate::settings::movable_canvas_card(ctx, "clean-up", canvas, W, hold, |ui| {
             if crate::settings::card_head(ui, W, "Clean up") {
                 act = Act::Cancel;
             }

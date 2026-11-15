@@ -1103,7 +1103,12 @@ impl MastikApp {
         }
 
         let note = self.palette_target_note(target);
-        let area = crate::ui::canvas_popup_area(ctx, egui::Id::new("command-palette"), canvas);
+        let area = crate::ui::canvas_popup_area(
+            ctx,
+            egui::Id::new("command-palette"),
+            canvas,
+            egui::Vec2::ZERO,
+        );
         let moved = ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
         let mut clicked: Option<usize> = None;
         let mut hovered: Option<usize> = None;

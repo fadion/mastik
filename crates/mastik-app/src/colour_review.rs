@@ -303,7 +303,7 @@ impl MastikApp {
         let r = &mut self.colour_review;
         let mut act = None;
         let hold = crate::settings::CardHold::Open;
-        crate::settings::canvas_card(ctx, "colour-review", canvas, W, hold, |ui| {
+        crate::settings::movable_canvas_card(ctx, "colour-review", canvas, W, hold, |ui| {
             if crate::settings::card_head(ui, W, "Colour review") {
                 act = Some(Act::Close);
             }

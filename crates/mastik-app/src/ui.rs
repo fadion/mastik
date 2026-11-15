@@ -997,16 +997,140 @@ pub const CANVAS_POPUP_TOP: f32 = 56.0;
 pub const CANVAS_POPUP_LIST_H: f32 = 372.0;
 
 /// The place every popup over the canvas hangs from — the command palette, batch
-/// rename, tokens import, Colour review: centred on the canvas's width (not the
-/// window's), [`CANVAS_POPUP_TOP`] under its top edge. A modal passes it to
+/// rename, tokens import, Colour review: centred on [`card_lane`] (the canvas
+/// short of the inspector) or else on `canvas`, [`CANVAS_POPUP_TOP`] under the
+/// canvas's top edge, then `moved` by [`card_drag`]. A modal passes it to
 /// `Modal::area`; a card that leaves the canvas live shows it directly.
-pub fn canvas_popup_area(ctx: &egui::Context, id: egui::Id, canvas: egui::Rect) -> egui::Area {
+pub fn canvas_popup_area(
+    ctx: &egui::Context,
+    id: egui::Id,
+    canvas: egui::Rect,
+    moved: egui::Vec2,
+) -> egui::Area {
     let screen = ctx.content_rect();
+    let x = card_lane(ctx).unwrap_or(canvas).center().x;
     egui::Modal::default_area(id).anchor(
         egui::Align2::CENTER_TOP,
         egui::vec2(
-            canvas.center().x - screen.center().x,
+            x - screen.center().x,
             canvas.top() - screen.top() + CANVAS_POPUP_TOP,
+        ) + moved,
+    )
+}
+
+/// Where this frame's cards centre across: the canvas up to the inspector's
+/// cards in the editor, `None` elsewhere. Written by `MastikApp::ui` before
+/// any card is shown.
+pub fn set_card_lane(ctx: &egui::Context, lane: Option<egui::Rect>) {
+    ctx.data_mut(|d| match lane {
+        Some(l) => {
+            d.insert_temp(card_lane_id(), l);
+        }
+        None => d.remove::<egui::Rect>(card_lane_id()),
+    });
+}
+
+/// The rect [`set_card_lane`] wrote this frame, if any.
+pub fn card_lane(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<egui::Rect>(card_lane_id()))
+}
+
+fn card_lane_id() -> egui::Id {
+    egui::Id::new("card-lane")
+}
+
+/// How far a movable card has been dragged from where it opens, how far it was
+/// when last placed, and the pass it was last shown in.
+#[derive(Clone, Copy)]
+struct CardDrag {
+    moved: egui::Vec2,
+    placed: egui::Vec2,
+    pass: u64,
+}
+
+fn card_drag_id(card: egui::Id) -> egui::Id {
+    card.with("card-drag")
+}
+
+/// Makes the card whose area is `card` movable by its title row this pass
+/// ([`card_drag_handle`]) and answers how far it has been dragged, cut so the
+/// card stays [`SCREEN_MARGIN`] inside the window. A card not shown last pass
+/// starts over, so a closed card reopens where it opens.
+pub fn card_drag(ctx: &egui::Context, card: egui::Id) -> egui::Vec2 {
+    let pass = ctx.cumulative_pass_nr();
+    let shown = ctx.memory(|m| m.area_rect(card));
+    let bound = ctx.content_rect().shrink(SCREEN_MARGIN);
+    ctx.data_mut(|d| {
+        let e = d.get_temp_mut_or_insert_with(card_drag_id(card), || CardDrag {
+            moved: egui::Vec2::ZERO,
+            placed: egui::Vec2::ZERO,
+            pass,
+        });
+        if e.pass + 1 < pass {
+            e.moved = egui::Vec2::ZERO;
+        } else if let Some(shown) = shown {
+            // Measured on last pass's card, placed `e.placed` from where it opens.
+            let opens = shown.translate(-e.placed);
+            e.moved = keep_inside(opens, e.moved, bound);
+        }
+        e.placed = e.moved;
+        e.pass = pass;
+        e.moved
+    })
+}
+
+/// The title row `rect` of a card: drags the card when [`card_drag`] made it
+/// movable this pass; otherwise nothing. Call it before the row's own
+/// controls, which keep their clicks over the drag.
+pub fn card_drag_handle(ui: &egui::Ui, rect: egui::Rect) {
+    let ctx = ui.ctx();
+    let card = ui.layer_id().id;
+    let key = card_drag_id(card);
+    let pass = ctx.cumulative_pass_nr();
+    let movable = ctx
+        .data(|d| d.get_temp::<CardDrag>(key))
+        .is_some_and(|e| e.pass == pass);
+    if !movable {
+        return;
+    }
+    let resp = ui.interact(rect, key, egui::Sense::drag());
+    if resp.dragged() {
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if resp.hovered() {
+        ctx.set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    let delta = resp.drag_delta();
+    if delta == egui::Vec2::ZERO {
+        return;
+    }
+    ctx.data_mut(|d| {
+        if let Some(mut e) = d.get_temp::<CardDrag>(key) {
+            e.moved += delta;
+            d.insert_temp(key, e);
+        }
+    });
+}
+
+/// `delta` cut so `rect` moved by it stays inside `bound`. On an axis where
+/// `rect` already lies past an edge it may move only back inward.
+fn keep_inside(rect: egui::Rect, delta: egui::Vec2, bound: egui::Rect) -> egui::Vec2 {
+    let axis = |lo: f32, hi: f32, min: f32, max: f32, d: f32| {
+        d.clamp((min - lo).min(0.0), (max - hi).max(0.0))
+    };
+    egui::vec2(
+        axis(
+            rect.left(),
+            rect.right(),
+            bound.left(),
+            bound.right(),
+            delta.x,
+        ),
+        axis(
+            rect.top(),
+            rect.bottom(),
+            bound.top(),
+            bound.bottom(),
+            delta.y,
         ),
     )
 }

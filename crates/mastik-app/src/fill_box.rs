@@ -354,7 +354,7 @@ impl MastikApp {
         let mut clicked: Option<NodeId> = None;
         let doc = &self.session.doc;
         let hold = crate::settings::CardHold::Open;
-        crate::settings::canvas_card(ctx, "fill-content", canvas, W, hold, |ui| {
+        crate::settings::movable_canvas_card(ctx, "fill-content", canvas, W, hold, |ui| {
             if crate::settings::card_head(ui, W, "Fill with content") {
                 act = Act::Cancel;
             }

@@ -396,7 +396,7 @@ impl MastikApp {
 
         let mut decision = None;
         let mut retry = false;
-        let modal = card("settings", ctx, |ui| {
+        let modal = movable_card("settings", ctx, |ui| {
             ui.set_width(ui::menu_inner_w(SETTINGS_W, PAD));
             // Zero, so every vertical gap is written out: an `add_space` is added to
             // `item_spacing.y` (see [`SECTION_AIR`]).
@@ -1230,7 +1230,26 @@ pub(crate) fn card<R>(
     ctx: &egui::Context,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::ModalResponse<R> {
-    card_modal(ctx, id).show(ctx, |ui| {
+    show_card(card_modal(ctx, id), ctx, body)
+}
+
+/// [`card`], movable by its title row ([`ui::card_drag`]): the larger cards a
+/// person may want beside what they are working on (Settings, Version history).
+pub(crate) fn movable_card<R>(
+    id: &str,
+    ctx: &egui::Context,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    let moved = ui::card_drag(ctx, egui::Id::new(id));
+    show_card(card_modal_moved(ctx, id, moved), ctx, body)
+}
+
+fn show_card<R>(
+    modal: egui::Modal,
+    ctx: &egui::Context,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::ModalResponse<R> {
+    modal.show(ctx, |ui| {
         ui::hold_tab(ui);
         let out = body(ui);
         // The card's rect, frame included, so the window's own controls laid over
@@ -1249,24 +1268,28 @@ pub(crate) fn card<R>(
 /// Shared so every settings-shaped modal is the same object. The caller sets its
 /// own width: [`CARD_W`] is this file's, and a modal with a wider row may be wider.
 ///
-/// Centred on [`set_card_centre`]'s point when one is set (the canvas, as the
-/// command palette is), else on the window. The move off the window's centre is
-/// cut short [`CARD_EDGE`] from the edge, measured on last frame's card: not
-/// `Area::constrain_to`, which clips the backdrop the card blocks clicks with.
+/// Centred on [`ui::card_lane`] when one is set (the canvas short of the
+/// inspector, as the command palette is), else on the window. The move off the
+/// window's centre is cut short [`CARD_EDGE`] from the edge, measured on last
+/// frame's card: not `Area::constrain_to`, which clips the backdrop the card
+/// blocks clicks with.
 pub(crate) fn card_modal(ctx: &egui::Context, id: &str) -> egui::Modal {
+    card_modal_moved(ctx, id, egui::Vec2::ZERO)
+}
+
+/// [`card_modal`] dragged `moved` from where it opens.
+fn card_modal_moved(ctx: &egui::Context, id: &str, moved: egui::Vec2) -> egui::Modal {
     let id = egui::Id::new(id);
     let screen = ctx.content_rect();
     let size = ctx
         .memory(|m| m.area_rect(id))
         .map_or(egui::Vec2::ZERO, |r| r.size());
     let room = ((screen.size() - size) / 2.0 - egui::Vec2::splat(CARD_EDGE)).max(egui::Vec2::ZERO);
-    let offset = ctx
-        .data(|d| d.get_temp::<egui::Pos2>(card_centre_id()))
-        .map_or(egui::Vec2::ZERO, |c| {
-            (c - screen.center()).clamp(-room, room)
-        });
+    let offset = ui::card_lane(ctx).map_or(egui::Vec2::ZERO, |lane| {
+        (lane.center() - screen.center()).clamp(-room, room)
+    });
     egui::Modal::new(id)
-        .area(egui::Modal::default_area(id).anchor(egui::Align2::CENTER_CENTER, offset))
+        .area(egui::Modal::default_area(id).anchor(egui::Align2::CENTER_CENTER, offset + moved))
         // Half black: a modal over a canvas must dim more than
         // egui's default 100/255, or a light document still reads as in focus.
         .backdrop_color(egui::Color32::from_black_alpha(128))
@@ -1282,21 +1305,6 @@ pub(crate) fn card_frame() -> egui::Frame {
 
 /// The least room a card moved toward the canvas keeps from the window's edge.
 pub(crate) const CARD_EDGE: f32 = 24.0;
-
-/// Where this frame's cards centre: `Some` the canvas's middle in the editor,
-/// `None` the window's. Written by `MastikApp::ui` before any card is shown.
-pub(crate) fn set_card_centre(ctx: &egui::Context, centre: Option<egui::Pos2>) {
-    ctx.data_mut(|d| match centre {
-        Some(c) => {
-            d.insert_temp(card_centre_id(), c);
-        }
-        None => d.remove::<egui::Pos2>(card_centre_id()),
-    });
-}
-
-fn card_centre_id() -> egui::Id {
-    egui::Id::new("card-centre")
-}
 
 /// The title row every settings-shaped modal opens with, [`CANVAS_CARD_HEAD_H`]
 /// tall as a canvas card's: the name on the left, the ✕ against the right
@@ -1315,6 +1323,7 @@ pub(crate) fn modal_title_noted(ui: &mut egui::Ui, title: &str, note: Option<&st
         egui::vec2(ui.available_width(), CANVAS_CARD_HEAD_H),
         egui::Sense::hover(),
     );
+    ui::card_drag_handle(ui, rect);
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
@@ -1412,7 +1421,33 @@ pub(crate) fn canvas_card(
     hold: CardHold,
     body: impl FnOnce(&mut egui::Ui),
 ) -> bool {
-    let area = ui::canvas_popup_area(ctx, egui::Id::new(id), canvas);
+    canvas_card_moved(ctx, id, canvas, w, hold, egui::Vec2::ZERO, body)
+}
+
+/// [`canvas_card`], movable by its [`card_head`] ([`ui::card_drag`]): a card a
+/// person works in for a while, beside the layers it acts on.
+pub(crate) fn movable_canvas_card(
+    ctx: &egui::Context,
+    id: &str,
+    canvas: egui::Rect,
+    w: f32,
+    hold: CardHold,
+    body: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let moved = ui::card_drag(ctx, egui::Id::new(id));
+    canvas_card_moved(ctx, id, canvas, w, hold, moved, body)
+}
+
+fn canvas_card_moved(
+    ctx: &egui::Context,
+    id: &str,
+    canvas: egui::Rect,
+    w: f32,
+    hold: CardHold,
+    moved: egui::Vec2,
+    body: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let area = ui::canvas_popup_area(ctx, egui::Id::new(id), canvas, moved);
     let rows = |ui: &mut egui::Ui| {
         ui.set_width(w);
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -1449,6 +1484,7 @@ pub(crate) fn card_head(ui: &mut egui::Ui, w: f32, title: &str) -> bool {
 /// [`card_head`] with a dim `note` after the title ([`modal_title_noted`]).
 pub(crate) fn card_head_noted(ui: &mut egui::Ui, w: f32, title: &str, note: Option<&str>) -> bool {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, CANVAS_CARD_HEAD_H), egui::Sense::hover());
+    ui::card_drag_handle(ui, rect);
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect.shrink2(egui::vec2(CANVAS_CARD_PAD, 0.0)))
@@ -2707,12 +2743,12 @@ mod tests {
         );
     }
 
-    /// A card centres on the point `set_card_centre` names, and on the window with none.
-    /// flip: `card_modal` ignoring the centre → fails at the canvas assert.
+    /// A card centres on the lane `ui::set_card_lane` names, and on the window with none.
+    /// flip: `card_modal` ignoring the lane → fails at the canvas assert.
     #[test]
     fn a_card_centres_on_the_canvas_when_there_is_one() {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
-        let centre_of = |centre: Option<egui::Pos2>| {
+        let centre_of = |lane: Option<egui::Rect>| {
             let ctx = egui::Context::default();
             let mut rect = egui::Rect::NOTHING;
             for _ in 0..3 {
@@ -2721,7 +2757,7 @@ mod tests {
                     ..Default::default()
                 };
                 let _ = ctx.run_ui(input, |ui| {
-                    set_card_centre(ui.ctx(), centre);
+                    ui::set_card_lane(ui.ctx(), lane);
                     rect = card("probe-card", ui.ctx(), |ui| {
                         ui.allocate_exact_size(egui::vec2(200.0, 100.0), egui::Sense::hover());
                     })
@@ -2731,13 +2767,101 @@ mod tests {
             }
             rect.center()
         };
-        let canvas = egui::pos2(500.0, 330.0);
+        let lane = egui::Rect::from_center_size(egui::pos2(500.0, 330.0), egui::vec2(400.0, 500.0));
         assert!(
-            (centre_of(Some(canvas)) - canvas).length() < 1.0,
+            (centre_of(Some(lane)) - lane.center()).length() < 1.0,
             "on the canvas: {:?}",
-            centre_of(Some(canvas))
+            centre_of(Some(lane))
         );
         assert!((centre_of(None) - screen.center()).length() < 1.0);
+    }
+
+    /// A movable card follows a drag on its title row, not one on its body, stops
+    /// at the window's margin, and opens where it opens again once closed.
+    /// flip: `ui::card_drag` not resetting a card unseen last pass → fails at "reopens".
+    #[test]
+    fn a_movable_card_drags_by_its_title_and_forgets_it_on_close() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let id = egui::Id::new("probe-move");
+        let frame = |events: Vec<egui::Event>, shown: bool| -> egui::Rect {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                if shown {
+                    movable_canvas_card(
+                        ui.ctx(),
+                        "probe-move",
+                        screen,
+                        300.0,
+                        CardHold::Open,
+                        |ui| {
+                            card_head(ui, 300.0, "Probe");
+                            ui.allocate_exact_size(egui::vec2(300.0, 200.0), egui::Sense::hover());
+                        },
+                    );
+                }
+            });
+            ctx.memory(|m| m.area_rect(id))
+                .unwrap_or(egui::Rect::NOTHING)
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let drag = |from: egui::Pos2, by: egui::Vec2| {
+            frame(vec![egui::Event::PointerMoved(from)], true);
+            frame(vec![button(from, true)], true);
+            for i in 1..=5 {
+                frame(
+                    vec![egui::Event::PointerMoved(from + by * i as f32 / 5.0)],
+                    true,
+                );
+            }
+            frame(vec![button(from + by, false)], true);
+            for _ in 0..3 {
+                frame(vec![], true);
+            }
+            frame(vec![], true)
+        };
+        for _ in 0..3 {
+            frame(vec![], true);
+        }
+        let start = frame(vec![], true);
+        assert!(start.is_positive(), "the card is shown: {start:?}");
+
+        let body = start.min + egui::vec2(150.0, 120.0);
+        let after_body = drag(body, egui::vec2(100.0, 0.0));
+        assert_eq!(
+            after_body.min, start.min,
+            "a drag on the body leaves the card"
+        );
+
+        let head = start.min + egui::vec2(150.0, 20.0);
+        let moved = drag(head, egui::vec2(100.0, 60.0)).min - start.min;
+        assert!(
+            moved.x > 60.0 && moved.x <= 100.0 && moved.y > 30.0 && moved.y <= 60.0,
+            "moved by its title: {moved:?}"
+        );
+
+        let head = start.min + moved + egui::vec2(150.0, 20.0);
+        let pinned = drag(head, egui::vec2(-2000.0, 0.0));
+        assert!(
+            (pinned.left() - ui::SCREEN_MARGIN).abs() < 1.0,
+            "stops at the margin: {pinned:?}"
+        );
+
+        frame(vec![egui::Event::PointerMoved(egui::pos2(5.0, 5.0))], false);
+        frame(vec![], false);
+        frame(vec![], true);
+        let reopened = frame(vec![], true);
+        assert_eq!(reopened.min, start.min, "reopens where it opens");
     }
 
     /// `Tab` walks a footer in the order it reads, the way out first, and the row

@@ -933,6 +933,7 @@ fn card_head(ui: &mut egui::Ui, title: &str, progress: Option<(usize, usize)>) -
         egui::vec2(ui.available_width(), crate::settings::CANVAS_CARD_HEAD_H),
         egui::Sense::hover(),
     );
+    crate::ui::card_drag_handle(ui, row);
     let close = ui
         .new_child(
             egui::UiBuilder::new()
@@ -1258,7 +1259,7 @@ impl MastikApp {
         let mut pointed_now: Option<Later> = None;
         let pins = self.prefs.version_history;
         let today = local_day(clock::now());
-        let modal = crate::settings::card("version-history", ctx, |ui| {
+        let modal = crate::settings::movable_card("version-history", ctx, |ui| {
             ui.set_width(crate::ui::menu_inner_w(CARD_W, crate::settings::PAD));
             if card_head(ui, &title, progress) {
                 close = true;
