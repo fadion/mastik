@@ -49,13 +49,15 @@ pub(crate) enum Which {
         kit_name: String,
         id: ScriptId,
     },
-    /// Typed this session and not saved, by its place in the unsaved list.
-    Unsaved(usize),
+    /// Typed this session and not saved, by a serial that stays its own as
+    /// others are deleted, so the values and the bad line kept for it do too.
+    Unsaved(u64),
 }
 
 /// A script typed this session and saved nowhere.
 #[derive(Clone, Debug)]
 struct Unsaved {
+    serial: u64,
     name: String,
     source: String,
 }
@@ -93,6 +95,8 @@ pub(crate) struct Scripts {
     /// document script's as the document holds it.
     buffer: String,
     unsaved: Vec<Unsaved>,
+    /// The serial the next unsaved script takes.
+    next_unsaved: u64,
     search: String,
     /// The library folder's scripts, read when the window opens and after a write.
     library: Vec<library::LibraryScript>,
@@ -189,10 +193,20 @@ impl MastikApp {
     /// The log's *Open in editor*: a new unsaved script holding `source`.
     pub(crate) fn open_script_editor_with(&mut self, source: String) {
         self.open_scripts();
-        let n = self.scripts.unsaved.len();
+        self.add_unsaved(source);
+    }
+
+    /// Start a new unsaved script holding `source`, and show it.
+    fn add_unsaved(&mut self, source: String) {
+        let serial = self.scripts.next_unsaved;
+        self.scripts.next_unsaved += 1;
         let name = self.unsaved_name();
-        self.scripts.unsaved.push(Unsaved { name, source });
-        self.pick_script(Which::Unsaved(n));
+        self.scripts.unsaved.push(Unsaved {
+            serial,
+            name,
+            source,
+        });
+        self.pick_script(Which::Unsaved(serial));
     }
 
     /// Every saved script, in the palette's order: this document's, the
@@ -288,10 +302,11 @@ impl MastikApp {
                 .into_iter()
                 .find(|s| s.id == *id)
                 .map(|s| (s.name, s.source)),
-            Which::Unsaved(i) => self
+            Which::Unsaved(serial) => self
                 .scripts
                 .unsaved
-                .get(*i)
+                .iter()
+                .find(|u| u.serial == *serial)
                 .map(|u| (u.name.clone(), u.source.clone())),
         }
     }
@@ -371,8 +386,8 @@ impl MastikApp {
                 self.authored(&which);
             }
             Which::Library(_) => self.scripts.pending = Some(Instant::now()),
-            Which::Unsaved(i) => {
-                if let Some(u) = self.scripts.unsaved.get_mut(i) {
+            Which::Unsaved(serial) => {
+                if let Some(u) = self.scripts.unsaved.iter_mut().find(|u| u.serial == serial) {
                     u.source = self.scripts.buffer.clone();
                 }
             }
@@ -710,15 +725,7 @@ impl MastikApp {
                 self.scripts.open = false;
             }
             Act::Pick(w) => self.pick_script(w),
-            Act::New => {
-                let n = self.scripts.unsaved.len();
-                let name = self.unsaved_name();
-                self.scripts.unsaved.push(Unsaved {
-                    name,
-                    source: String::new(),
-                });
-                self.pick_script(Which::Unsaved(n));
-            }
+            Act::New => self.add_unsaved(String::new()),
             Act::Run => {
                 if let Some(w) = current {
                     self.start_script_run(w);
@@ -762,12 +769,7 @@ impl MastikApp {
                         }
                         Err(e) => self.session.fail(format!("Couldn't duplicate {name}: {e}")),
                     },
-                    Which::Unsaved(_) => {
-                        let n = self.scripts.unsaved.len();
-                        let name = self.unsaved_name();
-                        self.scripts.unsaved.push(Unsaved { name, source });
-                        self.pick_script(Which::Unsaved(n));
-                    }
+                    Which::Unsaved(_) => self.add_unsaved(source),
                     Which::Document(_) | Which::Kit { .. } => {
                         if let Some(id) = self.add_document_script(&name, source) {
                             self.pick_script(Which::Document(id));
@@ -806,8 +808,10 @@ impl MastikApp {
                             Err(e) => self.session.fail(format!("Couldn't rename {old}: {e}")),
                         }
                     }
-                    Which::Unsaved(i) => {
-                        if let Some(u) = self.scripts.unsaved.get_mut(i) {
+                    Which::Unsaved(serial) => {
+                        if let Some(u) =
+                            self.scripts.unsaved.iter_mut().find(|u| u.serial == serial)
+                        {
                             u.name = new;
                         }
                     }
@@ -828,10 +832,11 @@ impl MastikApp {
                         self.scripts.deleting = Some(name);
                         return;
                     }
-                    Which::Unsaved(i) => {
-                        if i < self.scripts.unsaved.len() {
-                            self.scripts.unsaved.remove(i);
-                        }
+                    Which::Unsaved(serial) => {
+                        self.scripts.unsaved.retain(|u| u.serial != serial);
+                        self.scripts
+                            .last_values
+                            .remove(&values_key(&Which::Unsaved(serial)));
                     }
                     Which::Kit { .. } => return,
                 }
@@ -1283,10 +1288,9 @@ fn source_list(
                     let unsaved: Vec<_> = s
                         .unsaved
                         .iter()
-                        .enumerate()
-                        .map(|(i, u)| {
+                        .map(|u| {
                             (
-                                Which::Unsaved(i),
+                                Which::Unsaved(u.serial),
                                 u.name.clone(),
                                 String::new(),
                                 icon::FILE_CODE,
@@ -1935,6 +1939,28 @@ mod tests {
         form.values.insert("by".into(), Value::from(7.0));
         app.run_script_now(form.which, form.name, form.source, form.values);
         assert_eq!(left(&app, card), x + 7.0);
+    }
+
+    /// The values an unsaved script's form last ran with stay its own when an
+    /// unsaved script listed before it is deleted.
+    /// flip: `script_named` finding an unsaved script by its place in the list →
+    /// fails at "B's form is up".
+    #[test]
+    fn an_unsaved_scripts_values_outlive_a_deletion_before_it() {
+        let (mut app, _, _) = with_script("", None);
+        let source = "---@input by number = 3 -- By\nsel.x += param.by";
+        app.add_unsaved(source.into());
+        let a = app.scripts.current.clone().unwrap();
+        app.add_unsaved(source.into());
+        let b = app.scripts.current.clone().unwrap();
+        let mut kept = serde_json::Map::new();
+        kept.insert("by".into(), Value::from(9.0));
+        app.scripts.last_values.insert(values_key(&b), kept);
+        app.pick_script(a);
+        app.scripts_act(Some(Act::Delete));
+        app.start_script_run(b);
+        let form = app.scripts.form.take().expect("B's form is up");
+        assert_eq!(form.values.get("by"), Some(&Value::from(9.0)), "still B's");
     }
 
     /// A run that fails changes nothing, says where, and puts the editor on the line.
