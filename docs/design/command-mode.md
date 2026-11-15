@@ -281,7 +281,11 @@ fixed rects, so the window keeps the size it is given. `Ctrl+Enter` runs. `Ctrl+
 selects the next match, wrapping to the top, and `Ctrl+F` then Enter goes on from there. The ⋯ menu: *Save to library* ·
 *Copy into this document* · *Duplicate* · *Rename* · *Show in folder* · *Delete* (not on a kit's).
 The code pane is `ui::code_editor`, inked from `mastik_vm::tokens`: keywords `star()`, numbers
-`saved()`, strings `warn()`, comments `text::faint()`, Mastik's own names `accent_300()`.
+`saved()`, strings `warn()`, comments `text::faint()`, Mastik's own names `accent_300()`. Its
+gutter's numbers stand on their lines' baselines. The pane reads as one text: a press in its air
+under the text puts the caret at the end, and one beside a line number at that line's start. The
+output pane's top edge drags (`ui::drag_edge`), from the code pane's least (80) down to the output's
+head alone; the height is kept for the session.
 
 **Types.** `mastik_vm::definitions` writes a `.d.luau` from the same tables as the bindings (the
 `Layers` class, `sel` and the relative names, each verb with typed parameters, `param`), saved as

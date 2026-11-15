@@ -19,8 +19,6 @@ const HEAD_H: f32 = ui::CONTROL_H;
 const FLOOR_H: f32 = 2.0 * ui::RAIL_POPUP_PAD + HEAD_H + 10.0 + 40.0 + 10.0 + 96.0;
 /// A question's bubble at most this share of the thread's width.
 const BUBBLE_SHARE: f32 = 0.82;
-/// The drag edge's grab width, over the panel's right edge.
-const EDGE_GRAB: f32 = 6.0;
 /// The send button.
 const SEND_W: f32 = 26.0;
 /// Clear air between the panel's top and the canvas's: room to see what is
@@ -158,42 +156,28 @@ impl MastikApp {
 
         // The drag edge on the panel's right.
         let rect = resp.rect;
+        // Centred half a point in, on the card's own border, which is inside its rect.
         let edge = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - EDGE_GRAB / 2.0, rect.top() + 12.0),
-            egui::pos2(rect.right() + EDGE_GRAB / 2.0, rect.bottom() - 12.0),
+            egui::pos2(
+                rect.right() - 0.5 - ui::DRAG_EDGE_GRAB / 2.0,
+                rect.top() + 12.0,
+            ),
+            egui::pos2(
+                rect.right() - 0.5 + ui::DRAG_EDGE_GRAB / 2.0,
+                rect.bottom() - 12.0,
+            ),
         );
-        // Lit as the layers panel's edge is: a hairline, after the same dwell,
-        // so a pointer merely crossing it does not light it.
-        let (pos, pressed, down) = ctx.input(|i| {
-            (
-                i.pointer.hover_pos(),
-                i.pointer.button_pressed(egui::PointerButton::Primary),
-                i.pointer.button_down(egui::PointerButton::Primary),
-            )
-        });
-        let in_band = pos.is_some_and(|p| edge.contains(p));
-        self.assistant.edge = self.assistant.edge.advance(now, in_band, pressed, down);
-        if let Some(due) = self.assistant.edge.due() {
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64((due - now).max(0.0)));
-        }
-        let lit = self.assistant.edge.lit();
         let edge_resp = egui::Area::new(egui::Id::new("assistant-edge"))
             .order(egui::Order::Foreground)
             .fixed_pos(edge.min)
             .show(ctx, |ui| {
-                let (r, resp) = ui.allocate_exact_size(edge.size(), egui::Sense::drag());
-                if lit || resp.dragged() {
-                    let ink = match resp.dragged() {
-                        true => color::accent(),
-                        false => color::accent_700(),
-                    };
-                    // Over the card's own border, which is inside its rect.
-                    let ppp = ui.ctx().pixels_per_point();
-                    let x = ui::hairline_in_column(r.center().x - 0.5, ppp, 1.0);
-                    ui.painter()
-                        .vline(x, r.y_range(), egui::Stroke::new(1.0, ink));
-                }
-                resp.on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+                ui::drag_edge(
+                    ui,
+                    egui::Id::new("assistant-edge-band"),
+                    edge,
+                    true,
+                    &mut self.assistant.edge,
+                )
             })
             .inner;
         if edge_resp.dragged() {

@@ -32,8 +32,11 @@ const OUTPUT_HEAD_H: f32 = 30.0;
 /// The rename field's width in the head: room for a long name beside the
 /// head's note, find and *Run*.
 const RENAME_W: f32 = 200.0;
-/// The output pane's height.
+/// The output pane's height until its edge is dragged. It drags down to its
+/// head alone, whose eyebrow then has the same air under it as over it.
 const OUTPUT_H: f32 = 132.0;
+/// The least the code pane keeps as the output pane is dragged up.
+const CODE_MIN_H: f32 = 80.0;
 /// How long typing in a library script rests before it is written to its file.
 const WRITE_AFTER: std::time::Duration = std::time::Duration::from_millis(600);
 /// The run form's width.
@@ -133,6 +136,11 @@ pub(crate) struct Scripts {
     /// The values each script's form last ran with, for the session, by
     /// [`values_key`].
     last_values: rustc_hash::FxHashMap<String, serde_json::Map<String, Value>>,
+    /// The output pane's height, its head included, once its top edge has been
+    /// dragged; [`OUTPUT_H`] until then.
+    output_h: Option<f32>,
+    /// The output pane's drag edge, lit after the pointer rests on it.
+    output_edge: crate::app::EdgeDwell,
 }
 
 /// What the window asked for this frame.
@@ -692,10 +700,29 @@ impl MastikApp {
             let name = header.clone().map(|h| h.0).unwrap_or_default();
             script_head(ui, s, &which, &name, where_, edited_note, &mut act);
             ui::card_rule(ui);
-            let code_h = (ui.available_height() - OUTPUT_H - 1.0).max(80.0);
+            // The code and the output share what the head leaves, less the rule
+            // between them; the output keeps at least its head.
+            let room = ui.available_height() - 1.0;
+            let output_h = s
+                .output_h
+                .unwrap_or(OUTPUT_H)
+                .clamp(OUTPUT_HEAD_H, (room - CODE_MIN_H).max(OUTPUT_HEAD_H));
+            let code_h = room - output_h;
             let bad = s.bad.as_ref().filter(|(w, _)| *w == which).map(|(_, l)| *l);
             let editable = !matches!(which, Which::Kit { .. });
             let code_id = s.code_id();
+            // The pane's air around the text is the text's too: a press there
+            // puts the caret at the end, or beside a line number at its line's
+            // start. Sensed before the text edit, which takes the presses on it.
+            let blank = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), code_h),
+            );
+            let blank = editable.then(|| {
+                ui.interact(blank, code_id.with("blank"), egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::Text)
+            });
+            let mut laid: Option<egui::text_edit::TextEditOutput> = None;
             egui::ScrollArea::both()
                 .id_salt("script-code")
                 .max_height(code_h)
@@ -737,9 +764,39 @@ impl MastikApp {
                     {
                         act = Some(Act::Run);
                     }
+                    laid = Some(out);
                 });
-            ui::card_rule(ui);
-            output_pane(ui, &s.output);
+            if let (Some(blank), Some(out)) = (blank, &laid)
+                && blank.clicked()
+            {
+                let at = blank.interact_pointer_pos();
+                let beside = at.filter(|p| {
+                    p.x < out.response.rect.left() && out.response.rect.y_range().contains(p.y)
+                });
+                let to = match beside {
+                    Some(p) => out
+                        .galley
+                        .cursor_from_pos(egui::vec2(0.0, p.y - out.galley_pos.y)),
+                    None => out.galley.end(),
+                };
+                let mut state = out.state.clone();
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(to)));
+                state.store(ui.ctx(), out.response.id);
+                out.response.request_focus();
+            }
+            let rule = ui::card_rule(ui);
+            output_pane(ui, &s.output, output_h);
+            let band = egui::Rect::from_center_size(
+                rule.center(),
+                egui::vec2(rule.width(), ui::DRAG_EDGE_GRAB),
+            );
+            let edge = ui::drag_edge(ui, id.with("output-edge"), band, false, &mut s.output_edge);
+            if edge.dragged() {
+                let max = (room - CODE_MIN_H).max(OUTPUT_HEAD_H);
+                s.output_h = Some((output_h - edge.drag_delta().y).clamp(OUTPUT_HEAD_H, max));
+            }
         });
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
             && self.scripts.current.is_some()
@@ -1654,8 +1711,9 @@ fn script_head(
     }
 }
 
-/// The output pane: each run under a rule with its time, errors in the red.
-fn output_pane(ui: &mut egui::Ui, runs: &[RunOut]) {
+/// The output pane, `h` tall with its head: each run under a rule with its
+/// time, errors in the red. At its head's height it shows the head alone.
+fn output_pane(ui: &mut egui::Ui, runs: &[RunOut], h: f32) {
     let w = ui.available_width();
     let (head, _) = ui.allocate_exact_size(egui::vec2(w, OUTPUT_HEAD_H), egui::Sense::hover());
     let p = ui.painter();
@@ -1674,9 +1732,14 @@ fn output_pane(ui: &mut egui::Ui, runs: &[RunOut]) {
             theme::text::faint(),
         );
     }
+    let lines_h = h - OUTPUT_HEAD_H;
+    if lines_h < 1.0 {
+        return;
+    }
     egui::ScrollArea::vertical()
         .id_salt("script-output")
-        .max_height(OUTPUT_H - OUTPUT_HEAD_H)
+        .max_height(lines_h)
+        .min_scrolled_height(lines_h)
         .auto_shrink([false, false])
         .stick_to_bottom(true)
         .show(ui, |ui| {
@@ -2018,6 +2081,114 @@ mod tests {
             }
             assert_eq!(height(&ctx), first, "the same height");
         }
+    }
+
+    /// The editor open on a document script holding `source`, pumped until laid out.
+    fn open_on(source: &str) -> (egui::Context, MastikApp) {
+        use crate::command::tests::pass;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, _, script) = with_script(source, None);
+        app.open_scripts();
+        app.pick_script(Which::Document(script));
+        for _ in 0..3 {
+            pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        (ctx, app)
+    }
+
+    /// A primary press and release at `at`, the pointer moved there first.
+    fn click_at(ctx: &egui::Context, app: &mut MastikApp, at: egui::Pos2) {
+        use crate::command::tests::pass;
+        let none = egui::Modifiers::NONE;
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: none,
+        };
+        pass(ctx, app, vec![egui::Event::PointerMoved(at)], none);
+        pass(ctx, app, vec![button(true)], none);
+        pass(ctx, app, vec![button(false)], none);
+        pass(ctx, app, Vec::new(), none);
+    }
+
+    /// The code pane's caret, in chars.
+    fn caret(ctx: &egui::Context, app: &MastikApp) -> Option<usize> {
+        egui::TextEdit::load_state(ctx, app.scripts.code_id())
+            .and_then(|s| s.cursor.char_range())
+            .map(|r| r.primary.index.0)
+    }
+
+    /// A press in the code pane's air under the text puts the caret at the
+    /// text's end, and one beside a line number at that line's start.
+    /// flip: `scripts_ui` not acting on `blank` → fails at "the end".
+    #[test]
+    fn a_press_beside_the_code_places_the_caret() {
+        let source = "sel.x += 1\nsel.y += 2";
+        let (ctx, mut app) = open_on(source);
+        let code = ctx
+            .read_response(app.scripts.code_id())
+            .expect("fixture: the code is drawn")
+            .rect;
+        click_at(
+            &ctx,
+            &mut app,
+            egui::pos2(code.center().x, code.bottom() + 40.0),
+        );
+        assert_eq!(caret(&ctx, &app), Some(source.chars().count()), "the end");
+        let second = egui::pos2(code.left() - 8.0, code.top() + ui::CODE_LINE_H * 1.5);
+        click_at(&ctx, &mut app, second);
+        assert_eq!(caret(&ctx, &app), Some(11), "the second line's start");
+    }
+
+    /// The output pane's top edge drags: down to the head alone, and up only
+    /// as far as leaves the code its least.
+    /// flip: the drag's clamp losing its floor (`OUTPUT_HEAD_H` → 0) → fails at
+    /// "the head alone".
+    #[test]
+    fn the_output_drags_down_to_its_head() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = open_on("print(1)");
+        let none = egui::Modifiers::NONE;
+        let edge = || {
+            ctx.read_response(egui::Id::new("script-editor").with("output-edge"))
+                .expect("fixture: the edge is drawn")
+                .rect
+                .center()
+        };
+        let drag = |app: &mut MastikApp, from: egui::Pos2, dy: f32| {
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: none,
+            };
+            pass(&ctx, app, vec![egui::Event::PointerMoved(from)], none);
+            pass(&ctx, app, vec![button(from, true)], none);
+            let mut at = from;
+            for _ in 0..10 {
+                at.y += dy / 10.0;
+                pass(&ctx, app, vec![egui::Event::PointerMoved(at)], none);
+            }
+            pass(&ctx, app, vec![button(at, false)], none);
+            pass(&ctx, app, Vec::new(), none);
+        };
+        let start = edge();
+        drag(&mut app, start, 600.0);
+        assert_eq!(app.scripts.output_h, Some(OUTPUT_HEAD_H), "the head alone");
+        drag(&mut app, edge(), -900.0);
+        let code = ctx
+            .read_response(app.scripts.code_id())
+            .expect("the code is drawn")
+            .rect;
+        let lowest = edge().y;
+        assert!(lowest < start.y, "it grew: {lowest} vs {start:?}");
+        assert!(
+            lowest - code.top() >= CODE_MIN_H - 12.0,
+            "the code keeps its least: {}",
+            lowest - code.top()
+        );
     }
 
     /// A run that fails changes nothing, says where, and puts the editor on the line.

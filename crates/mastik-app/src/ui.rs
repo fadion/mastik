@@ -269,6 +269,60 @@ pub fn card_vrule(ui: &egui::Ui, rect: egui::Rect) {
     );
 }
 
+/// How wide a [`drag_edge`]'s grab band is, across its line.
+pub const DRAG_EDGE_GRAB: f32 = 6.0;
+
+/// A pane edge that drags to resize: `band` takes the drag and wears the
+/// resize cursor, and its centre line lights as the layers panel's edge does —
+/// `accent_700` once the pointer has rested in the band for the dwell `dwell`
+/// keeps, `accent` while dragged — so a pointer merely crossing it leaves it
+/// dark. `upright` for an edge between side-by-side panes. Paints only the
+/// light; the caller draws the resting rule, and reads the drag.
+pub fn drag_edge(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    band: egui::Rect,
+    upright: bool,
+    dwell: &mut crate::app::EdgeDwell,
+) -> egui::Response {
+    let ctx = ui.ctx().clone();
+    let (now, pos, pressed, down) = ctx.input(|i| {
+        (
+            i.time,
+            i.pointer.hover_pos(),
+            i.pointer.button_pressed(egui::PointerButton::Primary),
+            i.pointer.button_down(egui::PointerButton::Primary),
+        )
+    });
+    *dwell = dwell.advance(now, pos.is_some_and(|p| band.contains(p)), pressed, down);
+    if let Some(due) = dwell.due() {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64((due - now).max(0.0)));
+    }
+    let resp = ui.interact(band, id, egui::Sense::drag());
+    if dwell.lit() || resp.dragged() {
+        let ink = match resp.dragged() {
+            true => color::accent(),
+            false => color::accent_700(),
+        };
+        let ppp = ctx.pixels_per_point();
+        let stroke = egui::Stroke::new(1.0, ink);
+        match upright {
+            true => {
+                let x = hairline_in_column(band.center().x, ppp, 1.0);
+                ui.painter().vline(x, band.y_range(), stroke);
+            }
+            false => {
+                let y = hairline_in_column(band.center().y, ppp, 1.0);
+                ui.painter().hline(band.x_range(), y, stroke);
+            }
+        }
+    }
+    resp.on_hover_cursor(match upright {
+        true => egui::CursorIcon::ResizeHorizontal,
+        false => egui::CursorIcon::ResizeVertical,
+    })
+}
+
 /// The width of a [`close_button`]'s box.
 pub const CLOSE_BUTTON_W: f32 = 18.0;
 /// A [`close_button`]'s ×, and a removable [`layer_chip`]'s.
@@ -2494,6 +2548,19 @@ pub const CODE_LINE_H: f32 = 19.0;
 /// The line-number gutter's width, its numbers right-aligned in it.
 pub const CODE_GUTTER_W: f32 = 44.0;
 
+/// The gutter's line numbers: a point under the code, so they read as margin.
+const CODE_GUTTER_PT: f32 = CODE_PT - 1.0;
+
+/// `text` as one run of code at `pt` in a [`CODE_LINE_H`] line, unwrapped, as
+/// [`code_editor`] lays out its text: the gutter's numbers, and their baseline.
+fn code_line_job(text: &str, pt: f32, ink: egui::Color32) -> egui::text::LayoutJob {
+    let mut f = egui::TextFormat::simple(egui::FontId::monospace(pt), ink);
+    f.line_height = Some(CODE_LINE_H);
+    let mut job = egui::text::LayoutJob::single_section(text.to_owned(), f);
+    job.wrap.max_width = f32::INFINITY;
+    job
+}
+
 /// The script editor's text: monospace at [`CODE_PT`], unwrapped, its runs inked
 /// by `inks`, with a gutter of line numbers. `bad` (0-based) numbers its line in
 /// the error ink and squiggles it; `editable` false shows the text for reading.
@@ -2566,11 +2633,23 @@ pub fn code_editor(
         })
         .inner;
     let p = ui.painter();
+    // A row puts its glyphs an ascent below the line's top rather than in its
+    // middle, and the numbers are a point smaller: each number is laid out in a
+    // line of the same height and moved so its baseline is the code's.
+    let baseline = |pt: f32| {
+        let g = ui.fonts_mut(|f| f.layout_job(code_line_job("0", pt, color::text())));
+        g.rows
+            .first()
+            .and_then(|r| r.row.glyphs.first())
+            .map_or(0.0, |gl| gl.pos.y)
+    };
+    let lift = baseline(CODE_PT) - baseline(CODE_GUTTER_PT);
     // Only the rows in view get a number; the rest are counted past.
     let shown = ui.clip_rect().expand(CODE_LINE_H).y_range();
     let mut line = 0usize;
     let mut starts = true;
     for row in &out.galley.rows {
+        let top = out.galley_pos.y + row.rect().top();
         let y = out.galley_pos.y + row.rect().center().y;
         if starts && !shown.contains(y) {
             line += 1;
@@ -2579,11 +2658,12 @@ pub fn code_editor(
                 true => color::error(),
                 false => theme::text::faint(),
             };
-            p.text(
-                egui::pos2(gutter.right() - 10.0, y),
-                egui::Align2::RIGHT_CENTER,
-                (line + 1).to_string(),
-                egui::FontId::monospace(CODE_PT - 1.0),
+            let number = ui.fonts_mut(|f| {
+                f.layout_job(code_line_job(&(line + 1).to_string(), CODE_GUTTER_PT, ink))
+            });
+            p.galley(
+                egui::pos2(gutter.right() - 10.0 - number.size().x, top + lift),
+                number,
                 ink,
             );
             if bad == Some(line) && !row.row.glyphs.is_empty() {
@@ -8692,6 +8772,45 @@ mod tests {
             code_editor(ui, id, &mut text, &inks, None, false);
         });
         assert_eq!(calls.get(), 2, "a new text is inked again");
+    }
+
+    /// Each gutter number sits on its code line's baseline.
+    /// flip: the numbers centred on the row (`lift` ignored, `top` the row's
+    /// centre less half a number) → fails at "on the code's baseline".
+    #[test]
+    fn gutter_numbers_sit_on_their_lines_baseline() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let mut text = "local a = 1\nlocal b = 2\nprint(a)".to_string();
+        let id = egui::Id::new("gutter-baseline");
+        let out = ctx.run_ui(Default::default(), |ui| {
+            code_editor(ui, id, &mut text, &|_| CodeInks::new(), None, true);
+        });
+        // A text shape's baselines, each row's first glyph, in screen points.
+        let baselines = |t: &egui::epaint::TextShape| -> Vec<f32> {
+            t.galley
+                .rows
+                .iter()
+                .filter_map(|r| r.row.glyphs.first().map(|g| t.pos.y + r.pos.y + g.pos.y))
+                .collect()
+        };
+        let mut code = Vec::new();
+        let mut numbers = Vec::new();
+        for c in &out.shapes {
+            if let egui::Shape::Text(t) = &c.shape {
+                match t.galley.text() {
+                    "1" | "2" | "3" => numbers.extend(baselines(t)),
+                    s if s.starts_with("local") => code = baselines(t),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(code.len(), 3, "the fixture drew three code lines");
+        assert_eq!(numbers.len(), 3, "and three numbers");
+        for (c, n) in code.iter().zip(&numbers) {
+            assert!((c - n).abs() < 0.51, "on the code's baseline: {c} vs {n}");
+        }
     }
 
     /// An `edit_frame`d edit fills its row's height with its line on the row's
