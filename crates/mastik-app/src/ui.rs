@@ -474,6 +474,23 @@ pub fn canvas_pill_led(
     pad: egui::Vec2,
     lead: usize,
 ) -> egui::Rect {
+    let (rect, shapes) = pill_shapes(painter, at, align, text, hue, pad, lead);
+    painter.extend(shapes);
+    rect
+}
+
+/// The shapes [`canvas_pill_led`] paints, and its rect, for a caller that must
+/// put them under something drawn later (the command bar's field puts its pills
+/// under the caret).
+pub fn pill_shapes(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    hue: egui::Color32,
+    pad: egui::Vec2,
+    lead: usize,
+) -> (egui::Rect, [egui::Shape; 2]) {
     let ink = pill_ink(hue);
     let font = egui::FontId::proportional(BADGE_PT);
     let g = if lead == 0 {
@@ -490,9 +507,8 @@ pub fn canvas_pill_led(
         painter.layout_job(job)
     };
     let rect = align.anchor_size(at, g.size() + pad * 2.0);
-    painter.rect_filled(rect, egui::CornerRadius::same(4), hue);
-    painter.galley(rect.min + pad, g, ink);
-    rect
+    let ground = egui::Shape::rect_filled(rect, egui::CornerRadius::same(4), hue);
+    (rect, [ground, egui::Shape::galley(rect.min + pad, g, ink)])
 }
 
 /// How strongly [`canvas_pill_led`] draws its typed lead: enough to read, plainly

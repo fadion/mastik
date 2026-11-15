@@ -36,7 +36,7 @@ const GAP: f32 = 3.0;
 
 /// The air in a label: a main's chip's, tighter than a badge's, since a view can
 /// carry eighty of them.
-const LABEL_PAD: egui::Vec2 = egui::vec2(4.0, 2.0);
+pub(crate) const LABEL_PAD: egui::Vec2 = egui::vec2(4.0, 2.0);
 
 /// The space a sliding label leaves after the one it slid past.
 const LABEL_GAP: f32 = 2.0;
@@ -86,6 +86,10 @@ struct On {
     prior: Tool,
     /// Whether the canvas has the keys (Pick) rather than the field (Type).
     picking: bool,
+    /// Pick from the middle of a line, where a value goes: a label or a click
+    /// writes its layer into the line and gives the keys back, the selection
+    /// left alone.
+    naming: bool,
 }
 
 /// What a deal depends on: the page, the scope a click picks in, the view and
@@ -216,6 +220,7 @@ impl MastikApp {
         self.navigate.on = Some(On {
             prior,
             picking: false,
+            naming: false,
         });
         self.navigate.typed.clear();
         self.navigate.dealt_for = None;
@@ -239,10 +244,33 @@ impl MastikApp {
 
     /// Give the keys to the canvas (`true`, Pick) or to the field.
     pub(crate) fn set_picking(&mut self, picking: bool) {
+        self.set_pick_focus(picking, false);
+    }
+
+    /// Give the keys to the canvas to name a layer in the line rather than
+    /// select one (`naming`), or as [`Self::set_picking`] does.
+    pub(crate) fn set_pick_focus(&mut self, picking: bool, naming: bool) {
         if let Some(on) = self.navigate.on.as_mut() {
             on.picking = picking;
+            on.naming = picking && naming;
         }
         self.navigate.typed.clear();
+    }
+
+    /// Whether the bar picks to name a layer in its line.
+    pub(crate) fn naming_pick(&self) -> bool {
+        self.picking() && self.navigate.on.as_ref().is_some_and(|o| o.naming)
+    }
+
+    /// Write `id`'s label into the bar's line at the caret and give the keys
+    /// back to the field: a naming pick's answer, by label or by click.
+    pub(crate) fn name_in_line(&mut self, id: NodeId) {
+        if let Some(label) = self.label_for(id)
+            && let Some(bar) = self.command_bar.as_mut()
+        {
+            bar.write_at_caret(label);
+        }
+        self.set_picking(false);
     }
 
     /// Forget the layers the labels hold as another document comes forward,
@@ -625,6 +653,11 @@ impl MastikApp {
             let hit = self.navigate.deal.iter().find(|d| d.label == typed);
             if let Some(id) = hit.map(|d| d.id) {
                 self.navigate.typed.clear();
+                if self.naming_pick() {
+                    // A naming pick ends with the first label it takes.
+                    self.name_in_line(id);
+                    break;
+                }
                 self.nav_land(id, m.shift);
             } else if self
                 .navigate
@@ -1256,7 +1289,8 @@ mod tests {
         );
     }
 
-    /// Over 81 candidates, only the current layer's children are labelled.
+    /// Over 81 candidates, only the current layer's children are labelled, with
+    /// the current layer itself, which the bar's subject pill deals a label.
     ///
     /// flip: dropping the `LABELS_MAX` fallback in `deal` → fails at the set.
     #[test]
@@ -1280,7 +1314,7 @@ mod tests {
             "fixture: more candidates than labels"
         );
         tap(&ctx, &mut f.app, egui::Key::Backtick);
-        assert_eq!(dealt(&f.app), HashSet::from([f.r1, f.r2]));
+        assert_eq!(dealt(&f.app), HashSet::from([f.r1, f.r2, f.g]));
     }
 
     /// The yellow closed outlines a frame of the label overlay alone paints, with
@@ -1385,6 +1419,111 @@ mod tests {
         let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
         assert_eq!(text, Some(format!(".x = {la}")), "the label at the caret");
         assert_eq!(selected(&f.app), [f.b], "the selection untouched");
+    }
+
+    /// The bar open with `line` in its field, the caret at its end. Written as
+    /// a pick writes, so no completion list opens on it.
+    fn bar_with(ctx: &egui::Context, f: &mut F, line: &str) {
+        f.app.open_command_bar();
+        frame(ctx, &mut f.app, Vec::new());
+        f.app
+            .command_bar
+            .as_mut()
+            .unwrap()
+            .write_at_caret(line.into());
+        frame(ctx, &mut f.app, Vec::new());
+        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
+        assert_eq!(text.as_deref(), Some(line), "fixture: the line written");
+    }
+
+    /// `` ` `` where a value goes picks to name: a label writes its layer into
+    /// the line and gives the keys back, the selection untouched.
+    ///
+    /// flip: `leap_keys` landing on the layer whatever the pick → fails at "the
+    /// label at the caret".
+    #[test]
+    fn a_backtick_where_a_value_goes_names_a_layer_in_the_line() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        bar_with(&ctx, &mut f, ".x = ");
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert!(f.app.naming_pick(), "picks to name");
+        let la = label_of(&f.app, f.a);
+        spell(&ctx, &mut f.app, &la, egui::Modifiers::NONE);
+        frame(&ctx, &mut f.app, Vec::new());
+        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
+        assert_eq!(text, Some(format!(".x = {la}")), "the label at the caret");
+        assert!(!f.app.picking(), "the keys back with the field");
+        assert_eq!(selected(&f.app), [f.b], "the selection untouched");
+    }
+
+    /// `` ` `` after a value, or on an empty line, picks to select.
+    ///
+    /// flip: `pick_from_line` naming on any line with text → fails at "after a
+    /// value".
+    #[test]
+    fn a_backtick_after_a_value_picks_to_select() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        bar_with(&ctx, &mut f, ".x = 20");
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert!(f.app.picking() && !f.app.naming_pick(), "after a value");
+        let la = label_of(&f.app, f.a);
+        spell(&ctx, &mut f.app, &la, egui::Modifiers::NONE);
+        assert_eq!(selected(&f.app), [f.a], "the label selects");
+        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
+        assert_eq!(text.as_deref(), Some(".x = 20"), "and the line is kept");
+    }
+
+    /// While the bar picks to name, a plain click on a layer names it too.
+    ///
+    /// flip: `bar_alt_click` asking for `Alt` while naming → fails at "the label
+    /// at the caret".
+    #[test]
+    fn a_click_while_naming_writes_the_label_into_the_line() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        bar_with(&ctx, &mut f, ".x = ");
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert!(f.app.naming_pick(), "fixture: picks to name");
+        let at = centre_of(&f.app, f.a);
+        click(&ctx, &mut f.app, at, egui::Modifiers::NONE);
+        let la = label_of(&f.app, f.a);
+        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
+        assert_eq!(text, Some(format!(".x = {la}")), "the label at the caret");
+        assert!(!f.app.picking(), "the keys back with the field");
+        assert_eq!(selected(&f.app), [f.b], "the selection untouched");
+    }
+
+    /// `Backspace` just after a label in the line takes the whole label.
+    ///
+    /// flip: dropping the bar's whole-pill `Backspace` → fails at the text.
+    #[test]
+    fn backspace_takes_a_label_whole() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        crowd(&ctx, &mut f);
+        f.app.open_command_bar();
+        frame(&ctx, &mut f.app, Vec::new());
+        let la = label_of(&f.app, f.a);
+        assert_eq!(la.len(), 2, "fixture: a two-letter label");
+        bar_with(&ctx, &mut f, ".x = ");
+        // Written as a pick writes it: typed, it is a word still being completed.
+        f.app
+            .command_bar
+            .as_mut()
+            .unwrap()
+            .write_at_caret(la.clone());
+        frame(&ctx, &mut f.app, Vec::new());
+        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
+        assert_eq!(
+            text,
+            Some(format!(".x = {la}")),
+            "fixture: the label written"
+        );
+        tap(&ctx, &mut f.app, egui::Key::Backspace);
+        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
+        assert_eq!(text.as_deref(), Some(".x = "));
     }
 
     /// The singles are the nine home-row letters, each once, index fingers first.

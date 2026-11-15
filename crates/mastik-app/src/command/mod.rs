@@ -40,6 +40,128 @@ const HEAD_H: f32 = crate::ui::CONTROL_H + 2.0 * PAD;
 const FOCUS_W: f32 = 112.0;
 /// Between the head row's parts: the focus control, the path, the subject.
 const HEAD_GAP: f32 = 12.0;
+/// Between a pill in the field and the text beside it.
+const PILL_GAP: f32 = 3.0;
+/// How strongly the field's pills draw while the bar picks and the line sleeps.
+const ASLEEP: f32 = 0.5;
+
+/// What the field draws as pills. A leap label named in the line is a pill in
+/// the label's own letters, so the line reads as the canvas shows it; the
+/// selection is a pill in the prompt's place, and before each `.` that rule 2
+/// reads as the subject.
+struct Pills {
+    /// The subject's letters (`SK`, `SK +2`) and what it is, for its tooltip.
+    subject: Option<(String, String)>,
+    /// The labels a line may name.
+    labels: rustc_hash::FxHashMap<String, NodeId>,
+    /// The names of the labels' layers, for their tooltips.
+    names: rustc_hash::FxHashMap<NodeId, String>,
+    /// The first byte of the word the completion list is open on: still being
+    /// typed, so not yet a pill.
+    typing: Option<usize>,
+}
+
+impl Pills {
+    /// The labels `text` names, by range, but the word being typed.
+    fn named(&self, text: &str) -> Vec<(std::ops::Range<usize>, NodeId)> {
+        mastik_vm::marks(text)
+            .names
+            .into_iter()
+            .filter(|r| Some(r.start) != self.typing)
+            .filter_map(|r| Some((r.clone(), *self.labels.get(&text[r])?)))
+            .collect()
+    }
+
+    /// The dots that read as the subject, but one that opens the line, which the
+    /// prompt's pill already stands before.
+    fn subject_dots(&self, text: &str) -> Vec<usize> {
+        if self.subject.is_none() {
+            return Vec::new();
+        }
+        mastik_vm::marks(text)
+            .subject
+            .into_iter()
+            .filter(|d| !text[..*d].trim().is_empty())
+            .collect()
+    }
+}
+
+/// A pill's size for `letters`: a leap label's, as the canvas draws it.
+fn pill_size(painter: &egui::Painter, letters: &str) -> egui::Vec2 {
+    let font = egui::FontId::proportional(crate::ui::BADGE_PT);
+    painter
+        .layout_no_wrap(letters.to_owned(), font, egui::Color32::PLACEHOLDER)
+        .size()
+        + crate::navigate::LABEL_PAD * 2.0
+}
+
+/// One character's advance in the field's monospace face.
+fn mono_advance(painter: &egui::Painter) -> f32 {
+    painter
+        .layout_no_wrap("m".to_owned(), mono(), egui::Color32::PLACEHOLDER)
+        .size()
+        .x
+}
+
+/// The room each side of a label's letters so its pill, centred on them, clears
+/// its neighbours.
+fn pill_room(painter: &egui::Painter, label: &str) -> f32 {
+    let span = label.chars().count() as f32 * mono_advance(painter);
+    ((pill_size(painter, &label.to_uppercase()).x - span) / 2.0).max(0.0) + PILL_GAP
+}
+
+/// The field's galley: the line in `ink`, each label's letters hidden with room
+/// for its pill, and room before each subject dot for the subject's pill.
+fn pill_galley(
+    ui: &egui::Ui,
+    text: &str,
+    pills: &Pills,
+    ink: egui::Color32,
+) -> std::sync::Arc<egui::Galley> {
+    let p = ui.painter();
+    // (range, room before, room after, hidden)
+    let mut pieces: Vec<(std::ops::Range<usize>, f32, f32, bool)> = pills
+        .named(text)
+        .into_iter()
+        .map(|(r, _)| {
+            let room = pill_room(p, &text[r.clone()]);
+            (r, room, room, true)
+        })
+        .collect();
+    if let Some((letters, _)) = &pills.subject {
+        let room = PILL_GAP + pill_size(p, letters).x + 1.0;
+        pieces.extend(
+            pills
+                .subject_dots(text)
+                .into_iter()
+                .map(|d| (d..d + 1, room, 0.0, false)),
+        );
+    }
+    pieces.sort_by_key(|(r, ..)| r.start);
+    let format = |hidden: bool| {
+        let c = match hidden {
+            true => egui::Color32::TRANSPARENT,
+            false => ink,
+        };
+        egui::TextFormat::simple(mono(), c)
+    };
+    let mut job = egui::text::LayoutJob::default();
+    let (mut at, mut pending) = (0, 0.0);
+    for (r, before, after, hidden) in pieces {
+        if r.start > at {
+            job.append(&text[at..r.start], pending, format(false));
+            pending = 0.0;
+        }
+        job.append(&text[r.clone()], pending + before, format(hidden));
+        pending = after;
+        at = r.end;
+    }
+    if at < text.len() {
+        job.append(&text[at..], pending, format(false));
+    }
+    job.wrap.max_width = f32::INFINITY;
+    ui.fonts_mut(|f| f.layout_job(job))
+}
 
 /// The open bar.
 #[derive(Default)]
@@ -322,6 +444,28 @@ impl MastikApp {
         }
     }
 
+    /// The subject's pill: the first selected layer's label, dealt one when it
+    /// has none, and how many more are selected (`SK +2`), with what it is for
+    /// its tooltip. `None` with nothing selected.
+    fn subject_pill(&mut self) -> Option<(String, String)> {
+        let ids = self.session.selection.ids();
+        let first = *ids.first()?;
+        let more = ids.len() - 1;
+        let label = self.label_for(first)?.to_uppercase();
+        let letters = match more {
+            0 => label,
+            n => format!("{label} +{n}"),
+        };
+        Some((letters, self.bar_subject()))
+    }
+
+    /// Give the keys to the canvas from the line `text`: to name a layer where
+    /// a value goes, mid-line, or else to select one.
+    fn pick_from_line(&mut self, ctx: &egui::Context, text: &str) {
+        let naming = !text.trim().is_empty() && mastik_vm::value_at(text, caret_of(ctx, text));
+        self.set_pick_focus(true, naming);
+    }
+
     /// The leap labels lines may name, as the bar last dealt them.
     fn bar_labels(&self) -> rustc_hash::FxHashMap<String, NodeId> {
         self.leap_labels()
@@ -520,10 +664,11 @@ impl MastikApp {
             return;
         }
         if keys.pick {
-            self.set_picking(true);
+            self.pick_from_line(ctx, &bar.text);
             bar.dismiss();
         }
         let picking = self.pick_focus();
+        let naming = self.naming_pick();
         // An edit of the text drops the error it was for and the recall.
         if bar.error.as_ref().is_some_and(|(t, _)| *t != bar.text) {
             bar.error = None;
@@ -551,6 +696,41 @@ impl MastikApp {
             bar.caret_to = Some(caret);
             // Written, not typed: the list does not open on it.
             bar.seen = bar.text.clone();
+        }
+        // The subject's pill first: it may deal the selection a label.
+        let subject = self.subject_pill();
+        let mut pills = Pills {
+            subject,
+            labels: self.bar_labels(),
+            names: Default::default(),
+            typing: match bar.suggest {
+                Suggest::On(s) => Some(s),
+                _ => None,
+            },
+        };
+        pills.names = pills
+            .labels
+            .values()
+            .map(|id| {
+                (
+                    *id,
+                    crate::private::layer(&self.session.doc, *id).into_owned(),
+                )
+            })
+            .collect();
+        // `Backspace` just after a pill takes the whole label, as one thing.
+        let backspace =
+            !picking && ctx.input(|i| i.key_pressed(egui::Key::Backspace) && i.modifiers.is_none());
+        if backspace
+            && let Some((r, _)) = pills
+                .named(&bar.text)
+                .into_iter()
+                .find(|(r, _)| r.end == caret)
+        {
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace));
+            bar.text.replace_range(r.clone(), "");
+            caret = r.start;
+            bar.caret_to = Some(caret);
         }
         let completion = (!picking && !bar.text.trim().is_empty() && bar.recalled.is_none())
             .then(|| self.bar_completion(&mut bar, caret));
@@ -747,6 +927,7 @@ impl MastikApp {
             .as_ref()
             .map(|c| c.layers.clone())
             .unwrap_or_default();
+        let mut pointed_pill: Option<NodeId> = None;
         let mut log_click: Option<(usize, bool)> = None;
         let mut log_menu_at: Option<(usize, egui::Pos2)> = None;
         let entries: Vec<log::Entry> = self.session.command_log.entries().cloned().collect();
@@ -814,10 +995,14 @@ impl MastikApp {
                 // frame's `follow_suggest` reads against this.
                 bar.seen = bar.text.clone();
                 let sleep = picking.then_some(typed.as_str());
-                field(ui, &mut bar, error, value.as_deref(), sleep);
+                pointed_pill = field(ui, &mut bar, error, value.as_deref(), sleep, &pills);
                 crate::ui::card_rule(ui);
                 let hint = |s: &str| (crate::input::keys(s).into_owned(), false);
                 match error {
+                    _ if naming => {
+                        let (left, _) = hint("A label names its layer here · so does a click");
+                        footer(ui, &left, false, "` types");
+                    }
                     _ if picking => {
                         let (left, _) =
                             hint("Labels pick · Shift adds · Enter in · Backspace out · * in each repeat");
@@ -851,8 +1036,10 @@ impl MastikApp {
                 }
             });
         });
-        if let Some(pick) = focus_click {
-            self.set_picking(pick);
+        match focus_click {
+            Some(true) => self.pick_from_line(ctx, &bar.text),
+            Some(false) => self.set_picking(false),
+            None => {}
         }
         // A click writes the text, not typing: `seen` takes it so the list
         // does not open on it.
@@ -906,7 +1093,8 @@ impl MastikApp {
         bar.lit = match bar.suggest {
             Suggest::On(_) => lit_of(&bar),
             _ => None,
-        };
+        }
+        .or(pointed_pill);
         self.command_bar = Some(bar);
     }
 
@@ -1155,29 +1343,52 @@ fn head(
     clicked.map(|i| i == 1)
 }
 
-/// The field: the `:` prompt in the accent, the line, a read's value at the right
-/// edge, and a squiggle under the token an error names. Asleep (`sleep`, the
-/// letters typed of a label) while the bar picks: the line is kept but dimmed and
-/// unfocused, and the right edge shows the letters typed.
+/// The field: the subject's pill, or with nothing selected the `:` prompt in the
+/// accent; the line with its pills (`Pills`); a read's value at the right edge,
+/// and a squiggle under the token an error names. Asleep (`sleep`, the letters
+/// typed of a label) while the bar picks: the line is kept but dimmed and
+/// unfocused, and the right edge shows the letters typed. Answers the layer of
+/// the pill under the pointer.
 fn field(
     ui: &mut egui::Ui,
     bar: &mut Bar,
     error: Option<&mastik_vm::VmError>,
     value: Option<&str>,
     sleep: Option<&str>,
-) {
+    pills: &Pills,
+) -> Option<NodeId> {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(W, FIELD_H), egui::Sense::empty());
-    let p = ui.painter().clone();
-    p.text(
-        egui::pos2(rect.left() + PAD + ROW_GLYPH_X, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        ":",
-        mono(),
-        match sleep {
-            Some(_) => theme::text::faint(),
-            None => color::accent_300(),
-        },
-    );
+    let mut p = ui.painter().clone();
+    if sleep.is_some() {
+        p.multiply_opacity(ASLEEP);
+    }
+    let pill = |p: &egui::Painter, at: egui::Pos2, align: egui::Align2, letters: &str| {
+        let pad = crate::navigate::LABEL_PAD;
+        crate::ui::pill_shapes(p, at, align, letters, color::leap(), pad, 0)
+    };
+    let mut text_left = rect.left() + TEXT_X;
+    let mut tips: Vec<(egui::Rect, String, Option<NodeId>)> = Vec::new();
+    match &pills.subject {
+        Some((letters, what)) => {
+            let at = egui::pos2(rect.left() + FOOTER_INSET, rect.center().y);
+            let (r, shapes) = pill(&p, at, egui::Align2::LEFT_CENTER, letters);
+            p.extend(shapes);
+            text_left = text_left.max(r.right() + 2.0 * PILL_GAP);
+            tips.push((r, what.clone(), None));
+        }
+        None => {
+            p.text(
+                egui::pos2(rect.left() + PAD + ROW_GLYPH_X, rect.center().y),
+                egui::Align2::CENTER_CENTER,
+                ":",
+                mono(),
+                match sleep {
+                    Some(_) => theme::text::faint(),
+                    None => color::accent_300(),
+                },
+            );
+        }
+    }
     let edge = match sleep {
         Some(typed) => {
             (!typed.is_empty()).then(|| (format!("{}…", typed.to_uppercase()), color::leap()))
@@ -1198,7 +1409,7 @@ fn field(
         w + VALUE_GAP
     });
     let text_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + TEXT_X, rect.top()),
+        egui::pos2(text_left, rect.top()),
         egui::pos2(rect.right() - VALUE_INSET - value_w, rect.bottom()),
     );
     let mut child = ui.new_child(
@@ -1206,6 +1417,15 @@ fn field(
             .max_rect(text_rect)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
+    let ink = match sleep {
+        Some(_) => theme::text::faint(),
+        None => color::text(),
+    };
+    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+        pill_galley(ui, buf.as_str(), pills, ink)
+    };
+    // The pills go under the caret, so their place is taken before the field draws.
+    let under = p.add(egui::Shape::Noop);
     #[expect(
         clippy::disallowed_methods,
         reason = "the command bar's field: the palette's own scale, in the monospace face"
@@ -1216,10 +1436,8 @@ fn field(
         .desired_width(f32::INFINITY)
         .font(mono())
         .interactive(sleep.is_none())
-        .text_color(match sleep {
-            Some(_) => theme::text::faint(),
-            None => color::text(),
-        })
+        .text_color(ink)
+        .layouter(&mut layouter)
         .hint_text(
             egui::RichText::new(match sleep {
                 Some(_) => "Picking: type a label",
@@ -1265,6 +1483,53 @@ fn field(
         let y = out.galley_pos.y + out.galley.size().y + 1.0;
         crate::canvas::paint_squiggle(&p, egui::pos2(x(span.start), y), egui::pos2(x(span.end), y));
     }
+    // The pills, from the galley the field just drew, which the layouter made
+    // room in. The text may have changed this frame, so it is read again.
+    let text = &bar.text;
+    let x_of = |b: usize| {
+        let c = text[..b].chars().count();
+        out.galley_pos.x
+            + out
+                .galley
+                .pos_from_cursor(egui::text::CCursor::new(c))
+                .min
+                .x
+    };
+    let y = out.galley_pos.y + out.galley.size().y / 2.0;
+    let advance = mono_advance(&p);
+    let clipped = p.with_clip_rect(text_rect.intersect(p.clip_rect()));
+    let mut shapes = Vec::new();
+    for (r, id) in pills.named(text) {
+        let span = text[r.clone()].chars().count() as f32 * advance;
+        let at = egui::pos2(x_of(r.start) + span / 2.0, y);
+        let letters = text[r].to_uppercase();
+        let (rect, s) = pill(&clipped, at, egui::Align2::CENTER_CENTER, &letters);
+        shapes.extend(s);
+        let name = pills.names.get(&id).cloned().unwrap_or_default();
+        tips.push((rect.intersect(text_rect), name, Some(id)));
+    }
+    if let Some((letters, what)) = &pills.subject {
+        for d in pills.subject_dots(text) {
+            let at = egui::pos2(x_of(d) - 1.0, y);
+            let (rect, s) = pill(&clipped, at, egui::Align2::RIGHT_CENTER, letters);
+            shapes.extend(s);
+            tips.push((rect.intersect(text_rect), what.clone(), None));
+        }
+    }
+    clipped.set(under, egui::Shape::Vec(shapes));
+    let mut hovered = None;
+    for (i, (rect, tip, id)) in tips.into_iter().enumerate() {
+        if !rect.is_positive() {
+            continue;
+        }
+        let resp = ui
+            .interact(rect, field_id().with(("pill", i)), egui::Sense::hover())
+            .on_hover_text(tip);
+        if resp.hovered() {
+            hovered = id;
+        }
+    }
+    hovered
 }
 
 /// A caption in the footer's place: the error, and *Tab fixes it* when it can.
@@ -1453,6 +1718,37 @@ pub(crate) mod tests {
 
     fn left(app: &MastikApp, id: NodeId) -> f64 {
         app.session.resolved.world_bounds(id).expect("a box").x0
+    }
+
+    /// A label named in the line is a pill unless it is the word being typed or
+    /// is reached through a dot; a subject dot is a pill unless it opens the line.
+    ///
+    /// flip: `Pills::named` keeping the word being typed → fails at "still typed".
+    #[test]
+    fn pills_are_the_labels_named_and_the_subject_dots() {
+        let id = mastik_core::IdSource::new(1).mint();
+        let mut pills = Pills {
+            subject: Some(("SK".into(), "Card".into())),
+            labels: [("fj".to_owned(), id), ("d".to_owned(), id)]
+                .into_iter()
+                .collect(),
+            names: Default::default(),
+            typing: None,
+        };
+        let line = ".x = fj.x - .d + d";
+        let named: Vec<&str> = pills
+            .named(line)
+            .into_iter()
+            .map(|(r, _)| &line[r])
+            .collect();
+        assert_eq!(named, ["fj", "d"], "not the `d` after a dot");
+        assert_eq!(
+            pills.subject_dots(line),
+            [12],
+            "not the dot that opens the line"
+        );
+        pills.typing = Some(17);
+        assert_eq!(pills.named(line).len(), 1, "still typed");
     }
 
     /// `:`, a line and Enter: the selection moves, as one undo step named *Edit*
