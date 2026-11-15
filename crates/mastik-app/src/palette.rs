@@ -149,7 +149,8 @@ struct Cmd {
     group: Group,
     checked: Option<bool>,
     enabled: bool,
-    why: Option<&'static str>,
+    /// Why a row is disabled; owned when it names something (a script's line).
+    why: Option<std::borrow::Cow<'static, str>>,
     /// A verb the selection's menu leaves out, shown only when typed for.
     absent: bool,
     /// Built by the target's own menu: what *For the selection* lists.
@@ -176,7 +177,7 @@ impl Cmd {
             group: row.group.unwrap_or(spec.group),
             checked: row.checked,
             enabled: row.enabled,
-            why: row.why,
+            why: row.why.map(Into::into),
             absent: false,
             own,
             hits: Vec::new(),
@@ -195,7 +196,7 @@ impl Cmd {
             group: spec.group,
             checked: None,
             enabled: why.is_none(),
-            why,
+            why: why.map(Into::into),
             absent: false,
             own: false,
             hits: Vec::new(),
@@ -791,9 +792,13 @@ impl MastikApp {
         push(&mut out, Cmd::verb(Item::Navigate, None));
         push(&mut out, Cmd::verb(Item::CommandBar, None));
         push(&mut out, Cmd::verb(Item::Scripts, None));
-        for (i, name) in self.saved_script_names().into_iter().enumerate() {
+        for (i, (name, held)) in self.saved_script_runs().into_iter().enumerate() {
             let mut run = Cmd::verb(Item::RunScript(i), None);
             run.label = format!("Run {name}");
+            if let Some(why) = held {
+                run.enabled = false;
+                run.why = Some(why.into());
+            }
             push(&mut out, run);
         }
         push(&mut out, Cmd::verb(Item::ColourReview, None));
@@ -1164,7 +1169,7 @@ impl MastikApp {
                 crate::ui::card_rule(ui);
                 let flat = sections.iter().flat_map(|s| &s.entries);
                 let why = match flat.clone().nth(pal.highlight) {
-                    Some(Entry::Cmd(c)) if !c.enabled => c.why,
+                    Some(Entry::Cmd(c)) if !c.enabled => c.why.as_deref(),
                     _ => None,
                 };
                 footer(ui, why, &note, pal.layers_only);
@@ -1426,7 +1431,7 @@ fn cmd_row(ui: &mut egui::Ui, c: &Cmd, lit: bool) -> egui::Response {
         right -= chip(ui, right, rect.center().y, accel, live) + 8.0;
     }
     let side = if c.absent {
-        c.why.unwrap_or_default()
+        c.why.as_deref().unwrap_or_default()
     } else {
         c.group.label()
     };
@@ -1926,7 +1931,7 @@ pub(crate) mod tests {
         assert!(paste.own);
         let ungroup = find(Item::Ungroup).expect("ungroup is offered as absent");
         assert!(ungroup.absent && !ungroup.enabled);
-        assert_eq!(ungroup.why, Some("Needs a group or a boolean"));
+        assert_eq!(ungroup.why.as_deref(), Some("Needs a group or a boolean"));
         assert!(find(Item::MakeKeyLayer).is_none());
         assert!(
             find(Item::ExportCode(mastik_export::code::Target::React)).is_some_and(|c| c.enabled)
@@ -2001,7 +2006,7 @@ pub(crate) mod tests {
         assert!(aligns.iter().all(|l| l.starts_with("Align")), "{aligns:?}");
         let replace = find(Item::PasteToReplace).expect("Paste to replace is listed");
         assert!(!replace.absent);
-        assert_eq!(replace.why, Some("No layers have been copied"));
+        assert_eq!(replace.why.as_deref(), Some("No layers have been copied"));
         for head in [
             Item::CopyPasteAs,
             Item::Arrange,
@@ -2165,7 +2170,10 @@ pub(crate) mod tests {
             .find(|c| c.item == Item::PublishKit)
             .expect("a publish row");
         assert!(!publish.enabled);
-        assert_eq!(publish.why, Some("Make this document a kit first"));
+        assert_eq!(
+            publish.why.as_deref(),
+            Some("Make this document a kit first")
+        );
     }
 
     /// The Document menu's rows and the quarter turns are commands: *Make this a kit*

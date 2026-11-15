@@ -263,10 +263,13 @@ header that does not parse fails the run at its line. The form draws each by its
 dropdown past that, a `ui::switch_row` carrying the input's label, a `ui::text_field`. Values are
 remembered per script for the session.
 
-**The run.** Disclosure if owed, then the form if the header has inputs, then the run (§7). The
-status line says *Card grid · 6 layers changed*, *Card grid failed at line 4 — nothing changed* or
-*Card grid stopped: … — nothing changed*; a failure opens the editor on the script with its line
-marked.
+**The run.** Disclosure if owed, then the form if the header has inputs, then the run (§7).
+**A syntax error holds every run**, before the disclosure or the form (`start_script_run`): Luau's
+parser refuses the text, so a run could only fail. The status line says *Card grid has a syntax
+error on line 4*, and when the editor is open on that script the caret goes to the error. No other
+problem the check finds holds a run. Otherwise the status line says *Card grid · 6 layers changed*,
+*Card grid failed at line 4 — nothing changed* or *Card grid stopped: … — nothing changed*; a
+failure opens the editor on the script with its line marked.
 
 **The editor** (`command/editor.rs`) is in the app: *Tools ▸ Scripts…*, and the palette's *Scripts…*
 and a *Run ‹name›* row per saved script. One floating, resizable window that leaves the canvas
@@ -274,11 +277,12 @@ live, hung as the canvas cards are (centred on the card lane, `ui::CANVAS_POPUP_
 canvas's top) and movable by its head: a list on the left (a
 `ui::search_box`; sections *This document*, *Library*, *Kit · ‹name›*, *Unsaved*; *+ New script*,
 a `ui::action_button`, and the folder button at its foot), the script's head (its name, where it
-lives, the find and ⋯ toggles and *Run*), the code pane and an output pane listing the last runs
-under timed rules, errors in the error ink. The list's rows are list rows (`MENU_ROW_H`,
+lives, its problem counts, the find and ⋯ toggles and *Run*), the code pane and an output pane
+listing the last runs under timed rules, errors in the error ink. The list's rows are list rows (`MENU_ROW_H`,
 `ui::list_row_ground`) in the palette's row layout; with no script open the pane is a
 `ui::empty_state`. The body is laid out in fixed rects, so the window keeps the size it is given.
-`Ctrl+Enter` runs. The loupe in the head toggles find (`FieldButton::On` while it is open), as
+`Ctrl+Enter` runs, or puts the caret on the syntax error that holds the run. The loupe in the head
+toggles find (`FieldButton::On` while it is open), as
 `Ctrl+F` from the code pane opens it: Enter selects the next match, wrapping to the top, and
 `Ctrl+F` then Enter goes on from there. The ⋯ menu, opened by the ⋯ (on while it is open) or by a
 right-click on a list row, which opens that script first (`context-menus.md` §6.10): *Save to
@@ -320,8 +324,9 @@ before the same character steps over it, a bracket or quote typed over a selecti
 `mastik.d.luau` in the scripts folder when the editor opens (never from a headless app, whose
 preferences are a throwaway), so luau-lsp in an outside editor completes and checks against it.
 **In-app type checking is not built**: Luau's type checker is a separate analysis library that
-`mlua` does not expose. Completion reads the same tables and does not infer types: a property is
-offered after any `.`, whatever stands before it.
+`mlua` does not expose. Completion, the hint, hover and the check read the same tables and infer
+no types: a property is offered after any `.`, whatever stands before it, and the check calls a
+property missing only after an expression it can see holds layers.
 
 **Completion in the editor** is `mastik_vm::complete_script` over the whole script, in a dropdown
 hung `ui::MENU_GAP` under the word being completed (over it with no room below), drawing the bar's
@@ -329,12 +334,70 @@ rows (`command::completion_rows`). It offers the script's own names (*This scrip
 functions, parameters and loop variables, and after `param.` the header's inputs), the language's
 names, the verbs, *Luau* (the keywords and the permitted library, and a library's members after
 `math.`, `string.` or `table.`), and the page's layers; properties after `.` and methods after `:`.
-Leap labels are left out, since they last a session, and so are verbs' argument words, which are
-the bar's sugar. It offers nothing in a string or a comment, on a number, or where a name is being
-declared (after `local`, `function`, `for`). It opens and shuts as the bar's list does, by one
+A row's side note is its one-line doc; the library's members' and the permitted globals' come from
+`run::LIB_DOCS`, a line and a signature for each `LIBRARY` member and `STDLIB` function, held to
+those lists by `every_library_member_has_a_help_line`. Inside a choice parameter's quotes it offers
+that parameter's words with their quotes (*Choices*), and at a key of a verb's table argument the
+names not yet written. Leap labels are left out, since they last a session, and so are the bar's
+bare argument words. It offers nothing else in a string, nor in a comment, on a number, or where a
+name is being declared (after `local`, `function`, `for`). It opens and shuts as the bar's list does, by one
 `command::suggest::Suggester`, and only while the code has the focus: `↑`/`↓` move, `Tab` takes
 the lit row and `Enter` too unless the word already reads as it, when `Enter` breaks the line;
 `Escape` shuts it for the word; `Ctrl+Space` opens it.
+
+**Language help** (`mastik_vm::help`, drawn by `command/script_help.rs`) reads the tables the
+runtime binds, so it cannot disagree with a run. Its cards are `ui::menu_frame(ui::POPOVER_PAD)`,
+sized from their laid-out text each frame.
+
+- **The parameter hint** (`signature_at`) is the call the caret is in: the nearest unclosed `(`
+  whose callee is a verb, a collection method after `:` or a function the script declares (its
+  first declaration), or a verb's table argument (`verb { … }`, `verb({ … })`). The argument is
+  counted by top-level commas. A verb's subject (its `Node`/`Nodes` parameter) is left out, and a
+  verb that takes layers adds *Acts on the selection.* to its doc. Lines: the signature in mono, the
+  lit parameter `accent_200()` underlined in `accent_300()`, types faint; the lit parameter's
+  `name · doc`, *No more arguments* past the last, or for a table *Named: dx is left.* / *All
+  given.* with nothing lit; the doc, dim; for the script's own function, names only and *This
+  script's function · line N*. None inside a comment. It hangs `ui::MENU_GAP` over the line the
+  call opens on, its left edge at the bracket; with no room above, under the completion list or the
+  caret's line. It shows only while the code has the focus, and `Escape` with no list up hides it
+  for that call until the text changes.
+- **Hover** (`hover_at`): once the pointer rests on a name (`ui::Resting`), a card under it
+  (`ui::dropdown_place`, taking no pointer) says what it is, the word washed in the accent: a
+  property (`card.opacity: number`, its doc, *Property · reads raise when the layers disagree*), a
+  method, a `param.x` input (its type and default, its label, *This script's input, line N*), a
+  library member or global (*Luau library*), the language's names (*Name*), a verb (*Verb*), the
+  script's functions, or a layer named on the page (its kind glyph, *Frame on Home, 1440 × 820 ·
+  outlined on the canvas*, outlined there as a hovered Layers row is; several of that name add that
+  they raise at the run). Nothing for keywords, numbers, strings, plain locals or a local that
+  shadows a layer, and no card while the completion list is up or `Ctrl` is held.
+- **Problems** (`check`), found without running. If Luau's parser refuses the text, the syntax
+  error alone, on the token after *got '…'* or else the line's text (`<eof>` on the last line with
+  text), with *Show line N* when the message names another line. Otherwise:
+
+  | Ink | Problem |
+  | --- | --- |
+  | warning (`color::warn()`) | a name not declared anywhere in the script and not the language's, a verb, the permitted library or a layer on this page: *No name “x” — did you mean y?*, noted *Not a local, a library name or a layer on this page* |
+  | error (`color::error()`) | a property no layer has, after an expression that holds layers (a collection name, a layer name, a local or loop variable over one, a `Layers` property, an index of one); a missing member of `math`, `string` or `table`; a missing `param` input; an assignment to a global or a non-local named function (*No global “x” — write `local x = …`*) |
+
+  Unknown names are only warnings because a layer name resolves at the run, on the page the run
+  sees. A field of the script's own table is never checked. The check runs once typing has rested
+  `script_help::CHECK_AFTER` (600 ms, the library write's delay) and at once on opening a script;
+  nothing is marked while the text differs from the text checked, nor a name's problem under the
+  caret (a syntax error is). `ui::code_editor` takes `ui::CodeMark`s: each inks its line's number and
+  squiggles its span (`canvas::paint_squiggle_in`); a failed run's line is one more mark in the error
+  ink. Resting on a squiggle or its line number shows the problem's card (the warning glyph in its
+  ink, the message, a *Change to y* `ui::label_button` that edits the text, *Show line N*, the
+  note); it takes the pointer, stays while the pointer is on it and hides the hint. The head's
+  counts (the warning glyph in each ink with its count, each only when not zero) say *1 error,
+  1 warning · click goes to the next*, and a click selects the next problem after the caret,
+  wrapping. While a syntax error holds the run, the head's *Run* is disabled (*Fix the syntax error
+  on line N to run · Ctrl+Enter puts the caret on it*), as are the palette's *Run ‹name›* rows.
+- **Go to declaration** (`declaration_at`): the nearest declaration above the use, else the first
+  (a function called above it); `param.x` goes to its `---@input` line. With `Ctrl` held over such
+  a name it takes a dotted `accent_300()` underline and the pointing hand; `Ctrl`+click, or `F12` at
+  the caret, selects the declaration and washes its line in the accent, fading over 600 ms,
+  scrolling only when the line is out of view, to a third of the way down. Mastik's names, the
+  library and keywords never underline.
 
 ## 11. MCP and `/ai`
 
@@ -495,3 +558,6 @@ rules*): a row's name is never cut for its note.
 - **An `Alt`-click under the bar must cancel its gesture** (`bar_alt_click` sets
   `gesture_cancelled`): the label is written either way, but without it the same press also selects
   and starts an `Alt` duplicate-drag (`an_alt_click_writes_the_label_into_the_line`).
+- **The syntax hold compiles the text as it is now**, never reading the check's problems: those wait
+  for typing to rest, so a run started inside that wait would get through
+  (`a_syntax_error_holds_every_run`).

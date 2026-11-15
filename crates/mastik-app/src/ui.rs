@@ -2561,16 +2561,27 @@ fn code_line_job(text: &str, pt: f32, ink: egui::Color32) -> egui::text::LayoutJ
     job
 }
 
+/// A problem [`code_editor`] marks: its line's number in `ink`, and a squiggle
+/// in `ink` under `span` (bytes of the text), or under the line's text.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodeMark {
+    /// The line, from 0.
+    pub line: usize,
+    pub span: Option<std::ops::Range<usize>>,
+    pub ink: egui::Color32,
+}
+
 /// The script editor's text: monospace at [`CODE_PT`], unwrapped, its runs inked
-/// by `inks`, with a gutter of line numbers. `bad` (0-based) numbers its line in
-/// the error ink and squiggles it; `editable` false shows the text for reading.
-/// No ground of its own: it fills the pane it is given, which scrolls it.
+/// by `inks`, with a gutter of line numbers. Each of `marks` inks its line's
+/// number and squiggles its span; the first mark on a line wins its number.
+/// `editable` false shows the text for reading. No ground of its own: it fills
+/// the pane it is given, which scrolls it.
 pub fn code_editor(
     ui: &mut egui::Ui,
     id: egui::Id,
     text: &mut String,
     inks: &dyn Fn(&str) -> CodeInks,
-    bad: Option<usize>,
+    marks: &[CodeMark],
     editable: bool,
 ) -> egui::text_edit::TextEditOutput {
     let font = egui::FontId::monospace(CODE_PT);
@@ -2654,10 +2665,10 @@ pub fn code_editor(
         if starts && !shown.contains(y) {
             line += 1;
         } else if starts {
-            let ink = match bad == Some(line) {
-                true => color::error(),
-                false => theme::text::faint(),
-            };
+            let ink = marks
+                .iter()
+                .find(|m| m.line == line)
+                .map_or_else(theme::text::faint, |m| m.ink);
             let number = ui.fonts_mut(|f| {
                 f.layout_job(code_line_job(&(line + 1).to_string(), CODE_GUTTER_PT, ink))
             });
@@ -2666,12 +2677,28 @@ pub fn code_editor(
                 number,
                 ink,
             );
-            if bad == Some(line) && !row.row.glyphs.is_empty() {
-                let r = row.rect().translate(out.galley_pos.to_vec2());
-                crate::canvas::paint_squiggle(
+            let r = row.rect().translate(out.galley_pos.to_vec2());
+            for m in marks.iter().filter(|m| m.line == line) {
+                let (a, b) = match &m.span {
+                    Some(s) if s.end <= text.len() => {
+                        let x = |b: usize| {
+                            let c = text.get(..b).map_or(0, |t| t.chars().count());
+                            out.galley
+                                .pos_from_cursor(egui::text::CCursor::new(c))
+                                .left()
+                                + out.galley_pos.x
+                        };
+                        // An empty span (the end of the text) still shows a mark.
+                        (x(s.start), x(s.end).max(x(s.start) + CODE_PT / 2.0))
+                    }
+                    _ if row.row.glyphs.is_empty() => continue,
+                    _ => (r.left(), r.right()),
+                };
+                crate::canvas::paint_squiggle_in(
                     p,
-                    egui::pos2(r.left(), r.bottom() - 1.0),
-                    egui::pos2(r.right(), r.bottom() - 1.0),
+                    egui::pos2(a, r.bottom() - 1.0),
+                    egui::pos2(b, r.bottom() - 1.0),
+                    m.ink,
                 );
             }
             line += 1;
@@ -8768,13 +8795,13 @@ mod tests {
         let id = egui::Id::new("ink-cache");
         for _ in 0..3 {
             let _ = ctx.run_ui(Default::default(), |ui| {
-                code_editor(ui, id, &mut text, &inks, None, false);
+                code_editor(ui, id, &mut text, &inks, &[], false);
             });
         }
         assert_eq!(calls.get(), 1, "kept");
         text.push_str("\nlocal b = 2");
         let _ = ctx.run_ui(Default::default(), |ui| {
-            code_editor(ui, id, &mut text, &inks, None, false);
+            code_editor(ui, id, &mut text, &inks, &[], false);
         });
         assert_eq!(calls.get(), 2, "a new text is inked again");
     }
@@ -8790,7 +8817,7 @@ mod tests {
         let mut text = "local a = 1\nlocal b = 2\nprint(a)".to_string();
         let id = egui::Id::new("gutter-baseline");
         let out = ctx.run_ui(Default::default(), |ui| {
-            code_editor(ui, id, &mut text, &|_| CodeInks::new(), None, true);
+            code_editor(ui, id, &mut text, &|_| CodeInks::new(), &[], true);
         });
         // A text shape's baselines, each row's first glyph, in screen points.
         let baselines = |t: &egui::epaint::TextShape| -> Vec<f32> {

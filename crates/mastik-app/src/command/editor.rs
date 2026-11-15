@@ -158,6 +158,8 @@ pub(crate) struct Scripts {
         (u64, usize, u64, mastik_core::NodeId),
         mastik_vm::Completion,
     )>,
+    /// The language help over the code pane: hints, hover cards, problems.
+    pub(crate) help: super::script_help::Help,
 }
 
 /// The completion list open over the code this frame: its rows (the word they
@@ -373,9 +375,19 @@ impl MastikApp {
         out
     }
 
-    /// The saved scripts' names, for the palette's *Run* rows.
-    pub(crate) fn saved_script_names(&self) -> Vec<String> {
-        self.saved_scripts().into_iter().map(|(_, n)| n).collect()
+    /// The saved scripts' names, for the palette's *Run* rows, each with why its
+    /// row is held: the reason *Run* gives while a syntax error holds the script.
+    pub(crate) fn saved_script_runs(&self) -> Vec<(String, Option<String>)> {
+        self.saved_scripts()
+            .into_iter()
+            .map(|(which, name)| {
+                let held = self
+                    .script_source(&which)
+                    .and_then(|src| self.scripts.help.held_line(&src))
+                    .map(super::script_help::held_reason_at);
+                (name, held)
+            })
+            .collect()
     }
 
     /// Read the library folder again, as the palette opens.
@@ -722,6 +734,16 @@ impl MastikApp {
         let Some((name, source)) = self.script_named(&which) else {
             return;
         };
+        // A syntax error holds every run, before its disclosure or form; from the
+        // editor the caret goes to it.
+        if let Some(p) = mastik_vm::syntax_error(&source) {
+            self.session
+                .fail(format!("{name} has a syntax error on line {}", p.line));
+            if self.scripts.open && self.scripts.current.as_ref() == Some(&which) {
+                self.scripts.found = Some(p.span.start..p.span.start);
+            }
+            return;
+        }
         // A document or kit script with no key (a file whose id was taken out) is
         // shown every time: nothing can mark it, so it never runs unseen.
         let shown_before = match &which {
@@ -927,7 +949,25 @@ impl MastikApp {
         let offer = self.script_suggest(ctx, self.scripts.code_id());
         // After the list, which takes its own keys first.
         let typed = self.script_keys(ctx, self.scripts.code_id());
+        let page = self.session.page;
+        self.scripts.help.lit_layer = None;
+        let problems: Vec<mastik_vm::Problem> = match &current {
+            Some(_) => self
+                .scripts
+                .help
+                .problems(ctx, &self.session.doc, page, &self.scripts.buffer)
+                .to_vec(),
+            None => Vec::new(),
+        };
+        let held = self
+            .scripts
+            .help
+            .syntax(&self.scripts.buffer)
+            .map(super::script_help::held_reason);
+        let caret = caret_byte(ctx, self.scripts.code_id(), &self.scripts.buffer);
+        let mut help_act = None;
         let doc = &self.session.doc;
+        let res = &self.session.resolved;
         let (mut row_clicked, mut row_hovered) = (None, None);
         let s = &mut self.scripts;
         let id = egui::Id::new("script-editor");
@@ -980,7 +1020,16 @@ impl MastikApp {
                 return;
             };
             let name = header.clone().map(|h| h.0).unwrap_or_default();
-            script_head(ui, s, &name, where_, edited_note, &mut act);
+            script_head(
+                ui,
+                s,
+                &name,
+                where_,
+                edited_note,
+                &problems,
+                held.as_deref(),
+                &mut act,
+            );
             ui::card_rule(ui);
             // The code and the output share what the head leaves, less the rule
             // between them; the output keeps at least its head.
@@ -1012,7 +1061,8 @@ impl MastikApp {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(10.0);
-                    let out = ui::code_editor(ui, code_id, &mut s.buffer, &inks, bad, editable);
+                    let marks = super::script_help::Help::marks(&problems, caret, bad);
+                    let out = ui::code_editor(ui, code_id, &mut s.buffer, &inks, &marks, editable);
                     edited |= out.response.changed();
                     // A block's closing word steps back as its last letter is typed.
                     if typed
@@ -1058,6 +1108,12 @@ impl MastikApp {
                     {
                         act = Some(Act::Run);
                     }
+                    let list = offer
+                        .as_ref()
+                        .and_then(|_| ui.ctx().memory(|m| m.area_rect(id.with("suggest"))));
+                    help_act = s.help.pane(
+                        ui, id, &out, &s.buffer, code_view, list, doc, res, page, &problems,
+                    );
                     laid = Some(out);
                 });
             if let (Some(blank), Some(out)) = (blank, &laid)
@@ -1123,6 +1179,7 @@ impl MastikApp {
                 egui::Id::new(MENU_ID),
                 egui::Id::new(FIND_ID),
                 id.with("suggest"),
+                id.with("problem"),
             ];
             self.scripts.keys = ctx.layer_id_at(at).is_some_and(|l| ours.contains(&l.id));
         }
@@ -1133,7 +1190,22 @@ impl MastikApp {
         {
             act = Some(Act::Run);
         }
+        match help_act {
+            Some(super::script_help::HelpAct::Select(r)) => self.scripts.found = Some(r),
+            Some(super::script_help::HelpAct::Replace(r, with))
+                if r.end <= self.scripts.buffer.len()
+                    && self.scripts.buffer.is_char_boundary(r.start)
+                    && self.scripts.buffer.is_char_boundary(r.end) =>
+            {
+                let end = r.start + with.len();
+                self.scripts.buffer.replace_range(r, &with);
+                self.scripts.found = Some(end..end);
+                edited = true;
+            }
+            _ => {}
+        }
         if edited {
+            self.scripts.help.edited(ctx);
             self.store_buffer();
         }
         if let Some(i) = row_hovered {
@@ -1492,7 +1564,7 @@ impl MastikApp {
                                             egui::Id::new("disclosed-code-text"),
                                             &mut shown,
                                             &inks,
-                                            None,
+                                            &[],
                                             false,
                                         );
                                     });
@@ -2029,14 +2101,23 @@ fn empty_pane(ui: &mut egui::Ui, act: &mut Option<Act>) {
     );
 }
 
-/// The script's head: its name, where it lives, the ⋯ menu's and find's
-/// toggles, and *Run*; and find's field under it while open.
+/// The script's head: its name, where it lives, its problem counts (a click
+/// walks to the next), the ⋯ menu's and find's toggles, and *Run*, disabled
+/// with `held`'s reason while a syntax error holds it; and find's field under
+/// it while open.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the head shows the script's name, place, edit state, problems and hold; \
+              bundling them would only move the list"
+)]
 fn script_head(
     ui: &mut egui::Ui,
     s: &mut Scripts,
     name: &str,
     where_: &str,
     edited: bool,
+    problems: &[mastik_vm::Problem],
+    held: Option<&str>,
     act: &mut Option<Act>,
 ) {
     let (rect, _) = ui.allocate_exact_size(
@@ -2064,12 +2145,25 @@ fn script_head(
             .size(ui::CAPTION_PT)
             .color(theme::text::faint()),
     );
+    if let Some(counts) = super::script_help::counts(ui, problems)
+        && counts.clicked()
+    {
+        let caret = caret_byte(ui.ctx(), s.code_id(), &s.buffer).unwrap_or(0);
+        s.found = super::script_help::next_problem(problems, caret);
+    }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        if settings::text_button(ui, "Run", FieldButton::Primary)
-            .on_hover_text(crate::input::keys("Run the script · Ctrl+Enter"))
-            .clicked()
-        {
+        let run = match held {
+            Some(why) => {
+                settings::text_button(ui, "Run", FieldButton::Disabled).on_hover_text(format!(
+                    "{why} · {}",
+                    crate::input::keys("Ctrl+Enter puts the caret on it")
+                ))
+            }
+            None => settings::text_button(ui, "Run", FieldButton::Primary)
+                .on_hover_text(crate::input::keys("Run the script · Ctrl+Enter")),
+        };
+        if run.clicked() && held.is_none() {
             *act = Some(Act::Run);
         }
         // The ⋯ and the loupe are toggles, on while their menu or field is up,
@@ -3307,5 +3401,108 @@ mod tests {
             "Escape keeps the old name"
         );
         assert!(app.scripts.renaming.is_none(), "the field is gone");
+    }
+
+    /// A syntax error holds a run from anywhere before its disclosure, says so
+    /// on the status line, and holds the palette's *Run* row with *Run*'s reason.
+    /// flip: `start_script_run` not checking the syntax → fails at "no disclosure".
+    #[test]
+    fn a_syntax_error_holds_every_run() {
+        let (mut app, card, script) =
+            with_script("for _, n in ipairs(sel) do\n  n.x += 1\n", Some("doc-a"));
+        let x = left(&app, card);
+        app.start_script_run(Which::Document(script));
+        assert!(app.scripts.disclosure.is_none(), "no disclosure");
+        assert_eq!(left(&app, card), x, "nothing ran");
+        assert_eq!(
+            app.session.status().text,
+            "Nudge has a syntax error on line 2"
+        );
+        let runs = app.saved_script_runs();
+        assert_eq!(
+            runs,
+            [(
+                "Nudge".to_owned(),
+                Some("Fix the syntax error on line 2 to run".to_owned())
+            )]
+        );
+    }
+
+    /// The check marks a problem once typing rests, not while it goes on, and
+    /// never a name's problem under the caret.
+    /// flip: `Help::problems` checking without waiting for a rest → fails at
+    /// "nothing while typing".
+    #[test]
+    fn problems_wait_for_a_rest() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = typing_at_end("sel.widht = 3\n");
+        let none = egui::Modifiers::NONE;
+        let marked = |app: &mut MastikApp, ctx: &egui::Context| {
+            let (doc, page) = (app.session.doc.clone(), app.session.page);
+            let buffer = app.scripts.buffer.clone();
+            app.scripts.help.problems(ctx, &doc, page, &buffer).len()
+        };
+        assert_eq!(
+            marked(&mut app, &ctx),
+            1,
+            "fixture: opened, checked at once"
+        );
+        type_code(&ctx, &mut app, "print(x)");
+        assert_eq!(marked(&mut app, &ctx), 0, "nothing while typing");
+        for _ in 0..60 {
+            pass(&ctx, &mut app, Vec::new(), none);
+        }
+        assert_eq!(
+            marked(&mut app, &ctx),
+            2,
+            "after the rest: widht and x in {:?}",
+            app.scripts.buffer
+        );
+        // Just after the `x`, before the `)`.
+        let caret = Some(app.scripts.buffer.len() - 1);
+        let problems = {
+            let (doc, page) = (app.session.doc.clone(), app.session.page);
+            let buffer = app.scripts.buffer.clone();
+            app.scripts
+                .help
+                .problems(&ctx, &doc, page, &buffer)
+                .to_vec()
+        };
+        let marks = super::super::script_help::Help::marks(&problems, caret, None);
+        assert_eq!(marks.len(), 1, "the name under the caret is not marked");
+    }
+
+    /// Typing a verb's `(` hangs its hint over the line; `Escape` hides it for
+    /// that call.
+    /// flip: `Help::pane` never drawing the hint → fails at "the hint is up".
+    #[test]
+    fn a_verbs_open_bracket_shows_its_hint() {
+        let (ctx, mut app) = typing_at_end("");
+        let hint = egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("script-editor").with("hint"),
+        );
+        let up = |ctx: &egui::Context| ctx.memory(|m| m.areas().is_visible(&hint));
+        type_code(&ctx, &mut app, "align(");
+        assert!(up(&ctx), "the hint is up");
+        press(&ctx, &mut app, egui::Key::Escape);
+        press(&ctx, &mut app, egui::Key::Escape);
+        assert!(!up(&ctx), "Escape hid it");
+    }
+
+    /// `F12` selects the declaration of the name at the caret.
+    /// flip: `Help::pane` ignoring F12 → fails at "the declaration".
+    #[test]
+    fn f12_goes_to_the_declaration() {
+        let source = "local gap = 1\nprint(gap";
+        let (ctx, mut app) = typing_at_end(source);
+        press(&ctx, &mut app, egui::Key::F12);
+        let range = egui::TextEdit::load_state(&ctx, app.scripts.code_id())
+            .and_then(|s| s.cursor.char_range())
+            .map(|r| {
+                let (a, b) = (r.primary.index.0, r.secondary.index.0);
+                a.min(b)..a.max(b)
+            });
+        assert_eq!(range, Some(6..9), "the declaration");
     }
 }

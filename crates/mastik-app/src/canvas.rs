@@ -8391,12 +8391,18 @@ impl MastikApp {
         let (box_ids, soft) = boxed.unwrap_or((&[], false));
         let bind_list = self.var_browser.as_ref().and_then(|b| b.bind_hover);
         let bar_lit = self.command_bar.as_ref().and_then(|b| b.lit_layer());
+        let script_lit = self
+            .scripts
+            .open
+            .then_some(self.scripts.help.lit_layer)
+            .flatten();
         let panels = self
             .layers_hover
             .iter()
             .chain(&self.history_pane.hover)
             .chain(&bind_list)
-            .chain(&bar_lit);
+            .chain(&bar_lit)
+            .chain(&script_lit);
         for (&id, width) in panels
             .map(|id| (id, 3.0))
             .chain(box_ids.iter().map(|id| (id, if soft { 1.0 } else { 3.0 })))
@@ -11382,6 +11388,16 @@ impl MastikApp {
 /// A spelling squiggle from `a` to `b` in screen points: a zigzag of a fixed
 /// size whatever the zoom, so it reads as chrome, not as the text's own ink.
 pub(crate) fn paint_squiggle(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2) {
+    paint_squiggle_in(painter, a, b, color::danger());
+}
+
+/// [`paint_squiggle`] in `ink`: the script editor's warnings are amber.
+pub(crate) fn paint_squiggle_in(
+    painter: &egui::Painter,
+    a: egui::Pos2,
+    b: egui::Pos2,
+    ink: egui::Color32,
+) {
     const STEP: f32 = 2.0;
     const RISE: f32 = 1.5;
     let along = b - a;
@@ -11395,10 +11411,7 @@ pub(crate) fn paint_squiggle(painter: &egui::Painter, a: egui::Pos2, b: egui::Po
     let points: Vec<egui::Pos2> = (0..=n)
         .map(|i| a + dir * (i as f32 * STEP) + if i % 2 == 0 { -up } else { up } * 0.5)
         .collect();
-    painter.add(egui::Shape::line(
-        points,
-        egui::Stroke::new(1.0, color::danger()),
-    ));
+    painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, ink)));
 }
 
 /// The layer name a picture takes among siblings: the one it arrived with (a

@@ -11,6 +11,7 @@ pub(crate) mod code_keys;
 pub(crate) mod editor;
 pub(crate) mod host;
 pub(crate) mod log;
+pub(crate) mod script_help;
 pub(crate) mod suggest;
 
 use crate::app::MastikApp;
