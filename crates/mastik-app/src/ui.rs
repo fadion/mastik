@@ -3436,6 +3436,10 @@ pub fn combo_text(text: &str) -> egui::WidgetText {
 /// right edge.
 const SEARCH_CLEAR: f32 = 20.0;
 const SEARCH_CLEAR_INSET: f32 = 4.0;
+/// The air between a [`search_box`]'s magnifier and its text: the theme's
+/// `item_spacing.x`, set by the box itself so it is the same in every caller,
+/// whatever spacing the caller's `Ui` holds.
+const SEARCH_GLYPH_GAP: f32 = 7.0;
 
 /// The one search field, in a panel, a dialog or at the head of a dropdown's
 /// list: [`text_field`]'s ground and [`typing_edge`], a faint magnifier before
@@ -3456,6 +3460,7 @@ pub fn search_box(
     let clear_side = SEARCH_CLEAR.min(size.y - 8.0);
     // The row paints the typing edge (`framed_row`).
     field_row_inset(ui, size, FIELD_PAD_X, 0.0, |ui| {
+        ui.spacing_mut().item_spacing.x = SEARCH_GLYPH_GAP;
         // Registered first, so the edit above it wins its own area and this
         // takes only the magnifier's. The bare `CLICK` flag: `Sense::click()`
         // adds `FOCUSABLE`, a tab stop in front of the edit.
@@ -9696,6 +9701,52 @@ mod tests {
             "fixture: the empty field fills its row, {empty}"
         );
         assert_eq!(width("card"), empty, "the ✕ costs the field no width");
+    }
+
+    /// A search box's hint stands as far from its magnifier in a `Ui` with no
+    /// item spacing as in one with the theme's.
+    ///
+    /// flip: `search_box` not setting `SEARCH_GLYPH_GAP` → fails at "the same gap".
+    #[test]
+    fn a_search_boxs_text_keeps_its_gap_whatever_the_callers_spacing() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let gap = |spacing: Option<f32>| {
+            let mut text = String::new();
+            let mut out = None;
+            for _ in 0..2 {
+                out = Some(ctx.run_ui(Default::default(), |ui| {
+                    if let Some(x) = spacing {
+                        ui.spacing_mut().item_spacing.x = x;
+                    }
+                    let id = egui::Id::new("search-gap-test");
+                    search_box(ui, egui::vec2(200.0, CONTROL_H), &mut text, "Find", id);
+                }));
+            }
+            let texts: Vec<(String, f32)> = out
+                .expect("ran")
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos.x)),
+                    _ => None,
+                })
+                .collect();
+            let at = |s: &str| {
+                texts
+                    .iter()
+                    .find(|(t, _)| t == s)
+                    .map(|(_, x)| *x)
+                    .unwrap_or_else(|| panic!("{s:?} is drawn: {texts:?}"))
+            };
+            at("Find") - at(icon::MAGNIFYING_GLASS)
+        };
+        let themed = gap(None);
+        assert!(
+            themed > 10.0,
+            "fixture: the hint is after the glyph, {themed}"
+        );
+        assert_eq!(gap(Some(0.0)), themed, "the same gap");
     }
 
     /// A colour typed into a hex field replaces the one there; driven with real events.
