@@ -154,17 +154,12 @@ impl MastikApp {
             .map(|f| crate::private::layer(&self.session.doc, f).into_owned());
         let open = v.menu;
         let selected = !self.session.selection.ids().is_empty();
-        let ruler = if self.rulers_on() {
-            crate::rulers::THICKNESS
-        } else {
-            0.0
-        };
         let mut act = None;
         egui::Area::new(egui::Id::new("vision-bar"))
             .order(egui::Order::Middle)
             .fade_in(false)
             .pivot(egui::Align2::CENTER_TOP)
-            .fixed_pos(self.canvas_rect.center_top() + egui::vec2(0.0, 12.0 + ruler))
+            .fixed_pos(self.canvas_bar_anchor(ctx))
             .show(ctx, |ui| {
                 bar_frame().show(ui, |ui| {
                     ui.set_height(BAR_H - 2.0);

@@ -947,18 +947,11 @@ fn card_head(ui: &mut egui::Ui, title: &str, progress: Option<(usize, usize)>) -
                 16.0,
                 color::accent_400(),
             ));
-            ui.label(
-                egui::RichText::new("Version history")
+            let name = "Version history";
+            let shown = ui.label(
+                egui::RichText::new(name)
                     .size(crate::ui::TITLE_PT)
                     .color(theme::text::strong()),
-            );
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(title)
-                        .size(crate::ui::SMALL_PT)
-                        .color(theme::text::dim()),
-                )
-                .truncate(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let close = crate::ui::close_button(ui).clicked();
@@ -969,6 +962,7 @@ fn card_head(ui: &mut egui::Ui, title: &str, progress: Option<(usize, usize)>) -
                             .color(theme::text::faint()),
                     );
                 }
+                crate::settings::title_note(ui, &shown, name, title);
                 close
             })
             .inner
@@ -1700,8 +1694,8 @@ mod tests {
         t.len() == 5 && t.as_bytes()[2] == b':'
     }
 
-    /// How far below the card's title each string `keep` takes was drawn: the card
-    /// is centred, so it moves as a whole when it grows.
+    /// How far below the card's title each string `keep` takes was drawn: measured
+    /// from the title, so where the card sits does not count.
     fn below_title(drawn: &[(String, egui::Pos2)], keep: impl Fn(&str) -> bool) -> Vec<f32> {
         let title = drawn
             .iter()
@@ -1743,6 +1737,52 @@ mod tests {
         assert!(app.version_naming.is_some(), "fixture: the field is open");
         assert_eq!(before.len(), 3, "fixture: Now and both rows drawn");
         assert_eq!(before, after, "no row moves");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The head's note (the file and its count of versions) stands on the title's
+    /// baseline, as every card title's note does.
+    /// flip: `card_head` drawing the note as a centred label → fails at "baseline".
+    #[test]
+    fn the_heads_note_sits_on_the_titles_baseline() {
+        let ctx = egui::Context::default();
+        let (mut app, root) = filed(&ctx, "note-baseline");
+        assert!(app.save_file(true), "fixture: one pin");
+        app.versions_open = true;
+        settled(&ctx, &mut app);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            time: Some(ctx.input(|i| i.time) + 0.1),
+            ..Default::default()
+        };
+        let baselines: Vec<(String, f32)> = ctx
+            .run_ui(input, |ui| app.version_history_dialog(ui.ctx()))
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((
+                    t.galley.text().to_string(),
+                    t.pos.y + crate::ui::baseline_in(&t.galley),
+                )),
+                _ => None,
+            })
+            .collect();
+        let at = |pick: &dyn Fn(&str) -> bool| {
+            baselines
+                .iter()
+                .find(|(t, _)| pick(t))
+                .map(|(_, y)| *y)
+                .expect("drawn")
+        };
+        let title = at(&|t| t == "Version history");
+        let note = at(&|t| t.contains("version") && t.contains('·'));
+        assert!(
+            (title - note).abs() < 0.5,
+            "baseline: title {title}, note {note}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

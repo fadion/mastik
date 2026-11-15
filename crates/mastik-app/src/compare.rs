@@ -865,14 +865,8 @@ impl MastikApp {
             });
         }
 
-        // Where the contrast checker's and the vision bar's sit: below the top
-        // ruler, centred on the canvas.
-        let ruler = if self.rulers_on() {
-            crate::rulers::THICKNESS
-        } else {
-            0.0
-        };
-        let anchor = self.canvas_rect.center_top() + egui::vec2(0.0, 12.0 + ruler);
+        // Where the contrast checker's and the vision bar's sit.
+        let anchor = self.canvas_bar_anchor(ctx);
         let private = crate::private::on();
         let Some(c) = self.session.compare.as_mut() else {
             return;

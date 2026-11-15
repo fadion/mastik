@@ -1268,11 +1268,11 @@ fn show_card<R>(
 /// Shared so every settings-shaped modal is the same object. The caller sets its
 /// own width: [`CARD_W`] is this file's, and a modal with a wider row may be wider.
 ///
-/// Centred on [`ui::card_lane`] when one is set (the canvas short of the
-/// inspector, as the command palette is), else on the window. The move off the
-/// window's centre is cut short [`CARD_EDGE`] from the edge, measured on last
-/// frame's card: not `Area::constrain_to`, which clips the backdrop the card
-/// blocks clicks with.
+/// Hung as a canvas card is when [`ui::card_lane`] is set: centred across the
+/// lane, [`ui::CANVAS_POPUP_TOP`] under its top. With no lane (the library) it
+/// centres on the window. Either way it is kept [`CARD_EDGE`] inside the window,
+/// measured on last frame's card: not `Area::constrain_to`, which clips the
+/// backdrop the card blocks clicks with.
 pub(crate) fn card_modal(ctx: &egui::Context, id: &str) -> egui::Modal {
     card_modal_moved(ctx, id, egui::Vec2::ZERO)
 }
@@ -1286,11 +1286,18 @@ pub(crate) fn card_modal_moved(ctx: &egui::Context, id: &str, moved: egui::Vec2)
         .memory(|m| m.area_rect(id))
         .map_or(egui::Vec2::ZERO, |r| r.size());
     let room = ((screen.size() - size) / 2.0 - egui::Vec2::splat(CARD_EDGE)).max(egui::Vec2::ZERO);
-    let offset = ui::card_lane(ctx).map_or(egui::Vec2::ZERO, |lane| {
-        (lane.center() - screen.center()).clamp(-room, room)
+    // From the window's centre-top, by its top edge: a card that grows keeps
+    // its top where it opened.
+    let centred = (screen.height() - size.y) / 2.0;
+    let offset = ui::card_lane(ctx).map_or(egui::vec2(0.0, centred), |lane| {
+        let top = lane.top() - screen.top() + ui::CANVAS_POPUP_TOP;
+        egui::vec2(
+            (lane.center().x - screen.center().x).clamp(-room.x, room.x),
+            top.clamp(centred - room.y, centred + room.y),
+        )
     });
     egui::Modal::new(id)
-        .area(egui::Modal::default_area(id).anchor(egui::Align2::CENTER_CENTER, offset + moved))
+        .area(egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, offset + moved))
         // Half black: a modal over a canvas must dim more than
         // egui's default 100/255, or a light document still reads as in focus.
         .backdrop_color(egui::Color32::from_black_alpha(128))
@@ -1348,47 +1355,53 @@ const TITLE_NOTE_GAP: f32 = 7.0;
 /// the ✕.
 fn title_row(ui: &mut egui::Ui, title: &str, note: Option<&str>) -> bool {
     ui.horizontal(|ui| {
-        let title_font = egui::FontId::proportional(ui::TITLE_PT);
         let shown = ui.label(
             egui::RichText::new(title)
-                .font(title_font.clone())
+                .font(egui::FontId::proportional(ui::TITLE_PT))
                 .color(theme::text::strong()),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let closed = ui::close_button(ui).clicked();
             if let Some(note) = note {
-                // On the title's baseline: the smaller type centred by its box
-                // sits high beside it. Cut short of the ✕, the whole note its tooltip.
-                let ink = theme::text::dim();
-                let left = shown.rect.right() + TITLE_NOTE_GAP;
-                let room = ui.available_rect_before_wrap().right() - left;
-                let mut job = egui::text::LayoutJob::simple_singleline(
-                    note.to_owned(),
-                    egui::FontId::proportional(ui::SMALL_PT),
-                    ink,
-                );
-                job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(0.0));
-                let galley = ui.painter().layout_job(job);
-                let title = ui.painter().layout_no_wrap(
-                    title.to_owned(),
-                    title_font,
-                    egui::Color32::PLACEHOLDER,
-                );
-                let baseline = shown.rect.top() + ui::baseline_in(&title);
-                let at = egui::pos2(left, baseline - ui::baseline_in(&galley));
-                let rect = egui::Rect::from_min_size(at, galley.size());
-                let cut = galley.elided;
-                ui.painter().galley(at, galley, ink);
-                if cut {
-                    ui.interact(rect, ui.id().with("title-note"), egui::Sense::hover())
-                        .on_hover_text(note);
-                }
+                title_note(ui, &shown, title, note);
             }
             closed
         })
         .inner
     })
     .inner
+}
+
+/// A card title's `note` (what the card is about: the file, the count), dim at
+/// `ui::SMALL_PT` [`TITLE_NOTE_GAP`] after the title label `shown`, on the
+/// title's baseline: the smaller type centred by its box sits high beside it.
+/// Called inside the row's right-to-left run after its own controls, so it is
+/// cut to the room they leave, the whole note its tooltip.
+pub(crate) fn title_note(ui: &mut egui::Ui, shown: &egui::Response, title: &str, note: &str) {
+    let ink = theme::text::dim();
+    let left = shown.rect.right() + TITLE_NOTE_GAP;
+    let room = ui.available_rect_before_wrap().right() - left;
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        note.to_owned(),
+        egui::FontId::proportional(ui::SMALL_PT),
+        ink,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(0.0));
+    let galley = ui.painter().layout_job(job);
+    let title = ui.painter().layout_no_wrap(
+        title.to_owned(),
+        egui::FontId::proportional(ui::TITLE_PT),
+        egui::Color32::PLACEHOLDER,
+    );
+    let baseline = shown.rect.top() + ui::baseline_in(&title);
+    let at = egui::pos2(left, baseline - ui::baseline_in(&galley));
+    let rect = egui::Rect::from_min_size(at, galley.size());
+    let cut = galley.elided;
+    ui.painter().galley(at, galley, ink);
+    if cut {
+        ui.interact(rect, ui.id().with("title-note"), egui::Sense::hover())
+            .on_hover_text(note);
+    }
 }
 
 /// A card over the canvas's side inset, tighter than [`PAD`]: its rows run their
@@ -2744,12 +2757,14 @@ mod tests {
         );
     }
 
-    /// A card centres on the lane `ui::set_card_lane` names, and on the window with none.
-    /// flip: `card_modal` ignoring the lane → fails at the canvas assert.
+    /// A card hangs `ui::CANVAS_POPUP_TOP` under the lane `ui::set_card_lane` names,
+    /// centred across it, lifted when too tall to clear the window's foot; with no
+    /// lane it centres on the window.
+    /// flip: `card_modal_moved` centring on the lane's middle → fails at "hung".
     #[test]
-    fn a_card_centres_on_the_canvas_when_there_is_one() {
+    fn a_card_hangs_from_the_canvas_top_when_there_is_one() {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
-        let centre_of = |lane: Option<egui::Rect>| {
+        let rect_of = |lane: Option<egui::Rect>, h: f32| {
             let ctx = egui::Context::default();
             let mut rect = egui::Rect::NOTHING;
             for _ in 0..3 {
@@ -2760,21 +2775,28 @@ mod tests {
                 let _ = ctx.run_ui(input, |ui| {
                     ui::set_card_lane(ui.ctx(), lane);
                     rect = card("probe-card", ui.ctx(), |ui| {
-                        ui.allocate_exact_size(egui::vec2(200.0, 100.0), egui::Sense::hover());
+                        ui.allocate_exact_size(egui::vec2(200.0, h), egui::Sense::hover());
                     })
                     .response
                     .rect;
                 });
             }
-            rect.center()
+            rect
         };
         let lane = egui::Rect::from_center_size(egui::pos2(500.0, 330.0), egui::vec2(400.0, 500.0));
+        let hung = rect_of(Some(lane), 100.0);
         assert!(
-            (centre_of(Some(lane)) - lane.center()).length() < 1.0,
-            "on the canvas: {:?}",
-            centre_of(Some(lane))
+            (hung.center().x - lane.center().x).abs() < 1.0
+                && (hung.top() - (lane.top() + ui::CANVAS_POPUP_TOP)).abs() < 1.0,
+            "hung: {hung:?}"
         );
-        assert!((centre_of(None) - screen.center()).length() < 1.0);
+        let tall = rect_of(Some(lane), 500.0);
+        assert!(
+            (tall.bottom() - (screen.bottom() - CARD_EDGE)).abs() < 1.0,
+            "a tall card stops short of the window's foot: {tall:?}"
+        );
+        let centre = rect_of(None, 100.0).center();
+        assert!((centre - screen.center()).length() < 1.0, "{centre:?}");
     }
 
     /// A movable card follows a drag on its title row, not one on its body, stops

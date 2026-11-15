@@ -206,7 +206,7 @@ stack.
   A stale badge dims to 45% with a spinning circle-notch in place of its glyph. During a drag (a
   gesture preview that is not the fix card's own) the badges of the selected layers and their
   descendants hide.
-- **The bar** (`contrast_bar`), an `Area` at the canvas's top centre, 12pt below the top ruler (below the canvas's top edge with rulers hidden): circle-half glyph,
+- **The bar** (`contrast_bar`), an `Area` at `MastikApp::canvas_bar_anchor`, centred on the card lane (the canvas short of the inspector), 12pt below the top ruler (below the canvas's top edge with rulers hidden): circle-half glyph,
   the scope pill (*Contrast* on a page with no frame), the level head (`ui::menu_head`, as the top
   bar's dropdowns), then *Measuring…*, *All N pass* or *N failing* with `k / N` once stepped and
   prev/next arrows, then × to end the mode; groups part at hairlines. *Measuring…* pulses

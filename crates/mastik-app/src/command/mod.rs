@@ -992,7 +992,10 @@ impl MastikApp {
             .order(egui::Order::Foreground)
             .interactable(true)
             .constrain(false)
-            .fixed_pos(egui::pos2(canvas.center().x - outer.x / 2.0, top));
+            .fixed_pos(egui::pos2(
+                self.card_lane(ctx).center().x - outer.x / 2.0,
+                top,
+            ));
 
         let subject = self.bar_subject(&pills.subject_ids);
         let subject_glyph = pills

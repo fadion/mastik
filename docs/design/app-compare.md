@@ -74,7 +74,8 @@ matched by id, so a renamed or moved layer is one change.
   only while that is still a chart or went with it. An added or removed chart counts no layers
   inside it.
 - **The bar** (`compare_bar`) sits where the contrast checker's and the vision bar's do, on their
-  frame: centred on the canvas, 12pt below its top (and below the rulers when they show). It holds
+  frame: `MastikApp::canvas_bar_anchor`, centred on the card lane (the canvas short of the
+  inspector), 12pt below its top (and below the rulers when they show). It holds
   the git-diff glyph, *Comparing ‹name› · ‹when› with now* (an unnamed version: its time; two
   versions: *with ‹name› · ‹when›*), a `ui::segmented` *Then · Now · Swipe*, the *Overlay*
   toggle (a 24pt field button with the bounding-box glyph, as tall as the segmented track;

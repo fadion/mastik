@@ -9448,6 +9448,18 @@ impl MastikApp {
         canvas.with_max_x(column.left().clamp(canvas.left(), canvas.right()))
     }
 
+    /// The centre-top a bar over the canvas hangs from (the contrast checker's,
+    /// the vision bar's, the compare bar's): centred on [`Self::card_lane`],
+    /// 12pt under the canvas's top and below the top ruler when it shows.
+    pub(crate) fn canvas_bar_anchor(&self, ctx: &egui::Context) -> egui::Pos2 {
+        let ruler = if self.rulers_on() {
+            crate::rulers::THICKNESS
+        } else {
+            0.0
+        };
+        self.card_lane(ctx).center_top() + egui::vec2(0.0, 12.0 + ruler)
+    }
+
     /// The x an inspector popover starts at.
     pub(crate) fn popover_left(ctx: &egui::Context, width: f32) -> f32 {
         let screen = ctx.input(|i| i.content_rect());
