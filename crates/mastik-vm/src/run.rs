@@ -59,10 +59,46 @@ const META: &str = "mastik.meta";
 const IDS: &str = "mastik.ids";
 
 /// The permitted standard library, read from the sandboxed globals.
-const STDLIB: &[&str] = &[
+pub(crate) const STDLIB: &[&str] = &[
     "math", "string", "table", "ipairs", "pairs", "select", "tonumber", "tostring", "type",
     "assert", "error",
 ];
+
+/// The members of the permitted libraries, for highlighting and completion
+/// after `math.`, `string.` and `table.`; `math` without its random numbers. A
+/// test holds each one to the sandbox, so a name here is one a script can call.
+pub(crate) const LIBRARY: &[(&str, &[&str])] = &[
+    (
+        "math",
+        &[
+            "abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "cosh", "deg", "exp",
+            "floor", "fmod", "frexp", "huge", "ldexp", "log", "log10", "max", "min", "modf",
+            "noise", "pi", "pow", "rad", "round", "sign", "sin", "sinh", "sqrt", "tan", "tanh",
+        ],
+    ),
+    (
+        "string",
+        &[
+            "byte", "char", "find", "format", "gmatch", "gsub", "len", "lower", "match", "rep",
+            "reverse", "split", "sub", "upper",
+        ],
+    ),
+    (
+        "table",
+        &[
+            "clear", "clone", "concat", "create", "find", "freeze", "insert", "isfrozen", "maxn",
+            "move", "pack", "remove", "sort", "unpack",
+        ],
+    ),
+];
+
+/// The members `LIBRARY` lists for library `lib`, none for any other name.
+pub(crate) fn library(lib: &str) -> &'static [&'static str] {
+    LIBRARY
+        .iter()
+        .find(|(name, _)| *name == lib)
+        .map_or(&[], |(_, members)| members)
+}
 
 /// Names the language gives besides the verbs, labels and layers: completion
 /// and the unknown-name suggestions read them.

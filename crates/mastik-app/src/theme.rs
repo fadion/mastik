@@ -513,6 +513,49 @@ pub mod text {
     }
 }
 
+/// The script editor's syntax inks. Their own set rather than the status
+/// colours: a favourite's star and a warning are one orange, which made a
+/// keyword and a string read alike. Mastik's own names keep the accent and a
+/// comment [`text::faint`]; each ink here holds text contrast on every ground.
+pub mod code {
+    use super::color::by_theme;
+    use eframe::egui::Color32;
+    /// `local`, `if`, `end`…
+    pub fn keyword() -> Color32 {
+        by_theme(
+            Color32::from_rgb(0xc4, 0x9c, 0xf0),
+            Color32::from_rgb(0x7a, 0x3c, 0xb8),
+        )
+    }
+    /// A number, and `true`, `false`, `nil`.
+    pub fn literal() -> Color32 {
+        by_theme(
+            Color32::from_rgb(0xf0, 0x9a, 0x6a),
+            Color32::from_rgb(0xa4, 0x4a, 0x0a),
+        )
+    }
+    pub fn string() -> Color32 {
+        by_theme(
+            Color32::from_rgb(0xa8, 0xd6, 0x8c),
+            Color32::from_rgb(0x2f, 0x74, 0x18),
+        )
+    }
+    /// The standard library: `math`, `ipairs`, `string.format`…
+    pub fn builtin() -> Color32 {
+        by_theme(
+            Color32::from_rgb(0x6c, 0xc8, 0xc8),
+            Color32::from_rgb(0x0b, 0x6e, 0x72),
+        )
+    }
+    /// A name called or defined that is neither Mastik's nor the library's.
+    pub fn function() -> Color32 {
+        by_theme(
+            Color32::from_rgb(0xe8, 0xd2, 0x8a),
+            Color32::from_rgb(0x75, 0x5c, 0x00),
+        )
+    }
+}
+
 /// The app's own icon glyphs, by name, in `assets/fonts/MastikIcons.ttf`. Render
 /// with [`icon_text`] or [`icon_font`] so they use the icon family.
 ///
@@ -2186,6 +2229,11 @@ mod tests {
             ("danger", color::danger, 3.0),
             ("saved", color::saved, 3.0),
             ("error", color::error, 4.5),
+            ("code::keyword", code::keyword, 4.5),
+            ("code::literal", code::literal, 4.5),
+            ("code::string", code::string, 4.5),
+            ("code::builtin", code::builtin, 4.5),
+            ("code::function", code::function, 4.5),
         ];
         for theme in [color::Theme::Dark, color::Theme::Light] {
             color::set_theme(theme);

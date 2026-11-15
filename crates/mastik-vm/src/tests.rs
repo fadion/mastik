@@ -666,6 +666,56 @@ fn tokens_mark_the_api() {
     assert_eq!(names_used(src), ["sel", "width", "align"]);
 }
 
+/// The editor's tokens tell constants, the standard library and called names
+/// from plain ones; a verb called stays Mastik's.
+/// flip: `tokens` checking `calls` before `is_builtin` → fails at the list,
+/// `ipairs` and `floor` read as calls.
+#[test]
+fn tokens_mark_constants_builtins_and_calls() {
+    let src = "local function f(n) return nil end\nfor _, v in ipairs(sel) do f(math.floor(v.x)) end\nalign(\"left\", true)\nx.floor = math.pi";
+    let got: Vec<(&str, Tok)> = tokens(src)
+        .into_iter()
+        .map(|(r, t)| (&src[r], t))
+        .filter(|(_, t)| *t != Tok::Plain && *t != Tok::Keyword)
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("f", Tok::Function),
+            ("nil", Tok::Constant),
+            ("ipairs", Tok::Builtin),
+            ("sel", Tok::Api),
+            ("f", Tok::Function),
+            ("math", Tok::Builtin),
+            ("floor", Tok::Builtin),
+            ("x", Tok::Api),
+            ("align", Tok::Api),
+            ("\"left\"", Tok::String),
+            ("true", Tok::Constant),
+            ("math", Tok::Builtin),
+            ("pi", Tok::Builtin),
+        ]
+    );
+}
+
+/// Every library member highlighting and completion offer is one a script can
+/// reach in the sandbox, and `math`'s random numbers are not offered.
+#[test]
+fn the_listed_library_is_the_sandboxs() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    for (lib, members) in crate::run::LIBRARY {
+        assert!(crate::run::STDLIB.contains(lib), "{lib} is permitted");
+        for m in *members {
+            let out = run_script(&mut h, &e, &format!("return {lib}.{m} ~= nil"))
+                .unwrap_or_else(|err| panic!("{lib}.{m}: {}", err.message));
+            assert_eq!(out.value.as_deref(), Some("true"), "{lib}.{m} is there");
+        }
+    }
+    assert!(!crate::run::library("math").contains(&"random"));
+}
+
 /// The definitions describe the collection, the names and every verb.
 #[test]
 fn definitions_cover_the_api() {

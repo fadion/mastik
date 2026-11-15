@@ -280,8 +280,11 @@ palette's row layout; with no script open the pane is a `ui::empty_state`. The b
 fixed rects, so the window keeps the size it is given. `Ctrl+Enter` runs. `Ctrl+F`, from the code pane, opens find: Enter
 selects the next match, wrapping to the top, and `Ctrl+F` then Enter goes on from there. The ⋯ menu: *Save to library* ·
 *Copy into this document* · *Duplicate* · *Rename* · *Show in folder* · *Delete* (not on a kit's).
-The code pane is `ui::code_editor`, inked from `mastik_vm::tokens`: keywords `star()`, numbers
-`saved()`, strings `warn()`, comments `text::faint()`, Mastik's own names `accent_300()`. Its
+The code pane is `ui::code_editor`, inked from `mastik_vm::tokens` in `theme::code`'s syntax inks:
+keywords, literals (numbers, `true`, `false`, `nil`), strings, the permitted standard library
+(`math`, `ipairs`, and a listed member after `math.`, `string.` or `table.`, from `run::LIBRARY`),
+and any other name right before a `(`; comments are `text::faint()` and Mastik's own names
+`accent_300()`. Its
 gutter's numbers stand on their lines' baselines. The pane reads as one text: a press in its air
 under the text puts the caret at the end, and one beside a line number at that line's start. The
 output pane's top edge drags (`ui::drag_edge`), from the code pane's least (80) down to the output's

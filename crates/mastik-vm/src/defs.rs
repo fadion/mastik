@@ -14,13 +14,34 @@ use crate::props::{self, METHODS, PROPERTIES};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tok {
     Keyword,
+    /// `true`, `false` and `nil`: values, though Luau reserves them.
+    Constant,
     Number,
     String,
     Comment,
     /// Mastik's own names: `sel`, `param`, the relative names, the verbs, and a
     /// property or method after a `.` or `:`.
     Api,
+    /// The permitted standard library: `math`, `ipairs`…, and a member after
+    /// `math.`, `string.` or `table.`.
+    Builtin,
+    /// Any other name called or defined: the name right before a `(`.
+    Function,
     Plain,
+}
+
+/// Whether lexeme `i` of `lexemes` is the standard library's: a permitted
+/// global, or a listed member after its library and a `.`.
+fn is_builtin(src: &str, lexemes: &[lex::Lexeme], i: usize) -> bool {
+    let word = &src[lexemes[i].range.clone()];
+    let text = |j: usize| &src[lexemes[j].range.clone()];
+    match i.checked_sub(1).map(text) {
+        Some(".") => i
+            .checked_sub(2)
+            .is_some_and(|j| crate::run::library(text(j)).contains(&word)),
+        Some(":") => false,
+        _ => crate::run::STDLIB.contains(&word),
+    }
 }
 
 /// The names that are Mastik's wherever they stand as a bare name.
@@ -57,12 +78,20 @@ pub fn tokens(source: &str) -> Vec<(Range<usize>, Tok)> {
         .iter()
         .enumerate()
         .map(|(i, l)| {
+            let calls = lexemes
+                .get(i + 1)
+                .is_some_and(|n| &source[n.range.clone()] == "(");
             let tok = match l.kind {
+                Lx::Keyword if matches!(&source[l.range.clone()], "true" | "false" | "nil") => {
+                    Tok::Constant
+                }
                 Lx::Keyword => Tok::Keyword,
                 Lx::Number => Tok::Number,
                 Lx::String => Tok::String,
                 Lx::Comment => Tok::Comment,
                 Lx::Ident if is_api(source, &lexemes, i) => Tok::Api,
+                Lx::Ident if is_builtin(source, &lexemes, i) => Tok::Builtin,
+                Lx::Ident if calls => Tok::Function,
                 Lx::Ident | Lx::Punct => Tok::Plain,
             };
             (l.range.clone(), tok)

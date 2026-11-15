@@ -1296,13 +1296,16 @@ pub(crate) fn inks(source: &str) -> ui::CodeInks {
     mastik_vm::tokens(source)
         .into_iter()
         .filter_map(|(r, t)| {
+            use mastik_vm::Tok;
             let ink = match t {
-                mastik_vm::Tok::Keyword => color::star(),
-                mastik_vm::Tok::Number => color::saved(),
-                mastik_vm::Tok::String => color::warn(),
-                mastik_vm::Tok::Comment => theme::text::faint(),
-                mastik_vm::Tok::Api => color::accent_300(),
-                mastik_vm::Tok::Plain => return None,
+                Tok::Keyword => theme::code::keyword(),
+                Tok::Constant | Tok::Number => theme::code::literal(),
+                Tok::String => theme::code::string(),
+                Tok::Comment => theme::text::faint(),
+                Tok::Api => color::accent_300(),
+                Tok::Builtin => theme::code::builtin(),
+                Tok::Function => theme::code::function(),
+                Tok::Plain => return None,
             };
             Some((r, ink))
         })
