@@ -11,7 +11,8 @@ use rustc_hash::FxHashMap;
 use crate::lex;
 use crate::props::{METHODS, PROPERTIES};
 
-/// Which list a completion row belongs to, in the order they are shown.
+/// Which list a completion row belongs to, in the order they are shown when
+/// their best matches are alike (`by_best_section`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Section {
     /// The language's own names: `sel`, `parent`, `param`…
@@ -48,26 +49,30 @@ pub struct Completion {
     pub rows: Vec<Row>,
 }
 
-/// How well `word` matches `name`: prefix 0, the start of a `_`-separated word 1,
-/// a subsequence 2, with the matched byte ranges; `None` when it does not.
+/// How well `word` matches `name`: the whole name 0, a prefix 1, the start of a
+/// `_`-separated word 2, a subsequence 3, with the matched byte ranges; `None`
+/// when it does not.
 #[expect(
     clippy::single_range_in_vec_init,
     reason = "a list of matched ranges that holds one"
 )]
 fn score(word: &str, name: &str) -> Option<(u8, Vec<Range<usize>>)> {
     if word.is_empty() {
-        return Some((0, Vec::new()));
+        return Some((1, Vec::new()));
     }
     let (w, n) = (word.to_ascii_lowercase(), name.to_ascii_lowercase());
-    if n.starts_with(&w) {
+    if n == w {
         return Some((0, vec![0..w.len()]));
+    }
+    if n.starts_with(&w) {
+        return Some((1, vec![0..w.len()]));
     }
     let starts = n
         .match_indices('_')
         .map(|(i, _)| i + 1)
         .filter(|s| n[*s..].starts_with(&w));
     if let Some(s) = starts.into_iter().next() {
-        return Some((1, vec![s..s + w.len()]));
+        return Some((2, vec![s..s + w.len()]));
     }
     let mut ranges: Vec<Range<usize>> = Vec::new();
     let mut from = 0;
@@ -80,7 +85,7 @@ fn score(word: &str, name: &str) -> Option<(u8, Vec<Range<usize>>)> {
         }
         from = end;
     }
-    Some((2, ranges))
+    Some((3, ranges))
 }
 
 /// Rows of `section` for every `(name, detail)` `word` matches, best first.
@@ -89,6 +94,18 @@ fn rank<'a>(
     word: &str,
     candidates: impl IntoIterator<Item = (&'a str, String)>,
 ) -> Vec<Row> {
+    ranked(section, word, candidates)
+        .into_iter()
+        .map(|(_, row)| row)
+        .collect()
+}
+
+/// [`rank`] with each row's [`score`].
+fn ranked<'a>(
+    section: Section,
+    word: &str,
+    candidates: impl IntoIterator<Item = (&'a str, String)>,
+) -> Vec<(u8, Row)> {
     let mut scored: Vec<(u8, Row)> = candidates
         .into_iter()
         .filter_map(|(name, detail)| {
@@ -111,7 +128,7 @@ fn rank<'a>(
             .then(a.label.len().cmp(&b.label.len()))
             .then(a.label.cmp(&b.label))
     });
-    scored.into_iter().map(|(_, row)| row).collect()
+    scored
 }
 
 /// Completion for `line` with the cursor at byte `cursor`: one verb's next
@@ -151,34 +168,44 @@ pub fn complete(
             METHODS.iter().map(|m| (m.name, m.doc.to_owned())),
         ),
         _ => {
-            let mut rows = rank(
-                Section::Names,
-                word,
-                crate::run::NAMES.iter().map(|(n, d)| (*n, (*d).to_owned())),
-            );
-            rows.extend(rank(
-                Section::Verbs,
-                word,
-                verbs::VERBS.iter().map(|v| (v.name, v.doc.to_owned())),
-            ));
             let mut keys: Vec<(&String, &NodeId)> = labels.iter().collect();
             keys.sort();
-            rows.extend(rank(
-                Section::Labels,
-                word,
-                keys.into_iter()
-                    .map(|(k, id)| (k.as_str(), crate::describe(doc, &[*id]))),
-            ));
             let layers = crate::layer_names(doc, page);
-            rows.extend(rank(
-                Section::Layers,
-                word,
-                layers.iter().map(|n| (n.as_str(), "layer".to_owned())),
-            ));
-            rows
+            by_best_section(vec![
+                ranked(
+                    Section::Names,
+                    word,
+                    crate::run::NAMES.iter().map(|(n, d)| (*n, (*d).to_owned())),
+                ),
+                ranked(
+                    Section::Verbs,
+                    word,
+                    verbs::VERBS.iter().map(|v| (v.name, v.doc.to_owned())),
+                ),
+                ranked(
+                    Section::Labels,
+                    word,
+                    keys.into_iter()
+                        .map(|(k, id)| (k.as_str(), crate::describe(doc, &[*id]))),
+                ),
+                ranked(
+                    Section::Layers,
+                    word,
+                    layers.iter().map(|n| (n.as_str(), "layer".to_owned())),
+                ),
+            ])
         }
     };
     Completion { replace, rows }
+}
+
+/// Ranked sections as one list, kept whole and in their order except that a
+/// section with a better best match goes first: a word typed out whole (a
+/// label, `sel`) leads the list rather than sitting under every verb that
+/// merely starts with it.
+fn by_best_section(mut sections: Vec<Vec<(u8, Row)>>) -> Vec<Row> {
+    sections.sort_by_key(|rows| rows.first().map_or(u8::MAX, |(s, _)| *s));
+    sections.into_iter().flatten().map(|(_, row)| row).collect()
 }
 
 /// The property rows for `word`, an almost-match (`.alpha`) first as a dim row
