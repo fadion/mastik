@@ -559,7 +559,7 @@ modal that opens closes the palette. App actions only; typed syntax belongs to t
   canvas reads no keys, and Escape closes only the palette.
 - **Placement and keys.** An `egui::Modal` on the settings card's ground (`settings::card_frame`)
   with a transparent backdrop, 560 wide, at
-  `ui::canvas_popup_area`: centre-top over the canvas column, its top `ui::CANVAS_POPUP_TOP` (56pt)
+  `ui::canvas_popup_area`: centred on the card lane (`app-chrome.md`, *Shared rules*), its top `ui::CANVAS_POPUP_TOP` (56pt)
   below the canvas's top, its list scrolling past `ui::CANVAS_POPUP_LIST_H`. Nothing dims, so selection
   outlines stay visible; the panels are unchanged. A backdrop click closes it and is swallowed. While
   open it owns the keyboard: `palette::read_keys` takes its keys at the top of the frame, before any
@@ -594,8 +594,8 @@ worded for the scope that plan was made for (`Plan::scope`).
   and *Rename* with one, as `Ctrl+R` does; a `CURSOR_TEXT` button in the
   Layers header between collapse-all and search (*Batch rename (Ctrl+Shift+R)*); the cheatsheet's
   Layer section.
-- **Placement and keys.** The palette's place, 520 wide, centred over the canvas column, its top
-  56pt below the canvas's top: an open card (`CardHold::Open`), not a modal, so the canvas keeps
+- **Placement and keys.** The palette's place, 520 wide, centred on the card lane, its top
+  56pt below the canvas's top, movable by its title row: an open card (`CardHold::Open`), not a modal, so the canvas keeps
   its input and the layers can be selected, edited and panned under it, as with Find and Colour
   review. Opening it closes the palette, the context menu, the top-bar menu, the colour picker and
   the other cards over the canvas's top (Find, Colour review, Clean up, Fill with content); opening any of those
@@ -1166,7 +1166,7 @@ colour, one undo step each. The rule is `mastik_core::color_review`.
   with every use on a locked layer it writes nothing, the variable included.
 - **Doors and place.** *Tools ▸ Colour review…*, after *Simulate vision* and never ticked,
   and the palette (`Item::ColourReview`, unbound). It hangs at the palette's place
-  (`ui::canvas_popup_area`), 420 wide, on the settings card's ground (`settings::card_frame`), but is
+  (`ui::canvas_popup_area`), 420 wide, movable by its title row, on the settings card's ground (`settings::card_frame`), but is
   no modal: nothing blocks the canvas and a click there leaves it open. It is at most
   `ui::canvas_popup_room` tall, its list scrolling past `ui::CANVAS_POPUP_LIST_H`; title, controls
   and foot stay put. One card over the canvas's top shows at a time: opening it, Find, batch

@@ -266,7 +266,9 @@ status line says *Card grid · 6 layers changed*, *Card grid failed at line 4 �
 marked.
 
 **The editor** (`command/editor.rs`) is in the app: *Tools ▸ Scripts…*, and the palette's *Scripts…*
-and a *Run ‹name›* row per saved script. One floating, resizable window: a list on the left (a
+and a *Run ‹name›* row per saved script. One floating, resizable window that leaves the canvas
+live, hung as the canvas cards are (centred on the card lane, `ui::CANVAS_POPUP_TOP` under the
+canvas's top) and movable by its head: a list on the left (a
 search field; sections *This document*, *Library*, *Kit · ‹name›*, *Unsaved*; *New script* and the
 folder button at its foot), the script's head (its name, renamed in place, where it lives, find,
 the ⋯ menu and *Run*), the code pane and an output pane listing the last runs under timed rules,
