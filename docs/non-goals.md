@@ -126,6 +126,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **A keyframe timeline** — transitions, smart animate, springs and looping states cover an app's motion; a timeline is a motion tool (`prototyping.md`).
 - **A node graph of patches** — triggers, actions, conditions and Luau scripts carry the logic without a second language.
 - **Several devices and sensors talking to each other** — one player, one screen.
+- **Gamepad triggers** — neither winit nor egui delivers gamepad input, and a prototype of an app is driven by pointer and keys.
 - **Rive and Lottie export** — the player is the prototype's output; motion assets are another product.
 - **Comments in the player** — the comment tool is a non-goal, in the player as on the canvas.
 - **Hosted links** — the export is one HTML file the designer sends or hosts anywhere; Mastik runs no server.

@@ -213,11 +213,14 @@ language covers.
 
 ## 10. Where scripts live
 
-**A script may be stored in a document; it is never run by the document.** No script runs on open
-or re-runs on any change: a script the document re-runs is the constraint engine `foundations.md`
-§13 decision 1 forbids, however small the convenience. Opening a shared document therefore runs no
-one else's code, and there is no warning on open: a run the person starts is inside §8's sandbox,
-and warnings train people to click *Allow*. A stored script is a tool shipped beside the work; the
+**A script may be stored in a document; it is never run by the document on its own.** No script
+runs on open or re-runs on any change: a script the document re-runs is the constraint engine
+`foundations.md` §13 decision 1 forbids, however small the convenience. Opening a shared document
+therefore runs no one else's code, and there is no warning on open: a run the person starts is
+inside §8's sandbox, and warnings train people to click *Allow*. A prototype's *Run script* is such
+a run: it fires only from a pointer or key trigger the person acts on while playing, never from a
+frame opening or a variable changing, and it writes the player's copy, not the document
+(`prototyping.md`). A stored script is a tool shipped beside the work; the
 document records what its run committed and never needs it.
 
 | Place | Kept | Edited |
