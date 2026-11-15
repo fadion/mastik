@@ -23,6 +23,12 @@ const START: egui::Vec2 = egui::vec2(1000.0, 620.0);
 const LIST_W: f32 = 240.0;
 /// The script head's height, over the code.
 const HEAD_H: f32 = 44.0;
+/// The script head's inset from the pane's edges, the output pane's too.
+const HEAD_INSET: f32 = 14.0;
+/// The find field's width.
+const FIND_W: f32 = 260.0;
+/// The output pane's head.
+const OUTPUT_HEAD_H: f32 = 30.0;
 /// The rename field's width in the head: room for a long name beside the
 /// head's note, find and *Run*.
 const RENAME_W: f32 = 200.0;
@@ -187,6 +193,14 @@ impl MastikApp {
             if let Some(w) = first {
                 self.pick_script(w);
             }
+        }
+    }
+
+    /// Start a run of the open script, as its *Run* does.
+    #[cfg(test)]
+    pub(crate) fn run_open_script(&mut self) {
+        if let Some(w) = self.scripts.current.clone() {
+            self.start_script_run(w);
         }
     }
 
@@ -641,88 +655,82 @@ impl MastikApp {
                 act = Some(Act::Close);
             }
             ui::card_rule(ui);
+            // The body is laid out in fixed rects and allocated once. Content
+            // that measured itself would grow the window: a resizable window
+            // keeps the size its content reached, so a column a point past its
+            // room grew it a little on every repaint.
             let body = ui.available_rect_before_wrap();
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                ui.allocate_ui_with_layout(
-                    egui::vec2(LIST_W, body.height()),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| source_list(ui, s, &doc_scripts, &kits, &mut act),
+            ui.allocate_rect(body, egui::Sense::hover());
+            let list = egui::Rect::from_min_size(body.min, egui::vec2(LIST_W, body.height()));
+            let rule = egui::Rect::from_min_size(list.right_top(), egui::vec2(1.0, body.height()));
+            let pane = body.with_min_x(rule.right());
+            let pane_ui = |ui: &mut egui::Ui, rect: egui::Rect| {
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
                 );
-                let (rule, _) =
-                    ui.allocate_exact_size(egui::vec2(1.0, body.height()), egui::Sense::hover());
-                ui.painter().vline(
-                    rule.center().x,
-                    rule.y_range(),
-                    egui::Stroke::new(1.0, color::card_border()),
-                );
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), body.height()),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        let Some(which) = current.clone() else {
-                            empty_pane(ui, &mut act);
-                            return;
-                        };
-                        let name = header.clone().map(|h| h.0).unwrap_or_default();
-                        script_head(ui, s, &which, &name, where_, edited_note, &mut act);
-                        ui::card_rule(ui);
-                        let code_h = (ui.available_height() - OUTPUT_H - 1.0).max(80.0);
-                        let bad = s.bad.as_ref().filter(|(w, _)| *w == which).map(|(_, l)| *l);
-                        let editable = !matches!(which, Which::Kit { .. });
-                        let code_id = s.code_id();
-                        egui::ScrollArea::both()
-                            .id_salt("script-code")
-                            .max_height(code_h)
-                            .min_scrolled_height(code_h)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.add_space(10.0);
-                                let out = ui::code_editor(
-                                    ui,
-                                    code_id,
-                                    &mut s.buffer,
-                                    &inks,
-                                    bad,
-                                    editable,
-                                );
-                                edited |= out.response.changed();
-                                if let Some(line) = s.jump.take() {
-                                    let at = char_of_line(&s.buffer, line);
-                                    let mut state = out.state.clone();
-                                    state.cursor.set_char_range(Some(
-                                        egui::text::CCursorRange::one(egui::text::CCursor::new(at)),
-                                    ));
-                                    state.store(ui.ctx(), out.response.id);
-                                    out.response.request_focus();
-                                }
-                                if let Some(r) = s.found.take()
-                                    && r.end <= s.buffer.len()
-                                    && s.buffer.is_char_boundary(r.start)
-                                    && s.buffer.is_char_boundary(r.end)
-                                {
-                                    let at = |b: usize| {
-                                        egui::text::CCursor::new(s.buffer[..b].chars().count())
-                                    };
-                                    let mut state = out.state.clone();
-                                    state.cursor.set_char_range(Some(
-                                        egui::text::CCursorRange::two(at(r.start), at(r.end)),
-                                    ));
-                                    state.store(ui.ctx(), out.response.id);
-                                    out.response.request_focus();
-                                }
-                                if ui.input(|i| {
-                                    i.modifiers.command && i.key_pressed(egui::Key::Enter)
-                                }) && out.response.has_focus()
-                                {
-                                    act = Some(Act::Run);
-                                }
-                            });
-                        ui::card_rule(ui);
-                        output_pane(ui, &s.output);
-                    },
-                );
-            });
+                child.set_clip_rect(rect.intersect(ui.clip_rect()));
+                child
+            };
+            source_list(&mut pane_ui(ui, list), s, &doc_scripts, &kits, &mut act);
+            ui::card_vrule(ui, rule);
+            let ui = &mut pane_ui(ui, pane);
+            let Some(which) = current.clone() else {
+                empty_pane(ui, &mut act);
+                return;
+            };
+            let name = header.clone().map(|h| h.0).unwrap_or_default();
+            script_head(ui, s, &which, &name, where_, edited_note, &mut act);
+            ui::card_rule(ui);
+            let code_h = (ui.available_height() - OUTPUT_H - 1.0).max(80.0);
+            let bad = s.bad.as_ref().filter(|(w, _)| *w == which).map(|(_, l)| *l);
+            let editable = !matches!(which, Which::Kit { .. });
+            let code_id = s.code_id();
+            egui::ScrollArea::both()
+                .id_salt("script-code")
+                .max_height(code_h)
+                .min_scrolled_height(code_h)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(10.0);
+                    let out = ui::code_editor(ui, code_id, &mut s.buffer, &inks, bad, editable);
+                    edited |= out.response.changed();
+                    if let Some(line) = s.jump.take() {
+                        let at = char_of_line(&s.buffer, line);
+                        let mut state = out.state.clone();
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::one(
+                                egui::text::CCursor::new(at),
+                            )));
+                        state.store(ui.ctx(), out.response.id);
+                        out.response.request_focus();
+                    }
+                    if let Some(r) = s.found.take()
+                        && r.end <= s.buffer.len()
+                        && s.buffer.is_char_boundary(r.start)
+                        && s.buffer.is_char_boundary(r.end)
+                    {
+                        let at = |b: usize| egui::text::CCursor::new(s.buffer[..b].chars().count());
+                        let mut state = out.state.clone();
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                at(r.start),
+                                at(r.end),
+                            )));
+                        state.store(ui.ctx(), out.response.id);
+                        out.response.request_focus();
+                    }
+                    if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
+                        && out.response.has_focus()
+                    {
+                        act = Some(Act::Run);
+                    }
+                });
+            ui::card_rule(ui);
+            output_pane(ui, &s.output);
         });
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
             && self.scripts.current.is_some()
@@ -971,6 +979,14 @@ impl MastikApp {
                             let label = input.label.clone().unwrap_or_else(|| input.name.clone());
                             let value =
                                 form.values.entry(input.name.clone()).or_insert(Value::Null);
+                            // A switch carries its label, as Settings' do.
+                            if input.ty == mastik_vm::InputType::Boolean {
+                                let on = value.as_bool().unwrap_or(false);
+                                if ui::switch_row(ui, &label, on, settings::SWITCH_H).clicked() {
+                                    *value = Value::Bool(!on);
+                                }
+                                continue;
+                            }
                             ui::labelled(ui, &label, |ui| input_field(ui, w, input, value));
                         }
                     });
@@ -1040,9 +1056,8 @@ impl MastikApp {
                                 .size(ui::CONTROL_PT)
                                 .color(theme::text::strong()),
                         );
-                        egui::Frame::NONE
-                            .fill(color::field())
-                            .corner_radius(5)
+                        // The recessed field ground, the code inset by its own gutter.
+                        ui::field_frame()
                             .inner_margin(egui::Margin::symmetric(0, 10))
                             .show(ui, |ui| {
                                 // Both ways: a line past the box's edge must not
@@ -1374,69 +1389,46 @@ fn inputs_note(source: &str) -> String {
     }
 }
 
-/// One script row: its source's glyph, its name, its note.
+/// One script row: a list row's height and ground, which answer the pointer,
+/// in the palette's row layout under the palette's section labels: its
+/// source's glyph, its name, its note.
 fn list_row(ui: &mut egui::Ui, glyph: &str, name: &str, note: &str, lit: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), ui::MENU_ROW_H + 6.0),
+        egui::vec2(ui.available_width(), ui::MENU_ROW_H),
         egui::Sense::click(),
     );
-    ui::list_row_ground(ui.painter(), rect, lit, resp.hovered());
     let p = ui.painter();
-    p.text(
-        egui::pos2(rect.left() + 14.0, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        theme::icon_font(14.0),
-        theme::text::dim(),
-    );
-    let mut right = rect.right() - 8.0;
-    if !note.is_empty() {
-        let g = p.layout_no_wrap(
-            note.to_owned(),
-            egui::FontId::proportional(ui::CAPTION_PT),
-            theme::text::faint(),
-        );
-        right -= g.size().x;
-        p.galley(
-            egui::pos2(right, rect.center().y - g.size().y / 2.0),
-            g,
-            theme::text::faint(),
-        );
-        right -= 8.0;
-    }
-    let mut job = egui::text::LayoutJob::single_section(
-        name.to_owned(),
-        egui::TextFormat::simple(egui::FontId::proportional(ui::CONTROL_PT), color::text()),
-    );
-    job.wrap = egui::text::TextWrapping {
-        max_width: (right - rect.left() - 30.0).max(0.0),
-        max_rows: 1,
-        break_anywhere: true,
-        overflow_character: Some('…'),
-    };
-    let g = p.layout_job(job);
-    p.galley(
-        egui::pos2(rect.left() + 30.0, rect.center().y - g.size().y / 2.0),
-        g,
-        color::text(),
+    ui::list_row_ground(p, rect, lit, resp.hovered());
+    crate::palette::row_glyph(p, rect, glyph, theme::text::dim());
+    let font = egui::FontId::proportional(ui::CONTROL_PT);
+    let label = crate::palette::lit_label(name, &[], font, color::text(), color::text());
+    crate::palette::row_texts(
+        p,
+        rect,
+        rect.right() - 8.0,
+        label,
+        Some((note, theme::text::faint())),
     );
     resp
 }
 
+/// Above the empty pane's state.
+const EMPTY_TOP: f32 = 64.0;
+
 /// The pane's state with no script open.
 fn empty_pane(ui: &mut egui::Ui, act: &mut Option<Act>) {
-    ui.add_space(24.0);
-    ui.horizontal(|ui| {
-        ui.add_space(16.0);
-        ui::empty_note(ui, "No script open. Pick one, or start a new script.");
-    });
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.add_space(16.0);
-        if settings::text_button(ui, "New script", FieldButton::Off).clicked() {
-            *act = Some(Act::New);
-        }
-    });
+    ui.add_space(EMPTY_TOP);
+    ui::empty_state(
+        ui,
+        Some(icon::FILE_CODE),
+        "No script open",
+        "Pick one from the list, or start a new script",
+        |ui| {
+            if settings::text_button(ui, "New script", FieldButton::Off).clicked() {
+                *act = Some(Act::New);
+            }
+        },
+    );
 }
 
 /// The script's head: its name (or the rename field), where it lives, find,
@@ -1456,7 +1448,7 @@ fn script_head(
     );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(14.0, 0.0)))
+            .max_rect(rect.shrink2(egui::vec2(HEAD_INSET, 0.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     let ui = &mut child;
@@ -1528,13 +1520,15 @@ fn script_head(
             s.find = Some(s.find.take().unwrap_or_default());
         }
         if s.menu {
-            let at = menu.rect.left_bottom() + egui::vec2(0.0, ui::MENU_GAP);
+            let size = egui::vec2(crate::menu::MENU_W, ui::menu_height(6, 0));
+            let at = ui::dropdown_place(ui.ctx(), menu.rect, size, ui::MENU_GAP);
             let mut chosen = None;
             let resp = egui::Area::new(egui::Id::new("script-menu"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(at)
                 .show(ui.ctx(), |ui| {
                     ui::menu_frame(ui::MENU_PAD).show(ui, |ui| {
+                        ui.set_width(ui::menu_inner_w(crate::menu::MENU_W, ui::MENU_PAD));
                         ui::popup_rows(ui);
                         let h = ui::MENU_ROW_H;
                         let kit = matches!(which, Which::Kit { .. });
@@ -1597,15 +1591,21 @@ fn script_head(
         ui.ctx().memory_mut(|m| m.request_focus(find_field));
     }
     if let Some(find) = &mut s.find {
+        // Under the head's right end, kept on screen as a menu is.
+        let size = egui::vec2(
+            FIND_W + 2.0 * (ui::MENU_PAD + ui::MENU_BORDER),
+            ui::CONTROL_H + 2.0 * (ui::MENU_PAD + ui::MENU_BORDER),
+        );
+        let at = rect.right_bottom() + egui::vec2(-HEAD_INSET - size.x, ui::MENU_GAP);
         let area = egui::Area::new(egui::Id::new("script-find"))
             .order(egui::Order::Foreground)
-            .fixed_pos(rect.right_bottom() + egui::vec2(-280.0, 6.0));
+            .fixed_pos(ui::menu_place(ui.ctx(), at, size));
         let mut close = false;
         area.show(ui.ctx(), |ui| {
             ui::menu_frame(ui::MENU_PAD).show(ui, |ui| {
                 let resp = ui::search_box(
                     ui,
-                    egui::vec2(260.0, ui::CONTROL_H),
+                    egui::vec2(FIND_W, ui::CONTROL_H),
                     find,
                     "Find in script",
                     find_field,
@@ -1648,17 +1648,17 @@ fn script_head(
 /// The output pane: each run under a rule with its time, errors in the red.
 fn output_pane(ui: &mut egui::Ui, runs: &[RunOut]) {
     let w = ui.available_width();
-    let (head, _) = ui.allocate_exact_size(egui::vec2(w, 30.0), egui::Sense::hover());
+    let (head, _) = ui.allocate_exact_size(egui::vec2(w, OUTPUT_HEAD_H), egui::Sense::hover());
     let p = ui.painter();
     ui::paint_eyebrow(
         p,
-        egui::pos2(head.left() + 14.0, head.center().y),
+        egui::pos2(head.left() + HEAD_INSET, head.center().y),
         egui::Align2::LEFT_CENTER,
         "Output",
     );
     if let Some(last) = runs.last() {
         p.text(
-            egui::pos2(head.right() - 14.0, head.center().y),
+            egui::pos2(head.right() - HEAD_INSET, head.center().y),
             egui::Align2::RIGHT_CENTER,
             format!("Last run {} · {:.2} s", last.at, last.secs),
             egui::FontId::proportional(ui::CAPTION_PT),
@@ -1667,12 +1667,13 @@ fn output_pane(ui: &mut egui::Ui, runs: &[RunOut]) {
     }
     egui::ScrollArea::vertical()
         .id_salt("script-output")
-        .max_height(OUTPUT_H - 30.0)
+        .max_height(OUTPUT_H - OUTPUT_HEAD_H)
         .auto_shrink([false, false])
         .stick_to_bottom(true)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            let font = egui::FontId::monospace(ui::CODE_PT - 0.5);
+            // The code's face and size, as the pane above it.
+            let font = egui::FontId::monospace(ui::CODE_PT);
             for run in runs {
                 for (text, ink) in
                     std::iter::once((format!("— run at {} —", run.at), theme::text::faint())).chain(
@@ -1682,7 +1683,7 @@ fn output_pane(ui: &mut egui::Ui, runs: &[RunOut]) {
                     )
                 {
                     ui.horizontal(|ui| {
-                        ui.add_space(14.0);
+                        ui.add_space(HEAD_INSET);
                         ui.label(egui::RichText::new(text).font(font.clone()).color(ink));
                     });
                 }
@@ -1693,7 +1694,8 @@ fn output_pane(ui: &mut egui::Ui, runs: &[RunOut]) {
 
 /// One input's field, by its type: a value field for a number, a swatch and
 /// its hex for a colour, a segmented control for up to three choices and a
-/// dropdown beyond, a switch for a boolean, a text field for a string.
+/// dropdown beyond, a text field for a string. A boolean's switch row is the
+/// form's own, since it carries the label.
 fn input_field(ui: &mut egui::Ui, w: f32, input: &mastik_vm::Input, value: &mut Value) {
     use mastik_vm::InputType as T;
     let size = egui::vec2(w, ui::CONTROL_H);
@@ -1717,12 +1719,8 @@ fn input_field(ui: &mut egui::Ui, w: f32, input: &mastik_vm::Input, value: &mut 
                 false => Value::from(v),
             };
         }
-        T::Boolean => {
-            let on = value.as_bool().unwrap_or(false);
-            if ui::switch_row(ui, "On", on, settings::SWITCH_H).clicked() {
-                *value = Value::Bool(!on);
-            }
-        }
+        // The form draws a boolean's switch row itself, label and all.
+        T::Boolean => {}
         T::String => {
             let mut s = value.as_str().unwrap_or_default().to_owned();
             if ui::text_field(ui, size, &mut s, "").changed() {
@@ -1735,15 +1733,10 @@ fn input_field(ui: &mut egui::Ui, w: f32, input: &mastik_vm::Input, value: &mut 
                 .unwrap_or("#000000")
                 .trim_start_matches('#')
                 .to_owned();
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                let ink = parse_hex(&s).unwrap_or(egui::Color32::BLACK);
-                ui::swatch(ui, ui::CONTROL_H, color::field(), ui::Swatch::Solid(ink));
-                let rest = egui::vec2(ui.available_width(), ui::CONTROL_H);
-                if ui::text_field(ui, rest, &mut s, "FFFFFF").changed() {
-                    *value = Value::String(format!("#{}", s.trim().trim_start_matches('#')));
-                }
-            });
+            let ink = parse_hex(&s).unwrap_or(egui::Color32::BLACK);
+            if ui::colour_text_field(ui, size, &mut s, ink).changed() {
+                *value = Value::String(format!("#{}", s.trim().trim_start_matches('#')));
+            }
         }
         T::Choice(words) => {
             let at = value
@@ -1983,6 +1976,39 @@ mod tests {
         app.start_script_run(b);
         let form = app.scripts.form.take().expect("B's form is up");
         assert_eq!(form.values.get("by"), Some(&Value::from(9.0)), "still B's");
+    }
+
+    /// The open editor keeps its size while the pointer moves over it, with a
+    /// script open and with none.
+    /// flip: the body allocated a point past its room → fails at "the same
+    /// height".
+    #[test]
+    fn the_editor_keeps_its_size_as_the_pointer_moves() {
+        use crate::command::tests::pass;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, _, script) = with_script("sel.x += 1\nsel.y += 1", None);
+        let none = egui::Modifiers::NONE;
+        let height = |ctx: &egui::Context| {
+            ctx.memory(|m| m.area_rect(egui::Id::new("script-editor")))
+                .expect("the editor is drawn")
+                .height()
+        };
+        for picked in [None, Some(Which::Document(script))] {
+            app.open_scripts();
+            if let Some(w) = picked {
+                app.pick_script(w);
+            }
+            for _ in 0..3 {
+                pass(&ctx, &mut app, Vec::new(), none);
+            }
+            let first = height(&ctx);
+            for i in 0..30 {
+                let at = egui::pos2(400.0 + i as f32 * 7.0, 300.0 + i as f32 * 3.0);
+                pass(&ctx, &mut app, vec![egui::Event::PointerMoved(at)], none);
+            }
+            assert_eq!(height(&ctx), first, "the same height");
+        }
     }
 
     /// A run that fails changes nothing, says where, and puts the editor on the line.

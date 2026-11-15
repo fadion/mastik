@@ -255,8 +255,9 @@ a form before the run, read in the script as `param.name` (an unknown one raises
 `integer`, `boolean`, `string`, `color` (`"#rrggbb"`, or `"#rrggbbaa"`), `choice(a, b, …)`. A missing default is the
 type's zero (the range's low end, the first choice); only a number or an integer takes a range. A
 header that does not parse fails the run at its line. The form draws each by its type: a
-`ui::value_field`, a swatch and its hex, a `ui::segmented` for up to three choices and a dropdown
-past that, a switch, a `ui::text_field`. Values are remembered per script for the session.
+`ui::value_field`, a `ui::colour_text_field`, a `ui::segmented` for up to three choices and a
+dropdown past that, a `ui::switch_row` carrying the input's label, a `ui::text_field`. Values are
+remembered per script for the session.
 
 **The run.** Disclosure if owed, then the form if the header has inputs, then the run (§7). The
 status line says *Card grid · 6 layers changed*, *Card grid failed at line 4 — nothing changed* or
@@ -268,7 +269,9 @@ and a *Run ‹name›* row per saved script. One floating, resizable window: a l
 search field; sections *This document*, *Library*, *Kit · ‹name›*, *Unsaved*; *New script* and the
 folder button at its foot), the script's head (its name, renamed in place, where it lives, find,
 the ⋯ menu and *Run*), the code pane and an output pane listing the last runs under timed rules,
-errors in the error ink. `Ctrl+Enter` runs. `Ctrl+F`, from the code pane, opens find: Enter
+errors in the error ink. The list's rows are list rows (`MENU_ROW_H`, `ui::list_row_ground`) in the
+palette's row layout; with no script open the pane is a `ui::empty_state`. The body is laid out in
+fixed rects, so the window keeps the size it is given. `Ctrl+Enter` runs. `Ctrl+F`, from the code pane, opens find: Enter
 selects the next match, wrapping to the top, and `Ctrl+F` then Enter goes on from there. The ⋯ menu: *Save to library* ·
 *Copy into this document* · *Duplicate* · *Rename* · *Show in folder* · *Delete* (not on a kit's).
 The code pane is `ui::code_editor`, inked from `mastik_vm::tokens`: keywords `star()`, numbers

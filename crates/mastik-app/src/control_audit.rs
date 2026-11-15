@@ -1324,6 +1324,30 @@ fn sweep_on(theme: Theme) {
         a.find.find = "yearly".into();
     });
     check("find", app, found);
+    // The script editor with a script open: its list, head, find and output.
+    let mut app = with_a_rect(&ctx);
+    let found = opened(&ctx, &mut app, |_, a| {
+        a.open_script_editor_with("sel.x += 1".into());
+    });
+    check("script editor", app, found);
+    // A script's run form, a field of every kind its header can ask for.
+    let mut app = with_a_rect(&ctx);
+    let found = opened(&ctx, &mut app, |_, a| {
+        a.open_script_editor_with(
+            "---@input by number = 3 -- By\n\
+             ---@input on boolean = true -- On\n\
+             ---@input name string = x -- Name\n\
+             ---@input ink color = #ff0000 -- Ink\n\
+             ---@input side choice(left, right) = left -- Side\n\
+             ---@input way choice(a, b, c, d) = a -- Way\n\
+             sel.x += param.by"
+                .into(),
+        );
+        a.scripts.open = false;
+        a.run_open_script();
+        assert!(a.scripts.modal_up(), "fixture: the form is up");
+    });
+    check("script form", app, found);
     let mut app = with_a_rect(&ctx);
     let found = opened(&ctx, &mut app, |c, a| a.open_batch_rename(c, None));
     check("batch rename", app, found);

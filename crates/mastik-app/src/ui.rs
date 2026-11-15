@@ -257,6 +257,18 @@ pub fn card_rule(ui: &mut egui::Ui) -> egui::Rect {
     rect
 }
 
+/// [`card_rule`] upright: a hairline of `color::divider()` down `rect`'s
+/// centre, between two panes of one card (the script editor's list and its
+/// script), on the device grid. Paints only; the caller has laid `rect` out.
+pub fn card_vrule(ui: &egui::Ui, rect: egui::Rect) {
+    let ppp = ui.ctx().pixels_per_point();
+    let x = hairline_in_column(rect.center().x, ppp, 1.0);
+    ui.painter().line_segment(
+        [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+        egui::Stroke::new(1.0, color::divider()),
+    );
+}
+
 /// The width of a [`close_button`]'s box.
 pub const CLOSE_BUTTON_W: f32 = 18.0;
 /// A [`close_button`]'s ×, and a removable [`layer_chip`]'s.
@@ -2295,6 +2307,41 @@ pub fn text_field(
         )
     })
 }
+
+/// A colour typed as text, in one [`text_field`]-like row: the paint's
+/// [`swatch`] chip at the row's start, then the text, retyped rather than
+/// inserted into on focus as the inspector's hex is. For a form that asks for a
+/// colour (a script's input); the inspector's paint rows carry their bindings
+/// and opacity and keep their own.
+pub fn colour_text_field(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    text: &mut String,
+    ink: egui::Color32,
+) -> egui::Response {
+    let pt = Scale::of(size.y).text_pt();
+    let font = egui::FontId::proportional(pt);
+    let frame = edit_frame(ui, &font, size.y - FIELD_BORDER_H, FIELD_PAD_X).left(COLOUR_CHIP_GAP);
+    field_row_inset(ui, size, FIELD_PAD_X, 0.0, |ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        swatch(ui, COLOUR_CHIP, color::field(), Swatch::Solid(ink));
+        let resp = frame.add(
+            ui,
+            f32::INFINITY,
+            egui::TextEdit::singleline(text)
+                .font(font)
+                .char_limit(COLOUR_CHAR_LIMIT),
+        );
+        select_all_on_focus(ui, &resp, text);
+        resp
+    })
+}
+
+/// A [`colour_text_field`]'s chip, the size the type card's colour row draws.
+pub const COLOUR_CHIP: f32 = 14.0;
+
+/// Between a [`colour_text_field`]'s chip and its text.
+const COLOUR_CHIP_GAP: f32 = 7.0;
 
 /// The ink each run of a [`code_editor`]'s text takes, by byte range; the rest
 /// is `color::text()`.
