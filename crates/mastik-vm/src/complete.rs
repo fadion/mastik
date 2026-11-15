@@ -1,0 +1,250 @@
+//! Completion for the bar and the editor: Mastik's own names only — verbs,
+//! properties, the language's names, leap labels and the page's layers — read
+//! from the tables the runtime binds, so the two cannot drift.
+
+use std::ops::Range;
+
+use mastik_core::verbs::{self, ParamKind};
+use mastik_core::{Document, NodeId};
+use rustc_hash::FxHashMap;
+
+use crate::lex;
+use crate::props::{METHODS, PROPERTIES};
+
+/// Which list a completion row belongs to, in the order they are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Section {
+    /// The language's own names: `sel`, `parent`, `param`…
+    Names,
+    Verbs,
+    /// A collection's properties and methods, after `.` or `:`.
+    Properties,
+    Labels,
+    Layers,
+    /// The words a verb's next argument takes.
+    Choices,
+}
+
+/// One completion row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub section: Section,
+    /// What Enter writes over [`Completion::replace`].
+    pub label: String,
+    /// A line on what it is.
+    pub detail: String,
+    /// The byte ranges of `label` the typed word matched, to draw bold.
+    pub matched: Vec<Range<usize>>,
+    /// An almost-match drawn dim: the typed word is no name, and `suggestion` is
+    /// what it most likely meant.
+    pub dim: bool,
+    pub suggestion: Option<String>,
+}
+
+/// What to offer at a cursor: the range a pick replaces, and the rows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Completion {
+    pub replace: Range<usize>,
+    pub rows: Vec<Row>,
+}
+
+/// How well `word` matches `name`: prefix 0, the start of a `_`-separated word 1,
+/// a subsequence 2, with the matched byte ranges; `None` when it does not.
+#[expect(
+    clippy::single_range_in_vec_init,
+    reason = "a list of matched ranges that holds one"
+)]
+fn score(word: &str, name: &str) -> Option<(u8, Vec<Range<usize>>)> {
+    if word.is_empty() {
+        return Some((0, Vec::new()));
+    }
+    let (w, n) = (word.to_ascii_lowercase(), name.to_ascii_lowercase());
+    if n.starts_with(&w) {
+        return Some((0, vec![0..w.len()]));
+    }
+    let starts = n
+        .match_indices('_')
+        .map(|(i, _)| i + 1)
+        .filter(|s| n[*s..].starts_with(&w));
+    if let Some(s) = starts.into_iter().next() {
+        return Some((1, vec![s..s + w.len()]));
+    }
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    let mut from = 0;
+    for c in w.chars() {
+        let at = from + n[from..].find(c)?;
+        let end = at + c.len_utf8();
+        match ranges.last_mut() {
+            Some(r) if r.end == at => r.end = end,
+            _ => ranges.push(at..end),
+        }
+        from = end;
+    }
+    Some((2, ranges))
+}
+
+/// Rows of `section` for every `(name, detail)` `word` matches, best first.
+fn rank<'a>(
+    section: Section,
+    word: &str,
+    candidates: impl IntoIterator<Item = (&'a str, String)>,
+) -> Vec<Row> {
+    let mut scored: Vec<(u8, Row)> = candidates
+        .into_iter()
+        .filter_map(|(name, detail)| {
+            let (r, matched) = score(word, name)?;
+            Some((
+                r,
+                Row {
+                    section,
+                    label: name.to_owned(),
+                    detail,
+                    matched,
+                    dim: false,
+                    suggestion: None,
+                },
+            ))
+        })
+        .collect();
+    scored.sort_by(|(ra, a), (rb, b)| {
+        ra.cmp(rb)
+            .then(a.label.len().cmp(&b.label.len()))
+            .then(a.label.cmp(&b.label))
+    });
+    scored.into_iter().map(|(_, row)| row).collect()
+}
+
+/// Completion for `line` with the cursor at byte `cursor`: one verb's next
+/// argument once a verb and a space are typed, a property after `.`, a method
+/// after `:`, else the names a line can start with.
+pub fn complete(
+    doc: &Document,
+    page: NodeId,
+    labels: &FxHashMap<String, NodeId>,
+    line: &str,
+    cursor: usize,
+) -> Completion {
+    let mut cursor = cursor.min(line.len());
+    while !line.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    let bytes = line.as_bytes();
+    let mut start = cursor;
+    while start > 0 && lex::ident_char(bytes[start - 1] as char) {
+        start -= 1;
+    }
+    let mut end = cursor;
+    while end < bytes.len() && lex::ident_char(bytes[end] as char) {
+        end += 1;
+    }
+    let word = &line[start..cursor];
+    let replace = start..end;
+    if let Some(rows) = verb_argument(line, start, word) {
+        return Completion { replace, rows };
+    }
+    let before = line[..start].chars().next_back();
+    let rows = match before {
+        Some('.') if !line[..start].ends_with("..") => properties(word),
+        Some(':') => rank(
+            Section::Properties,
+            word,
+            METHODS.iter().map(|m| (m.name, m.doc.to_owned())),
+        ),
+        _ => {
+            let mut rows = rank(
+                Section::Names,
+                word,
+                crate::run::NAMES.iter().map(|(n, d)| (*n, (*d).to_owned())),
+            );
+            rows.extend(rank(
+                Section::Verbs,
+                word,
+                verbs::VERBS.iter().map(|v| (v.name, v.doc.to_owned())),
+            ));
+            let mut keys: Vec<(&String, &NodeId)> = labels.iter().collect();
+            keys.sort();
+            rows.extend(rank(
+                Section::Labels,
+                word,
+                keys.into_iter()
+                    .map(|(k, id)| (k.as_str(), crate::describe(doc, &[*id]))),
+            ));
+            let layers = crate::layer_names(doc, page);
+            rows.extend(rank(
+                Section::Layers,
+                word,
+                layers.iter().map(|n| (n.as_str(), "layer".to_owned())),
+            ));
+            rows
+        }
+    };
+    Completion { replace, rows }
+}
+
+/// The property rows for `word`, an almost-match (`.alpha`) first as a dim row
+/// naming what it most likely meant.
+fn properties(word: &str) -> Vec<Row> {
+    let mut rows = rank(
+        Section::Properties,
+        word,
+        PROPERTIES.iter().map(|p| (p.name, p.doc.to_owned())),
+    );
+    let exact = PROPERTIES.iter().any(|p| p.name == word);
+    let prefixed = rows
+        .iter()
+        .any(|r| r.matched.first().is_some_and(|m| m.start == 0));
+    if !word.is_empty()
+        && !exact
+        && !prefixed
+        && let Some(meant) = crate::run::nearest_property(word)
+    {
+        rows.insert(
+            0,
+            Row {
+                section: Section::Properties,
+                label: word.to_owned(),
+                detail: format!("No property “{word}” — did you mean {meant}?"),
+                matched: Vec::new(),
+                dim: true,
+                suggestion: Some(meant),
+            },
+        );
+    }
+    rows
+}
+
+/// The choices of a verb's next argument when `line` is a verb then bare words
+/// (rule 1) and the word being typed, starting at `start`, is an argument.
+/// `None` when the line is not such a call; no rows when the argument takes no fixed words.
+fn verb_argument(line: &str, start: usize, word: &str) -> Option<Vec<Row>> {
+    let lead = line.len() - line.trim_start().len();
+    let text = &line[lead..];
+    let name_len = text
+        .find(|c: char| !lex::ident_char(c))
+        .unwrap_or(text.len());
+    let verb = verbs::find(&text[..name_len])?;
+    let name_end = lead + name_len;
+    if start <= name_end || !line[name_end..].starts_with(char::is_whitespace) {
+        return None;
+    }
+    let before = line[name_end..start].split_whitespace().count();
+    let subject = verb
+        .params
+        .iter()
+        .position(|p| matches!(p.kind, ParamKind::Node | ParamKind::Nodes));
+    let param = verb
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != subject)
+        .map(|(_, p)| p)
+        .nth(before)?;
+    let ParamKind::Choice(words) = param.kind else {
+        return Some(Vec::new());
+    };
+    Some(rank(
+        Section::Choices,
+        word,
+        words.iter().map(|w| (*w, param.doc.to_owned())),
+    ))
+}

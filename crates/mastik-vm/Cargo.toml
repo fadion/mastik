@@ -1,0 +1,23 @@
+[package]
+name = "mastik-vm"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Command Mode's language: Luau through `mlua`, the bar's line sugar, completion
+# and highlighting. Headless — no rendering or UI dependency, which
+# `deps_forbidden` checks. The document is reached only through `mastik-core` and
+# the caller's `Host`.
+[dependencies]
+mastik-core = { path = "../mastik-core" }
+serde_json.workspace = true
+rustc-hash.workspace = true
+# Luau, built from source: `vendored` compiles the C++ VM with the platform's C++
+# compiler (MSVC on Windows), so this crate is the workspace's one C++ build. Pinned
+# exactly, as the rendering crates are, because the vendored Luau moves with every
+# mlua patch release and the language's surface rests on its behaviour: under
+# `Lua::sandbox` the globals proxy through `__index`, a per-evaluation environment
+# takes a Rust `__index`, and the interrupt fires at calls and loop edges. Those
+# were checked against this version; a bump re-runs this crate's tests first.
+mlua = { version = "=0.11.6", features = ["luau", "vendored"] }
