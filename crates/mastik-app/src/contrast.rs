@@ -1823,6 +1823,8 @@ mod tests {
                 fills: solid(190, 190, 190),
             },
         ])));
+        // After a frame, which gives the canvas the size the zoom fits to.
+        frame(ctx, &mut app, Vec::new());
         app.zoom_to(Some(Rect::new(-20.0, -20.0, 320.0, 220.0)));
         frame(ctx, &mut app, Vec::new());
         Fixture {
