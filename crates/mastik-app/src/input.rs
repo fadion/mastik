@@ -39,12 +39,13 @@ impl Mode {
     }
 }
 
-/// A sibling step in Pick: the Layers panel's rows, not the canvas's space.
+/// A sibling step in Pick, in reading order on the canvas (rows top to bottom,
+/// each left to right), not the Layers panel's z-order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
-    /// `↓`: the row below — the next layer back in z-order.
+    /// `↓`: the next sibling read.
     Next,
-    /// `↑`: the row above.
+    /// `↑`: the one read before.
     Prev,
 }
 
@@ -90,8 +91,8 @@ impl Nav {
     /// The cheatsheet's label for the key.
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Nav::Step(Step::Next, _) => "Next layer (row below)",
-            Nav::Step(Step::Prev, _) => "Previous layer (row above)",
+            Nav::Step(Step::Next, _) => "Next layer on the canvas",
+            Nav::Step(Step::Prev, _) => "Previous layer on the canvas",
             Nav::StepIn => "Step in",
             Nav::StepOut => "Step out",
             Nav::Matching => "The same layer in each repeat",

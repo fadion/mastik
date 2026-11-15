@@ -641,7 +641,7 @@ selects its layer, `Shift` + a label adds it; with two-letter labels the first l
 |---|---|
 | `Enter` · `→` | step into the one selected layer when it holds others (group, boolean, frame, instance root); otherwise back to the field |
 | `Backspace` · `←` | step out: out of the entered group, selecting it; with none entered, to the current layer's parent |
-| `↓` / `↑` | the Layers panel's row below / above; `Shift` adds the layer to the selection |
+| `↓` / `↑` | the next / previous sibling in reading order on the canvas (rows top to bottom, each left to right); `Shift` adds the layer to the selection |
 | `Shift+8` (`*`) | the same layer in each repeat (`select_matching`) |
 | `Shift+1` | zoom to fit |
 | `Shift+2` | zoom to the selection (physical `Num2`, §0) |

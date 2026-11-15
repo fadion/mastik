@@ -315,29 +315,58 @@ impl MastikApp {
             .unwrap_or(self.session.page)
     }
 
-    /// Move to a sibling of the current layer; with `extend`, add it to the
-    /// selection rather than replace it.
+    /// Move to the next or previous sibling of the current layer in reading
+    /// order on the canvas ([`Self::reading_order`]); with `extend`, add it to
+    /// the selection rather than replace it. The canvas, not the Layers panel:
+    /// z-order often runs against what the eye sees, and `↓` should go down.
     fn nav_step(&mut self, step: Step, extend: bool) {
         let doc = &self.session.doc;
         let target = match self.nav_current() {
-            // Nothing to move from: the scope's top row.
-            None => doc
-                .get(self.nav_scope())
-                .and_then(|n| n.children().last().copied()),
-            // `children` is z-order with the topmost last, and the panel lists it
-            // reversed: the row below is the index before.
+            // Nothing to move from: the scope's first layer.
+            None => self.reading_order(self.nav_scope()).first().copied(),
             Some(at) => doc.get(at).and_then(|n| n.parent()).and_then(|p| {
-                let kids = doc.get(p)?.children();
-                let i = kids.iter().position(|c| *c == at)?;
+                let order = self.reading_order(p);
+                let i = order.iter().position(|c| *c == at)?;
                 match step {
-                    Step::Next => i.checked_sub(1).map(|j| kids[j]),
-                    Step::Prev => kids.get(i + 1).copied(),
+                    Step::Next => order.get(i + 1).copied(),
+                    Step::Prev => i.checked_sub(1).map(|j| order[j]),
                 }
             }),
         };
         if let Some(target) = target {
             self.nav_land(target, extend);
         }
+    }
+
+    /// `parent`'s visible children as the eye reads them on the canvas: rows top
+    /// to bottom, each left to right. A layer joins a row when its centre falls
+    /// within the height of the row's first layer. Children with no box (empty,
+    /// hidden) are left out.
+    fn reading_order(&self, parent: NodeId) -> Vec<NodeId> {
+        let doc = &self.session.doc;
+        let Some(kids) = doc.get(parent).map(|n| n.children()) else {
+            return Vec::new();
+        };
+        let mut boxes: Vec<(NodeId, Rect)> = kids
+            .iter()
+            .filter(|id| doc.get(**id).is_some_and(|n| n.visible()))
+            .filter_map(|id| Some((*id, self.session.preview_world_bounds(*id)?)))
+            .collect();
+        boxes.sort_by(|a, b| a.1.y0.total_cmp(&b.1.y0));
+        let mut rows: Vec<Vec<(NodeId, Rect)>> = Vec::new();
+        for (id, b) in boxes {
+            let cy = b.center().y;
+            match rows.last_mut() {
+                Some(row) if cy >= row[0].1.y0 && cy <= row[0].1.y1 => row.push((id, b)),
+                _ => rows.push(vec![(id, b)]),
+            }
+        }
+        rows.into_iter()
+            .flat_map(|mut row| {
+                row.sort_by(|a, b| a.1.x0.total_cmp(&b.1.x0));
+                row.into_iter().map(|(id, _)| id)
+            })
+            .collect()
     }
 
     /// Into the one selected layer when it holds others, as the editor's `Enter`
@@ -1179,24 +1208,52 @@ mod tests {
         assert_eq!(selected(&f.app), [f.a]);
     }
 
-    /// `↓` and `↑` are the Layers panel's row below and above; Shift adds.
+    /// `↓` and `↑` step through siblings in reading order on the canvas; Shift
+    /// adds.
     ///
-    /// flip: `Step::Next` taking the index after rather than before → fails at
-    /// "the row below b".
+    /// flip: `nav_step` walking `children` as the panel does → fails at "nothing
+    /// after b, the last read".
     #[test]
     fn the_arrows_walk_siblings_and_shift_adds() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         tap(&ctx, &mut f.app, egui::Key::Backtick);
+        // The row reads a, g, b left to right, though the panel lists b, g, a.
         tap(&ctx, &mut f.app, egui::Key::ArrowDown);
-        assert_eq!(selected(&f.app), [f.g], "the row below b");
-        shift_tap(&ctx, &mut f.app, egui::Key::ArrowDown);
-        assert_eq!(selected(&f.app), [f.g, f.a], "and a, added");
+        assert_eq!(selected(&f.app), [f.b], "nothing after b, the last read");
         tap(&ctx, &mut f.app, egui::Key::ArrowUp);
+        assert_eq!(selected(&f.app), [f.g], "the one before b");
+        shift_tap(&ctx, &mut f.app, egui::Key::ArrowUp);
+        assert_eq!(selected(&f.app), [f.g, f.a], "and a, added");
+        tap(&ctx, &mut f.app, egui::Key::ArrowDown);
         assert_eq!(selected(&f.app), [f.g], "a plain step selects alone");
+    }
+
+    /// `↓` goes down the canvas whatever the z-order: three squares stacked so
+    /// the panel lists them bottom to top.
+    ///
+    /// flip: `nav_step` walking `children` as the panel does → fails at "down
+    /// the canvas".
+    #[test]
+    fn the_arrows_read_the_canvas_not_the_layer_order() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let page = f.app.session.page;
+        let ids: Vec<NodeId> = (0..3).map(|_| f.app.session.ids.mint()).collect();
+        // Each lower one above the last in z-order, so the panel lists them
+        // bottom to top.
+        let ops = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| square(*id, page, 3 + i, 200.0, 60.0 + i as f64 * 30.0))
+            .collect();
+        f.app.session.commit(Transaction(ops));
+        f.app.session.selection.set_one(ids[0]);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
         tap(&ctx, &mut f.app, egui::Key::ArrowDown);
+        assert_eq!(selected(&f.app), [ids[1]], "down the canvas");
         tap(&ctx, &mut f.app, egui::Key::ArrowDown);
-        assert_eq!(selected(&f.app), [f.a], "nothing below the bottom row");
+        assert_eq!(selected(&f.app), [ids[2]]);
     }
 
     /// The editor's keys rest in Pick: a tool letter, Delete, a digit, a letter

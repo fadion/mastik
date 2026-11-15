@@ -316,7 +316,7 @@ text edit took the keys. A text edit started under the bar (a double-click on te
 | a label's letters | select its layer; `Shift` on the last adds it. Of two-letter labels the first narrows and `Backspace` takes it back (`leap_keys`, read before the table) |
 | `Enter` `→` | into the one selected layer when it holds others (group, boolean, frame, instance root), by `enter_container`; from anything else, back to Type |
 | `Backspace` `←` | out: with a group entered, select it and enter the rung above it (`group_chain(doc, g, None).last()`); else select the current layer's parent |
-| `↓` / `↑` | the Layers panel's row below / above; `Shift` adds |
+| `↓` / `↑` | the next / previous sibling in reading order on the canvas (`reading_order`: rows top to bottom, a layer joining a row when its centre falls within the row's first layer's height, each row left to right), not the Layers panel's z-order, which often runs against what the eye sees; `Shift` adds |
 | `*` (`Shift+8`) | the same layer in each repeat (`select_matching`) |
 | `Shift+1` / `Shift+2` | zoom to fit / to the selection |
 | `.` | run the last line in the log again on the selection (`Log::last_line`): typed, or written for an edit made elsewhere, such as a drag's `.x += 24`; a script's run is no line |
