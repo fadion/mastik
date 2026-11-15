@@ -1914,7 +1914,10 @@ pub fn contains_local(
             None => false,
         },
         // A boolean is hit-testable, but its outline is not this function's to
-        // build; the test lives beside the cache in `query::hit_test`.
+        // build; the test lives beside the cache in `query::hit_test`. A group is
+        // deliberately never hit by its box, only through its children: a large
+        // group would otherwise catch every click over its gaps (a decided
+        // non-goal).
         NodeKind::Group | NodeKind::Root | NodeKind::Boolean { .. } => false,
         // Only a band `slop` wide either side of the edge: a slice usually lies over
         // the art, so a click inside it picks what is underneath, and an exact test

@@ -41,6 +41,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **A polygonal (click-by-click) lasso, a contain-only lasso rule, or shape-testing for the box marquee** — the lasso touches shapes, the box keeps its bounds rule.
 - **On the size preview: an act on a tile's click, a ground colour of one's own, or a separate drawing per size** — the card shows the layer as it is, at fixed sizes on fixed grounds (`app-canvas-chrome.md`, *The size preview*).
 - **On a loose selection's spacing handles: bands over uneven gaps, a negative gap, a value typed on a band, or a Gap field in the Align card** — Distribute or Tidy up evens uneven gaps, after which the bands appear.
+- **A group hovered or clicked anywhere in its box** — a group is hit only where a child draws, so the gaps inside it fall through to what is behind: a large group would otherwise catch every click over its empty space, and design tools of this class hit groups the same way. The hover ring traces the group's box for legibility only; a section that should take clicks across its whole box is a frame (`core-ops.md`, `contains_local`).
 
 ## Booleans and paths
 
