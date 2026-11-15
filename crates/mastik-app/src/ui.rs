@@ -2545,6 +2545,11 @@ pub const CODE_PT: f32 = 12.0;
 /// Between two lines of code: the line height of [`CODE_PT`] monospace.
 pub const CODE_LINE_H: f32 = 19.0;
 
+/// A code row's height within its [`CODE_LINE_H`] line: the caret's and a
+/// selection's, a point over the ink each side, so the caret reads as the
+/// text's height rather than the line's.
+pub const CODE_ROW_H: f32 = 16.0;
+
 /// The line-number gutter's width, its numbers right-aligned in it.
 pub const CODE_GUTTER_W: f32 = 44.0;
 
@@ -2569,6 +2574,19 @@ pub struct CodeMark {
     pub line: usize,
     pub span: Option<std::ops::Range<usize>>,
     pub ink: egui::Color32,
+}
+
+/// How far [`code_editor`] moves the ink down inside a row (`drop`) and the
+/// row down inside its line (`lift`), each to the pixel: the ink centred in a
+/// [`CODE_ROW_H`] row, the row centred in a [`CODE_LINE_H`] line.
+fn code_row_offsets(ui: &egui::Ui) -> (f32, f32) {
+    let ppp = ui.ctx().pixels_per_point();
+    let snap = |v: f32| (v.max(0.0) * ppp).round() / ppp;
+    let ink_h = ui.fonts_mut(|f| f.row_height(&egui::FontId::monospace(CODE_PT)));
+    (
+        snap((CODE_ROW_H - ink_h) / 2.0),
+        snap((CODE_LINE_H - CODE_ROW_H) / 2.0),
+    )
 }
 
 /// The script editor's text: monospace at [`CODE_PT`], unwrapped, its runs inked
@@ -2622,7 +2640,25 @@ pub fn code_editor(
         }
         job.append(&s[at..], 0.0, fmt(color::text()));
         job.wrap.max_width = f32::INFINITY;
-        ui.fonts_mut(|f| f.layout_job(job))
+        let mut galley = ui.fonts_mut(|f| f.layout_job(job));
+        // egui sets a row's glyphs an ascent below its top and makes the row the
+        // whole line tall, so the ink sat at the top with the line's air under
+        // it: the caret ran into that air, and a press just over a line's text
+        // landed on the line above. Each row is cut to `CODE_ROW_H` and centred
+        // on the ink in its line; a press between rows takes the nearer one.
+        let (drop, lift) = code_row_offsets(ui);
+        let g = std::sync::Arc::make_mut(&mut galley);
+        for placed in &mut g.rows {
+            placed.pos.y += lift;
+            let row = std::sync::Arc::make_mut(&mut placed.row);
+            row.size.y = CODE_ROW_H;
+            for glyph in &mut row.glyphs {
+                glyph.pos.y += drop;
+            }
+            row.visuals.mesh.translate(egui::vec2(0.0, drop));
+            row.visuals.mesh_bounds = row.visuals.mesh_bounds.translate(egui::vec2(0.0, drop));
+        }
+        galley
     };
     let (gutter, out) = ui
         .horizontal_top(|ui| {
@@ -2654,7 +2690,7 @@ pub fn code_editor(
             .and_then(|r| r.row.glyphs.first())
             .map_or(0.0, |gl| gl.pos.y)
     };
-    let lift = baseline(CODE_PT) - baseline(CODE_GUTTER_PT);
+    let lift = baseline(CODE_PT) - baseline(CODE_GUTTER_PT) + code_row_offsets(ui).0;
     // Only the rows in view get a number; the rest are counted past.
     let shown = ui.clip_rect().expand(CODE_LINE_H).y_range();
     let mut line = 0usize;
@@ -2694,10 +2730,11 @@ pub fn code_editor(
                     _ if row.row.glyphs.is_empty() => continue,
                     _ => (r.left(), r.right()),
                 };
+                // In the line's air under the row, clear of the descenders.
                 crate::canvas::paint_squiggle_in(
                     p,
-                    egui::pos2(a, r.bottom() - 1.0),
-                    egui::pos2(b, r.bottom() - 1.0),
+                    egui::pos2(a, r.bottom()),
+                    egui::pos2(b, r.bottom()),
                     m.ink,
                 );
             }
@@ -8804,6 +8841,52 @@ mod tests {
             code_editor(ui, id, &mut text, &inks, &[], false);
         });
         assert_eq!(calls.get(), 2, "a new text is inked again");
+    }
+
+    /// A code row is the caret's height, centred on its ink within its line,
+    /// so a press anywhere over a line's ink, or in the air nearer it, lands on
+    /// that line.
+    /// flip: `code_editor` keeping egui's rows (whole line, ink at the top) →
+    /// fails at "the caret's height".
+    #[test]
+    fn a_code_row_is_centred_on_its_ink() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let mut text = "local a = 1\nlocal b = 2\nprint(a)".to_string();
+        let mut laid = None;
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let out = code_editor(
+                ui,
+                egui::Id::new("rows"),
+                &mut text,
+                &|_| CodeInks::new(),
+                &[],
+                true,
+            );
+            laid = Some(out.galley);
+        });
+        let galley = laid.expect("laid out");
+        let caret = galley.pos_from_cursor(egui::text::CCursor::new(14));
+        assert_eq!(caret.height(), CODE_ROW_H, "the caret's height");
+        for (i, placed) in galley.rows.iter().enumerate() {
+            let line = i as f32 * CODE_LINE_H;
+            // The font's own box (`logical_rect` is the line's height).
+            let g = &placed.row.glyphs[0];
+            let top = placed.pos.y + g.pos.y - g.font_ascent;
+            let ink = egui::Rect::from_x_y_ranges(0.0..=1.0, top..=top + g.font_height);
+            let (above, below) = (ink.top() - line, line + CODE_LINE_H - ink.bottom());
+            assert!(
+                (above - below).abs() <= 1.5,
+                "row {i}'s ink centred: {above} vs {below}"
+            );
+            // Just over the ink, and in the air under the line's middle.
+            for y in [ink.top() - 1.0, line + CODE_LINE_H * 0.85] {
+                let c = galley.cursor_from_pos(egui::vec2(4.0, y)).index.0;
+                let row = text.chars().take(c).filter(|ch| *ch == '\n').count();
+                assert_eq!(row, i, "a press at y {y} lands on line {i}");
+            }
+        }
     }
 
     /// Each gutter number sits on its code line's baseline.
