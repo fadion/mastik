@@ -1039,6 +1039,11 @@ fn a_syntax_error_is_found_without_running() {
 #[test]
 fn the_check_marks_what_a_run_would_refuse() {
     let (h, _) = three();
+    let first: Vec<String> = check(&h.doc, h.page, "sel.widht = 1")
+        .into_iter()
+        .map(|p| p.message)
+        .collect();
+    assert_eq!(first.len(), 1, "a dot on the text's first name");
     let src = "local n = #selectoin\nsel.widht = 320\nsel.fill = B.fill\n\
                local t = { size = 3 }\nt.foo = 1\nprint(math.flor(2))\ncount = 4\n\
                for _, c in ipairs(sel) do c.hieght = 1 end";

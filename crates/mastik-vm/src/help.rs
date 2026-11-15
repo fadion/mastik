@@ -621,6 +621,9 @@ pub struct Problem {
     pub note: Option<String>,
     /// Another line the message names (`to close 'for' at line 4`).
     pub related: Option<u32>,
+    /// Luau's parser refused the text: *Run* is held, and the mark stands even
+    /// under the caret.
+    pub syntax: bool,
 }
 
 /// The byte range of line `n` (from 1) of `source`, its newline left out.
@@ -689,6 +692,7 @@ pub fn syntax_error(source: &str) -> Option<Problem> {
         fix: None,
         note: None,
         related,
+        syntax: true,
     })
 }
 
@@ -819,13 +823,14 @@ pub fn check(doc: &Document, page: NodeId, source: &str) -> Vec<Problem> {
                 fix: fix.map(|f| (span.clone(), f)),
                 note: note.map(str::to_owned),
                 related: None,
+                syntax: false,
             };
         match before {
             "." if i >= 2 => {
                 let owner = text(i - 2);
                 if ident(i - 2)
-                    && text(i - 3) != "."
-                    && text(i - 3) != ":"
+                    && text(i.wrapping_sub(3)) != "."
+                    && text(i.wrapping_sub(3)) != ":"
                     && !declared.contains(&owner)
                 {
                     if owner == "param" {
