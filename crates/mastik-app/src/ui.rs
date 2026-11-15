@@ -1093,12 +1093,8 @@ pub fn card_drag_handle(ui: &egui::Ui, rect: egui::Rect) {
     if !movable {
         return;
     }
+    // No cursor of its own: the row keeps the arrow, as a window's title bar does.
     let resp = ui.interact(rect, key, egui::Sense::drag());
-    if resp.dragged() {
-        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-    } else if resp.hovered() {
-        ctx.set_cursor_icon(egui::CursorIcon::Grab);
-    }
     let delta = resp.drag_delta();
     if delta == egui::Vec2::ZERO {
         return;
