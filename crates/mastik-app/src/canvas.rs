@@ -8422,21 +8422,18 @@ impl MastikApp {
 
     /// While the command bar types, an `Alt`-press on a layer writes its leap
     /// label into the line at the caret, the selection untouched: a line's
-    /// argument by pointing. While the bar picks to name a layer, a plain press
-    /// does the same and gives the keys back to the field. The press then sits
-    /// out to its release, so it neither selects nor starts the `Alt`
-    /// duplicate-drag.
+    /// argument by pointing. The press then sits out to its release, so it
+    /// neither selects nor starts the `Alt` duplicate-drag.
     fn bar_alt_click(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, ppp: f32) {
-        let naming = self.naming_pick();
         if self.command_bar.is_none()
-            || (self.picking() && !naming)
+            || self.picking()
             || self.mode != Mode::Normal
             || self.gesture_cancelled
         {
             return;
         }
         let (pressed, alt) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers.alt));
-        if !pressed || !(alt || naming) {
+        if !pressed || !alt {
             return;
         }
         let Some(p) = resp.hover_pos() else { return };
@@ -8450,9 +8447,7 @@ impl MastikApp {
         };
         let id = self.pick_preview(leaf, ui);
         self.gesture_cancelled = true;
-        if naming {
-            self.name_in_line(id);
-        } else if let Some(label) = self.label_for(id)
+        if let Some(label) = self.label_for(id)
             && let Some(bar) = self.command_bar.as_mut()
         {
             bar.write_at_caret(label);

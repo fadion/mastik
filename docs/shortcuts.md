@@ -634,12 +634,13 @@ The command bar's Pick focus (§8, `design/command-mode.md`, *Pick*). While it h
 undo and redo chords and the cheatsheet's, and nothing else, so a tool letter rests.
 
 **The home-row letters are leap labels, read before the table** (`MastikApp::leap_keys`): a label
-selects its layer, `Shift` + a label adds it; with two-letter labels the first letter narrows and
-`Backspace` takes it back. No table row is a letter.
+selects its layer, `Shift` + a label adds it; a label is two letters, the first narrows and
+`Backspace` takes it back. The pick writes its current layer into the field's line as it goes, and
+`` ` `` ends it. No table row is a letter.
 
 | Key | Action |
 |---|---|
-| `Enter` · `→` | step into the one selected layer when it holds others (group, boolean, frame, instance root); otherwise back to the field |
+| `Enter` · `→` | step into the one selected layer when it holds others (group, boolean, frame, instance root), on its top-left child; otherwise back to the field |
 | `Backspace` · `←` | step out: out of the entered group, selecting it; with none entered, to the current layer's parent |
 | `↓` / `↑` | the next / previous sibling in reading order on the canvas (rows top to bottom, each left to right); `Shift` adds the layer to the selection |
 | `Shift+8` (`*`) | the same layer in each repeat (`select_matching`) |

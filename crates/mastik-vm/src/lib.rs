@@ -30,7 +30,7 @@ pub use defs::{Tok, definitions, names_used, tokens};
 pub use header::{Header, Input, InputType, header};
 pub use props::{METHODS, Method, PROPERTIES, PropType, Property};
 pub use run::{Budget, READ_BUDGET, RUN_BUDGET};
-pub use sugar::{Line, LineKind, Marks, desugar, marks, value_at};
+pub use sugar::{Line, LineKind, Marks, desugar, marks};
 
 /// What the language reaches the document through: the app's session, or a test's
 /// plain document.

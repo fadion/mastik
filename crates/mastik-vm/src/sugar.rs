@@ -206,17 +206,6 @@ pub fn marks(line: &str) -> Marks {
     out
 }
 
-/// Whether a value goes at byte `caret` of `line`: the text before it ends where
-/// rule 2 would read a `.` as the subject (after `=`, an operator, an opening
-/// bracket or comma, or a keyword a value follows), or is empty.
-pub fn value_at(line: &str, caret: usize) -> bool {
-    let Some(before) = line.get(..caret) else {
-        return false;
-    };
-    let lexemes = lex::lex(before);
-    prefix_after(lexemes.last(), before)
-}
-
 /// Whether `l` ends the statement before it at bracket depth 0: a `;`, a comment,
 /// or a keyword a statement follows (`do`, `then`, `else`, `repeat`, `end`).
 fn opens_statement(l: &Lexeme, src: &str) -> bool {

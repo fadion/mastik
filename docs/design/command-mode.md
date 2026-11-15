@@ -86,8 +86,8 @@ The environment's `__index` (`run::resolve`) answers an unknown name in this ord
 
 1. `sel` (alias `selection`): the selection, always a collection.
 2. `parent`, `prev`, `next`, `children`: relative to the selection.
-3. **Leap labels**, one or two lowercase home-row letters, bound to the layers the bar last dealt
-   them to (*Pick*). A label whose layer was deleted raises.
+3. **Leap labels**, two lowercase home-row letters, each bound to its layer for as long as the
+   document is open (*Pick*). A label whose layer was deleted raises.
 4. **Registry verbs**, by their registry names.
 5. `print` (to the bar's result or the editor's output), `percent`, `math` without `random` and
    `randomseed`, `param` (a script's inputs, §10), and the allowlist `string`, `table`, `ipairs`,
@@ -314,7 +314,7 @@ text edit took the keys. A text edit started under the bar (a double-click on te
 | Key | Act |
 | --- | --- |
 | a label's letters | select its layer; `Shift` on the last adds it. Of two-letter labels the first narrows and `Backspace` takes it back (`leap_keys`, read before the table) |
-| `Enter` `→` | into the one selected layer when it holds others (group, boolean, frame, instance root), by `enter_container`; from anything else, back to Type |
+| `Enter` `→` | into the one selected layer when it holds others (group, boolean, frame, instance root), by `enter_container`, on its first child in reading order (not the topmost in z-order the editor's Enter lands on), so `↓` walks on from there; from anything else, back to Type |
 | `Backspace` `←` | out: with a group entered, select it and enter the rung above it (`group_chain(doc, g, None).last()`); else select the current layer's parent |
 | `↓` / `↑` | the next / previous sibling in reading order on the canvas (`reading_order`: rows top to bottom, a layer joining a row when its centre falls within the row's first layer's height, each row left to right), not the Layers panel's z-order, which often runs against what the eye sees; `Shift` adds |
 | `*` (`Shift+8`) | the same layer in each repeat (`select_matching`) |
@@ -325,13 +325,15 @@ text edit took the keys. A text edit started under the bar (a double-click on te
 Every other editor key rests; the history chords and the cheatsheet's stay, and opened from Pick
 the cheatsheet's *Pick layers* section leads.
 
-**Picking to name.** `` ` `` from the field (or a click on *Pick*) with the caret where a value
-goes (`mastik_vm::value_at`: after `=`, an operator, an opening bracket or comma, where rule 2 would
-read a `.` as the subject) and text in the line picks to name rather than to select: a label's
-letters, or a plain click on a layer, write that layer's label into the line at the caret and give
-the keys straight back to the field, the selection untouched (`name_in_line`). So `.x = `, `` ` ``,
-a label, `.x + 50` names a second layer without leaving the keys. Anywhere else — an empty line, the
-caret after a value — Pick selects as above, which is how the subject is changed mid-line.
+**One pick, written as it goes.** A pick is the same wherever the caret is — the line's start or
+mid-line: labels, arrows, `Enter`, `Backspace` and clicks on the canvas move and select as above.
+Once the selection has moved off what it was when the pick began, the current layer's label stands
+in the line at the caret the pick began from, replaced as the pick moves on (`pick_into_line`), so
+the field shows the pick as a pill in real time; `` ` `` ends the pick with it there. So `` ` ``,
+a label, `` ` ``, `.x = `, `` ` ``, a label, `` ` ``, `.x + 50` writes *FJ.x = DK.x + 50*.
+**The label that opens a line is its subject** (`line_subject`): a bare `.x` anywhere in it, and a
+verb's subject, mean that layer, however the selection moves after; a line that opens with no
+label acts on the selection.
 
 **The deal** is made when the bar opens and kept for its whole time open (`deal_tick`). It deals
 again at once when the page or the entered group changes, and once the view or the document has
@@ -339,14 +341,18 @@ rested 0.15 s after moving (`REST_S`), never mid-press, so a drag ends before it
 relabelled. The candidates are what a plain click could reach in view, inside the entered group
 when there is one (`leap_candidates`): hit tests sampled across the view and at each layer's
 centre, each raised by `group_chain` as a click is. More than 81 label only the current layer's
-children (its parent's when it has none), those in view. Nine or fewer labels are one letter each,
-the home row by ease (`f j d k s l g h a`); more are two-letter pairs, easiest first.
+children (its parent's when it has none), those in view.
 
-**Labels hold still**, so a line being typed keeps meaning what it named: a layer keeps its label
-while the deal keeps its label length; a label written as a word in the field's line keeps its
-layer through later deals and no other layer takes it; the rest take the easiest free label,
-nearest the current layer first. `label_for` deals a label to a layer that has none. The labels
-stay bound as handles for lines until the next deal.
+**A label belongs to its layer.** Labels are always two home-row letters, easiest first
+(`label_pairs`), and unique across the document. A layer meeting its first deal takes the easiest
+free label, the newcomers in reading order, and keeps it for as long as the document is open —
+through pans, zooms, entered groups, edits and the bar closed and reopened — so a label never
+changes under the eye and a line can name layers from different frames and groups. One length
+always is the price of that: mixed one- and two-letter labels cannot share a deal (`f` would
+shadow `fj`), so a count crossing nine would relabel everything. Only when all 81 are taken does a
+label move (`free_label`): a deleted layer's first, else that of the layer seen longest ago that is
+out of view and not named in the field's line. `label_for` gives a label to a layer the deal did not
+reach.
 
 **What is drawn.** In Pick, every label. In Type, those the completion offers for the word at the
 caret (a word of at most two home-row letters), else only the label of the layer under the pointer,
@@ -376,33 +382,30 @@ rules*): a row's name is never cut for its note.
   a two-cell `ui::segmented_tipped` (*Type*, *Pick*; a click switches), the path from the page to
   the current layer's parent, and on the right the subject with its kind's glyph (*Card*, *Card and
   2 more*, *Nothing selected*), so it is plain which layer a line acts on and where it sits.
-- **The field**: monospace at the palette field's size (`HEAD_PT`), a read's live value (`= 20`) at
-  the right edge. **Pills** say which layers the line names, in the leap labels' own look
-  (`ui::pill_shapes`, the leap yellow): the selection is a pill in the prompt's place (its first
-  layer's label, dealt one if it has none, `SK +2` for more), and the `:` prompt in the accent
-  shows only with nothing selected; every other `.` rule 2 reads as the subject wears the same pill
-  before it, so `.x = fj.x - .x` reads *SK.x = FJ.x − SK.x*; a free name that is a label
-  (`mastik_vm::marks`) is drawn as its pill, its letters hidden and room made around them by the
-  field's layouter, except the word the completion list is open on, which is still being typed.
-  The line's text sits close against the subject's pill, and a pill before a `.` reaches into the
-  dot's empty half-cell (`DOT_TUCK`), so `SK.x` reads as one thing. **Colour says which layer is
-  which**: the subject, and any label naming a selected layer, wear the leap yellow; every other
-  layer named takes the next of `color::REFERENCE` (green, orange, teal, pink) in order of first
-  mention, one hue per layer however often it is named, and is outlined on the canvas in that hue
-  while the bar is open (`draw_line_references`), as a spreadsheet colours a formula's ranges.
+- **The field**: the card's whole width from the head row's inset, with no prompt column;
+  monospace at the palette field's size (`HEAD_PT`), a read's live value (`= 20`) at the right
+  edge, and *Pick a layer and type a command* while empty. **Pills** say which layers the line
+  names, in the leap labels' own look (`ui::pill_shapes`): a free name that is a label
+  (`mastik_vm::marks`) is drawn as its pill, the subject's opening the line like any other, except
+  the word the completion list is open on, which is still being typed. Each `.` rule 2 reads as the
+  subject wears the subject's pill before it (its label, `SK +2` for a selection of more), so
+  `fj.x = dk.x - .x` reads *FJ.x = DK.x − FJ.x*. The field's layouter lays a label's hidden letters
+  out exactly as wide as its pill, so the caret at either end of a label stands at the pill's edge,
+  never inside it. **Colour says which layer is which**: the subject wears the leap yellow; every
+  other layer named takes the next of `color::REFERENCE` (green, orange, teal, pink) in order of
+  first mention, one hue per layer however often it is named, and is outlined on the canvas in that
+  hue while the bar is open (`draw_line_references`), as a spreadsheet colours a formula's ranges.
   Hovering a pill names its layer and outlines it as a hovered Layers row; `Backspace` just after a
-  label pill takes the whole label, and at the line's start takes the subject's pill, clearing the
-  selection. The line's text stays plain Luau with the labels as words. In Pick it
-  sleeps: the line is kept, dimmed and not focusable, the hint reads *Picking: type a label*, and
-  the right edge shows a first letter typed in the leap ink.
+  label pill takes the whole label. The line's text stays plain Luau with the labels as words. In
+  Pick it sleeps: the line is kept, dimmed and not focusable, the hint reads *Picking: type a
+  label*, and the right edge shows a first letter typed in the leap ink.
 - **The footer**: in Type, the desugared Luau, *each by itself* after a rule-3 line, and on the
   right *` picks*, or *Enter copies ‹value›* while a read shows one. An error replaces it with a
   red caption, the token it names squiggled, and *Tab fixes it* when it carries a fix. In Pick it
-  lists the keys, with *` types* on the right; picking to name, it says a label or a click names
-  a layer there.
+  lists the keys, with *` types* on the right.
 - **`Alt`-click** on a layer, in Type, writes its label into the line at the caret (a space first
   when it would run into the word before), leaving the selection alone: an argument by pointing.
-  While the bar picks to name, a plain click does the same. The press sits out to its release
+  The press sits out to its release
   (`gesture_cancelled`), so it neither selects nor starts the `Alt` duplicate-drag.
 - **The list above**, in Type only: the log while the field is empty, else completion, at most
   eight rows in sections *Names*, *Verbs*, *Properties*, *Labels*, *Layers*, *Choices* (a verb's next argument's

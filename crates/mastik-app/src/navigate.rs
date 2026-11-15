@@ -66,9 +66,14 @@ const REST_S: f64 = 0.15;
 pub(crate) struct Navigate {
     /// While the bar is open.
     on: Option<On>,
-    /// The labels lines may name, lowercase: the deal's, and any a line in the
-    /// field held when the deal was made.
+    /// The label book, lowercase label to layer: every label given since the
+    /// document came forward, each kept by its layer (`deal`).
     labels: HashMap<String, NodeId>,
+    /// The deal each layer was last in view for, by `tick`: the oldest out of
+    /// view gives up its label first once the book is full.
+    seen_at: HashMap<NodeId, u64>,
+    /// Counts deals.
+    tick: u64,
     /// The last deal, nearest the current layer first when it was made: what the
     /// canvas draws.
     deal: Vec<Dealt>,
@@ -86,10 +91,6 @@ struct On {
     prior: Tool,
     /// Whether the canvas has the keys (Pick) rather than the field (Type).
     picking: bool,
-    /// Pick from the middle of a line, where a value goes: a label or a click
-    /// writes its layer into the line and gives the keys back, the selection
-    /// left alone.
-    naming: bool,
 }
 
 /// What a deal depends on: the page, the scope a click picks in, the view and
@@ -109,15 +110,8 @@ struct Dealt {
     container: bool,
 }
 
-/// The home-row letters, easiest first: index fingers, then middle, ring, the
-/// stretch and the pinkies. A deal of nine or fewer spells its labels from these.
-pub(crate) fn label_singles() -> Vec<String> {
-    let mut by_ease = HOME_ROW;
-    by_ease.sort_by_key(|c| cost(*c));
-    by_ease.iter().map(|c| c.to_string()).collect()
-}
-
-/// How hard a home-row letter is to reach.
+/// How hard a home-row letter is to reach: index fingers, then middle, ring, the
+/// stretch and the pinkies.
 fn cost(c: char) -> u8 {
     match c {
         'f' | 'j' => 0,
@@ -220,7 +214,6 @@ impl MastikApp {
         self.navigate.on = Some(On {
             prior,
             picking: false,
-            naming: false,
         });
         self.navigate.typed.clear();
         self.navigate.dealt_for = None;
@@ -244,39 +237,17 @@ impl MastikApp {
 
     /// Give the keys to the canvas (`true`, Pick) or to the field.
     pub(crate) fn set_picking(&mut self, picking: bool) {
-        self.set_pick_focus(picking, false);
-    }
-
-    /// Give the keys to the canvas to name a layer in the line rather than
-    /// select one (`naming`), or as [`Self::set_picking`] does.
-    pub(crate) fn set_pick_focus(&mut self, picking: bool, naming: bool) {
         if let Some(on) = self.navigate.on.as_mut() {
             on.picking = picking;
-            on.naming = picking && naming;
         }
         self.navigate.typed.clear();
-    }
-
-    /// Whether the bar picks to name a layer in its line.
-    pub(crate) fn naming_pick(&self) -> bool {
-        self.picking() && self.navigate.on.as_ref().is_some_and(|o| o.naming)
-    }
-
-    /// Write `id`'s label into the bar's line at the caret and give the keys
-    /// back to the field: a naming pick's answer, by label or by click.
-    pub(crate) fn name_in_line(&mut self, id: NodeId) {
-        if let Some(label) = self.label_for(id)
-            && let Some(bar) = self.command_bar.as_mut()
-        {
-            bar.write_at_caret(label);
-        }
-        self.set_picking(false);
     }
 
     /// Forget the layers the labels hold as another document comes forward,
     /// which may share their ids.
     pub(crate) fn forget_navigate_layers(&mut self) {
         self.navigate.labels.clear();
+        self.navigate.seen_at.clear();
         self.navigate.deal.clear();
         self.navigate.typed.clear();
         self.navigate.dealt_for = None;
@@ -347,10 +318,20 @@ impl MastikApp {
         let Some(kids) = doc.get(parent).map(|n| n.children()) else {
             return Vec::new();
         };
-        let mut boxes: Vec<(NodeId, Rect)> = kids
+        let shown = kids
             .iter()
-            .filter(|id| doc.get(**id).is_some_and(|n| n.visible()))
-            .filter_map(|id| Some((*id, self.session.preview_world_bounds(*id)?)))
+            .copied()
+            .filter(|id| doc.get(*id).is_some_and(|n| n.visible()))
+            .collect();
+        self.reading_sort(shown)
+    }
+
+    /// `ids` in reading order on the canvas, as [`Self::reading_order`] reads
+    /// siblings; those with no box are left out.
+    fn reading_sort(&self, ids: Vec<NodeId>) -> Vec<NodeId> {
+        let mut boxes: Vec<(NodeId, Rect)> = ids
+            .into_iter()
+            .filter_map(|id| Some((id, self.session.preview_world_bounds(id)?)))
             .collect();
         boxes.sort_by(|a, b| a.1.y0.total_cmp(&b.1.y0));
         let mut rows: Vec<Vec<(NodeId, Rect)>> = Vec::new();
@@ -383,7 +364,14 @@ impl MastikApp {
             })
         });
         match into {
-            Some(id) => self.enter_container(id, None),
+            Some(id) => {
+                self.enter_container(id, None);
+                // On the first child the eye reads, as `↓` walks on from it, not
+                // the topmost in z-order the editor's Enter lands on.
+                if let Some(first) = self.reading_order(id).first().copied() {
+                    self.session.selection.set_one(first);
+                }
+            }
             None => self.set_picking(false),
         }
     }
@@ -457,11 +445,14 @@ impl MastikApp {
     }
 
     /// Deal labels to what a click could reach in view, inside the entered group
-    /// when there is one. A layer keeps the label
-    /// it had while the deal keeps its length; a label the field's line holds
-    /// keeps its layer; the rest take the easiest free label, nearest the current
-    /// layer first. Nine or fewer are one letter each, more are two. A view with
-    /// more than [`LABELS_MAX`] labels only the children of the current layer.
+    /// when there is one. **A label belongs to its layer**: once given, a layer
+    /// keeps it for as long as the document is open — through pans, zooms,
+    /// entered groups and edits — so a label never changes under the eye. Labels
+    /// are always two letters, unique across the document; a layer meeting its
+    /// first deal takes the easiest free one, the newcomers in reading order.
+    /// Only when all [`LABELS_MAX`] are taken is one moved ([`Self::free_label`]).
+    /// A view with more than [`LABELS_MAX`] candidates labels only the children of
+    /// the current layer.
     fn deal(&mut self) {
         let doc = &self.session.doc;
         let current = self.nav_current();
@@ -486,105 +477,95 @@ impl MastikApp {
                 })
                 .collect();
         }
-        // Nearest the current layer first, so the easy labels land where the eye is.
-        let from = current
-            .and_then(|c| self.session.preview_world_bounds(c))
-            .map_or(view.center(), |b| b.center());
-        let centre = |id: &NodeId| {
-            self.session
-                .preview_world_bounds(*id)
-                .map_or(f64::INFINITY, |b| (b.center() - from).hypot2())
-        };
-        ids.sort_by(|a, b| centre(a).total_cmp(&centre(b)));
         ids.truncate(LABELS_MAX);
+        // Newcomers take the easy labels in the order the eye reads them.
+        let ids = self.reading_sort(ids);
+        self.navigate.tick += 1;
+        let tick = self.navigate.tick;
+        for id in &ids {
+            self.navigate.seen_at.insert(*id, tick);
+        }
+        let deal: Vec<Dealt> = ids
+            .iter()
+            .filter_map(|id| {
+                let label = self.book_label(*id, &ids)?;
+                Some(Dealt {
+                    label,
+                    id: *id,
+                    container: self.is_container(*id),
+                })
+            })
+            .collect();
+        self.navigate.deal = deal;
+    }
 
+    /// Whether `id` is drawn with a container's dashed outline and dark label.
+    fn is_container(&self, id: NodeId) -> bool {
+        self.session.doc.get(id).is_some_and(|n| {
+            matches!(
+                n.kind(),
+                NodeKind::Group | NodeKind::Boolean { .. } | NodeKind::Artboard { .. }
+            )
+        })
+    }
+
+    /// `id`'s label from the book, giving it one when it has none; `showing`
+    /// are the layers in view, whose labels never move.
+    fn book_label(&mut self, id: NodeId, showing: &[NodeId]) -> Option<String> {
+        if let Some((k, _)) = self.navigate.labels.iter().find(|(_, v)| **v == id) {
+            return Some(k.clone());
+        }
+        let label = self.free_label(showing)?;
+        self.navigate.labels.insert(label.clone(), id);
+        Some(label)
+    }
+
+    /// The easiest label no layer holds; with all of them held, the label of a
+    /// deleted layer, else of the layer seen longest ago that is out of view
+    /// (`showing`) and not named in the field's line. `None` only when every
+    /// label is in view or in the line.
+    fn free_label(&mut self, showing: &[NodeId]) -> Option<String> {
+        if let Some(l) = label_pairs()
+            .into_iter()
+            .find(|l| !self.navigate.labels.contains_key(l))
+        {
+            return Some(l);
+        }
         let line = self
             .command_bar
             .as_ref()
             .map(|b| b.text.clone())
             .unwrap_or_default();
         let held = words(&line);
-        let pinned: HashMap<String, NodeId> = self
+        let doc = &self.session.doc;
+        let seen = &self.navigate.seen_at;
+        let (label, _) = self
             .navigate
             .labels
             .iter()
-            .filter(|(k, _)| held.contains(k.as_str()))
-            .map(|(k, v)| (k.clone(), *v))
-            .collect();
-        let pool = match ids.len() <= HOME_ROW.len() {
-            true => label_singles(),
-            false => label_pairs(),
-        };
-        let len = pool[0].len();
-        let had: HashMap<NodeId, &str> = self
-            .navigate
-            .deal
-            .iter()
-            .filter(|d| d.label.len() == len)
-            .map(|d| (d.id, d.label.as_str()))
-            .collect();
-        let mut taken: HashSet<String> = pinned.keys().cloned().collect();
-        let mut out: Vec<Option<String>> = vec![None; ids.len()];
-        for (slot, id) in out.iter_mut().zip(&ids) {
-            let kept = pinned
-                .iter()
-                .find(|(_, v)| *v == id)
-                .map(|(k, _)| k.clone())
-                .or_else(|| {
-                    had.get(id)
-                        .filter(|l| !taken.contains(**l))
-                        .map(|l| l.to_string())
-                });
-            if let Some(l) = kept {
-                taken.insert(l.clone());
-                *slot = Some(l);
-            }
-        }
-        let mut free = pool.into_iter().filter(|l| !taken.contains(l));
-        let container = |id: NodeId| {
-            doc.get(id).is_some_and(|n| {
-                matches!(
-                    n.kind(),
-                    NodeKind::Group | NodeKind::Boolean { .. } | NodeKind::Artboard { .. }
-                )
+            .filter(|(k, v)| !held.contains(k.as_str()) && !showing.contains(v))
+            .min_by_key(|(k, v)| {
+                let age = if doc.contains(**v) {
+                    seen.get(*v).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                (doc.contains(**v), age, (*k).clone())
             })
-        };
-        let deal: Vec<Dealt> = ids
-            .iter()
-            .zip(out)
-            .filter_map(|(id, l)| {
-                Some(Dealt {
-                    label: l.or_else(|| free.next())?,
-                    id: *id,
-                    container: container(*id),
-                })
-            })
-            .collect();
-        let mut labels = pinned;
-        labels.extend(deal.iter().map(|d| (d.label.clone(), d.id)));
-        self.navigate.labels = labels;
-        self.navigate.deal = deal;
+            .map(|(k, v)| (k.clone(), *v))?;
+        self.navigate.labels.remove(&label);
+        Some(label)
     }
 
-    /// The label `id` wears, dealing it the next free one when it has none, so a
-    /// line can name a layer the deal did not reach.
+    /// The label `id` wears, giving it one from the book when it has none, so a
+    /// line can name a layer the deal did not reach. It is drawn with the deal's.
     pub(crate) fn label_for(&mut self, id: NodeId) -> Option<String> {
         if let Some((k, _)) = self.navigate.labels.iter().find(|(_, v)| **v == id) {
             return Some(k.clone());
         }
-        let singles = self.navigate.deal.iter().all(|d| d.label.len() == 1);
-        let taken = |l: &String| self.navigate.labels.contains_key(l);
-        let label = singles
-            .then(label_singles)
-            .and_then(|p| p.into_iter().find(|l| !taken(l)))
-            .or_else(|| label_pairs().into_iter().find(|l| !taken(l)))?;
-        let container = self.session.doc.get(id).is_some_and(|n| {
-            matches!(
-                n.kind(),
-                NodeKind::Group | NodeKind::Boolean { .. } | NodeKind::Artboard { .. }
-            )
-        });
-        self.navigate.labels.insert(label.clone(), id);
+        let showing: Vec<NodeId> = self.navigate.deal.iter().map(|d| d.id).collect();
+        let label = self.book_label(id, &showing)?;
+        let container = self.is_container(id);
         self.navigate.deal.push(Dealt {
             label: label.clone(),
             id,
@@ -682,11 +663,6 @@ impl MastikApp {
             let hit = self.navigate.deal.iter().find(|d| d.label == typed);
             if let Some(id) = hit.map(|d| d.id) {
                 self.navigate.typed.clear();
-                if self.naming_pick() {
-                    // A naming pick ends with the first label it takes.
-                    self.name_in_line(id);
-                    break;
-                }
                 self.nav_land(id, m.shift);
             } else if self
                 .navigate
@@ -1121,13 +1097,12 @@ mod tests {
     }
 
     /// Pick deals at once to what a plain click could select — the group, not
-    /// its squares — one letter each while nine or fewer, the current layer the
-    /// easiest.
+    /// its squares — two letters each, the easiest in reading order.
     ///
-    /// flip: `deal` spelling from `label_pairs` whatever the count → fails at "one
-    /// letter each".
+    /// flip: `deal` giving the easiest labels nearest the current layer first,
+    /// rather than in `reading_sort`'s order → fails at "in reading order".
     #[test]
-    fn pick_deals_one_letter_labels_at_once() {
+    fn pick_deals_two_letter_labels_in_reading_order() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         tap(&ctx, &mut f.app, egui::Key::Backtick);
@@ -1136,20 +1111,18 @@ mod tests {
             HashSet::from([f.a, f.g, f.b]),
             "the group, not its squares"
         );
-        assert!(
-            f.app.leap_labels().keys().all(|k| k.len() == 1),
-            "one letter each: {:?}",
-            f.app.leap_labels()
-        );
-        assert_eq!(label_of(&f.app, f.b), label_singles()[0], "b is current");
+        let pairs = label_pairs();
+        let got = [f.a, f.g, f.b].map(|id| label_of(&f.app, id));
+        assert_eq!(got.as_slice(), &pairs[..3], "in reading order");
     }
 
-    /// Past nine, every label is two letters, and the first letter narrows.
+    /// In a crowded view every label is still two letters, and the first letter
+    /// narrows.
     ///
     /// flip: `leap_keys` not keeping the first letter → fails at "the first
     /// letter narrows".
     #[test]
-    fn past_nine_labels_are_two_letters_and_the_first_narrows() {
+    fn the_first_letter_of_a_label_narrows() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         crowd(&ctx, &mut f);
@@ -1190,11 +1163,13 @@ mod tests {
         assert!(f.app.picking());
     }
 
-    /// `Enter` steps into the picked group and the labels follow onto its
-    /// children; `Backspace` steps out, selecting the group, and they come back.
+    /// `Enter` steps into the picked group, on the child the eye reads first,
+    /// and the labels follow onto its children; `Backspace` steps out, selecting
+    /// the group, and they come back.
     ///
     /// flip: `step_out` leaving `entered_group` as it was → fails at "out of the
-    /// group".
+    /// group"; `step_in` keeping `enter_container`'s topmost child → fails at "on
+    /// its top-left child".
     #[test]
     fn enter_steps_in_and_backspace_steps_out_and_the_labels_follow() {
         let ctx = egui::Context::default();
@@ -1205,7 +1180,8 @@ mod tests {
 
         tap(&ctx, &mut f.app, egui::Key::Enter);
         assert_eq!(f.app.entered_group, Some(f.g), "into the group");
-        assert_eq!(selected(&f.app), [f.r2], "on its top child");
+        // r2 is the topmost in z-order; r1 is to its left.
+        assert_eq!(selected(&f.app), [f.r1], "on its top-left child");
         assert_eq!(dealt(&f.app), HashSet::from([f.r1, f.r2]));
 
         tap(&ctx, &mut f.app, egui::Key::Backspace);
@@ -1322,53 +1298,97 @@ mod tests {
         assert!(app.picking(), "and the bar still picks");
     }
 
-    /// A moved view is dealt again once it rests, and a layer keeps its letter
-    /// though the current layer, which orders a fresh deal, has changed.
+    /// Pan until the view is dealt again.
+    fn pan_and_rest(ctx: &egui::Context, app: &mut MastikApp, by: Vec2) {
+        let before = app.navigate.dealt_for.map(|k| k.view);
+        app.session.camera.pan_pixels(by);
+        for _ in 0..20 {
+            frame(ctx, app, Vec::new());
+        }
+        let after = app.navigate.dealt_for.map(|k| k.view);
+        assert_ne!(before, after, "fixture: the moved view was dealt again");
+    }
+
+    /// A layer keeps its label through everything that deals again: a pan, a
+    /// view crowded past nine, stepping into a group and out, closing and
+    /// reopening the bar.
     ///
-    /// flip: `deal` ignoring `had` → fails at "a keeps its letter".
+    /// flip: `deal` starting each deal from an empty book → fails at "through
+    /// a pan".
     #[test]
-    fn labels_keep_their_letters_when_the_view_moves() {
+    fn a_layer_keeps_its_label_through_every_deal() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         tap(&ctx, &mut f.app, egui::Key::Backtick);
         let la = label_of(&f.app, f.a);
-        spell(&ctx, &mut f.app, &la, egui::Modifiers::NONE);
-        assert_ne!(la, label_singles()[0], "fixture: a was not the easiest");
-        let before = f.app.navigate.dealt_for.map(|k| k.view);
-        f.app.session.camera.pan_pixels(Vec2::new(30.0, 0.0));
-        for _ in 0..20 {
-            frame(&ctx, &mut f.app, Vec::new());
-        }
-        let after = f.app.navigate.dealt_for.map(|k| k.view);
-        assert_ne!(before, after, "fixture: the moved view was dealt again");
-        assert_eq!(label_of(&f.app, f.a), la, "a keeps its letter");
+        let lb = label_of(&f.app, f.b);
+        let lg = label_of(&f.app, f.g);
+        // `a` out of view, so `g` reads first; then back.
+        pan_and_rest(&ctx, &mut f.app, Vec2::new(-300.0, 0.0));
+        assert!(!dealt(&f.app).contains(&f.a), "fixture: a out of view");
+        assert_eq!(label_of(&f.app, f.g), lg, "through a pan");
+        pan_and_rest(&ctx, &mut f.app, Vec2::new(300.0, 0.0));
+        assert_eq!(label_of(&f.app, f.a), la, "through a pan back");
+        crowd(&ctx, &mut f);
+        assert_eq!(label_of(&f.app, f.a), la, "through a crowded view");
+        f.app.session.selection.set_one(f.g);
+        tap(&ctx, &mut f.app, egui::Key::Enter);
+        assert_eq!(f.app.entered_group, Some(f.g), "fixture: stepped in");
+        tap(&ctx, &mut f.app, egui::Key::Backspace);
+        assert_eq!(
+            label_of(&f.app, f.a),
+            la,
+            "through a group stepped in and out"
+        );
+        f.app.end_bar_session();
+        f.app.command_bar = None;
+        frame(&ctx, &mut f.app, Vec::new());
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert_eq!(label_of(&f.app, f.b), lb, "through the bar reopened");
     }
 
-    /// A label the field's line holds keeps its layer through a deal elsewhere,
-    /// and no other layer takes it.
+    /// With every label taken, a newcomer takes the label of the layer seen
+    /// longest ago, never one in view or named in the field's line.
     ///
-    /// flip: `deal` building `labels` without `pinned` → fails at "the line's label".
+    /// flip: `free_label` not skipping the line's labels → fails at "not the
+    /// line's".
     #[test]
-    fn a_label_written_in_the_line_keeps_its_layer() {
+    fn a_full_book_moves_only_a_label_out_of_view_and_out_of_the_line() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
-        f.app.open_command_bar();
-        frame(&ctx, &mut f.app, Vec::new());
-        let la = label_of(&f.app, f.a);
-        f.app.command_bar.as_mut().unwrap().text = format!("{la}.x = 5");
-        f.app.entered_group = Some(f.g);
-        f.app.session.selection.set_one(f.r1);
-        frame(&ctx, &mut f.app, Vec::new());
+        bar_with(&ctx, &mut f, "");
+        // The rest of the book on layers long gone from view: minted, never shown.
+        let pairs = label_pairs();
+        let taken: Vec<String> = f.app.leap_labels().keys().cloned().collect();
+        let mut ids = mastik_core::IdSource::new(0xB00C);
+        for l in pairs.iter().filter(|l| !taken.contains(l)) {
+            let id = ids.mint();
+            f.app.navigate.labels.insert(l.clone(), id);
+            f.app.navigate.seen_at.insert(id, 0);
+        }
         assert_eq!(
-            dealt(&f.app),
-            HashSet::from([f.r1, f.r2]),
-            "fixture: dealt inside"
+            f.app.leap_labels().len(),
+            LABELS_MAX,
+            "fixture: the book is full"
         );
-        assert_eq!(f.app.leap_labels().get(&la), Some(&f.a), "the line's label");
-        assert!(
-            f.app.navigate.deal.iter().all(|d| d.label != la),
-            "taken by nothing else"
-        );
+        // Each absent layer is a deleted one, so all tie and the first by letter
+        // goes first: the line holds that one.
+        let held = pairs
+            .iter()
+            .filter(|l| !taken.contains(l))
+            .min()
+            .cloned()
+            .expect("an absent layer's label");
+        f.app.command_bar.as_mut().unwrap().text = format!("{held}.x = 1");
+        let page = f.app.session.page;
+        let fresh = f.app.session.ids.mint();
+        f.app
+            .session
+            .commit(Transaction(vec![square(fresh, page, 3, 200.0, 0.0)]));
+        let got = f.app.label_for(fresh).expect("a label");
+        assert_ne!(got, held, "not the line's");
+        assert!(!taken.contains(&got), "not one in view");
+        assert_eq!(f.app.leap_labels().get(&got), Some(&fresh));
     }
 
     /// Over 81 candidates, only the current layer's children are labelled, with
@@ -1518,63 +1538,94 @@ mod tests {
         assert_eq!(text.as_deref(), Some(line), "fixture: the line written");
     }
 
-    /// `` ` `` where a value goes picks to name: a label writes its layer into
-    /// the line and gives the keys back, the selection untouched.
+    fn line(app: &MastikApp) -> String {
+        app.command_bar
+            .as_ref()
+            .map(|b| b.text.clone())
+            .unwrap_or_default()
+    }
+
+    /// A pick writes its current layer at the caret as it goes, replaces it as
+    /// the pick moves on (a label, an arrow), and `` ` `` ends it with the label
+    /// there. The pick selects as any pick does.
     ///
-    /// flip: `leap_keys` landing on the layer whatever the pick → fails at "the
-    /// label at the caret".
+    /// flip: `pick_into_line` writing nothing → fails at "written as it goes".
     #[test]
-    fn a_backtick_where_a_value_goes_names_a_layer_in_the_line() {
+    fn a_pick_writes_its_layer_into_the_line_as_it_goes() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         bar_with(&ctx, &mut f, ".x = ");
         tap(&ctx, &mut f.app, egui::Key::Backtick);
-        assert!(f.app.naming_pick(), "picks to name");
+        assert!(f.app.picking(), "fixture: picking");
+        assert_eq!(
+            line(&f.app),
+            ".x = ",
+            "nothing written before the pick moves"
+        );
         let la = label_of(&f.app, f.a);
         spell(&ctx, &mut f.app, &la, egui::Modifiers::NONE);
         frame(&ctx, &mut f.app, Vec::new());
-        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
-        assert_eq!(text, Some(format!(".x = {la}")), "the label at the caret");
-        assert!(!f.app.picking(), "the keys back with the field");
-        assert_eq!(selected(&f.app), [f.b], "the selection untouched");
-    }
-
-    /// `` ` `` after a value, or on an empty line, picks to select.
-    ///
-    /// flip: `pick_from_line` naming on any line with text → fails at "after a
-    /// value".
-    #[test]
-    fn a_backtick_after_a_value_picks_to_select() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        bar_with(&ctx, &mut f, ".x = 20");
+        assert_eq!(line(&f.app), format!(".x = {la}"), "written as it goes");
+        assert_eq!(selected(&f.app), [f.a], "and selected");
+        tap(&ctx, &mut f.app, egui::Key::ArrowDown);
+        frame(&ctx, &mut f.app, Vec::new());
+        let lg = label_of(&f.app, f.g);
+        assert_eq!(
+            line(&f.app),
+            format!(".x = {lg}"),
+            "replaced as it moves on"
+        );
         tap(&ctx, &mut f.app, egui::Key::Backtick);
-        assert!(f.app.picking() && !f.app.naming_pick(), "after a value");
-        let la = label_of(&f.app, f.a);
-        spell(&ctx, &mut f.app, &la, egui::Modifiers::NONE);
-        assert_eq!(selected(&f.app), [f.a], "the label selects");
-        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
-        assert_eq!(text.as_deref(), Some(".x = 20"), "and the line is kept");
+        frame(&ctx, &mut f.app, Vec::new());
+        assert!(!f.app.picking(), "`` ` `` ends the pick");
+        assert_eq!(line(&f.app), format!(".x = {lg}"), "with the label there");
     }
 
-    /// While the bar picks to name, a plain click on a layer names it too.
+    /// A click on the canvas while picking selects as it always does, and the
+    /// pick writes what it selected.
     ///
-    /// flip: `bar_alt_click` asking for `Alt` while naming → fails at "the label
-    /// at the caret".
+    /// flip: `bar_alt_click` taking a plain press while picking → fails at
+    /// "selected".
     #[test]
-    fn a_click_while_naming_writes_the_label_into_the_line() {
+    fn a_click_while_picking_selects_and_writes() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         bar_with(&ctx, &mut f, ".x = ");
         tap(&ctx, &mut f.app, egui::Key::Backtick);
-        assert!(f.app.naming_pick(), "fixture: picks to name");
         let at = centre_of(&f.app, f.a);
         click(&ctx, &mut f.app, at, egui::Modifiers::NONE);
+        assert_eq!(selected(&f.app), [f.a], "selected");
         let la = label_of(&f.app, f.a);
-        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
-        assert_eq!(text, Some(format!(".x = {la}")), "the label at the caret");
-        assert!(!f.app.picking(), "the keys back with the field");
-        assert_eq!(selected(&f.app), [f.b], "the selection untouched");
+        assert_eq!(line(&f.app), format!(".x = {la}"), "and written");
+        assert!(f.app.picking(), "the pick goes on");
+    }
+
+    /// The label that opens a line is its subject: a bare `.x` means that layer
+    /// whatever is selected.
+    ///
+    /// flip: `line_subject` answering the selection always → fails at "a moved".
+    #[test]
+    fn the_label_that_opens_a_line_is_its_subject() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        bar_with(&ctx, &mut f, "");
+        let la = label_of(&f.app, f.a);
+        let (a0, b0) = (left_of(&f.app, f.a), left_of(&f.app, f.b));
+        f.app
+            .command_bar
+            .as_mut()
+            .unwrap()
+            // The second statement's bare `.x` is the subject's.
+            .write_at_caret(format!("{la}.x += 0; .x += 10"));
+        frame(&ctx, &mut f.app, Vec::new());
+        assert_eq!(selected(&f.app), [f.b], "fixture: b is selected");
+        tap(&ctx, &mut f.app, egui::Key::Enter);
+        assert_eq!(left_of(&f.app, f.a), a0 + 10.0, "a moved");
+        assert_eq!(left_of(&f.app, f.b), b0, "b did not");
+    }
+
+    fn left_of(app: &MastikApp, id: NodeId) -> f64 {
+        app.session.resolved.world_bounds(id).expect("a box").x0
     }
 
     /// `Backspace` just after a label in the line takes the whole label.
@@ -1606,31 +1657,6 @@ mod tests {
         tap(&ctx, &mut f.app, egui::Key::Backspace);
         let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
         assert_eq!(text.as_deref(), Some(".x = "));
-    }
-
-    /// `Backspace` at the line's start takes the subject's pill: the selection
-    /// goes, and the bar stays open.
-    ///
-    /// flip: dropping the bar's subject-pill `Backspace` → fails at "the
-    /// selection goes".
-    #[test]
-    fn backspace_at_the_start_takes_the_subject() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        bar_with(&ctx, &mut f, "");
-        assert_eq!(selected(&f.app), [f.b], "fixture: b is the subject");
-        tap(&ctx, &mut f.app, egui::Key::Backspace);
-        assert!(selected(&f.app).is_empty(), "the selection goes");
-        assert!(f.app.command_bar.is_some(), "the bar stays open");
-    }
-
-    /// The singles are the nine home-row letters, each once, index fingers first.
-    #[test]
-    fn the_singles_are_the_home_row_easiest_first() {
-        let singles = label_singles();
-        assert_eq!(singles.len(), HOME_ROW.len());
-        assert_eq!(&singles[..2], ["f", "j"]);
-        assert_eq!(singles.last().unwrap(), "a");
     }
 
     /// The pairs are the 81 two-letter home-row labels, each once, easiest first.
