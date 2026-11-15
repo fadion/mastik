@@ -652,7 +652,7 @@ impl MastikApp {
         }
     }
 
-    /// Brand mark, name, search, the update chip and the Settings door, under the tab
+    /// The app's name, search, the update chip and the Settings door, under the tab
     /// strip, which is the window's title bar.
     fn dashboard_top_bar(&mut self, ui: &mut egui::Ui, act: &mut Option<Act>) {
         egui::Panel::top("library-topbar")
@@ -662,10 +662,7 @@ impl MastikApp {
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
-                    // The editor's mark, at rest rather than as a control.
-                    let (mark, _) =
-                        ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::empty());
-                    crate::ui::logo(ui, mark, false);
+                    // The name alone: the library's tab right above wears the mark.
                     let brand = ui
                         .label(
                             egui::RichText::new("Mastik")
