@@ -352,11 +352,18 @@ is never cut for its note.
 - **The list above**: the log while the field is empty, else completion, at most eight rows in
   sections *Names*, *Verbs*, *Properties*, *Labels*, *Layers*, *Choices* (a verb's next argument's
   words), the typed letters lit; an almost-match is a dim row naming what it meant.
-- **Keys**: `Tab` takes the lit completion or an error's fix; `↑`/`↓` move through completions, else
-  recall typed lines, `↓` past the newest giving back what was being typed; `Enter` runs (a read
-  copies its value and makes no step; a write is one step named after its verb, else *Edit*, with
-  `TERMINAL_WINDOW`); `Escape` closes the log's menu if it is open, else clears the text, then
-  closes.
+- **When completion shows** follows a code editor's suggest widget (VS Code's, Zed's): typing a
+  name's letter (not a digit), `.` or `:`, or the space before a verb's argument opens it on that
+  word; any other character shuts it; deleting keeps it while the word has letters (or sits right
+  after a trigger); the caret leaving the word shuts it. `Escape` shuts it for that word, and typing
+  on in the word leaves it shut; `Ctrl+Space` (Ctrl on every platform) opens it on the word at the
+  caret. Taking a row shuts it. A list with no rows is not shown.
+- **Keys**: while the list shows, `↑`/`↓` move through it, `Tab` takes the lit row and `Enter` takes
+  it too unless the word already reads as the row, when `Enter` runs the line. Otherwise `↑`/`↓`
+  recall typed lines, `↓` past the newest giving back what was being typed; `Tab` takes an error's
+  fix; `Enter` runs (a read copies its value and makes no step; a write is one step named after its
+  verb, else *Edit*, with `TERMINAL_WINDOW`). `Escape` closes the log's menu if it is open, else the
+  list, else clears the text, then closes.
   A failed line stays in the field with its error.
 
 ## Traps

@@ -58,6 +58,105 @@ pub(crate) struct Bar {
     caret_to: Option<usize>,
     /// The completion list as last worked out ([`MastikApp::bar_completion`]).
     completed: Option<Completed>,
+    /// Whether the completion list is up ([`Bar::follow_suggest`]).
+    suggest: Suggest,
+    /// The text as the field left it last frame, to tell typing from a
+    /// keystroke-free frame.
+    seen: String,
+}
+
+/// The completion list's state, as a code editor's suggest widget keeps it: it
+/// opens on typing a name or a trigger, follows the word being typed, and shuts
+/// when the caret leaves that word.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+enum Suggest {
+    #[default]
+    Off,
+    /// Up for the word starting at this byte.
+    On(usize),
+    /// Escape shut it for the word starting at this byte: typing on in that
+    /// word leaves it shut, as an editor's does.
+    Dismissed(usize),
+}
+
+impl Bar {
+    /// Move the suggest state on from what changed since last frame. Typing a
+    /// name's letter, `.` or `:`, or the space before a verb's argument opens
+    /// it; any other character shuts it; deleting keeps it while the word
+    /// stays, and a caret that leaves the word shuts it. `invoke` (`Ctrl+Space`)
+    /// opens it on the word at the caret whatever came before.
+    fn follow_suggest(&mut self, c: Option<&mastik_vm::Completion>, caret: usize, invoke: bool) {
+        let start = c.map(|c| c.replace.start);
+        if self.text != self.seen {
+            self.highlight = 0;
+            let grew = self.text.len() > self.seen.len();
+            self.suggest = match (c, start) {
+                (Some(c), Some(s)) if s <= caret && caret <= self.text.len() => {
+                    let word = &self.text[s..caret];
+                    let trigger = trigger_at(&self.text, s, c);
+                    match self.suggest {
+                        Suggest::Dismissed(a) if a == s => Suggest::Dismissed(a),
+                        _ if grew => {
+                            let typed = self.text[..caret].chars().next_back();
+                            let opens = match typed {
+                                Some(ch) if ch.is_alphanumeric() || ch == '_' => {
+                                    !word.starts_with(|d: char| d.is_ascii_digit())
+                                }
+                                _ => word.is_empty() && trigger,
+                            };
+                            match opens {
+                                true => Suggest::On(s),
+                                false => Suggest::Off,
+                            }
+                        }
+                        Suggest::On(a) if a == s && (caret > s || trigger) => Suggest::On(a),
+                        _ => Suggest::Off,
+                    }
+                }
+                _ => Suggest::Off,
+            };
+        }
+        if let Suggest::On(a) | Suggest::Dismissed(a) = self.suggest
+            && Some(a) != start
+        {
+            self.suggest = Suggest::Off;
+        }
+        if invoke && let Some(s) = start {
+            self.suggest = Suggest::On(s);
+        }
+    }
+
+    /// Escape on an open list: shut it for this word.
+    fn dismiss(&mut self) {
+        if let Suggest::On(a) = self.suggest {
+            self.suggest = Suggest::Dismissed(a);
+        }
+    }
+
+    /// Take completion row `i` into the field, and shut the list.
+    fn accept(&mut self, c: &mastik_vm::Completion, i: usize) {
+        let Some(row) = c.rows.get(i) else { return };
+        let r = c.replace.clone();
+        if r.end > self.text.len() {
+            return;
+        }
+        let insert = insert_of(row);
+        self.text.replace_range(r.clone(), insert);
+        self.caret_to = Some(r.start + insert.len());
+        self.highlight = 0;
+        self.suggest = Suggest::Off;
+    }
+}
+
+/// Whether an empty word at `start` sits where a list opens on its own: just
+/// after `.` or `:`, or at a verb's argument, whose choices `c` holds.
+fn trigger_at(text: &str, start: usize, c: &mastik_vm::Completion) -> bool {
+    let before = text[..start].chars().next_back();
+    matches!(before, Some('.' | ':'))
+        || (!c.rows.is_empty()
+            && c.rows
+                .iter()
+                .all(|r| r.section == mastik_vm::Section::Choices))
 }
 
 /// A completion list and what it was worked out for — the text, the caret, the
@@ -76,6 +175,8 @@ pub(crate) struct Keys {
     enter: bool,
     tab: bool,
     escape: bool,
+    /// `Ctrl+Space`: open the completion list on the word at the caret.
+    suggest: bool,
 }
 
 /// Take the keys the open bar answers. Called before any panel draws.
@@ -87,6 +188,8 @@ pub(crate) fn read_keys(ctx: &egui::Context) -> Keys {
         enter: i.consume_key(none, egui::Key::Enter),
         tab: i.consume_key(none, egui::Key::Tab),
         escape: i.consume_key(none, egui::Key::Escape),
+        // Ctrl on every platform, as the editors this follows bind it.
+        suggest: i.consume_key(egui::Modifiers::CTRL, egui::Key::Space),
     })
 }
 
@@ -319,17 +422,6 @@ impl MastikApp {
             self.command_bar = Some(bar);
             return;
         }
-        // Escape closes the innermost thing first: the log's menu, then the
-        // text, then the bar.
-        if keys.escape {
-            if bar.log_menu.is_some() {
-                bar.log_menu = None;
-            } else if bar.text.is_empty() {
-                return;
-            } else {
-                bar = Bar::default();
-            }
-        }
         // An edit of the text drops the error it was for and the recall.
         if bar.error.as_ref().is_some_and(|(t, _)| *t != bar.text) {
             bar.error = None;
@@ -346,19 +438,35 @@ impl MastikApp {
             .and_then(|s| s.cursor.char_range())
             .map(|r| char_to_byte(&bar.text, r.primary.index.0))
             .unwrap_or(bar.text.len());
-        let list = if bar.text.trim().is_empty() || bar.recalled.is_some() {
-            if self.session.command_log.entries().len() > 0 {
-                List::Log
+        let completion = (!bar.text.trim().is_empty() && bar.recalled.is_none())
+            .then(|| self.bar_completion(&mut bar, caret));
+        bar.follow_suggest(completion.as_ref(), caret, keys.suggest);
+        let suggesting = matches!(bar.suggest, Suggest::On(_))
+            && bar.error.is_none()
+            && completion.as_ref().is_some_and(|c| !c.rows.is_empty());
+
+        // Escape closes the innermost thing first: the log's menu, the
+        // completion list, then the text, then the bar.
+        if keys.escape {
+            if bar.log_menu.is_some() {
+                bar.log_menu = None;
+            } else if suggesting {
+                bar.dismiss();
+            } else if bar.text.is_empty() {
+                return;
             } else {
-                List::None
+                bar = Bar::default();
             }
-        } else {
-            let c = self.bar_completion(&mut bar, caret);
-            if c.rows.is_empty() || bar.error.is_some() {
-                List::None
-            } else {
-                List::Complete(c)
+        }
+        let list = match completion {
+            _ if bar.text.trim().is_empty() || bar.recalled.is_some() => {
+                match self.session.command_log.entries().len() {
+                    0 => List::None,
+                    _ => List::Log,
+                }
             }
+            Some(c) if suggesting && matches!(bar.suggest, Suggest::On(_)) => List::Complete(c),
+            _ => List::None,
         };
         let rows = match &list {
             List::Complete(c) => c.rows.len().min(LIST_ROWS),
@@ -368,8 +476,10 @@ impl MastikApp {
             bar.highlight = bar.highlight.min(rows - 1);
         }
 
-        // Keys: a list of completions takes the arrows and Tab; otherwise the
-        // arrows walk the typed lines and Tab takes an error's fix.
+        // Keys: a list of completions takes the arrows, Tab and Enter, as an
+        // editor's does; otherwise the arrows walk the typed lines, Tab takes an
+        // error's fix and Enter runs.
+        let mut accepted = false;
         if let List::Complete(c) = &list {
             if keys.down {
                 bar.highlight = (bar.highlight + 1) % rows;
@@ -377,14 +487,15 @@ impl MastikApp {
             if keys.up {
                 bar.highlight = (bar.highlight + rows - 1) % rows;
             }
-            if keys.tab
-                && let Some(row) = c.rows.get(bar.highlight)
-            {
-                let r = c.replace.clone();
-                let insert = insert_of(row);
-                bar.text.replace_range(r.clone(), insert);
-                bar.caret_to = Some(r.start + insert.len());
-                bar.highlight = 0;
+            // Enter takes the row only when it would change the word: on a word
+            // already whole, it runs the line.
+            let changes = c
+                .rows
+                .get(bar.highlight)
+                .is_some_and(|row| bar.text.get(c.replace.clone()) != Some(insert_of(row)));
+            if keys.tab || (keys.enter && changes) {
+                bar.accept(c, bar.highlight);
+                accepted = true;
             }
         } else {
             let typed: Vec<String> = self
@@ -432,7 +543,8 @@ impl MastikApp {
                 bar.error = None;
             }
         }
-        if keys.enter {
+        if keys.enter && !accepted {
+            bar.suggest = Suggest::Off;
             let line = bar.text.trim().to_owned();
             // The error's spans count from the trimmed line; the field holds the
             // spaces before it.
@@ -555,15 +667,19 @@ impl MastikApp {
                 let error = bar.error.as_ref().map(|(_, e)| e.clone());
                 let error = error.as_ref();
                 let value = bar.read.as_ref().and_then(|(_, _, v)| v.clone());
+                // What the field changes from here on is typing, which next
+                // frame's `follow_suggest` reads against this.
+                bar.seen = bar.text.clone();
                 field(ui, &mut bar, error, value.as_deref());
                 crate::ui::card_rule(ui);
                 match error {
                     Some(e) => error_line(ui, e),
                     None => {
                         let (left, right) = match (&list, &value) {
-                            (List::Complete(_), _) => {
-                                ("Tab completes · ↑↓ choose".to_owned(), subject.clone())
-                            }
+                            (List::Complete(_), _) => (
+                                "Tab completes · ↑↓ choose · Esc hides".to_owned(),
+                                subject.clone(),
+                            ),
                             _ if bar.recalled.is_some() => {
                                 ("↑ recalled from the log".to_owned(), subject.clone())
                             }
@@ -580,14 +696,13 @@ impl MastikApp {
                     }
                 }
             });
+        // A click writes the text, not typing: `seen` takes it so the list
+        // does not open on it.
         if let Some(i) = clicked_row
             && let List::Complete(c) = &list
-            && let Some(row) = c.rows.get(i)
         {
-            let r = c.replace.clone();
-            let insert = insert_of(row);
-            bar.text.replace_range(r.clone(), insert);
-            bar.caret_to = Some(r.start + insert.len());
+            bar.accept(c, i);
+            bar.seen = bar.text.clone();
         }
         if let Some((i, shift)) = log_click {
             bar.picked = match (shift, bar.picked) {
@@ -600,6 +715,7 @@ impl MastikApp {
             {
                 bar.text = line;
                 bar.caret_to = Some(bar.text.len());
+                bar.seen = bar.text.clone();
             }
         }
         if let Some((i, at)) = log_menu_at {
@@ -1407,6 +1523,81 @@ pub(crate) mod tests {
             .find(|g| g.text().starts_with("Set how"))
             .expect("the note is drawn");
         assert!(note.elided, "the note is cut");
+    }
+
+    fn suggest(app: &MastikApp) -> Suggest {
+        app.command_bar.as_ref().expect("the bar is open").suggest
+    }
+
+    /// Type `text`, and the frame after it that reads the typing.
+    fn type_in(ctx: &egui::Context, app: &mut MastikApp, text: &str) {
+        pass(ctx, app, vec![egui::Event::Text(text.into())], NONE);
+        pass(ctx, app, Vec::new(), NONE);
+    }
+
+    /// A name's letters open the list and an operator shuts it, though the
+    /// empty word after it has rows to offer.
+    /// flip: `follow_suggest` opening on any typed character → fails at "an
+    /// operator shuts it".
+    #[test]
+    fn typing_a_name_opens_the_list_and_an_operator_shuts_it() {
+        let (ctx, mut app, _) = typed(".wid");
+        assert!(matches!(suggest(&app), Suggest::On(_)), "a name opens it");
+        type_in(&ctx, &mut app, " = ");
+        assert_eq!(suggest(&app), Suggest::Off, "an operator shuts it");
+        type_in(&ctx, &mut app, "pa");
+        assert!(
+            matches!(suggest(&app), Suggest::On(_)),
+            "a new name opens it"
+        );
+    }
+
+    /// Escape hides the list and keeps the line; typing on in that word leaves
+    /// it hidden, and `Ctrl+Space` brings it back.
+    /// flip: `follow_suggest` letting typing reopen a dismissed word → fails at
+    /// "stays hidden".
+    #[test]
+    fn escape_hides_the_list_for_the_word() {
+        let (ctx, mut app, _) = typed(".wi");
+        pass(&ctx, &mut app, vec![key(egui::Key::Escape, NONE)], NONE);
+        let bar = app.command_bar.as_ref().expect("the bar stays open");
+        assert_eq!(bar.text, ".wi", "the line stays");
+        assert!(matches!(bar.suggest, Suggest::Dismissed(_)), "hidden");
+        type_in(&ctx, &mut app, "d");
+        assert!(
+            matches!(suggest(&app), Suggest::Dismissed(_)),
+            "stays hidden"
+        );
+        pass(
+            &ctx,
+            &mut app,
+            vec![key(egui::Key::Space, egui::Modifiers::CTRL)],
+            egui::Modifiers::CTRL,
+        );
+        assert!(matches!(suggest(&app), Suggest::On(_)), "Ctrl+Space");
+    }
+
+    /// Enter takes a row that would change the word, and runs a line whose word
+    /// is already whole.
+    /// flip: Enter always running → fails at "Enter took the row".
+    #[test]
+    fn enter_takes_a_row_that_changes_the_word() {
+        let (ctx, mut app, card) = typed(".widt");
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        assert_eq!(
+            app.command_bar.as_ref().unwrap().text,
+            ".width",
+            "Enter took the row"
+        );
+        type_in(&ctx, &mut app, " = 40");
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        let w = app
+            .session
+            .resolved
+            .world_bounds(card)
+            .expect("a box")
+            .width();
+        assert_eq!(w, 40.0, "the line ran");
     }
 
     /// Counts read as the status line says them.
