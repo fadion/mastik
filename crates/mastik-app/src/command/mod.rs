@@ -55,6 +55,16 @@ pub(crate) struct Bar {
     /// Put the caret at the end of the field next frame, after a recall or a
     /// completion wrote the text.
     caret_to: Option<usize>,
+    /// The completion list as last worked out ([`MastikApp::bar_completion`]).
+    completed: Option<Completed>,
+}
+
+/// A completion list and what it was worked out for — the text, the caret, the
+/// document's revision and the page — with each shown row's layer.
+struct Completed {
+    key: (String, usize, u64, NodeId),
+    completion: mastik_vm::Completion,
+    layers: Vec<Option<NodeId>>,
 }
 
 /// This frame's bar keys, taken out of `Events` before the field can read them.
@@ -124,23 +134,66 @@ impl MastikApp {
             .collect()
     }
 
-    /// The layer a completion row names, for its kind glyph: a label's layer, or
-    /// the first on the page by that name.
-    fn completion_layer(&self, row: &mastik_vm::Row) -> Option<&mastik_core::Node> {
+    /// The layer each shown completion row names, for its kind glyph: a label's
+    /// layer, or the first on the page by that name. One walk of the page, and
+    /// only when a row names a layer.
+    fn completion_layers(&self, rows: &[mastik_vm::Row]) -> Vec<Option<NodeId>> {
+        use mastik_vm::Section;
         let doc = &self.session.doc;
-        match row.section {
-            mastik_vm::Section::Labels => self
-                .bar_labels()
-                .get(row.label.as_str())
-                .and_then(|id| doc.get(*id)),
-            mastik_vm::Section::Layers => {
-                mastik_core::build::subtree_nodes(doc, &[self.session.page])
-                    .into_iter()
-                    .filter_map(|id| doc.get(id))
-                    .find(|n| n.name() == row.label)
+        let labels = self.leap_labels();
+        let wanted: rustc_hash::FxHashSet<&str> = rows
+            .iter()
+            .filter(|r| r.section == Section::Layers)
+            .map(|r| r.label.as_str())
+            .collect();
+        let mut by_name: rustc_hash::FxHashMap<&str, NodeId> = Default::default();
+        if !wanted.is_empty() {
+            for id in mastik_core::build::subtree_nodes(doc, &[self.session.page]) {
+                if let Some(name) = doc.get(id).map(|n| n.name())
+                    && wanted.contains(name)
+                {
+                    by_name.entry(name).or_insert(id);
+                }
             }
-            _ => None,
         }
+        rows.iter()
+            .map(|row| match row.section {
+                Section::Labels => labels.get(row.label.as_str()).copied(),
+                Section::Layers => by_name.get(row.label.as_str()).copied(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What to complete at `caret` in `bar`'s text, worked out again only when
+    /// the text, the caret, the document or the page has changed since.
+    fn bar_completion(&self, bar: &mut Bar, caret: usize) -> mastik_vm::Completion {
+        let key = (
+            bar.text.clone(),
+            caret,
+            self.session.revision(),
+            self.session.page,
+        );
+        if let Some(c) = &bar.completed
+            && c.key == key
+        {
+            return c.completion.clone();
+        }
+        let labels = self.bar_labels();
+        let completion = mastik_vm::complete(
+            &self.session.doc,
+            self.session.page,
+            &labels,
+            &bar.text,
+            caret,
+        );
+        let shown = &completion.rows[..completion.rows.len().min(LIST_ROWS)];
+        bar.completed = Some(Completed {
+            key,
+            layers: self.completion_layers(shown),
+            completion: completion.clone(),
+        });
+        completion
     }
 
     /// Run `line`: a read copies its value, a write commits one undo step named
@@ -299,14 +352,7 @@ impl MastikApp {
                 List::None
             }
         } else {
-            let labels = self.bar_labels();
-            let c = mastik_vm::complete(
-                &self.session.doc,
-                self.session.page,
-                &labels,
-                &bar.text,
-                caret,
-            );
+            let c = self.bar_completion(&mut bar, caret);
             if c.rows.is_empty() || bar.error.is_some() {
                 List::None
             } else {
@@ -444,6 +490,11 @@ impl MastikApp {
         let subject = self.bar_subject();
         let parsed = mastik_vm::desugar(bar.text.trim());
         let mut clicked_row: Option<usize> = None;
+        let row_layers = bar
+            .completed
+            .as_ref()
+            .map(|c| c.layers.clone())
+            .unwrap_or_default();
         let mut log_click: Option<(usize, bool)> = None;
         let mut log_menu_at: Option<(usize, egui::Pos2)> = None;
         let entries: Vec<log::Entry> = self.session.command_log.entries().cloned().collect();
@@ -486,7 +537,11 @@ impl MastikApp {
                                     crate::palette::section_label(ui, section_title(row.section));
                                     section = Some(row.section);
                                 }
-                                let layer = self.completion_layer(row);
+                                let layer = row_layers
+                                    .get(i)
+                                    .copied()
+                                    .flatten()
+                                    .and_then(|id| self.session.doc.get(id));
                                 if complete_row(ui, layer, row, i == bar.highlight).clicked() {
                                     clicked_row = Some(i);
                                 }
@@ -1247,6 +1302,39 @@ pub(crate) mod tests {
         assert_eq!(text(&app), ".x += 1", "fixture: the line recalled");
         pass(&ctx, &mut app, vec![key(egui::Key::ArrowDown, NONE)], NONE);
         assert_eq!(text(&app), "zzq", "the draft is back");
+    }
+
+    /// The completion list is kept between frames but worked out again when the
+    /// document changes under the same text.
+    /// flip: `bar_completion`'s key leaving out the revision → fails at "the
+    /// renamed layer is offered".
+    #[test]
+    fn completions_follow_the_document() {
+        let (ctx, mut app, card) = typed("Car");
+        let offered = |app: &MastikApp| -> Vec<String> {
+            let bar = app.command_bar.as_ref().unwrap();
+            bar.completed
+                .as_ref()
+                .map(|c| c.completion.rows.iter().map(|r| r.label.clone()).collect())
+                .unwrap_or_default()
+        };
+        assert!(
+            offered(&app).contains(&"Card".to_string()),
+            "fixture: Card offered: {:?}",
+            offered(&app)
+        );
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetName {
+                id: card,
+                name: "Carrot".into(),
+            }
+        ])));
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        assert!(
+            offered(&app).contains(&"Carrot".to_string()),
+            "the renamed layer is offered: {:?}",
+            offered(&app)
+        );
     }
 
     /// With the log's menu open, Escape closes the menu and leaves the line.

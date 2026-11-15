@@ -225,12 +225,12 @@ impl MastikApp {
                 .iter()
                 .map(|s| (Which::Library(s.name.clone()), s.name.clone())),
         );
-        for used in self.kits_used() {
-            for s in self.kit_scripts(&used.kit) {
+        for entry in self.script_kits() {
+            for s in self.entry_scripts(&entry) {
                 out.push((
                     Which::Kit {
-                        kit: used.kit.clone(),
-                        kit_name: used.name.clone(),
+                        kit: entry.id.clone(),
+                        kit_name: entry.name.clone(),
                         id: s.id,
                     },
                     s.name,
@@ -318,15 +318,42 @@ impl MastikApp {
     /// The scripts kit `kit` carries, from its published state, which the kit's
     /// shelf reads when first asked.
     fn kit_scripts(&self, kit: &str) -> Vec<Script> {
-        let own = self.session.doc.meta().id.clone();
-        let Some(entry) = crate::kits::index::kits_in(&self.library, own.as_deref())
-            .into_iter()
+        self.script_kits()
+            .iter()
             .find(|k| k.id == kit)
-        else {
+            .map(|entry| self.entry_scripts(entry))
+            .unwrap_or_default()
+    }
+
+    /// The library's entries for the kits this document uses, in vault order.
+    /// Read every frame by the editor and the palette, so it walks only the
+    /// vault's tops: `kits_used` also counts each kit's instances.
+    fn script_kits(&self) -> Vec<crate::kits::index::KitEntry> {
+        let doc = &self.session.doc;
+        let Some(vault) = doc.vault().and_then(|v| doc.get(v)) else {
             return Vec::new();
         };
+        let mut used: Vec<&str> = Vec::new();
+        for top in vault.children() {
+            if let Some(o) = doc.get(*top).and_then(|n| n.origin())
+                && !used.contains(&o.kit.as_str())
+            {
+                used.push(&o.kit);
+            }
+        }
+        if used.is_empty() {
+            return Vec::new();
+        }
+        let listed = crate::kits::index::kits_in(&self.library, doc.meta().id.as_deref());
+        used.iter()
+            .filter_map(|kit| listed.iter().find(|k| k.id == *kit).cloned())
+            .collect()
+    }
+
+    /// `entry`'s scripts as its shelf holds them; none until it is read.
+    fn entry_scripts(&self, entry: &crate::kits::index::KitEntry) -> Vec<Script> {
         self.kit_shelf
-            .current(&entry)
+            .current(entry)
             .map(|p| p.document().scripts().to_vec())
             .unwrap_or_default()
     }
@@ -334,20 +361,15 @@ impl MastikApp {
     /// The kits this document uses, each with its scripts; a kit not read yet is
     /// asked for, and lists its scripts once its shelf has them.
     fn kits_with_scripts(&mut self) -> Vec<(String, String, Vec<Script>)> {
-        let own = self.session.doc.meta().id.clone();
-        let listed = crate::kits::index::kits_in(&self.library, own.as_deref());
         let mut out = Vec::new();
-        for used in self.kits_used() {
-            let Some(entry) = listed.iter().find(|k| k.id == used.kit) else {
-                continue;
-            };
-            if self.kit_shelf.current(entry).is_none() {
-                self.kit_shelf.ask(entry);
+        for entry in self.script_kits() {
+            if self.kit_shelf.current(&entry).is_none() {
+                self.kit_shelf.ask(&entry);
                 continue;
             }
-            let scripts = self.kit_scripts(&used.kit);
+            let scripts = self.entry_scripts(&entry);
             if !scripts.is_empty() {
-                out.push((used.kit.clone(), used.name.clone(), scripts));
+                out.push((entry.id, entry.name, scripts));
             }
         }
         out

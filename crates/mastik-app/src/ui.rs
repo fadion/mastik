@@ -2311,7 +2311,7 @@ pub const CODE_GUTTER_W: f32 = 44.0;
 
 /// The script editor's text: monospace at [`CODE_PT`], unwrapped, its runs inked
 /// by `inks`, with a gutter of line numbers. `bad` (0-based) numbers its line in
-/// the danger ink and squiggles it; `editable` false shows the text for reading.
+/// the error ink and squiggles it; `editable` false shows the text for reading.
 /// No ground of its own: it fills the pane it is given, which scrolls it.
 pub fn code_editor(
     ui: &mut egui::Ui,
@@ -2322,8 +2322,22 @@ pub fn code_editor(
     editable: bool,
 ) -> egui::text_edit::TextEditOutput {
     let font = egui::FontId::monospace(CODE_PT);
+    // The layouter runs every frame, so the inks are worked out once per text
+    // and theme and kept under the edit's id.
+    let dark = ui.visuals().dark_mode;
+    let inks_key = id.with("code-inks");
     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
         let s = buf.as_str();
+        let hash = egui::util::hash((s, dark));
+        let held = ui.data(|d| d.get_temp::<(u64, std::sync::Arc<CodeInks>)>(inks_key));
+        let runs = match held {
+            Some((h, runs)) if h == hash => runs,
+            _ => {
+                let runs = std::sync::Arc::new(inks(s));
+                ui.data_mut(|d| d.insert_temp(inks_key, (hash, runs.clone())));
+                runs
+            }
+        };
         let mut job = egui::text::LayoutJob::default();
         let fmt = |ink| {
             let mut f = egui::TextFormat::simple(font.clone(), ink);
@@ -2331,7 +2345,7 @@ pub fn code_editor(
             f
         };
         let mut at = 0;
-        for (r, ink) in inks(s) {
+        for (r, ink) in runs.iter().cloned() {
             if r.start < at
                 || r.end > s.len()
                 || !s.is_char_boundary(r.start)
@@ -2367,11 +2381,15 @@ pub fn code_editor(
         })
         .inner;
     let p = ui.painter();
+    // Only the rows in view get a number; the rest are counted past.
+    let shown = ui.clip_rect().expand(CODE_LINE_H).y_range();
     let mut line = 0usize;
     let mut starts = true;
     for row in &out.galley.rows {
-        if starts {
-            let y = out.galley_pos.y + row.rect().center().y;
+        let y = out.galley_pos.y + row.rect().center().y;
+        if starts && !shown.contains(y) {
+            line += 1;
+        } else if starts {
             let ink = match bad == Some(line) {
                 true => color::error(),
                 false => theme::text::faint(),
@@ -8462,6 +8480,34 @@ mod logo_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `code_editor` works its inks out once per text, not on every frame, and
+    /// again when the text changes.
+    /// flip: the layouter calling `inks` without its cache → fails at "kept".
+    #[test]
+    fn code_inks_are_worked_out_once_per_text() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let calls = std::cell::Cell::new(0);
+        let inks = |_: &str| {
+            calls.set(calls.get() + 1);
+            CodeInks::new()
+        };
+        let mut text = "local a = 1".to_string();
+        let id = egui::Id::new("ink-cache");
+        for _ in 0..3 {
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                code_editor(ui, id, &mut text, &inks, None, false);
+            });
+        }
+        assert_eq!(calls.get(), 1, "kept");
+        text.push_str("\nlocal b = 2");
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            code_editor(ui, id, &mut text, &inks, None, false);
+        });
+        assert_eq!(calls.get(), 2, "a new text is inked again");
+    }
 
     /// An `edit_frame`d edit fills its row's height with its line on the row's
     /// centre, both shown in a field row beside a label and `put` over a box.
