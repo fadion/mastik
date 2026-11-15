@@ -85,6 +85,9 @@ struct Step {
 pub struct StepView<'a> {
     pub note: &'a StepNote,
     pub serial: u64,
+    /// What applying the step would put back: the undo stack's inverse, the redo
+    /// stack's forward edit. Its values are the ones the step replaced.
+    pub inverse: &'a Transaction,
 }
 
 /// A history in the form it is kept between sessions ([`History::saved`]): each
@@ -418,6 +421,7 @@ impl Step {
         StepView {
             note: &self.note,
             serial: self.serial,
+            inverse: &self.tx,
         }
     }
 }
