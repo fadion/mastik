@@ -41,7 +41,7 @@ pub(crate) enum Opened {
 /// The open sheet.
 pub(crate) struct Cheatsheet {
     filter: String,
-    /// The section that leads: the library's, the text keys', Navigate's, or none.
+    /// The section that leads: the library's, the text keys', Pick's, or none.
     first: Lead,
     /// The frame that opened it, whose chord press must not also close it.
     just_opened: bool,
@@ -112,10 +112,14 @@ fn keys_of(accel: &str) -> Vec<String> {
     accel.split('+').map(str::to_string).collect()
 }
 
-/// Navigate's keys: the registry's row that turns it on, then its own keymap's,
-/// spelled from the table (`input::navigate_rows`) and labelled by `Nav::label`.
+/// The bar's Pick keys: the registry's row that opens it, the labels, then its
+/// own keymap's, spelled from the table (`input::navigate_rows`) and labelled by
+/// `Nav::label`.
 fn navigate_section() -> Section {
     let mut rows: Vec<Row> = item_row(Item::Navigate).into_iter().collect();
+    // The letters are read before the table, so no table row spells them.
+    rows.push(hand_row("Pick the layer by its label", &["Label"]));
+    rows.push(hand_row("Add the layer to the selection", &["Shift+Label"]));
     for (nav, chords) in crate::input::navigate_rows() {
         rows.push(Row {
             item: None,
@@ -123,13 +127,8 @@ fn navigate_section() -> Section {
             chords: chords.into_iter().map(keys_of).collect(),
         });
     }
-    // The Shift twins are unshown in the table; one row says it for all four.
-    rows.insert(
-        5,
-        hand_row("Add the layer to the selection", &["Shift+move"]),
-    );
     Section {
-        title: "Navigate",
+        title: "Pick layers",
         rows,
     }
 }
@@ -364,7 +363,7 @@ fn sections(lead: Lead) -> Vec<Section> {
     let lead_title = match lead {
         Lead::Library => Some("Library"),
         Lead::Text => Some("Text editing"),
-        Lead::Navigate => Some("Navigate"),
+        Lead::Navigate => Some("Pick layers"),
         Lead::None => None,
     };
     if let Some(title) = lead_title
@@ -433,7 +432,7 @@ impl MastikApp {
         let first = match from {
             Opened::Library => Lead::Library,
             Opened::Editor if self.text.is_some() => Lead::Text,
-            Opened::Editor if self.navigating() => Lead::Navigate,
+            Opened::Editor if self.picking() => Lead::Navigate,
             Opened::Editor => Lead::None,
         };
         self.cheatsheet = Some(Cheatsheet {
@@ -1299,18 +1298,18 @@ mod tests {
     fn the_screen_it_opened_from_leads() {
         assert_eq!(sections(Lead::Library)[0].title, "Library");
         assert_eq!(sections(Lead::Text)[0].title, "Text editing");
-        assert_eq!(sections(Lead::Navigate)[0].title, "Navigate");
+        assert_eq!(sections(Lead::Navigate)[0].title, "Pick layers");
         assert_eq!(sections(Lead::None)[0].title, "Tools");
     }
 
-    /// Every chord on the Navigate section's own rows resolves, in Navigate, to its
-    /// key's action and nothing else; the editor's meaning of the same key rests.
-    /// The rows are spelled from the table, so a key bound to the wrong step agrees
-    /// with itself here: `navigate::tests::hjkl_walk_the_layers_panel_rows` holds
-    /// the steps.
+    /// Every chord on the Pick section's own rows resolves, in Pick, to its key's
+    /// action and nothing else; the editor's meaning of the same key rests. The
+    /// rows are spelled from the table, so a key bound to the wrong step agrees
+    /// with itself here: `navigate::tests::the_arrows_walk_siblings_and_shift_adds`
+    /// holds the steps.
     ///
     /// flip: `input`'s `nav` binding builder scoping its rows `Scope::Normal` →
-    /// fails at "Parent layer (H)".
+    /// fails at "Step in (Enter)".
     #[test]
     fn every_navigate_chord_resolves_in_navigate() {
         use crate::input::{Action, Mode};
@@ -1356,6 +1355,6 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked >= 16, "only {checked} chords were driven");
+        assert!(checked >= 12, "only {checked} chords were driven");
     }
 }

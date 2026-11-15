@@ -551,8 +551,7 @@ pub struct MastikApp {
     pub(crate) canvas: CanvasRenderer,
     /// Explicit editing mode — every keystroke routes through it (§9.3).
     pub(crate) mode: Mode,
-    /// Navigate, the keyboard walk through the tree, and its leap labels
-    /// (`crate::navigate`).
+    /// The command bar's Pick focus and its leap labels (`crate::navigate`).
     pub(crate) navigate: crate::navigate::Navigate,
     pub(crate) tool: Tool,
     pub(crate) drag: Drag,
@@ -1302,7 +1301,6 @@ impl ToolsRow {
             .chain([
                 (crate::contrast::STOP_CONTRAST, None),
                 (crate::vision::STOP_VISION, None),
-                (crate::navigate::STOP_NAVIGATE, ToolsRow::Navigate.accel()),
             ])
             .collect()
     }
@@ -1324,7 +1322,7 @@ impl ToolsRow {
         }
     }
 
-    /// The chord a bulk edit and Navigate show, from the keymap; the checks have none.
+    /// The chord a bulk edit and *Pick layers* show, from the keymap; the checks have none.
     fn accel(self) -> Option<&'static str> {
         use crate::menu::Item;
         match self {
@@ -2319,9 +2317,18 @@ impl MastikApp {
         let mut palette_keys = crate::palette::Keys::default();
         let mut bar_keys = crate::command::Keys::default();
         let popover_heard = std::mem::take(&mut self.popover_heard);
-        if self.command_bar.is_some() && !self.modal_is_up() {
-            // The bar owns the keyboard as the palette does.
-            bar_keys = crate::command::read_keys(&ctx);
+        if self.picking() && !self.modal_is_up() {
+            // The bar's Pick focus: the labels take the letters, then its keymap
+            // the rest; every other editor key rests.
+            self.leap_keys(&ctx);
+            for action in input::resolve(&ctx, self.keymap_mode(), self.prefs.nudge) {
+                self.dispatch(&ctx, action);
+            }
+        } else if let Some(bar) = self.command_bar.as_ref()
+            && !self.modal_is_up()
+        {
+            // The bar's Type focus owns the keyboard as the palette does.
+            bar_keys = crate::command::read_keys(&ctx, &bar.text);
         } else if self.palette.is_some() && !self.modal_is_up() {
             // The palette owns the keyboard: its keys leave `Events` before its
             // field can read them, and nothing reaches `input::resolve`.
@@ -2368,11 +2375,8 @@ impl MastikApp {
                 self.tab_key(key);
             } else {
                 self.compare_overlay_key(&ctx);
-                // Leap labels on the canvas take the letters in place of the keymap.
-                if !self.leap_keys(&ctx) {
-                    for action in input::resolve(&ctx, self.keymap_mode(), self.prefs.nudge) {
-                        self.dispatch(&ctx, action);
-                    }
+                for action in input::resolve(&ctx, self.keymap_mode(), self.prefs.nudge) {
+                    self.dispatch(&ctx, action);
                 }
             }
         }
@@ -2861,7 +2865,7 @@ impl MastikApp {
             Action::OpacityDigit(d) => self.opacity_digit(ctx, d),
             Action::BlendChord(d) => self.blend_chord(d),
             Action::TextStyle(chord) => self.text_chord(chord),
-            Action::Navigate => self.toggle_navigate(),
+            Action::Navigate => self.pick_layers(),
             Action::OpenScripts => self.open_scripts(),
             Action::RunScript(i) => self.run_listed_script(i),
             Action::Nav(nav) => self.nav_action(ctx, nav),
@@ -8537,7 +8541,7 @@ impl MastikApp {
         }
     }
 
-    /// The **Tools** dropdown's rows: Navigate, *Scripts…*, the checks, which change nothing,
+    /// The **Tools** dropdown's rows: *Pick layers*, *Scripts…*, the checks, which change nothing,
     /// then a hairline and the bulk edits, each opening its box with its chord beside it.
     /// Bare rows with no tick column: a check that is on says so in its own bar
     /// over the canvas. A pick closes the menu before it acts.
@@ -8559,7 +8563,6 @@ impl MastikApp {
                     crate::contrast::STOP_CONTRAST
                 }
                 ToolsRow::SimulateVision if self.vision.is_some() => crate::vision::STOP_VISION,
-                ToolsRow::Navigate if self.navigating() => crate::navigate::STOP_NAVIGATE,
                 _ => row.label(),
             };
             let style = crate::ui::MenuRow::new("", label)
@@ -8575,7 +8578,7 @@ impl MastikApp {
             }
             self.open_menu = TopMenu::None;
             match row {
-                ToolsRow::Navigate => self.toggle_navigate(),
+                ToolsRow::Navigate => self.pick_layers(),
                 ToolsRow::Scripts => self.open_scripts(),
                 ToolsRow::CheckContrast => self.toggle_contrast(),
                 ToolsRow::SimulateVision => self.toggle_vision(),
@@ -8910,8 +8913,9 @@ impl MastikApp {
     }
 
     /// The floating status bar at the canvas's bottom left, to the minimap's right when
-    /// that shows: the mode when not the default (Navigate's with its path and hint),
-    /// and the last status message for [`status_hold`], then a fade.
+    /// that shows: a text session's mode, and the last status message for
+    /// [`status_hold`], then a fade. The bar's Pick focus is no mode here: the bar
+    /// itself says it.
     /// *View ▸ Show messages* hides the message, never the mode. Drawn in focus
     /// mode too (its Escape hint). Truncated so it never runs under the inspector.
     ///
@@ -8921,7 +8925,7 @@ impl MastikApp {
     fn status_bar(&self, ctx: &egui::Context, canvas: egui::Rect) -> bool {
         let status = self.session.status();
         let mode = self.keymap_mode();
-        let moded = mode != Mode::Normal;
+        let moded = mode == Mode::TextInsert;
         let exporting = self.exporting();
         let age = status.at.elapsed().as_secs_f32();
         let hold = status_hold(status).as_secs_f32();
@@ -8973,19 +8977,11 @@ impl MastikApp {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 8.0;
                             if moded {
-                                // Navigate wears the amber, as it is its only sign.
-                                let ink = match mode {
-                                    Mode::Navigate => color::warn(),
-                                    _ => color::accent_300(),
-                                };
                                 ui.label(
                                     egui::RichText::new(mode.label())
                                         .size(crate::ui::EYEBROW_PT)
-                                        .color(ink),
+                                        .color(color::accent_300()),
                                 );
-                            }
-                            if mode == Mode::Navigate {
-                                self.navigate_pill(ui);
                             }
                             if message {
                                 ui.add(

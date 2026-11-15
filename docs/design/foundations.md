@@ -32,7 +32,7 @@ Mastik is a native, open-source 2D design tool (Figma-class scope, minimal v1) w
 - Save/load: native versioned document format with deterministic bytes.
 - Export: SVG (semantic), PNG and JPEG (CPU renderer, no GPU needed), JSON snapshot (AI handoff).
 - MCP server (read/query/export, then write operations against the live document) and headless mode `mastik serve` (§8.2).
-- Command Mode: Navigate, the command bar and scripts in sandboxed Luau, stored in the library, a document or a kit and never run by the document (§13, `command-mode.md`).
+- Command Mode: the command bar (typing a line, picking layers by label) and scripts in sandboxed Luau, stored in the library, a document or a kit and never run by the document (§13, `command-mode.md`).
 - Platforms: Windows, Linux, and Apple Silicon macOS. Nobody developing Mastik has a Mac; CI's macOS leg is its only compiler. v0.4.0 was the first release built by CI for every platform; no build has been run by hand on a Mac.
 
 ### Deferred (design for, do not build)
@@ -157,18 +157,18 @@ Not designed: conflict resolution, causality/ordering metadata, presence, networ
 
 ## 13. Command Mode
 
-A keyboard-driven way to walk the node tree and edit at typing speed, through the same verbs agents use over MCP. Built: **Navigate** (`` ` ``: `h`/`l` parent and child, `j`/`k` the Layers panel's row below and above, leap labels on `f`), the **command bar** (`:`, one line of Luau over the selection, one undo step) and **scripts** (the editor, the library folder, scripts stored in documents and kits). The design is in `command-mode.md`; the keys in `shortcuts.md` §15. `/ai` in the bar, a door into the assistant, is unbuilt (`docs/ai.md`).
+A keyboard-driven way to walk the node tree and edit at typing speed, through the same verbs agents use over MCP. Built: the **command bar** with two focuses, **Type** (`:`, one line of Luau over the selection, one undo step) and **Pick** (`` ` ``, the canvas has the keys: leap labels select, the arrows walk the tree), and **scripts** (the editor, the library folder, scripts stored in documents and kits). The design is in `command-mode.md`; the keys in `shortcuts.md` §15. `/ai` in the bar, a door into the assistant, is unbuilt (`docs/ai.md`).
 
 ### Decisions made
 
 1. **One-shot evaluation, not constraints.** Expressions are evaluated at commit and forgotten; `a.width = b.width - 5` copies a value. Persistent constraints are a separate future feature (a dependency graph); do not let the syntax grow into an accidental constraint engine. §5.3c's insets are not this: a fixed layout algorithm re-run from specified values. For the same reason a script may be stored in a document but is never run by it: no run on open, no re-run on a change (§15 D1100).
 2. **World-space property projection.** The language speaks `x/y/width/height/rotation/opacity/fill…` in world space (Figma inspector semantics), projected onto local transforms and geometry ops by a facade in `mastik-core` (`build::move_by_world`, `edit::turned_to`), the same machinery as MCP's `place_at_world` (§8.4).
 3. **Selection-relative addressing.** The selected node is the default subject (`.width = …`); `parent`, `prev`/`next` are relative; leap-label handles address other nodes. Lookup by layer name is a disambiguated fallback only (names are not unique).
-4. **The editor stays the normal mode.** Navigate is a toggle that swaps the keymap (`Mode::Navigate`, handed to `input::resolve` by `MastikApp::keymap_mode`) and leaves the canvas, panels and mouse as they are, with its sign on the status card. The bar needs no mode: `:` opens it from the editor or Navigate whenever no text entry has the keyboard. Text editing stays `Mode::TextInsert`.
+4. **The editor stays the normal mode.** The bar needs no mode: `:` opens it from the editor whenever no text entry has the keyboard, and the canvas, panels and mouse stay live under it. Its Pick focus swaps only the keymap (`Mode::Navigate`, handed to `input::resolve` by `MastikApp::keymap_mode`); the bar's head row is its sign. Text editing stays `Mode::TextInsert`.
 
 ### Where it rests
 
-- **Mode-aware input routing** (§9.3): `input::resolve` takes the keymap's mode, so Navigate is one more arm of the same match.
+- **Mode-aware input routing** (§9.3): `input::resolve` takes the keymap's mode, so the bar's Pick focus is one more arm of the same match.
 - **The world-space facade in core** (decision 2), shared by the language and MCP.
 - **Leap labels are egui chrome**, painted in `draw_canvas` over everything a layer wears, not a `RenderOverrides` overlay.
 

@@ -55,7 +55,7 @@ pub trait Host {
 /// this session, and the script's input values.
 pub struct Env<'a> {
     pub selection: &'a [NodeId],
-    /// Lowercase two-letter labels (`sk`) to the layers they were shown on.
+    /// Lowercase leap labels (`f`, `sk`) to the layers they were shown on.
     pub labels: &'a FxHashMap<String, NodeId>,
     pub params: serde_json::Map<String, serde_json::Value>,
 }

@@ -129,13 +129,14 @@ impl Log {
         }
     }
 
-    /// The newest line typed in the bar, for `.` to repeat.
-    pub(crate) fn last_typed(&self) -> Option<&str> {
+    /// The newest line that ran, typed in the bar or written for an edit made
+    /// elsewhere, for `.` to repeat. A script's run is no line.
+    pub(crate) fn last_line(&self) -> Option<&str> {
         self.entries
             .iter()
             .rev()
-            .find(|e| e.source == Source::Bar && !e.failed)
-            .and_then(|e| e.line.as_deref())
+            .filter(|e| !e.failed && !matches!(e.source, Source::Script(_)))
+            .find_map(|e| e.line.as_deref())
     }
 }
 

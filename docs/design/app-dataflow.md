@@ -165,7 +165,7 @@ app-wide and kept across launches, so the colour just used is one click away in 
 
 ### Input routing (`input.rs`)
 
-- Every keystroke resolves against an explicit `Mode` (normal / text-insert / navigate, the last handed in by `MastikApp::keymap_mode` while Navigate is on, §13; the command bar needs no mode) and against whether a chrome widget owns the keyboard. No key handling happens elsewhere, so the keymap is one function.
+- Every keystroke resolves against an explicit `Mode` (normal / text-insert / navigate, the last handed in by `MastikApp::keymap_mode` while the command bar has its Pick focus, §13; the bar's Type focus needs no mode, its field owning the keyboard) and against whether a chrome widget owns the keyboard. No key handling happens elsewhere, so the keymap is one function.
 - **A modal owns the keyboard and the pointer.** While Settings, *Unsaved changes* or crash recovery is up, `input::resolve` is not called (a card of buttons focuses nothing). Dropped files are filled before widgets run, so `take_dropped_images` is gated too. The shared condition is `MastikApp::modal_is_up`.
 - Outside the keymap: `canvas::text_mode_input` reads raw events for a session's editing keys (chars, Escape, Enter, Backspace, arrows, `Tab`, the clipboard trio gated on Alt and Shift up).
 - `TextInsert` is near-exclusive: no bare key resolves to an `Action` there, but modified chords do: `Action::TextStyle`, and `Undo`, `Redo`, `Save`, `Open`. `Tab` also resolves to `Action::StepPoint`; the modes keep them apart. Focus half of the guard still applies.

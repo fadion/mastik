@@ -1,10 +1,11 @@
 # Command Mode (vm.md §1–§12)
 
-Command Mode is the keyboard's way into the document: **Navigate** walks the layer tree and deals
-leap labels, the **command bar** runs one line of the scripting language against the selection, and
-**scripts** are whole programs in that language, kept in the library folder, in a document or in a
-kit. The language is Luau in the headless crate `mastik-vm`; the app's half is `command/` (the bar,
-its log, the host, the script editor), `navigate.rs` and `scripts/` (the library folder). The
+Command Mode is the keyboard's way into the document: the **command bar** runs one line of the
+scripting language against the selection (its **Type** focus) and names layers by leap labels
+dealt over the canvas (its **Pick** focus), and **scripts** are whole programs in that language,
+kept in the library folder, in a document or in a kit. The language is Luau in the headless crate
+`mastik-vm`; the app's half is `command/` (the bar, its log, the host, the script editor),
+`navigate.rs` (Pick and the labels) and `scripts/` (the library folder). The
 decisions it rests on are `foundations.md` §13. Headings keep `vm.md`'s numbers, so a `vm.md §4`
 cited from code is found here; `vm.md` keeps only what is still open.
 
@@ -85,8 +86,8 @@ The environment's `__index` (`run::resolve`) answers an unknown name in this ord
 
 1. `sel` (alias `selection`): the selection, always a collection.
 2. `parent`, `prev`, `next`, `children`: relative to the selection.
-3. **Leap labels**, two lowercase letters, bound to the layers Navigate last dealt them to. A label
-   whose layer was deleted raises.
+3. **Leap labels**, one or two lowercase home-row letters, bound to the layers the bar last dealt
+   them to (*Pick*). A label whose layer was deleted raises.
 4. **Registry verbs**, by their registry names.
 5. `print` (to the bar's result or the editor's output), `percent`, `math` without `random` and
    `randomseed`, `param` (a script's inputs, §10), and the allowlist `string`, `table`, `ipairs`,
@@ -296,67 +297,91 @@ document's stored scripts are written through `add_script`, `set_script` and `re
 
 In `non-goals.md`, *Command Mode*.
 
-## Navigate (`navigate.rs`)
+## Pick (`navigate.rs`)
 
-**A keymap, not a canvas state.** `` ` `` (the Tools menu's *Navigate*, the palette's) turns it on
-with the Select tool and off again; `MastikApp::mode` stays `Normal`, so the canvas, the panels and
-the mouse behave as in the editor, and `keymap_mode` hands `input::resolve` `Mode::Navigate` in
-place of the editor's keys. A text edit started from it runs in `Mode::TextInsert` and ends back in
-it. Leaving keeps the selection and gives back the tool it had. While on, the Tools menu's and the
-palette's row read *Stop navigating*.
+**The bar has two focuses.** In **Type** (`:`) its field has the keys. In **Pick** the canvas has
+them: `` ` `` from the editor, Tools ▸ *Pick layers* or the palette's *Pick layers* opens the bar
+on it, and `` ` `` switches to it from Type unless the caret is inside a string, where it is Luau's
+own backtick. Picking belongs to the bar because it serves someone who has left the mouse to type
+and must name layers without it; on its own, a keyboard walk never beats the mouse in a design
+tool. It is a keymap, not a canvas state: `MastikApp::mode` stays `Normal`, and `keymap_mode` hands
+`input::resolve` `Mode::Navigate` while the bar picks. Its sign is the bar's head row.
+
+Opening the bar on either focus switches the canvas to the Select tool; closing it keeps the
+selection and gives back the tool from before, unless another was chosen by hand meanwhile or a
+text edit took the keys. A text edit started under the bar (a double-click on text) closes it.
 
 | Key | Act |
 | --- | --- |
-| `h` `←` / `l` `→` | parent / child (the child last stood on, else the topmost) |
-| `j` `↓` / `k` `↑` | the Layers panel's row below / above: structural, so `j` steps back in z-order |
-| `Shift` + a step | add the layer to the selection |
-| `f` / `Shift+F` | labels on the layers in view / inside the current layer |
-| `Enter` `i` | step in, as the editor's `Enter` |
-| `:` / `.` | the command bar / run the last bar line again |
-| `Shift+2` | zoom to the layer |
-| `u` | undo (and the history chords) |
-| `` ` `` `Escape` | leave |
+| a label's letters | select its layer; `Shift` on the last adds it. Of two-letter labels the first narrows and `Backspace` takes it back (`leap_keys`, read before the table) |
+| `Enter` `→` | into the one selected layer when it holds others (group, boolean, frame, instance root), by `enter_container`; from anything else, back to Type |
+| `Backspace` `←` | out: with a group entered, select it and enter the rung above it (`group_chain(doc, g, None).last()`); else select the current layer's parent |
+| `↓` / `↑` | the Layers panel's row below / above; `Shift` adds |
+| `*` (`Shift+8`) | the same layer in each repeat (`select_matching`) |
+| `Shift+1` / `Shift+2` | zoom to fit / to the selection |
+| `.` | run the last line in the log again on the selection (`Log::last_line`): typed, or written for an edit made elsewhere, such as a drag's `.x += 24`; a script's run is no line |
+| `` ` `` `:` `Escape` | back to Type |
 
-Every other editor key rests; the cheatsheet's chord stays, and opened from here its *Navigate*
-section leads. **The sign is the status card at the canvas's bottom left**: *NAVIGATE* in
-`color::warn()`, its only sign, then the path to the current layer and *f labels · : command · `
-leaves*.
+Every other editor key rests; the history chords and the cheatsheet's stay, and opened from Pick
+the cheatsheet's *Pick layers* section leads.
 
-**Leap labels** are the spatial instrument. Two home-row letters each (81 pairs, the easiest nearest
-the current layer); the candidates are what a plain click could reach, found by hit tests sampled
-across the view and at each layer's centre, each raised by `group_chain` as a click is. More than
-81 label only the children of the current layer (its parent's when it has none), those in view. The
-first letter keeps outlines only on the labels it still matches and fades the rest; the second
-selects (with `Shift`, adds); `Backspace` takes the first back, `Escape` hides them. Each labelled
-layer is outlined on its bounds, outset 3: dashed with the dark label for a group, boolean or
-frame, solid with the yellow label for any other layer, so *the group or the layer inside it* is
-told by line and lightness, not hue. Every line is two inks, `LEAP_INK` inside and `color::leap()`
-outside, so it reads on any artwork. They are egui chrome painted in `draw_canvas` over everything
-a layer wears, not a `RenderOverrides` overlay. **Labels outlive the deal**: the last labels dealt
-stay bound as handles for the bar and scripts until the next deal. **Opening the command bar deals
-too**, to the layers in view as `f` does, quietly, so a line can name what is on screen; the bar
-shows them only while its completion offers labels for the word at the caret (a word of at most two
-home-row letters), narrowed by the letters typed as Navigate's first letter narrows them.
+**The deal** is made when the bar opens and kept for its whole time open (`deal_tick`). It deals
+again at once when the page or the entered group changes, and once the view or the document has
+rested 0.15 s after moving (`REST_S`), never mid-press, so a drag ends before its layers are
+relabelled. The candidates are what a plain click could reach in view, inside the entered group
+when there is one (`leap_candidates`): hit tests sampled across the view and at each layer's
+centre, each raised by `group_chain` as a click is. More than 81 label only the current layer's
+children (its parent's when it has none), those in view. Nine or fewer labels are one letter each,
+the home row by ease (`f j d k s l g h a`); more are two-letter pairs, easiest first.
+
+**Labels hold still**, so a line being typed keeps meaning what it named: a layer keeps its label
+while the deal keeps its label length; a label written as a word in the field's line keeps its
+layer through later deals and no other layer takes it; the rest take the easiest free label,
+nearest the current layer first. `label_for` deals a label to a layer that has none. The labels
+stay bound as handles for lines until the next deal.
+
+**What is drawn.** In Pick, every label. In Type, those the completion offers for the word at the
+caret (a word of at most two home-row letters), else only the label of the layer under the pointer,
+so it can be named. Typed letters keep outlines only on the labels they still match and fade the
+rest. Each labelled layer is outlined on its bounds, outset 3: dashed with the dark label for a
+group, boolean or frame, solid with the yellow label for any other layer, so *the group or the layer
+inside it* is told by line and lightness, not hue. Every line is two inks, `LEAP_INK` inside and
+`color::leap()` outside, so it reads on any artwork. In Pick the label of the layer under the
+pointer wears a ring in `color::SELECT`. They are egui chrome painted in `draw_canvas` over
+everything a layer wears, not a `RenderOverrides` overlay.
 
 ## The command bar (`command/mod.rs`)
 
-`:` opens it (`Key::Colon`, shifted or not) from the editor or Navigate whenever no text entry has
-the keyboard, closing the palette and any menu; it needs no mode of its own. It is a sibling of the
+`:` opens it on Type (`Key::Colon`, shifted or not) from the editor whenever no text entry has the
+keyboard, closing the palette and any menu; it needs no mode of its own. It is a sibling of the
 palette's card: 640 wide, docked 24 above the canvas's foot, or 24 below its top when the selection
-reaches into that band. It is placed from the height it works out that frame, not anchored, since
-an anchor reads last frame's size and a growing list would push the foot down a frame early; the
-list is drawn into exactly that height, and the area is not constrained to the screen, since egui
-constrains by last frame's size and would shove the card up on the frame its list shrinks. Its
-rows, section labels and footer are the palette's (`app-chrome.md`, *Shared rules*): a row's name
-is never cut for its note.
+reaches into that band. **It is a plain foreground `egui::Area`, not a modal**: the canvas under it
+pans, zooms, hovers and selects, and a click there never moves the keys or closes the bar, so the
+mouse moves and points while the keys name and run. It is placed from the height it works out that
+frame, not anchored, since an anchor reads last frame's size and a growing list would push the foot
+down a frame early; the list is drawn into exactly that height, and the area is not constrained to
+the screen, since egui constrains by last frame's size and would shove the card up on the frame its
+list shrinks. Its rows, section labels and footer are the palette's (`app-chrome.md`, *Shared
+rules*): a row's name is never cut for its note.
 
+- **The head row**, above the field (`CONTROL_H` in the card's inset, a rule under it): the focus as
+  a two-cell `ui::segmented_tipped` (*Type*, *Pick*; a click switches), the path from the page to
+  the current layer's parent, and on the right the subject with its kind's glyph (*Card*, *Card and
+  2 more*, *Nothing selected*), so it is plain which layer a line acts on and where it sits.
 - **The field**: monospace at the palette field's size (`HEAD_PT`), a `:` prompt in the accent, a
-  read's live value (`= 20`) at the right edge.
-- **The footer**: the desugared Luau and the subject (*Card*, *Card and 2 more*, *Nothing
-  selected*); *each by itself* after a rule-3 line. An error replaces it with a red caption, the
-  token it names squiggled, and *Tab fixes it* when it carries a fix.
-- **The list above**: the log while the field is empty, else completion, at most eight rows in
-  sections *Names*, *Verbs*, *Properties*, *Labels*, *Layers*, *Choices* (a verb's next argument's
+  read's live value (`= 20`) at the right edge. In Pick it sleeps: the line is kept, dimmed and not
+  focusable, the hint reads *Picking: type a label*, and the right edge shows a first letter typed
+  in the leap ink.
+- **The footer**: in Type, the desugared Luau, *each by itself* after a rule-3 line, and on the
+  right *` picks*, or *Enter copies ‹value›* while a read shows one. An error replaces it with a
+  red caption, the token it names squiggled, and *Tab fixes it* when it carries a fix. In Pick it
+  lists the keys, with *` types* on the right.
+- **`Alt`-click** on a layer, in Type, writes its label into the line at the caret (a space first
+  when it would run into the word before), leaving the selection alone: an argument by pointing. The
+  press sits out to its release (`gesture_cancelled`), so it neither selects nor starts the `Alt`
+  duplicate-drag.
+- **The list above**, in Type only: the log while the field is empty, else completion, at most
+  eight rows in sections *Names*, *Verbs*, *Properties*, *Labels*, *Layers*, *Choices* (a verb's next argument's
   words), the typed letters lit; an almost-match is a dim row naming what it meant. A whole-name
   match outranks a prefix, and a section whose best row matches better goes first, so a label or
   name typed out whole leads the list. The lit row's layer (a label's, or a layer's by name) is
@@ -367,8 +392,9 @@ is never cut for its note.
   after a trigger); the caret leaving the word shuts it. `Escape` shuts it for that word, and typing
   on in the word leaves it shut; `Ctrl+Space` (Ctrl on every platform) opens it on the word at the
   caret. Taking a row shuts it. A list with no rows is not shown.
-- **Keys**: while the list shows, `↑`/`↓` move through it, `Tab` takes the lit row and `Enter` takes
-  it too unless the word already reads as the row, when `Enter` runs the line. Otherwise `↑`/`↓`
+- **Keys**, in Type: `` ` `` picks, outside a string (*Pick*). While the list shows, `↑`/`↓` move
+  through it, `Tab` takes the lit row and `Enter` takes it too unless the word already reads as the
+  row, when `Enter` runs the line. Otherwise `↑`/`↓`
   recall typed lines, `↓` past the newest giving back what was being typed; `Tab` takes an error's
   fix; `Enter` runs (a read copies its value and makes no step; a write is one step named after its
   verb, else *Edit*, with `TERMINAL_WINDOW`). `Escape` closes the log's menu if it is open, else the
@@ -387,3 +413,6 @@ is never cut for its note.
   run in the document (`a_line_that_fails_changes_nothing`).
 - **The disclosure record is a cryptographic hash of the source**, because the key and the source
   both come from the sender (`a_script_is_disclosed_per_key_and_source`).
+- **An `Alt`-click under the bar must cancel its gesture** (`bar_alt_click` sets
+  `gesture_cancelled`): the label is written either way, but without it the same press also selects
+  and starts an `Alt` duplicate-drag (`an_alt_click_writes_the_label_into_the_line`).

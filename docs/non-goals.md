@@ -153,6 +153,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **Plugins or UI extension from a script** — a script edits the document; panels, tools and chrome are a different feature with a different security design.
 - **Async, coroutines, or a run that yields across frames** (`command-mode.md` §8).
 - **Binding the interaction layer** — gestures, previews and `RenderOverrides` have no scriptable form; a script says a committed outcome (`command-mode.md` §6).
+- **Keyboard navigation as a mode of its own** — walking layers by key never beats the mouse in a design tool; picking layers by label is the command bar's Pick focus, for naming layers while typing (`command-mode.md`, *Pick*).
 
 ## Tests and goldens
 

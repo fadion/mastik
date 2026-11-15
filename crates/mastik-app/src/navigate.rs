@@ -1,29 +1,24 @@
-//! Navigate: walking the layer tree from the keyboard, and leap labels (§13).
+//! Pick: the command bar's second focus (`docs/design/command-mode.md`, *Pick*).
 //!
-//! A keymap rather than a canvas state: `MastikApp::mode` stays `Normal`, so the
+//! The bar has two focuses. In Type its field has the keys; in Pick the canvas
+//! has them: every layer a click could reach wears a leap label, a label's
+//! letters select it, and the tree's steps take the keys no label uses. A
+//! keymap rather than a canvas state: `MastikApp::mode` stays `Normal`, so the
 //! canvas, the panels and the mouse behave as in the editor, and
 //! [`MastikApp::keymap_mode`] hands `input::resolve` [`Mode::Navigate`] instead.
-//! A text edit started from here runs in `Mode::TextInsert` and ends back here.
 //!
-//! Moves are structural: `j` and `k` are the Layers panel's row below and above,
-//! so `j` steps back in z-order. Leap labels are the spatial instrument: two
-//! home-row letters on each layer a click could reach, and the last labels dealt
-//! stay readable as handles ([`MastikApp::leap_labels`]) after they hide.
+//! The deal is the bar's whole time open: labels stay bound as handles lines
+//! name ([`MastikApp::leap_labels`]), keep their letters as the view moves, and
+//! a label a line already holds keeps its layer through every later deal.
 
 use crate::app::MastikApp;
-use crate::input::{Action, Mode, Nav, Step};
-use crate::theme::{self, color, icon};
+use crate::input::{Mode, Nav, Step};
+use crate::theme::color;
 use crate::tools::Tool;
 use eframe::egui;
 use mastik_core::kurbo::{Point, Rect};
 use mastik_core::{NodeId, NodeKind};
 use std::collections::{HashMap, HashSet};
-
-/// The Tools menu's and the palette's row while Navigate is on.
-pub(crate) const STOP_NAVIGATE: &str = "Stop navigating";
-
-/// The pill's hint after the path.
-const HINT: &str = "f labels · : command · ` leaves";
 
 /// The home row, the letters a label is spelled from.
 const HOME_ROW: [char; 9] = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
@@ -50,6 +45,9 @@ const LABEL_GAP: f32 = 2.0;
 /// the eye does not lose its place, but plainly out.
 const RULED_OUT: f32 = 0.25;
 
+/// The ring round the label of the layer under the pointer, in Pick.
+const RING: f32 = 1.5;
+
 /// Points between the samples a deal hit-tests across the view: under the
 /// smallest layer a click comfortably reaches. Each layer's centre is tested too,
 /// for anything smaller.
@@ -58,34 +56,46 @@ const SAMPLE_PT: f64 = 8.0;
 /// The most samples one deal takes; a wider view samples more sparsely.
 const SAMPLES_MAX: f64 = 40_000.0;
 
-/// Navigate's state on the app. The labels outlive the mode: they are handles
-/// the command bar reads until the next deal replaces them.
+/// How long a moved view or document rests before it is dealt again, so a pan
+/// or a wheel deals once at its end rather than every frame of it.
+const REST_S: f64 = 0.15;
+
+/// Pick's state on the app. The labels outlive a deal: they are handles the
+/// bar's lines read until the next deal replaces them.
 #[derive(Default)]
 pub(crate) struct Navigate {
-    /// While the mode is on.
+    /// While the bar is open.
     on: Option<On>,
-    /// The last labels dealt, lowercase.
+    /// The labels lines may name, lowercase: the deal's, and any a line in the
+    /// field held when the deal was made.
     labels: HashMap<String, NodeId>,
-    /// The last deal, nearest the current layer first, which is also who got
-    /// the easy pairs: what the labels draw from.
+    /// The last deal, nearest the current layer first when it was made: what the
+    /// canvas draws.
     deal: Vec<Dealt>,
-    /// The labels on the canvas in Navigate, while they show.
-    shown: Option<Shown>,
+    /// The letters typed of a label in Pick.
+    typed: String,
+    /// What the deal was made for.
+    dealt_for: Option<DealKey>,
+    /// What the last frame saw, and since when, so a moving view deals once it
+    /// rests.
+    seen: Option<(DealKey, f64)>,
 }
 
 struct On {
-    /// The tool to give back on leaving.
+    /// The tool to give back when the bar closes.
     prior: Tool,
-    /// The layer the keys move from, while it is still selected.
-    current: Option<NodeId>,
-    /// Per parent, the child last stood on: where `l` goes back to.
-    visited: HashMap<NodeId, NodeId>,
+    /// Whether the canvas has the keys (Pick) rather than the field (Type).
+    picking: bool,
 }
 
-/// The deal on the canvas in Navigate.
-struct Shown {
-    /// The first letter, once typed.
-    typed: Option<char>,
+/// What a deal depends on: the page, the scope a click picks in, the view and
+/// the document.
+#[derive(Clone, Copy, PartialEq)]
+struct DealKey {
+    page: NodeId,
+    scope: Option<NodeId>,
+    view: Rect,
+    revision: u64,
 }
 
 struct Dealt {
@@ -95,16 +105,28 @@ struct Dealt {
     container: bool,
 }
 
-/// Every two-letter label, easiest first: index fingers before pinkies, and a
-/// pair that changes hands or repeats a letter before one that stays on a hand.
-pub(crate) fn label_pairs() -> Vec<String> {
-    let cost = |c: char| match c {
+/// The home-row letters, easiest first: index fingers, then middle, ring, the
+/// stretch and the pinkies. A deal of nine or fewer spells its labels from these.
+pub(crate) fn label_singles() -> Vec<String> {
+    let mut by_ease = HOME_ROW;
+    by_ease.sort_by_key(|c| cost(*c));
+    by_ease.iter().map(|c| c.to_string()).collect()
+}
+
+/// How hard a home-row letter is to reach.
+fn cost(c: char) -> u8 {
+    match c {
         'f' | 'j' => 0,
         'd' | 'k' => 1,
         's' | 'l' => 2,
         'g' | 'h' => 3,
         _ => 4,
-    };
+    }
+}
+
+/// Every two-letter label, easiest first: index fingers before pinkies, and a
+/// pair that changes hands or repeats a letter before one that stays on a hand.
+pub(crate) fn label_pairs() -> Vec<String> {
     let left = |c: char| "asdfg".contains(c);
     let mut by_ease = HOME_ROW;
     by_ease.sort_by_key(|c| cost(*c));
@@ -142,102 +164,118 @@ fn home_letter(key: egui::Key) -> Option<char> {
     })
 }
 
+/// The labels `text` holds as words: a line in the field names them, so a deal
+/// must not move them to other layers under it.
+fn words(text: &str) -> HashSet<&str> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
 impl MastikApp {
-    /// The keymap `input::resolve` reads: Navigate's while it is on and no text
+    /// The keymap `input::resolve` reads: Pick's while the bar picks and no text
     /// is being typed, else the mode's own.
     pub(crate) fn keymap_mode(&self) -> Mode {
         match self.mode {
-            Mode::Normal if self.navigate.on.is_some() => Mode::Navigate,
+            Mode::Normal if self.picking() => Mode::Navigate,
             mode => mode,
         }
     }
 
-    /// Whether Navigate is on, a text edit started from it included.
-    pub(crate) fn navigating(&self) -> bool {
-        self.navigate.on.is_some()
+    /// Whether the bar is open on its Pick focus.
+    pub(crate) fn picking(&self) -> bool {
+        self.command_bar.is_some() && self.pick_focus()
     }
 
-    /// The last labels dealt, lowercase (`"sk"`), kept after they hide until the
-    /// next `f` deals again. A label whose layer has gone stays: the reader says
-    /// there is no such layer.
+    /// The focus the bar's session holds, read while the bar itself is taken out
+    /// to be drawn.
+    pub(crate) fn pick_focus(&self) -> bool {
+        self.navigate.on.as_ref().is_some_and(|o| o.picking)
+    }
+
+    /// The labels lines may name, lowercase (`"f"`, `"sk"`). A label whose layer
+    /// has gone stays: the reader says there is no such layer.
     pub(crate) fn leap_labels(&self) -> &HashMap<String, NodeId> {
         &self.navigate.labels
     }
 
-    /// `` ` ``, the Tools menu's *Navigate* and the palette's: on with the select
-    /// tool, or back to the editor.
-    pub(crate) fn toggle_navigate(&mut self) {
-        if self.navigating() {
-            self.leave_navigate();
-            return;
-        }
+    /// `` ` ``, the Tools menu's *Pick layers* and the palette's: the bar on its
+    /// Pick focus, opening it first when it is shut.
+    pub(crate) fn pick_layers(&mut self) {
+        self.open_command_bar();
+        self.set_picking(true);
+    }
+
+    /// The bar opening: the canvas runs the select tool under it, whatever was
+    /// armed, and a fresh deal is made this frame.
+    pub(crate) fn begin_bar_session(&mut self) {
         let prior = self.tool;
         if self.tool != Tool::Select {
             self.choose_tool(Tool::Select);
         }
         self.navigate.on = Some(On {
             prior,
-            current: self.session.selection.ids().last().copied(),
-            visited: HashMap::new(),
+            picking: false,
         });
+        self.navigate.typed.clear();
+        self.navigate.dealt_for = None;
     }
 
-    /// Back to the editor with the selection kept and the tool it had before.
-    pub(crate) fn leave_navigate(&mut self) {
-        self.navigate.shown = None;
+    /// The bar closing: the tool from before comes back, unless another was
+    /// chosen by hand meanwhile or a text edit took the keys (arming a tool
+    /// would end it), and the selection stays.
+    pub(crate) fn end_bar_session(&mut self) {
+        self.navigate.typed.clear();
         let Some(on) = self.navigate.on.take() else {
             return;
         };
-        if self.tool != on.prior {
-            // A drawing tool drops the selection as it arms; leaving keeps it.
+        if self.tool == Tool::Select && on.prior != Tool::Select && self.text.is_none() {
+            // A drawing tool drops the selection as it arms; closing keeps it.
             let kept = self.session.selection.clone();
             self.choose_tool(on.prior);
             self.session.selection = kept;
         }
     }
 
-    /// Forget the layers Navigate holds as another document comes forward, which
-    /// may share their ids: the labels dealt and shown, and where the keys stand.
-    /// The mode itself stays on.
+    /// Give the keys to the canvas (`true`, Pick) or to the field.
+    pub(crate) fn set_picking(&mut self, picking: bool) {
+        if let Some(on) = self.navigate.on.as_mut() {
+            on.picking = picking;
+        }
+        self.navigate.typed.clear();
+    }
+
+    /// Forget the layers the labels hold as another document comes forward,
+    /// which may share their ids.
     pub(crate) fn forget_navigate_layers(&mut self) {
         self.navigate.labels.clear();
         self.navigate.deal.clear();
-        self.navigate.shown = None;
-        if let Some(on) = self.navigate.on.as_mut() {
-            on.current = None;
-            on.visited.clear();
-        }
+        self.navigate.typed.clear();
+        self.navigate.dealt_for = None;
+        self.navigate.seen = None;
     }
 
-    /// One key of Navigate's keymap.
+    /// One key of Pick's keymap.
     pub(crate) fn nav_action(&mut self, ctx: &egui::Context, nav: Nav) {
         match nav {
             Nav::Step(step, extend) => self.nav_step(step, extend),
-            Nav::Labels { inside } => self.deal_labels(inside),
-            Nav::StepIn => self.dispatch(ctx, Action::Enter),
-            Nav::Zoom => {
-                let bounds = self
-                    .nav_current()
-                    .and_then(|id| self.session.preview_world_bounds(id));
-                self.zoom_to(bounds);
-            }
-            Nav::Undo => self.dispatch(ctx, Action::Undo),
-            Nav::Command => self.open_command_bar(),
+            Nav::StepIn => self.step_in(),
+            Nav::StepOut => self.step_out(),
+            Nav::Matching => self.select_matching(),
+            Nav::Fit => self.zoom_to(self.document_bounds()),
+            Nav::Zoom => self.zoom_to(self.selection_bounds()),
             Nav::Repeat => self.repeat_bar_line(ctx),
-            Nav::Leave => self.leave_navigate(),
+            Nav::Type => self.set_picking(false),
         }
     }
 
-    /// The layer the keys move from: the one last moved to while it stays
-    /// selected, else the selection's last.
+    /// The layer the keys move from: the selection's last.
     pub(crate) fn nav_current(&self) -> Option<NodeId> {
-        let sel = &self.session.selection;
-        self.navigate
-            .on
-            .as_ref()
-            .and_then(|on| on.current)
-            .filter(|id| sel.contains(*id))
-            .or_else(|| sel.ids().last().copied())
+        self.session
+            .selection
+            .ids()
+            .last()
+            .copied()
             .filter(|id| self.session.doc.contains(*id))
     }
 
@@ -249,62 +287,72 @@ impl MastikApp {
             .unwrap_or(self.session.page)
     }
 
-    /// Move the current layer one step through the tree; with `extend`, add it
-    /// to the selection rather than replace it.
+    /// Move to a sibling of the current layer; with `extend`, add it to the
+    /// selection rather than replace it.
     fn nav_step(&mut self, step: Step, extend: bool) {
         let doc = &self.session.doc;
-        let parent_of = |id: NodeId| doc.get(id).and_then(|n| n.parent());
         let target = match self.nav_current() {
-            // Nothing to move from: the scope's top row, for any step but out.
-            None => match step {
-                Step::Parent => None,
-                _ => doc
-                    .get(self.nav_scope())
-                    .and_then(|n| n.children().last().copied()),
-            },
-            Some(at) => match step {
-                Step::Parent => parent_of(at).filter(|p| !doc.is_page(*p)),
-                Step::Child => {
-                    let kids = doc.get(at).map(|n| n.children()).unwrap_or_default();
-                    let back = self
-                        .navigate
-                        .on
-                        .as_ref()
-                        .and_then(|on| on.visited.get(&at))
-                        .filter(|v| kids.contains(v));
-                    back.or(kids.last()).copied()
+            // Nothing to move from: the scope's top row.
+            None => doc
+                .get(self.nav_scope())
+                .and_then(|n| n.children().last().copied()),
+            // `children` is z-order with the topmost last, and the panel lists it
+            // reversed: the row below is the index before.
+            Some(at) => doc.get(at).and_then(|n| n.parent()).and_then(|p| {
+                let kids = doc.get(p)?.children();
+                let i = kids.iter().position(|c| *c == at)?;
+                match step {
+                    Step::Next => i.checked_sub(1).map(|j| kids[j]),
+                    Step::Prev => kids.get(i + 1).copied(),
                 }
-                // `children` is z-order with the topmost last, and the panel lists
-                // it reversed: the row below is the index before.
-                Step::Next | Step::Prev => parent_of(at).and_then(|p| {
-                    let kids = doc.get(p)?.children();
-                    let i = kids.iter().position(|c| *c == at)?;
-                    match step {
-                        Step::Next => i.checked_sub(1).map(|j| kids[j]),
-                        _ => kids.get(i + 1).copied(),
-                    }
-                }),
-            },
+            }),
         };
-        let Some(target) = target else {
-            return;
-        };
-        self.nav_land(target, extend);
+        if let Some(target) = target {
+            self.nav_land(target, extend);
+        }
     }
 
-    /// Make `id` the current layer: selected alone, or added with `add`, its
-    /// parent remembering it for `l`, and scrolled into view.
-    fn nav_land(&mut self, id: NodeId, add: bool) {
+    /// Into the one selected layer when it holds others, as the editor's `Enter`
+    /// steps into a group; from anything else, back to the field.
+    fn step_in(&mut self) {
         let doc = &self.session.doc;
-        let parent_of = |id: NodeId| doc.get(id).and_then(|n| n.parent());
-        if let Some(on) = self.navigate.on.as_mut() {
-            for at in [on.current, Some(id)].into_iter().flatten() {
-                if let Some(p) = parent_of(at) {
-                    on.visited.insert(p, at);
-                }
-            }
-            on.current = Some(id);
+        let into = self.session.selection.single().filter(|id| {
+            doc.get(*id).is_some_and(|n| {
+                !n.children().is_empty()
+                    && (matches!(
+                        n.kind(),
+                        NodeKind::Group | NodeKind::Boolean { .. } | NodeKind::Artboard { .. }
+                    ) || mastik_core::component::instance_root(doc, *id) == Some(*id))
+            })
+        });
+        match into {
+            Some(id) => self.enter_container(id, None),
+            None => self.set_picking(false),
         }
+    }
+
+    /// Out of the entered group, selecting it, to the group it sits in; with none
+    /// entered, to the current layer's parent.
+    fn step_out(&mut self) {
+        let doc = &self.session.doc;
+        if let Some(g) = self.entered_group.filter(|g| doc.contains(*g)) {
+            // The chain is outermost first: its last is the rung just above.
+            self.entered_group = mastik_core::group_chain(doc, g, None).last().copied();
+            self.session.selection.set_one(g);
+            return;
+        }
+        if let Some(p) = self
+            .nav_current()
+            .and_then(|c| doc.get(c))
+            .and_then(|n| n.parent())
+            .filter(|p| !doc.is_page(*p))
+        {
+            self.session.selection.set_one(p);
+        }
+    }
+
+    /// Select `id` alone, or add it with `add`, and scroll it into view.
+    fn nav_land(&mut self, id: NodeId, add: bool) {
         if add {
             self.session.selection.add(id);
         } else {
@@ -315,40 +363,54 @@ impl MastikApp {
         }
     }
 
-    /// `f` and `F`: deal labels to the layers in view a click could reach, or with
-    /// `inside` to those inside the current layer, and show them.
-    fn deal_labels(&mut self, inside: bool) {
-        if self.deal(inside, true) {
-            self.navigate.shown = Some(Shown { typed: None });
+    /// Each frame the bar is up: deal again when the scope or the page changed,
+    /// or once a moved view or an edited document has rested. Never mid-press,
+    /// so a drag ends before its layers are relabelled.
+    pub(crate) fn deal_tick(&mut self, ctx: &egui::Context) {
+        if self.command_bar.is_none() {
+            return;
+        }
+        let key = DealKey {
+            page: self.session.page,
+            scope: self.entered_group,
+            view: self.session.camera.viewport(self.canvas_px).view,
+            revision: self.session.revision(),
+        };
+        let now = ctx.input(|i| i.time);
+        let since = match self.navigate.seen {
+            Some((k, t)) if k == key => t,
+            _ => now,
+        };
+        self.navigate.seen = Some((key, since));
+        let due = match self.navigate.dealt_for {
+            Some(k) if k == key => false,
+            Some(k) if k.page == key.page && k.scope == key.scope => {
+                let rested = now - since >= REST_S;
+                if !rested {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(REST_S));
+                }
+                rested && !ctx.input(|i| i.pointer.any_down())
+            }
+            _ => true,
+        };
+        if due {
+            self.deal();
+            self.navigate.dealt_for = Some(key);
         }
     }
 
-    /// The command bar opening: deal labels to the layers in view as `f` does,
-    /// for the bar to show while a label is being typed. Says nothing when there
-    /// is nothing to label; the last deal then stands.
-    pub(crate) fn deal_bar_labels(&mut self) {
-        self.navigate.shown = None;
-        self.deal(false, false);
-    }
-
-    /// Deal labels and keep them as the handles lines name; `false` when there
-    /// was nothing to label, which `say` reports on the status line. A view with
+    /// Deal labels to what a click could reach in view, inside the entered group
+    /// when there is one. A layer keeps the label
+    /// it had while the deal keeps its length; a label the field's line holds
+    /// keeps its layer; the rest take the easiest free label, nearest the current
+    /// layer first. Nine or fewer are one letter each, more are two. A view with
     /// more than [`LABELS_MAX`] labels only the children of the current layer.
-    fn deal(&mut self, inside: bool, say: bool) -> bool {
+    fn deal(&mut self) {
         let doc = &self.session.doc;
         let current = self.nav_current();
-        let within = match (inside, current) {
-            (true, Some(c)) if doc.get(c).is_some_and(|n| !n.children().is_empty()) => Some(c),
-            (true, _) => {
-                if say {
-                    self.session.info("Nothing inside this layer to label");
-                }
-                return false;
-            }
-            (false, _) => None,
-        };
         let view = self.session.camera.viewport(self.canvas_px).view;
-        let mut ids = self.leap_candidates(view, within);
+        // Inside an entered group, only its layers: stepping in narrows the deal.
+        let mut ids = self.leap_candidates(view, self.entered_group);
         if ids.len() > LABELS_MAX {
             let parent = current.and_then(|c| doc.get(c)).and_then(|n| n.parent());
             let holder = current
@@ -367,13 +429,7 @@ impl MastikApp {
                 })
                 .collect();
         }
-        if ids.is_empty() {
-            if say {
-                self.session.info("No layers in view to label");
-            }
-            return false;
-        }
-        // Nearest the current layer first, so the easy pairs land where the eye is.
+        // Nearest the current layer first, so the easy labels land where the eye is.
         let from = current
             .and_then(|c| self.session.preview_world_bounds(c))
             .map_or(view.center(), |b| b.center());
@@ -384,23 +440,100 @@ impl MastikApp {
         };
         ids.sort_by(|a, b| centre(a).total_cmp(&centre(b)));
         ids.truncate(LABELS_MAX);
+
+        let line = self
+            .command_bar
+            .as_ref()
+            .map(|b| b.text.clone())
+            .unwrap_or_default();
+        let held = words(&line);
+        let pinned: HashMap<String, NodeId> = self
+            .navigate
+            .labels
+            .iter()
+            .filter(|(k, _)| held.contains(k.as_str()))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        let pool = match ids.len() <= HOME_ROW.len() {
+            true => label_singles(),
+            false => label_pairs(),
+        };
+        let len = pool[0].len();
+        let had: HashMap<NodeId, &str> = self
+            .navigate
+            .deal
+            .iter()
+            .filter(|d| d.label.len() == len)
+            .map(|d| (d.id, d.label.as_str()))
+            .collect();
+        let mut taken: HashSet<String> = pinned.keys().cloned().collect();
+        let mut out: Vec<Option<String>> = vec![None; ids.len()];
+        for (slot, id) in out.iter_mut().zip(&ids) {
+            let kept = pinned
+                .iter()
+                .find(|(_, v)| *v == id)
+                .map(|(k, _)| k.clone())
+                .or_else(|| {
+                    had.get(id)
+                        .filter(|l| !taken.contains(**l))
+                        .map(|l| l.to_string())
+                });
+            if let Some(l) = kept {
+                taken.insert(l.clone());
+                *slot = Some(l);
+            }
+        }
+        let mut free = pool.into_iter().filter(|l| !taken.contains(l));
+        let container = |id: NodeId| {
+            doc.get(id).is_some_and(|n| {
+                matches!(
+                    n.kind(),
+                    NodeKind::Group | NodeKind::Boolean { .. } | NodeKind::Artboard { .. }
+                )
+            })
+        };
         let deal: Vec<Dealt> = ids
-            .into_iter()
-            .zip(label_pairs())
-            .map(|(id, label)| Dealt {
-                label,
-                id,
-                container: doc.get(id).is_some_and(|n| {
-                    matches!(
-                        n.kind(),
-                        NodeKind::Group | NodeKind::Boolean { .. } | NodeKind::Artboard { .. }
-                    )
-                }),
+            .iter()
+            .zip(out)
+            .filter_map(|(id, l)| {
+                Some(Dealt {
+                    label: l.or_else(|| free.next())?,
+                    id: *id,
+                    container: container(*id),
+                })
             })
             .collect();
-        self.navigate.labels = deal.iter().map(|d| (d.label.clone(), d.id)).collect();
+        let mut labels = pinned;
+        labels.extend(deal.iter().map(|d| (d.label.clone(), d.id)));
+        self.navigate.labels = labels;
         self.navigate.deal = deal;
-        true
+    }
+
+    /// The label `id` wears, dealing it the next free one when it has none, so a
+    /// line can name a layer the deal did not reach.
+    pub(crate) fn label_for(&mut self, id: NodeId) -> Option<String> {
+        if let Some((k, _)) = self.navigate.labels.iter().find(|(_, v)| **v == id) {
+            return Some(k.clone());
+        }
+        let singles = self.navigate.deal.iter().all(|d| d.label.len() == 1);
+        let taken = |l: &String| self.navigate.labels.contains_key(l);
+        let label = singles
+            .then(label_singles)
+            .and_then(|p| p.into_iter().find(|l| !taken(l)))
+            .or_else(|| label_pairs().into_iter().find(|l| !taken(l)))?;
+        let container = self.session.doc.get(id).is_some_and(|n| {
+            matches!(
+                n.kind(),
+                NodeKind::Group | NodeKind::Boolean { .. } | NodeKind::Artboard { .. }
+            )
+        });
+        self.navigate.labels.insert(label.clone(), id);
+        self.navigate.deal.push(Dealt {
+            label: label.clone(),
+            id,
+            container,
+        });
+        Some(label)
     }
 
     /// The layers in `view` a plain click could select, in the order first met:
@@ -454,85 +587,119 @@ impl MastikApp {
         out
     }
 
-    /// Read the keys while labels show, in place of the keymap; `false` when none
-    /// show. The first letter narrows, the second selects (with Shift, adds),
-    /// Backspace takes the first back and Escape hides them.
-    pub(crate) fn leap_keys(&mut self, ctx: &egui::Context) -> bool {
-        if self.navigate.shown.is_none() || self.keymap_mode() != Mode::Navigate {
-            return false;
+    /// In Pick, take the home-row letters out of this frame's keys before the
+    /// keymap reads them: a label's letters select it (with Shift, add it), the
+    /// first of two narrows, and `Backspace` takes a first letter back.
+    pub(crate) fn leap_keys(&mut self, ctx: &egui::Context) {
+        if !self.picking() || self.mode != Mode::Normal {
+            return;
         }
-        if ctx.egui_wants_keyboard_input() {
-            return false;
-        }
-        let presses: Vec<(egui::Key, egui::Modifiers)> = ctx.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::Key {
-                        key,
-                        pressed: true,
-                        modifiers,
-                        ..
-                    } => Some((*key, *modifiers)),
-                    _ => None,
-                })
-                .collect()
+        let typing = !self.navigate.typed.is_empty();
+        let presses: Vec<(egui::Key, egui::Modifiers)> = ctx.input_mut(|i| {
+            let mut out = Vec::new();
+            i.events.retain(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !modifiers.command
+                    && !modifiers.alt
+                    && (home_letter(*key).is_some()
+                        || (typing && *key == egui::Key::Backspace)) =>
+                {
+                    out.push((*key, *modifiers));
+                    false
+                }
+                _ => true,
+            });
+            out
         });
         for (key, m) in presses {
-            let Some(shown) = self.navigate.shown.as_mut() else {
-                break;
-            };
-            if key == egui::Key::Escape {
-                self.navigate.shown = None;
-                break;
-            }
-            if m.command || m.alt {
-                continue;
-            }
             if key == egui::Key::Backspace {
-                shown.typed = None;
+                self.navigate.typed.pop();
                 continue;
             }
-            let Some(c) = home_letter(key) else {
-                continue;
-            };
-            match shown.typed {
-                None => {
-                    if self.navigate.deal.iter().any(|d| d.label.starts_with(c)) {
-                        shown.typed = Some(c);
-                    }
-                }
-                Some(first) => {
-                    let label: String = [first, c].into_iter().collect();
-                    let hit = self.navigate.deal.iter().find(|d| d.label == label);
-                    if let Some(id) = hit.map(|d| d.id) {
-                        self.navigate.shown = None;
-                        self.nav_land(id, m.shift);
-                        break;
-                    }
-                }
+            let Some(c) = home_letter(key) else { continue };
+            let typed = format!("{}{c}", self.navigate.typed);
+            let hit = self.navigate.deal.iter().find(|d| d.label == typed);
+            if let Some(id) = hit.map(|d| d.id) {
+                self.navigate.typed.clear();
+                self.nav_land(id, m.shift);
+            } else if self
+                .navigate
+                .deal
+                .iter()
+                .any(|d| d.label.starts_with(&typed))
+            {
+                self.navigate.typed = typed;
+            } else {
+                self.navigate.typed.clear();
             }
         }
-        true
     }
 
-    /// The labels and their outlines over the canvas while they show — in
-    /// Navigate after `f`, or while the command bar is offering labels for the
-    /// word being typed: every outline first, then every label, so no outline
-    /// crosses a label. Letters already typed narrow them: the outlines stay only
-    /// on the labels they match, and the rest fade. A label that would cover one
-    /// already placed slides right along its layer's top edge.
-    pub(crate) fn draw_leap_labels(&self, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
-        let typed: String = match &self.navigate.shown {
-            Some(shown) if self.keymap_mode() == Mode::Navigate => {
-                shown.typed.map(String::from).unwrap_or_default()
+    /// The letters typed of a label in Pick, for the bar's field to show.
+    pub(crate) fn pick_typed(&self) -> &str {
+        &self.navigate.typed
+    }
+
+    /// The names from the page down to the current layer's parent, the bar's head
+    /// path: where the selection sits, and so where the labels are.
+    pub(crate) fn pick_path(&self) -> Vec<String> {
+        let doc = &self.session.doc;
+        let from = self
+            .nav_current()
+            .and_then(|c| doc.get(c))
+            .and_then(|n| n.parent())
+            .or(self.entered_group);
+        let mut path: Vec<NodeId> =
+            std::iter::successors(from, |id| doc.get(*id).and_then(|n| n.parent()))
+                .take_while(|id| !doc.is_page(*id))
+                .collect();
+        path.push(self.session.page);
+        path.reverse();
+        path.iter()
+            .map(|id| crate::private::layer(doc, *id).into_owned())
+            .collect()
+    }
+
+    /// The labels and their outlines over the canvas: all of them in Pick; in
+    /// Type, those the completion offers for the word being typed, else the one
+    /// on `pointed`, the layer a click would take, so it can be named. Every
+    /// outline first, then every label, so no outline crosses a label. Letters
+    /// already typed narrow them: the outlines stay only on the labels they
+    /// match, and the rest fade. A label that would cover one already placed
+    /// slides right along its layer's top edge. In Pick the label on `pointed`
+    /// wears a ring.
+    pub(crate) fn draw_leap_labels(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        ppp: f32,
+        pointed: Option<NodeId>,
+    ) {
+        let picking = self.picking();
+        let (typed, only) = if picking {
+            (self.navigate.typed.clone(), None)
+        } else {
+            let Some(bar) = self.command_bar.as_ref() else {
+                return;
+            };
+            match bar.labels_typed() {
+                Some(word) => (word, None),
+                None => match pointed.filter(|p| self.navigate.deal.iter().any(|d| d.id == *p)) {
+                    Some(p) => (String::new(), Some(p)),
+                    None => return,
+                },
             }
-            _ => match self.command_bar.as_ref().and_then(|b| b.labels_typed()) {
-                Some(word) => word.to_owned(),
-                None => return,
-            },
         };
-        let deal = &self.navigate.deal;
+        let deal: Vec<&Dealt> = self
+            .navigate
+            .deal
+            .iter()
+            .filter(|d| only.is_none_or(|o| o == d.id))
+            .collect();
         let matched = |d: &Dealt| d.label.starts_with(&typed);
         let boxes: Vec<Option<egui::Rect>> = deal
             .iter()
@@ -583,7 +750,7 @@ impl MastikApp {
                     0
                 }
             };
-            crate::ui::canvas_pill_led(
+            let pill = crate::ui::canvas_pill_led(
                 &p,
                 at.min,
                 egui::Align2::LEFT_TOP,
@@ -592,39 +759,15 @@ impl MastikApp {
                 LABEL_PAD,
                 lead,
             );
-        }
-    }
-
-    /// The pill's words after NAVIGATE: the path to the current layer, a caret
-    /// between names, then the hint.
-    pub(crate) fn navigate_pill(&self, ui: &mut egui::Ui) {
-        let doc = &self.session.doc;
-        let mut path: Vec<NodeId> = std::iter::successors(self.nav_current(), |id| {
-            doc.get(*id).and_then(|n| n.parent())
-        })
-        .take_while(|id| !doc.is_page(*id))
-        .collect();
-        path.reverse();
-        let pt = crate::ui::SMALL_PT;
-        for (i, id) in path.iter().enumerate() {
-            if i > 0 {
-                ui.label(theme::icon_text(
-                    icon::CARET_RIGHT,
-                    pt,
-                    theme::text::faint(),
-                ));
+            if picking && Some(d.id) == pointed {
+                p.rect_stroke(
+                    pill.expand(RING),
+                    egui::CornerRadius::same(4),
+                    egui::Stroke::new(RING, color::SELECT),
+                    egui::StrokeKind::Outside,
+                );
             }
-            ui.label(
-                egui::RichText::new(crate::private::layer(doc, *id))
-                    .size(pt)
-                    .color(theme::text::strong()),
-            );
         }
-        ui.label(
-            egui::RichText::new(HINT)
-                .size(pt)
-                .color(theme::text::faint()),
-        );
     }
 }
 
@@ -651,7 +794,7 @@ fn outline(painter: &egui::Painter, b: egui::Rect, dashed: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mastik_core::kurbo::{Affine, Size};
+    use mastik_core::kurbo::{Affine, Size, Vec2};
     use mastik_core::{Document, IdSource, Operation, Transaction, build};
 
     /// The fixture's layers, as the Layers panel lists them top to bottom: `b`,
@@ -721,6 +864,21 @@ mod tests {
         }
     }
 
+    /// Ten more squares in a row under the fixture's, in view: more than one
+    /// letter can label.
+    fn crowd(ctx: &egui::Context, f: &mut F) {
+        let page = f.app.session.page;
+        let ops = (0..10)
+            .map(|i| {
+                let id = f.app.session.ids.mint();
+                square(id, page, 3, i as f64 * 30.0, 30.0)
+            })
+            .collect();
+        f.app.session.commit(Transaction(ops));
+        f.app.zoom_to(Some(Rect::new(-20.0, -20.0, 340.0, 70.0)));
+        frame(ctx, &mut f.app, Vec::new());
+    }
+
     /// One frame of the whole app, its modifiers the first key's.
     fn frame(ctx: &egui::Context, app: &mut MastikApp, events: Vec<egui::Event>) {
         let modifiers = events
@@ -730,6 +888,15 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_default();
+        frame_with(ctx, app, events, modifiers);
+    }
+
+    fn frame_with(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -762,8 +929,33 @@ mod tests {
         frame(ctx, app, vec![key_with(key, egui::Modifiers::SHIFT)]);
     }
 
+    /// A press and release of the primary button at `at` with `modifiers` held,
+    /// the pointer moved there first, then frames for the release to settle.
+    fn click(ctx: &egui::Context, app: &mut MastikApp, at: egui::Pos2, modifiers: egui::Modifiers) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        frame_with(ctx, app, vec![egui::Event::PointerMoved(at)], modifiers);
+        frame_with(ctx, app, vec![button(true)], modifiers);
+        frame_with(ctx, app, vec![button(false)], modifiers);
+        frame_with(ctx, app, Vec::new(), egui::Modifiers::NONE);
+    }
+
+    /// Where `id`'s centre is on screen.
+    fn centre_of(app: &MastikApp, id: NodeId) -> egui::Pos2 {
+        let b = app.session.preview_world_bounds(id).expect("bounds");
+        app.to_screen(b.center(), app.canvas_rect, app.canvas_ppp)
+    }
+
     fn selected(app: &MastikApp) -> Vec<NodeId> {
         app.session.selection.ids().to_vec()
+    }
+
+    fn dealt(app: &MastikApp) -> HashSet<NodeId> {
+        app.navigate.deal.iter().map(|d| d.id).collect()
     }
 
     /// The label dealt to `id`.
@@ -779,93 +971,203 @@ mod tests {
         egui::Key::from_name(&c.to_string()).expect("a letter key")
     }
 
-    /// `` ` `` turns Navigate on with the select tool and the pill's keymap; `Esc`
-    /// leaves with the selection kept and the tool from before; `` ` `` leaves too.
+    /// Type a label's letters, the last with `last` held.
+    fn spell(ctx: &egui::Context, app: &mut MastikApp, label: &str, last: egui::Modifiers) {
+        let n = label.chars().count();
+        for (i, c) in label.chars().enumerate() {
+            let m = if i + 1 == n {
+                last
+            } else {
+                egui::Modifiers::NONE
+            };
+            frame(ctx, app, vec![key_with(letter_key(c), m)]);
+        }
+    }
+
+    /// `` ` `` opens the bar on Pick with the select tool under it; `Esc` gives
+    /// the keys to the field, `` ` `` takes them back, and `Esc` on an empty line
+    /// closes the bar with the tool from before and the selection kept.
     ///
-    /// flip: `leave_navigate` not giving back `on.prior` → fails at "the tool from
+    /// flip: `end_bar_session` not choosing `on.prior` → fails at "the tool from
     /// before".
     #[test]
-    fn the_backtick_toggles_navigate_and_leaving_gives_the_tool_back() {
+    fn the_backtick_opens_the_bar_on_pick_and_closing_gives_the_tool_back() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         f.app.choose_tool(Tool::Rect);
         f.app.session.selection.set_one(f.b);
 
         tap(&ctx, &mut f.app, egui::Key::Backtick);
-        assert!(f.app.navigating(), "the backtick turned it on");
+        assert!(f.app.picking(), "the backtick opened the bar on Pick");
         assert_eq!(f.app.keymap_mode(), Mode::Navigate);
         assert_eq!(f.app.mode, Mode::Normal, "a keymap, not a canvas mode");
-        assert_eq!(f.app.tool, Tool::Select);
+        assert_eq!(f.app.tool, Tool::Select, "the canvas selects under the bar");
 
         tap(&ctx, &mut f.app, egui::Key::Escape);
-        assert!(!f.app.navigating(), "Esc left");
+        assert!(f.app.command_bar.is_some(), "Esc kept the bar");
+        assert!(!f.app.picking(), "and gave the keys to the field");
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert!(f.app.picking(), "the backtick from the field picks again");
+
+        tap(&ctx, &mut f.app, egui::Key::Escape);
+        tap(&ctx, &mut f.app, egui::Key::Escape);
+        assert!(
+            f.app.command_bar.is_none(),
+            "Esc on an empty line closed it"
+        );
         assert_eq!(f.app.tool, Tool::Rect, "the tool from before");
         assert_eq!(selected(&f.app), [f.b], "the selection kept");
-
-        tap(&ctx, &mut f.app, egui::Key::Backtick);
-        assert!(f.app.navigating());
-        tap(&ctx, &mut f.app, egui::Key::Backtick);
-        assert!(!f.app.navigating(), "the backtick leaves as well");
-        assert_eq!(f.app.tool, Tool::Rect);
     }
 
-    /// `j` and `k` are the Layers panel's row below and above, `l` the top row
-    /// inside or the child last visited, `h` the parent; the ends stay put.
+    /// Inside a string the backtick is Luau's: it types rather than picks.
+    ///
+    /// flip: `read_keys` ignoring `in_string` → fails at "typed, not picked".
+    #[test]
+    fn a_backtick_inside_a_string_types() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.open_command_bar();
+        f.app.command_bar.as_mut().unwrap().text = ".name = \"a".into();
+        frame(&ctx, &mut f.app, Vec::new());
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert!(!f.app.picking(), "typed, not picked");
+    }
+
+    /// Pick deals at once to what a plain click could select — the group, not
+    /// its squares — one letter each while nine or fewer, the current layer the
+    /// easiest.
+    ///
+    /// flip: `deal` spelling from `label_pairs` whatever the count → fails at "one
+    /// letter each".
+    #[test]
+    fn pick_deals_one_letter_labels_at_once() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert_eq!(
+            dealt(&f.app),
+            HashSet::from([f.a, f.g, f.b]),
+            "the group, not its squares"
+        );
+        assert!(
+            f.app.leap_labels().keys().all(|k| k.len() == 1),
+            "one letter each: {:?}",
+            f.app.leap_labels()
+        );
+        assert_eq!(label_of(&f.app, f.b), label_singles()[0], "b is current");
+    }
+
+    /// Past nine, every label is two letters, and the first letter narrows.
+    ///
+    /// flip: `leap_keys` not keeping the first letter → fails at "the first
+    /// letter narrows".
+    #[test]
+    fn past_nine_labels_are_two_letters_and_the_first_narrows() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        crowd(&ctx, &mut f);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert!(f.app.navigate.deal.len() > 9, "fixture: more than nine");
+        assert!(f.app.leap_labels().keys().all(|k| k.len() == 2));
+        let label = label_of(&f.app, f.a);
+        let first = label.chars().next().unwrap();
+        tap(&ctx, &mut f.app, letter_key(first));
+        assert_eq!(
+            f.app.pick_typed(),
+            first.to_string(),
+            "the first letter narrows"
+        );
+        assert_eq!(selected(&f.app), [f.b], "one letter selects nothing");
+        tap(&ctx, &mut f.app, egui::Key::Backspace);
+        assert_eq!(f.app.pick_typed(), "", "Backspace takes it back");
+        assert!(f.app.picking(), "and does not step out");
+        spell(&ctx, &mut f.app, &label, egui::Modifiers::NONE);
+        assert_eq!(selected(&f.app), [f.a]);
+    }
+
+    /// A label selects; with Shift it adds; the deal stays for the next pick.
+    ///
+    /// flip: `nav_land` ignoring `add` → fails at "added".
+    #[test]
+    fn a_label_selects_and_shift_adds() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        let la = label_of(&f.app, f.a);
+        spell(&ctx, &mut f.app, &la, egui::Modifiers::NONE);
+        assert_eq!(selected(&f.app), [f.a]);
+        let lg = label_of(&f.app, f.g);
+        spell(&ctx, &mut f.app, &lg, egui::Modifiers::SHIFT);
+        assert_eq!(selected(&f.app), [f.a, f.g], "added");
+        assert_eq!(f.app.navigate.deal.len(), 3, "the deal stays");
+        assert!(f.app.picking());
+    }
+
+    /// `Enter` steps into the picked group and the labels follow onto its
+    /// children; `Backspace` steps out, selecting the group, and they come back.
+    ///
+    /// flip: `step_out` leaving `entered_group` as it was → fails at "out of the
+    /// group".
+    #[test]
+    fn enter_steps_in_and_backspace_steps_out_and_the_labels_follow() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        let lg = label_of(&f.app, f.g);
+        spell(&ctx, &mut f.app, &lg, egui::Modifiers::NONE);
+
+        tap(&ctx, &mut f.app, egui::Key::Enter);
+        assert_eq!(f.app.entered_group, Some(f.g), "into the group");
+        assert_eq!(selected(&f.app), [f.r2], "on its top child");
+        assert_eq!(dealt(&f.app), HashSet::from([f.r1, f.r2]));
+
+        tap(&ctx, &mut f.app, egui::Key::Backspace);
+        assert_eq!(f.app.entered_group, None, "out of the group");
+        assert_eq!(selected(&f.app), [f.g], "the group selected");
+        assert_eq!(dealt(&f.app), HashSet::from([f.a, f.g, f.b]));
+        assert!(f.app.picking());
+    }
+
+    /// `Enter` on a layer with nothing inside gives the keys back to the field.
+    ///
+    /// flip: `step_in` dispatching the editor's `Enter` → fails at "to the field".
+    #[test]
+    fn enter_on_a_leaf_goes_back_to_the_field() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        let la = label_of(&f.app, f.a);
+        spell(&ctx, &mut f.app, &la, egui::Modifiers::NONE);
+        tap(&ctx, &mut f.app, egui::Key::Enter);
+        assert!(
+            f.app.command_bar.is_some() && !f.app.picking(),
+            "to the field"
+        );
+        assert_eq!(selected(&f.app), [f.a]);
+    }
+
+    /// `↓` and `↑` are the Layers panel's row below and above; Shift adds.
     ///
     /// flip: `Step::Next` taking the index after rather than before → fails at
     /// "the row below b".
-    /// flip: `Step::Child` ignoring `visited` → fails at "the child last visited".
     #[test]
-    fn hjkl_walk_the_layers_panel_rows() {
+    fn the_arrows_walk_siblings_and_shift_adds() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         tap(&ctx, &mut f.app, egui::Key::Backtick);
-        let app = &mut f.app;
-
-        tap(&ctx, app, egui::Key::K);
-        assert_eq!(selected(app), [f.b], "nothing above the top row");
-        tap(&ctx, app, egui::Key::J);
-        assert_eq!(selected(app), [f.g], "the row below b");
-        tap(&ctx, app, egui::Key::L);
-        assert_eq!(selected(app), [f.r2], "the top row inside the group");
-        tap(&ctx, app, egui::Key::ArrowDown);
-        assert_eq!(selected(app), [f.r1], "the arrow is j's twin");
-        tap(&ctx, app, egui::Key::ArrowUp);
-        assert_eq!(selected(app), [f.r2]);
-        tap(&ctx, app, egui::Key::J);
-        tap(&ctx, app, egui::Key::H);
-        assert_eq!(selected(app), [f.g], "h is the parent");
-        tap(&ctx, app, egui::Key::H);
-        assert_eq!(selected(app), [f.g], "the page is no layer to step to");
-        tap(&ctx, app, egui::Key::L);
-        assert_eq!(selected(app), [f.r1], "the child last visited");
-        tap(&ctx, app, egui::Key::ArrowLeft);
-        tap(&ctx, app, egui::Key::J);
-        assert_eq!(selected(app), [f.a]);
-        tap(&ctx, app, egui::Key::J);
-        assert_eq!(selected(app), [f.a], "nothing below the bottom row");
-        assert_eq!(app.tool, Tool::Select, "no tool letter answered");
-    }
-
-    /// Shift with a move adds the layer it lands on, and the next move goes on
-    /// from there.
-    ///
-    /// flip: `nav_land` ignoring `add` → fails at "b and the group".
-    #[test]
-    fn shift_with_a_move_extends_the_selection() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        tap(&ctx, &mut f.app, egui::Key::Backtick);
-        shift_tap(&ctx, &mut f.app, egui::Key::J);
-        assert_eq!(selected(&f.app), [f.b, f.g], "b and the group");
+        tap(&ctx, &mut f.app, egui::Key::ArrowDown);
+        assert_eq!(selected(&f.app), [f.g], "the row below b");
         shift_tap(&ctx, &mut f.app, egui::Key::ArrowDown);
-        assert_eq!(selected(&f.app), [f.b, f.g, f.a], "and a, below the group");
-        tap(&ctx, &mut f.app, egui::Key::K);
-        assert_eq!(selected(&f.app), [f.g], "a plain move selects alone");
+        assert_eq!(selected(&f.app), [f.g, f.a], "and a, added");
+        tap(&ctx, &mut f.app, egui::Key::ArrowUp);
+        assert_eq!(selected(&f.app), [f.g], "a plain step selects alone");
+        tap(&ctx, &mut f.app, egui::Key::ArrowDown);
+        tap(&ctx, &mut f.app, egui::Key::ArrowDown);
+        assert_eq!(selected(&f.app), [f.a], "nothing below the bottom row");
     }
 
-    /// The editor's keys rest in Navigate: a tool letter, Delete, a digit; `u`
-    /// undoes and Ctrl+Z keeps its meaning.
+    /// The editor's keys rest in Pick: a tool letter, Delete, a digit, a letter
+    /// no label uses; Ctrl+Z still undoes.
     ///
     /// flip: `navigate_mode` reading the table as `Mode::Normal` → fails at "R rests".
     #[test]
@@ -874,7 +1176,6 @@ mod tests {
         let mut f = fixture(&ctx);
         tap(&ctx, &mut f.app, egui::Key::Backtick);
         let app = &mut f.app;
-
         tap(&ctx, app, egui::Key::R);
         assert_eq!(app.tool, Tool::Select, "R rests");
         tap(&ctx, app, egui::Key::Delete);
@@ -892,19 +1193,10 @@ mod tests {
             name: "Renamed".into(),
         }]));
         tap(&ctx, app, egui::Key::U);
-        assert_eq!(app.session.history.undo_depth(), depth, "u undid it");
-        frame(
-            &ctx,
-            app,
-            vec![key_with(
-                egui::Key::Z,
-                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-            )],
-        );
         assert_eq!(
             app.session.history.undo_depth(),
             depth + 1,
-            "Ctrl+Shift+Z redid it"
+            "u is no key here"
         );
         frame(
             &ctx,
@@ -912,68 +1204,196 @@ mod tests {
             vec![key_with(egui::Key::Z, egui::Modifiers::COMMAND)],
         );
         assert_eq!(app.session.history.undo_depth(), depth, "Ctrl+Z undid it");
-        assert!(app.navigating(), "and Navigate is still on");
+        assert!(app.picking(), "and the bar still picks");
     }
 
-    /// `Enter` steps into a group as the editor's does, and Navigate stays on.
+    /// A moved view is dealt again once it rests, and a layer keeps its letter
+    /// though the current layer, which orders a fresh deal, has changed.
     ///
-    /// flip: `Nav::StepIn` dispatching `Action::Escape` → fails at "inside".
+    /// flip: `deal` ignoring `had` → fails at "a keeps its letter".
     #[test]
-    fn enter_steps_in_as_the_editors_does() {
+    fn labels_keep_their_letters_when_the_view_moves() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        let la = label_of(&f.app, f.a);
+        spell(&ctx, &mut f.app, &la, egui::Modifiers::NONE);
+        assert_ne!(la, label_singles()[0], "fixture: a was not the easiest");
+        let before = f.app.navigate.dealt_for.map(|k| k.view);
+        f.app.session.camera.pan_pixels(Vec2::new(30.0, 0.0));
+        for _ in 0..20 {
+            frame(&ctx, &mut f.app, Vec::new());
+        }
+        let after = f.app.navigate.dealt_for.map(|k| k.view);
+        assert_ne!(before, after, "fixture: the moved view was dealt again");
+        assert_eq!(label_of(&f.app, f.a), la, "a keeps its letter");
+    }
+
+    /// A label the field's line holds keeps its layer through a deal elsewhere,
+    /// and no other layer takes it.
+    ///
+    /// flip: `deal` building `labels` without `pinned` → fails at "the line's label".
+    #[test]
+    fn a_label_written_in_the_line_keeps_its_layer() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.open_command_bar();
+        frame(&ctx, &mut f.app, Vec::new());
+        let la = label_of(&f.app, f.a);
+        f.app.command_bar.as_mut().unwrap().text = format!("{la}.x = 5");
+        f.app.entered_group = Some(f.g);
+        f.app.session.selection.set_one(f.r1);
+        frame(&ctx, &mut f.app, Vec::new());
+        assert_eq!(
+            dealt(&f.app),
+            HashSet::from([f.r1, f.r2]),
+            "fixture: dealt inside"
+        );
+        assert_eq!(f.app.leap_labels().get(&la), Some(&f.a), "the line's label");
+        assert!(
+            f.app.navigate.deal.iter().all(|d| d.label != la),
+            "taken by nothing else"
+        );
+    }
+
+    /// Over 81 candidates, only the current layer's children are labelled.
+    ///
+    /// flip: dropping the `LABELS_MAX` fallback in `deal` → fails at the set.
+    #[test]
+    fn over_81_candidates_label_only_the_children_of_the_current_layer() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let page = f.app.session.page;
+        let mut ops = Vec::new();
+        for i in 0..90 {
+            let id = f.app.session.ids.mint();
+            let (x, y) = ((i % 15) as f64 * 22.0, 40.0 + (i / 15) as f64 * 22.0);
+            ops.push(square(id, page, 3, x, y));
+        }
+        f.app.session.commit(Transaction(ops));
+        f.app.zoom_to(Some(Rect::new(-20.0, -20.0, 340.0, 180.0)));
         f.app.session.selection.set_one(f.g);
+        frame(&ctx, &mut f.app, Vec::new());
+        let view = f.app.session.camera.viewport(f.app.canvas_px).view;
+        assert!(
+            f.app.leap_candidates(view, None).len() > LABELS_MAX,
+            "fixture: more candidates than labels"
+        );
         tap(&ctx, &mut f.app, egui::Key::Backtick);
-        tap(&ctx, &mut f.app, egui::Key::I);
-        assert_eq!(selected(&f.app), [f.r2], "inside, on the top child");
-        assert_eq!(f.app.entered_group, Some(f.g));
-        assert!(f.app.navigating());
+        assert_eq!(dealt(&f.app), HashSet::from([f.r1, f.r2]));
     }
 
-    /// A text edit started from Navigate types in the text keymap, and its Escape
-    /// comes back to Navigate rather than out of it.
+    /// The yellow closed outlines a frame of the label overlay alone paints, with
+    /// the pointer on `pointed`.
+    fn solid(ctx: &egui::Context, app: &MastikApp, pointed: Option<NodeId>) -> usize {
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.draw_leap_labels(ui.painter(), app.canvas_rect, app.canvas_ppp, pointed);
+        });
+        let yellow = egui::epaint::ColorMode::Solid(color::leap());
+        out.shapes
+            .iter()
+            .filter(|c| matches!(&c.shape, egui::Shape::Path(p) if p.closed && p.stroke.color == yellow))
+            .count()
+    }
+
+    /// In Pick every label shows, and after a first letter only those it still
+    /// matches keep an outline; the group's are dashed.
     ///
-    /// flip: `keymap_mode` answering Navigate whatever `mode` holds → fails at "the
-    /// text keymap".
+    /// flip: `draw_leap_labels` outlining every dealt layer → fails at the count
+    /// after the first letter.
     #[test]
-    fn a_text_edit_from_navigate_ends_back_in_navigate() {
+    fn the_first_letter_keeps_outlines_only_on_what_it_matches() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
-        let text = f.app.session.ids.mint();
-        let parts = crate::fonts::FontService::default_text_parts();
-        f.app
-            .session
-            .commit(Transaction(vec![Operation::CreateNode {
-                id: text,
-                parent: f.app.session.page,
-                index: 3,
-                kind: NodeKind::Text {
-                    content: "Pro".into(),
-                    style: Box::new(parts.style),
-                    spans: parts.spans,
-                    para_spans: parts.para_spans,
-                    paragraph: parts.paragraph,
-                    block: parts.block,
-                    sizing: parts.sizing,
-                    on_path: None,
-                    on_path_flip: false,
-                    on_path_offset: 0.0,
-                },
-                transform: Some(Affine::translate((200.0, 0.0))),
-                name: None,
-            }]));
-        f.app.session.selection.set_one(text);
+        crowd(&ctx, &mut f);
         tap(&ctx, &mut f.app, egui::Key::Backtick);
+        let all = solid(&ctx, &f.app, None);
+        assert_eq!(
+            all,
+            f.app.navigate.deal.len() - 1,
+            "every solid one; the group dashed"
+        );
+        let first = label_of(&f.app, f.a).chars().next().unwrap();
+        tap(&ctx, &mut f.app, letter_key(first));
+        let left = f
+            .app
+            .navigate
+            .deal
+            .iter()
+            .filter(|d| d.label.starts_with(first) && d.id != f.g)
+            .count();
+        assert!(left < all, "fixture: the letter rules outlines out");
+        assert_eq!(
+            solid(&ctx, &f.app, None),
+            left,
+            "only what the letter still matches"
+        );
+    }
 
-        tap(&ctx, &mut f.app, egui::Key::Enter);
-        assert!(f.app.text.is_some(), "Enter opened the text");
-        assert_eq!(f.app.keymap_mode(), Mode::TextInsert, "the text keymap");
-        assert!(f.app.navigating(), "with Navigate still on beneath it");
+    /// In Type no label shows until one is offered, except the one on the layer
+    /// under the pointer, so it can be named.
+    ///
+    /// flip: `draw_leap_labels` returning in Type when nothing is offered → fails
+    /// at "the pointed layer's".
+    #[test]
+    fn in_type_the_pointed_layer_shows_its_label_alone() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.open_command_bar();
+        frame(&ctx, &mut f.app, Vec::new());
+        assert_eq!(
+            solid(&ctx, &f.app, None),
+            0,
+            "none while nothing is offered"
+        );
+        assert_eq!(solid(&ctx, &f.app, Some(f.a)), 1, "the pointed layer's");
+    }
 
-        tap(&ctx, &mut f.app, egui::Key::Escape);
-        assert!(f.app.text.is_none(), "Escape ended the edit");
-        assert_eq!(f.app.keymap_mode(), Mode::Navigate, "and came back here");
-        assert_eq!(selected(&f.app), [text]);
+    /// The canvas stays live under the bar: a click selects, and the bar keeps
+    /// its focus.
+    ///
+    /// flip: `canvas_ui` skipping the tools' input while the bar is open → fails at
+    /// "the click selected".
+    #[test]
+    fn a_click_under_the_open_bar_selects() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.open_command_bar();
+        frame(&ctx, &mut f.app, Vec::new());
+        let at = centre_of(&f.app, f.a);
+        click(&ctx, &mut f.app, at, egui::Modifiers::NONE);
+        assert_eq!(selected(&f.app), [f.a], "the click selected");
+        assert!(f.app.command_bar.is_some(), "the bar stayed");
+    }
+
+    /// In Type an `Alt`-click writes the layer's label into the line and leaves
+    /// the selection as it was.
+    ///
+    /// flip: `bar_alt_click` not setting `gesture_cancelled` → fails at "the
+    /// selection untouched".
+    #[test]
+    fn an_alt_click_writes_the_label_into_the_line() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.open_command_bar();
+        frame(&ctx, &mut f.app, Vec::new());
+        f.app.command_bar.as_mut().unwrap().text = ".x = ".into();
+        frame(&ctx, &mut f.app, Vec::new());
+        let at = centre_of(&f.app, f.a);
+        click(&ctx, &mut f.app, at, egui::Modifiers::ALT);
+        let la = label_of(&f.app, f.a);
+        let text = f.app.command_bar.as_ref().map(|b| b.text.clone());
+        assert_eq!(text, Some(format!(".x = {la}")), "the label at the caret");
+        assert_eq!(selected(&f.app), [f.b], "the selection untouched");
+    }
+
+    /// The singles are the nine home-row letters, each once, index fingers first.
+    #[test]
+    fn the_singles_are_the_home_row_easiest_first() {
+        let singles = label_singles();
+        assert_eq!(singles.len(), HOME_ROW.len());
+        assert_eq!(&singles[..2], ["f", "j"]);
+        assert_eq!(singles.last().unwrap(), "a");
     }
 
     /// The pairs are the 81 two-letter home-row labels, each once, easiest first.
@@ -997,165 +1417,5 @@ mod tests {
             "the index fingers lead"
         );
         assert_eq!(pairs.last().unwrap(), "aa", "both pinkies last");
-    }
-
-    /// `f` labels what a plain click could select: the group, not the squares
-    /// inside it, and the nearest layer gets the easiest pair.
-    ///
-    /// flip: `leap_candidates` keeping the leaf rather than the chain's outermost →
-    /// fails at "the group, not its squares".
-    #[test]
-    fn f_labels_what_a_click_could_reach() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        tap(&ctx, &mut f.app, egui::Key::Backtick);
-        tap(&ctx, &mut f.app, egui::Key::F);
-        let dealt: HashSet<NodeId> = f.app.leap_labels().values().copied().collect();
-        assert_eq!(
-            dealt,
-            HashSet::from([f.a, f.g, f.b]),
-            "the group, not its squares"
-        );
-        assert_eq!(label_of(&f.app, f.b), label_pairs()[0], "b is current");
-        assert!(f.app.navigate.shown.is_some(), "and they show");
-    }
-
-    /// `F` labels inside the current layer only.
-    ///
-    /// flip: `deal_labels` passing `None` for `within` → fails at the set.
-    #[test]
-    fn shift_f_labels_inside_the_current_layer() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        f.app.session.selection.set_one(f.g);
-        tap(&ctx, &mut f.app, egui::Key::Backtick);
-        shift_tap(&ctx, &mut f.app, egui::Key::F);
-        let dealt: HashSet<NodeId> = f.app.leap_labels().values().copied().collect();
-        assert_eq!(dealt, HashSet::from([f.r1, f.r2]));
-    }
-
-    /// Over 81 candidates, only the current layer's children are labelled.
-    ///
-    /// flip: dropping the `LABELS_MAX` fallback in `deal_labels` → fails at the set
-    /// (81 labels on the grid).
-    #[test]
-    fn over_81_candidates_label_only_the_children_of_the_current_layer() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        let page = f.app.session.page;
-        let mut ops = Vec::new();
-        for i in 0..90 {
-            let id = f.app.session.ids.mint();
-            let (x, y) = ((i % 15) as f64 * 22.0, 40.0 + (i / 15) as f64 * 22.0);
-            ops.push(square(id, page, 3, x, y));
-        }
-        f.app.session.commit(Transaction(ops));
-        f.app.zoom_to(Some(Rect::new(-20.0, -20.0, 340.0, 180.0)));
-        f.app.session.selection.set_one(f.g);
-        tap(&ctx, &mut f.app, egui::Key::Backtick);
-        let view = f.app.session.camera.viewport(f.app.canvas_px).view;
-        assert!(
-            f.app.leap_candidates(view, None).len() > LABELS_MAX,
-            "fixture: more candidates than labels"
-        );
-        tap(&ctx, &mut f.app, egui::Key::F);
-        let dealt: HashSet<NodeId> = f.app.leap_labels().values().copied().collect();
-        assert_eq!(dealt, HashSet::from([f.r1, f.r2]));
-    }
-
-    /// The first letter narrows the labels, the second selects; the labels hide
-    /// and their map stays, Navigate on, until the next `f` deals again.
-    ///
-    /// flip: `leap_keys` clearing `labels` when it hides them → fails at "the map
-    /// stays".
-    /// flip: `leap_keys` not recording the first letter → fails at "the first
-    /// letter narrows".
-    #[test]
-    fn two_letters_select_and_the_map_outlives_the_labels() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        tap(&ctx, &mut f.app, egui::Key::Backtick);
-        tap(&ctx, &mut f.app, egui::Key::F);
-        let label = label_of(&f.app, f.a);
-        let mut letters = label.chars();
-        let (first, second) = (letters.next().unwrap(), letters.next().unwrap());
-
-        tap(&ctx, &mut f.app, letter_key(first));
-        let typed = f.app.navigate.shown.as_ref().and_then(|s| s.typed);
-        assert_eq!(typed, Some(first), "the first letter narrows");
-        assert_eq!(selected(&f.app), [f.b], "one letter selects nothing");
-
-        tap(&ctx, &mut f.app, letter_key(second));
-        assert_eq!(selected(&f.app), [f.a], "the second selects");
-        assert!(f.app.navigate.shown.is_none(), "and the labels hide");
-        assert_eq!(f.app.leap_labels().len(), 3, "the map stays");
-        assert_eq!(f.app.leap_labels().get(&label), Some(&f.a));
-        assert!(f.app.navigating());
-
-        tap(&ctx, &mut f.app, egui::Key::J);
-        assert_eq!(selected(&f.app), [f.a], "the keys are the keymap's again");
-        tap(&ctx, &mut f.app, egui::Key::Escape);
-        assert!(!f.app.navigating());
-        assert_eq!(f.app.leap_labels().len(), 3, "leaving keeps it too");
-    }
-
-    /// Shift on the last letter adds the layer; Escape hides the labels without
-    /// leaving Navigate.
-    ///
-    /// flip: `nav_land` called with `false` from `leap_keys` → fails at "added".
-    #[test]
-    fn shift_on_the_last_letter_adds_and_escape_only_hides() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        tap(&ctx, &mut f.app, egui::Key::Backtick);
-        tap(&ctx, &mut f.app, egui::Key::F);
-        tap(&ctx, &mut f.app, egui::Key::Escape);
-        assert!(f.app.navigate.shown.is_none(), "Escape hid them");
-        assert!(f.app.navigating(), "and stayed in Navigate");
-
-        tap(&ctx, &mut f.app, egui::Key::F);
-        let label = label_of(&f.app, f.g);
-        let mut letters = label.chars().map(letter_key);
-        tap(&ctx, &mut f.app, letters.next().unwrap());
-        shift_tap(&ctx, &mut f.app, letters.next().unwrap());
-        assert_eq!(selected(&f.app), [f.b, f.g], "added");
-    }
-
-    /// After the first letter only the labels it still matches keep an outline:
-    /// each outline is two closed lines, dark inside and yellow outside, and the
-    /// group's are dashed.
-    ///
-    /// flip: `draw_leap_labels` outlining every dealt layer → fails at the count
-    /// after the first letter.
-    #[test]
-    fn the_first_letter_keeps_outlines_only_on_what_it_matches() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        tap(&ctx, &mut f.app, egui::Key::Backtick);
-        tap(&ctx, &mut f.app, egui::Key::F);
-        // The yellow closed lines a frame of the overlay alone paints.
-        let solid = |app: &MastikApp| {
-            let out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                app.draw_leap_labels(ui.painter(), app.canvas_rect, app.canvas_ppp);
-            });
-            let yellow = egui::epaint::ColorMode::Solid(color::leap());
-            out.shapes
-                .iter()
-                .filter(|c| {
-                    matches!(&c.shape, egui::Shape::Path(p) if p.closed && p.stroke.color == yellow)
-                })
-                .count()
-        };
-        assert_eq!(solid(&f.app), 2, "a and b are solid; the group dashed");
-        let first = label_of(&f.app, f.a).chars().next().unwrap();
-        tap(&ctx, &mut f.app, letter_key(first));
-        let left = f
-            .app
-            .leap_labels()
-            .iter()
-            .filter(|(k, v)| k.starts_with(first) && **v != f.g)
-            .count();
-        assert!(left < 2, "fixture: the letter rules a solid outline out");
-        assert_eq!(solid(&f.app), left, "only what the letter still matches");
     }
 }

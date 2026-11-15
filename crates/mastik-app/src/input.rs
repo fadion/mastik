@@ -1,8 +1,8 @@
 //! Mode-aware input routing (§9.3, §13 "seams v1 must reserve").
 //!
 //! Every keystroke resolves against an explicit [`Mode`] before it becomes an
-//! [`Action`]; Navigate is the third arm. The command bar needs no mode: `:`
-//! opens it, and it owns the keyboard while open.
+//! [`Action`]; Navigate, the command bar's Pick focus, is the third arm. The
+//! bar's Type focus needs no mode: its field owns the keyboard while it is up.
 //!
 //! Chrome focus is part of routing: if egui owns the keyboard (a focused text
 //! field), the canvas sees nothing.
@@ -12,8 +12,8 @@ use eframe::egui;
 use mastik_core::build;
 use mastik_core::kurbo::Vec2;
 
-/// The editing mode: normal, text insert and Navigate, each with a visible
-/// indicator — not a pile of context-dependent shortcuts.
+/// The editing mode: normal, text insert and the bar's Pick focus, each with a
+/// visible sign — not a pile of context-dependent shortcuts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Mode {
     /// Selecting, drawing, transforming. Single-key tool switches live here.
@@ -21,9 +21,10 @@ pub enum Mode {
     Normal,
     /// Typing into a text node on the canvas. Keys are content, not commands.
     TextInsert,
-    /// Walking the layer tree from the keyboard (`crate::navigate`). A keymap, not
-    /// a canvas state: `MastikApp::mode` stays `Normal` and the canvas behaves as
-    /// in it; `MastikApp::keymap_mode` answers this while Navigate is on.
+    /// The command bar's Pick focus (`crate::navigate`): leap labels take the
+    /// letters and the tree's steps take the keys no label uses. A keymap, not a
+    /// canvas state: `MastikApp::mode` stays `Normal` and the canvas behaves as in
+    /// it; `MastikApp::keymap_mode` answers this while the bar picks.
     Navigate,
 }
 
@@ -33,77 +34,71 @@ impl Mode {
         match self {
             Mode::Normal => "NORMAL",
             Mode::TextInsert => "INSERT",
-            Mode::Navigate => "NAVIGATE",
+            Mode::Navigate => "PICK",
         }
     }
 }
 
-/// A structural step in Navigate: the Layers panel's rows, not the canvas's space.
+/// A sibling step in Pick: the Layers panel's rows, not the canvas's space.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
-    /// `h`, `←`: the layer the current one sits in.
-    Parent,
-    /// `l`, `→`: the child last visited from here, else the top row inside.
-    Child,
-    /// `j`, `↓`: the row below — the next layer back in z-order.
+    /// `↓`: the row below — the next layer back in z-order.
     Next,
-    /// `k`, `↑`: the row above.
+    /// `↑`: the row above.
     Prev,
 }
 
-/// A key of Navigate's keymap ([`Mode::Navigate`]).
+/// A key of the bar's Pick keymap ([`Mode::Navigate`]). The home-row letters are
+/// leap labels there, read before this table (`MastikApp::leap_keys`), so no row
+/// here is a letter.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Nav {
-    /// Move the current layer; `true` with Shift, which adds it to the selection.
+    /// `↑`, `↓`: a sibling; `true` with Shift, which adds it to the selection.
     Step(Step, bool),
-    /// `f` labels every layer in view, `F` (`inside`) those inside the current one.
-    Labels { inside: bool },
-    /// `Enter`, `i`: [`Action::Enter`], from Navigate.
+    /// `Enter`, `→`: into the selected group, or back to the field from a layer
+    /// with nothing to step into.
     StepIn,
-    /// `Shift+2`: fit the current layer in the view.
+    /// `Backspace`, `←`: out to the group the selection sits in.
+    StepOut,
+    /// `*`: the same layer in each copy of its repeated blocks
+    /// (`MastikApp::select_matching`).
+    Matching,
+    /// `Shift+1`: fit the page in the view.
+    Fit,
+    /// `Shift+2`: fit the selection in the view.
     Zoom,
-    /// `u`: undo.
-    Undo,
-    /// `:`: the command bar, on the current layer.
-    Command,
-    /// `.`: the last line typed in the bar again, on the current layer.
+    /// `.`: the last line in the log again, on the selection.
     Repeat,
-    /// `` ` ``, `Esc`: back to the editor.
-    Leave,
+    /// `` ` ``, `:`, `Esc`: back to the field.
+    Type,
 }
 
 impl Nav {
     /// The cheatsheet's rows, in its order; the Shift steps share one hand row.
-    pub(crate) const SHEET: [Nav; 12] = [
-        Nav::Step(Step::Parent, false),
-        Nav::Step(Step::Child, false),
+    pub(crate) const SHEET: [Nav; 9] = [
+        Nav::StepIn,
+        Nav::StepOut,
         Nav::Step(Step::Next, false),
         Nav::Step(Step::Prev, false),
-        Nav::Labels { inside: false },
-        Nav::Labels { inside: true },
-        Nav::StepIn,
-        Nav::Command,
+        Nav::Matching,
         Nav::Repeat,
+        Nav::Fit,
         Nav::Zoom,
-        Nav::Undo,
-        Nav::Leave,
+        Nav::Type,
     ];
 
     /// The cheatsheet's label for the key.
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Nav::Step(Step::Parent, _) => "Parent layer",
-            Nav::Step(Step::Child, _) => "Child layer",
             Nav::Step(Step::Next, _) => "Next layer (row below)",
             Nav::Step(Step::Prev, _) => "Previous layer (row above)",
-            Nav::Labels { inside: false } => "Label the layers in view",
-            Nav::Labels { inside: true } => "Label the layers inside",
             Nav::StepIn => "Step in",
-            Nav::Zoom => "Zoom to the layer",
-            Nav::Undo => "Undo",
-            Nav::Command => "Command bar on the layer",
-            Nav::Repeat => "Repeat the last bar line",
-            Nav::Leave => "Leave Navigate",
+            Nav::StepOut => "Step out",
+            Nav::Matching => "The same layer in each repeat",
+            Nav::Fit => "Zoom to fit",
+            Nav::Zoom => "Zoom to the selection",
+            Nav::Repeat => "Repeat the last line",
+            Nav::Type => "Back to typing",
         }
     }
 }
@@ -430,10 +425,10 @@ pub enum Action {
     BlendChord(u8),
     /// One of the styling chords a live text session admits — see [`TextChord`].
     TextStyle(TextChord),
-    /// `` ` `` — Navigate on or off (`MastikApp::toggle_navigate`); the Tools menu
-    /// and the palette carry it for layouts where `` ` `` is a dead key.
+    /// `` ` `` — the command bar on its Pick focus (`MastikApp::pick_layers`); the
+    /// Tools menu and the palette carry it for layouts where `` ` `` is a dead key.
     Navigate,
-    /// A key of Navigate's own keymap — see [`Nav`].
+    /// A key of the bar's Pick keymap — see [`Nav`].
     Nav(Nav),
     /// Tools ▸ *Scripts…*: the script editor (`crate::command::editor`). No chord.
     OpenScripts,
@@ -673,7 +668,7 @@ enum Scope {
     Text,
     /// `Normal` and `Text`.
     Both,
-    /// Navigate only, where every other key rests.
+    /// The bar's Pick focus only, where every other key rests.
     Navigate,
     /// Every mode: the history chords.
     Every,
@@ -780,8 +775,8 @@ const BINDINGS: &[Binding] = {
     const fn nav(mods: Mods, key: K, nav: Nav) -> Binding {
         bind(mods, key, A::Nav(nav)).in_scope(Scope::Navigate)
     }
-    /// A Navigate step's Shift twin, which extends the selection: unshown, as the
-    /// cheatsheet's one hand row says it for all four.
+    /// A Pick step's Shift twin, which extends the selection: unshown, as the
+    /// cheatsheet's one hand row says it for both.
     const fn extend(key: K, step: Step) -> Binding {
         nav(SHIFT, key, Nav::Step(step, true)).unshown()
     }
@@ -790,7 +785,7 @@ const BINDINGS: &[Binding] = {
     }
     &[
         // File and history; the four a text session also admits finish it first,
-        // and Navigate keeps undo and redo.
+        // and Pick keeps undo and redo.
         every(bind(CTRL, K::Z, A::Undo)),
         every(bind(CTRL_SHIFT, K::Z, A::Redo)),
         every(bind(CTRL, K::Y, A::Redo)),
@@ -907,38 +902,29 @@ const BINDINGS: &[Binding] = {
         bind(NONE, K::I, A::ChooseTool(Tool::Eyedropper)),
         // Illustrator's chart letter; draws the kind the rail's chart slot shows.
         bind(NONE, K::J, A::ChooseTool(Tool::Chart)),
-        // Navigate: on from the editor, and its own keymap while on. `:` and `.`
-        // are the command bar's.
+        // The command bar's Pick focus: opened from the editor, and its own
+        // keymap while it has the keys. No row is a letter: those are labels.
         bind(NONE, K::Backtick, A::Navigate),
-        nav(NONE, K::H, Nav::Step(Step::Parent, false)),
-        nav(NONE, K::ArrowLeft, Nav::Step(Step::Parent, false)),
-        nav(NONE, K::L, Nav::Step(Step::Child, false)),
-        nav(NONE, K::ArrowRight, Nav::Step(Step::Child, false)),
-        nav(NONE, K::J, Nav::Step(Step::Next, false)),
-        nav(NONE, K::ArrowDown, Nav::Step(Step::Next, false)),
-        nav(NONE, K::K, Nav::Step(Step::Prev, false)),
-        nav(NONE, K::ArrowUp, Nav::Step(Step::Prev, false)),
-        extend(K::H, Step::Parent),
-        extend(K::ArrowLeft, Step::Parent),
-        extend(K::L, Step::Child),
-        extend(K::ArrowRight, Step::Child),
-        extend(K::J, Step::Next),
-        extend(K::ArrowDown, Step::Next),
-        extend(K::K, Step::Prev),
-        extend(K::ArrowUp, Step::Prev),
-        nav(NONE, K::F, Nav::Labels { inside: false }),
-        nav(SHIFT, K::F, Nav::Labels { inside: true }),
         nav(NONE, K::Enter, Nav::StepIn),
-        nav(NONE, K::I, Nav::StepIn),
+        nav(NONE, K::ArrowRight, Nav::StepIn),
+        nav(NONE, K::Backspace, Nav::StepOut),
+        nav(NONE, K::ArrowLeft, Nav::StepOut),
+        nav(NONE, K::ArrowDown, Nav::Step(Step::Next, false)),
+        nav(NONE, K::ArrowUp, Nav::Step(Step::Prev, false)),
+        extend(K::ArrowDown, Step::Next),
+        extend(K::ArrowUp, Step::Prev),
+        // `*` and `@` have no egui key, so they reach it as their physical digit
+        // with Shift; `!` has one, read beside this table (`navigate_mode`).
+        nav(SHIFT, K::Num8, Nav::Matching),
+        nav(SHIFT, K::Num1, Nav::Fit),
         nav(SHIFT, K::Num2, Nav::Zoom),
-        nav(NONE, K::U, Nav::Undo),
+        nav(NONE, K::Period, Nav::Repeat),
+        nav(NONE, K::Backtick, Nav::Type),
         // Shifted `;` reaches egui as `Key::Colon`; a layout that types it bare
         // sends no Shift.
-        nav(SHIFT, K::Colon, Nav::Command),
-        nav(NONE, K::Colon, Nav::Command).unshown(),
-        nav(NONE, K::Period, Nav::Repeat),
-        nav(NONE, K::Backtick, Nav::Leave),
-        nav(NONE, K::Escape, Nav::Leave),
+        nav(SHIFT, K::Colon, Nav::Type).unshown(),
+        nav(NONE, K::Colon, Nav::Type).unshown(),
+        nav(NONE, K::Escape, Nav::Type),
         // A live text session's styling chords (`docs/shortcuts.md` §10).
         text(CTRL, K::B, TextChord::Bold),
         text(CTRL, K::I, TextChord::Italic),
@@ -1253,13 +1239,19 @@ pub fn resolve(ctx: &egui::Context, mode: Mode, nudge: NudgeStep) -> Vec<Action>
     }
 }
 
-/// Navigate's keymap: its own table rows and the history chords, and nothing the
+/// Pick's keymap: its own table rows and the history chords, and nothing the
 /// editor binds besides — a tool letter rests. The cheatsheet's chord stays, so
-/// the keys can be looked up from inside the mode.
+/// the keys can be looked up from inside the focus.
 fn navigate_mode(ctx: &egui::Context) -> Vec<Action> {
     ctx.input(|i| {
         let mut out = Vec::new();
         table_chords(i, Mode::Navigate, &mut out);
+        // `Shift+1` as `!`, as `normal_mode` reads it: the table's `Num1` row is
+        // the spelling a layout that passes the digit through sends.
+        let m = i.modifiers;
+        if m.shift && !m.command && !m.alt && i.key_pressed(egui::Key::Exclamationmark) {
+            out.push(Action::Nav(Nav::Fit));
+        }
         if cheatsheet_pressed(i) {
             out.push(Action::Cheatsheet);
         }
@@ -1267,7 +1259,7 @@ fn navigate_mode(ctx: &egui::Context) -> Vec<Action> {
     })
 }
 
-/// Navigate's cheatsheet rows: each [`Nav::SHEET`] key's label and its spellings
+/// Pick's cheatsheet rows: each [`Nav::SHEET`] key's label and its spellings
 /// from [`BINDINGS`], so the sheet and the keymap cannot disagree.
 pub(crate) fn navigate_rows() -> impl Iterator<Item = (Nav, Vec<&'static str>)> {
     Nav::SHEET
@@ -2026,6 +2018,23 @@ mod tests {
                 none
             )
             .is_empty()
+        );
+    }
+
+    /// In Pick too, `Shift+1` arriving as `!` fits the page.
+    ///
+    /// flip: dropping the `Exclamationmark` read from `navigate_mode` → fails at
+    /// the assertion.
+    #[test]
+    fn shift_1_fits_in_pick_as_an_exclamation_mark() {
+        let shift = egui::Modifiers::SHIFT;
+        assert_eq!(
+            actions(
+                Mode::Navigate,
+                vec![key(egui::Key::Exclamationmark, shift)],
+                shift
+            ),
+            vec![Action::Nav(Nav::Fit)],
         );
     }
 

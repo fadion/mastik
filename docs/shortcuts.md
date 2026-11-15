@@ -324,8 +324,8 @@ when a sentence happened to be copied elsewhere. The event arm only silences the
 | `Ctrl+Shift+K` | place image | ✅ Figma's (`architecture.md` §5.5a) |
 | `Ctrl+K` | **command palette** | ✅ editor only, this file's choice; the library keeps `Ctrl+K` for its file search. Opens and closes (`Action::Palette`, a `BINDINGS` row read in both modes, so in a text session too; while open, `palette::read_keys` reads it). `Ctrl` without Alt and Shift |
 | `Ctrl+/` | **command palette** | ✅ Figma's quick actions, alias; Shift up, so it never reads as `Ctrl+Shift+/` |
-| `:` | **command bar** | ✅ `Action::CommandBar`, read in code as typed (`Key::Colon`, with or without Shift), in the editor and Navigate while no text entry has the keyboard (`design/command-mode.md`). While open the bar holds the keyboard as the palette does (`command::read_keys`): `Tab`, `↑`/`↓`, `Enter`, `Escape`, and `Ctrl+Space` (Ctrl on every platform) to open completion |
-| `` ` `` | **Navigate on / off** | ✅ `Action::Navigate`; the Tools menu's *Navigate* and the palette's row are its doors where `` ` `` is a dead key. Its own keys are §15 |
+| `:` | **command bar** | ✅ `Action::CommandBar`, read in code as typed (`Key::Colon`, with or without Shift), from the editor while no text entry has the keyboard; in the bar's Pick focus it gives the keys back to the field (§15, `design/command-mode.md`). On its Type focus the bar holds the keyboard as the palette does (`command::read_keys`): `Tab`, `↑`/`↓`, `Enter`, `Escape`, `Ctrl+Space` (Ctrl on every platform) to open completion, and `` ` `` to pick unless the caret is inside a string, where it is Luau's own backtick |
+| `` ` `` | **pick layers** | ✅ `Action::Navigate`: the command bar on its Pick focus, opening it first when it is shut; the Tools menu's *Pick layers* and the palette's row are its doors where `` ` `` is a dead key. Pick's own keys are §15 |
 | `Ctrl+Enter` | **run the script** | ✅ in the script editor only, read by the editor's window (`command/editor.rs`); `Ctrl+F` there finds in the script |
 | `Ctrl+Shift+A` | **the assistant** | ✅ `Action::Assistant`: opens or closes the assistant's panel and attaches nothing, as its rail button and the palette's *Assistant* do (`design/assistant.md` §6). In private mode the status line says it is not available. Not plain `Shift+A`, which adds flex layout (§11). The cheatsheet lists it under File |
 | `Ctrl+Shift+/` · ⌃⇧/ on macOS | **shortcut cheatsheet** | ✅ `Key::Questionmark` too (§0). Editor (both modes) and library (`dashboard_keys`); the chord again closes it, read in `cheatsheet_ui` because `resolve` does not run under a modal |
@@ -627,28 +627,26 @@ The command palette also lists both (*Insert*, *Publish kit…*). `Ctrl+Alt+P` i
 |---|---|---|
 | `Shift+S` | open the styles and variables browser | ✅ `Action::VariablesBrowser` (exactly Shift, §15 D1040), beside `Shift+I`: it, the insert picker and the assets browser (no chord) swap in place at the foot of the vertical toolbar, one at a time; also toggled by the rail's swatches button. Free: §1's `S` is read with no Shift; `Alt+S` and `Ctrl+Alt+S` need Alt; `Ctrl+Shift+S` is inert. `shift_s_opens_the_variables_browser_and_leaves_s_alone`. ⚠️ `Shift+I`'s caveat holds: right after opening, the chord types a capital *S* in the search |
 
-## 15. Navigate
+## 15. Pick
 
-`` ` `` turns it on (§8). While on, `input::resolve` reads `Mode::Navigate`: these rows
-(`BINDINGS` rows in `Scope::Navigate`), the undo and redo chords and the cheatsheet's, and nothing
-else, so a tool letter rests (`design/command-mode.md`, *Navigate*).
+The command bar's Pick focus (§8, `design/command-mode.md`, *Pick*). While it has the keys,
+`input::resolve` reads `Mode::Navigate`: these rows (`BINDINGS` rows in `Scope::Navigate`), the
+undo and redo chords and the cheatsheet's, and nothing else, so a tool letter rests.
+
+**The home-row letters are leap labels, read before the table** (`MastikApp::leap_keys`): a label
+selects its layer, `Shift` + a label adds it; with two-letter labels the first letter narrows and
+`Backspace` takes it back. No table row is a letter.
 
 | Key | Action |
 |---|---|
-| `h` `←` / `l` `→` | parent / child: the child last stood on, else the topmost |
-| `j` `↓` / `k` `↑` | the Layers panel's row below / above |
-| `Shift` + any of those | the same step, adding the layer to the selection |
-| `f` / `Shift+F` | leap labels on the layers in view / inside the current layer |
-| `Enter` · `i` | step in, as §11's `Enter` |
-| `:` | the command bar on the selection |
-| `.` | run the last line typed in the bar again |
-| `Shift+2` | zoom to the current layer (physical `Num2`, §0) |
-| `u` | undo |
-| `` ` `` · `Escape` | leave, keeping the selection and giving back the tool |
-
-**While labels show they take the keys in place of the table** (`MastikApp::leap_keys`): the first
-home-row letter narrows, the second selects (`Shift` adds), `Backspace` takes the first back,
-`Escape` hides the labels and leaves Navigate on.
+| `Enter` · `→` | step into the one selected layer when it holds others (group, boolean, frame, instance root); otherwise back to the field |
+| `Backspace` · `←` | step out: out of the entered group, selecting it; with none entered, to the current layer's parent |
+| `↓` / `↑` | the Layers panel's row below / above; `Shift` adds the layer to the selection |
+| `Shift+8` (`*`) | the same layer in each repeat (`select_matching`) |
+| `Shift+1` | zoom to fit |
+| `Shift+2` | zoom to the selection (physical `Num2`, §0) |
+| `.` | run the last line in the log again on the selection |
+| `` ` `` · `:` · `Escape` | back to the field |
 
 ---
 

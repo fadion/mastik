@@ -2108,6 +2108,9 @@ impl MastikApp {
             self.draw_canvas(ui, &painter, rect, ppp, &resp);
             return;
         }
+        // Before the tools, which would read the same press as a click or the
+        // start of an `Alt` duplicate-drag.
+        self.bar_alt_click(ui, &resp, rect, ppp);
         if self.context_menu.is_none() && !self.tabs.menu_was_up && !self.peeking && !pinching {
             match self.mode {
                 // A picker opened over a text session can pick too.
@@ -2117,7 +2120,7 @@ impl MastikApp {
                     }
                 }
                 Mode::TextInsert => self.text_mode_input(ui, &resp, rect, ppp),
-                // `mode` never holds Navigate, a keymap only (`MastikApp::keymap_mode`).
+                // `mode` never holds Navigate, Pick's keymap only (`MastikApp::keymap_mode`).
                 Mode::Normal | Mode::Navigate => self.normal_mode_input(ui, &resp, rect, ppp),
             }
         }
@@ -7799,6 +7802,11 @@ impl MastikApp {
             blink: Default::default(),
         });
         self.mode = Mode::TextInsert;
+        // The text takes the keys the bar held: a double-click under the open bar
+        // hands the keyboard to the canvas, so the bar closes.
+        if self.command_bar.take().is_some() {
+            self.end_bar_session();
+        }
         self.session.info("Editing text · Esc to finish");
     }
 
@@ -8408,6 +8416,53 @@ impl MastikApp {
         ppp: f32,
         resp: &egui::Response,
     ) -> Option<NodeId> {
+        self.pointed_at(ui, rect, ppp, resp)
+            .filter(|target| !self.session.selection.contains(*target))
+    }
+
+    /// While the command bar types, an `Alt`-press on a layer writes its leap
+    /// label into the line at the caret, the selection untouched: a line's
+    /// argument by pointing. The press then sits out to its release, so it
+    /// neither selects nor starts the `Alt` duplicate-drag.
+    fn bar_alt_click(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: egui::Rect, ppp: f32) {
+        if self.command_bar.is_none()
+            || self.picking()
+            || self.mode != Mode::Normal
+            || self.gesture_cancelled
+        {
+            return;
+        }
+        let (pressed, alt) = ui.input(|i| (i.pointer.primary_pressed(), i.modifiers.alt));
+        if !pressed || !alt {
+            return;
+        }
+        let Some(p) = resp.hover_pos() else { return };
+        // Only where the canvas is the layer on top, as `pointed_at` reads it.
+        if ui.ctx().layer_id_at(p).is_some_and(|l| l != ui.layer_id()) {
+            return;
+        }
+        let world = self.to_world(p, rect, ppp);
+        let Some(leaf) = self.pick_at_pointer(ui, p, world, rect, ppp) else {
+            return;
+        };
+        let id = self.pick_preview(leaf, ui);
+        self.gesture_cancelled = true;
+        if let Some(label) = self.label_for(id)
+            && let Some(bar) = self.command_bar.as_mut()
+        {
+            bar.write_at_caret(label);
+        }
+    }
+
+    /// [`Self::hover_target`] selected or not: the layer whose leap label the bar
+    /// rings or shows.
+    pub(crate) fn pointed_at(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        ppp: f32,
+        resp: &egui::Response,
+    ) -> Option<NodeId> {
         if !self.selecting() {
             return None;
         }
@@ -8425,8 +8480,7 @@ impl MastikApp {
         }
         let world = self.to_world(p, rect, ppp);
         let leaf = self.pick_at_pointer(ui, p, world, rect, ppp)?;
-        let target = self.pick_preview(leaf, ui);
-        (!self.session.selection.contains(target)).then_some(target)
+        Some(self.pick_preview(leaf, ui))
     }
 
     /// The node tool's chrome: every anchor of the edited path, and the handles
@@ -10538,8 +10592,12 @@ impl MastikApp {
         // Over the selection chrome, so no hairline crosses the number.
         self.draw_measures(ui, painter, rect, ppp, resp);
 
-        // Navigate's leap labels, over everything a layer wears.
-        self.draw_leap_labels(painter, rect, ppp);
+        // The bar's leap labels, over everything a layer wears.
+        let pointed = self
+            .command_bar
+            .as_ref()
+            .and_then(|_| self.pointed_at(ui, rect, ppp, resp));
+        self.draw_leap_labels(painter, rect, ppp, pointed);
 
         // Snap lines for the live gesture; the pen's come from the hover position,
         // from before its first anchor too.

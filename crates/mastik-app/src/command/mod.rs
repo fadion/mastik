@@ -1,8 +1,11 @@
-//! Command Mode's command bar (`docs/design/command-mode.md`): `:` opens a line
-//! that runs against the selection in the scripting language, a sibling of the
-//! palette's card docked at the canvas's foot. A write commits one undo step; a
-//! read shows its value as it is typed; the log above the field lists past lines
-//! and every other edit as the command that would make it.
+//! Command Mode's command bar (`docs/design/command-mode.md`): a sibling of the
+//! palette's card docked at the canvas's foot, with two focuses. In Type (`:`)
+//! its field takes a line that runs against the selection in the scripting
+//! language: a write commits one undo step, a read shows its value as it is
+//! typed, and the log above the field lists past lines and every other edit as
+//! the command that would make it. In Pick (`` ` ``, `crate::navigate`) the
+//! canvas has the keys and leap labels select. The canvas stays live under the
+//! card either way: the mouse pans, zooms and selects, and never takes the keys.
 
 pub(crate) mod editor;
 pub(crate) mod host;
@@ -10,7 +13,8 @@ pub(crate) mod log;
 
 use crate::app::MastikApp;
 use crate::palette::{
-    self, FIELD_H, FOOTER_H, FooterLine, PAD, ROW_GAP, ROW_GLYPH_X, ROW_H, ROW_LABEL_X, SECTION_H,
+    self, FIELD_H, FOOTER_H, FOOTER_INSET, FooterLine, PAD, ROW_GAP, ROW_GLYPH_X, ROW_H,
+    ROW_LABEL_X, SECTION_H,
 };
 use crate::theme::{self, color, icon};
 use eframe::egui;
@@ -30,6 +34,12 @@ const TEXT_X: f32 = PAD + ROW_LABEL_X;
 const VALUE_INSET: f32 = 14.0;
 /// Between the line and a read's value.
 const VALUE_GAP: f32 = 10.0;
+/// The head row: a control's height in the card's inset.
+const HEAD_H: f32 = crate::ui::CONTROL_H + 2.0 * PAD;
+/// The focus control's width in the head row: two cells, *Type* and *Pick*.
+const FOCUS_W: f32 = 112.0;
+/// Between the head row's parts: the focus control, the path, the subject.
+const HEAD_GAP: f32 = 12.0;
 
 /// The open bar.
 #[derive(Default)]
@@ -65,6 +75,8 @@ pub(crate) struct Bar {
     seen: String,
     /// The layer the lit completion row names, which the canvas outlines.
     lit: Option<NodeId>,
+    /// A word to write at the caret next frame ([`Bar::write_at_caret`]).
+    insert: Option<String>,
 }
 
 /// The completion list's state, as a code editor's suggest widget keeps it: it
@@ -136,7 +148,7 @@ impl Bar {
 
     /// The letters typed of a leap label, lowercase, while the list offers
     /// labels for the word at the caret: the canvas shows the labels then,
-    /// narrowed by these letters as Navigate's first letter narrows them.
+    /// narrowed by these letters as Pick's first letter narrows them.
     pub(crate) fn labels_typed(&self) -> Option<String> {
         if !matches!(self.suggest, Suggest::On(_)) || self.error.is_some() {
             return None;
@@ -154,6 +166,13 @@ impl Bar {
         let word = word.to_lowercase();
         let home = word.len() <= 2 && word.chars().all(crate::navigate::is_home_letter);
         home.then_some(word)
+    }
+
+    /// Write `word` into the line at the caret as the bar next draws, a space
+    /// before it when it would run into the word there: how an `Alt`-click on the
+    /// canvas names a layer by its label.
+    pub(crate) fn write_at_caret(&mut self, word: String) {
+        self.insert = Some(word);
     }
 
     /// Escape on an open list: shut it for this word.
@@ -207,20 +226,61 @@ pub(crate) struct Keys {
     escape: bool,
     /// `Ctrl+Space`: open the completion list on the word at the caret.
     suggest: bool,
+    /// `` ` `` outside a string: give the keys to the canvas (Pick).
+    pick: bool,
 }
 
-/// Take the keys the open bar answers. Called before any panel draws.
-pub(crate) fn read_keys(ctx: &egui::Context) -> Keys {
+/// Take the keys the bar's Type focus answers, `text` being its line. Called
+/// before any panel draws.
+pub(crate) fn read_keys(ctx: &egui::Context, text: &str) -> Keys {
     let none = egui::Modifiers::NONE;
-    ctx.input_mut(|i| Keys {
-        up: i.consume_key(none, egui::Key::ArrowUp),
-        down: i.consume_key(none, egui::Key::ArrowDown),
-        enter: i.consume_key(none, egui::Key::Enter),
-        tab: i.consume_key(none, egui::Key::Tab),
-        escape: i.consume_key(none, egui::Key::Escape),
-        // Ctrl on every platform, as the editors this follows bind it.
-        suggest: i.consume_key(egui::Modifiers::CTRL, egui::Key::Space),
+    // Inside a string the backtick is Luau's own, an interpolated string's quote.
+    let caret = caret_of(ctx, text);
+    let quoted = in_string(&text[..caret]);
+    ctx.input_mut(|i| {
+        let pick = !quoted && i.consume_key(none, egui::Key::Backtick);
+        if pick {
+            i.events
+                .retain(|e| !matches!(e, egui::Event::Text(t) if t == "`"));
+        }
+        Keys {
+            up: i.consume_key(none, egui::Key::ArrowUp),
+            down: i.consume_key(none, egui::Key::ArrowDown),
+            enter: i.consume_key(none, egui::Key::Enter),
+            tab: i.consume_key(none, egui::Key::Tab),
+            escape: i.consume_key(none, egui::Key::Escape),
+            // Ctrl on every platform, as the editors this follows bind it.
+            suggest: i.consume_key(egui::Modifiers::CTRL, egui::Key::Space),
+            pick,
+        }
     })
+}
+
+/// The caret's byte offset in the field's `text`, its end when the field has
+/// none yet.
+fn caret_of(ctx: &egui::Context, text: &str) -> usize {
+    egui::TextEdit::load_state(ctx, field_id())
+        .and_then(|s| s.cursor.char_range())
+        .map(|r| char_to_byte(text, r.primary.index.0))
+        .unwrap_or(text.len())
+}
+
+/// Whether `before` ends inside a Luau string: an open `"`, `'` or `` ` ``, a
+/// backslash escaping the next character.
+fn in_string(before: &str) -> bool {
+    let mut open: Option<char> = None;
+    let mut escaped = false;
+    for c in before.chars() {
+        match open {
+            Some(_) if escaped => escaped = false,
+            Some(_) if c == '\\' => escaped = true,
+            Some(q) if c == q => open = None,
+            Some(_) => {}
+            None if matches!(c, '"' | '\'' | '`') => open = Some(c),
+            None => {}
+        }
+    }
+    open.is_some()
 }
 
 /// What the list above the field shows.
@@ -231,7 +291,8 @@ enum List {
 }
 
 impl MastikApp {
-    /// `:` — open the bar, closing whatever else floats over the canvas.
+    /// `:` — open the bar on its Type focus, closing whatever else floats over
+    /// the canvas. Labels are dealt as it draws, so a line can name what it sees.
     pub(crate) fn open_command_bar(&mut self) {
         if self.command_bar.is_some() {
             return;
@@ -240,8 +301,7 @@ impl MastikApp {
         self.context_menu = None;
         self.open_menu = crate::app::TopMenu::None;
         self.command_bar = Some(Bar::default());
-        // Fresh labels for this view, so a line can name what it sees.
-        self.deal_bar_labels();
+        self.begin_bar_session();
     }
 
     /// The selection a line acts on.
@@ -262,7 +322,7 @@ impl MastikApp {
         }
     }
 
-    /// The leap labels lines may name, as Navigate last dealt them.
+    /// The leap labels lines may name, as the bar last dealt them.
     fn bar_labels(&self) -> rustc_hash::FxHashMap<String, NodeId> {
         self.leap_labels()
             .iter()
@@ -401,9 +461,10 @@ impl MastikApp {
         }
     }
 
-    /// `.` in Navigate: run the last line typed in the bar again on the selection.
+    /// `.` in Pick: run the last line in the log again on the selection, a line
+    /// typed or one an edit made elsewhere was written as (a drag's `.x += 24`).
     pub(crate) fn repeat_bar_line(&mut self, ctx: &egui::Context) {
-        let Some(line) = self.session.command_log.last_typed().map(str::to_owned) else {
+        let Some(line) = self.session.command_log.last_line().map(str::to_owned) else {
             self.session.info("No line to repeat yet");
             return;
         };
@@ -447,13 +508,22 @@ impl MastikApp {
 
     /// Draw the open bar and act on this frame's keys.
     pub(crate) fn command_bar_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect, keys: Keys) {
+        // Before the bar is taken out: the deal reads the line, for the labels it holds.
+        self.deal_tick(ctx);
         let Some(mut bar) = self.command_bar.take() else {
+            // Closed elsewhere (a tab switch): the session ends with it.
+            self.end_bar_session();
             return;
         };
         if self.modal_is_up() {
             self.command_bar = Some(bar);
             return;
         }
+        if keys.pick {
+            self.set_picking(true);
+            bar.dismiss();
+        }
+        let picking = self.pick_focus();
         // An edit of the text drops the error it was for and the recall.
         if bar.error.as_ref().is_some_and(|(t, _)| *t != bar.text) {
             bar.error = None;
@@ -466,11 +536,23 @@ impl MastikApp {
         }
         self.bar_read(&mut bar);
 
-        let caret = egui::TextEdit::load_state(ctx, field_id())
-            .and_then(|s| s.cursor.char_range())
-            .map(|r| char_to_byte(&bar.text, r.primary.index.0))
-            .unwrap_or(bar.text.len());
-        let completion = (!bar.text.trim().is_empty() && bar.recalled.is_none())
+        let mut caret = caret_of(ctx, &bar.text);
+        if let Some(word) = bar.insert.take() {
+            let runs_on = bar.text[..caret]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | ')' | ']' | '"' | '\''));
+            let word = match runs_on {
+                true => format!(" {word}"),
+                false => word,
+            };
+            bar.text.insert_str(caret, &word);
+            caret += word.len();
+            bar.caret_to = Some(caret);
+            // Written, not typed: the list does not open on it.
+            bar.seen = bar.text.clone();
+        }
+        let completion = (!picking && !bar.text.trim().is_empty() && bar.recalled.is_none())
             .then(|| self.bar_completion(&mut bar, caret));
         bar.follow_suggest(completion.as_ref(), caret, keys.suggest);
         let suggesting = matches!(bar.suggest, Suggest::On(_))
@@ -485,12 +567,15 @@ impl MastikApp {
             } else if suggesting {
                 bar.dismiss();
             } else if bar.text.is_empty() {
+                self.end_bar_session();
                 return;
             } else {
                 bar = Bar::default();
             }
         }
         let list = match completion {
+            // Picking keeps the canvas clear: the field sleeps and lists nothing.
+            _ if picking => List::None,
             _ if bar.text.trim().is_empty() || bar.recalled.is_some() => {
                 match self.session.command_log.entries().len() {
                     0 => List::None,
@@ -612,7 +697,7 @@ impl MastikApp {
 
         // Dock at the foot unless the selection reaches into that band.
         let list_h = list_height(&list, self.session.command_log.entries().len());
-        let height = list_h + FIELD_H + 1.0 + FOOTER_H;
+        let height = list_h + HEAD_H + 1.0 + FIELD_H + 1.0 + FOOTER_H;
         let ppp = ctx.pixels_per_point();
         let band = egui::Rect::from_min_max(
             egui::pos2(canvas.center().x - W / 2.0, canvas.bottom() - DOCK - height),
@@ -631,11 +716,11 @@ impl MastikApp {
             false => canvas.bottom() - DOCK - outer.y,
             true => canvas.top() + DOCK,
         };
-        // `Modal::default_area` less its centring anchor, which would win over
-        // the place. Not constrained: egui keeps an area on screen by last
-        // frame's size, so a list that just shrank would shove the card up a frame.
+        // A plain area, not a modal: the canvas under it stays live, and only the
+        // card takes the pointer. Not constrained: egui keeps an area on screen by
+        // last frame's size, so a list that just shrank would shove the card up a
+        // frame.
         let area = egui::Area::new(egui::Id::new("command-bar"))
-            .kind(egui::UiKind::Modal)
             .sense(egui::Sense::hover())
             .order(egui::Order::Foreground)
             .interactable(true)
@@ -643,6 +728,16 @@ impl MastikApp {
             .fixed_pos(egui::pos2(canvas.center().x - outer.x / 2.0, top));
 
         let subject = self.bar_subject();
+        let subject_glyph = self
+            .session
+            .selection
+            .ids()
+            .first()
+            .and_then(|id| self.session.doc.get(*id))
+            .map(|n| crate::panels::layers::node_icon(n).0);
+        let path = self.pick_path();
+        let typed = self.pick_typed().to_owned();
+        let mut focus_click: Option<bool> = None;
         let parsed = mastik_vm::desugar(bar.text.trim());
         let mut clicked_row: Option<usize> = None;
         let mut hovered_row: Option<usize> = None;
@@ -655,11 +750,8 @@ impl MastikApp {
         let mut log_click: Option<(usize, bool)> = None;
         let mut log_menu_at: Option<(usize, egui::Pos2)> = None;
         let entries: Vec<log::Entry> = self.session.command_log.entries().cloned().collect();
-        let modal = egui::Modal::new(egui::Id::new("command-bar"))
-            .area(area)
-            .backdrop_color(egui::Color32::TRANSPARENT)
-            .frame(crate::settings::card_frame())
-            .show(ctx, |ui| {
+        area.show(ctx, |ui| {
+            crate::settings::card_frame().show(ui, |ui| {
                 ui.set_width(W);
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                 match &list {
@@ -714,41 +806,54 @@ impl MastikApp {
                 let error = bar.error.as_ref().map(|(_, e)| e.clone());
                 let error = error.as_ref();
                 let value = bar.read.as_ref().and_then(|(_, _, v)| v.clone());
+                if let Some(pick) = head(ui, picking, &path, subject_glyph, &subject) {
+                    focus_click = Some(pick);
+                }
+                crate::ui::card_rule(ui);
                 // What the field changes from here on is typing, which next
                 // frame's `follow_suggest` reads against this.
                 bar.seen = bar.text.clone();
-                field(ui, &mut bar, error, value.as_deref());
+                let sleep = picking.then_some(typed.as_str());
+                field(ui, &mut bar, error, value.as_deref(), sleep);
                 crate::ui::card_rule(ui);
+                let hint = |s: &str| (crate::input::keys(s).into_owned(), false);
                 match error {
+                    _ if picking => {
+                        let (left, _) =
+                            hint("Labels pick · Shift adds · Enter in · Backspace out · * in each repeat");
+                        footer(ui, &left, false, "` types");
+                    }
                     Some(e) => error_line(ui, e),
                     None => {
                         // The Luau in the code face; a hint about keys in the
                         // caption face, spelled by `input::keys` as the palette's.
-                        let hint = |s: &str| (crate::input::keys(s).into_owned(), false);
+                        // The subject is the head row's; the right edge says how
+                        // to pick one.
+                        let picks = "` picks".to_owned();
                         let (left, right) = match (&list, &value) {
-                            (List::Complete(_), _) => (
-                                hint("Tab completes · ↑↓ choose · Esc hides"),
-                                subject.clone(),
-                            ),
-                            _ if bar.recalled.is_some() => {
-                                (hint("↑ recalled from the log"), subject.clone())
+                            (List::Complete(_), _) => {
+                                (hint("Tab completes · ↑↓ choose · Esc hides"), picks)
                             }
+                            _ if bar.recalled.is_some() => (hint("↑ recalled from the log"), picks),
                             (_, Some(v)) => {
                                 ((parsed.luau.clone(), true), format!("Enter copies {v}"))
                             }
                             _ if bar.text.trim().is_empty() => {
-                                (hint("↑ recalls a line · Esc closes"), subject.clone())
+                                (hint("↑ recalls a line · Esc closes"), picks)
                             }
-                            _ if parsed.each_by_itself => (
-                                (format!("{} · each by itself", parsed.luau), true),
-                                subject.clone(),
-                            ),
-                            _ => ((parsed.luau.clone(), true), subject.clone()),
+                            _ if parsed.each_by_itself => {
+                                ((format!("{} · each by itself", parsed.luau), true), picks)
+                            }
+                            _ => ((parsed.luau.clone(), true), picks),
                         };
                         footer(ui, &left.0, left.1, &right);
                     }
                 }
             });
+        });
+        if let Some(pick) = focus_click {
+            self.set_picking(pick);
+        }
         // A click writes the text, not typing: `seen` takes it so the list
         // does not open on it.
         if let Some(i) = hovered_row {
@@ -792,14 +897,11 @@ impl MastikApp {
                 }
                 LogMenu::Editor(source) => {
                     bar.log_menu = None;
-                    self.command_bar = None;
+                    self.end_bar_session();
                     self.open_script_editor_with(source);
                     return;
                 }
             }
-        }
-        if modal.backdrop_response.clicked() && bar.log_menu.is_none() {
-            return;
         }
         bar.lit = match bar.suggest {
             Suggest::On(_) => lit_of(&bar),
@@ -970,13 +1072,99 @@ fn mono() -> egui::FontId {
     egui::FontId::monospace(crate::ui::HEAD_PT)
 }
 
+/// The head row: the focus as a two-cell segmented control, the path to where
+/// the selection sits, and the subject a line acts on with its kind's glyph.
+/// Answers a click on a focus cell: `true` for *Pick*.
+fn head(
+    ui: &mut egui::Ui,
+    picking: bool,
+    path: &[String],
+    glyph: Option<&str>,
+    subject: &str,
+) -> Option<bool> {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, HEAD_H), egui::Sense::hover());
+    let inner = rect.shrink2(egui::vec2(FOOTER_INSET, 0.0));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let clicked = crate::ui::segmented_tipped(
+        &mut child,
+        FOCUS_W,
+        crate::ui::SEGMENT_CELL_H,
+        2,
+        usize::from(picking),
+        |_| true,
+        |i| ["Type a line (:)", "Pick layers by label (`)"][i],
+        |p, i, r, on| crate::ui::segment_label(p, r, ["Type", "Pick"][i], on),
+    );
+    let p = ui.painter().clone();
+    let y = rect.center().y;
+    let font = egui::FontId::proportional(crate::ui::SMALL_PT);
+    // The subject first, from the right, so the path knows its room.
+    let (ink, glyph_ink) = match glyph {
+        Some(_) => (color::text(), theme::text::dim()),
+        None => (theme::text::faint(), theme::text::faint()),
+    };
+    let g = p.layout_no_wrap(subject.to_owned(), font.clone(), ink);
+    let mut right = inner.right() - g.size().x;
+    p.galley(egui::pos2(right, y - g.size().y / 2.0), g, ink);
+    if let Some(glyph) = glyph {
+        right -= 6.0;
+        let r = p.text(
+            egui::pos2(right, y),
+            egui::Align2::RIGHT_CENTER,
+            glyph,
+            theme::icon_font(crate::ui::CONTROL_GLYPH_PT),
+            glyph_ink,
+        );
+        right = r.left();
+    }
+    let room = egui::Rect::from_min_max(
+        egui::pos2(inner.left() + FOCUS_W + HEAD_GAP, rect.top()),
+        egui::pos2(right - HEAD_GAP, rect.bottom()),
+    );
+    let clipped = p.with_clip_rect(room.intersect(p.clip_rect()));
+    let mut x = room.left();
+    for (i, name) in path.iter().enumerate() {
+        if i > 0 {
+            let r = clipped.text(
+                egui::pos2(x, y),
+                egui::Align2::LEFT_CENTER,
+                icon::CARET_RIGHT,
+                theme::icon_font(crate::ui::SMALL_PT),
+                theme::text::faint(),
+            );
+            x = r.right() + 4.0;
+        }
+        let last = i + 1 == path.len();
+        let ink = match last {
+            true => theme::text::strong(),
+            false => theme::text::faint(),
+        };
+        let r = clipped.text(
+            egui::pos2(x, y),
+            egui::Align2::LEFT_CENTER,
+            name,
+            font.clone(),
+            ink,
+        );
+        x = r.right() + 4.0;
+    }
+    clicked.map(|i| i == 1)
+}
+
 /// The field: the `:` prompt in the accent, the line, a read's value at the right
-/// edge, and a squiggle under the token an error names.
+/// edge, and a squiggle under the token an error names. Asleep (`sleep`, the
+/// letters typed of a label) while the bar picks: the line is kept but dimmed and
+/// unfocused, and the right edge shows the letters typed.
 fn field(
     ui: &mut egui::Ui,
     bar: &mut Bar,
     error: Option<&mastik_vm::VmError>,
     value: Option<&str>,
+    sleep: Option<&str>,
 ) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(W, FIELD_H), egui::Sense::empty());
     let p = ui.painter().clone();
@@ -985,10 +1173,19 @@ fn field(
         egui::Align2::CENTER_CENTER,
         ":",
         mono(),
-        color::accent_300(),
+        match sleep {
+            Some(_) => theme::text::faint(),
+            None => color::accent_300(),
+        },
     );
-    let value_w = value.map_or(0.0, |v| {
-        let g = p.layout_no_wrap(format!("= {v}"), mono(), theme::text::dim());
+    let edge = match sleep {
+        Some(typed) => {
+            (!typed.is_empty()).then(|| (format!("{}…", typed.to_uppercase()), color::leap()))
+        }
+        None => value.map(|v| (format!("= {v}"), theme::text::dim())),
+    };
+    let value_w = edge.map_or(0.0, |(v, ink)| {
+        let g = p.layout_no_wrap(v, mono(), ink);
         let w = g.size().x;
         p.galley(
             egui::pos2(
@@ -1018,16 +1215,27 @@ fn field(
         .frame(egui::Frame::NONE)
         .desired_width(f32::INFINITY)
         .font(mono())
-        .text_color(color::text())
+        .interactive(sleep.is_none())
+        .text_color(match sleep {
+            Some(_) => theme::text::faint(),
+            None => color::text(),
+        })
         .hint_text(
-            egui::RichText::new("Type a command, or a sum")
-                .font(mono())
-                .color(theme::text::faint()),
+            egui::RichText::new(match sleep {
+                Some(_) => "Picking: type a label",
+                None => "Type a command, or a sum",
+            })
+            .font(mono())
+            .color(theme::text::faint()),
         )
         .show(&mut child);
-    // Every frame: the bar owns the keyboard while it is open.
-    if !out.response.has_focus() {
-        out.response.request_focus();
+    // Every frame: the field owns the keyboard while the bar types, and gives it
+    // up while the bar picks, so the canvas's letters reach the labels.
+    match sleep {
+        None if !out.response.has_focus() => out.response.request_focus(),
+        // By id: a field that is not interactive may not say it holds the focus.
+        Some(_) => ui.memory_mut(|m| m.surrender_focus(field_id())),
+        None => {}
     }
     if let Some(at) = bar.caret_to.take() {
         let mut state = out.state.clone();
@@ -1074,8 +1282,8 @@ fn error_line(ui: &mut egui::Ui, e: &mastik_vm::VmError) {
     );
 }
 
-/// The footer: the Luau (`code`) or a hint on the left, the subject or the
-/// read's note on the right.
+/// The footer: the Luau (`code`) or a hint on the left, a hint or the read's
+/// note on the right.
 fn footer(ui: &mut egui::Ui, left: &str, code: bool, right: &str) {
     let face = match code {
         true => egui::FontId::monospace(crate::ui::CAPTION_PT),

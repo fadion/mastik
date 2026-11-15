@@ -528,6 +528,7 @@ impl MastikApp {
         // The bar's error and completions are of this document too.
         self.forget_navigate_layers();
         self.command_bar = None;
+        self.end_bar_session();
         self.open_menu = crate::app::TopMenu::None;
         self.context_menu = None;
         self.palette = None;

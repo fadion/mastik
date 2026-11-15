@@ -30,7 +30,7 @@ pub(crate) const FOOTER_H: f32 = 30.0;
 /// How far the footer's text sits above the footer's centre.
 const FOOTER_TEXT_LIFT: f32 = 1.0;
 /// The footer's text inset from the card's edges.
-const FOOTER_INSET: f32 = 14.0;
+pub(crate) const FOOTER_INSET: f32 = 14.0;
 /// A footer glyph's size (the command bar's error mark).
 const FOOTER_GLYPH_PT: f32 = 13.0;
 /// The list's inset inside the card, the command bar's too.
@@ -788,11 +788,7 @@ impl MastikApp {
             vision.label = crate::vision::STOP_VISION.into();
         }
         push(&mut out, vision);
-        let mut navigate = Cmd::verb(Item::Navigate, None);
-        if self.navigating() {
-            navigate.label = crate::navigate::STOP_NAVIGATE.into();
-        }
-        push(&mut out, navigate);
+        push(&mut out, Cmd::verb(Item::Navigate, None));
         push(&mut out, Cmd::verb(Item::CommandBar, None));
         push(&mut out, Cmd::verb(Item::Scripts, None));
         for (i, name) in self.saved_script_names().into_iter().enumerate() {
