@@ -100,6 +100,440 @@ pub(crate) fn library(lib: &str) -> &'static [&'static str] {
         .map_or(&[], |(_, members)| members)
 }
 
+/// One line on a library member or a permitted global: its parameters (`None`
+/// for a value such as `math.pi`), what it answers and what it does.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LibDoc {
+    /// `math.floor`, or a global's bare name.
+    pub path: &'static str,
+    pub params: Option<&'static str>,
+    pub returns: &'static str,
+    pub doc: &'static str,
+}
+
+/// Shorthand for a [`LIB_DOCS`] row.
+const fn lib(
+    path: &'static str,
+    params: Option<&'static str>,
+    returns: &'static str,
+    doc: &'static str,
+) -> LibDoc {
+    LibDoc {
+        path,
+        params,
+        returns,
+        doc,
+    }
+}
+
+/// A line for every [`LIBRARY`] member and every [`STDLIB`] function, which
+/// completion and hover help show; a test holds the two lists to each other.
+pub(crate) const LIB_DOCS: &[LibDoc] = &[
+    lib(
+        "math.abs",
+        Some("x: number"),
+        "number",
+        "The size of x, its sign dropped",
+    ),
+    lib(
+        "math.acos",
+        Some("x: number"),
+        "number",
+        "The angle whose cosine is x, in radians",
+    ),
+    lib(
+        "math.asin",
+        Some("x: number"),
+        "number",
+        "The angle whose sine is x, in radians",
+    ),
+    lib(
+        "math.atan",
+        Some("x: number"),
+        "number",
+        "The angle whose tangent is x, in radians",
+    ),
+    lib(
+        "math.atan2",
+        Some("y: number, x: number"),
+        "number",
+        "The angle of the point (x, y) from the x axis, in radians",
+    ),
+    lib(
+        "math.ceil",
+        Some("x: number"),
+        "number",
+        "The smallest whole number not below x",
+    ),
+    lib(
+        "math.clamp",
+        Some("x: number, min: number, max: number"),
+        "number",
+        "x held between min and max",
+    ),
+    lib(
+        "math.cos",
+        Some("x: number"),
+        "number",
+        "The cosine of x radians",
+    ),
+    lib(
+        "math.cosh",
+        Some("x: number"),
+        "number",
+        "The hyperbolic cosine of x",
+    ),
+    lib(
+        "math.deg",
+        Some("x: number"),
+        "number",
+        "x radians in degrees",
+    ),
+    lib(
+        "math.exp",
+        Some("x: number"),
+        "number",
+        "e raised to the power x",
+    ),
+    lib(
+        "math.floor",
+        Some("x: number"),
+        "number",
+        "The largest whole number not above x",
+    ),
+    lib(
+        "math.fmod",
+        Some("x: number, y: number"),
+        "number",
+        "The remainder of x / y, rounded toward zero",
+    ),
+    lib(
+        "math.frexp",
+        Some("x: number"),
+        "(number, number)",
+        "m and e such that x = m × 2^e, m from 0.5 up to 1",
+    ),
+    lib(
+        "math.huge",
+        None,
+        "number",
+        "Infinity, larger than any number",
+    ),
+    lib(
+        "math.ldexp",
+        Some("m: number, e: number"),
+        "number",
+        "m × 2^e",
+    ),
+    lib(
+        "math.log",
+        Some("x: number, base: number?"),
+        "number",
+        "The logarithm of x, natural unless base is given",
+    ),
+    lib(
+        "math.log10",
+        Some("x: number"),
+        "number",
+        "The base-10 logarithm of x",
+    ),
+    lib(
+        "math.max",
+        Some("...: number"),
+        "number",
+        "The largest of the numbers given",
+    ),
+    lib(
+        "math.min",
+        Some("...: number"),
+        "number",
+        "The smallest of the numbers given",
+    ),
+    lib(
+        "math.modf",
+        Some("x: number"),
+        "(number, number)",
+        "The whole part of x and its fraction",
+    ),
+    lib(
+        "math.noise",
+        Some("x: number, y: number?, z: number?"),
+        "number",
+        "Perlin noise at the point, from -1 to 1",
+    ),
+    lib(
+        "math.pi",
+        None,
+        "number",
+        "π, a circle's circumference over its diameter",
+    ),
+    lib(
+        "math.pow",
+        Some("x: number, y: number"),
+        "number",
+        "x raised to the power y",
+    ),
+    lib(
+        "math.rad",
+        Some("x: number"),
+        "number",
+        "x degrees in radians",
+    ),
+    lib(
+        "math.round",
+        Some("x: number"),
+        "number",
+        "x to the nearest whole number, halves away from zero",
+    ),
+    lib(
+        "math.sign",
+        Some("x: number"),
+        "number",
+        "-1, 0 or 1, by the sign of x",
+    ),
+    lib(
+        "math.sin",
+        Some("x: number"),
+        "number",
+        "The sine of x radians",
+    ),
+    lib(
+        "math.sinh",
+        Some("x: number"),
+        "number",
+        "The hyperbolic sine of x",
+    ),
+    lib(
+        "math.sqrt",
+        Some("x: number"),
+        "number",
+        "The square root of x",
+    ),
+    lib(
+        "math.tan",
+        Some("x: number"),
+        "number",
+        "The tangent of x radians",
+    ),
+    lib(
+        "math.tanh",
+        Some("x: number"),
+        "number",
+        "The hyperbolic tangent of x",
+    ),
+    lib(
+        "string.byte",
+        Some("s: string, i: number?, j: number?"),
+        "...number",
+        "The character codes of s from i to j",
+    ),
+    lib(
+        "string.char",
+        Some("...: number"),
+        "string",
+        "The text of these character codes",
+    ),
+    lib(
+        "string.find",
+        Some("s: string, pattern: string, init: number?, plain: boolean?"),
+        "(number?, number?)",
+        "Where pattern first matches in s, searching from init",
+    ),
+    lib(
+        "string.format",
+        Some("format: string, ...: any"),
+        "string",
+        "The values written into format's % slots",
+    ),
+    lib(
+        "string.gmatch",
+        Some("s: string, pattern: string"),
+        "() -> string",
+        "Each match of pattern in s, for a for loop",
+    ),
+    lib(
+        "string.gsub",
+        Some("s: string, pattern: string, repl: any, n: number?"),
+        "(string, number)",
+        "s with each match of pattern replaced, and how many were",
+    ),
+    lib(
+        "string.len",
+        Some("s: string"),
+        "number",
+        "The length of s in bytes",
+    ),
+    lib(
+        "string.lower",
+        Some("s: string"),
+        "string",
+        "s in lower case",
+    ),
+    lib(
+        "string.match",
+        Some("s: string, pattern: string, init: number?"),
+        "string?",
+        "The first match of pattern in s, or its captures",
+    ),
+    lib(
+        "string.rep",
+        Some("s: string, n: number, sep: string?"),
+        "string",
+        "s written n times, joined by sep",
+    ),
+    lib("string.reverse", Some("s: string"), "string", "s backwards"),
+    lib(
+        "string.split",
+        Some("s: string, sep: string?"),
+        "{string}",
+        "s cut at each sep, a comma unless given",
+    ),
+    lib(
+        "string.sub",
+        Some("s: string, i: number, j: number?"),
+        "string",
+        "The part of s from i to j",
+    ),
+    lib(
+        "string.upper",
+        Some("s: string"),
+        "string",
+        "s in upper case",
+    ),
+    lib(
+        "table.clear",
+        Some("t: table"),
+        "()",
+        "Remove every entry of t",
+    ),
+    lib(
+        "table.clone",
+        Some("t: table"),
+        "table",
+        "A shallow copy of t",
+    ),
+    lib(
+        "table.concat",
+        Some("t: table, sep: string?, i: number?, j: number?"),
+        "string",
+        "The list's strings and numbers joined by sep",
+    ),
+    lib(
+        "table.create",
+        Some("n: number, value: any?"),
+        "table",
+        "A list of n entries, each value",
+    ),
+    lib(
+        "table.find",
+        Some("t: table, value: any, init: number?"),
+        "number?",
+        "The index of value in the list, or nil",
+    ),
+    lib(
+        "table.freeze",
+        Some("t: table"),
+        "table",
+        "Make t read-only, and answer it",
+    ),
+    lib(
+        "table.insert",
+        Some("t: table, pos: number?, value: any"),
+        "()",
+        "Add value to the list at pos, or at its end",
+    ),
+    lib(
+        "table.isfrozen",
+        Some("t: table"),
+        "boolean",
+        "Whether t is read-only",
+    ),
+    lib(
+        "table.maxn",
+        Some("t: table"),
+        "number",
+        "The largest number t is indexed by",
+    ),
+    lib(
+        "table.move",
+        Some("a: table, f: number, e: number, t: number, b: table?"),
+        "table",
+        "Copy a's entries f to e into b, or a, from index t",
+    ),
+    lib(
+        "table.pack",
+        Some("...: any"),
+        "table",
+        "The values given as a list, with their count in n",
+    ),
+    lib(
+        "table.remove",
+        Some("t: table, pos: number?"),
+        "any",
+        "Take out the entry at pos, or the last, and answer it",
+    ),
+    lib(
+        "table.sort",
+        Some("t: table, comp: ((any, any) -> boolean)?"),
+        "()",
+        "Sort the list in place, by comp when given",
+    ),
+    lib(
+        "table.unpack",
+        Some("t: table, i: number?, j: number?"),
+        "...any",
+        "The list's entries from i to j as separate values",
+    ),
+    lib(
+        "ipairs",
+        Some("t: table"),
+        "iterator",
+        "Each index and value of the list in order, for a for loop",
+    ),
+    lib(
+        "pairs",
+        Some("t: table"),
+        "iterator",
+        "Each key and value of t in no set order, for a for loop",
+    ),
+    lib(
+        "select",
+        Some("i: number | \"#\", ...: any"),
+        "...any",
+        "The values from the i-th on, or their count for \"#\"",
+    ),
+    lib(
+        "tonumber",
+        Some("v: any, base: number?"),
+        "number?",
+        "v as a number, or nil when it is not one",
+    ),
+    lib("tostring", Some("v: any"), "string", "v as text"),
+    lib(
+        "type",
+        Some("v: any"),
+        "string",
+        "The name of v's type: \"number\", \"string\", \"table\"…",
+    ),
+    lib(
+        "assert",
+        Some("v: any, message: string?"),
+        "any",
+        "v when it is truthy, else stop the run with message",
+    ),
+    lib(
+        "error",
+        Some("message: any, level: number?"),
+        "never",
+        "Stop the run with message",
+    ),
+];
+
+/// The line on `path`: `math.floor`, or a global's name.
+pub(crate) fn lib_doc(path: &str) -> Option<&'static LibDoc> {
+    LIB_DOCS.iter().find(|d| d.path == path)
+}
+
 /// Names the language gives besides the verbs, labels and layers: completion
 /// and the unknown-name suggestions read them.
 pub(crate) const NAMES: &[(&str, &str)] = &[
@@ -585,7 +1019,7 @@ fn global_names(state: &RefCell<State<'_>>, env: &crate::Env<'_>) -> Vec<String>
 }
 
 /// The layers under `page` called exactly `name`.
-fn named(doc: &mastik_core::Document, page: NodeId, name: &str) -> Vec<NodeId> {
+pub(crate) fn named(doc: &mastik_core::Document, page: NodeId, name: &str) -> Vec<NodeId> {
     let mut out = Vec::new();
     let mut stack: Vec<NodeId> = doc
         .get(page)
@@ -1474,7 +1908,7 @@ fn raised(e: &mlua::Error) -> Option<&Raised> {
 }
 
 /// A Luau message's `script:<line>: ` prefix split off.
-fn split_line(message: &str) -> (Option<u32>, String) {
+pub(crate) fn split_line(message: &str) -> (Option<u32>, String) {
     let message = message
         .split_once("\nstack traceback:")
         .map_or(message, |(m, _)| m);

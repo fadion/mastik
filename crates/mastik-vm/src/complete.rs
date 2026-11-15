@@ -308,14 +308,49 @@ pub fn complete_script(doc: &Document, page: NodeId, source: &str, cursor: usize
         rows: Vec::new(),
     };
     let lexemes = lex::lex(source);
-    let quoted = lexemes.iter().any(|l| {
+    let quoted = lexemes.iter().find(|l| {
         matches!(l.kind, lex::Lx::String | lex::Lx::Comment)
             && l.range.start < cursor
             && (cursor < l.range.end || (cursor == l.range.end && !closed(source, l)))
     });
+    // Inside a choice parameter's quotes, its words with their quotes.
+    if let Some(s) = quoted.filter(|l| l.kind == lex::Lx::String) {
+        let quote = &source[s.range.start..s.range.start + 1];
+        if quote != "["
+            && let Some((replace, words)) =
+                crate::help::argument_rows(source, cursor, Some(s.range.clone()))
+        {
+            let typed = &source[s.range.start + 1..cursor];
+            let rows = ranked(
+                Section::Choices,
+                typed,
+                words.iter().map(|(w, d)| (&w[1..w.len() - 1], d.clone())),
+            )
+            .into_iter()
+            .map(|(_, mut row)| {
+                row.label = format!("{quote}{}{quote}", row.label);
+                for m in &mut row.matched {
+                    *m = m.start + 1..m.end + 1;
+                }
+                row
+            })
+            .collect();
+            return Completion { replace, rows };
+        }
+    }
     // A word starting with a digit is a number being typed.
-    if quoted || source[start..end].starts_with(|c: char| c.is_ascii_digit()) {
+    if quoted.is_some() || source[start..end].starts_with(|c: char| c.is_ascii_digit()) {
         return none;
+    }
+    // At a key of a verb's table argument, the names it has left.
+    if let Some((replace, names)) = crate::help::argument_rows(source, cursor, None) {
+        let word = &source[replace.start..cursor];
+        let rows = rank(
+            Section::Choices,
+            word,
+            names.iter().map(|(n, d)| (n.as_str(), d.clone())),
+        );
+        return Completion { replace, rows };
     }
     let text = |l: &lex::Lexeme| &source[l.range.clone()];
     let before: Vec<&lex::Lexeme> = lexemes
@@ -348,9 +383,11 @@ pub fn complete_script(doc: &Document, page: NodeId, source: &str, cursor: usize
             rank(
                 Section::Luau,
                 word,
-                crate::run::library(lib)
-                    .iter()
-                    .map(|m| (*m, format!("{lib} library"))),
+                crate::run::library(lib).iter().map(|m| {
+                    let doc = crate::run::lib_doc(&format!("{lib}.{m}"))
+                        .map_or_else(|| format!("{lib} library"), |d| d.doc.to_owned());
+                    (*m, doc)
+                }),
             )
         }
         Some(".") => properties(word),
@@ -365,11 +402,11 @@ pub fn complete_script(doc: &Document, page: NodeId, source: &str, cursor: usize
             let luau = lex::KEYWORDS
                 .iter()
                 .map(|k| (*k, "keyword".to_owned()))
-                .chain(
-                    crate::run::STDLIB
-                        .iter()
-                        .map(|s| (*s, "library".to_owned())),
-                );
+                .chain(crate::run::STDLIB.iter().map(|s| {
+                    let doc = crate::run::lib_doc(s)
+                        .map_or_else(|| "library".to_owned(), |d| d.doc.to_owned());
+                    (*s, doc)
+                }));
             by_best_section(vec![
                 ranked(
                     Section::Script,
@@ -418,19 +455,40 @@ fn declared(
     lexemes: &[lex::Lexeme],
     typing: &Range<usize>,
 ) -> Vec<(String, &'static str)> {
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    for d in declarations(source, lexemes, typing) {
+        let name = &source[lexemes[d.at].range.clone()];
+        if !out.iter().any(|(n, _)| n == name) {
+            out.push((name.to_owned(), d.what));
+        }
+    }
+    out
+}
+
+/// One name a script declares: its lexeme's index and what it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Decl {
+    pub at: usize,
+    /// "local", "function", "parameter" or "loop variable".
+    pub what: &'static str,
+}
+
+/// Every declaration in `lexemes`, in source order: `local` names, `local
+/// function` and `function` names (a dotted or method name declares nothing),
+/// a function's parameters (`self` is implicit, never listed) and loop
+/// variables. The lexeme at `typing` is the word being typed, never a name.
+pub(crate) fn declarations(
+    source: &str,
+    lexemes: &[lex::Lexeme],
+    typing: &Range<usize>,
+) -> Vec<Decl> {
     let text = |i: usize| lexemes.get(i).map_or("", |l| &source[l.range.clone()]);
     let ident = |i: usize| {
         lexemes
             .get(i)
             .is_some_and(|l| l.kind == lex::Lx::Ident && l.range != *typing)
     };
-    let mut out: Vec<(String, &'static str)> = Vec::new();
-    let mut add = |i: usize, what: &'static str| {
-        let name = text(i);
-        if !out.iter().any(|(n, _)| n == name) {
-            out.push((name.to_owned(), what));
-        }
-    };
+    let mut out: Vec<Decl> = Vec::new();
     // Names after `at`, separated by commas, as `local a, b` and `for k, v` list them.
     let list = |at: usize| {
         let mut names = Vec::new();
@@ -445,6 +503,7 @@ fn declared(
         names
     };
     for i in 0..lexemes.len() {
+        let mut add = |at: usize, what| out.push(Decl { at, what });
         match text(i) {
             "local" if text(i + 1) == "function" => {
                 if ident(i + 2) {
@@ -457,11 +516,16 @@ fn declared(
                 .for_each(|n| add(n, "loop variable")),
             "function" => {
                 let mut open = i + 1;
-                if ident(open) && text(open + 1) == "(" {
-                    if text(i.wrapping_sub(1)) != "local" {
-                        add(open, "function");
-                    }
+                if ident(open) {
+                    let first = open;
                     open += 1;
+                    while matches!(text(open), "." | ":") && ident(open + 1) {
+                        open += 2;
+                    }
+                    if open == first + 1 && text(open) == "(" && text(i.wrapping_sub(1)) != "local"
+                    {
+                        add(first, "function");
+                    }
                 }
                 if text(open) == "(" {
                     list(open + 1).into_iter().for_each(|n| add(n, "parameter"));

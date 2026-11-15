@@ -869,3 +869,230 @@ fn a_runtime_error_names_its_line() {
     assert_eq!(err.kind, ErrorKind::Error);
     assert!(err.line.is_some());
 }
+
+/// Every library member and permitted global function has a help line, and
+/// every help line names one of them.
+/// flip: a `LIB_DOCS` row removed → fails at "has a line".
+#[test]
+fn every_library_member_has_a_help_line() {
+    let docs = crate::run::LIB_DOCS;
+    let mut wanted: Vec<String> = Vec::new();
+    for (lib, members) in crate::run::LIBRARY {
+        wanted.extend(members.iter().map(|m| format!("{lib}.{m}")));
+    }
+    wanted.extend(
+        crate::run::STDLIB
+            .iter()
+            .filter(|s| {
+                crate::run::library(s).is_empty() && !matches!(**s, "math" | "string" | "table")
+            })
+            .map(|s| (*s).to_owned()),
+    );
+    for w in &wanted {
+        assert!(docs.iter().any(|d| d.path == w), "{w} has a line");
+    }
+    for d in docs {
+        assert!(wanted.iter().any(|w| w == d.path), "{} is a member", d.path);
+        assert!(!d.doc.is_empty(), "{}", d.path);
+    }
+}
+
+/// The hint lights the argument the caret is in, past nested calls, and says
+/// when the arguments have run out.
+/// flip: `call_at` keeping a closed bracket's frame → fails at "after a nested call".
+#[test]
+fn the_hint_lights_the_argument_the_caret_is_in() {
+    let s = signature_at("align(", 6).unwrap();
+    assert_eq!(s.name, "align");
+    assert_eq!(s.params.len(), 1, "the subject is left out");
+    assert_eq!(s.active, Some(0));
+    assert_eq!(s.detail.as_deref(), Some("edge · which edge or centre"));
+    assert!(s.doc.unwrap().ends_with(ACTS_ON_SELECTION));
+
+    let src = "local copies = duplicate(0, ";
+    let s = signature_at(src, src.len()).unwrap();
+    assert_eq!(s.active, Some(1));
+    assert_eq!(s.params[1].ty.as_deref(), Some("number?"));
+
+    let src = "duplicate(math.floor(w / 2), ";
+    assert_eq!(
+        signature_at(src, src.len()).unwrap().active,
+        Some(1),
+        "after a nested call"
+    );
+
+    let src = "duplicate(1, 2, ";
+    let s = signature_at(src, src.len()).unwrap();
+    assert_eq!(
+        (s.active, s.detail.as_deref()),
+        (None, Some("No more arguments"))
+    );
+
+    assert_eq!(signature_at("align()", 7), None, "after the close");
+    assert_eq!(signature_at("-- align(", 9), None, "in a comment");
+}
+
+/// A table argument lists what is left, and the script's own function shows
+/// its parameter names and where it is declared.
+#[test]
+fn the_hint_covers_named_arguments_and_the_scripts_functions() {
+    let src = "duplicate { dy = 8, ";
+    let s = signature_at(src, src.len()).unwrap();
+    assert!(s.named);
+    assert_eq!(s.active, None);
+    assert_eq!(s.detail.as_deref(), Some("Named: dx is left."));
+
+    let src = "local function nudge(by, times)\nend\nnudge(4, ";
+    let s = signature_at(src, src.len()).unwrap();
+    assert_eq!(s.name, "nudge");
+    assert_eq!(s.active, Some(1));
+    assert_eq!(s.note.as_deref(), Some("This script's function · line 1"));
+    assert_eq!(s.doc, None, "no doc is invented");
+
+    let src = "sel:adjust(\"x\", ";
+    let s = signature_at(src, src.len()).unwrap();
+    assert_eq!((s.name.as_str(), s.active), ("sel:adjust", Some(1)));
+}
+
+/// Inside a choice parameter's quotes completion offers its words, quoted;
+/// at a table argument's key, the names not yet written.
+/// flip: `complete_script` returning nothing inside every string → fails at "quoted".
+#[test]
+fn completion_offers_choices_in_quotes_and_names_left() {
+    let rows = script_rows("align(\"le");
+    assert_eq!(
+        rows.first(),
+        Some(&(Section::Choices, "\"left\"".to_owned())),
+        "quoted"
+    );
+    assert_eq!(
+        script_rows("print(\"le"),
+        [],
+        "any other string stays quiet"
+    );
+    let rows = script_rows("duplicate { dy = 8, ");
+    assert_eq!(rows, [(Section::Choices, "dx".to_owned())]);
+}
+
+/// A hover card says what a property, an input, a library member, a verb and
+/// a layer are, and nothing for a plain local.
+#[test]
+fn hover_says_what_a_name_is() {
+    let (h, _) = three();
+    let at = |src: &str, word: &str| {
+        let i = src.rfind(word).unwrap();
+        hover_at(&h.doc, h.page, src, i)
+    };
+    let src = "for _, card in ipairs(sel) do card.opacity = 0.8 end";
+    let c = at(src, "opacity").unwrap();
+    assert_eq!(
+        (c.title.as_str(), c.ty.as_deref()),
+        ("card.opacity", Some("number"))
+    );
+    assert!(c.kind.starts_with("Property"));
+
+    let src = "---@input gap number = 24 -- Gap\nprint(param.gap)";
+    let c = at(src, "gap)").unwrap();
+    assert_eq!(c.ty.as_deref(), Some("number = 24"));
+    assert_eq!(c.doc.as_deref(), Some("Gap"));
+    assert_eq!(c.kind, "This script's input, line 1");
+
+    let c = at("local w = math.floor(3)", "floor").unwrap();
+    assert_eq!(c.title, "math.floor(x: number)");
+    assert_eq!(c.kind, "Luau library");
+
+    let c = at("align(\"left\")", "align").unwrap();
+    assert_eq!(c.kind, "Verb");
+
+    let c = at("print(B.width)", "B.").unwrap();
+    assert!(c.layer.is_some());
+    assert_eq!(c.kind, "A layer named on this page");
+
+    assert_eq!(at("local n = 3\nprint(n)", "n)"), None, "a plain local");
+    assert_eq!(
+        at("local B = 3\nprint(B)", "B)"),
+        None,
+        "a local hides the layer"
+    );
+}
+
+/// The check marks a syntax error alone, with its line, and Run's hold reads
+/// the same compile.
+#[test]
+fn a_syntax_error_is_found_without_running() {
+    let src = "for i, card in ipairs(sel) do\n  card.x = i\n";
+    let p = syntax_error(src).unwrap();
+    assert_eq!(p.severity, Severity::Error);
+    assert_eq!(p.line, 2, "the last line with text");
+    assert_eq!(p.related, Some(1));
+    assert!(p.message.starts_with("Expected 'end'"), "{}", p.message);
+    let (h, _) = three();
+    assert_eq!(check(&h.doc, h.page, src), [p]);
+    assert_eq!(syntax_error("local a = 1"), None);
+}
+
+/// Names the check cannot find are warnings with the run's fix; a wrong
+/// property on layers, a missing library member or input and a global
+/// assignment are errors; a layer on the page, a table's own key and a field of
+/// a script's table are not marked.
+/// flip: `check` skipping the bare-name arm → fails at "selectoin".
+#[test]
+fn the_check_marks_what_a_run_would_refuse() {
+    let (h, _) = three();
+    let src = "local n = #selectoin\nsel.widht = 320\nsel.fill = B.fill\n\
+               local t = { size = 3 }\nt.foo = 1\nprint(math.flor(2))\ncount = 4\n\
+               for _, c in ipairs(sel) do c.hieght = 1 end";
+    let found: Vec<(Severity, String, Option<String>)> = check(&h.doc, h.page, src)
+        .into_iter()
+        .map(|p| (p.severity, p.message, p.fix.map(|f| f.1)))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                Severity::Warning,
+                "No name “selectoin” — did you mean selection?".to_owned(),
+                Some("selection".to_owned())
+            ),
+            (
+                Severity::Error,
+                "No property “widht” — did you mean width?".to_owned(),
+                Some("width".to_owned())
+            ),
+            (
+                Severity::Error,
+                "No “flor” in math — did you mean floor?".to_owned(),
+                Some("floor".to_owned())
+            ),
+            (
+                Severity::Error,
+                "No global “count” — write `local count = …`".to_owned(),
+                None
+            ),
+            (
+                Severity::Error,
+                "No property “hieght” — did you mean height?".to_owned(),
+                Some("height".to_owned())
+            ),
+        ]
+    );
+}
+
+/// Go to declaration finds the nearest declaration above a use, a function
+/// called above its own, and an input's header line; never a Mastik name.
+#[test]
+fn declaration_is_the_nearest_above() {
+    let at = |src: &str, word: &str| {
+        let i = src.rfind(word).unwrap();
+        declaration_at(src, i).map(|(_, d)| d.start)
+    };
+    let src = "local a = 1\nlocal a = 2\nprint(a)";
+    assert_eq!(at(src, "a)"), Some(18), "the second local");
+    let src = "go()\nlocal function go() end";
+    assert_eq!(at(src, "go()"), Some(20));
+    let src = "---@input gap number = 24\nprint(param.gap)";
+    assert_eq!(at(src, "gap)"), Some(10));
+    assert_eq!(at("print(sel)", "sel"), None);
+    let src = "local function f(by) return by end";
+    assert_eq!(at(src, "by end"), Some(17), "a parameter");
+}

@@ -115,7 +115,7 @@ pub fn names_used(source: &str) -> Vec<String> {
 }
 
 /// A parameter's Luau type.
-fn param_type(kind: ParamKind) -> String {
+pub(crate) fn param_type(kind: ParamKind) -> String {
     match kind {
         ParamKind::Node | ParamKind::Nodes => "Layers".into(),
         ParamKind::Number | ParamKind::Index => "number".into(),

@@ -17,6 +17,7 @@ use rustc_hash::FxHashMap;
 mod complete;
 mod defs;
 mod header;
+mod help;
 mod lex;
 mod props;
 mod run;
@@ -28,6 +29,10 @@ mod tests;
 pub use complete::{Completion, Row, Section, complete, complete_script};
 pub use defs::{Tok, definitions, names_used, tokens};
 pub use header::{Header, Input, InputType, header};
+pub use help::{
+    ACTS_ON_SELECTION, Hover, Problem, Severity, SigParam, Signature, check, declaration_at,
+    hover_at, signature_at, syntax_error,
+};
 pub use props::{METHODS, Method, PROPERTIES, PropType, Property};
 pub use run::{Budget, READ_BUDGET, RUN_BUDGET};
 pub use sugar::{Line, LineKind, Marks, desugar, marks};
