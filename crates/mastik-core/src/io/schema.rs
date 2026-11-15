@@ -61,9 +61,8 @@ pub(crate) struct DocumentDto {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub styles: Vec<crate::style::Style>,
     /// The stored scripts (`crate::script`) in list order, absent in a document
-    /// with none. Additive, so no version bump is owed: nothing else in the file
-    /// refers to a script, so an older reader skips the key and draws the same
-    /// document (its next save drops the scripts).
+    /// with none. New in v17: a v16 reader would skip the key and its next save
+    /// would drop the scripts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scripts: Vec<crate::script::Script>,
     /// The image table, sorted by id on save (invariant 9).

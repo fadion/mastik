@@ -524,6 +524,10 @@ impl MastikApp {
         self.chart_read = None;
         // The size preview's copy is of this document.
         self.size_preview.drop_copy();
+        // Leap labels name this document's layers; another may share the ids.
+        // The bar's error and completions are of this document too.
+        self.forget_navigate_layers();
+        self.command_bar = None;
         self.open_menu = crate::app::TopMenu::None;
         self.context_menu = None;
         self.palette = None;

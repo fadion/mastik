@@ -86,7 +86,7 @@ pub struct StepView<'a> {
     pub note: &'a StepNote,
     pub serial: u64,
     /// What applying the step would put back: the undo stack's inverse, the redo
-    /// stack's forward edit. Its values are the ones the step replaced.
+    /// stack's forward edit. Its values are the ones applying it would write.
     pub inverse: &'a Transaction,
 }
 

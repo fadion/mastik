@@ -190,6 +190,18 @@ impl MastikApp {
         }
     }
 
+    /// Forget the layers Navigate holds as another document comes forward, which
+    /// may share their ids: the labels dealt and shown, and where the keys stand.
+    /// The mode itself stays on.
+    pub(crate) fn forget_navigate_layers(&mut self) {
+        self.navigate.labels.clear();
+        self.navigate.shown = None;
+        if let Some(on) = self.navigate.on.as_mut() {
+            on.current = None;
+            on.visited.clear();
+        }
+    }
+
     /// One key of Navigate's keymap.
     pub(crate) fn nav_action(&mut self, ctx: &egui::Context, nav: Nav) {
         match nav {

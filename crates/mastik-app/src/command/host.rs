@@ -63,7 +63,12 @@ impl mastik_vm::Host for SessionHost<'_> {
         if self.read_only {
             return Err(A_READ_WRITES_NOTHING.into());
         }
-        self.s.try_commit(tx).map_err(|e| match e {
+        // The style browser's *Edit* is set aside, as for an agent: a script's
+        // edit of a style's users means the same whatever panel is open.
+        let held = self.s.style_edit.take();
+        let applied = self.s.try_commit(tx);
+        self.s.style_edit = held;
+        applied.map_err(|e| match e {
             CommitError::Op(e) => e.to_string(),
             CommitError::ReadOnly => crate::compare::READ_ONLY.to_owned(),
         })
@@ -71,16 +76,18 @@ impl mastik_vm::Host for SessionHost<'_> {
 }
 
 /// What a run changed, counted from the steps it made: the layers made, changed
-/// and deleted, each only when it is not zero.
+/// and deleted, and the document's scripts it touched, each only when not zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Counts {
     pub(crate) made: usize,
     pub(crate) changed: usize,
     pub(crate) deleted: usize,
+    pub(crate) scripts: usize,
 }
 
 impl Counts {
-    /// `6 layers changed`, `12 made, 2 changed`; `None` when nothing changed.
+    /// `6 layers changed`, `12 made, 2 changed`, `1 script changed`; `None` when
+    /// nothing changed.
     pub(crate) fn said(self) -> Option<String> {
         let mut parts = Vec::new();
         let layers = |n: usize| if n == 1 { "layer" } else { "layers" };
@@ -99,17 +106,25 @@ impl Counts {
             });
             noun = false;
         }
+        if self.scripts > 0 {
+            let n = self.scripts;
+            parts.push(format!(
+                "{n} {} changed",
+                if n == 1 { "script" } else { "scripts" }
+            ));
+        }
         (!parts.is_empty()).then(|| parts.join(", "))
     }
 }
 
 /// Count what the step whose inverse is `inverse` did: an inverse's delete is a
 /// layer the step made, its create one the step deleted, and any other edit names
-/// a layer it changed.
+/// a layer it changed. A layer the step both made and deleted is not counted.
 pub(crate) fn counts(inverse: &Transaction) -> Counts {
     use mastik_core::Operation as Op;
     let mut made = rustc_hash::FxHashSet::default();
     let mut deleted = rustc_hash::FxHashSet::default();
+    let mut scripts = rustc_hash::FxHashSet::default();
     for op in &inverse.0 {
         match op {
             Op::DeleteNode { id } => {
@@ -123,6 +138,14 @@ pub(crate) fn counts(inverse: &Transaction) -> Counts {
                     deleted.insert(root.id());
                 }
             }
+            Op::AddScript { script, .. } => {
+                scripts.insert(script.id);
+            }
+            Op::RemoveScript { id }
+            | Op::SetScriptName { id, .. }
+            | Op::SetScriptSource { id, .. } => {
+                scripts.insert(*id);
+            }
             _ => {}
         }
     }
@@ -131,10 +154,12 @@ pub(crate) fn counts(inverse: &Transaction) -> Counts {
         .into_iter()
         .filter(|id| !made.contains(id) && !deleted.contains(id))
         .count();
+    let both = made.intersection(&deleted).count();
     Counts {
-        made: made.len(),
+        made: made.len() - both,
         changed,
-        deleted: deleted.len(),
+        deleted: deleted.len() - both,
+        scripts: scripts.len(),
     }
 }
 
@@ -157,8 +182,8 @@ fn vault_node(doc: &Document, args: &Value) -> Option<NodeId> {
 
 /// Run `f` against the session as one undo step named `label` with `glyph`: every
 /// write it commits is joined into one step, and on an error every one is taken
-/// back, so a failed run changes nothing. Answers what `f` answered and what the
-/// step did, with its serial.
+/// back, so a failed run changes nothing — the redo stack included. Answers what
+/// `f` answered and what the step did, with its serial.
 pub(crate) fn run_as_step<T>(
     s: &mut EditorSession,
     label: &str,
@@ -169,21 +194,37 @@ pub(crate) fn run_as_step<T>(
     s.end_edit_run();
     let mark = s.mark();
     let depth = s.history.undo_depth();
+    // Each commit clears the redo stack; a run that fails or lands nothing gives
+    // it back below.
+    let held_redo = s.history.take_redo();
     let ran = f(&mut SessionHost {
         s: &mut *s,
         read_only: false,
     });
     let made = s.history.undo_depth().saturating_sub(depth);
     match ran {
-        Err(e) => {
+        Err(mut e) => {
+            let mut whole = true;
             for _ in 0..made {
-                s.take_back();
+                if !s.take_back() {
+                    whole = false;
+                    break;
+                }
             }
-            s.rewind(&mark);
+            if whole {
+                s.rewind(&mark);
+                s.history.restore_redo(held_redo);
+            } else {
+                e.message
+                    .push_str(" (its changes could not all be taken back: undo the rest)");
+            }
             s.end_edit_run();
             Err(e)
         }
         Ok(answer) => {
+            if made == 0 {
+                s.history.restore_redo(held_redo);
+            }
             if made > 1 {
                 s.history.join_last(made);
             }

@@ -2081,6 +2081,7 @@ impl EditorSession {
     pub fn resume_history(&mut self, saved: mastik_core::SavedHistory) {
         self.history = History::restore(saved);
         self.saved_step = Some(self.history.current());
+        self.command_log.seen_up_to(self.history.current());
         self.resumed = true;
     }
 

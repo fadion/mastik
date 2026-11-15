@@ -69,6 +69,12 @@ impl Log {
         }
     }
 
+    /// Take the step on top of a history resumed from an earlier session as seen,
+    /// so the log does not list it as an edit made now.
+    pub(crate) fn seen_up_to(&mut self, serial: Option<u64>) {
+        self.seen = serial.map(|s| (s, u64::MAX));
+    }
+
     /// Note the undo step on top of `s`'s history if it is new, or re-render it if
     /// a run folded more into it; called once a frame.
     pub(crate) fn watch(s: &mut crate::session::EditorSession) {
@@ -184,6 +190,9 @@ pub(crate) fn quoted(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
             c => out.push(c),
         }
     }

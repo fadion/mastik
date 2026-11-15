@@ -1131,6 +1131,27 @@ pub(crate) mod tests {
         assert!(bar.error.is_some());
     }
 
+    /// A failed line leaves the redo stack as it found it.
+    /// flip: `run_as_step` not restoring the held redo on an error → fails at
+    /// "redo kept".
+    #[test]
+    fn a_line_that_fails_keeps_redo() {
+        let (ctx, mut app, _) = typed(r#".x = 300; error("no")"#);
+        add_rect(&mut app);
+        app.session.undo();
+        assert_eq!(
+            app.session.history.redo_depth(),
+            1,
+            "fixture: one step to redo"
+        );
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        assert!(
+            app.command_bar.as_ref().unwrap().error.is_some(),
+            "the line failed"
+        );
+        assert_eq!(app.session.history.redo_depth(), 1, "redo kept");
+    }
+
     /// A read shows its value as it is typed and Enter makes no undo step.
     /// flip: `bar_read` taking no value for a read → fails at "the live value".
     #[test]
@@ -1253,6 +1274,7 @@ pub(crate) mod tests {
                 made,
                 changed,
                 deleted,
+                scripts: 0,
             }
             .said()
         };
@@ -1260,5 +1282,10 @@ pub(crate) mod tests {
         assert_eq!(c(12, 2, 0).as_deref(), Some("12 layers made, 2 changed"));
         assert_eq!(c(0, 0, 1).as_deref(), Some("1 layer deleted"));
         assert_eq!(c(0, 0, 0), None);
+        let scripts = host::Counts {
+            scripts: 1,
+            ..Default::default()
+        };
+        assert_eq!(scripts.said().as_deref(), Some("1 script changed"));
     }
 }

@@ -151,18 +151,20 @@ chrome. A script can only say a committed outcome; it starts where the edit valv
 **A run is one undo step, and a failed run changes nothing.** There is no working copy:
 
 1. `command::host::run_as_step` ends the edit run (a run never merges into a nudge before it) and
-   marks the session.
+   marks the session, and holds the redo stack (`History::take_redo`), which each commit clears.
 2. The host commits each step to the live session as it comes (`EditorSession::try_commit`, the
    commit door, with what components owe), so later reads see earlier writes: positioning each
-   child from the previous one works.
+   child from the previous one works. The style browser's *Edit* is set aside for each commit, as
+   for an agent, so a script's edit means the same whatever panel is open.
 3. On success it joins the steps the run made into one with `History::join_last` (each inverse was
    taken after its own step, so the latest goes first), names it after the script, the bar's verb
    or *Edit*, with the source's glyph, and ends the edit run again.
-4. On an error or a spent budget it takes back every step it made (`take_back`) and rewinds to the
-   mark.
+4. On an error or a spent budget it takes back every step it made (`take_back`), rewinds to the
+   mark and gives the redo stack back; a run that made no step gives it back too.
 
 A step is counted from its inverse for the status line and the log: a `DeleteNode` in it is a
-layer made, a `CreateNode` or `InsertSubtree` one deleted, any other subject one changed.
+layer made, a `CreateNode` or `InsertSubtree` one deleted, any other subject one changed, and a
+layer both made and deleted is not counted. A script op counts as a script changed.
 
 ## 8. Sandbox and limits
 

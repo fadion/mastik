@@ -214,12 +214,9 @@ fn script_name(path: &Path) -> Option<String> {
         return None;
     }
     let name = path.file_stem()?.to_str()?;
+    // A definitions file (`name.d.luau`) types the API for an outside editor;
+    // `check_name` refuses its name, so it is no script.
     check_name(name).ok()?;
-    // A definitions file (`name.d.luau`) types the API for an outside editor; it
-    // is no script.
-    if name.to_ascii_lowercase().ends_with(".d") {
-        return None;
-    }
     Some(name.to_owned())
 }
 
@@ -253,6 +250,10 @@ pub fn check_name(name: &str) -> Result<(), ScriptError> {
         return Err(ScriptError::BadName(
             "a script's name cannot end with a dot",
         ));
+    }
+    // `name.d.luau` is a definitions file, which the library never lists.
+    if name.to_ascii_lowercase().ends_with(".d") {
+        return Err(ScriptError::BadName("a script's name cannot end with .d"));
     }
     let base = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
     let device = matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
@@ -343,6 +344,8 @@ mod tests {
             "CON",
             "com1",
             "nul.txt",
+            "mastik.d",
+            "Types.D",
         ] {
             assert!(
                 matches!(lib.write(bad, "x"), Err(ScriptError::BadName(_))),
