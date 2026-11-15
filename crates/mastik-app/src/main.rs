@@ -1754,9 +1754,9 @@ mod tests {
         assert!(refused.contains("not valid Unicode"), "{refused}");
     }
 
-    /// `window_icon` decodes as the 512px Mastik mark: a transparent corner and
-    /// middle, opaque points on the coil. The size pins the file, since
-    /// `icon-64.png` and `icon-1024.png` are the same artwork.
+    /// `window_icon` decodes as the 512px Mastik mark: a transparent corner, the
+    /// "m" cut out of the drop, and opaque points on the drop. The size pins the
+    /// file, since `icon-64.png` and `icon-1024.png` are the same artwork.
     #[test]
     fn window_icon_is_the_mastik_mark_at_the_size_windows_scales_from() {
         let icon = window_icon();
@@ -1765,8 +1765,8 @@ mod tests {
 
         let alpha_at = |x: usize, y: usize| icon.rgba[(y * 512 + x) * 4 + 3];
         assert_eq!(alpha_at(0, 0), 0, "the mark must not fill its box");
-        assert_eq!(alpha_at(256, 256), 0, "the coil is a ring, not a disc");
-        assert_eq!(alpha_at(60, 300), 255, "the left of the coil is solid ink");
+        assert_eq!(alpha_at(256, 256), 0, "the m's middle stem is cut out");
+        assert_eq!(alpha_at(60, 300), 255, "the left of the drop is solid ink");
         assert_eq!(alpha_at(256, 470), 255, "and so is its bottom");
     }
 

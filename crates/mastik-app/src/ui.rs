@@ -8284,8 +8284,8 @@ mod logo_tests {
         assert_eq!((icon.width, icon.height), (64, 64));
         let alpha_at = |x: usize, y: usize| icon.rgba[(y * 64 + x) * 4 + 3];
         assert_eq!(alpha_at(0, 0), 0, "a transparent corner");
-        assert_eq!(alpha_at(32, 32), 0, "a transparent middle");
-        assert_eq!(alpha_at(7, 37), 255, "solid ink on the coil");
+        assert_eq!(alpha_at(32, 32), 0, "the m's middle stem is cut out");
+        assert_eq!(alpha_at(7, 37), 255, "solid ink on the drop");
 
         let ctx = egui::Context::default();
         let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(26.0, 26.0));
