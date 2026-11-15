@@ -63,6 +63,8 @@ pub(crate) struct Bar {
     /// The text as the field left it last frame, to tell typing from a
     /// keystroke-free frame.
     seen: String,
+    /// The layer the lit completion row names, which the canvas outlines.
+    lit: Option<NodeId>,
 }
 
 /// The completion list's state, as a code editor's suggest widget keeps it: it
@@ -124,6 +126,34 @@ impl Bar {
         if invoke && let Some(s) = start {
             self.suggest = Suggest::On(s);
         }
+    }
+
+    /// The layer the lit completion row names (a label's, or a layer's by
+    /// name), for the canvas to outline as it outlines a hovered Layers row.
+    pub(crate) fn lit_layer(&self) -> Option<NodeId> {
+        self.lit
+    }
+
+    /// The letters typed of a leap label, lowercase, while the list offers
+    /// labels for the word at the caret: the canvas shows the labels then,
+    /// narrowed by these letters as Navigate's first letter narrows them.
+    pub(crate) fn labels_typed(&self) -> Option<String> {
+        if !matches!(self.suggest, Suggest::On(_)) || self.error.is_some() {
+            return None;
+        }
+        let c = self.completed.as_ref()?;
+        let offers = c
+            .completion
+            .rows
+            .iter()
+            .any(|r| r.section == mastik_vm::Section::Labels);
+        if c.key.0 != self.text || !offers {
+            return None;
+        }
+        let word = c.key.0.get(c.completion.replace.start..c.key.1)?;
+        let word = word.to_lowercase();
+        let home = word.len() <= 2 && word.chars().all(crate::navigate::is_home_letter);
+        home.then_some(word)
     }
 
     /// Escape on an open list: shut it for this word.
@@ -210,6 +240,8 @@ impl MastikApp {
         self.context_menu = None;
         self.open_menu = crate::app::TopMenu::None;
         self.command_bar = Some(Bar::default());
+        // Fresh labels for this view, so a line can name what it sees.
+        self.deal_bar_labels();
     }
 
     /// The selection a line acts on.
@@ -475,6 +507,13 @@ impl MastikApp {
         if rows > 0 {
             bar.highlight = bar.highlight.min(rows - 1);
         }
+        let lit_of = |bar: &Bar| match &list {
+            List::Complete(_) => bar
+                .completed
+                .as_ref()
+                .and_then(|c| c.layers.get(bar.highlight).copied().flatten()),
+            _ => None,
+        };
 
         // Keys: a list of completions takes the arrows, Tab and Enter, as an
         // editor's does; otherwise the arrows walk the typed lines, Tab takes an
@@ -745,6 +784,10 @@ impl MastikApp {
         if modal.backdrop_response.clicked() && bar.log_menu.is_none() {
             return;
         }
+        bar.lit = match bar.suggest {
+            Suggest::On(_) => lit_of(&bar),
+            _ => None,
+        };
         self.command_bar = Some(bar);
     }
 
@@ -1598,6 +1641,37 @@ pub(crate) mod tests {
             .expect("a box")
             .width();
         assert_eq!(w, 40.0, "the line ran");
+    }
+
+    /// Opening the bar deals labels to what is in view; typing a label shows
+    /// the labels on the canvas, the label leads the list, and its row names
+    /// its layer for the canvas to outline.
+    /// flip: `open_command_bar` not dealing → fails at "the bar dealt";
+    /// `by_best_section` keeping the fixed order → fails at "the label leads";
+    /// `labels_typed` ignoring the suggest state → fails at "an operator hides them".
+    #[test]
+    fn the_bar_shows_the_labels_it_offers() {
+        let (ctx, mut app, card) = typed("");
+        let label = app
+            .leap_labels()
+            .iter()
+            .find(|(_, id)| **id == card)
+            .map(|(k, _)| k.clone())
+            .expect("the bar dealt");
+        type_in(&ctx, &mut app, &label);
+        let bar = app.command_bar.as_ref().unwrap();
+        assert_eq!(bar.labels_typed().as_deref(), Some(label.as_str()));
+        let top = &bar.completed.as_ref().unwrap().completion.rows[0];
+        assert_eq!(
+            (top.section, top.label.as_str()),
+            (mastik_vm::Section::Labels, label.as_str()),
+            "the label leads"
+        );
+        assert_eq!(bar.lit_layer(), Some(card), "the lit row's layer");
+        type_in(&ctx, &mut app, " + ");
+        let bar = app.command_bar.as_ref().unwrap();
+        assert_eq!(bar.labels_typed(), None, "an operator hides them");
+        assert_eq!(bar.lit_layer(), None);
     }
 
     /// Counts read as the status line says them.

@@ -66,7 +66,10 @@ pub(crate) struct Navigate {
     on: Option<On>,
     /// The last labels dealt, lowercase.
     labels: HashMap<String, NodeId>,
-    /// The labels on the canvas, while they show.
+    /// The last deal, nearest the current layer first, which is also who got
+    /// the easy pairs: what the labels draw from.
+    deal: Vec<Dealt>,
+    /// The labels on the canvas in Navigate, while they show.
     shown: Option<Shown>,
 }
 
@@ -79,10 +82,8 @@ struct On {
     visited: HashMap<NodeId, NodeId>,
 }
 
-/// One deal on the canvas.
+/// The deal on the canvas in Navigate.
 struct Shown {
-    /// Nearest the current layer first, which is also who gets the easy pairs.
-    deal: Vec<Dealt>,
     /// The first letter, once typed.
     typed: Option<char>,
 }
@@ -117,6 +118,11 @@ pub(crate) fn label_pairs() -> Vec<String> {
         .collect();
     pairs.sort_by_key(|(score, _)| *score);
     pairs.into_iter().map(|(_, s)| s).collect()
+}
+
+/// Whether `c` is a letter a label is spelled from.
+pub(crate) fn is_home_letter(c: char) -> bool {
+    HOME_ROW.contains(&c)
 }
 
 /// The home-row letter `key` types, if it is one.
@@ -195,6 +201,7 @@ impl MastikApp {
     /// The mode itself stays on.
     pub(crate) fn forget_navigate_layers(&mut self) {
         self.navigate.labels.clear();
+        self.navigate.deal.clear();
         self.navigate.shown = None;
         if let Some(on) = self.navigate.on.as_mut() {
             on.current = None;
@@ -309,16 +316,34 @@ impl MastikApp {
     }
 
     /// `f` and `F`: deal labels to the layers in view a click could reach, or with
-    /// `inside` to those inside the current layer. A view with more than
-    /// [`LABELS_MAX`] labels only the children of the current layer.
+    /// `inside` to those inside the current layer, and show them.
     fn deal_labels(&mut self, inside: bool) {
+        if self.deal(inside, true) {
+            self.navigate.shown = Some(Shown { typed: None });
+        }
+    }
+
+    /// The command bar opening: deal labels to the layers in view as `f` does,
+    /// for the bar to show while a label is being typed. Says nothing when there
+    /// is nothing to label; the last deal then stands.
+    pub(crate) fn deal_bar_labels(&mut self) {
+        self.navigate.shown = None;
+        self.deal(false, false);
+    }
+
+    /// Deal labels and keep them as the handles lines name; `false` when there
+    /// was nothing to label, which `say` reports on the status line. A view with
+    /// more than [`LABELS_MAX`] labels only the children of the current layer.
+    fn deal(&mut self, inside: bool, say: bool) -> bool {
         let doc = &self.session.doc;
         let current = self.nav_current();
         let within = match (inside, current) {
             (true, Some(c)) if doc.get(c).is_some_and(|n| !n.children().is_empty()) => Some(c),
             (true, _) => {
-                self.session.info("Nothing inside this layer to label");
-                return;
+                if say {
+                    self.session.info("Nothing inside this layer to label");
+                }
+                return false;
             }
             (false, _) => None,
         };
@@ -343,8 +368,10 @@ impl MastikApp {
                 .collect();
         }
         if ids.is_empty() {
-            self.session.info("No layers in view to label");
-            return;
+            if say {
+                self.session.info("No layers in view to label");
+            }
+            return false;
         }
         // Nearest the current layer first, so the easy pairs land where the eye is.
         let from = current
@@ -372,7 +399,8 @@ impl MastikApp {
             })
             .collect();
         self.navigate.labels = deal.iter().map(|d| (d.label.clone(), d.id)).collect();
-        self.navigate.shown = Some(Shown { deal, typed: None });
+        self.navigate.deal = deal;
+        true
     }
 
     /// The layers in `view` a plain click could select, in the order first met:
@@ -470,13 +498,14 @@ impl MastikApp {
             };
             match shown.typed {
                 None => {
-                    if shown.deal.iter().any(|d| d.label.starts_with(c)) {
+                    if self.navigate.deal.iter().any(|d| d.label.starts_with(c)) {
                         shown.typed = Some(c);
                     }
                 }
                 Some(first) => {
                     let label: String = [first, c].into_iter().collect();
-                    if let Some(id) = shown.deal.iter().find(|d| d.label == label).map(|d| d.id) {
+                    let hit = self.navigate.deal.iter().find(|d| d.label == label);
+                    if let Some(id) = hit.map(|d| d.id) {
                         self.navigate.shown = None;
                         self.nav_land(id, m.shift);
                         break;
@@ -487,19 +516,25 @@ impl MastikApp {
         true
     }
 
-    /// The labels and their outlines over the canvas while they show: every
-    /// outline first, then every label, so no outline crosses a label. A label that
-    /// would cover one already placed slides right along its layer's top edge.
+    /// The labels and their outlines over the canvas while they show — in
+    /// Navigate after `f`, or while the command bar is offering labels for the
+    /// word being typed: every outline first, then every label, so no outline
+    /// crosses a label. Letters already typed narrow them: the outlines stay only
+    /// on the labels they match, and the rest fade. A label that would cover one
+    /// already placed slides right along its layer's top edge.
     pub(crate) fn draw_leap_labels(&self, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
-        let Some(shown) = &self.navigate.shown else {
-            return;
+        let typed: String = match &self.navigate.shown {
+            Some(shown) if self.keymap_mode() == Mode::Navigate => {
+                shown.typed.map(String::from).unwrap_or_default()
+            }
+            _ => match self.command_bar.as_ref().and_then(|b| b.labels_typed()) {
+                Some(word) => word.to_owned(),
+                None => return,
+            },
         };
-        if self.keymap_mode() != Mode::Navigate {
-            return;
-        }
-        let matched = |d: &Dealt| shown.typed.is_none_or(|c| d.label.starts_with(c));
-        let boxes: Vec<Option<egui::Rect>> = shown
-            .deal
+        let deal = &self.navigate.deal;
+        let matched = |d: &Dealt| d.label.starts_with(&typed);
+        let boxes: Vec<Option<egui::Rect>> = deal
             .iter()
             .map(|d| {
                 let b = self.session.preview_world_bounds(d.id)?;
@@ -508,7 +543,7 @@ impl MastikApp {
                 Some(egui::Rect::from_two_pos(a, z).expand(OUTSET))
             })
             .collect();
-        for (d, b) in shown.deal.iter().zip(&boxes) {
+        for (d, b) in deal.iter().zip(&boxes) {
             if let Some(b) = b
                 && matched(d)
             {
@@ -517,7 +552,7 @@ impl MastikApp {
         }
         let font = egui::FontId::proportional(crate::ui::BADGE_PT);
         let mut placed: Vec<egui::Rect> = Vec::new();
-        for (d, b) in shown.deal.iter().zip(&boxes) {
+        for (d, b) in deal.iter().zip(&boxes) {
             let Some(b) = b else { continue };
             let text = d.label.to_uppercase();
             let size = painter
@@ -541,13 +576,12 @@ impl MastikApp {
                 color::leap()
             };
             let mut p = painter.clone();
-            let lead = match shown.typed {
-                Some(_) if matched(d) => 1,
-                Some(_) => {
+            let lead = match matched(d) {
+                true => typed.chars().count(),
+                false => {
                     p.multiply_opacity(RULED_OUT);
                     0
                 }
-                None => 0,
             };
             crate::ui::canvas_pill_led(
                 &p,

@@ -8373,19 +8373,22 @@ impl MastikApp {
     }
 
     /// Outline the layer under the pointer in the Layers panel, those the hovered
-    /// History row's step touched, and those the Clean up or Fill with content
-    /// box's hovered row names, in the canvas hover's stroke (a hairline for a
-    /// whole group of rows); the selection keeps its own frame.
+    /// History row's step touched, the one the command bar's lit completion
+    /// names, and those the Clean up or Fill with content box's hovered row
+    /// names, in the canvas hover's stroke (a hairline for a whole group of
+    /// rows); the selection keeps its own frame.
     fn draw_panel_hover(&self, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
         let boxed = (self.clean_up.as_ref().map(|b| b.ringed()))
             .or_else(|| self.fill_content.as_ref().map(|b| b.ringed()));
         let (box_ids, soft) = boxed.unwrap_or((&[], false));
         let bind_list = self.var_browser.as_ref().and_then(|b| b.bind_hover);
+        let bar_lit = self.command_bar.as_ref().and_then(|b| b.lit_layer());
         let panels = self
             .layers_hover
             .iter()
             .chain(&self.history_pane.hover)
-            .chain(&bind_list);
+            .chain(&bind_list)
+            .chain(&bar_lit);
         for (&id, width) in panels
             .map(|id| (id, 3.0))
             .chain(box_ids.iter().map(|id| (id, if soft { 1.0 } else { 3.0 })))

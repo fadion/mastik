@@ -330,7 +330,10 @@ frame, solid with the yellow label for any other layer, so *the group or the lay
 told by line and lightness, not hue. Every line is two inks, `LEAP_INK` inside and `color::leap()`
 outside, so it reads on any artwork. They are egui chrome painted in `draw_canvas` over everything
 a layer wears, not a `RenderOverrides` overlay. **Labels outlive the deal**: the last labels dealt
-stay bound as handles for the bar and scripts until the next `f`.
+stay bound as handles for the bar and scripts until the next deal. **Opening the command bar deals
+too**, to the layers in view as `f` does, quietly, so a line can name what is on screen; the bar
+shows them only while its completion offers labels for the word at the caret (a word of at most two
+home-row letters), narrowed by the letters typed as Navigate's first letter narrows them.
 
 ## The command bar (`command/mod.rs`)
 
@@ -351,7 +354,10 @@ is never cut for its note.
   token it names squiggled, and *Tab fixes it* when it carries a fix.
 - **The list above**: the log while the field is empty, else completion, at most eight rows in
   sections *Names*, *Verbs*, *Properties*, *Labels*, *Layers*, *Choices* (a verb's next argument's
-  words), the typed letters lit; an almost-match is a dim row naming what it meant.
+  words), the typed letters lit; an almost-match is a dim row naming what it meant. A whole-name
+  match outranks a prefix, and a section whose best row matches better goes first, so a label or
+  name typed out whole leads the list. The lit row's layer (a label's, or a layer's by name) is
+  outlined on the canvas as a hovered Layers row is.
 - **When completion shows** follows a code editor's suggest widget (VS Code's, Zed's): typing a
   name's letter (not a digit), `.` or `:`, or the space before a verb's argument opens it on that
   word; any other character shuts it; deleting keeps it while the word has letters (or sits right
