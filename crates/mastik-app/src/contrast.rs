@@ -511,7 +511,10 @@ impl MastikApp {
         let mut seen = Vec::new();
         let mut clicked = None;
         let mut spinning = false;
-        for &id in &c.subjects {
+        // Failures claim their places first, so a crowd drops passes, not them.
+        let mut order = c.subjects.clone();
+        order.sort_by_key(|id| !matches!(c.marks.get(id), Some(Mark::Measured(f)) if !f.passes()));
+        for id in order {
             if dragging && self.moving(id) {
                 continue;
             }
@@ -560,20 +563,12 @@ impl MastikApp {
             if r.top() < canvas.top() + 2.0 {
                 r = r.translate(egui::vec2(0.0, canvas.top() + 2.0 - r.top()));
             }
-            // A badge over earlier ones moves down below the lowest it touches, and
-            // one pushed past the canvas is not drawn, which also bounds this loop
-            // by the badges a canvas can show.
-            while let Some(bottom) = placed
-                .iter()
-                .filter(|p| p.intersects(r))
-                .map(|p| p.bottom())
-                .reduce(f32::max)
-            {
-                r = r.translate(egui::vec2(0.0, bottom + 2.0 - r.top()));
-            }
-            if r.top() > canvas.bottom() {
+            // Down past the layer's own height, or one row for a short layer, the
+            // badge would name a stranger; its outline still marks a failure.
+            let reach = layer.height().max(h + 2.0);
+            let Some(r) = place(&placed, r, reach, canvas.bottom()) else {
                 continue;
-            }
+            };
             placed.push(r);
             #[cfg(test)]
             seen.push((id, r));
@@ -1294,6 +1289,25 @@ fn fail_text(f: &Finding, level: Level) -> String {
         level.format(f.ratio),
         level.format_needs(f.needs)
     )
+}
+
+/// Where a badge wanted at `r` goes: down below the lowest earlier one it
+/// touches, as often as it takes. `None` once that moves it more than `reach`
+/// or past `bottom`, which also bounds the loop.
+fn place(placed: &[egui::Rect], mut r: egui::Rect, reach: f32, bottom: f32) -> Option<egui::Rect> {
+    let home = r.top();
+    while let Some(lowest) = placed
+        .iter()
+        .filter(|p| p.intersects(r))
+        .map(|p| p.bottom())
+        .reduce(f32::max)
+    {
+        r = r.translate(egui::vec2(0.0, lowest + 2.0 - r.top()));
+        if r.top() - home > reach || r.top() > bottom {
+            return None;
+        }
+    }
+    (r.top() <= bottom).then_some(r)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2400,5 +2414,63 @@ mod tests {
             Document::new(page),
         );
         assert!(f.app.contrast.is_none());
+    }
+
+    /// A crowded badge moves down at most its reach, then is dropped.
+    /// flip: `place` without its reach test → fails at "the third is dropped".
+    #[test]
+    fn a_badge_moves_down_no_further_than_its_reach() {
+        let want = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(80.0, 20.0));
+        let mut placed = Vec::new();
+        for _ in 0..2 {
+            placed.push(place(&placed, want, 22.0, 800.0).expect("room within reach"));
+        }
+        assert_eq!(placed[0], want, "the first sits where it wants");
+        assert_eq!(
+            placed[1].top(),
+            want.bottom() + 2.0,
+            "the second one row down"
+        );
+        assert_eq!(
+            place(&placed, want, 22.0, 800.0),
+            None,
+            "the third is dropped"
+        );
+        assert_eq!(place(&[], want, 22.0, 5.0), None, "past the bottom");
+    }
+
+    /// Where a pass's badge and a failure's want one place, the failure gets it,
+    /// though the pass comes first in reading order.
+    /// flip: `contrast_badges` placing in reading order (no sort) → fails at
+    /// "the failure keeps its place".
+    #[test]
+    fn a_failure_s_badge_places_before_a_pass_s() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetTransform {
+                    id: f.grey,
+                    transform: Affine::translate((20.0, 22.0)),
+                }]))
+        );
+        f.app.toggle_contrast();
+        settle(&ctx, &mut f.app);
+        let c = f.app.contrast.as_ref().unwrap();
+        assert_eq!(
+            c.subjects,
+            [f.black, f.grey],
+            "fixture: the pass reads first"
+        );
+        let at = |id| {
+            c.badges_seen
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, r)| *r)
+        };
+        let grey = at(f.grey).expect("the failure has a badge");
+        let black = at(f.black).expect("fixture: the pass is pushed, not dropped");
+        assert!(grey.top() < black.top(), "the failure keeps its place");
     }
 }

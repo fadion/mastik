@@ -192,9 +192,12 @@ stack.
   A layer queued again while its job is in flight stays stale when that answer lands. A layer the
   answer leaves out (nothing of it is drawn) is marked so, with no badge, and waits for an edit
   that could change that rather than being queued on every edit.
-- **Badges** (`contrast_badges`) keep one screen size, above the layer's top left; a badge that
-  overlaps earlier ones moves down below the lowest it touches, and one pushed past the canvas's
-  bottom is not drawn. They are painted in the canvas panel's own layer
+- **Badges** (`contrast_badges`) keep one screen size, above the layer's top left. Failures are
+  placed first, then the rest in reading order, so a crowd drops passes before failures. A badge
+  that overlaps earlier ones moves down below the lowest it touches (`place`), but no further
+  than the layer's own height, or one badge row for a shorter layer; past that, or past the
+  canvas's bottom, it is not drawn, and a failure keeps its outline. Badges are painted in the
+  canvas panel's own layer
   after `canvas_ui`, so every floating card covers them.
 
   | Mark | Badge |
