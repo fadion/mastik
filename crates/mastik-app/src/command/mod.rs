@@ -645,6 +645,8 @@ impl MastikApp {
         let subject = self.bar_subject();
         let parsed = mastik_vm::desugar(bar.text.trim());
         let mut clicked_row: Option<usize> = None;
+        let mut hovered_row: Option<usize> = None;
+        let moved = ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
         let row_layers = bar
             .completed
             .as_ref()
@@ -696,8 +698,14 @@ impl MastikApp {
                                     .copied()
                                     .flatten()
                                     .and_then(|id| self.session.doc.get(id));
-                                if complete_row(ui, layer, row, i == bar.highlight).clicked() {
+                                let resp = complete_row(ui, layer, row, i == bar.highlight);
+                                if resp.clicked() {
                                     clicked_row = Some(i);
+                                }
+                                // The highlight follows a moving pointer, as the
+                                // palette's does; a resting one leaves the keys theirs.
+                                if resp.hovered() && moved {
+                                    hovered_row = Some(i);
                                 }
                             }
                         });
@@ -714,29 +722,38 @@ impl MastikApp {
                 match error {
                     Some(e) => error_line(ui, e),
                     None => {
+                        // The Luau in the code face; a hint about keys in the
+                        // caption face, spelled by `input::keys` as the palette's.
+                        let hint = |s: &str| (crate::input::keys(s).into_owned(), false);
                         let (left, right) = match (&list, &value) {
                             (List::Complete(_), _) => (
-                                "Tab completes · ↑↓ choose · Esc hides".to_owned(),
+                                hint("Tab completes · ↑↓ choose · Esc hides"),
                                 subject.clone(),
                             ),
                             _ if bar.recalled.is_some() => {
-                                ("↑ recalled from the log".to_owned(), subject.clone())
+                                (hint("↑ recalled from the log"), subject.clone())
                             }
-                            (_, Some(v)) => (parsed.luau.clone(), format!("Enter copies {v}")),
+                            (_, Some(v)) => {
+                                ((parsed.luau.clone(), true), format!("Enter copies {v}"))
+                            }
                             _ if bar.text.trim().is_empty() => {
-                                ("↑ recalls a line · Esc closes".to_owned(), subject.clone())
+                                (hint("↑ recalls a line · Esc closes"), subject.clone())
                             }
-                            _ if parsed.each_by_itself => {
-                                (format!("{} · each by itself", parsed.luau), subject.clone())
-                            }
-                            _ => (parsed.luau.clone(), subject.clone()),
+                            _ if parsed.each_by_itself => (
+                                (format!("{} · each by itself", parsed.luau), true),
+                                subject.clone(),
+                            ),
+                            _ => ((parsed.luau.clone(), true), subject.clone()),
                         };
-                        footer(ui, &left, &right);
+                        footer(ui, &left.0, left.1, &right);
                     }
                 }
             });
         // A click writes the text, not typing: `seen` takes it so the list
         // does not open on it.
+        if let Some(i) = hovered_row {
+            bar.highlight = i;
+        }
         if let Some(i) = clicked_row
             && let List::Complete(c) = &list
         {
@@ -1057,16 +1074,17 @@ fn error_line(ui: &mut egui::Ui, e: &mastik_vm::VmError) {
     );
 }
 
-/// The footer: the Luau on the left, the subject or the read's note on the right.
-fn footer(ui: &mut egui::Ui, left: &str, right: &str) {
+/// The footer: the Luau (`code`) or a hint on the left, the subject or the
+/// read's note on the right.
+fn footer(ui: &mut egui::Ui, left: &str, code: bool, right: &str) {
+    let face = match code {
+        true => egui::FontId::monospace(crate::ui::CAPTION_PT),
+        false => palette::caption_font(),
+    };
     palette::footer_line(
         ui,
         FooterLine {
-            left: (
-                left,
-                egui::FontId::monospace(crate::ui::CAPTION_PT),
-                theme::text::dim(),
-            ),
+            left: (left, face, theme::text::dim()),
             right: Some((right, theme::text::muted())),
             ..Default::default()
         },
