@@ -166,6 +166,57 @@ fn elide(line: &str) -> String {
     out
 }
 
+/// What a bar line names, for the bar to draw as pills: the byte of each `.`
+/// that rule 2 reads as the subject, and the range of each free name, a word not
+/// reached through `.` or `:` (outside strings and comments), which may be a
+/// leap label.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Marks {
+    pub subject: Vec<usize>,
+    pub names: Vec<std::ops::Range<usize>>,
+}
+
+/// The [`Marks`] of `line`.
+pub fn marks(line: &str) -> Marks {
+    let lexemes = lex::lex(line);
+    let mut out = Marks::default();
+    for (i, l) in lexemes.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|p| &lexemes[p]);
+        let text = &line[l.range.clone()];
+        match l.kind {
+            Lx::Punct if text == "." => {
+                let named = lexemes
+                    .get(i + 1)
+                    .is_some_and(|n| n.kind == Lx::Ident && n.range.start == l.range.end);
+                if named && prefix_after(prev, line) {
+                    out.subject.push(l.range.start);
+                }
+            }
+            Lx::Ident => {
+                let reached = prev.is_some_and(|p| {
+                    p.kind == Lx::Punct && matches!(&line[p.range.clone()], "." | ":")
+                });
+                if !reached {
+                    out.names.push(l.range.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Whether a value goes at byte `caret` of `line`: the text before it ends where
+/// rule 2 would read a `.` as the subject (after `=`, an operator, an opening
+/// bracket or comma, or a keyword a value follows), or is empty.
+pub fn value_at(line: &str, caret: usize) -> bool {
+    let Some(before) = line.get(..caret) else {
+        return false;
+    };
+    let lexemes = lex::lex(before);
+    prefix_after(lexemes.last(), before)
+}
+
 /// Whether `l` ends the statement before it at bracket depth 0: a `;`, a comment,
 /// or a keyword a statement follows (`do`, `then`, `else`, `repeat`, `end`).
 fn opens_statement(l: &Lexeme, src: &str) -> bool {

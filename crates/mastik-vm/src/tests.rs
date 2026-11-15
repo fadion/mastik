@@ -216,6 +216,27 @@ fn desugar_follows_the_four_rules() {
     }
 }
 
+/// `marks` finds the subject's dots where rule 2 elides them and the free names,
+/// never a name reached through `.` or one inside a string; `value_at` agrees with
+/// rule 2 on where a value goes.
+#[test]
+fn marks_find_the_subject_and_free_names() {
+    let line = ".x = fj.x - .x + print(\"sk\")";
+    let m = marks(line);
+    let names: Vec<&str> = m.names.iter().map(|r| &line[r.clone()]).collect();
+    assert_eq!(
+        m.subject,
+        vec![0, 12],
+        "the leading `.` and the one after `-`"
+    );
+    assert_eq!(names, vec!["fj", "print"], "no `x` after a dot, no string");
+    assert!(value_at(".x = ", 5), "after `=`");
+    assert!(value_at(".x = fj.x - ", 12), "after `-`");
+    assert!(!value_at(".x = fj", 7), "after a name");
+    assert!(!value_at(".x = 20", 7), "after a number");
+    assert!(value_at("", 0), "an empty line");
+}
+
 /// An unknown name raises naming it and the nearest real one, placed on it; a
 /// global cannot be assigned; `os` and randomness are not there.
 /// flip: `resolve` falling through to nil for an unknown name → fails at "No name".
