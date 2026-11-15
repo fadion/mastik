@@ -39,6 +39,9 @@ pub(crate) struct Bar {
     recall: Option<usize>,
     /// The text a recall put in the field, so the footer says so until it changes.
     recalled: Option<String>,
+    /// What the person had typed when `↑` first recalled, given back when `↓`
+    /// walks past the newest line.
+    draft: Option<String>,
     /// The highlighted completion row.
     highlight: usize,
     /// The last error, with the text it was for: an edit clears it.
@@ -262,19 +265,26 @@ impl MastikApp {
             self.command_bar = Some(bar);
             return;
         }
+        // Escape closes the innermost thing first: the log's menu, then the
+        // text, then the bar.
         if keys.escape {
-            if bar.text.is_empty() {
+            if bar.log_menu.is_some() {
+                bar.log_menu = None;
+            } else if bar.text.is_empty() {
                 return;
+            } else {
+                bar = Bar::default();
             }
-            bar = Bar::default();
         }
         // An edit of the text drops the error it was for and the recall.
         if bar.error.as_ref().is_some_and(|(t, _)| *t != bar.text) {
             bar.error = None;
         }
+        // An edited recall is the person's own line now; the draft goes with it.
         if bar.recalled.as_ref().is_some_and(|t| *t != bar.text) {
             bar.recalled = None;
             bar.recall = None;
+            bar.draft = None;
         }
         self.bar_read(&mut bar);
 
@@ -339,6 +349,9 @@ impl MastikApp {
                 .filter_map(|e| e.line.clone())
                 .collect();
             if keys.up && !typed.is_empty() {
+                if bar.recall.is_none() {
+                    bar.draft = Some(bar.text.clone());
+                }
                 let at = bar.recall.map_or(0, |n| (n + 1).min(typed.len() - 1));
                 bar.recall = Some(at);
                 bar.text = typed[at].clone();
@@ -351,7 +364,7 @@ impl MastikApp {
                 if n == 0 {
                     bar.recall = None;
                     bar.recalled = None;
-                    bar.text.clear();
+                    bar.text = bar.draft.take().unwrap_or_default();
                 } else {
                     bar.recall = Some(n - 1);
                     bar.text = typed[n - 1].clone();
@@ -1217,6 +1230,35 @@ pub(crate) mod tests {
             ".width = 20",
             "Tab fixes it"
         );
+    }
+
+    /// `↑` then `↓` gives back what was being typed before the recall.
+    /// flip: `↓` past the newest line clearing the text instead of taking the
+    /// draft → fails at "the draft is back".
+    #[test]
+    fn recall_keeps_the_draft() {
+        let (ctx, mut app, _) = typed(".x += 1");
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        pass(&ctx, &mut app, vec![egui::Event::Text("zzq".into())], NONE);
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        let text = |app: &MastikApp| app.command_bar.as_ref().unwrap().text.clone();
+        assert_eq!(text(&app), "zzq", "fixture: a draft typed");
+        pass(&ctx, &mut app, vec![key(egui::Key::ArrowUp, NONE)], NONE);
+        assert_eq!(text(&app), ".x += 1", "fixture: the line recalled");
+        pass(&ctx, &mut app, vec![key(egui::Key::ArrowDown, NONE)], NONE);
+        assert_eq!(text(&app), "zzq", "the draft is back");
+    }
+
+    /// With the log's menu open, Escape closes the menu and leaves the line.
+    /// flip: Escape skipping the menu check → fails at "the line stays".
+    #[test]
+    fn escape_closes_the_log_menu_first() {
+        let (ctx, mut app, _) = typed(".x");
+        app.command_bar.as_mut().unwrap().log_menu = Some(egui::pos2(400.0, 400.0));
+        pass(&ctx, &mut app, vec![key(egui::Key::Escape, NONE)], NONE);
+        let bar = app.command_bar.as_ref().expect("the bar stays open");
+        assert_eq!(bar.text, ".x", "the line stays");
+        assert!(bar.log_menu.is_none(), "the menu closed");
     }
 
     /// An error's fix lands on the right word when the line starts with spaces,

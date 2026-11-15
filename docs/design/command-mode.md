@@ -349,8 +349,10 @@ an anchor reads last frame's size and a growing list would push the foot down a 
   sections *Names*, *Verbs*, *Properties*, *Labels*, *Layers*, *Choices* (a verb's next argument's
   words), the typed letters lit; an almost-match is a dim row naming what it meant.
 - **Keys**: `Tab` takes the lit completion or an error's fix; `↑`/`↓` move through completions, else
-  recall typed lines; `Enter` runs (a read copies its value and makes no step; a write is one step
-  named after its verb, else *Edit*, with `TERMINAL_WINDOW`); `Escape` clears the text, then closes.
+  recall typed lines, `↓` past the newest giving back what was being typed; `Enter` runs (a read
+  copies its value and makes no step; a write is one step named after its verb, else *Edit*, with
+  `TERMINAL_WINDOW`); `Escape` closes the log's menu if it is open, else clears the text, then
+  closes.
   A failed line stays in the field with its error.
 
 ## Traps
