@@ -1277,8 +1277,9 @@ pub(crate) fn card_modal(ctx: &egui::Context, id: &str) -> egui::Modal {
     card_modal_moved(ctx, id, egui::Vec2::ZERO)
 }
 
-/// [`card_modal`] dragged `moved` from where it opens.
-fn card_modal_moved(ctx: &egui::Context, id: &str, moved: egui::Vec2) -> egui::Modal {
+/// [`card_modal`] dragged `moved` from where it opens: [`ui::card_drag`]'s
+/// answer, for a modal that draws its own title row (the shortcuts sheet).
+pub(crate) fn card_modal_moved(ctx: &egui::Context, id: &str, moved: egui::Vec2) -> egui::Modal {
     let id = egui::Id::new(id);
     let screen = ctx.content_rect();
     let size = ctx

@@ -176,7 +176,7 @@ impl MastikApp {
         let mut copy = false;
         let mut select: Option<Vec<NodeId>> = None;
         let hold = crate::settings::CardHold::Open;
-        crate::settings::canvas_card(ctx, "credits", canvas, W, hold, |ui| {
+        crate::settings::movable_canvas_card(ctx, "credits", canvas, W, hold, |ui| {
             if crate::settings::card_head(ui, W, "Credits") {
                 close = true;
             }

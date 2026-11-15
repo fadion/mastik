@@ -1503,7 +1503,7 @@ impl MastikApp {
             .as_ref()
             .map(|c| foot_text(c, &self.library.projects))
             .unwrap_or_default();
-        let modal = settings::card("import-files", ctx, |ui| {
+        let modal = settings::movable_card("import-files", ctx, |ui| {
             ui.set_width(ui::menu_inner_w(CARD_W, settings::PAD));
             ui.spacing_mut().item_spacing.y = 0.0;
             let Some(card) = self.dash.import.as_mut() else {

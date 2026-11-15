@@ -525,7 +525,7 @@ impl MastikApp {
         let mut changed = false;
         let hold = crate::settings::CardHold::Modal;
         let clicked_away =
-            crate::settings::canvas_card(ctx, "tokens-import", canvas, W, hold, |ui| {
+            crate::settings::movable_canvas_card(ctx, "tokens-import", canvas, W, hold, |ui| {
                 if head(ui, &t.path) {
                     act = Act::Cancel;
                 }

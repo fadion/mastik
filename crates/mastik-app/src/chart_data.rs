@@ -551,7 +551,7 @@ impl MastikApp {
             return;
         };
         let hold = crate::settings::CardHold::Open;
-        crate::settings::canvas_card(ctx, "chart-data", canvas, w, hold, |ui| {
+        crate::settings::movable_canvas_card(ctx, "chart-data", canvas, w, hold, |ui| {
             if crate::settings::card_head_noted(ui, w, "Chart data", Some(&name)) {
                 act.push(Act::Close);
             }

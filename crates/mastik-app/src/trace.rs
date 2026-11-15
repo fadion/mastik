@@ -343,7 +343,7 @@ impl MastikApp {
         let mut act = Act::None;
         let hold = crate::settings::CardHold::Modal;
         let clicked_away =
-            crate::settings::canvas_card(ctx, "trace-image", canvas, W, hold, |ui| {
+            crate::settings::movable_canvas_card(ctx, "trace-image", canvas, W, hold, |ui| {
                 if crate::settings::card_head(ui, W, "Trace image") {
                     act = Act::Cancel;
                 }

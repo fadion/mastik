@@ -480,7 +480,7 @@ impl MastikApp {
         let mut reread = false;
         let hold = crate::settings::CardHold::Modal;
         let clicked_away =
-            crate::settings::canvas_card(ctx, "chart-import", canvas, W, hold, |ui| {
+            crate::settings::movable_canvas_card(ctx, "chart-import", canvas, W, hold, |ui| {
                 let (name, dirs) = crate::tokens_import::where_label(&t.path);
                 let place = match dirs.is_empty() || !t.linkable {
                     true => name,

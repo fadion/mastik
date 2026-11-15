@@ -473,7 +473,8 @@ impl MastikApp {
         all.retain(|s| !s.rows.is_empty());
 
         let mut closed = false;
-        let mut card = crate::settings::card_modal(ctx, "cheatsheet");
+        let moved = crate::ui::card_drag(ctx, egui::Id::new("cheatsheet"));
+        let mut card = crate::settings::card_modal_moved(ctx, "cheatsheet", moved);
         // No margin under the footer: it sits on the card's bottom edge, as the palette's does.
         card.frame = card.frame.map(|f| {
             f.inner_margin(egui::Margin {
@@ -491,6 +492,13 @@ impl MastikApp {
             // An `Area` lays out in last frame's size; without this a body that
             // grows back after the filter clears gains only a step per frame.
             ui.set_max_height(card_h);
+            // The title row with the card's top margin above it, ahead of the
+            // row's own filter and ✕, which keep their clicks over the drag.
+            let head = egui::Rect::from_min_size(
+                ui.cursor().min - egui::vec2(0.0, pad),
+                egui::vec2(inner, crate::ui::CONTROL_H + pad),
+            );
+            crate::ui::card_drag_handle(ui, head);
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new("Keyboard shortcuts")
@@ -1210,6 +1218,54 @@ mod tests {
         app_frame(&ctx, &mut app, size, Vec::new());
         app_frame(&ctx, &mut app, size, Vec::new());
         assert_eq!(card_rect(&ctx).height(), full);
+    }
+
+    /// The sheet moves by its title, and a drag in the filter on that row stays the
+    /// field's.
+    /// flip: `cheatsheet_ui` building its modal without `card_drag` → fails at "by its title".
+    #[test]
+    fn the_sheet_moves_by_its_title_not_its_filter() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let size = egui::vec2(1320.0, 820.0);
+        app_frame(&ctx, &mut app, size, Vec::new());
+        app.open_cheatsheet(Opened::Editor);
+        for _ in 0..4 {
+            app_frame(&ctx, &mut app, size, Vec::new());
+        }
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut drag = |from: egui::Pos2, by: egui::Vec2| {
+            app_frame(&ctx, &mut app, size, vec![egui::Event::PointerMoved(from)]);
+            app_frame(&ctx, &mut app, size, vec![button(from, true)]);
+            for i in 1..=5 {
+                let at = from + by * i as f32 / 5.0;
+                app_frame(&ctx, &mut app, size, vec![egui::Event::PointerMoved(at)]);
+            }
+            app_frame(&ctx, &mut app, size, vec![button(from + by, false)]);
+            for _ in 0..3 {
+                app_frame(&ctx, &mut app, size, Vec::new());
+            }
+            card_rect(&ctx)
+        };
+        let start = card_rect(&ctx);
+        let pad = crate::settings::PAD;
+        // The filter sits right of centre on the title row, the ✕ at its end.
+        let filter = egui::pos2(start.right() - pad - 120.0, start.top() + pad + 12.0);
+        assert_eq!(
+            drag(filter, egui::vec2(0.0, 80.0)).min,
+            start.min,
+            "the filter's drag"
+        );
+        let title = egui::pos2(start.left() + pad + 40.0, start.top() + pad + 12.0);
+        // Down until the tall sheet meets the window's margin, 40 points short.
+        let moved = drag(title, egui::vec2(0.0, 80.0)).min - start.min;
+        assert!(moved.y > 30.0, "by its title: {moved:?}");
     }
 
     /// **The sheet holds the keyboard over a text session**: a click on its body
