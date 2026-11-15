@@ -290,6 +290,20 @@ under the text puts the caret at the end, and one beside a line number at that l
 output pane's top edge drags (`ui::drag_edge`), from the code pane's least (80) down to the output's
 head alone; the height is kept for the session.
 
+**Editing keys** (`command/code_keys.rs`, pure edits of the text and a selection, taken out of the
+frame's events before the text edit reads them and after the completion list has taken its own).
+One indent step is two spaces; a line indented with tabs keeps them. `Enter` keeps the line's
+indentation and goes a step in after a line ending in `then`, `do`, `else`, `repeat`, an open
+bracket or a function's parameters, and between `(` and `)` puts the close on a line of its own.
+Typing the last letter of `end`, `else`, `elseif` or `until` (or a lone `}`, `)`, `]`) as a line's
+only word steps the line back to its block's depth, never deeper. `Tab` over several lines indents
+them, otherwise it pads to the next step; `Shift+Tab` outdents the lines a selection touches.
+`Ctrl+/` comments the lines with `-- ` at their least indentation, or uncomments them when all are
+comments. `Alt+↑`/`↓` move the lines, `Shift+Alt+↑`/`↓` copy them. Brackets and quotes type their
+close where one can stand (a quote not after a name, nor in a string or comment), a close typed
+before the same character steps over it, a bracket or quote typed over a selection wraps it, and
+`Backspace` between an empty pair takes both.
+
 **Types.** `mastik_vm::definitions` writes a `.d.luau` from the same tables as the bindings (the
 `Layers` class, `sel` and the relative names, each verb with typed parameters, `param`), saved as
 `mastik.d.luau` in the scripts folder when the editor opens (never from a headless app, whose

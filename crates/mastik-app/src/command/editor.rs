@@ -5,6 +5,7 @@
 //! with a header asks for its inputs first, and one that came with a document or
 //! a kit shows its source before its first run on this machine.
 
+use super::code_keys;
 use super::host;
 use super::log;
 use crate::app::MastikApp;
@@ -574,15 +575,74 @@ impl MastikApp {
         };
         // Written, not typed: the list does not open on it.
         s.suggest.seen = s.buffer.clone();
-        let mut state = egui::TextEdit::load_state(ctx, code_id).unwrap_or_default();
-        state
-            .cursor
-            .set_char_range(Some(egui::text::CCursorRange::one(
-                egui::text::CCursor::new(s.buffer[..at].chars().count()),
-            )));
-        state.store(ctx, code_id);
+        put_selection(ctx, code_id, &s.buffer, code_keys::Sel::caret(at));
         ctx.memory_mut(|m| m.request_focus(code_id));
         self.store_buffer();
+    }
+
+    /// The code pane's editing keys, taken out of this frame's events before
+    /// the text edit reads them (`code_keys`): `Enter` indents, `Tab` and
+    /// `Shift+Tab` work on lines, `Ctrl+/` comments, `Alt+↑`/`↓` move lines and
+    /// `Shift+Alt+↑`/`↓` copy them, brackets and quotes pair, and `Backspace`
+    /// takes an empty pair. Handling stops at the first event left to the text
+    /// edit, so the frame's keys keep their order. Answers whether a character
+    /// was left to the text edit to type, for [`code_keys::dedent_closer`].
+    fn script_keys(&mut self, ctx: &egui::Context, code_id: egui::Id) -> bool {
+        let editable = matches!(
+            self.scripts.current,
+            Some(Which::Document(_) | Which::Library(_) | Which::Unsaved(_))
+        );
+        if !editable || !ctx.memory(|m| m.has_focus(code_id)) {
+            return false;
+        }
+        let Some(mut sel) = selection(ctx, code_id, &self.scripts.buffer) else {
+            return false;
+        };
+        let mut text = self.scripts.buffer.clone();
+        let (mut changed, mut typed) = (false, false);
+        ctx.input_mut(|i| {
+            let mut kept = Vec::new();
+            let mut ours = true;
+            for e in std::mem::take(&mut i.events) {
+                let next = match &e {
+                    _ if !ours => None,
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers: m,
+                        ..
+                    } => edit_key(&mut text, sel, *key, *m),
+                    egui::Event::Text(t) => {
+                        let mut chars = t.chars();
+                        match (chars.next(), chars.next()) {
+                            (Some(c), None) => code_keys::type_char(&mut text, sel, c),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(s) = next {
+                    sel = s;
+                    changed = true;
+                    continue;
+                }
+                if matches!(e, egui::Event::Text(_)) {
+                    typed = true;
+                }
+                ours &= !edits_text(&e);
+                kept.push(e);
+            }
+            i.events = kept;
+        });
+        if changed {
+            let s = &mut self.scripts;
+            s.buffer = text;
+            // Written, not typed: the completion list does not open on it.
+            s.suggest.seen = s.buffer.clone();
+            put_selection(ctx, code_id, &s.buffer, sel);
+            self.store_buffer();
+        }
+        typed
     }
 
     /// Start a run of `which`: the disclosure first for a document's or kit's
@@ -794,6 +854,8 @@ impl MastikApp {
         let edited_note = self.scripts.pending.is_some();
         let doc_scripts: Vec<Script> = self.session.doc.scripts().to_vec();
         let offer = self.script_suggest(ctx, self.scripts.code_id());
+        // After the list, which takes its own keys first.
+        let typed = self.script_keys(ctx, self.scripts.code_id());
         let doc = &self.session.doc;
         let (mut row_clicked, mut row_hovered) = (None, None);
         let s = &mut self.scripts;
@@ -881,6 +943,15 @@ impl MastikApp {
                     ui.add_space(10.0);
                     let out = ui::code_editor(ui, code_id, &mut s.buffer, &inks, bad, editable);
                     edited |= out.response.changed();
+                    // A block's closing word steps back as its last letter is typed.
+                    if typed
+                        && out.response.changed()
+                        && let Some(caret) = caret_byte(ui.ctx(), code_id, &s.buffer)
+                        && let Some(sel) = code_keys::dedent_closer(&mut s.buffer, caret)
+                    {
+                        put_selection(ui.ctx(), code_id, &s.buffer, sel);
+                        ui.ctx().request_repaint();
+                    }
                     if let Some(line) = s.jump.take() {
                         let at = char_of_line(&s.buffer, line);
                         let mut state = out.state.clone();
@@ -1464,6 +1535,91 @@ fn caret_byte(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<usize> {
     egui::TextEdit::load_state(ctx, id)
         .and_then(|s| s.cursor.char_range())
         .map(|r| super::char_to_byte(text, r.primary.index.0))
+}
+
+/// The text edit `id`'s selection in `text`, in bytes; none before the edit
+/// has placed a caret.
+fn selection(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<code_keys::Sel> {
+    let r = egui::TextEdit::load_state(ctx, id)?.cursor.char_range()?;
+    Some(code_keys::Sel {
+        anchor: super::char_to_byte(text, r.secondary.index.0),
+        caret: super::char_to_byte(text, r.primary.index.0),
+    })
+}
+
+/// Give the text edit `id` the selection `sel` in `text`, for its next draw.
+fn put_selection(ctx: &egui::Context, id: egui::Id, text: &str, sel: code_keys::Sel) {
+    let at = |b: usize| egui::text::CCursor::new(text[..b.min(text.len())].chars().count());
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            at(sel.anchor),
+            at(sel.caret),
+        )));
+    state.store(ctx, id);
+}
+
+/// The code pane's edit for `key` pressed with `m`, applied to `text`; `None`
+/// for a key the text edit keeps. `Alt+↑`/`↓` at the text's first or last
+/// line is still taken, so it never moves the caret instead.
+fn edit_key(
+    text: &mut String,
+    sel: code_keys::Sel,
+    key: egui::Key,
+    m: egui::Modifiers,
+) -> Option<code_keys::Sel> {
+    use egui::Key;
+    let alt = m.alt && !m.command && !m.ctrl;
+    match key {
+        Key::Enter if m.is_none() => Some(code_keys::newline(text, sel)),
+        Key::Tab if m.is_none() => Some(code_keys::indent(text, sel)),
+        Key::Tab if m.matches_exact(egui::Modifiers::SHIFT) => Some(code_keys::outdent(text, sel)),
+        Key::Slash if m.matches_exact(egui::Modifiers::COMMAND) => {
+            Some(code_keys::toggle_comment(text, sel))
+        }
+        Key::ArrowUp | Key::ArrowDown if alt && m.shift => {
+            Some(code_keys::duplicate_lines(text, sel, key == Key::ArrowUp))
+        }
+        Key::ArrowUp | Key::ArrowDown if alt => {
+            Some(code_keys::move_lines(text, sel, key == Key::ArrowUp).unwrap_or(sel))
+        }
+        Key::Backspace if m.is_none() => code_keys::backspace_pair(text, sel),
+        _ => None,
+    }
+}
+
+/// Whether the text edit changes its text or its caret on `e`: once one such
+/// event is left to it, the events after it are left to it too.
+fn edits_text(e: &egui::Event) -> bool {
+    use egui::Key;
+    match e {
+        egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Cut => true,
+        egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } => {
+            modifiers.command
+                || matches!(
+                    key,
+                    Key::Enter
+                        | Key::Tab
+                        | Key::Backspace
+                        | Key::Delete
+                        | Key::ArrowLeft
+                        | Key::ArrowRight
+                        | Key::ArrowUp
+                        | Key::ArrowDown
+                        | Key::Home
+                        | Key::End
+                        | Key::PageUp
+                        | Key::PageDown
+                )
+        }
+        _ => false,
+    }
 }
 
 /// The highlighting: the language's token kinds in the theme's inks.
@@ -2516,6 +2672,41 @@ mod tests {
             "the text stays"
         );
         assert!(app.scripts.open, "the editor stays open");
+    }
+
+    /// The code pane takes its editing keys before the text edit: `Enter`
+    /// after `then` indents, `end` typed a letter a frame steps back, `(` types
+    /// its close, and `Ctrl+/` comments the line.
+    /// flip: `scripts_ui` not calling `script_keys` → fails at "Enter indents".
+    #[test]
+    fn the_code_pane_takes_its_editing_keys() {
+        use crate::command::tests::{key, pass};
+        let (ctx, mut app) = typing_at_end("if a then");
+        press(&ctx, &mut app, egui::Key::Enter);
+        assert_eq!(app.scripts.buffer, "if a then\n  ", "Enter indents");
+        type_code(&ctx, &mut app, "x = f");
+        type_code(&ctx, &mut app, "(");
+        assert_eq!(
+            app.scripts.buffer, "if a then\n  x = f()",
+            "( types its close"
+        );
+        assert_eq!(caret(&ctx, &app), Some(18), "between the two");
+        type_code(&ctx, &mut app, ")");
+        press(&ctx, &mut app, egui::Key::Enter);
+        for letter in ["e", "n", "d"] {
+            type_code(&ctx, &mut app, letter);
+        }
+        assert_eq!(
+            app.scripts.buffer, "if a then\n  x = f()\nend",
+            "end steps back to its block"
+        );
+        let ctrl = egui::Modifiers::COMMAND;
+        pass(&ctx, &mut app, vec![key(egui::Key::Slash, ctrl)], ctrl);
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(
+            app.scripts.buffer, "if a then\n  x = f()\n-- end",
+            "Ctrl+/ comments the line"
+        );
     }
 
     /// A run that fails changes nothing, says where, and puts the editor on the line.

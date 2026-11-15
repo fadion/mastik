@@ -7,6 +7,7 @@
 //! canvas has the keys and leap labels select. The canvas stays live under the
 //! card either way: the mouse pans, zooms and selects, and never takes the keys.
 
+pub(crate) mod code_keys;
 pub(crate) mod editor;
 pub(crate) mod host;
 pub(crate) mod log;
