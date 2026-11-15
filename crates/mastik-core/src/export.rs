@@ -387,7 +387,8 @@ impl ExportFormat {
 pub enum IconSet {
     /// 16, 32 and 48: what a browser tab and the Windows shell read.
     Favicon,
-    /// The Windows shell's own ladder, up to the 256 its large views draw.
+    /// The Windows shell's own ladder, up to the 256 its large views draw; 96 is
+    /// the medium view at 200%, and 128 is left out since no view asks for it.
     Windows,
     /// Every size an ICNS holds.
     MacOs,
@@ -411,7 +412,7 @@ impl IconSet {
     pub fn sizes(self) -> &'static [u32] {
         match self {
             IconSet::Favicon => &[16, 32, 48],
-            IconSet::Windows => &[16, 24, 32, 48, 64, 256],
+            IconSet::Windows => &[16, 24, 32, 48, 64, 96, 256],
             IconSet::MacOs => ExportFormat::Icns.icon_sizes(),
         }
     }
@@ -750,8 +751,8 @@ mod tests {
             serde_json::to_string(&ico).expect("serialize"),
             r#"{"format":"Ico"}"#
         );
-        ico.sizes = vec![256, 16, 24, 32, 48, 64];
-        assert_eq!(ico.icon_sizes(), [16, 24, 32, 48, 64, 256], "sorted");
+        ico.sizes = vec![256, 16, 24, 32, 48, 64, 96];
+        assert_eq!(ico.icon_sizes(), [16, 24, 32, 48, 64, 96, 256], "sorted");
         assert_eq!(ico.icon_set(), Some(IconSet::Windows));
         ico.sizes = vec![16, 20];
         assert_eq!(ico.icon_set(), None, "custom");
