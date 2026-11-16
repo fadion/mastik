@@ -3152,12 +3152,15 @@ impl MastikApp {
             // A component carried out of the insert picker: its drag is egui's too.
             || self.kit_picker.as_ref().is_some_and(|p| p.dragging())
             || self.asset_panel.as_ref().is_some_and(|p| p.dragging());
-        // A pencil stroke in flight is dropped and records nothing.
-        if self.pencil.take().is_some() {
-            return true;
-        }
-        // So is a shape builder drag, and a knife's cut.
-        if self.builder.take().is_some() || self.knife.take().is_some() {
+        // A pencil stroke in flight is dropped and records nothing; so is a shape
+        // builder drag, and a knife's cut. The press that dropped one is spent, so
+        // its release opens no menu.
+        if self.pencil.take().is_some()
+            || self.builder.take().is_some()
+            || self.knife.take().is_some()
+        {
+            self.gesture_cancelled = true;
+            ctx.stop_dragging();
             return true;
         }
         // The compare's Swipe handle goes back to where its drag began.
@@ -17678,6 +17681,57 @@ mod context_menu_rule_tests {
             app.context_menu.is_some(),
             "and the next right-click, with nothing in flight, opens one"
         );
+    }
+
+    /// R1 for a pencil stroke: the right-click that drops the stroke is spent, so
+    /// its release opens no menu and selects nothing.
+    ///
+    /// flip: `cancel_gesture`'s pencil arm returning without `gesture_cancelled`
+    /// → fails at "the dropping click opens no menu".
+    #[test]
+    fn a_right_click_that_drops_a_pencil_stroke_opens_no_menu() {
+        let primary = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let ctx = egui::Context::default();
+        let (mut app, _, g2, made) = app_with_two_groups(&ctx);
+        whole_frame(&ctx, &mut app, Vec::new());
+        app.choose_tool(Tool::Pencil);
+        app.session.selection.set(vec![g2]);
+        whole_frame(&ctx, &mut app, Vec::new());
+        let ppp = ctx.pixels_per_point();
+        let canvas = app.canvas_rect;
+        let empty = app.to_screen(mastik_core::kurbo::Point::new(200.0, 200.0), canvas, ppp);
+        let over_g1 = app.to_screen(
+            app.session
+                .preview_world_bounds(made[0])
+                .expect("a rect")
+                .center(),
+            canvas,
+            ppp,
+        );
+        whole_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(empty)]);
+        whole_frame(&ctx, &mut app, vec![primary(empty, true)]);
+        for step in 1..=4 {
+            let t = step as f32 / 4.0;
+            whole_frame(
+                &ctx,
+                &mut app,
+                vec![egui::Event::PointerMoved(empty.lerp(over_g1, t))],
+            );
+        }
+        assert!(app.pencil.is_some(), "fixture: a stroke is in flight");
+        whole_frame(&ctx, &mut app, vec![secondary(over_g1, true)]);
+        whole_frame(&ctx, &mut app, vec![secondary(over_g1, false)]);
+        assert!(app.pencil.is_none(), "the stroke was dropped");
+        assert!(
+            app.context_menu.is_none(),
+            "the dropping click opens no menu"
+        );
+        assert_eq!(app.session.selection.ids(), &[g2], "and selects nothing");
     }
 
     /// R4: the right-click that opens the next menu replaces the last one; the

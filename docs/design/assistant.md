@@ -376,7 +376,8 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   send, a proposal's *Ask again* and the command bar's `/ai` use the current one, its name and
   size as they are now.
 - **While the panel is open, the scoped frame's name tag** leads with the scope glyph and takes
-  the selection's ink; private mode leaves it plain. It gets no outline, which would read as the
+  the selection's ink, a component set's tab included; a main component's chip and an instance's
+  tag keep their violet, the glyph their mark. Private mode leaves it plain. It gets no outline, which would read as the
   dashed one an attached layer wears.
 - **No render goes with the scope**, and the MCP server knows nothing of it.
 

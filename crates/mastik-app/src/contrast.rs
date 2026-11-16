@@ -533,9 +533,6 @@ impl MastikApp {
                 continue;
             };
             let layer = self.to_screen_rect(world);
-            if !layer.intersects(canvas) {
-                continue;
-            }
             let stale = c.stale.contains(&id);
             spinning |= stale;
             let top = top_level(doc, c.page, id);
@@ -570,6 +567,11 @@ impl MastikApp {
                     }
                     Mark::Skipped(_) | Mark::Nothing => {}
                 }
+                continue;
+            }
+            // A summary speaks for its whole frame, so only a layer's own badge
+            // drops a layer off the canvas; the frame's tally above counts it.
+            if !layer.intersects(canvas) {
                 continue;
             }
             let (kind, text) = match mark {
@@ -2607,5 +2609,40 @@ mod tests {
             "zoomed in to the layer badges: {near:?}"
         );
         assert!(!near.iter().any(|(id, _)| *id == f.card));
+    }
+
+    /// A far frame cut by the canvas's bottom edge still counts its failing
+    /// layer below it: with passes hidden, the summary shows, as a failure.
+    /// flip: `contrast_badges` culling off-canvas layers before the frame's
+    /// tally → fails at "the cut-off failure".
+    #[test]
+    fn a_far_frame_cut_by_the_canvas_counts_its_hidden_failure() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.prefs.contrast.show_passing = false;
+        f.app.toggle_contrast();
+        settle(&ctx, &mut f.app);
+        f.app
+            .zoom_to(Some(Rect::new(-3000.0, -3000.0, 3300.0, 3200.0)));
+        frame(&ctx, &mut f.app, Vec::new());
+        // Pan so the canvas's bottom edge cuts the card between the passing
+        // title (y 20) and the failing caption (y 120).
+        use mastik_core::kurbo::Point;
+        let (canvas, ppp) = (f.app.canvas_rect, f.app.canvas_ppp);
+        let y = |w: f64| f.app.to_screen(Point::new(0.0, w), canvas, ppp).y;
+        let scale = f64::from(y(100.0) - y(0.0)) / 100.0;
+        f.app.session.camera.center.y -= f64::from(canvas.bottom() - y(80.0)) / scale;
+        frame(&ctx, &mut f.app, Vec::new());
+        let (canvas, ppp) = (f.app.canvas_rect, f.app.canvas_ppp);
+        let at = |w: f64| f.app.to_screen(Point::new(0.0, w), canvas, ppp).y;
+        assert!(
+            at(40.0) < canvas.bottom() && at(120.0) > canvas.bottom(),
+            "fixture: the edge cuts the card"
+        );
+        let seen = f.app.contrast.as_ref().unwrap().badges_seen.clone();
+        assert!(
+            seen.iter().any(|(id, _)| *id == f.card),
+            "the cut-off failure is summarised: {seen:?}"
+        );
     }
 }

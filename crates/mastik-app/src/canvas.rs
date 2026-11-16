@@ -9332,6 +9332,7 @@ impl MastikApp {
             }
         };
         if is_set {
+            scope_mark(&mut job);
             glyph(&mut job, icon::VARIANT_SET, egui::Color32::PLACEHOLDER);
             words(&mut job, &shown, 4.0, egui::Color32::PLACEHOLDER);
             mode_word(&mut job, theme::text::dim());
@@ -9375,6 +9376,7 @@ impl MastikApp {
             if !self.session.selection.contains(id) && !entered {
                 return None;
             }
+            scope_mark(&mut job);
             glyph(&mut job, icon::HEXAGON, egui::Color32::PLACEHOLDER);
             if entered {
                 words(
@@ -9554,6 +9556,9 @@ impl MastikApp {
             let Some((label, galley)) = self.frame_label(ui, id, rect, ppp) else {
                 continue;
             };
+            // The assistant's scoped frame takes the selection's ink; a main's chip
+            // and an instance's tag stay violet, their scope glyph the mark.
+            let scoped = self.assistant.open && !self.prefs.private && self.scoped_to(id);
             // A main's violet chip and filled hexagon, selected or not.
             if self.session.doc.get(id).is_some_and(|n| n.component()) {
                 painter.rect_filled(label, 3.0, color::COMPONENT);
@@ -9582,8 +9587,9 @@ impl MastikApp {
             }
             let is_set = self.session.doc.get(id).is_some_and(|n| n.set().is_some());
             if is_set {
-                // A set's tab and resting hairline, neutral selected or not. The
-                // hairline lies on the page, so the page picks its ink.
+                // A set's tab and resting hairline, neutral selected or not, its
+                // text the selection's ink while scoped. The hairline lies on the
+                // page, so the page picks its ink.
                 if let Some(q) = self.selection_quad(id, rect, ppp) {
                     let ink = set_outline(self.session.preview_ground());
                     let stroke = egui::Stroke::new(1.0, ink);
@@ -9603,10 +9609,14 @@ impl MastikApp {
                     egui::Stroke::new(1.0, theme::color::card_border()),
                     egui::StrokeKind::Inside,
                 );
-                painter.galley(label.min + SET_TAB_PAD, galley, theme::text::strong());
+                let ink = if scoped {
+                    color::SELECT
+                } else {
+                    theme::text::strong()
+                };
+                painter.galley(label.min + SET_TAB_PAD, galley, ink);
                 continue;
             }
-            let scoped = self.assistant.open && !self.prefs.private && self.scoped_to(id);
             let ink = if self.session.selection.contains(id) || scoped {
                 color::SELECT
             } else {
@@ -19234,6 +19244,18 @@ mod frame_menu_door_tests {
         assert!(tag(&app, set).1.ends_with("2 variants are Small"));
         assert!(tag(&app, b).1.starts_with(icon::WARNING));
         assert!(tag(&app, a).1.starts_with(icon::WARNING));
+        // Scoped while the assistant's panel is open, the tab leads with the scope glyph.
+        // flip: `frame_label`'s set arm without `scope_mark` → fails here.
+        app.scope_assistant_to(set);
+        assert!(
+            app.assistant.open && app.scoped_to(set),
+            "fixture: scoped, panel open"
+        );
+        let text = tag(&app, set).1;
+        assert!(
+            text.starts_with(icon::SCOPE_FRAME),
+            "the scope glyph leads: {text:?}"
+        );
     }
 
     /// A selected set's `+` has its own hit route: the middle of the bottom edge,
