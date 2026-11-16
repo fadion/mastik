@@ -356,6 +356,16 @@ fn rewrite(line: &str, ask: &Ask) -> (String, Option<Value>) {
         return (line.to_owned(), None);
     };
     let mut changed = false;
+    // `call`'s `args` may come as JSON text, which the host reads as the object
+    // it holds; read here the same way, so a document it names is followed.
+    if message.pointer("/params/name").and_then(Value::as_str) == Some("call")
+        && let Some(args) = message.pointer_mut("/params/arguments/args")
+        && let Some(text) = args.as_str()
+        && let Ok(parsed @ Value::Object(_)) = serde_json::from_str::<Value>(text)
+    {
+        *args = parsed;
+        changed = true;
+    }
     if let Some(at) = document_pointer(&Some(message.clone()))
         && let Some(arg) = message.pointer_mut(at)
         && let Some(asked) = arg.as_str()
@@ -798,13 +808,24 @@ mod tests {
         );
     }
 
-    /// A `use_document` made through `call` switches what the proxy restores
-    /// on the next host, as a direct one does.
+    /// A `use_document` made through `call`, its `args` as an object or as JSON
+    /// text, switches what the proxy restores on the next host, as a direct
+    /// one does.
     ///
     /// flip: `document_pointer` without its `call` arm → fails at "the
-    /// document named through `call`".
+    /// document named through `call`"; `rewrite` leaving text `args` as text →
+    /// fails there for the text form.
     #[test]
     fn a_document_switched_through_call_is_the_one_restored() {
+        for args in [
+            json!({ "document": "other" }),
+            json!("{\"document\":\"other\"}"),
+        ] {
+            switched_through_call(args);
+        }
+    }
+
+    fn switched_through_call(args: Value) {
         let mut hosts = Fake::new(vec![
             Scripted {
                 host: Host::Serve,
@@ -818,7 +839,7 @@ mod tests {
             },
         ]);
         let [init, done] = handshake();
-        let through = json!({ "tool": "use_document", "args": { "document": "other" } });
+        let through = json!({ "tool": "use_document", "args": args });
         let lines = [
             init,
             done,
