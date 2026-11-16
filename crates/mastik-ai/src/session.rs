@@ -338,7 +338,10 @@ impl Session {
 
     /// Stop the running turn: Claude Code's interrupt, a kill otherwise. A
     /// child gets ten seconds to end before it is killed; the next turn
-    /// resumes the conversation by id.
+    /// resumes the conversation by id. Never waits on the child's stdin, since
+    /// it runs on the UI thread: a turn's line still being written means the
+    /// harness has not read the turn, so the child is killed at once, and the
+    /// interrupt is written on a thread of its own.
     pub fn stop(&mut self) {
         let inner = &self.inner;
         if !inner.in_flight.load(Ordering::Acquire) {
@@ -349,36 +352,43 @@ impl Session {
             st.stopping = true;
             (st.turn, st.child.clone(), st.stdin.clone())
         };
-        let interrupted = match (inner.harness.interrupt_line(), stdin) {
-            (Some(line), Some(stdin)) => stdin
-                .lock()
-                .is_ok_and(|mut s| s.write_all(line.as_bytes()).and_then(|_| s.flush()).is_ok()),
-            _ => false,
+        // Still setting up: the turn's thread sees `stopping` before it spawns.
+        let Some(child) = child else {
+            return;
         };
-        match (interrupted, child) {
-            (true, Some(child)) => {
-                let inner = Arc::clone(inner);
-                std::thread::spawn(move || {
-                    let until = Instant::now() + EXIT_GRACE;
-                    while Instant::now() < until {
-                        std::thread::sleep(Duration::from_millis(100));
-                        if !inner.in_flight.load(Ordering::Acquire) || inner.lock().turn != id {
-                            return;
-                        }
-                    }
-                    if let Ok(mut c) = child.lock() {
-                        inner.tracker.kill(&mut c);
-                    }
-                });
+        let kill = |inner: &Inner, child: &Mutex<Child>| {
+            if let Ok(mut c) = child.lock() {
+                inner.tracker.kill(&mut c);
             }
-            (false, Some(child)) => {
-                if let Ok(mut c) = child.lock() {
-                    inner.tracker.kill(&mut c);
+        };
+        let interrupt = match (inner.harness.interrupt_line(), stdin) {
+            (Some(line), Some(stdin)) if stdin.try_lock().is_ok() => Some((line, stdin)),
+            _ => None,
+        };
+        let Some((line, stdin)) = interrupt else {
+            return kill(inner, &child);
+        };
+        let (writer, grace) = (Arc::clone(inner), Arc::clone(inner));
+        let written_child = Arc::clone(&child);
+        std::thread::spawn(move || {
+            let written = stdin
+                .lock()
+                .is_ok_and(|mut s| s.write_all(line.as_bytes()).and_then(|_| s.flush()).is_ok());
+            if !written {
+                kill(&writer, &written_child);
+            }
+        });
+        // Apart from the write, which a harness not reading its stdin can hold.
+        std::thread::spawn(move || {
+            let until = Instant::now() + EXIT_GRACE;
+            while Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(100));
+                if !grace.in_flight.load(Ordering::Acquire) || grace.lock().turn != id {
+                    return;
                 }
             }
-            // Still setting up: the turn's thread sees `stopping` before it spawns.
-            (_, None) => {}
-        }
+            kill(&grace, &child);
+        });
     }
 
     /// Every event that has arrived, without blocking.
@@ -1526,6 +1536,8 @@ mod tests {
                 say(r#"{"type":"thread.started","thread_id":"t-1"}"#);
                 std::thread::sleep(Duration::from_secs(60));
             }
+            // A persistent harness still starting: it reads nothing on stdin.
+            "deaf" => std::thread::sleep(Duration::from_secs(60)),
             "exit" => {
                 say("Error: Not logged in. Run `codex login`.");
                 std::process::exit(3);
@@ -1837,6 +1849,45 @@ mod tests {
             .as_ref()
             .map(|c| c.lock().unwrap().id());
         assert_eq!(pid, after, "the interrupt kept the process");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Stop returns at once while a turn's line is still being written to a
+    /// harness that is not reading it, and the turn ends as stopped.
+    /// flip: `stop` taking the stdin lock on its caller's thread → fails at
+    /// "stop returned at once", after the fake gives up a minute later.
+    #[test]
+    fn stop_does_not_wait_on_a_write_in_progress() {
+        let (mut s, root) = fake_session(Harness::Claude, "deaf");
+        // Far past any pipe's buffer, so the write blocks.
+        s.send(Turn {
+            text: "x".repeat(8 << 20),
+            images: Vec::new(),
+        })
+        .unwrap();
+        let until = Instant::now() + Duration::from_secs(30);
+        while s.inner.lock().stdin.is_none() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let writing = s
+            .inner
+            .lock()
+            .stdin
+            .clone()
+            .is_some_and(|i| i.try_lock().is_err());
+        assert!(writing, "the fixture's write is in progress");
+        let stopped = Instant::now();
+        s.stop();
+        assert!(
+            stopped.elapsed() < Duration::from_secs(2),
+            "stop returned at once: {:?}",
+            stopped.elapsed()
+        );
+        let evs = until_idle(&mut s);
+        assert_eq!(evs.last(), Some(&Event::Stopped), "{evs:?}");
+        assert!(stopped.elapsed() < EXIT_GRACE);
         drop(s);
         let _ = std::fs::remove_dir_all(&root);
     }

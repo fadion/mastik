@@ -129,7 +129,9 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 - **Stop** sends Claude Code its interrupt and kills every other harness's child with its whole
   tree (its own process group off Windows). An interrupt that
   has not ended the turn in ten seconds kills the process, and the next turn respawns it with
-  `--resume <session id>`. The turn ends only when the harness reports `Event::Stopped`; until then
+  `--resume <session id>`. Stop runs on the UI thread and never waits on the harness's stdin: the
+  interrupt is written on a thread of its own, and while the turn's line is still being written
+  the harness has not read the turn, so its process is killed at once. The turn ends only when the harness reports `Event::Stopped`; until then
   the send button reads *Stopping…*, disabled, and then a note says *Stopped. The next question
   resumes the session.*
 - **A harness that exits before answering ends the session** as any ending does (the grant revoked
