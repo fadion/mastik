@@ -49,6 +49,17 @@ pub struct Facts {
     pub styles: Vec<String>,
     /// Every text's content, cut to [`MAX_TEXT_CHARS`].
     pub texts: Vec<String>,
+    /// The kits this document uses, each with the oldest version any of its
+    /// copies came from: a vault main's `origin`, as `kits::users` counts it.
+    pub kits: Vec<KitUse>,
+}
+
+/// One kit a document took components from.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct KitUse {
+    /// The kit's `meta.id`.
+    pub kit: String,
+    pub version: u32,
 }
 
 /// What kind of thing a content match found, in the order a row names the
@@ -123,6 +134,21 @@ impl Facts {
                     .push(content.chars().take(MAX_TEXT_CHARS).collect());
             }
             stack.extend(node.children().iter().copied());
+        }
+        if let Some(vault) = doc.vault().and_then(|v| doc.get(v)) {
+            for origin in vault
+                .children()
+                .iter()
+                .filter_map(|t| doc.get(*t)?.origin())
+            {
+                match facts.kits.iter_mut().find(|k| k.kit == origin.kit) {
+                    Some(k) => k.version = k.version.min(origin.version),
+                    None => facts.kits.push(KitUse {
+                        kit: origin.kit.clone(),
+                        version: origin.version,
+                    }),
+                }
+            }
         }
         facts.styles = doc
             .styles()
@@ -215,11 +241,16 @@ fn quoted(text: &str, hit: Hit) -> Reason {
     }
 }
 
+/// The shape [`Facts`] is cached in. Bump it when a field is added, so the cache
+/// written by an older build reads as a miss rather than as facts without it.
+const FORMAT: u32 = 1;
+
 /// An index key: the document's id plus its file's modification time, for the
-/// reason `super::cover`'s key gives; `None` for a document with no minted id.
+/// reason `super::cover`'s key gives, and [`FORMAT`]; also the cache file's
+/// stem. `None` for a document with no minted id.
 fn key(entry: &Entry) -> Option<String> {
     let id = entry.meta.id.as_deref().filter(|id| ids::is_minted(id))?;
-    Some(format!("{id}-{}", entry.modified))
+    Some(format!("{id}-{}-f{FORMAT}", entry.modified))
 }
 
 /// The cache's directory; `None` under `cfg(test)`, so the suite never writes
@@ -412,6 +443,28 @@ impl ContentIndex {
     pub fn progress(&self, entries: &[Entry]) -> (usize, usize) {
         let read = entries.iter().filter(|e| self.is_read(e)).count();
         (read, entries.len())
+    }
+
+    /// The documents among `entries` that use the kit `kit` (its `meta.id`), each
+    /// with the oldest version it took; `None` until every one has been read, so
+    /// a count is never a part-count.
+    pub fn kit_users<'a>(&self, kit: &str, entries: &'a [Entry]) -> Option<Vec<(&'a Entry, u32)>> {
+        let mut out = Vec::new();
+        for e in entries {
+            if !self.is_read(e) {
+                return None;
+            }
+            if e.meta.id.as_deref() == Some(kit) {
+                continue;
+            }
+            if let Some(k) = self
+                .get(e)
+                .and_then(|f| f.kits.iter().find(|k| k.kit == kit))
+            {
+                out.push((e, k.version));
+            }
+        }
+        Some(out)
     }
 
     /// The strongest reason `entry` answers `words` by what it holds.

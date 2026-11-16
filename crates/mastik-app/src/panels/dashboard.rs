@@ -354,6 +354,39 @@ pub(crate) struct MenuKeys {
     pub(crate) nav: Option<MenuNav>,
 }
 
+/// How many of a kit's users its ⋮ menu lists before *and N more*.
+const KIT_USERS_SHOWN: usize = 4;
+
+/// One row of a document's ⋮ menu.
+enum FileRow {
+    Verb(&'static str, Act),
+    /// An inert eyebrow over a group: *Used in*.
+    Head(&'static str),
+    /// A document using this kit: its name, the version it took, and where it is.
+    User(String, u32, PathBuf),
+    /// *and N more*, dim and inert.
+    More(usize),
+}
+
+/// An [`anchored_menu`]'s rows: how many, which a rule goes before, and which
+/// are inert.
+#[derive(Clone, Copy, Default)]
+struct MenuShape<'a> {
+    rows: usize,
+    seps: &'a [usize],
+    inert: &'a [usize],
+}
+
+impl MenuShape<'_> {
+    /// `rows` plain rows, no rule and nothing inert.
+    fn plain(rows: usize) -> Self {
+        Self {
+            rows,
+            ..Self::default()
+        }
+    }
+}
+
 /// What one frame of an [`anchored_menu`] came to.
 struct MenuOutcome {
     /// The row chosen, by a click or `Enter`, if one was.
@@ -373,28 +406,35 @@ struct MenuOutcome {
 ///
 /// `keys` is the menu's keyboard half (`context-menus.md` §8): the key read with
 /// the frame's keys moves the highlight or runs it, and a pointer move hands the
-/// highlight back to the pointer. A [`ui::menu_sep`] is drawn before each row in
-/// `seps`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one shell for every library menu"
-)]
+/// highlight back to the pointer. `shape` holds the row count, the rows a
+/// [`ui::menu_sep`] is drawn before, and the inert rows (a heading, a count),
+/// which take no hover, no click and no keyboard stop.
 fn anchored_menu(
     ui: &mut egui::Ui,
     id: egui::Id,
     anchor: egui::Rect,
     w: f32,
-    rows: usize,
-    seps: &[usize],
+    shape: MenuShape<'_>,
     keys: &mut MenuKeys,
     paint: impl Fn(&egui::Painter, usize, egui::Rect, bool),
 ) -> MenuOutcome {
+    let MenuShape { rows, seps, inert } = shape;
     let mut chosen = None;
     match keys.nav.take() {
         Some(MenuNav::Move(step)) => {
-            keys.highlight = navigate_index(rows, keys.highlight.filter(|i| *i < rows), step);
+            let mut at = keys.highlight.filter(|i| *i < rows);
+            // Past the inert rows, bounded so a menu of nothing but them ends.
+            for _ in 0..=rows {
+                at = navigate_index(rows, at, step);
+                if at.is_none_or(|i| !inert.contains(&i)) {
+                    break;
+                }
+            }
+            keys.highlight = at;
         }
-        Some(MenuNav::Activate) => chosen = keys.highlight.filter(|i| *i < rows),
+        Some(MenuNav::Activate) => {
+            chosen = keys.highlight.filter(|i| *i < rows && !inert.contains(i));
+        }
         // No submenus here.
         Some(MenuNav::Open | MenuNav::Back) => {}
         None if pointer_moved(ui.ctx()) => keys.highlight = None,
@@ -428,12 +468,18 @@ fn anchored_menu(
                     egui::vec2(ui::menu_inner_w(w, ui::MENU_PAD), ui::MENU_ROW_H),
                     egui::Sense::hover(),
                 );
-                let r = ui.interact(row, ui.id().with(i), egui::Sense::click());
-                // One ground: the keyboard's while it holds a highlight, else the hover.
-                let lit = match highlight {
-                    Some(hl) => hl == i,
-                    None => r.hovered(),
+                let live = !inert.contains(&i);
+                let sense = match live {
+                    true => egui::Sense::click(),
+                    false => egui::Sense::hover(),
                 };
+                let r = ui.interact(row, ui.id().with(i), sense);
+                // One ground: the keyboard's while it holds a highlight, else the hover.
+                let lit = live
+                    && match highlight {
+                        Some(hl) => hl == i,
+                        None => r.hovered(),
+                    };
                 ui::list_row_ground(ui.painter(), row, false, lit);
                 paint(ui.painter(), i, row, lit);
                 if r.clicked() {
@@ -2259,8 +2305,11 @@ impl MastikApp {
             egui::Id::new("library-sort-menu"),
             anchor,
             SORT_MENU_W,
-            rows,
-            if directions.is_some() { &seps } else { &[] },
+            MenuShape {
+                rows,
+                seps: if directions.is_some() { &seps } else { &[] },
+                inert: &[],
+            },
             &mut self.dash.menu_keys,
             |p, i, row, lit| {
                 let (label, on) = match fields.get(i) {
@@ -2326,8 +2375,7 @@ impl MastikApp {
             egui::Id::new("library-filter-menu"),
             anchor,
             w,
-            rows.len(),
-            &[],
+            MenuShape::plain(rows.len()),
             &mut self.dash.menu_keys,
             |p, i, row, lit| {
                 let (id, name, dot) = &rows[i];
@@ -3481,6 +3529,8 @@ impl MastikApp {
     /// A card's second line: a kit's published version, the page count once the
     /// index has read the document (drafts counted), then the age —
     /// *v3 · 2 pages · 6d ago*. Until it is read, the version and the age alone.
+    /// On *Kits*, once every document is read, a kit's usage replaces the rest:
+    /// *v3 · Used in 6 documents*, *Not used yet*.
     fn card_line(&self, entry: &Entry) -> String {
         let mut parts = Vec::new();
         if is_kit(&self.library, entry)
@@ -3492,6 +3542,19 @@ impl MastikApp {
                 .filter(|v| *v > 0)
         {
             parts.push(format!("v{v}"));
+        }
+        // On *Kits* a kit's usage takes the page count's and the age's place.
+        let usage = (self.dash.nav == Nav::Kits && self.dash.search_page.is_none())
+            .then_some(entry.meta.id.as_deref())
+            .flatten()
+            .filter(|_| is_kit(&self.library, entry))
+            .and_then(|id| self.index.kit_users(id, &self.library.entries));
+        if let Some(users) = usage {
+            parts.push(match users.len() {
+                0 => "Not used yet".to_string(),
+                n => format!("Used in {}", ui::count(n, "document")),
+            });
+            return parts.join(" · ");
         }
         if let Some(facts) = self.index.get(entry) {
             parts.push(ui::count(facts.pages.len(), "page"));
@@ -3608,6 +3671,35 @@ impl MastikApp {
         ]
     }
 
+    /// A kit's *Used in* rows for its ⋮ menu: the documents using it, most
+    /// recently edited first, each with the version it took, four of them and
+    /// then *and N more*, so the menu's size is bounded. Empty for a document
+    /// that is not a kit, one nobody uses, and until the index has read them all.
+    fn kit_users_rows(&self, entry: &Entry) -> Vec<FileRow> {
+        let Some(id) = entry
+            .meta
+            .id
+            .as_deref()
+            .filter(|_| is_kit(&self.library, entry))
+        else {
+            return Vec::new();
+        };
+        let Some(mut users) = self.index.kit_users(id, &self.library.entries) else {
+            return Vec::new();
+        };
+        users.sort_by_key(|(e, _)| std::cmp::Reverse(e.modified));
+        let more = users.len().saturating_sub(KIT_USERS_SHOWN);
+        let mut out: Vec<FileRow> = users
+            .into_iter()
+            .take(KIT_USERS_SHOWN)
+            .map(|(e, v)| FileRow::User(self.library.shown_entry(e), v, e.path.clone()))
+            .collect();
+        if more > 0 {
+            out.push(FileRow::More(more));
+        }
+        out
+    }
+
     fn file_menu_popup(
         &mut self,
         ui: &mut egui::Ui,
@@ -3639,11 +3731,27 @@ impl MastikApp {
                 ("Delete", Act::Trash(entry.path.clone())),
             ]
         };
-        let mut rows = rows;
+        let mut rows: Vec<FileRow> = rows.into_iter().map(|(l, a)| FileRow::Verb(l, a)).collect();
+        let mut seps = Vec::new();
         if !trashed {
             let at = rows.len() - 1;
-            rows.splice(at..at, self.kit_rows(entry));
+            let kit = self.kit_rows(entry);
+            // A kit's users, between the document's verbs and the kit's own, so a
+            // row behind the kit's version shows who has not updated.
+            let users = self.kit_users_rows(entry);
+            let mut block: Vec<FileRow> = Vec::new();
+            if !users.is_empty() {
+                seps.push(at);
+                block.push(FileRow::Head("Used in"));
+                block.extend(users);
+                seps.push(at + block.len());
+            }
+            block.extend(kit.into_iter().map(|(l, a)| FileRow::Verb(l, a)));
+            rows.splice(at..at, block);
         }
+        let inert: Vec<usize> = (0..rows.len())
+            .filter(|i| matches!(rows[*i], FileRow::Head(_) | FileRow::More(_)))
+            .collect();
 
         // Narrower than the filter's `FILTER_MENU_W`: these are verbs, those project names.
         let w = 170.0;
@@ -3652,29 +3760,74 @@ impl MastikApp {
             egui::Id::new(("file-menu-popup", &entry.path)),
             anchor,
             w,
-            rows.len(),
-            &[],
+            MenuShape {
+                rows: rows.len(),
+                seps: &seps,
+                inert: &inert,
+            },
             &mut self.dash.menu_keys,
             |p, i, row, lit| {
-                let label = rows[i].0;
-                // *Delete* alone is not the ordinary ink: it cannot be undone.
-                let danger = label.starts_with("Delete");
-                p.text(
-                    egui::pos2(row.left() + 8.0, row.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    egui::FontId::proportional(ui::SMALL_PT),
-                    match () {
-                        _ if danger => theme::color::danger(),
-                        _ if lit => color::text(),
-                        _ => theme::text::muted(),
-                    },
-                );
+                let font = egui::FontId::proportional(ui::SMALL_PT);
+                let at = egui::pos2(row.left() + 8.0, row.center().y);
+                match &rows[i] {
+                    FileRow::Verb(label, _) => {
+                        // *Delete* alone is not the ordinary ink: it cannot be undone.
+                        let danger = label.starts_with("Delete");
+                        p.text(
+                            at,
+                            egui::Align2::LEFT_CENTER,
+                            *label,
+                            font,
+                            match () {
+                                _ if danger => theme::color::danger(),
+                                _ if lit => color::text(),
+                                _ => theme::text::muted(),
+                            },
+                        );
+                    }
+                    FileRow::Head(label) => {
+                        ui::paint_eyebrow(p, at, egui::Align2::LEFT_CENTER, label);
+                    }
+                    FileRow::User(name, version, _) => {
+                        let v = format!("v{version}");
+                        let vg = p.layout_no_wrap(v, font.clone(), theme::text::faint());
+                        let vw = vg.size().x;
+                        p.galley(
+                            egui::pos2(row.right() - 8.0 - vw, row.center().y - vg.size().y / 2.0),
+                            vg,
+                            theme::text::faint(),
+                        );
+                        p.text(
+                            at,
+                            egui::Align2::LEFT_CENTER,
+                            elide(p.ctx(), name, ui::SMALL_PT, row.width() - vw - 28.0),
+                            font,
+                            if lit {
+                                color::text()
+                            } else {
+                                theme::text::muted()
+                            },
+                        );
+                    }
+                    FileRow::More(n) => {
+                        p.text(
+                            at,
+                            egui::Align2::LEFT_CENTER,
+                            format!("and {n} more"),
+                            font,
+                            theme::text::faint(),
+                        );
+                    }
+                }
             },
         );
 
         if let Some(i) = out.chosen {
-            let action = rows.into_iter().nth(i).expect("index from the same list").1;
+            let action = match rows.into_iter().nth(i).expect("index from the same list") {
+                FileRow::Verb(_, a) => a,
+                FileRow::User(_, _, path) => Act::Open(path),
+                FileRow::Head(_) | FileRow::More(_) => return,
+            };
             self.dash.menu_for = None;
             if let Some(a) = self.file_menu_chose(action, trashed) {
                 *act = Some(a);
@@ -5794,7 +5947,8 @@ mod tests {
                 ..Default::default()
             };
             let _ = ctx.run_ui(input, |ui| {
-                let _ = anchored_menu(ui, id, anchor, 180.0, 4, &[], &mut keys, |_, _, _, _| {});
+                let shape = MenuShape::plain(4);
+                let _ = anchored_menu(ui, id, anchor, 180.0, shape, &mut keys, |_, _, _, _| {});
             });
         }
         let card = ctx.memory(|m| m.area_rect(id)).expect("drawn");
@@ -8912,6 +9066,56 @@ mod tests {
             "and a tie goes to the name, whatever order the folder lists them in"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// On *Kits* a kit's card says how many documents use it once the index has
+    /// read them all, and its ⋮ menu lists them under *Used in* with the version
+    /// each took.
+    /// flip: `Facts::of` skipping the vault → fails at the card line ("Not used
+    /// yet").
+    #[test]
+    fn a_kit_says_who_uses_it() {
+        use crate::kits::picker::tests::{app_on, file_kit, temp_root};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let dir = temp_root("kit-usage");
+        let (kit, _, badge) = file_kit(&dir);
+        let mut app = app_on(&ctx, dir.clone());
+        let published = app
+            .library
+            .entries
+            .iter()
+            .find(|e| e.meta.id.as_deref() == Some(kit.as_str()))
+            .and_then(|e| mastik_core::io::load(&std::fs::read(&e.path).unwrap()).ok())
+            .and_then(|d| d.published().cloned())
+            .expect("the kit is published");
+        let mut notes = mastik_core::Document::new(app.session.ids.mint());
+        let path = store::file_document(&dir, None, "Notes", &mut notes).unwrap();
+        let mut ids = mastik_core::IdSource::new(0xBF);
+        let page = notes.first_page();
+        let (tx, _) =
+            mastik_core::kit::insert(&notes, &mut ids, &kit, 4, &published, badge, page).unwrap();
+        notes.apply(&tx).unwrap();
+        store::write_document(&path, &notes).unwrap();
+        app.go_to_dashboard();
+        app.library.refresh();
+        app.dash.nav = Nav::Kits;
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let entry = app
+            .library
+            .entries
+            .iter()
+            .find(|e| e.meta.id.as_deref() == Some(kit.as_str()))
+            .unwrap()
+            .clone();
+        assert_eq!(app.card_line(&entry), "v4 · Used in 1 document");
+        let rows = app.kit_users_rows(&entry);
+        assert!(
+            matches!(rows.as_slice(), [FileRow::User(name, 4, p)] if name == "Notes" && *p == path),
+            "Notes, at the version it took"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A narrow list drops *Created*, then *Opened*, rather than eliding every
