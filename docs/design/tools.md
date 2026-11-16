@@ -108,8 +108,17 @@ centre is over the canvas. It reads raw `MouseWheel` events, not egui's smoothed
 Settings' *Zoom with the scroll wheel* (`CanvasPrefs::wheel_zooms`, off by default) swaps the plain
 and `Ctrl`/`Alt` meanings for a mouse wheel only (`canvas::wheel_travel`): a notch zooms at the
 cursor and `Ctrl`/`Alt`+notch pans vertically; `Shift`+notch still pans sideways, and a touchpad's
-scroll and pinch keep the table's meanings. Only the canvas passes the preference; the minimap and
-present mode do not.
+scroll and pinch keep the table's meanings. Only the canvas honours it; the minimap and present mode
+do not.
+
+Settings' *Invert zoom direction* (`CanvasPrefs::invert_zoom`, off by default) turns a mouse wheel's
+zoom around: wheel up zooms out, down zooms in. It turns whichever notch zooms (plain under *Zoom
+with the scroll wheel*, `Ctrl`/`Alt` otherwise) and nothing else: a touchpad's pinch, a macOS
+`Zoom` gesture, a touch pinch and the zoom chords keep their direction. Both preferences reach
+`wheel_travel` as one `canvas::Wheel { zooms, invert }`, built from `&CanvasPrefs` on the canvas;
+present mode passes `zooms: false` with the invert preference, and the minimap reads all its wheel
+travel as zoom through `canvas::wheel_zoom_only`, which takes the invert preference too.
+`invert_zoom_turns_a_mouse_wheels_zoom_only` pins it.
 
 - **A mouse is told by its delta, not its unit** (`canvas::is_mouse_wheel`): a page delta, or a line
   delta of whole lines. On Windows winit reports every wheel message as lines, a precision touchpad's
@@ -202,6 +211,15 @@ menu on the press would take the release as a row pick):
 - `canvas::canvas_context_menu` checks the flag at the top, before any branch sets the selection, or a cancelling right-click would also select the layer under the pointer.
 - `edit_valve` spends its engagement transition on the frame it bails, so a cancelled edit cannot commit a frame later.
 - `MastikApp::secondary_press` records the press position (egui delivers `secondary_clicked` on the release, when it is gone), so jitter cannot shift the menu.
+
+Settings' *Right click to pan* (`CanvasPrefs::right_pan`, off by default) makes a right-button
+*drag* pan the canvas (`MastikApp::right_pan`): it joins `panning_armed` in normal mode and the
+middle-button pan in a text session. The two uses of the button stay apart by how they end: a right
+click that does not move is no drag, so its release still opens the menu, and a drag is never a
+`secondary_clicked`, so it opens none. A right press that cancelled a gesture sits out to its
+release behind `gesture_cancelled`, which `right_pan` asks itself because a text session's input
+does not, so it never pans.
+`a_right_drag_pans_only_under_the_setting` pins it.
 
 ### Context menus (`menu.rs`)
 

@@ -2739,8 +2739,10 @@ impl MastikApp {
         let (shift, alt) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
         let space = space_down(ui);
         // Space arms a pan from any tool, so it outranks the tool's own gesture.
-        let panning_armed =
-            space || self.tool == Tool::Hand || resp.dragged_by(egui::PointerButton::Middle);
+        let panning_armed = space
+            || self.tool == Tool::Hand
+            || resp.dragged_by(egui::PointerButton::Middle)
+            || self.right_pan(resp);
 
         // An armed eyedropper owns every press an armed pan does not, chrome included.
         if self.dropper_armed().is_some() && !panning_armed && !matches!(self.drag, Drag::Pan) {
@@ -7870,6 +7872,17 @@ impl MastikApp {
             .is_some_and(|b| b.contains(local))
     }
 
+    /// Whether this is a right-button drag that pans, under Settings' *Right click
+    /// to pan*. A right click that does not move is no drag, so it still opens the
+    /// context menu; a right press during another gesture cancels that gesture and
+    /// sits out to its release (`gesture_cancelled`, asked here as well because a
+    /// text session's input does not), so it never pans.
+    pub(crate) fn right_pan(&self, resp: &egui::Response) -> bool {
+        self.prefs.canvas.right_pan
+            && !self.gesture_cancelled
+            && resp.dragged_by(egui::PointerButton::Secondary)
+    }
+
     /// Move the camera by a pan drag's delta, shared by `update_drag` and
     /// [`Self::text_mode_input`].
     pub(crate) fn pan_by_drag(&mut self, ui: &egui::Ui, resp: &egui::Response) {
@@ -7913,7 +7926,7 @@ impl MastikApp {
         }
 
         // The middle button pans and only the primary selects; not Space, a character here.
-        if resp.drag_started_by(egui::PointerButton::Middle) {
+        if resp.drag_started_by(egui::PointerButton::Middle) || self.right_pan(resp) {
             self.drag = Drag::Pan;
         } else if resp.drag_started_by(egui::PointerButton::Primary)
             && let Some(p) = resp.interact_pointer_pos()
@@ -9079,7 +9092,7 @@ impl MastikApp {
         else {
             return;
         };
-        let (mut pan, zoom) = wheel_travel(ui.ctx(), rect.height(), self.prefs.canvas.wheel_zooms);
+        let (mut pan, zoom) = wheel_travel(ui.ctx(), rect.height(), (&self.prefs.canvas).into());
         let factor = wheel_zoom_factor(zoom) * pinch_zoom(ui.ctx());
         if let Some(t) = touch {
             pan += t.translation_delta;
@@ -11829,46 +11842,92 @@ fn badge_text_angle(dir: egui::Vec2) -> f32 {
 /// `Shift` pans sideways, a plain wheel pans. `page` is what one page of a
 /// page-unit wheel is worth. Shared by the canvas and present mode.
 ///
-/// `wheel_zooms` swaps a mouse wheel's plain and `Ctrl`/`Alt` meanings
+/// `wheel.zooms` swaps a mouse wheel's plain and `Ctrl`/`Alt` meanings
 /// ([`is_mouse_wheel`]); a touchpad's two-finger scroll and pinch keep theirs.
-pub(crate) fn wheel_travel(ctx: &egui::Context, page: f32, wheel_zooms: bool) -> (egui::Vec2, f32) {
+/// `wheel.invert` turns a mouse wheel's zoom around, and a touchpad's pinch never.
+pub(crate) fn wheel_travel(ctx: &egui::Context, page: f32, wheel: Wheel) -> (egui::Vec2, f32) {
+    let (mut pan, mut zoom) = (egui::Vec2::ZERO, 0.0_f32);
+    for (d, modifiers, mouse) in wheel_events(ctx, page) {
+        // `x + y` when modified: the platform may have swapped the axis.
+        // `Alt` aliases `Ctrl` (`docs/shortcuts.md` §9).
+        let zoom_key = modifiers.command || modifiers.alt;
+        let turn = if mouse && wheel.invert { -1.0 } else { 1.0 };
+        if wheel.zooms && mouse && !modifiers.shift {
+            if zoom_key {
+                pan.y += d.x + d.y;
+            } else {
+                zoom += turn * (d.x + d.y);
+            }
+        } else if zoom_key {
+            zoom += turn * (d.x + d.y);
+        } else if modifiers.shift {
+            pan.x += d.x + d.y;
+        } else {
+            pan += d;
+        }
+    }
+    (pan, zoom)
+}
+
+/// This frame's wheel travel in points, all of it as zoom, on any axis and with any
+/// modifier: the minimap's wheel, which has nothing to pan. `invert` turns a
+/// mouse wheel's around, as in [`wheel_travel`].
+pub(crate) fn wheel_zoom_only(ctx: &egui::Context, page: f32, invert: bool) -> f32 {
+    wheel_events(ctx, page)
+        .into_iter()
+        .map(|(d, _, mouse)| {
+            if mouse && invert {
+                -(d.x + d.y)
+            } else {
+                d.x + d.y
+            }
+        })
+        .sum()
+}
+
+/// What the wheel does under the Settings modal's *Canvas* switches: whether a
+/// mouse wheel zooms rather than pans, and whether its zoom is turned around.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Wheel {
+    pub zooms: bool,
+    pub invert: bool,
+}
+
+impl From<&crate::prefs::CanvasPrefs> for Wheel {
+    fn from(c: &crate::prefs::CanvasPrefs) -> Self {
+        Self {
+            zooms: c.wheel_zooms,
+            invert: c.invert_zoom,
+        }
+    }
+}
+
+/// This frame's wheel events in points, each with its modifiers and whether it
+/// came from a mouse wheel ([`is_mouse_wheel`]). `page` is what one page of a
+/// page-unit wheel is worth.
+fn wheel_events(ctx: &egui::Context, page: f32) -> Vec<(egui::Vec2, egui::Modifiers, bool)> {
     // Read before taking the input lock — `Context::options` takes its own.
     let per_line = ctx.options(|o| o.input_options.line_scroll_speed).max(1.0);
     ctx.input(|i| {
-        let (mut pan, mut zoom) = (egui::Vec2::ZERO, 0.0_f32);
-        for ev in &i.events {
-            let egui::Event::MouseWheel {
-                unit,
-                delta,
-                modifiers,
-                ..
-            } = ev
-            else {
-                continue;
-            };
-            let d = match unit {
-                egui::MouseWheelUnit::Point => *delta,
-                egui::MouseWheelUnit::Line => *delta * per_line,
-                egui::MouseWheelUnit::Page => *delta * page,
-            };
-            // `x + y` when modified: the platform may have swapped the axis.
-            // `Alt` aliases `Ctrl` (`docs/shortcuts.md` §9).
-            let zoom_key = modifiers.command || modifiers.alt;
-            if wheel_zooms && is_mouse_wheel(*unit, *delta) && !modifiers.shift {
-                if zoom_key {
-                    pan.y += d.x + d.y;
-                } else {
-                    zoom += d.x + d.y;
+        i.events
+            .iter()
+            .filter_map(|ev| match ev {
+                egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                    ..
+                } => {
+                    let d = match unit {
+                        egui::MouseWheelUnit::Point => *delta,
+                        egui::MouseWheelUnit::Line => *delta * per_line,
+                        egui::MouseWheelUnit::Page => *delta * page,
+                    };
+                    Some((d, *modifiers, is_mouse_wheel(*unit, *delta)))
                 }
-            } else if zoom_key {
-                zoom += d.x + d.y;
-            } else if modifiers.shift {
-                pan.x += d.x + d.y;
-            } else {
-                pan += d;
-            }
-        }
-        (pan, zoom)
+                _ => None,
+            })
+            .collect()
     })
 }
 
@@ -11901,6 +11960,16 @@ mod wheel_tests {
     }
 
     fn travel(ev: egui::Event, wheel_zooms: bool) -> (egui::Vec2, f32) {
+        travel_with(
+            ev,
+            super::Wheel {
+                zooms: wheel_zooms,
+                invert: false,
+            },
+        )
+    }
+
+    fn travel_with(ev: egui::Event, wheel: super::Wheel) -> (egui::Vec2, f32) {
         let ctx = egui::Context::default();
         let mut out = (egui::Vec2::ZERO, 0.0);
         let input = egui::RawInput {
@@ -11908,9 +11977,39 @@ mod wheel_tests {
             ..Default::default()
         };
         let _ = ctx.run_ui(input, |ui| {
-            out = super::wheel_travel(ui.ctx(), 100.0, wheel_zooms);
+            out = super::wheel_travel(ui.ctx(), 100.0, wheel);
         });
         out
+    }
+
+    /// *Invert zoom direction* turns a mouse wheel's zoom around, plain under
+    /// wheel-zoom and with `Ctrl` under scroll-to-pan, and leaves a touchpad's
+    /// pinch (fractional `Ctrl` lines) and its pan alone.
+    ///
+    /// flip: `wheel_travel` turning every event rather than a mouse wheel's →
+    /// fails at "a pinch keeps its direction".
+    #[test]
+    fn invert_zoom_turns_a_mouse_wheels_zoom_only() {
+        use egui::{Modifiers as M, MouseWheelUnit as U};
+        let inv = |zooms| super::Wheel {
+            zooms,
+            invert: true,
+        };
+        let (_, plain) = travel(wheel(U::Line, 1.0, M::NONE), true);
+        let (_, turned) = travel_with(wheel(U::Line, 1.0, M::NONE), inv(true));
+        assert!(
+            plain > 0.0 && turned == -plain,
+            "a notch zooms the other way"
+        );
+        let (_, turned) = travel_with(wheel(U::Line, 1.0, M::COMMAND), inv(false));
+        assert!(turned < 0.0, "Ctrl+notch under scroll-to-pan too");
+        let (_, pinch) = travel_with(wheel(U::Line, 0.3, M::COMMAND), inv(false));
+        assert!(pinch > 0.0, "a pinch keeps its direction");
+        let (pan, zoom) = travel_with(wheel(U::Line, 1.0, M::NONE), inv(false));
+        assert!(
+            zoom == 0.0 && pan.y > 0.0,
+            "and a plain notch still pans the same way"
+        );
     }
 
     /// With the preference on, a notch zooms and `Ctrl`+notch pans; a touchpad's

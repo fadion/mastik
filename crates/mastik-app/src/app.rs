@@ -17559,6 +17559,47 @@ mod context_menu_rule_tests {
         );
     }
 
+    /// Under *Right click to pan* a right-button drag pans the canvas and opens no
+    /// menu; with the setting off the same drag leaves the camera where it was.
+    ///
+    /// flip: `right_pan` ignoring `CanvasPrefs::right_pan` → fails at "off, a right
+    /// drag does not pan".
+    #[test]
+    fn a_right_drag_pans_only_under_the_setting() {
+        let drag = |on: bool| {
+            let ctx = egui::Context::default();
+            let (mut app, _, _, _) = app_with_two_groups(&ctx);
+            app.prefs.canvas.right_pan = on;
+            let at = egui::pos2(660.0, 410.0);
+            whole_frame(&ctx, &mut app, Vec::new());
+            whole_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+            let before = app.session.camera.center;
+            whole_frame(&ctx, &mut app, vec![secondary(at, true)]);
+            for step in 1..=6 {
+                let p = at + egui::vec2(20.0 * step as f32, 0.0);
+                whole_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(p)]);
+            }
+            whole_frame(
+                &ctx,
+                &mut app,
+                vec![secondary(at + egui::vec2(120.0, 0.0), false)],
+            );
+            (
+                before,
+                app.session.camera.center,
+                app.context_menu.is_some(),
+            )
+        };
+        let (before, after, menu) = drag(true);
+        assert!(
+            after.x < before.x - 1.0,
+            "on, a right drag to the right moves the view's centre left: {before:?} → {after:?}"
+        );
+        assert!(!menu, "and a drag opens no menu");
+        let (before, after, _) = drag(false);
+        assert_eq!(before, after, "off, a right drag does not pan");
+    }
+
     /// R1's other half: a right-click that cancels a gesture is spent (opens no menu
     /// and selects nothing), and the next one opens a menu. The marquee leaves the
     /// pointer over the first group while the second is selected.

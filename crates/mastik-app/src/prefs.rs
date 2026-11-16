@@ -393,6 +393,13 @@ pub struct CanvasPrefs {
     /// (`canvas::wheel_travel`). Off: scroll-to-pan is the design-tool default,
     /// and a touchpad's two-finger scroll pans either way.
     pub wheel_zooms: bool,
+    /// A mouse wheel turned up zooms out and down zooms in, on the canvas, the
+    /// minimap and in present mode (`canvas::Wheel`). A touchpad's pinch and the
+    /// zoom chords keep their direction.
+    pub invert_zoom: bool,
+    /// Pan with the right mouse button held and dragged (`canvas::right_pan`). A
+    /// right click that does not move still opens the context menu.
+    pub right_pan: bool,
     /// What a guide with no colour of its own draws in ([`mastik_core::Guide::color_or`]).
     pub guide_colour: Color,
     /// A guide's line in points, [`Self::GUIDE_MIN`]–[`Self::GUIDE_MAX`]; a selected
@@ -455,6 +462,8 @@ impl Default for CanvasPrefs {
     fn default() -> Self {
         Self {
             wheel_zooms: false,
+            invert_zoom: false,
+            right_pan: false,
             guide_colour: mastik_core::DEFAULT_GUIDE_COLOR,
             guide_thickness: 1,
             grid_adaptive: true,

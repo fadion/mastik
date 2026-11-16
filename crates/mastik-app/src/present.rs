@@ -339,7 +339,13 @@ impl crate::app::MastikApp {
             center: bounds.center(),
             zoom: fit_zoom(bounds, px),
         };
-        let (pan, zoom) = crate::canvas::wheel_travel(&ctx, rect.height(), false);
+        // Present mode keeps scroll-to-pan whatever the canvas does, and turns a
+        // mouse wheel's zoom around with it.
+        let wheel = crate::canvas::Wheel {
+            zooms: false,
+            invert: self.prefs.canvas.invert_zoom,
+        };
+        let (pan, zoom) = crate::canvas::wheel_travel(&ctx, rect.height(), wheel);
         let factor = crate::canvas::wheel_zoom_factor(zoom) * crate::canvas::pinch_zoom(&ctx);
         let Some(p) = self.presenting.as_mut() else {
             return;

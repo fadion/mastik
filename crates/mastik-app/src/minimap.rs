@@ -253,9 +253,9 @@ impl MastikApp {
         if let Some(p) = resp.hover_pos()
             && self.minimap.drag.is_none()
         {
-            let (pan, zoom) = crate::canvas::wheel_travel(&ctx, map.height(), false);
-            let factor = crate::canvas::wheel_zoom_factor(pan.x + pan.y + zoom)
-                * crate::canvas::pinch_zoom(&ctx);
+            let zoom =
+                crate::canvas::wheel_zoom_only(&ctx, map.height(), self.prefs.canvas.invert_zoom);
+            let factor = crate::canvas::wheel_zoom_factor(zoom) * crate::canvas::pinch_zoom(&ctx);
             if factor != 1.0 {
                 let anchor = self
                     .session

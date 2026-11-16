@@ -598,7 +598,7 @@ impl MastikApp {
                 rows.scrubbing
             }
             SettingsTab::Canvas => {
-                section(ui, "Wheel");
+                section(ui, "Mouse");
                 wheel_rows(ui, &mut draft.canvas);
                 section(ui, "Nudge");
                 let half = egui::vec2((ui.available_width() - COL_GAP) / 2.0, FIELD_H);
@@ -1109,7 +1109,8 @@ fn cache_row(bytes: Option<u64>) -> (String, bool) {
     }
 }
 
-/// The *Wheel* rows: the wheel-zoom switch and its caption.
+/// The *Mouse* rows: the wheel-zoom switch and its caption, the zoom direction,
+/// and right-button panning.
 fn wheel_rows(ui: &mut egui::Ui, canvas: &mut CanvasPrefs) {
     if ui::switch_row(
         ui,
@@ -1127,6 +1128,23 @@ fn wheel_rows(ui: &mut egui::Ui, canvas: &mut CanvasPrefs) {
         "Ctrl or Alt with the wheel pans instead. A touchpad's two-finger scroll \
          still pans.",
     );
+    ui.add_space(ROW_GAP);
+    if ui::switch_row(ui, "Invert zoom direction", canvas.invert_zoom, SWITCH_H)
+        .on_hover_text(
+            "Wheel up zooms out and wheel down zooms in, on the canvas, the minimap \
+             and in present mode",
+        )
+        .clicked()
+    {
+        canvas.invert_zoom = !canvas.invert_zoom;
+    }
+    ui.add_space(ROW_GAP);
+    if ui::switch_row(ui, "Right click to pan", canvas.right_pan, SWITCH_H)
+        .on_hover_text("Drag with the right button to pan; a right click still opens the menu")
+        .clicked()
+    {
+        canvas.right_pan = !canvas.right_pan;
+    }
 }
 
 /// The field of `canvas` a [`PrefColour`] names: the one map from a Settings colour
@@ -2459,7 +2477,7 @@ mod tests {
             (
                 SettingsTab::Canvas,
                 &[
-                    "WHEEL",
+                    "MOUSE",
                     "NUDGE",
                     "SNAPPING",
                     "PASTE",
@@ -2705,6 +2723,8 @@ mod tests {
             },
             canvas: CanvasPrefs {
                 wheel_zooms: true,
+                invert_zoom: true,
+                right_pan: true,
                 guide_colour: mastik_core::peniko::Color::from_rgb8(217, 70, 143),
                 guide_thickness: 3,
                 grid_adaptive: false,

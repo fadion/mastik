@@ -66,7 +66,8 @@ frame lands the same way (frames nest).
 
 ### An armed pan outranks every tool
 
-`panning_armed` (Space held, Hand tool, or middle-button drag) guards `guide_input`, the pen, the node
+`panning_armed` (Space held, Hand tool, a middle-button drag, or a right-button drag under
+Settings' *Right click to pan*) guards `guide_input`, the pen, the node
 tool, image editing and the drag arm. The three click arms read one binding,
 `let clicked = resp.clicked() && !panning_armed`.
 
