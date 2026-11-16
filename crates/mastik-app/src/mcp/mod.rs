@@ -29,6 +29,7 @@ use mastik_mcp::wire::{Content, Output};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 /// What a host lends the engine: its documents, by absolute path.
 pub(crate) trait Documents {
@@ -127,7 +128,7 @@ const LOOKS: usize = 1024;
 /// layer's fingerprint.
 struct Shown {
     rev: u64,
-    layers: Option<HashMap<String, Layer>>,
+    layers: Option<Rc<HashMap<String, Layer>>>,
     /// The layers changed or removed since the look before by anyone but this
     /// client, so `base_rev` does not count the client's own steps against it.
     others: Vec<String>,
@@ -319,15 +320,30 @@ fn delta(then: &HashMap<String, Layer>, now: &HashMap<String, Layer>) -> Delta {
     d
 }
 
+/// What serde writes, fed straight to a hasher, so a fingerprint builds no
+/// string.
+struct HashWriter<'a>(&'a mut std::hash::DefaultHasher);
+
+impl std::io::Write for HashWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        std::hash::Hasher::write(self.0, bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Every layer's fingerprint: its snapshot entry, hashed.
 fn layers(snapshot: &mastik_export::Snapshot) -> HashMap<String, Layer> {
-    use std::hash::{Hash as _, Hasher as _};
+    use std::hash::Hasher as _;
     snapshot
         .nodes
         .iter()
         .map(|n| {
             let mut h = std::hash::DefaultHasher::new();
-            serde_json::to_string(n).unwrap_or_default().hash(&mut h);
+            let _ = serde_json::to_writer(HashWriter(&mut h), n);
             (
                 n.id.clone(),
                 Layer {
@@ -340,8 +356,38 @@ fn layers(snapshot: &mastik_export::Snapshot) -> HashMap<String, Layer> {
         .collect()
 }
 
-fn snapshot_of(s: &EditorSession) -> mastik_export::Snapshot {
-    mastik_export::snapshot(&s.doc, &s.resolved)
+/// A document state's snapshot and its layers' fingerprints, made once.
+type Looked = (Rc<mastik_export::Snapshot>, Rc<HashMap<String, Layer>>);
+
+thread_local! {
+    /// The last state looked at, by its `(revision, drawn)`, both unique in the
+    /// process: a call's catch-up, its read and the look after its write share
+    /// one, and so do the clients of one document, rather than each building
+    /// the whole snapshot on the person's UI thread.
+    static LOOKED: std::cell::RefCell<Option<((u64, u64), Looked)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn looked(s: &EditorSession) -> Looked {
+    let at = (s.revision(), s.drawn());
+    if let Some(l) =
+        LOOKED.with_borrow(|c| c.as_ref().filter(|(k, _)| *k == at).map(|(_, l)| l.clone()))
+    {
+        return l;
+    }
+    let snap = mastik_export::snapshot(&s.doc, &s.resolved);
+    let fingerprints = Rc::new(layers(&snap));
+    let l = (Rc::new(snap), fingerprints);
+    LOOKED.set(Some((at, l.clone())));
+    l
+}
+
+fn snapshot_of(s: &EditorSession) -> Rc<mastik_export::Snapshot> {
+    looked(s).0
+}
+
+fn layers_of(s: &EditorSession) -> Rc<HashMap<String, Layer>> {
+    looked(s).1
 }
 
 impl Engine {
@@ -516,7 +562,7 @@ impl Engine {
                     } else {
                         conn.document = Some(path.clone());
                         conn.shown.clear();
-                        remember(conn, rev, layers(&snap), Vec::new());
+                        remember(conn, rev, layers_of(session), Vec::new());
                     }
                     let pages: Vec<Value> = snap
                         .pages
@@ -675,7 +721,7 @@ impl Engine {
         if after != before {
             // The call's own edit is not news to the caller; an undo's or redo's
             // layers are, since it did not choose them.
-            let now = layers(&snapshot_of(session));
+            let now = layers_of(session);
             let own = last_layers(conn).map(|then| delta(then, &now).to_json(&now, then));
             remember(conn, after, now, Vec::new());
             if matches!(call.tool.as_str(), "undo" | "redo")
@@ -801,7 +847,12 @@ fn parse_json_text(call: &mut Call) {
 
 /// Remember a look at `rev`, with the layers `others` changed or removed since
 /// the look before.
-fn remember(conn: &mut Connection, rev: u64, layers: HashMap<String, Layer>, others: Vec<String>) {
+fn remember(
+    conn: &mut Connection,
+    rev: u64,
+    layers: Rc<HashMap<String, Layer>>,
+    others: Vec<String>,
+) {
     if conn.shown.back().is_some_and(|s| s.rev == rev) {
         return;
     }
@@ -820,7 +871,7 @@ fn remember(conn: &mut Connection, rev: u64, layers: HashMap<String, Layer>, oth
 
 /// The fingerprints of the connection's last look.
 fn last_layers(conn: &Connection) -> Option<&HashMap<String, Layer>> {
-    conn.shown.back().and_then(|s| s.layers.as_ref())
+    conn.shown.back().and_then(|s| s.layers.as_deref())
 }
 
 /// What changed since the connection's last look, and remember this one.
@@ -829,7 +880,7 @@ fn catch_up(conn: &mut Connection, session: &EditorSession) -> Option<Value> {
     if conn.shown.back()?.rev == rev {
         return None;
     }
-    let now = layers(&snapshot_of(session));
+    let now = layers_of(session);
     let (report, others) = match last_layers(conn) {
         Some(last) => {
             let d = delta(last, &now);
@@ -1063,7 +1114,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
     match call.tool.as_str() {
         "get_document" => {
             let snap = snapshot_of(s);
-            if let Some(since) = since(conn, args, s.revision(), &snap, Scope::Document)? {
+            if let Some(since) = since(conn, args, s, Scope::Document)? {
                 within_budget(&since.to_string(), "What changed", NARROWER)?;
                 return json(since);
             }
@@ -1101,7 +1152,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
                 true => Scope::Subtree(&id),
                 false => Scope::Node(&id),
             };
-            if let Some(since) = since(conn, args, s.revision(), &snap, scope)? {
+            if let Some(since) = since(conn, args, s, scope)? {
                 within_budget(&since.to_string(), "What changed", NARROWER)?;
                 return json(since);
             }
@@ -1150,13 +1201,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
             let wire = id.map(NodeId::to_wire);
             // Answered in its own rows: whole when any of them, or the parent's
             // order of them, moved.
-            let moved = match since(
-                conn,
-                args,
-                s.revision(),
-                &snap,
-                Scope::Children(wire.as_deref()),
-            )? {
+            let moved = match since(conn, args, s, Scope::Children(wire.as_deref()))? {
                 Some(v) if v.get("unchanged").is_some() => return json(v),
                 Some(v) => v.get("since").cloned(),
                 None => None,
@@ -1598,14 +1643,13 @@ impl Scope<'_> {
 fn since(
     conn: &Connection,
     args: &Value,
-    rev: u64,
-    snap: &mastik_export::Snapshot,
+    s: &EditorSession,
     scope: Scope<'_>,
 ) -> Result<Option<Value>, String> {
     let Some(since) = index(args, "since") else {
         return Ok(None);
     };
-    if since == rev {
+    if since == s.revision() {
         return Ok(Some(json!({ "unchanged": true })));
     }
     let Some(then) = conn
@@ -1616,7 +1660,7 @@ fn since(
     else {
         return Ok(None);
     };
-    let now = layers(snap);
+    let (snap, now) = looked(s);
     let d = delta(then, &now);
     let fresh: std::collections::HashSet<&str> = d
         .added
@@ -4544,6 +4588,22 @@ mod tests {
             .collect();
         assert_eq!(files.len(), listed.len());
         assert!(files[0].contains("Badge"), "{files:?}");
+    }
+
+    /// One document state is snapshotted once, whoever looks; a change makes
+    /// a new look.
+    ///
+    /// flip: `looked` without its cache → fails at "shared".
+    #[test]
+    fn a_document_state_is_snapshotted_once() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let first = snapshot_of(&docs.session);
+        assert!(Rc::ptr_eq(&first, &snapshot_of(&docs.session)), "shared");
+        rect(&mut engine, &mut docs, 1, "A");
+        let after = snapshot_of(&docs.session);
+        assert!(!Rc::ptr_eq(&first, &after), "a change looks again");
+        assert_eq!(after.nodes.len(), first.nodes.len() + 1);
     }
 
     /// `since` on `get_node` and `list_children` answers only what the read

@@ -52,6 +52,11 @@ pub(crate) fn tools(all: bool) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// [`tools`] built once for every connection: the lists never change while
+/// the process runs.
+static LISTS: std::sync::LazyLock<[std::sync::Arc<Vec<serde_json::Value>>; 2]> =
+    std::sync::LazyLock::new(|| [tools(false).into(), tools(true).into()]);
+
 /// A listening endpoint; dropping it removes the discovery file and, off
 /// Windows, the socket.
 pub(crate) struct Endpoint {
@@ -188,8 +193,8 @@ fn spawn_connection(
                 conn,
                 to: with.to,
                 pid,
-                tools: tools(false),
-                all_tools: tools(true),
+                tools: LISTS[0].clone(),
+                all_tools: LISTS[1].clone(),
                 lists: with.lists,
                 wait: mastik_mcp::queue::TAKE_WAIT,
             };

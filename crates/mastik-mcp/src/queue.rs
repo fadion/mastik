@@ -99,10 +99,11 @@ pub struct Forward {
     pub to: Sender<Request>,
     /// The connecting process, which every call carries.
     pub pid: Option<u32>,
-    /// The tool definitions this host lists by default: the core set.
-    pub tools: Vec<Value>,
+    /// The tool definitions this host lists by default: the core set. Shared,
+    /// since every connection lists the same and a probe connects often.
+    pub tools: Arc<Vec<Value>>,
     /// The definitions it lists to a peer that asked for every tool.
-    pub all_tools: Vec<Value>,
+    pub all_tools: Arc<Vec<Value>>,
     /// Asked before the defaults.
     pub lists: Option<Lists>,
     /// How long a call waits to be taken: [`TAKE_WAIT`].
@@ -119,8 +120,8 @@ impl Handler for Forward {
             return listed;
         }
         match peer.all_tools {
-            true => self.all_tools.clone(),
-            false => self.tools.clone(),
+            true => self.all_tools.to_vec(),
+            false => self.tools.to_vec(),
         }
     }
 
@@ -200,8 +201,8 @@ mod tests {
             conn: 7,
             to,
             pid: None,
-            tools: Vec::new(),
-            all_tools: Vec::new(),
+            tools: Default::default(),
+            all_tools: Default::default(),
             lists: None,
             wait: TAKE_WAIT,
         };
@@ -227,8 +228,8 @@ mod tests {
             conn: 1,
             to,
             pid: None,
-            tools: Vec::new(),
-            all_tools: Vec::new(),
+            tools: Default::default(),
+            all_tools: Default::default(),
             lists: None,
             wait: Duration::from_millis(20),
         };
@@ -259,8 +260,8 @@ mod tests {
             conn: 1,
             to,
             pid: None,
-            tools: Vec::new(),
-            all_tools: Vec::new(),
+            tools: Default::default(),
+            all_tools: Default::default(),
             lists: None,
             wait: Duration::from_millis(20),
         };
@@ -290,8 +291,8 @@ mod tests {
             conn: 1,
             to,
             pid: Some(42),
-            tools: vec![json!("core")],
-            all_tools: Vec::new(),
+            tools: vec![json!("core")].into(),
+            all_tools: Default::default(),
             lists: Some(lists),
             wait: Duration::from_millis(20),
         };
