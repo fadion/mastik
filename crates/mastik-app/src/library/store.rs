@@ -471,6 +471,7 @@ mod tests {
             folder: folder.map(str::to_string),
             created: 1_774_483_200,
             archived: false,
+            description: None,
         }
     }
 

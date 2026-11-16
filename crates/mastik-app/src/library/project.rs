@@ -61,7 +61,15 @@ pub struct Project {
     /// need not bump.
     #[serde(default, skip_serializing_if = "is_false")]
     pub archived: bool,
+    /// One line about the project, shown under its name on its page; written
+    /// only when set, so the field is additive as `archived` is. Kept here and
+    /// not in any document, so describing a project rewrites none of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
+
+/// The longest a project's description may be.
+pub const DESCRIPTION_MAX: usize = 120;
 
 /// `skip_serializing_if` for a plain `bool`; serde hands it a `&bool`.
 fn is_false(b: &bool) -> bool {
@@ -282,6 +290,7 @@ mod tests {
                     folder: Some("kestrel".into()),
                     created: 1_774_483_200,
                     archived: false,
+                    description: None,
                 },
                 Project {
                     id: "1a2b3c4d5e".into(),
@@ -290,6 +299,7 @@ mod tests {
                     folder: None,
                     created: 1_774_483_300,
                     archived: false,
+                    description: None,
                 },
             ],
         }

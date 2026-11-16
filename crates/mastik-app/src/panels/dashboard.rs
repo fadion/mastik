@@ -43,6 +43,9 @@ const CARD_CAPTION_H: f32 = 46.0;
 /// project's files in it.
 const MOSAIC_H: f32 = 118.0;
 const MOSAIC_GAP: f32 = 7.0;
+/// A project page header's mosaic: [`MOSAIC_H`] tall and as wide as a project
+/// card's mosaic at the grid's widest card.
+const PROJECT_HEADER_MOSAIC_W: f32 = CARD_MAX_W - PROJECT_PAD * 2.0;
 /// Five: the largest the three-column rule in [`MastikApp::project_mosaic`] fills
 /// without a column growing a third row.
 const MOSAIC_MAX: usize = 5;
@@ -843,6 +846,8 @@ pub(crate) struct EditProject {
     pub(crate) color: String,
     /// Whether the project is to be archived (`library::project`).
     pub(crate) archived: bool,
+    /// The one-line description as typed; empty is none.
+    pub(crate) description: String,
     /// [`NewProject::name_focused`]'s latch.
     pub(crate) name_focused: bool,
 }
@@ -855,17 +860,33 @@ impl EditProject {
             name: p.name.clone(),
             color: p.color.clone(),
             archived: p.archived,
+            description: p.description.clone().unwrap_or_default(),
             name_focused: false,
         }
+    }
+
+    /// The description as it will be written: trimmed, capped at
+    /// [`project::DESCRIPTION_MAX`] characters, `None` when empty.
+    fn description(&self) -> Option<String> {
+        let d: String = self
+            .description
+            .trim()
+            .chars()
+            .take(project::DESCRIPTION_MAX)
+            .collect();
+        (!d.is_empty()).then_some(d)
     }
 
     /// Whether this card holds anything [`Self::of`] did not seed it with.
     ///
     /// The mirror of `of`: every field it copies as content is compared here
-    /// (`id` and `name_focused` are not content). `name` is compared trimmed
-    /// because `save_project` stores it trimmed.
+    /// (`id` and `name_focused` are not content). `name` and `description` are
+    /// compared as `save_project` stores them, trimmed.
     fn differs_from(&self, p: &project::Project) -> bool {
-        self.name.trim() != p.name || self.color != p.color || self.archived != p.archived
+        self.name.trim() != p.name
+            || self.color != p.color
+            || self.archived != p.archived
+            || self.description() != p.description
     }
 }
 
@@ -2053,6 +2074,12 @@ impl MastikApp {
     // No `act` parameter: the two things this commits (`dash.deleting_project`,
     // `dash.edit_project`) open a card and mutate no list, so they bypass `Act`.
     fn dashboard_header(&mut self, ui: &mut egui::Ui, count: usize) {
+        if let (Nav::Project(id), None) = (&self.dash.nav, &self.dash.search_page)
+            && let Some(p) = self.library.projects.get(id).cloned()
+        {
+            self.project_header(ui, &p, count);
+            return;
+        }
         let (heading, subheading) = self.heading(count);
         ui.horizontal(|ui| {
             // The tall item first: a `horizontal` row centres each item against the
@@ -2089,68 +2116,128 @@ impl MastikApp {
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                // Two plain buttons rather than a ⋮ menu: the destructive one is a glyph to aim at.
-                if let Nav::Project(id) = self.dash.nav.clone() {
-                    if delete_project_button(ui).clicked() && !self.dash.menu_was_up {
-                        self.dash.deleting_project = Some(DeleteProject {
-                            id: id.clone(),
-                            keep_files: true,
-                            transfer_to: None,
-                        });
-                    }
-                    // After *Delete project*: a right-to-left row places the first item at
-                    // the right margin. Drawn only when the project resolves, unlike
-                    // *Delete project*, which stays useful for one `projects.json` lost.
-                    if let Some(p) = self.library.projects.get(&id).cloned()
-                        && ui::action_button(
-                            ui,
-                            icon::PENCIL_SIMPLE,
-                            "Edit project",
-                            FieldButton::Off,
-                            egui::vec2(
-                                ui::action_button_w(ui.ctx(), "Edit project"),
-                                HEADER_CONTROL_H,
-                            ),
-                        )
-                        .clicked()
-                        && !self.dash.menu_was_up
-                    {
-                        // Its name field shows the real name.
-                        if crate::private::on() {
-                            self.session.info(crate::private::DECLINE_RENAME);
-                        } else {
-                            self.dash.edit_project = Some(EditProject::of(&p));
-                        }
-                    }
-                }
-                // A segmented track, not two icon buttons: one of grid and list is always on.
-                let selected = usize::from(self.dash.list_view);
-                let picked = ui::segmented_tipped(
-                    ui,
-                    VIEW_TRACK_W,
-                    VIEW_CELL_H,
-                    2,
-                    selected,
-                    |_| true,
-                    |i| if i == 0 { "Grid view" } else { "List view" },
-                    |p, i, rect, on| {
-                        let glyph = if i == 0 {
-                            icon::SQUARES_FOUR
-                        } else {
-                            icon::ROWS
-                        };
-                        ui::segment_glyph(p, rect, glyph, on);
-                    },
-                );
-                // Writes no preference: the `dashboard_*` defaults are set only in Settings.
-                if let Some(i) = picked {
-                    self.dash.list_view = i == 1;
-                }
-                self.sort_control(ui);
-                self.project_filter(ui);
+                self.header_controls(ui);
             });
         });
+    }
+
+    /// A project's page header: its *Recent* mosaic of the five newest files
+    /// ([`Self::project_mosaic`]), then its colour and name, its description when
+    /// it has one, and the counts; the body header's controls sit under it,
+    /// right-aligned. An empty project shows no mosaic.
+    fn project_header(&mut self, ui: &mut egui::Ui, p: &project::Project, count: usize) {
+        let dot = swatch(&p.color);
+        let (_, counts) = self.heading(count);
+        // Private mode masks it as it masks the name: it is left out.
+        let description = p.description.clone().filter(|_| !crate::private::on());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            if self.library.file_count(&p.id) > 0 {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(PROJECT_HEADER_MOSAIC_W, MOSAIC_H),
+                    egui::Sense::hover(),
+                );
+                self.project_mosaic(ui, &p.id, rect, dot);
+            }
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::Vec2::splat(DOT + 2.0), egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(rect, egui::CornerRadius::same(2), dot);
+                    ui.label(
+                        egui::RichText::new(self.library.shown_project(p))
+                            .size(ui::HEADING_PT)
+                            .color(theme::text::strong()),
+                    );
+                });
+                if let Some(d) = description {
+                    ui.label(
+                        egui::RichText::new(d)
+                            .size(ui::CONTROL_PT)
+                            .color(theme::text::muted()),
+                    );
+                }
+                ui.label(
+                    egui::RichText::new(counts)
+                        .size(ui::SMALL_PT)
+                        .color(theme::text::dim()),
+                );
+            });
+        });
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.header_controls(ui);
+            });
+        });
+    }
+
+    /// The body header's controls, laid right to left from the right margin: a
+    /// project's *Delete* and *Edit*, the view switch, the sort and the filter.
+    fn header_controls(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        // Two plain buttons rather than a ⋮ menu: the destructive one is a glyph to aim at.
+        if let (Nav::Project(id), None) = (self.dash.nav.clone(), &self.dash.search_page) {
+            if delete_project_button(ui).clicked() && !self.dash.menu_was_up {
+                self.dash.deleting_project = Some(DeleteProject {
+                    id: id.clone(),
+                    keep_files: true,
+                    transfer_to: None,
+                });
+            }
+            // After *Delete project*: a right-to-left row places the first item at
+            // the right margin. Drawn only when the project resolves, unlike
+            // *Delete project*, which stays useful for one `projects.json` lost.
+            if let Some(p) = self.library.projects.get(&id).cloned()
+                && ui::action_button(
+                    ui,
+                    icon::PENCIL_SIMPLE,
+                    "Edit project",
+                    FieldButton::Off,
+                    egui::vec2(
+                        ui::action_button_w(ui.ctx(), "Edit project"),
+                        HEADER_CONTROL_H,
+                    ),
+                )
+                .clicked()
+                && !self.dash.menu_was_up
+            {
+                // Its name field shows the real name.
+                if crate::private::on() {
+                    self.session.info(crate::private::DECLINE_RENAME);
+                } else {
+                    self.dash.edit_project = Some(EditProject::of(&p));
+                }
+            }
+        }
+        // A segmented track, not two icon buttons: one of grid and list is always on.
+        let selected = usize::from(self.dash.list_view);
+        let picked = ui::segmented_tipped(
+            ui,
+            VIEW_TRACK_W,
+            VIEW_CELL_H,
+            2,
+            selected,
+            |_| true,
+            |i| if i == 0 { "Grid view" } else { "List view" },
+            |p, i, rect, on| {
+                let glyph = if i == 0 {
+                    icon::SQUARES_FOUR
+                } else {
+                    icon::ROWS
+                };
+                ui::segment_glyph(p, rect, glyph, on);
+            },
+        );
+        // Writes no preference: the `dashboard_*` defaults are set only in Settings.
+        if let Some(i) = picked {
+            self.dash.list_view = i == 1;
+        }
+        self.sort_control(ui);
+        self.project_filter(ui);
     }
 
     /// Whether the project filter is offered, and so whether
@@ -4258,6 +4345,7 @@ impl MastikApp {
             folder,
             created: clock::now(),
             archived: false,
+            description: None,
         });
         if !self.library.save_projects() {
             self.session.fail("Could not write projects.json");
@@ -4332,6 +4420,7 @@ impl MastikApp {
             .find(|p| p.id == ep.id)
         {
             p.name = name;
+            p.description = ep.description();
             p.color = ep.color;
             p.archived = ep.archived;
             p.folder = folder;
@@ -4522,6 +4611,23 @@ impl MastikApp {
             if !ep.name_focused {
                 field.request_focus();
                 ep.name_focused = true;
+            }
+
+            // One line, in *Edit project* only: *New project* keeps its three rows.
+            ui.add_space(settings::ROW_GAP);
+            field_label(ui, "Description");
+            ui::text_field(
+                ui,
+                egui::vec2(ui.available_width(), settings::FIELD_H),
+                &mut ep.description,
+                "Optional",
+            );
+            if ep.description.chars().count() > project::DESCRIPTION_MAX {
+                ep.description = ep
+                    .description
+                    .chars()
+                    .take(project::DESCRIPTION_MAX)
+                    .collect();
             }
 
             ui.add_space(settings::ROW_GAP);
@@ -6406,6 +6512,7 @@ mod tests {
             folder: None,
             created: 0,
             archived: false,
+            description: None,
         });
         let kestrel = app.library.projects.projects[0].clone();
         let mut a = mastik_core::Document::new(app.session.ids.mint());
@@ -6631,6 +6738,7 @@ mod tests {
                 folder: None,
                 created: 0,
                 archived: false,
+                description: None,
             });
         app.library.save_projects();
         app.library.refresh();
@@ -7049,6 +7157,7 @@ mod tests {
             folder: Some("kestrel".into()),
             created: 0,
             archived: false,
+            description: None,
         };
         crate::library::project::Projects {
             version: 1,
@@ -8301,6 +8410,7 @@ mod tests {
                 folder: None,
                 created: 0,
                 archived: false,
+                description: None,
             };
             app.library.projects.projects.push(p.clone());
             let mut doc = mastik_core::Document::new(app.session.ids.mint());
@@ -9118,6 +9228,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A project's page heads with its name and description, and the card counts
+    /// a description edit alone as a change, trimmed; private mode leaves the
+    /// description out.
+    /// flip: `EditProject::differs_from` ignoring the description → fails at
+    /// "a description alone is an edit".
+    #[test]
+    fn a_project_page_heads_with_its_description() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "project-head");
+        seed(&mut app, "p-1", "Web shop", None);
+        seed_file(&mut app, &root, "p-1", "Checkout");
+        app.library.projects.projects[0].description = Some("Spring launch".into());
+        app.dash.nav = Nav::Project("p-1".into());
+        let runs = galleys(&mut app, &ctx);
+        assert!(in_body(&runs, "Web shop") && in_body(&runs, "Spring launch"));
+
+        let p = app.library.projects.projects[0].clone();
+        let mut card = EditProject::of(&p);
+        assert!(!card.differs_from(&p), "seeded, nothing changed");
+        card.description = " Spring launch ".into();
+        assert!(!card.differs_from(&p), "compared trimmed");
+        card.description = "Autumn launch".into();
+        assert!(card.differs_from(&p), "a description alone is an edit");
+
+        app.set_private(true);
+        assert!(!in_body(&galleys(&mut app, &ctx), "Spring launch"));
+        app.set_private(false);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A narrow list drops *Created*, then *Opened*, rather than eliding every
     /// column, and *Name* keeps at least its floor while it can.
     /// flip: `list_columns` dropping *Opened* first → fails at "Created goes first".
@@ -9586,6 +9727,7 @@ mod tests {
             folder: folder.map(str::to_string),
             created: 0,
             archived: false,
+            description: None,
         });
     }
 
@@ -9751,6 +9893,7 @@ mod tests {
             name: "  Harbor App  ".into(),
             color: project::PROJECT_COLORS[3].into(),
             archived: true,
+            description: "  Storefront redesign  ".into(),
             name_focused: true,
         });
         app.save_project();
@@ -9764,6 +9907,11 @@ mod tests {
         assert_eq!(saved.name, "Harbor App", "the name is trimmed and written");
         assert_eq!(saved.color, project::PROJECT_COLORS[3]);
         assert!(saved.archived);
+        assert_eq!(
+            saved.description.as_deref(),
+            Some("Storefront redesign"),
+            "the description is trimmed and written to projects.json"
+        );
         assert_eq!(saved.folder.as_deref(), Some("harbor-app"));
         assert!(
             root.join("harbor-app").join("landing-v4.mastik").is_file(),

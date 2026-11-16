@@ -963,6 +963,7 @@ mod leak {
             folder: Some("secret".into()),
             created: 0,
             archived: false,
+            description: None,
         });
         let filed = app.library.projects.get("p-1").cloned();
         let mut doc = mastik_core::Document::new(app.session.ids.mint());

@@ -364,6 +364,7 @@ mod tests {
             folder: Some(naming::slug(name)),
             created: 0,
             archived: false,
+            description: None,
         }
     }
 

@@ -556,6 +556,7 @@ mod tests {
             folder: None,
             created: 0,
             archived: false,
+            description: None,
         });
         entries[0].meta.project = Some("p".into());
         entries[1].meta.project = Some("p".into());
@@ -688,6 +689,7 @@ mod tests {
             folder: None,
             created: 0,
             archived: false,
+            description: None,
         };
         file(&root, "Landing v4", Some(&ghost));
         let lib = Library::open(root.clone());
@@ -798,6 +800,7 @@ mod tests {
             folder: Some("kestrel".into()),
             created: 0,
             archived: false,
+            description: None,
         };
         let mut doc = blank();
         let at_root = store::file_document(&root, None, "Landing v4", &mut doc).unwrap();

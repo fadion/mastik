@@ -14896,6 +14896,7 @@ mod library_wiring_tests {
                     folder: folder.map(str::to_string),
                     created: 0,
                     archived: false,
+                    description: None,
                 });
         }
         let kestrel = app.library.projects.projects[0].clone();
@@ -16135,6 +16136,7 @@ mod library_wiring_tests {
                 folder: Some("kestrel".into()),
                 created: 0,
                 archived: false,
+                description: None,
             });
         let project = app.library.projects.projects[0].clone();
         for (name, p) in [
