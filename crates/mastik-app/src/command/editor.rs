@@ -176,6 +176,12 @@ pub(crate) struct Scripts {
     last_press: Option<(f64, egui::Pos2)>,
     /// The line a closing word just stepped back, until the next letter typed.
     stepped: Option<code_keys::Stepped>,
+    /// The open library script's text as last read from or written to its
+    /// file: a file that no longer reads so was changed outside Mastik.
+    on_disk: Option<String>,
+    /// When the open library script's file is looked at again, as the open
+    /// document's is.
+    disk_watch: crate::library::disk::Watch,
 }
 
 /// The completion list open over the code this frame: its rows (the word they
@@ -289,6 +295,7 @@ impl MastikApp {
             ::log::warn!(target: "mastik", "the scripts folder's definitions: {e}");
         }
         self.scripts.library = library::list();
+        self.follow_library_disk();
         if self.scripts.current.is_none() {
             let first = self
                 .session
@@ -409,6 +416,54 @@ impl MastikApp {
     /// Read the library folder again, as the palette opens.
     pub(crate) fn refresh_script_library(&mut self) {
         self.scripts.library = library::list();
+        self.follow_library_disk();
+    }
+
+    /// Show the open library script's file as it now reads, when it was changed
+    /// outside Mastik and nothing typed here waits to be written; with typing
+    /// waiting, [`Self::flush_library_write`] keeps both.
+    fn follow_library_disk(&mut self) {
+        let Some(Which::Library(name)) = self.scripts.current.clone() else {
+            return;
+        };
+        if self.scripts.pending.is_some() {
+            return;
+        }
+        let Ok(now) = library::read(&name) else {
+            return;
+        };
+        if self.scripts.on_disk.as_ref() == Some(&now) {
+            return;
+        }
+        self.scripts.on_disk = Some(now.clone());
+        if let Some(listed) = self.scripts.library.iter_mut().find(|s| s.name == name) {
+            listed.source = now.clone();
+        }
+        if now != self.scripts.buffer {
+            let ctx = self.egui_ctx.clone();
+            self.show_changed_text(&ctx, now);
+            self.session
+                .info(format!("Reloaded “{name}”: it changed on disk"));
+        }
+    }
+
+    /// Put `text`, changed under the pane by someone else, in the code pane: a
+    /// new id, so the text edit's undo never crosses into it, and the keyboard
+    /// and the caret (clamped to the new text) kept when the code had them.
+    fn show_changed_text(&mut self, ctx: &egui::Context, text: String) {
+        let old = self.scripts.code_id();
+        let focused = ctx.memory(|m| m.has_focus(old));
+        let sel = selection(ctx, old, &self.scripts.buffer);
+        self.scripts.buffer = text;
+        self.scripts.shown += 1;
+        self.scripts.word_drag = None;
+        self.scripts.stepped = None;
+        if focused {
+            self.scripts.focus_code = true;
+            if let Some(sel) = sel {
+                put_selection(ctx, self.scripts.code_id(), &self.scripts.buffer, sel);
+            }
+        }
     }
 
     /// The palette's *Run* row `i`: start that script's run.
@@ -434,9 +489,20 @@ impl MastikApp {
         mastik_core::script::free_name(&taken, &format!("{} 1", mastik_core::script::UNTITLED))
     }
 
-    /// Show `which` in the code pane, writing any library edit still waiting.
+    /// Show `which` in the code pane, writing any library edit still waiting. A
+    /// library script is read from its file, as it is now.
     fn pick_script(&mut self, which: Which) {
         self.flush_library_write();
+        let fresh = match &which {
+            Which::Library(name) => library::read(name).ok(),
+            _ => None,
+        };
+        if let (Which::Library(name), Some(text)) = (&which, &fresh)
+            && let Some(listed) = self.scripts.library.iter_mut().find(|s| s.name == *name)
+        {
+            listed.source = text.clone();
+        }
+        self.scripts.on_disk = fresh;
         self.scripts.buffer = self.script_source(&which).unwrap_or_default();
         self.scripts.shown += 1;
         self.scripts.word_drag = None;
@@ -537,19 +603,50 @@ impl MastikApp {
         out
     }
 
-    /// Write the library script being typed in, if it is waiting.
-    pub(crate) fn flush_library_write(&mut self) {
+    /// Write the library script being typed in, if it is waiting. When its file
+    /// was changed outside Mastik meanwhile, nothing is written over it: the
+    /// typing is saved as a new library script beside it (an unsaved one if that
+    /// fails), shown in its place. Answers `false` then, so a run or an act does
+    /// not go on with the file's text.
+    pub(crate) fn flush_library_write(&mut self) -> bool {
         let Some(Which::Library(name)) = self.scripts.current.clone() else {
             self.scripts.pending = None;
-            return;
+            return true;
         };
         if self.scripts.pending.take().is_none() {
-            return;
+            return true;
+        }
+        let now = library::read(&name).ok();
+        if let (Some(now), Some(was)) = (&now, &self.scripts.on_disk)
+            && now != was
+        {
+            let typed = std::mem::take(&mut self.scripts.buffer);
+            let copy = library::unique_name(&name);
+            let kept = match library::write(&copy, &typed) {
+                Ok(()) => {
+                    self.scripts.library = library::list();
+                    self.pick_script(Which::Library(copy.clone()));
+                    copy
+                }
+                Err(_) => {
+                    let unsaved = self.unsaved_name();
+                    self.add_unsaved(typed);
+                    unsaved
+                }
+            };
+            self.session.fail(format!(
+                "“{name}” changed on disk, so your edit was saved as “{kept}” instead"
+            ));
+            return false;
         }
         match library::write(&name, &self.scripts.buffer) {
-            Ok(()) => self.scripts.library = library::list(),
+            Ok(()) => {
+                self.scripts.on_disk = Some(self.scripts.buffer.clone());
+                self.scripts.library = library::list();
+            }
             Err(e) => self.session.fail(format!("Couldn't save {name}: {e}")),
         }
+        true
     }
 
     /// Put the code pane's text where the script lives: a document script as an
@@ -758,7 +855,14 @@ impl MastikApp {
     /// script not shown here in this text, then the form for a script with
     /// inputs, then the run.
     pub(crate) fn start_script_run(&mut self, which: Which) {
-        self.flush_library_write();
+        if !self.flush_library_write() {
+            return;
+        }
+        // A library script runs as its file reads now, which the pane then shows.
+        if matches!(which, Which::Library(_)) {
+            self.scripts.library = library::list();
+            self.follow_library_disk();
+        }
         let Some((name, source)) = self.script_named(&which) else {
             return;
         };
@@ -955,12 +1059,21 @@ impl MastikApp {
         } else if self.scripts.pending.is_some() {
             ctx.request_repaint_after(WRITE_AFTER);
         }
-        // A document script changed under the pane (an undo): show it as it is.
+        // An open library script's file is looked at as the open document's is.
+        if matches!(self.scripts.current, Some(Which::Library(_))) {
+            let (now, focused) = ctx.input(|i| (i.time, i.viewport().focused.unwrap_or(true)));
+            match self.scripts.disk_watch.due(now, focused) {
+                Ok(()) => self.follow_library_disk(),
+                Err(wait) => ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait)),
+            }
+        }
+        // A document script changed under the pane (an undo, an agent's edit):
+        // show it as it is, the keyboard staying with the code.
         if let Some(Which::Document(id)) = &self.scripts.current {
             match self.session.doc.script(*id) {
                 Some(s) if s.source != self.scripts.buffer => {
-                    self.scripts.buffer = s.source.clone();
-                    self.scripts.shown += 1;
+                    let text = s.source.clone();
+                    self.show_changed_text(ctx, text);
                 }
                 Some(_) => {}
                 None => {
@@ -1294,6 +1407,12 @@ impl MastikApp {
     /// Act on what the window asked for.
     fn scripts_act(&mut self, act: Option<Act>) {
         let Some(act) = act else { return };
+        // Every act reads the script as last typed. A write refused over an
+        // outside edit has just moved the typing elsewhere, which the status line
+        // says; the act waits for the person to look.
+        if !self.flush_library_write() {
+            return;
+        }
         let current = self.scripts.current.clone();
         match act {
             Act::Close => {
@@ -1727,6 +1846,11 @@ mod library {
 
     pub(crate) fn list() -> Vec<LibraryScript> {
         open().map(|l| l.list()).unwrap_or_default()
+    }
+
+    /// The script `name`'s file as it reads now.
+    pub(crate) fn read(name: &str) -> Result<String, ScriptError> {
+        open()?.read(name)
     }
 
     /// Bring the folder's API definitions up to this version's.
@@ -3829,6 +3953,109 @@ mod tests {
         );
         assert_eq!(app.scripts.library.len(), 2, "and the library has its copy");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A headless app whose editor is open on the library script `Grid`, its
+    /// file holding `source`, in a scratch library folder.
+    fn open_on_library(tag: &str, source: &str) -> (std::path::PathBuf, MastikApp) {
+        let dir = scratch_library(tag);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Grid.luau"), source).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        app.open_scripts();
+        assert_eq!(
+            app.scripts.current,
+            Some(Which::Library("Grid".into())),
+            "fixture: Grid is open"
+        );
+        (dir, app)
+    }
+
+    /// An open library script whose file changed outside, with nothing typed
+    /// waiting, shows the file's text once the folder is read again.
+    /// flip: `refresh_script_library` not calling `follow_library_disk` → fails
+    /// at "the pane shows the file".
+    #[test]
+    fn an_outside_edit_of_an_open_library_script_is_shown() {
+        let (dir, mut app) = open_on_library("follow", "a");
+        std::fs::write(dir.join("Grid.luau"), "b").unwrap();
+        app.refresh_script_library();
+        assert_eq!(app.scripts.buffer, "b", "the pane shows the file");
+        assert_eq!(
+            app.session.status().text,
+            "Reloaded “Grid”: it changed on disk"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Typing waiting over a library script whose file changed outside is
+    /// never written over that file: it is saved beside it and shown there.
+    /// flip: `flush_library_write` without its changed-on-disk check → fails at
+    /// "the write is refused".
+    #[test]
+    fn typing_never_overwrites_an_outside_edit() {
+        let (dir, mut app) = open_on_library("clash", "a");
+        app.scripts.buffer = "a typed".into();
+        app.store_buffer();
+        assert!(app.scripts.pending.is_some(), "fixture: a write waits");
+        std::fs::write(dir.join("Grid.luau"), "b").unwrap();
+        assert!(!app.flush_library_write(), "the write is refused");
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap();
+        assert_eq!(read("Grid.luau"), "b", "Grid keeps the outside edit");
+        assert_eq!(read("Grid 2.luau"), "a typed", "the typing is kept");
+        assert_eq!(app.scripts.current, Some(Which::Library("Grid 2".into())));
+        assert_eq!(app.scripts.buffer, "a typed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// *Copy into this document* of a library script copies what was typed,
+    /// before its write delay has passed.
+    /// flip: `scripts_act` not flushing first → fails at "the last typing".
+    #[test]
+    fn copy_into_the_document_takes_the_last_typing() {
+        let (dir, mut app) = open_on_library("copy", "a");
+        app.scripts.buffer = "a typed".into();
+        app.store_buffer();
+        app.scripts_act(Some(Act::CopyToDocument));
+        let copied = app.session.doc.scripts().last().map(|s| s.source.clone());
+        assert_eq!(copied.as_deref(), Some("a typed"), "the last typing");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A document script changed under the pane while its code has the
+    /// keyboard keeps the keyboard in the code, on the new text's id.
+    /// flip: `show_changed_text` not setting `focus_code` → fails at "the code
+    /// keeps the keyboard".
+    #[test]
+    fn an_outside_change_to_the_open_script_keeps_the_keyboard() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = typing_at_end("sel.x += 1");
+        let Some(Which::Document(id)) = app.scripts.current.clone() else {
+            panic!("fixture: a document script is open");
+        };
+        let old = app.scripts.code_id();
+        assert!(
+            app.session
+                .commit(Transaction(vec![Operation::SetScriptSource {
+                    id,
+                    source: "sel.x += 2".into(),
+                }]))
+        );
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(
+            app.scripts.buffer, "sel.x += 2",
+            "fixture: the pane follows"
+        );
+        assert_ne!(app.scripts.code_id(), old, "fixture: on a new id");
+        let code = app.scripts.code_id();
+        assert!(
+            ctx.memory(|m| m.has_focus(code)),
+            "the code keeps the keyboard"
+        );
+        assert_eq!(caret(&ctx, &app), Some(10), "the caret where it was");
     }
 
     /// A right-click on a list row opens that script and its menu at the

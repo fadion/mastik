@@ -262,11 +262,23 @@ document records what its run committed and never needs it.
 | **This document** | `Document::scripts()` (`mastik_core::script`), saved as the optional `scripts` key (`io.md`) | each change a `SetScriptSource`, typing folding into one *Edit script* step |
 | **Kit · name** | the kit's published state (`kit::freeze` carries its scripts), listed from its latest publish | read-only |
 
-- **The library folder.** A script's name is its file's stem, compared without case as Windows and
-  macOS compare file names; `check_name` refuses a name that is not one plain file name on every
-  platform, and a name ending `.d`. Writes are atomic, and a pending write is flushed on exit. A
-  delete asks first (*Delete script?*), since it removes the file with no undo. `mastik.d.luau`
-  (§10, *Types*) sits beside the scripts and is never listed as one.
+- **The library folder.** A script's name is its file's stem. A name finds the file with exactly
+  that name, else the one file whose name differs only in case, as Windows and macOS compare file
+  names; where a case-sensitive folder holds several (`Grid.luau` and `grid.luau`) and none exact,
+  the name is refused rather than guessed. A `.luau` file that is not UTF-8 text is not listed, but
+  its name stays taken: nothing is saved, renamed or written over it. `check_name` refuses a name
+  that is not one plain file name on every platform, and a name ending `.d`. Writes are atomic, and
+  a pending write is flushed on exit. A delete asks first (*Delete script?*), since it removes the
+  file with no undo. `mastik.d.luau` (§10, *Types*) sits beside the scripts and is never listed as
+  one.
+- **A library script changed outside Mastik** (an outside editor, a `git pull`) is read again
+  whenever the folder is (the window opening, the palette opening, a run), and while it is open as
+  the open document's file is (`library::disk::Watch`: every 45 s and when the window gets the
+  focus back). With no typing waiting to be written, the pane takes the file's text and the status
+  line says *Reloaded “Grid”: it changed on disk*, as for a clean document. With typing waiting,
+  nothing is written over the outside edit: the typing is saved as a new library script beside it
+  (*Grid 2*), which the pane then shows, and the status line says so. The pending write at exit
+  does the same, so neither text is lost.
 - **Document scripts** change through `AddScript`, `RemoveScript`, `SetScriptName` and
   `SetScriptSource` (the two setters fold into an edit run) and the verbs `add_script`,
   `set_script`, `remove_script`.
