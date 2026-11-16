@@ -58,10 +58,12 @@ the language. A script gets no sugar: it is Luau as written.
 The rewrites, in order, on one line:
 
 1. **Verb call.** A first word that names a registry verb, followed by whitespace or the end and not
-   by `=` or a compound operator, is a call; the other words are its arguments. Numbers, `true`,
-   `false`, `nil` and quoted strings stay themselves; any other word becomes a string. `align left`
-   is `align("left")`, `duplicate 3` is `duplicate(3)`. **Names are the registry's, with no
-   aliases**: `dup 3` is not a verb and runs as written.
+   by `=`, a compound operator or an opening `{`, `(` or `[`, is a call; the other words are its
+   arguments. Numbers, `true`, `false`, `nil` and quoted strings stay themselves; any other word
+   becomes a string. `align left` is `align("left")`, `set_visible false` is `set_visible(false)`.
+   A bracket after the space is Luau's own call form and runs as written: `duplicate { dx = 7 }`,
+   `align ("left")`. **Names are the registry's, with no aliases**: `dup 3` is not a verb and
+   runs as written.
 2. **Subject elision.** A `.name` in prefix position (the line's start, after an operator, an
    opening bracket, a comma or a keyword that a value follows) is `sel.name`: `sk.x = .x + 5` is
    `sk.x = sel.x + 5`.

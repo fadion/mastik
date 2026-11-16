@@ -51,8 +51,9 @@ pub fn desugar(line: &str) -> Line {
 }
 
 /// Rule 1: `align left` as `align("left")` when the first word names a verb and
-/// whitespace or the end follows it. Numbers, `true`, `false`, `nil` and quoted
-/// strings stay themselves; every other word becomes a string.
+/// whitespace or the end follows it, and no bracket opens after the space.
+/// Numbers, `true`, `false`, `nil` and quoted strings stay themselves; every
+/// other word becomes a string.
 fn verb_call(line: &str) -> Option<String> {
     let text = line.trim();
     let end = text
@@ -70,8 +71,9 @@ fn verb_call(line: &str) -> Option<String> {
         return None;
     }
     let rest = rest.trim_start();
-    // `group = 3` is an assignment and `align == x` a comparison, not arguments.
-    if rest.starts_with('=') || COMPOUND.iter().any(|op| rest.starts_with(op)) {
+    // `group = 3` is an assignment and `align == x` a comparison, not arguments;
+    // `duplicate { dx = 7 }` and `align ("left")` are Luau's own call forms.
+    if rest.starts_with(['=', '{', '(', '[']) || COMPOUND.iter().any(|op| rest.starts_with(op)) {
         return None;
     }
     let args: Vec<String> = words(rest)
