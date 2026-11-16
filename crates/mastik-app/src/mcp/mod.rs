@@ -1195,6 +1195,16 @@ fn undo(s: &mut EditorSession, agent: &str) -> Result<Answer, String> {
             Ok(()) => json(json!({ "undone": label, "under_later_steps": true })),
             Err(why) => Err(format!("Your step `{label}`: {why}. Nothing was changed")),
         },
+        // The client's own *Undo* step on top is not undone: that would put
+        // back the edit it took back.
+        None if s
+            .history
+            .done()
+            .next_back()
+            .is_some_and(|v| mine(v.note) && v.note.reverts.is_some()) =>
+        {
+            json(json!({ "undone": null }))
+        }
         None => {
             let step = own_step(s.history.done().next_back(), agent, "undo")?;
             json(json!({ "undone": s.undo().then_some(step).flatten() }))
@@ -1973,6 +1983,66 @@ mod tests {
             4,
             "which the rename keeps"
         );
+    }
+
+    /// With the client's only step taken back under the person's, a second
+    /// `undo` leaves the *Undo* step it made alone rather than putting the
+    /// edit back.
+    ///
+    /// flip: `undo`'s arm for its own *Undo* step on top removed → fails at
+    /// `undone: null`.
+    #[test]
+    fn a_second_undo_never_undoes_its_own_revert() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let mine = NodeId::from_wire(&rect(&mut engine, &mut docs, 1, "Mine")).unwrap();
+        let page = docs.session.page;
+        let theirs = mastik_core::Transaction(vec![mastik_core::Operation::SetName {
+            id: page,
+            name: "Theirs".into(),
+        }]);
+        docs.session.try_commit(theirs).unwrap();
+        let out = call(&mut engine, &mut docs, 1, "undo", json!({}));
+        assert_eq!(ok(&out)["under_later_steps"], true);
+        let depth = docs.session.history.undo_depth();
+        let again = call(&mut engine, &mut docs, 1, "undo", json!({}));
+        assert_eq!(ok(&again)["undone"], Value::Null);
+        assert!(
+            docs.session.doc.get(mine).is_none(),
+            "the edit stays taken back"
+        );
+        assert_eq!(docs.session.history.undo_depth(), depth);
+    }
+
+    /// The person taking back an agent's step under later ones makes a step of
+    /// their own, counted as a commit, which the agent's `undo` cannot reach.
+    ///
+    /// flip: `EditorSession::revert` keeping the reverted step's agent → fails
+    /// at "the person's step".
+    #[test]
+    fn the_persons_revert_of_an_agent_step_is_theirs() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let mine = NodeId::from_wire(&rect(&mut engine, &mut docs, 1, "Mine")).unwrap();
+        let serial = docs.session.history.done().next_back().unwrap().serial;
+        let page = docs.session.page;
+        let theirs = mastik_core::Transaction(vec![mastik_core::Operation::SetName {
+            id: page,
+            name: "Theirs".into(),
+        }]);
+        docs.session.try_commit(theirs).unwrap();
+        let commits = docs.session.commits();
+        docs.session.revert(serial).unwrap();
+        assert!(docs.session.doc.get(mine).is_none());
+        assert_eq!(docs.session.commits(), commits + 1, "a revert is a commit");
+        let top = docs.session.history.done().next_back().unwrap();
+        assert!(
+            top.note.agent.is_none() && top.note.origin == mastik_core::Origin::User,
+            "the person's step"
+        );
+        let undo = call(&mut engine, &mut docs, 1, "undo", json!({}));
+        assert!(undo.is_error, "the agent cannot undo it");
+        assert!(docs.session.doc.get(mine).is_none());
     }
 
     /// `undo` and `redo` answer the name of the step they moved, as the history

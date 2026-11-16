@@ -1953,8 +1953,9 @@ impl EditorSession {
 
     /// Take back the done step `serial` alone, under later steps that changed
     /// other things, as a new step named *Undo* and the step's name, with its
-    /// glyph and origin (`History::revert`). Nothing is said; the error is why
-    /// nothing moved.
+    /// glyph (`History::revert`). The new step is whoever takes it back: the
+    /// agent of the MCP call being answered, else the person. It counts as a
+    /// commit. Nothing is said; the error is why nothing moved.
     pub fn revert(&mut self, serial: u64) -> Result<(), String> {
         if self.compare.is_some() {
             return Err(crate::compare::READ_ONLY.to_owned());
@@ -1964,6 +1965,10 @@ impl EditorSession {
         };
         let mut note = step.note.clone();
         note.label = format!("Undo {}", step.note.label);
+        note.agent = self.mcp_agent.clone();
+        if note.agent.is_none() {
+            note.origin = mastik_core::Origin::User;
+        }
         self.end_edit_run();
         let dirty = self
             .history
@@ -1977,6 +1982,7 @@ impl EditorSession {
         self.keep_page();
         self.dirty = true;
         self.revision = revision;
+        self.commits = self.commits.wrapping_add(1);
         Ok(())
     }
 
