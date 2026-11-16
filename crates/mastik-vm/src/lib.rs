@@ -143,9 +143,10 @@ pub fn run_script(host: &mut dyn Host, env: &Env, source: &str) -> Result<Outcom
 }
 
 /// `n` as the bar shows it: a whole number bare, else at most three decimals
-/// with the trailing zeros trimmed.
+/// with the trailing zeros trimmed. From 1e15 up there are no decimals to trim,
+/// and the rounding would overflow near `f64::MAX`, so such a number is written whole.
 pub(crate) fn format_number(n: f64) -> String {
-    if !n.is_finite() {
+    if !n.is_finite() || n.abs() >= 1e15 {
         return n.to_string();
     }
     let r = (n * 1000.0).round() / 1000.0;

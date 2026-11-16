@@ -66,13 +66,16 @@ The rewrites, in order, on one line:
    `align ("left")`. **Names are the registry's, with no aliases**: `dup 3` is not a verb and
    runs as written.
 2. **Subject elision.** A `.name` in prefix position (the line's start, after an operator, an
-   opening bracket, a comma or a keyword that a value follows) is `sel.name`: `sk.x = .x + 5` is
-   `sk.x = sel.x + 5`.
+   opening bracket, an interpolation's `{`, a comma, a keyword that a value follows, or a number or
+   string, which Luau cannot index unless the string is a call's argument) is `sel.name`:
+   `sk.x = .x + 5` is `sk.x = sel.x + 5`.
 3. **Compound assignment adjusts each layer by itself.** `<expr>.<prop> op= <rhs>` is
    `<expr>:adjust("<prop>", by)`: `+=` adds, `-=` adds the negation, and `*=`, `/=`, `//=`, `%=`,
-   `^=` map each layer's own value through a function. Each statement on the line is rewritten by
-   itself: `<expr>` starts after the `;`, comment or block keyword before it and `<rhs>` ends at
-   the one after, so `.x += 5; .y -= 2` and `for … do l.x += 5 end` both work. The footer says
+   `^=` map each layer's own value through a function, whose parameter is named apart from every
+   name in `<rhs>`. Each statement on the line is rewritten by itself: `<expr>` starts after the
+   `;`, comment or block keyword before it and `<rhs>` ends at the one after, or where a name or a
+   statement keyword follows a complete expression, so `.x += 5; .y -= 2`, `.x += 5 .y += 3` and
+   `for … do l.x += 5 end` all work. The footer says
    *each by itself*. This is
    the one place the tiers differ, and it is kept: in a script `sel.x += 15` is Luau's read of the
    shared value then a write, which raises on a selection that disagrees; a script spells the

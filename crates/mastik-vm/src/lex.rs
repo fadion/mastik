@@ -163,13 +163,33 @@ fn close_quote(b: &[u8], i: usize) -> usize {
     let mut j = i + 1;
     while j < b.len() {
         match b[j] {
-            b'\\' => j += 2,
+            b'\\' => j = escape_end(b, j),
             b'\n' | b'\r' => return j,
             c if c == quote => return j + 1,
             _ => j += 1,
         }
     }
     b.len()
+}
+
+/// The end of the escape whose `\` is at `j`, as Luau reads it: `\` and a CRLF
+/// continue the string over both bytes, and `\z` skips every space after it,
+/// newlines included. Any other escape is the `\` and one byte.
+fn escape_end(b: &[u8], j: usize) -> usize {
+    match b.get(j + 1) {
+        Some(b'\r') if b.get(j + 2) == Some(&b'\n') => j + 3,
+        Some(b'z') => {
+            let mut k = j + 2;
+            while b
+                .get(k)
+                .is_some_and(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+            {
+                k += 1;
+            }
+            k
+        }
+        _ => j + 2,
+    }
 }
 
 /// The end of an interpolated string's text section starting at `i`, just past
@@ -181,7 +201,7 @@ fn interp_section(b: &[u8], i: usize) -> (usize, bool) {
         match b[j] {
             // `\u{…}` is an escape, its brace no interpolation.
             b'\\' if b.get(j + 1..j + 3) == Some(b"u{") => j += 3,
-            b'\\' => j += 2,
+            b'\\' => j = escape_end(b, j),
             b'\n' | b'\r' => return (j, false),
             b'`' => return (j + 1, false),
             b'{' => return (j + 1, true),

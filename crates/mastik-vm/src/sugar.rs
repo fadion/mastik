@@ -158,14 +158,64 @@ pub fn invisible(c: char) -> bool {
     )
 }
 
-/// Whether the lexeme before a `.` puts that `.` in prefix position: the line's
-/// start, an operator or an opening bracket or comma, or a keyword that a value follows.
-fn prefix_after(prev: Option<&Lexeme>, src: &str) -> bool {
-    let Some(prev) = prev else { return true };
+/// Whether the `.` at lexeme `i` is in prefix position: after the line's start,
+/// an operator or an opening bracket or comma, or a keyword that a value follows.
+/// A number or string counts too, as Luau cannot index a literal: the `.` starts
+/// a new statement, or follows an interpolation's opening `{`. A string that is a
+/// call's argument (`f "s"`) does not, as the call's result can be indexed.
+fn prefix_at(lexemes: &[Lexeme], i: usize, src: &str) -> bool {
+    let Some(prev) = i.checked_sub(1).map(|p| &lexemes[p]) else {
+        return true;
+    };
     let text = &src[prev.range.clone()];
     match prev.kind {
         Lx::Punct => !matches!(text, ")" | "]" | "}" | "." | "..." | ":"),
         Lx::Keyword => !matches!(text, "end" | "true" | "false" | "nil"),
+        Lx::Number => true,
+        Lx::String => {
+            opens_interpolation(text)
+                || !i
+                    .checked_sub(2)
+                    .is_some_and(|b| ends_expression(&lexemes[b], src))
+        }
+        Lx::Ident | Lx::Comment => false,
+    }
+}
+
+/// Whether a string lexeme's text is an interpolated string's section that opens a `{…}`.
+fn opens_interpolation(text: &str) -> bool {
+    text.len() > 1 && text.starts_with(['`', '}']) && text.ends_with('{')
+}
+
+/// Whether `l` ends a complete expression, so that a name right after it starts a
+/// new statement: a name, a number, a closed string, a closing bracket or a constant.
+fn ends_expression(l: &Lexeme, src: &str) -> bool {
+    let t = &src[l.range.clone()];
+    match l.kind {
+        Lx::Ident | Lx::Number => true,
+        Lx::String => !opens_interpolation(t),
+        Lx::Punct => matches!(t, ")" | "]" | "}"),
+        Lx::Keyword => matches!(t, "true" | "false" | "nil"),
+        Lx::Comment => false,
+    }
+}
+
+/// Whether `l` can only start a statement when it follows a complete expression.
+fn starts_statement(l: &Lexeme, src: &str) -> bool {
+    match l.kind {
+        Lx::Ident => true,
+        Lx::Keyword => matches!(
+            &src[l.range.clone()],
+            "local"
+                | "if"
+                | "for"
+                | "while"
+                | "repeat"
+                | "return"
+                | "function"
+                | "break"
+                | "continue"
+        ),
         _ => false,
     }
 }
@@ -180,7 +230,7 @@ fn elide(line: &str) -> String {
         let named = lexemes
             .get(i + 1)
             .is_some_and(|n| n.kind == Lx::Ident && n.range.start == l.range.end);
-        if dot && named && prefix_after(i.checked_sub(1).map(|p| &lexemes[p]), line) {
+        if dot && named && prefix_at(&lexemes, i, line) {
             out.push_str(&line[copied..l.range.start]);
             out.push_str("sel");
             copied = l.range.start;
@@ -212,7 +262,7 @@ pub fn marks(line: &str) -> Marks {
                 let named = lexemes
                     .get(i + 1)
                     .is_some_and(|n| n.kind == Lx::Ident && n.range.start == l.range.end);
-                if named && prefix_after(prev, line) {
+                if named && prefix_at(&lexemes, i, line) {
                     out.subject.push(l.range.start);
                 }
             }
@@ -294,7 +344,13 @@ fn compound(line: &str) -> (String, bool) {
             .map_or(0, |j| lexemes[j].range.end)
             .max(copied);
         let end_at = (i + 1..lexemes.len())
-            .find(|&j| depths[j] == 0 && closes_expression(&lexemes[j], line))
+            .find(|&j| {
+                depths[j] == 0
+                    && (closes_expression(&lexemes[j], line)
+                        || (j > i + 1
+                            && starts_statement(&lexemes[j], line)
+                            && ends_expression(&lexemes[j - 1], line)))
+            })
             .unwrap_or(lexemes.len());
         let end = match end_at {
             n if n == i + 1 => l.range.end,
@@ -311,8 +367,18 @@ fn compound(line: &str) -> (String, bool) {
             "-=" if lex::is_number(rhs) && !rhs.starts_with('-') => format!("-{rhs}"),
             "-=" => format!("-({rhs})"),
             _ => {
+                // The layer's value is bound by a name the amount does not use.
+                let names: Vec<&str> = lex::lex(rhs)
+                    .iter()
+                    .filter(|l| l.kind == Lx::Ident)
+                    .map(|l| &rhs[l.range.clone()])
+                    .collect();
+                let mut v = String::from("v");
+                while names.contains(&v.as_str()) {
+                    v.push('_');
+                }
                 let bare = &op[..op.len() - 1];
-                format!("function(v) return v {bare} ({rhs}) end")
+                format!("function({v}) return {v} {bare} ({rhs}) end")
             }
         };
         let lead = &line[start..dot.range.start];
@@ -372,7 +438,7 @@ pub(crate) fn classify(luau: &str) -> LineKind {
         let after = |d: usize| lexemes.get(i + d).map(text);
         let before = i.checked_sub(1).map(|p| text(&lexemes[p]));
         match l.kind {
-            Lx::Punct if text(l) == "=" || COMPOUND.contains(&text(l)) => {
+            Lx::Punct if matches!(text(l), "=" | "..=") || COMPOUND.contains(&text(l)) => {
                 return LineKind::Write;
             }
             Lx::Punct if text(l) == ":" => {

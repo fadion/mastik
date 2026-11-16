@@ -197,6 +197,23 @@ fn desugar_follows_the_four_rules() {
             "if true then sel:adjust(\"x\", 1) end",
         ),
         (".width = 50% -- half", "sel.width = percent(50) -- half"),
+        (
+            "local v = 2; .width *= v",
+            "local v = 2; sel:adjust(\"width\", function(v_) return v_ * (v) end)",
+        ),
+        (
+            ".x += 5 .y += 3",
+            "sel:adjust(\"x\", 5) sel:adjust(\"y\", 3)",
+        ),
+        (
+            "sk.x += 5 sk.y -= 1",
+            "sk:adjust(\"x\", 5) sk:adjust(\"y\", -1)",
+        ),
+        (
+            "print(`{.name} is {.width} wide`)",
+            "print(`{sel.name} is {sel.width} wide`)",
+        ),
+        ("print(f \"s\" .x)", "print(f \"s\" .x)"),
     ];
     for (line, luau) in cases {
         assert_eq!(desugar(line).luau, luau, "{line}");
@@ -214,6 +231,7 @@ fn desugar_follows_the_four_rules() {
         ("group()", LineKind::Write),
         ("sel:select()", LineKind::Write),
         (".x == 1", LineKind::Read),
+        (".name ..= \" copy\"", LineKind::Write),
     ] {
         assert_eq!(desugar(line).kind, kind, "{line}");
     }
@@ -232,6 +250,11 @@ fn marks_find_the_subject_and_free_names() {
         "the leading `.` and the one after `-`"
     );
     assert_eq!(names, vec!["fj", "print"], "no `x` after a dot, no string");
+    assert_eq!(
+        marks("print(`{.x}`)").subject,
+        vec![8],
+        "an interpolation's `{{` is an opening bracket"
+    );
 }
 
 /// An unknown name raises naming it and the nearest real one, placed on it; a
@@ -319,6 +342,26 @@ fn a_mixed_read_raises_naming_the_values() {
     assert_eq!(read.copied, read.value, "a number copies as shown");
 }
 
+/// A finite number near `f64::MAX` reads as its digits, never as "inf".
+/// flip: `format_number` rounding every finite number → fails at "1e306".
+#[test]
+fn a_huge_number_reads_whole() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let read = eval_read(&mut h, &e, "1e306").unwrap().unwrap();
+    assert!(
+        read.starts_with("1000") && read.len() == 307,
+        "1e306: {read}"
+    );
+    assert_eq!(format_number(-2.5e15), "-2500000000000000");
+    assert_eq!(format_number(1.23456), "1.235");
+    assert_eq!(
+        eval_read(&mut h, &e, "math.huge").unwrap().as_deref(),
+        Some("inf")
+    );
+}
+
 /// `.x = 10` moves every layer's left to 10 in world space.
 /// flip: `write` moving only `ids[0]` → fails at the second layer's x.
 #[test]
@@ -368,6 +411,8 @@ fn adjust_changes_each_by_itself() {
     )
     .unwrap();
     assert_eq!(h.x(ids[2]), 100.0);
+    run_line(&mut h, &e, "local v = 2; .width /= v").unwrap();
+    assert_eq!(h.width(ids[0]), 240.0, "the amount's `v` is the script's");
     let err = run_line(&mut h, &e, ".fill += 1").unwrap_err();
     assert!(
         err.message.starts_with("`adjust` changes a number"),
@@ -817,6 +862,49 @@ fn the_lexer_ends_lines_where_luau_does() {
     let labels = FxHashMap::default();
     run_script(&mut h, &env(&ids[..1], &labels), "-- tidy\rsel.x = 5").unwrap();
     assert_eq!(h.x(ids[0]), 5.0, "Luau ran the line");
+}
+
+/// The lexer ends strings, long brackets and comments where Luau does, each case
+/// held to a run: a script whose `sel.x = 5` the lexer reads as code moves the
+/// layer, and one it reads as text does not.
+/// flip: `escape_end` taking two bytes for `\z` → fails at the `\z` case.
+#[test]
+fn the_lexer_reads_strings_and_brackets_as_luau_does() {
+    let cases: [(&str, bool); 13] = [
+        ("local s = \"a\\z\n\" sel.x = 5 --\"", true),
+        ("local s = \"a\\z  \n\t \" sel.x = 5 --\"", true),
+        ("local s = \"a\\\r\n\" sel.x = 5 --\"", true),
+        ("local s = `a\\z\n` sel.x = 5 --`", true),
+        ("local s = \"a\\\"sel.x = 5\"", false),
+        ("local s = \"a\\\nsel.x = 5\"", false),
+        ("local s = [==[ ]] sel.x = 5 ]==]", false),
+        ("local s = [==[ ]] ]==] sel.x = 5", true),
+        ("--[[ sel.x = 5", false),
+        ("--[==[ ]] sel.x = 5 ]==]", false),
+        ("--[= note\nsel.x = 5", true),
+        ("local s = `a {`b {sel.x}`} c` sel.x = 5", true),
+        ("local s = [[ sel.x = 5", false),
+    ];
+    let labels = FxHashMap::default();
+    for (src, runs) in cases {
+        let used = names_used(src);
+        let expected: &[&str] = if runs { &["sel", "x"] } else { &[] };
+        assert_eq!(used, expected, "{src:?}");
+        let (mut h, ids) = three();
+        let ran = run_script(&mut h, &env(&ids[..1], &labels), src).is_ok() && h.x(ids[0]) == 5.0;
+        assert_eq!(ran, runs, "Luau agrees: {src:?}");
+    }
+    let src = "print(1.5, 1e-2, 0x1e-2, 0x10)";
+    let numbers: Vec<&str> = lex::lex(src)
+        .into_iter()
+        .filter(|l| l.kind == lex::Lx::Number)
+        .map(|l| &src[l.range])
+        .collect();
+    assert_eq!(
+        numbers,
+        ["1.5", "1e-2", "0x1e", "2", "0x10"],
+        "a hex `e` is a digit"
+    );
 }
 
 /// The editor's tokens tell constants, the standard library and called names
