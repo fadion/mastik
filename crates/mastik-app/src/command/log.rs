@@ -148,8 +148,8 @@ impl Log {
         self.seen = serial.map(|s| (s, u64::MAX));
     }
 
-    /// Note the undo step on top of `s`'s history if it is new, or re-render it if
-    /// a run folded more into it; called once a frame.
+    /// Note the undo steps made since the log last looked, or re-render the top
+    /// one if a run folded more into it; called once a frame.
     pub(crate) fn watch(s: &mut crate::session::EditorSession) {
         let mut log = std::mem::take(&mut s.command_log);
         log.observe(s);
@@ -184,12 +184,42 @@ impl Log {
             }
             _ => {}
         }
+        // Every step past the one last seen, oldest first: several can land in
+        // one frame (two agents' calls). A fresh log takes only the top.
+        let since = self.seen.map(|(serial, _)| serial);
+        let mut new: Vec<_> = s
+            .history
+            .done()
+            .rev()
+            .take_while(|step| since.is_some_and(|seen| step.serial > seen))
+            .collect();
+        if new.is_empty() {
+            new.push(top);
+        }
+        new.reverse();
         self.seen = Some((top.serial, rev));
+        let subjects: Vec<Vec<NodeId>> = new.iter().map(|step| step.inverse.subjects()).collect();
+        for (i, step) in new.iter().enumerate() {
+            // A step is rendered against the document now, which a later step
+            // of the same frame may have changed under it: then it is a hole.
+            let overwritten = subjects[i + 1..]
+                .iter()
+                .any(|later| later.iter().any(|id| subjects[i].contains(id)));
+            let line = match overwritten {
+                true => None,
+                false => render(&s.doc, &s.resolved, step.inverse),
+            };
+            self.log_step(step, line);
+        }
+    }
+
+    /// Log `step`, rendered as `line`.
+    fn log_step(&mut self, step: &mastik_core::StepView<'_>, line: Option<String>) {
         // An agent's step while an `/ai` request is open is that request's,
         // named by the step; the person's own edit closes the request. A step
         // carries the agent's name, never the chat it came from, so any agent's
         // counts.
-        let agents = match &top.note.origin {
+        let agents = match &step.note.origin {
             mastik_core::Origin::Mcp { .. } => true,
             mastik_core::Origin::User => {
                 self.ai_open = false;
@@ -197,11 +227,10 @@ impl Log {
             }
         };
         if agents && let Some(e) = self.open_ai() {
-            e.serial = Some(top.serial);
-            e.result = top.note.label.clone();
+            e.serial = Some(step.serial);
+            e.result = step.note.label.clone();
             return;
         }
-        let line = render(&s.doc, &s.resolved, top.inverse);
         // An agent's step with no command teaches no one the language: it is
         // left out, where the person's own shows as a hole to fill.
         if agents && line.is_none() {
@@ -211,12 +240,12 @@ impl Log {
             luau: line.as_deref().map(luau_of),
             line,
             source: Source::Edit {
-                label: top.note.label.clone(),
-                glyph: top.note.glyph.clone(),
+                label: step.note.label.clone(),
+                glyph: step.note.glyph.clone(),
             },
             result: String::new(),
             failed: false,
-            serial: Some(top.serial),
+            serial: Some(step.serial),
         });
         while self.entries.len() > KEEP {
             self.entries.pop_front();

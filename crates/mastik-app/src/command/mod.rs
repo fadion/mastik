@@ -2942,6 +2942,49 @@ pub(crate) mod tests {
         );
     }
 
+    /// Two agents' steps committed in one frame are both logged, oldest first.
+    ///
+    /// flip: `Log::observe` reading only the top step → fails at "both steps".
+    #[test]
+    fn steps_landing_in_one_frame_are_all_logged() {
+        let (ctx, mut app, card) = typed("x");
+        let other = add_rect(&mut app);
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        let rows = app.session.command_log.entries().len();
+        for (id, script, client) in [
+            (card, "sel.x += 3", "Claude Code"),
+            (other, "sel.opacity = 0.5", "Codex"),
+        ] {
+            let labels = Default::default();
+            let env = mastik_vm::Env {
+                selection: &[id],
+                labels: &labels,
+                params: Default::default(),
+            };
+            host::run_as_step(&mut app.session, "Edit", icon::SPARKLE, |h| {
+                mastik_vm::run_script(h, &env, script)
+            })
+            .expect("the step ran");
+            app.session.history.current_note_mut().unwrap().origin = mastik_core::Origin::Mcp {
+                client: client.into(),
+                tool: "run_script".into(),
+            };
+        }
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        let lines: Vec<Option<&str>> = app
+            .session
+            .command_log
+            .entries()
+            .skip(rows)
+            .map(|e| e.line.as_deref())
+            .collect();
+        assert_eq!(
+            lines,
+            [Some(".x += 3"), Some(".opacity = 0.5")],
+            "both steps"
+        );
+    }
+
     /// `↑` in an empty bar recalls an `/ai` request as it recalls a typed line.
     ///
     /// flip: the recall leaving `Source::Ai` out → fails at "recalled".

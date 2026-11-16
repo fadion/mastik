@@ -215,7 +215,9 @@ language covers.
   `.x += 5; .y -= 2`, opacity, name, visible and locked. The person's step with anything else
   reads *— no command yet —* beside its name, a hole in what the language covers; an agent's
   (`Origin::Mcp`) is left out, since it teaches no one the language. A run that folds more into
-  its step renders its line again.
+  its step renders its line again. Every step since the watcher last looked is logged, oldest
+  first, so two agents' calls answered in one frame are both listed; one whose layers a later step
+  of that frame also changed is a hole, since the document after it is gone.
 - **An `/ai` request is one entry** (`Source::Ai`), so the assistant's steps read as the request
   that made them. Sending it (`Log::asked`) logs `/ai ‹request›`, *Asked*, and holds the entry
   open: while open, any agent's step (`Origin::Mcp`) folds into it, taking its serial and the
