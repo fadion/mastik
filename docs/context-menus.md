@@ -495,7 +495,7 @@ menu and §8's keys walk and run its rows (`read_nav` into `Scripts::menu_nav`).
 - **The four image fit modes** — image editing's card owns them.
 - **Text on path** — the Text tool's gesture; the menu has only the way out (*Detach from path*).
 - **Type controls in a text session** — the Type card is beside it.
-- **Show layers, Show history, Show minimap, Show size preview, Show toolbar, Focus mode, Private mode, Show messages, Show dimension badge, Show ask assistant** on the canvas
+- **Show layers, Show history, Show minimap, Show size preview, Show toolbar, Focus mode, Private mode, Show messages, Show dimension badge, Show ask assistant, Show assistant scope** on the canvas
   menu — chrome-wide switches and selection chrome, not artwork, in the top bar's View menu.
 - **Lasso select** on any menu — the marquee's shape is a tool setting, not a view; `Q`, the
   palette and the rail's Select slot carry it.

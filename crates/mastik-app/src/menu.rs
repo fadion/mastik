@@ -613,6 +613,7 @@ impl ViewState {
             | ViewSwitch::Private
             | ViewSwitch::AlignVisual
             | ViewSwitch::AskAssistant
+            | ViewSwitch::AssistantScope
             | ViewSwitch::SizeBadge => None,
         }
     }
@@ -1066,6 +1067,7 @@ impl Item {
                     ViewSwitch::AlignVisual => icon::VISUAL_CENTRE,
                     ViewSwitch::SizePreview => icon::SIZE_PREVIEW,
                     ViewSwitch::AskAssistant => icon::SPARKLE,
+                    ViewSwitch::AssistantScope => icon::SCOPE_FRAME,
                     ViewSwitch::SizeBadge => icon::BOUNDING_BOX,
                     // Placeholders: no menu builds a row for these, and spelling
                     // them out makes a new switch a compile error here.
@@ -5010,6 +5012,7 @@ mod tests {
                     ViewSwitch::Focus
                         | ViewSwitch::Private
                         | ViewSwitch::AskAssistant
+                        | ViewSwitch::AssistantScope
                         | ViewSwitch::SizeBadge
                 )
             })

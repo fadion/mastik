@@ -532,6 +532,10 @@ pub enum ViewSwitch {
     /// The assistant's ask button over the selection (`crate::assistant::canvas`),
     /// on by default and unbound; it shows only while the assistant is on.
     AskAssistant,
+    /// The scope button beside a selected top-level frame's ask button
+    /// (`crate::assistant::canvas`), on by default and unbound. The scoped
+    /// frame's lit button shows either way.
+    AssistantScope,
     /// The width × height pill under the selection (`canvas::draw_size_badge`), on by
     /// default and unbound. A shape being drawn keeps its pill either way.
     SizeBadge,
@@ -564,16 +568,17 @@ impl ViewSwitch {
             Self::Private => "Private mode",
             Self::AlignVisual => "Align by visual centre",
             Self::AskAssistant => "Show ask assistant",
+            Self::AssistantScope => "Show assistant scope",
             Self::SizeBadge => "Show dimension badge",
         }
     }
 
     /// The View menu's first group, what the canvas draws, in the order Illustrator's
     /// View menu reads it: rulers, the guides pulled out of them, then the grid
-    /// beside the layout grid so the two read against each other; then the two
+    /// beside the layout grid so the two read against each other; then the
     /// things hung on the selection, the dimension badge and the assistant's ask
-    /// button.
-    pub const VIEW_CANVAS: [Self; 7] = [
+    /// and scope buttons.
+    pub const VIEW_CANVAS: [Self; 8] = [
         Self::Rulers,
         Self::Guides,
         Self::GuideLock,
@@ -581,6 +586,7 @@ impl ViewSwitch {
         Self::LayoutGrid,
         Self::SizeBadge,
         Self::AskAssistant,
+        Self::AssistantScope,
     ];
 
     /// The View menu's modes, which *Present mode* follows as a verb.
@@ -611,7 +617,7 @@ impl ViewSwitch {
     /// `#[cfg(test)]` because the tests are its only readers; an `#[allow]` would
     /// keep every item it names alive.
     #[cfg(test)]
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Rulers,
         Self::Guides,
         Self::GuideLock,
@@ -634,6 +640,7 @@ impl ViewSwitch {
         Self::Private,
         Self::AlignVisual,
         Self::AskAssistant,
+        Self::AssistantScope,
         Self::SizeBadge,
     ];
 

@@ -346,9 +346,9 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   for Tools, the label and any chord, then 8pt).
 - **View** reads in three groups between separators, so each kind of row is found in one place:
   - what the canvas draws, `ViewSwitch::VIEW_CANVAS`: *Show rulers*, *Show guides*, *Lock guides*,
-    *Show grid*, *Show layout grid*, then the two things hung on the selection: *Show dimension
-    badge* (the size badge, *The create box and size pill*) and *Show ask assistant* (the assistant's ask button over the
-    selection, `assistant.md` §4);
+    *Show grid*, *Show layout grid*, then the things hung on the selection: *Show dimension
+    badge* (the size badge, *The create box and size pill*), *Show ask assistant* (the assistant's ask button over the
+    selection, `assistant.md` §4) and *Show assistant scope* (its scope button on a top-level frame);
   - the modes, `ViewSwitch::VIEW_MODES`: *Outline mode*, *Pixel preview*, *Private mode*, *Focus mode*, then *Present
     mode* — a verb, not a switch: a check row that never ticks, which closes the menu and dispatches
     `Action::Present`;

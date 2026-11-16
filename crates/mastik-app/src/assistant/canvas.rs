@@ -159,8 +159,9 @@ impl MastikApp {
             });
         }
         // Lit over the scoped frame on this page while the panel is open or the
-        // frame is selected, whatever *Show ask assistant* says; unlit over a
-        // selected top-level frame while that switch is on.
+        // frame is selected, whatever the View switches say; unlit over a
+        // selected top-level frame while *Show ask assistant* and *Show
+        // assistant scope* are both on.
         let scoped = self
             .assistant
             .scope
@@ -175,6 +176,7 @@ impl MastikApp {
             out.push(b);
         }
         if self.show_ask
+            && self.show_scope
             && let Some(id) = self.scope_candidate().filter(|id| Some(*id) != scoped)
             && let Some(b) = self.scope_button(id, false, ppp, screen, &out)
         {
@@ -519,6 +521,28 @@ pub(crate) mod tests {
         assert_eq!(scope_buttons(&app), 0, "two frames");
         app.session.selection.set_one(about);
         assert_eq!(scope_buttons(&app), 1, "the fixture can show one");
+    }
+
+    /// *View ▸ Show assistant scope* off hides the unlit scope button and leaves
+    /// the ask button.
+    /// flip: `ask_buttons` not reading `show_scope` → fails at "the switch hides it".
+    #[test]
+    fn the_scope_switch_hides_the_scope_button() {
+        let ctx = egui::Context::default();
+        let mut app = scoping_app(&ctx);
+        let page = app.session.page;
+        let home = add_frame(&mut app, page, "Home");
+        app.session.selection.set_one(home);
+        let count = |app: &MastikApp, scope: bool| {
+            buttons(&ctx, app)
+                .into_iter()
+                .filter(|b| matches!(b.0, AskKind::Scope { .. }) == scope)
+                .count()
+        };
+        assert_eq!(count(&app, true), 1, "the control: on by default");
+        app.set_view_switch(crate::input::ViewSwitch::AssistantScope, false);
+        assert_eq!(count(&app, true), 0, "the switch hides it");
+        assert_eq!(count(&app, false), 1, "and keeps the ask button");
     }
 
     /// A link hovered in a reply outlines its layer on this page, and nothing

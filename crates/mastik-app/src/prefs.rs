@@ -71,6 +71,9 @@ pub struct ViewPrefs {
     /// The ask-the-assistant button over the selection (*View ▸ Show ask
     /// assistant*).
     pub ask_assistant: bool,
+    /// The scope button beside a top-level frame's ask button (*View ▸ Show
+    /// assistant scope*).
+    pub assistant_scope: bool,
     /// The width × height pill under the selection (*View ▸ Show dimension badge*).
     pub size_badge: bool,
     /// The tool rail's frame slot shows the slice tool, last picked there.
@@ -109,6 +112,7 @@ impl Default for ViewPrefs {
             snap_baselines: true,
             lasso: false,
             ask_assistant: true,
+            assistant_scope: true,
             size_badge: true,
             rail_slice: false,
             rail_line: crate::rail::Member::Line,

@@ -322,7 +322,7 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
 - **The ask button** is a small `icon::SPARKLE` button above the selection's top-right corner, its
   right edge on the selection's and its bottom 8 clear of it, one for the whole selection and the
   same size at every zoom. Where there is no room above it sits inside the corner, and it stays left
-  of the inspector's cards. *View ▸ Show ask assistant* (`ViewSwitch::AskAssistant`, last of the
+  of the inspector's cards. *View ▸ Show ask assistant* (`ViewSwitch::AskAssistant`, in the
   View menu's canvas group; per machine, on by default) hides it; the context menu's row stays. The
   canvas context menu's view rows leave it out.
 - **An attached layer has its own ask button, lit**, in the same place over that layer, carrying the
@@ -355,8 +355,10 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   chat* keeps it, private mode keeps it, and closing the tab drops it.
 - **Two doors**, neither of which attaches anything:
   - **The scope button** (`icon::SCOPE_FRAME`, `AskKind::Scope`): unlit over a selection that is
-    exactly one top-level frame while *Show ask assistant* is on; lit over the scoped frame on its
-    page while the panel is open or the frame is selected, whatever that switch says. It stands
+    exactly one top-level frame while *Show ask assistant* and *View ▸ Show assistant scope*
+    (`ViewSwitch::AssistantScope`, last of the canvas group; per machine, on by default) are both
+    on; lit over the scoped frame on its page while the panel is open or the frame is selected,
+    whatever those switches say. It stands
     `SCOPE_GAP` (4) left of the ask button at that corner and level with it, or in the ask
     button's place when none stands there; where it would leave the canvas it is dropped and the
     ask button stays. Unlit, a click scopes the assistant and opens the panel with the composer
