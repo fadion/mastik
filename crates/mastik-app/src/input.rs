@@ -523,6 +523,9 @@ pub enum ViewSwitch {
     /// The assistant's ask button over the selection (`crate::assistant::canvas`),
     /// on by default and unbound; it shows only while the assistant is on.
     AskAssistant,
+    /// The width × height pill under the selection (`canvas::draw_size_badge`), on by
+    /// default and unbound. A shape being drawn keeps its pill either way.
+    SizeBadge,
 }
 
 impl ViewSwitch {
@@ -552,19 +555,22 @@ impl ViewSwitch {
             Self::Private => "Private mode",
             Self::AlignVisual => "Align by visual centre",
             Self::AskAssistant => "Show ask assistant",
+            Self::SizeBadge => "Show dimension badge",
         }
     }
 
     /// The View menu's first group, what the canvas draws, in the order Illustrator's
     /// View menu reads it: rulers, the guides pulled out of them, then the grid
-    /// beside the layout grid so the two read against each other; the
-    /// assistant's ask button last.
-    pub const VIEW_CANVAS: [Self; 6] = [
+    /// beside the layout grid so the two read against each other; then the two
+    /// things hung on the selection, the dimension badge and the assistant's ask
+    /// button.
+    pub const VIEW_CANVAS: [Self; 7] = [
         Self::Rulers,
         Self::Guides,
         Self::GuideLock,
         Self::Grid,
         Self::LayoutGrid,
+        Self::SizeBadge,
         Self::AskAssistant,
     ];
 
@@ -596,7 +602,7 @@ impl ViewSwitch {
     /// `#[cfg(test)]` because the tests are its only readers; an `#[allow]` would
     /// keep every item it names alive.
     #[cfg(test)]
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Rulers,
         Self::Guides,
         Self::GuideLock,
@@ -619,6 +625,7 @@ impl ViewSwitch {
         Self::Private,
         Self::AlignVisual,
         Self::AskAssistant,
+        Self::SizeBadge,
     ];
 
     /// The Snap menu's rows.

@@ -28,6 +28,10 @@ Part of §9.4.
 - The size pill hangs under that box exactly as under a selection: one painter
   (`canvas::paint_size_pill`), one rounding (`canvas::size_label`), the box from `create_outline_box`
   (Line answers `None` and gets neither). The pill clears `HANDLE_PICK_PX`.
+- *View ▸ Show dimension badge* (`ViewSwitch::SizeBadge`, `MastikApp::show_size_badge`, kept in
+  `prefs::ViewPrefs::size_badge`; on by default, unbound) hides the selection's pill
+  (`canvas::draw_size_badge`) and the marks it carries, its padlock included. A shape being drawn
+  keeps its create pill, and the origin fields still take the slot while the crosshair is armed.
 
 ### The Alt-drag copy
 
@@ -342,7 +346,8 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   for Tools, the label and any chord, then 8pt).
 - **View** reads in three groups between separators, so each kind of row is found in one place:
   - what the canvas draws, `ViewSwitch::VIEW_CANVAS`: *Show rulers*, *Show guides*, *Lock guides*,
-    *Show grid*, *Show layout grid*, *Show ask assistant* (the assistant's ask button over the
+    *Show grid*, *Show layout grid*, then the two things hung on the selection: *Show dimension
+    badge* (the size badge, *The create box and size pill*) and *Show ask assistant* (the assistant's ask button over the
     selection, `assistant.md` §4);
   - the modes, `ViewSwitch::VIEW_MODES`: *Outline mode*, *Pixel preview*, *Private mode*, *Focus mode*, then *Present
     mode* — a verb, not a switch: a check row that never ticks, which closes the menu and dispatches
@@ -388,7 +393,7 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   holds the typed text while the field has focus, `None` otherwise.
 - View and Snap render rows from `input::ViewSwitch`, the enum chords name, so label, order and state come from
   one place; the *Panels ▸* flyout alone drops the "Show" its labels need elsewhere. `input::BINDINGS` has no chord for *Snap to baselines*, *Show layout grid*, *Outline mode*,
-  *Show history*, *Show messages*.
+  *Show history*, *Show messages*, *Show dimension badge*.
 - **Outline mode** draws the artwork as one-device-pixel hairlines of every path the walk would fill
   or stroke, with type in the same ink, in near-black or near-white by the page ground's luminance.
   It pushes no layer, so nothing is clipped, masked, faded or given an effect: the view exists to

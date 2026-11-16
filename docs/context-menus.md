@@ -336,7 +336,8 @@ flag. A hidden, unlocked layer gets an ordinary menu reading *Show*.
 | Pixel preview ✓ | `Ctrl+Alt+Y` | |
 
 No selection rows, even while something is selected (C3). The View rows are the View menu's
-canvas and mode switches less *Focus mode*, *Private mode* and *Show ask assistant*. Every View
+canvas and mode switches less *Focus mode*, *Private mode*, *Show dimension badge* and *Show ask
+assistant*. Every View
 row is live in focus mode, which hides none of what they switch.
 
 ### 6.2 Layers panel background
@@ -493,8 +494,8 @@ menu and §8's keys walk and run its rows (`read_nav` into `Scripts::menu_nav`).
 - **The four image fit modes** — image editing's card owns them.
 - **Text on path** — the Text tool's gesture; the menu has only the way out (*Detach from path*).
 - **Type controls in a text session** — the Type card is beside it.
-- **Show layers, Show history, Show minimap, Show size preview, Show toolbar, Focus mode, Private mode, Show messages, Show ask assistant** on the canvas menu —
-  chrome-wide switches, in the top bar's View menu.
+- **Show layers, Show history, Show minimap, Show size preview, Show toolbar, Focus mode, Private mode, Show messages, Show dimension badge, Show ask assistant** on the canvas
+  menu — chrome-wide switches and selection chrome, not artwork, in the top bar's View menu.
 - **Lasso select** on any menu — the marquee's shape is a tool setting, not a view; `Q`, the
   palette and the rail's Select slot carry it.
 - **Collapse all / Expand all** — the layers panel header has the button.

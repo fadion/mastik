@@ -10587,7 +10587,7 @@ impl MastikApp {
                 let _ = self.draw_create_badge(ui, painter, rect, ppp, resp);
             } else if armed {
                 let _ = self.origin_fields(ui, rect, ppp);
-            } else {
+            } else if self.show_size_badge {
                 let _ = self.draw_size_badge(painter, rect, ppp, offset);
             }
         }

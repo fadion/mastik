@@ -603,7 +603,8 @@ impl ViewState {
             | ViewSwitch::Lasso
             | ViewSwitch::Private
             | ViewSwitch::AlignVisual
-            | ViewSwitch::AskAssistant => None,
+            | ViewSwitch::AskAssistant
+            | ViewSwitch::SizeBadge => None,
         }
     }
 }
@@ -1050,6 +1051,7 @@ impl Item {
                     ViewSwitch::AlignVisual => icon::VISUAL_CENTRE,
                     ViewSwitch::SizePreview => icon::SIZE_PREVIEW,
                     ViewSwitch::AskAssistant => icon::SPARKLE,
+                    ViewSwitch::SizeBadge => icon::BOUNDING_BOX,
                     // Placeholders: no menu builds a row for these, and spelling
                     // them out makes a new switch a compile error here.
                     ViewSwitch::Layers
@@ -4908,15 +4910,18 @@ mod tests {
                 })
                 .collect()
         };
-        // The ask button sits on the selection, not in the artwork: a menu over
-        // the canvas does not offer to hide it.
+        // The ask button and the dimension badge sit on the selection, not in the
+        // artwork: a menu over the canvas does not offer to hide them.
         let expected: Vec<ViewSwitch> = ViewSwitch::VIEW_CANVAS
             .into_iter()
             .chain(ViewSwitch::VIEW_MODES)
             .filter(|sw| {
                 !matches!(
                     sw,
-                    ViewSwitch::Focus | ViewSwitch::Private | ViewSwitch::AskAssistant
+                    ViewSwitch::Focus
+                        | ViewSwitch::Private
+                        | ViewSwitch::AskAssistant
+                        | ViewSwitch::SizeBadge
                 )
             })
             .collect();

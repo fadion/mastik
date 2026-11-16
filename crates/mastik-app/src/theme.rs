@@ -905,8 +905,8 @@ pub mod icon {
     #[allow(dead_code)]
     pub const ARROWS_LEFT_RIGHT: &str = "\u{e0a0}";
     /// A box around several things: a multi-selection's identity, Compare's
-    /// Overlay, a text's *Fixed size*, and fitting the dash pattern to the
-    /// shape's corners.
+    /// Overlay, a text's *Fixed size*, fitting the dash pattern to the shape's
+    /// corners, and *Show dimension badge*, the selection box's size.
     pub const BOUNDING_BOX: &str = "\u{e6ce}";
     /// A custom dash pattern, typed as a list.
     pub const LIST_DASHES: &str = "\u{e2f4}";

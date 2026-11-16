@@ -71,6 +71,8 @@ pub struct ViewPrefs {
     /// The ask-the-assistant button over the selection (*View ▸ Show ask
     /// assistant*).
     pub ask_assistant: bool,
+    /// The width × height pill under the selection (*View ▸ Show dimension badge*).
+    pub size_badge: bool,
     /// The tool rail's frame slot shows the slice tool, last picked there.
     pub rail_slice: bool,
     /// The tool rail's line slot shows this of Line, Spiral and Arc, last picked
@@ -107,6 +109,7 @@ impl Default for ViewPrefs {
             snap_baselines: true,
             lasso: false,
             ask_assistant: true,
+            size_badge: true,
             rail_slice: false,
             rail_line: crate::rail::Member::Line,
             rail_pencil: false,

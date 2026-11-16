@@ -1168,6 +1168,8 @@ pub struct MastikApp {
     /// *View ▸ Show ask assistant*: the ask button over the selection. An
     /// attached layer's lit button shows either way.
     pub(crate) show_ask: bool,
+    /// *View ▸ Show dimension badge*: the width × height pill under the selection.
+    pub(crate) show_size_badge: bool,
     /// The size preview's pin, renders and textures (`size_preview.rs`).
     pub(crate) size_preview: crate::size_preview::SizePreview,
     /// *Tools ▸ Check contrast*, while it is on (`contrast.rs`). View state: a
@@ -1940,6 +1942,7 @@ impl MastikApp {
             minimap: Default::default(),
             show_size_preview: view.size_preview,
             show_ask: view.ask_assistant,
+            show_size_badge: view.size_badge,
             size_preview: Default::default(),
             contrast: None,
             vision: None,
@@ -8671,6 +8674,7 @@ impl MastikApp {
             snap_baselines: self.snap_baselines,
             lasso: self.lasso,
             ask_assistant: self.show_ask,
+            size_badge: self.show_size_badge,
             rail_slice: self.rail.slice,
             rail_line: self.rail.line,
             rail_pencil: self.rail.pencil,
@@ -8698,6 +8702,7 @@ impl MastikApp {
             ViewSwitch::Minimap => self.show_minimap,
             ViewSwitch::SizePreview => self.show_size_preview,
             ViewSwitch::AskAssistant => self.show_ask,
+            ViewSwitch::SizeBadge => self.show_size_badge,
             ViewSwitch::Toolbar => self.show_toolbar,
             ViewSwitch::StatusMessages => self.show_status,
             ViewSwitch::Focus => self.focus,
@@ -8734,6 +8739,7 @@ impl MastikApp {
             ViewSwitch::Minimap => self.show_minimap = on,
             ViewSwitch::SizePreview => self.show_size_preview = on,
             ViewSwitch::AskAssistant => self.show_ask = on,
+            ViewSwitch::SizeBadge => self.show_size_badge = on,
             ViewSwitch::Toolbar => self.show_toolbar = on,
             ViewSwitch::StatusMessages => {
                 self.show_status = on;
