@@ -601,7 +601,7 @@ impl MastikApp {
             Some(Act::OpenLibrary) => {
                 self.kit_picker = None;
                 self.go_to_dashboard();
-                self.dash.nav = crate::panels::dashboard::Nav::Kits;
+                self.dash.go_to(crate::panels::dashboard::Nav::Kits);
             }
             None => {}
         }

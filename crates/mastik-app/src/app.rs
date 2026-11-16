@@ -8893,7 +8893,8 @@ impl MastikApp {
                 .on_hover_text(format!("Open “{}” in the library", project.name))
                 .clicked()
             {
-                self.dash.nav = crate::panels::dashboard::Nav::Project(project.id.clone());
+                self.dash
+                    .go_to(crate::panels::dashboard::Nav::Project(project.id.clone()));
                 self.go_to_dashboard();
             }
             ui.label(

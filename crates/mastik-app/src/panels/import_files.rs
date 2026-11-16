@@ -1374,7 +1374,7 @@ impl MastikApp {
         if o.written == 0 {
             return;
         }
-        self.dash.nav = match card
+        let nav = match card
             .options
             .project
             .as_deref()
@@ -1383,6 +1383,7 @@ impl MastikApp {
             Some(p) => Nav::Project(p.id.clone()),
             None => Nav::All,
         };
+        self.dash.go_to(nav);
         self.dash.selected = o.open.clone();
     }
 
@@ -2599,19 +2600,22 @@ mod tests {
         assert_ne!(got[0].meta.id, got[1].meta.id);
     }
 
-    /// *Done* shows where an unfiled copy went, *All files*, with the copy
-    /// selected and marked new until it is opened.
-    /// flip: `done_import` leaving `nav` alone → fails at "All files".
+    /// *Done* shows where an unfiled copy went, *All files* even from the results
+    /// page, with the copy selected and marked new until it is opened.
+    /// flip: `done_import` leaving `nav` alone → fails at "All files";
+    /// `DashboardState::go_to` keeping `search_page` → fails at "not the results".
     #[test]
     fn done_shows_the_copy_marked_new_until_opened() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx, "done");
         let source = two_pages(&mut f, "Fresh");
         f.app.dash.nav = Nav::Recent;
+        f.app.dash.search_page = Some("logo".into());
         assert_eq!(f.app.import_through_card(&ctx, vec![source]), 1);
         f.app.done_import();
         assert!(f.app.dash.import.is_none(), "the card closes");
         assert_eq!(f.app.dash.nav, Nav::All, "All files");
+        assert_eq!(f.app.dash.search_page, None, "not the results");
         let copy = f.app.dash.selected.clone().expect("the copy is selected");
         let id = f
             .app

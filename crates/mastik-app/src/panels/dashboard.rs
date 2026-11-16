@@ -276,6 +276,18 @@ pub(crate) struct SearchMatch {
     pub(crate) reason: Option<index::Reason>,
 }
 
+/// A search dropdown row by what it offers rather than where it sits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SearchRowKey {
+    Recent(String),
+    /// By id.
+    Project(String),
+    File(PathBuf),
+    ShowAll,
+    /// *Search the whole library*.
+    Widen,
+}
+
 /// One query's matches in order, and where each document sits among them, so a
 /// card on the results page finds its reason without ranking again.
 pub(crate) struct Matches {
@@ -425,6 +437,10 @@ const DOT: f32 = 7.0;
 pub(crate) struct MenuKeys {
     pub(crate) highlight: Option<usize>,
     pub(crate) nav: Option<MenuNav>,
+    /// How many rows the menu had last frame. The highlight is a row's place, so
+    /// rows arriving under it (a kit's *Used in*) drop it rather than move it
+    /// onto another row.
+    rows: usize,
 }
 
 /// How many of a kit's users its ⋮ menu lists before *and N more*.
@@ -492,6 +508,10 @@ fn anchored_menu(
     paint: impl Fn(&egui::Painter, usize, egui::Rect, bool),
 ) -> MenuOutcome {
     let MenuShape { rows, seps, inert } = shape;
+    if keys.rows != rows {
+        keys.rows = rows;
+        keys.highlight = None;
+    }
     let mut chosen = None;
     match keys.nav.take() {
         Some(MenuNav::Move(step)) => {
@@ -715,9 +735,10 @@ pub(crate) struct DashboardState {
     /// How many columns the file grid was last laid in, for the arrow keys; `0`
     /// before the first frame, which `arrow_target` reads as one.
     pub(crate) grid_cols: usize,
-    /// The first index of each row the file grid last laid, which a day heading
-    /// can start short of [`Self::grid_cols`]; empty before the first grid frame.
-    pub(crate) grid_rows: Vec<usize>,
+    /// Each row the file grid last laid: its first index, which a day heading
+    /// can start short of [`Self::grid_cols`], and the column that card stands in,
+    /// past the continue card beside it; empty before the first grid frame.
+    pub(crate) grid_rows: Vec<(usize, usize)>,
     /// Where the keyboard's cursor is, by path; only `MastikApp::dashboard_keys`
     /// writes it. A click opens the document instead, so empty is the ordinary state.
     ///
@@ -779,9 +800,24 @@ pub(crate) struct DashboardState {
     /// first document match, which the groups above can push down as the query
     /// changes. Cleared when the query changes and when the overlay opens.
     pub(crate) search_row: Option<usize>,
+    /// The row [`Self::search_row`] was steered onto, by what it offers, so the
+    /// highlight stays on it when rows sort in above it; read only while
+    /// `search_row` is set.
+    pub(crate) search_steered: Option<SearchRowKey>,
     /// The search's matches and the kits' usage, derived across frames; read
     /// through `MastikApp::memo`, which drops it when it is stale.
     pub(crate) memo: std::cell::RefCell<LibraryMemo>,
+}
+
+impl DashboardState {
+    /// Show the sidebar entry `nav`, leaving the results page and closing the
+    /// search: every door to a page goes through here, the sidebar's and those
+    /// from outside the library alike, so none lands on an old search.
+    pub(crate) fn go_to(&mut self, nav: Nav) {
+        self.nav = nav;
+        self.search_page = None;
+        self.search = None;
+    }
 }
 
 /// A migration that did not move everything, kept so the modal can report it and
@@ -1167,7 +1203,9 @@ impl MastikApp {
         let ctx = ui.ctx().clone();
         // `Ctrl+K`/`Ctrl+P` are read here, not through `input::resolve`. Ctrl without
         // Alt or Shift, so `Ctrl+Shift+K` (*Place image* in the editor) opens nothing.
+        // Not under a library menu, which reads the same `Enter` for its own row.
         let chord = self.library_keys_are_free()
+            && !self.library_menu_open()
             && ctx.input(|i| {
                 let cmd_only = i.modifiers.command && !i.modifiers.alt && !i.modifiers.shift;
                 cmd_only && (i.key_pressed(egui::Key::K) || i.key_pressed(egui::Key::P))
@@ -1397,11 +1435,39 @@ impl MastikApp {
         } else {
             recents.len() + projects.len()
         };
-        let mut sel = self.dash.search_row.unwrap_or(default).min(rows - 1);
+        // Steered, it follows the row it was steered onto: a document the index
+        // reads meanwhile can sort in above it.
+        let keys: Vec<SearchRowKey> = recents
+            .iter()
+            .map(|q| SearchRowKey::Recent(q.clone()))
+            .chain(
+                projects
+                    .iter()
+                    .map(|(p, _)| SearchRowKey::Project(p.id.clone())),
+            )
+            .chain(
+                files
+                    .iter()
+                    .map(|m| SearchRowKey::File(m.entry.path.clone())),
+            )
+            .chain(show_all.map(|_| SearchRowKey::ShowAll))
+            .chain(scope.as_ref().map(|_| SearchRowKey::Widen))
+            .collect();
+        let steered = self.dash.search_row.map(|row| {
+            self.dash
+                .search_steered
+                .as_ref()
+                .and_then(|k| keys.iter().position(|x| x == k))
+                .unwrap_or(row)
+        });
+        let mut sel = steered.unwrap_or(default).min(rows - 1);
         if step != 0 {
             // Clamped rather than wrapping, as `arrow_target` does for the grid.
             sel = (sel as i32 + step).clamp(0, rows as i32 - 1) as usize;
+        }
+        if step != 0 || steered.is_some() {
             self.dash.search_row = Some(sel);
+            self.dash.search_steered = keys.get(sel).cloned();
         }
         let enter = ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
         let mut chosen: Option<Act> = None;
@@ -1532,10 +1598,8 @@ impl MastikApp {
             return Some(panel);
         }
         if let Some(nav) = nav_to {
-            self.dash.nav = nav;
-            self.dash.search_page = None;
             self.remember_search(&query);
-            self.dash.search = None;
+            self.dash.go_to(nav);
             return Some(panel);
         }
         if let Some(a) = chosen {
@@ -1766,8 +1830,7 @@ impl MastikApp {
             // The results page lights no entry, and any entry leaves it.
             let page = self.dash.search_page.is_some();
             if self.nav_row(ui, glyph, label, Some(count), !page && self.dash.nav == nav) {
-                self.dash.nav = nav;
-                self.dash.search_page = None;
+                self.dash.go_to(nav);
             }
         }
 
@@ -1782,8 +1845,7 @@ impl MastikApp {
             if self.project_row(ui, p, ProjectRowKind::Active(count), selected)
                 == ProjectRowHit::Select
             {
-                self.dash.nav = Nav::Project(p.id.clone());
-                self.dash.search_page = None;
+                self.dash.go_to(Nav::Project(p.id.clone()));
             }
         }
         if self.nav_row(ui, icon::PLUS, "New project", None, false) {
@@ -1801,8 +1863,7 @@ impl MastikApp {
                     let selected = !page && self.dash.nav == Nav::Project(p.id.clone());
                     match self.project_row(ui, p, ProjectRowKind::Archived, selected) {
                         ProjectRowHit::Select => {
-                            self.dash.nav = Nav::Project(p.id.clone());
-                            self.dash.search_page = None;
+                            self.dash.go_to(Nav::Project(p.id.clone()));
                         }
                         ProjectRowHit::Unarchive => {
                             *act = Some(Act::SetArchived(p.id.clone(), false));
@@ -2267,8 +2328,7 @@ impl MastikApp {
                         );
                         let link = ui::word_link(ui, &ui::count(n, "project"), false);
                         if link.clicked() && !self.dash.menu_was_up {
-                            self.dash.nav = Nav::Project(id);
-                            self.dash.search_page = None;
+                            self.dash.go_to(Nav::Project(id));
                         }
                     }
                 });
@@ -2950,15 +3010,16 @@ impl MastikApp {
 
     /// The *Continue* row: the continue card across the grid's columns up to
     /// [`continue_span`], and the first of `entries` in two rows of cards beside
-    /// it in the columns left. Returns how many of `entries` it laid and the first
-    /// index of each row it laid them in, for [`Self::file_grid`] to go on from.
+    /// it in the columns left. Returns how many of `entries` it laid and the rows
+    /// it laid them in, as [`DashboardState::grid_rows`] holds them, for
+    /// [`Self::file_grid`] to go on from.
     fn continue_row(
         &mut self,
         ui: &mut egui::Ui,
         entry: &Entry,
         entries: &[Entry],
         act: &mut Option<Act>,
-    ) -> (usize, Vec<usize>) {
+    ) -> (usize, Vec<(usize, usize)>) {
         section_label(ui, "Continue");
         ui.add_space(6.0);
         let width = ui.available_width();
@@ -2971,7 +3032,10 @@ impl MastikApp {
             _ => span as f32 * card_w + (span - 1) as f32 * GRID_GAP,
         };
         let laid = entries.len().min(beside * 2);
-        let rows: Vec<usize> = (0..laid).step_by(beside.max(1)).collect();
+        let rows: Vec<(usize, usize)> = (0..laid)
+            .step_by(beside.max(1))
+            .map(|s| (s, span))
+            .collect();
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = GRID_GAP;
             self.continue_card(ui, entry, w, act);
@@ -2980,7 +3044,7 @@ impl MastikApp {
             }
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for (r, &start) in rows.iter().enumerate() {
+                for (r, &(start, _)) in rows.iter().enumerate() {
                     if r > 0 {
                         ui.add_space(GRID_GAP);
                     }
@@ -3023,7 +3087,7 @@ impl MastikApp {
             ui.add_space(gap);
         }
         if let Some(id) = go {
-            self.dash.nav = Nav::Project(id);
+            self.dash.go_to(Nav::Project(id));
         }
     }
 
@@ -3168,7 +3232,7 @@ impl MastikApp {
         &mut self,
         ui: &mut egui::Ui,
         entries: &[Entry],
-        (lead, lead_rows): (usize, Vec<usize>),
+        (lead, lead_rows): (usize, Vec<(usize, usize)>),
         new_file: Option<&str>,
         act: &mut Option<Act>,
     ) {
@@ -3194,7 +3258,7 @@ impl MastikApp {
             let slots = range.len() + usize::from(new_file.is_some() && g == last);
             for start in (0..slots).step_by(cols) {
                 if range.start + start < entries.len() {
-                    rows.push(range.start + start);
+                    rows.push((range.start + start, 0));
                 }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
@@ -4616,7 +4680,7 @@ impl MastikApp {
         // Gated on the removal: a reset on failure would take the user off the heading
         // that holds the files to retry.
         if failed == 0 && self.dash.nav == Nav::Project(id.to_string()) {
-            self.dash.nav = Nav::All;
+            self.dash.go_to(Nav::All);
         }
         self.dash.deleting_project = None;
         if failed > 0 {
@@ -5853,7 +5917,7 @@ impl MastikApp {
             let local = std::mem::take(&mut self.library.local);
             self.library = crate::library::state::Library::open_with_index(new_root, local);
             // A nav naming a project of the old library names nothing in the new one.
-            self.dash.nav = Nav::from_id(&self.prefs.dashboard_page);
+            self.dash.go_to(Nav::from_id(&self.prefs.dashboard_page));
         }
         self.prefs.save();
         // The retention window may have just shrunk; sweeping applies it now.
@@ -5959,18 +6023,20 @@ impl MastikApp {
 /// this view does not move on.
 ///
 /// Linear order: the grid wraps at the ends of its rows. `Up` and `Down` step by
-/// the rows as laid: `rows` holds each laid row's first index, which a day
-/// heading can start short of `grid_cols`; empty is one flat run of `grid_cols`.
-/// A column past a short row's end lands on its last card, as Explorer does;
-/// `Down` on the last row and `Up` on the first clamp to the ends and still return
-/// `Some`, which is why the caller sets rather than toggles. `Left`/`Right` are
-/// dead in the list view.
+/// the rows as laid, keeping the column on screen: `rows` holds each laid row's
+/// first index and the column it starts in (as [`DashboardState::grid_rows`]);
+/// empty is one flat run of `grid_cols`. A column past a short row's end lands
+/// on its last card, as Explorer does, and one short of a row's start on its
+/// first; `Down` on the last row and `Up` on the first clamp to the ends and
+/// still return `Some`, which is why the caller sets rather than toggles.
+/// `Left`/`Right` are dead in the list view. Always under `len`: `rows` is last
+/// frame's layout, which a list that has since shrunk outruns.
 fn arrow_target(
     current: Option<usize>,
     key: egui::Key,
     list_view: bool,
     grid_cols: usize,
-    rows: &[usize],
+    rows: &[(usize, usize)],
     len: usize,
 ) -> Option<usize> {
     if len == 0 {
@@ -5996,24 +6062,22 @@ fn arrow_target(
     }
     // The caller passes the grid's column count; `0` is one.
     let cols = if list_view { 1 } else { grid_cols.max(1) };
-    let flat: Vec<usize>;
-    let rows = match rows.is_empty() || list_view {
-        true => {
-            flat = (0..len).step_by(cols).collect();
-            &flat[..]
-        }
-        false => rows,
-    };
-    let r = rows.iter().rposition(|&s| s <= at).unwrap_or(0);
-    let col = at - rows[r];
+    // Rows starting past the list's end were laid for a longer one.
+    let mut rows: Vec<(usize, usize)> = rows.iter().copied().filter(|r| r.0 < len).collect();
+    if rows.is_empty() || list_view {
+        rows = (0..len).step_by(cols).map(|s| (s, 0)).collect();
+    }
+    let r = rows.iter().rposition(|&(s, _)| s <= at).unwrap_or(0);
+    let col = rows[r].1 + at.saturating_sub(rows[r].0);
     let to = match down {
         true if r + 1 >= rows.len() => return Some(len - 1),
         false if r == 0 => return Some(0),
         true => r + 1,
         false => r - 1,
     };
-    let end = rows.get(to + 1).copied().unwrap_or(len);
-    Some((rows[to] + col).min(end - 1))
+    let (start, lead) = rows[to];
+    let end = rows.get(to + 1).map_or(len, |r| r.0);
+    Some((start + col.saturating_sub(lead)).min(end - 1))
 }
 
 /// The small grey word above a field — *Project name*, *Base folder*, *Autosave*.
@@ -6104,16 +6168,11 @@ fn day_label(ui: &mut egui::Ui, bucket: clock::DayBucket) {
         egui::Align2::LEFT_CENTER,
         bucket.label(),
     );
-    let date = match bucket {
-        clock::DayBucket::Today => Some(clock::now()),
-        clock::DayBucket::Yesterday => Some(clock::now().saturating_sub(86_400)),
-        _ => None,
-    };
-    if let Some(at) = date {
+    if let Some(date) = bucket.date(clock::local_day(clock::now())) {
         p.text(
             egui::pos2(head.right() + 7.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
-            clock::short_date(at),
+            date,
             egui::FontId::proportional(ui::CAPTION_PT),
             theme::text::faint(),
         );
@@ -8140,7 +8199,7 @@ mod tests {
     fn the_arrows_cross_a_day_heading_by_visual_row() {
         use egui::Key::{ArrowDown, ArrowUp};
         // Four wide: a bucket of one, then one of five laid as four and one.
-        let rows = [0, 1, 5];
+        let rows = [(0, 0), (1, 0), (5, 0)];
         let g = |cur, key| arrow_target(cur, key, false, 4, &rows, 6);
         assert_eq!(g(Some(0), ArrowDown), Some(1), "into the next bucket");
         assert_eq!(
@@ -8150,6 +8209,77 @@ mod tests {
         );
         assert_eq!(g(Some(2), ArrowDown), Some(5));
         assert_eq!(g(Some(5), ArrowUp), Some(1), "back up keeps the column");
+    }
+
+    /// Beside the continue card the rows start two columns in, and `Down` and
+    /// `Up` across that seam keep the column on screen.
+    /// flip: `arrow_target` ignoring a row's start column → fails at "and on into
+    /// column two".
+    #[test]
+    fn the_arrows_cross_the_continue_rows_by_column() {
+        use egui::Key::{ArrowDown, ArrowUp};
+        // Five wide, the continue card spanning two: two rows of three beside
+        // it, then full rows of five.
+        let rows = [(0, 2), (3, 2), (6, 0), (11, 0)];
+        let g = |cur, key| arrow_target(cur, key, false, 5, &rows, 14);
+        assert_eq!(g(Some(0), ArrowDown), Some(3), "the card under it");
+        assert_eq!(g(Some(3), ArrowDown), Some(8), "and on into column two");
+        assert_eq!(g(Some(9), ArrowUp), Some(4), "up keeps column three");
+        assert_eq!(
+            g(Some(6), ArrowUp),
+            Some(3),
+            "under the continue card, up lands on the first card beside it"
+        );
+    }
+
+    /// A list that shrank since the grid was last laid is never stepped past
+    /// its end, though the rows still describe the longer one.
+    /// flip: `arrow_target` keeping the rows that start past `len` → fails at
+    /// "inside the list".
+    #[test]
+    fn the_arrows_stay_inside_a_list_that_shrank() {
+        use egui::Key::ArrowDown;
+        let rows = [(0, 0), (4, 0), (8, 0)];
+        let to = arrow_target(Some(0), ArrowDown, false, 4, &rows, 3);
+        assert!(to.is_some_and(|i| i < 3), "inside the list: {to:?}");
+    }
+
+    /// A menu whose rows change under its keyboard highlight drops it, so `Enter`
+    /// cannot run the row that moved into its place (a kit's *Used in* arriving
+    /// above *Delete*).
+    /// flip: `anchored_menu` keeping the highlight when the rows change → fails at
+    /// "nothing runs".
+    #[test]
+    fn a_menu_drops_its_highlight_when_its_rows_change() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let anchor = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(20.0, 20.0));
+        let run = |keys: &mut MenuKeys, rows: usize, nav: Option<MenuNav>| {
+            keys.nav = nav;
+            let mut chosen = None;
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let shape = MenuShape::plain(rows);
+                let id = egui::Id::new("menu-rows");
+                chosen = anchored_menu(ui, id, anchor, 170.0, shape, keys, |_, _, _, _| {}).chosen;
+            });
+            chosen
+        };
+        let mut keys = MenuKeys::default();
+        run(&mut keys, 8, None);
+        run(&mut keys, 8, Some(MenuNav::Move(crate::menu::Step::Last)));
+        assert_eq!(keys.highlight, Some(7), "on the last row");
+        assert_eq!(
+            run(&mut keys, 11, Some(MenuNav::Activate)),
+            None,
+            "nothing runs"
+        );
+        assert_eq!(keys.highlight, None);
+        run(&mut keys, 11, Some(MenuNav::Move(crate::menu::Step::Last)));
+        assert_eq!(
+            run(&mut keys, 11, Some(MenuNav::Activate)),
+            Some(10),
+            "control: a highlight on rows that held still runs"
+        );
     }
 
     /// `Down` is a row of whatever width the window made; a count of `0` steps one.
@@ -8363,9 +8493,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// `Ctrl+K` does not open the search from under a card that owns the keyboard
-    /// (*New project*, the rename field). flip: drop `library_keys_are_free()` from `search_field`'s `chord`
-    /// → fails at the first assertion.
+    /// `Ctrl+K` does not open the search from under a card or a menu that owns the
+    /// keyboard (*New project*, the rename field, the sort menu). flip: drop
+    /// `library_keys_are_free()` from `search_field`'s `chord` → fails at the first
+    /// assertion; drop `library_menu_open()` → fails at "nor a library menu's".
     #[test]
     fn ctrl_k_does_not_steal_the_caret_from_a_card_that_owns_the_keyboard() {
         let ctx = egui::Context::default();
@@ -8396,6 +8527,14 @@ mod tests {
              as a key that does"
         );
         app.rename_entry = None;
+
+        app.dash.sort_open = true;
+        press_with(&mut app, &ctx, egui::Key::K, cmd);
+        assert_eq!(
+            app.dash.search, None,
+            "nor a library menu's, whose rows read the same Enter"
+        );
+        app.dash.sort_open = false;
 
         // Control: with nothing owning the keyboard the chord still opens the overlay.
         press_with(&mut app, &ctx, egui::Key::K, cmd);
@@ -9714,6 +9853,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A steered highlight stays on its document when one the index reads
+    /// meanwhile sorts in above it, and `Enter` opens the one it was put on.
+    /// flip: `search_results` steering by row number alone → fails at "the
+    /// document it was steered onto".
+    #[test]
+    fn a_steered_search_row_follows_its_document_as_the_index_fills() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "search-steer");
+        let mut paths = Vec::new();
+        for (name, at) in [("Alpha", 1_700_086_400), ("Beta", 1_700_000_000)] {
+            // Each holds the text *Pay now, safely*.
+            let mut doc = crate::library::index::tests::doc();
+            let path = store::file_document(&root, None, name, &mut doc).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(at))
+                .unwrap();
+            paths.push(path);
+        }
+        app.library.refresh();
+        app.dash.nav = Nav::All;
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        app.dash.search = Some("pay".into());
+        let _ = galleys(&mut app, &ctx);
+        press(&mut app, &ctx, egui::Key::ArrowDown);
+        assert_eq!(app.dash.search_row, Some(1), "steered onto Beta");
+
+        // A frame called *Pay* is an exact match, which sorts above both texts.
+        let mut ids = mastik_core::IdSource::new(0x5EE);
+        let mut gamma = mastik_core::Document::new(ids.mint());
+        let page = gamma.first_page();
+        gamma
+            .apply(&mastik_core::Transaction(vec![
+                mastik_core::Operation::CreateNode {
+                    id: ids.mint(),
+                    parent: page,
+                    index: 0,
+                    kind: mastik_core::NodeKind::Artboard {
+                        size: mastik_core::kurbo::Size::new(10.0, 10.0),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: None,
+                    name: Some("Pay".into()),
+                },
+            ]))
+            .unwrap();
+        store::file_document(&root, None, "Gamma", &mut gamma).unwrap();
+        app.library.refresh();
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let order: Vec<String> = app
+            .search_matches(&search::words("pay"))
+            .iter()
+            .map(|m| m.entry.display_name())
+            .collect();
+        assert_eq!(order, ["Gamma", "Alpha", "Beta"], "the fixture's order");
+        press(&mut app, &ctx, egui::Key::Enter);
+        assert_eq!(
+            app.session.path.as_deref(),
+            Some(paths[1].as_path()),
+            "the document it was steered onto"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// On *Kits* a kit's card says how many documents use it once the index has
     /// read them all, and its ⋮ menu lists them under *Used in* with the version
     /// each took.
@@ -10600,14 +10809,20 @@ mod tests {
         crate::theme::install(&ctx);
         let (mut app, root) = app(&ctx, "day-groups");
         let now = clock::now();
-        for (name, ago) in [("Fresh", 60), ("Midweek", 3 * 86_400), ("Old", 40 * 86_400)] {
+        // *Fresh* a minute ahead, which counts as today on whichever side of
+        // midnight the grouping reads the clock.
+        for (name, at) in [
+            ("Fresh", now + 60),
+            ("Midweek", now - 3 * 86_400),
+            ("Old", now - 40 * 86_400),
+        ] {
             let mut doc = mastik_core::Document::new(app.session.ids.mint());
             let path = store::file_document(&root, None, name, &mut doc).unwrap();
             std::fs::File::options()
                 .write(true)
                 .open(&path)
                 .unwrap()
-                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(now - ago))
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(at))
                 .unwrap();
         }
         app.library.refresh();

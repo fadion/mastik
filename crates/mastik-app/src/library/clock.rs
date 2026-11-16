@@ -184,6 +184,13 @@ pub fn local_day(secs: u64) -> i64 {
     (secs as i64 + local_offset(secs)).div_euclid(86_400)
 }
 
+/// `"12 Mar"` for a [`local_day`]: a day read off the calendar, so no 23- or
+/// 25-hour day moves it, as subtracting 86 400 from a stamp would.
+pub fn day_date(day: i64) -> String {
+    let (_, m, d) = civil_from_unix((day.max(0) * 86_400) as u64);
+    format!("{d} {}", MONTHS[(m.clamp(1, 12) - 1) as usize])
+}
+
 /// The four groups a date sort heads its documents with, newest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DayBucket {
@@ -207,6 +214,16 @@ impl DayBucket {
             1 => Self::Yesterday,
             2..=6 => Self::ThisWeek,
             _ => Self::Earlier,
+        }
+    }
+
+    /// The date a heading carries beside its words: *Today*'s and *Yesterday*'s,
+    /// `today` being [`local_day`] of now; the wider buckets carry none.
+    pub fn date(self, today: i64) -> Option<String> {
+        match self {
+            Self::Today => Some(day_date(today)),
+            Self::Yesterday => Some(day_date(today - 1)),
+            Self::ThisWeek | Self::Earlier => None,
         }
     }
 
@@ -257,6 +274,25 @@ mod tests {
         assert_eq!(civil_from_unix(1_709_164_800), (2024, 2, 29));
         // 2000-03-01: the 400-year rule, which a naive /4 //100 gets wrong.
         assert_eq!(civil_from_unix(951_868_800), (2000, 3, 1));
+    }
+
+    /// *Yesterday*'s heading carries the calendar day before today, whatever
+    /// length the night between was, and agrees with a stamp's own date.
+    /// flip: `DayBucket::date` giving *Yesterday* `today`'s date → fails at "the
+    /// day before".
+    #[test]
+    fn a_day_headings_date_is_its_calendar_day() {
+        // The morning after Europe's spring-forward night, which is 23 hours long.
+        let today = days_from_civil(2026, 3, 30);
+        assert_eq!(DayBucket::Today.date(today).as_deref(), Some("30 Mar"));
+        assert_eq!(
+            DayBucket::Yesterday.date(today).as_deref(),
+            Some("29 Mar"),
+            "the day before"
+        );
+        assert_eq!(DayBucket::ThisWeek.date(today), None);
+        let t = 1_774_483_200 + 12 * 3_600;
+        assert_eq!(day_date(local_day(t)), short_date(t));
     }
 
     /// The seconds within a day must not shift the date.
