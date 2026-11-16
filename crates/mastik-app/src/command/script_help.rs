@@ -42,8 +42,9 @@ pub(crate) enum HelpAct {
 /// The help's state between frames.
 #[derive(Default)]
 pub(crate) struct Help {
-    /// The check's problems, and the hash of the text they were found in.
-    checked: Option<(u64, Vec<Problem>)>,
+    /// The check's problems, and what they were found in: the text's hash, and
+    /// the document's revision and page, whose layer names the check reads.
+    checked: Option<((u64, u64, NodeId), Vec<Problem>)>,
     /// Run's hold: a compile of the text, by its hash; never waits for a rest.
     compiled: Option<(u64, Option<Problem>)>,
     /// When the text last changed (`ctx` time); `None` before any typing, so a
@@ -185,25 +186,29 @@ impl Help {
             .or_insert_with(|| mastik_vm::syntax_error(source).map(|p| p.line))
     }
 
-    /// The problems marked now: the check of `text` once typing has rested
-    /// [`CHECK_AFTER`], none while the text differs from what was checked.
+    /// The problems marked now: the check of `text` against `doc` at `revision`
+    /// on `page`, once typing has rested [`CHECK_AFTER`], none while the text
+    /// differs from what was checked. An edit to the document or a page switch
+    /// with the text unchanged checks again at once: the layer names changed.
     pub(crate) fn problems(
         &mut self,
         ctx: &egui::Context,
         doc: &Document,
+        revision: u64,
         page: NodeId,
         text: &str,
     ) -> &[Problem] {
-        let h = hash(text);
-        let fresh = self.checked.as_ref().is_some_and(|(k, _)| *k == h);
-        if !fresh {
+        let key = (hash(text), revision, page);
+        let checked = self.checked.as_ref().map(|(k, _)| *k);
+        if checked != Some(key) {
+            let same_text = checked.is_some_and(|k| k.0 == key.0);
             let now = ctx.input(|i| i.time);
             let left = self.edited_at.map_or(0.0, |at| CHECK_AFTER - (now - at));
-            if left > 0.0 {
+            if left > 0.0 && !same_text {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
                 return &[];
             }
-            self.checked = Some((h, mastik_vm::check(doc, page, text)));
+            self.checked = Some((key, mastik_vm::check(doc, page, text)));
         }
         self.checked.as_ref().map_or(&[], |(_, p)| p.as_slice())
     }

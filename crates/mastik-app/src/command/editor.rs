@@ -1006,11 +1006,12 @@ impl MastikApp {
         let typed = self.script_keys(ctx, self.scripts.code_id());
         let page = self.session.page;
         self.scripts.help.lit_layer = None;
+        let revision = self.session.revision();
         let problems: Vec<mastik_vm::Problem> = match &current {
             Some(_) => self
                 .scripts
                 .help
-                .problems(ctx, &self.session.doc, page, &self.scripts.buffer)
+                .problems(ctx, &self.session.doc, revision, page, &self.scripts.buffer)
                 .to_vec(),
             None => Vec::new(),
         };
@@ -3913,8 +3914,11 @@ mod tests {
         let none = egui::Modifiers::NONE;
         let marked = |app: &mut MastikApp, ctx: &egui::Context| {
             let (doc, page) = (app.session.doc.clone(), app.session.page);
-            let buffer = app.scripts.buffer.clone();
-            app.scripts.help.problems(ctx, &doc, page, &buffer).len()
+            let (buffer, rev) = (app.scripts.buffer.clone(), app.session.revision());
+            app.scripts
+                .help
+                .problems(ctx, &doc, rev, page, &buffer)
+                .len()
         };
         assert_eq!(
             marked(&mut app, &ctx),
@@ -3936,14 +3940,44 @@ mod tests {
         let caret = Some(app.scripts.buffer.len() - 1);
         let problems = {
             let (doc, page) = (app.session.doc.clone(), app.session.page);
-            let buffer = app.scripts.buffer.clone();
+            let (buffer, rev) = (app.scripts.buffer.clone(), app.session.revision());
             app.scripts
                 .help
-                .problems(&ctx, &doc, page, &buffer)
+                .problems(&ctx, &doc, rev, page, &buffer)
                 .to_vec()
         };
         let marks = super::super::script_help::Help::marks(&problems, caret, None);
         assert_eq!(marks.len(), 1, "the name under the caret is not marked");
+    }
+
+    /// A layer made under an open script is known to the check at once, with
+    /// the text unchanged.
+    /// flip: `Help::problems` keyed on the text alone → fails at "the new layer".
+    #[test]
+    fn the_check_follows_the_layers() {
+        let (ctx, mut app) = open_on("print(Banner)");
+        let marked = |app: &mut MastikApp| {
+            let (doc, page) = (app.session.doc.clone(), app.session.page);
+            let (buffer, rev) = (app.scripts.buffer.clone(), app.session.revision());
+            app.scripts
+                .help
+                .problems(&ctx, &doc, rev, page, &buffer)
+                .iter()
+                .map(|p| p.message.clone())
+                .collect::<Vec<_>>()
+        };
+        let before = marked(&mut app);
+        assert!(
+            before.iter().any(|m| m.starts_with("No name “Banner”")),
+            "fixture: unknown at first: {before:?}"
+        );
+        let id = add_rect(&mut app);
+        let named = Transaction(vec![Operation::SetName {
+            id,
+            name: "Banner".into(),
+        }]);
+        assert!(app.session.commit(named), "fixture: renamed");
+        assert_eq!(marked(&mut app), Vec::<String>::new(), "the new layer");
     }
 
     /// Typing a verb's `(` hangs its hint over the line; `Escape` hides it. A

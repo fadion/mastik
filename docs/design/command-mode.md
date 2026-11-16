@@ -418,8 +418,9 @@ sized from their laid-out text each frame.
   a declared name's `:`, a function's return `:` or `::`); a typed name in a parameter or `local`
   list is declared as an untyped one is. The check runs once typing has rested
   `script_help::CHECK_AFTER` (600 ms, the library write's delay) and at once on opening a script;
-  nothing is marked while the text differs from the text checked, nor a name's problem under the
-  caret (a syntax error is). `ui::code_editor` takes `ui::CodeMark`s: each inks its line's number and
+  nothing is marked while the text differs from the text checked, and an edit to the document or a
+  page switch with the text unchanged checks again at once, since the check reads the page's layer
+  names. Nor is a name's problem marked under the caret (a syntax error is). `ui::code_editor` takes `ui::CodeMark`s: each inks its line's number and
   squiggles its span (`canvas::paint_squiggle_in`); a failed run's line is one more mark in the error
   ink. Resting on a squiggle or its line number shows the problem's card (the warning glyph in its
   ink, the message, a *Change to y* `ui::label_button` that edits the text, the note); it takes
