@@ -1545,6 +1545,28 @@ mod tests {
                 say(r#"{"type":"thread.started","thread_id":"t-1"}"#);
                 std::thread::sleep(Duration::from_secs(60));
             }
+            // Antigravity's NDJSON: a turn whose text says `unnamed` never
+            // names its conversation, and one that says `slow` never ends.
+            "agy" => {
+                let resumed = args.iter().any(|a| a == "--conversation");
+                for line in std::io::stdin().lock().lines() {
+                    let Ok(line) = line else { break };
+                    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    if v["event"] != "user" {
+                        continue;
+                    }
+                    let text = v.pointer("/message/content").and_then(|t| t.as_str());
+                    let text = text.unwrap_or_default();
+                    if !text.contains("unnamed") {
+                        say(r#"{"event":"init","conversation_id":"c-1"}"#);
+                    }
+                    let reply = format!("{} {text}", if resumed { "resumed" } else { "new" });
+                    say(&serde_json::json!({"event":"step_update","step_update":{"step_type":"agent_response","text_delta":reply}}).to_string());
+                    if !text.contains("slow") {
+                        say(r#"{"event":"result","result":{"status":"SUCCESS"}}"#);
+                    }
+                }
+            }
             // A turn that names its conversation only at its end, as Copilot's.
             "hang-unnamed" => {
                 say(
@@ -1875,6 +1897,41 @@ mod tests {
         assert_eq!(pid, after, "the interrupt kept the process");
         drop(s);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Antigravity, which Stop kills, is started again by the next turn: with
+    /// `--conversation` and no second system prompt once the conversation was
+    /// named, and as a new conversation told the system prompt when it was not.
+    /// flip: `read_persistent` without its `owes_system` recomputation → fails
+    /// at the unnamed case's reply.
+    #[test]
+    fn antigravity_starts_again_after_a_stop() {
+        let say = |text: &str| Turn {
+            text: text.into(),
+            images: Vec::new(),
+        };
+        for (first, then) in [("slow", "resumed two"), ("slow unnamed", "new sys\n\ntwo")] {
+            let (mut s, root) = fake_session(Harness::Antigravity, "agy");
+            // Its registration edits the person's own Antigravity: held as done.
+            s.inner.lock().prepared = Some(Ok(()));
+            s.send(say(first)).unwrap();
+            let until = Instant::now() + Duration::from_secs(30);
+            let mut evs = Vec::new();
+            while !evs.iter().any(|e| matches!(e, Event::Text(_))) && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+                evs.extend(s.poll());
+            }
+            let told = Event::Text(format!("new sys\n\n{first}"));
+            assert!(evs.contains(&told), "{first}: the first turn: {evs:?}");
+            s.stop();
+            let evs = until_idle(&mut s);
+            assert_eq!(evs.last(), Some(&Event::Stopped), "{first}");
+            s.send(say("two")).unwrap();
+            let evs = until_idle(&mut s);
+            assert!(evs.contains(&Event::Text(then.into())), "{first}: {evs:?}");
+            drop(s);
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     /// Stop returns at once while a turn's line is still being written to a
