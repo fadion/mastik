@@ -460,13 +460,17 @@ text edit took the keys. A text edit started under the bar (a double-click on te
 | Key | Act |
 | --- | --- |
 | a label's letters | select its layer; `Shift` on the last adds it. Of two-letter labels the first narrows and `Backspace` takes it back (`leap_keys`, read before the table) |
+| `1`–`9`, then `0`–`9` | a count, at most 99: the next arrow runs that many times, stopping at the last layer that way, and `.` repeats the line that many times. `0` starts none. Any other key spends it; `Backspace` drops its last digit |
+| `/` | the name filter: what is typed next (every key, home row included) keeps only the layers in view inside the scope, at any depth, shown and unlocked, whose name as drawn holds it, case aside (`refilter`), each given a label if it had none. `Enter` on one match selects it; on several it hands the letters back to pick among them, and `/` types into the filter again. A label picked ends it; `Backspace` on an empty filter or `Escape` clears it |
+| `m` + a letter | mark: the page, the view, the selection and the entered group under the letter (`navigate::Place`), kept with the document for the sitting (`EditorSession::marks`) and dropped when another document is read into it |
+| `'` + a letter · `''` | go to the mark, leaving where things stood for `''`, which goes back to before the last jump and makes that the way back again. A mark whose page is gone says so; an unset letter says *No mark ‹L›* |
 | `Enter` | into the one selected layer when it holds others (group, boolean, frame, instance root), by `enter_container`, on its first child in reading order (not the topmost in z-order the editor's Enter lands on); from anything else, back to Type |
 | `Backspace` | out: with a group entered, select it and enter the rung above it (`group_chain(doc, g, None).last()`); else select the current layer's parent |
 | `↑` `↓` `←` `→` | the nearest sibling that way on the canvas (`nearest_toward`): of the siblings whose centre lies past the current layer's that way, the least gap along the arrow plus twice the gap across it, so one in line beats a nearer one off to the side. The canvas, not the Layers panel's z-order, which often runs against what the eye sees. Nothing that way stays put; an arrow onto a group selects it without stepping in. With nothing selected, any arrow takes the scope's first layer in reading order. `Shift` adds |
 | `*` (`Shift+8`) | the same layer in each repeat (`select_matching`) |
 | `Shift+1` / `Shift+2` | zoom to fit / to the selection |
 | `.` | run the last line in the log again on the selection (`Log::last_line`): typed, or written for an edit made elsewhere, such as a drag's `.x += 24`; a script's run is no line, and neither is an `/ai` request, which would ask again |
-| `` ` `` `:` `Escape` | back to Type |
+| `` ` `` `:` `Escape` | back to Type; `Escape` first clears anything half typed (a count, a mark's prefix, the filter, a label's first letter) |
 
 Every other editor key rests; the history chords and the cheatsheet's stay, and opened from Pick
 the cheatsheet's *Pick layers* section leads.
@@ -549,11 +553,13 @@ rules*): a row's name is never cut for its note.
   Hovering a pill names its layer and outlines it as a hovered Layers row; `Backspace` just after a
   label pill takes the whole label. The line's text stays plain Luau with the labels as words. In
   Pick it sleeps: the line is kept, dimmed and not focusable, the hint reads *Picking: type a
-  label*, and the right edge shows a first letter typed in the leap ink.
+  label*, and the right edge shows in the leap ink what Pick has half typed (`pick_typed`): a
+  count, `M` or `'` waiting for a mark's letter, `/` and the name filter, or a label's first letter.
 - **The footer**: in Type, the desugared Luau, *each by itself* after a rule-3 line, and on the
   right *` picks*, or *Enter copies ‹value›* while a read shows one. An error replaces it with a
   red caption, the token it names squiggled, and *Tab fixes it* when it carries a fix. In Pick it
-  lists the keys, with *` types* on the right.
+  lists the keys that mean something now (`pick_hint`: the filter's while it is open, a mark's
+  while its letter is awaited), with *` types* on the right.
 - **`Alt`-click** on a layer, in Type, writes its label into the line at the caret (a space first
   when it would run into the word before), leaving the selection alone: an argument by pointing.
   The press sits out to its release

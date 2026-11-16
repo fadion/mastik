@@ -120,6 +120,15 @@ fn navigate_section() -> Section {
     // The letters are read before the table, so no table row spells them.
     rows.push(hand_row("Pick the layer by its label", &["Label"]));
     rows.push(hand_row("Add the layer to the selection", &["Shift+Label"]));
+    // Read before the table too, as the letters are.
+    rows.push(hand_row("Only the layers whose name holds…", &["/"]));
+    rows.push(hand_row(
+        "Run the next arrow or . that many times",
+        &["1–99"],
+    ));
+    rows.push(hand_row("Mark the selection and view as a letter", &["M"]));
+    rows.push(hand_row("Go to a mark", &["'"]));
+    rows.push(hand_row("Back to before the last jump", &["''"]));
     for (nav, chords) in crate::input::navigate_rows() {
         rows.push(Row {
             item: None,

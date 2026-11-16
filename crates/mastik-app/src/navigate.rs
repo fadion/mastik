@@ -84,6 +84,73 @@ pub(crate) struct Navigate {
     /// What the last frame saw, and since when, so a moving view deals once it
     /// rests.
     seen: Option<(DealKey, f64)>,
+    /// Digits typed ahead of an arrow or `.`: how many times it runs.
+    count: Option<u32>,
+    /// `m` or `'` pressed, waiting for the mark's letter.
+    marking: Option<MarkKey>,
+    /// The name filter `/` opened, while it holds.
+    filter: Option<Filter>,
+}
+
+/// What a mark's letter does once it comes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MarkKey {
+    /// `m`: remember where things stand under the letter.
+    Set,
+    /// `'`: go back to what the letter remembers; `''` to before the last jump.
+    Jump,
+}
+
+/// The name filter: only the layers whose drawn name holds `text` keep their
+/// labels. While `typing`, every key types into it; after `Enter` the letters
+/// pick among what it left.
+struct Filter {
+    text: String,
+    typing: bool,
+    /// The layers it leaves, in reading order, each with a label in the deal.
+    matches: Vec<NodeId>,
+}
+
+/// Where the work stood: the page, the view, the selection and the entered
+/// group. A mark holds one (`m` + letter), and a jump to one leaves the place
+/// it left behind for `''`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Place {
+    page: NodeId,
+    camera: crate::view::Camera,
+    selection: Vec<NodeId>,
+    entered: Option<NodeId>,
+}
+
+/// One document's marks, kept with it for the sitting and never saved.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Marks {
+    by_letter: HashMap<char, Place>,
+    /// Where the last jump left from, for `''`.
+    back: Option<Place>,
+}
+
+/// The most a count runs a key: a two-digit count.
+const COUNT_MAX: u32 = 99;
+
+impl Navigate {
+    /// Drop whatever is half typed: a label's first letter, a count, a mark's
+    /// prefix and the name filter.
+    fn clear_pending(&mut self) {
+        self.typed.clear();
+        self.count = None;
+        self.marking = None;
+        self.filter = None;
+    }
+
+    /// Whether anything is half typed, which `Escape` clears before it gives
+    /// the keys back to the field.
+    fn pending(&self) -> bool {
+        !self.typed.is_empty()
+            || self.count.is_some()
+            || self.marking.is_some()
+            || self.filter.is_some()
+    }
 }
 
 struct On {
@@ -194,6 +261,43 @@ fn nearest_toward(step: Step, from: Rect, boxes: &[(NodeId, Rect)]) -> Option<No
         .map(|(id, _)| id)
 }
 
+/// The letter `key` types, lowercase, for a mark's name.
+fn letter(key: egui::Key) -> Option<char> {
+    let name = key.name();
+    let mut chars = name.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+/// The digit `key` types, for a count.
+fn digit(key: egui::Key) -> Option<u32> {
+    use egui::Key as K;
+    [
+        K::Num0,
+        K::Num1,
+        K::Num2,
+        K::Num3,
+        K::Num4,
+        K::Num5,
+        K::Num6,
+        K::Num7,
+        K::Num8,
+        K::Num9,
+    ]
+    .iter()
+    .position(|k| *k == key)
+    .map(|d| d as u32)
+}
+
+/// Whether `id` and every layer above it up to its page are shown.
+fn shown(doc: &mastik_core::Document, id: NodeId) -> bool {
+    std::iter::successors(Some(id), |c| doc.get(*c).and_then(|n| n.parent()))
+        .take_while(|c| !doc.is_page(*c))
+        .all(|c| doc.get(c).is_some_and(|n| n.visible()))
+}
+
 /// The labels `text` holds as words: a line in the field names them, so a deal
 /// must not move them to other layers under it.
 fn words(text: &str) -> HashSet<&str> {
@@ -247,7 +351,7 @@ impl MastikApp {
             prior,
             picking: false,
         });
-        self.navigate.typed.clear();
+        self.navigate.clear_pending();
         self.navigate.dealt_for = None;
     }
 
@@ -255,7 +359,7 @@ impl MastikApp {
     /// chosen by hand meanwhile or a text edit took the keys (arming a tool
     /// would end it), and the selection stays.
     pub(crate) fn end_bar_session(&mut self) {
-        self.navigate.typed.clear();
+        self.navigate.clear_pending();
         let Some(on) = self.navigate.on.take() else {
             return;
         };
@@ -272,7 +376,7 @@ impl MastikApp {
         if let Some(on) = self.navigate.on.as_mut() {
             on.picking = picking;
         }
-        self.navigate.typed.clear();
+        self.navigate.clear_pending();
     }
 
     /// Forget the layers the labels hold as another document comes forward,
@@ -281,21 +385,34 @@ impl MastikApp {
         self.navigate.labels.clear();
         self.navigate.seen_at.clear();
         self.navigate.deal.clear();
-        self.navigate.typed.clear();
+        self.navigate.clear_pending();
         self.navigate.dealt_for = None;
         self.navigate.seen = None;
     }
 
-    /// One key of Pick's keymap.
+    /// One key of Pick's keymap. A count typed ahead runs an arrow or `.` that
+    /// many times, an arrow stopping at the last layer that way; any other key
+    /// spends it.
     pub(crate) fn nav_action(&mut self, ctx: &egui::Context, nav: Nav) {
+        let times = self.navigate.count.take().unwrap_or(1);
         match nav {
-            Nav::Step(step, extend) => self.nav_step(step, extend),
+            Nav::Step(step, extend) => {
+                for _ in 0..times {
+                    if !self.nav_step(step, extend) {
+                        break;
+                    }
+                }
+            }
             Nav::StepIn => self.step_in(),
             Nav::StepOut => self.step_out(),
             Nav::Matching => self.select_matching(),
             Nav::Fit => self.zoom_to(self.document_bounds()),
             Nav::Zoom => self.zoom_to(self.selection_bounds()),
-            Nav::Repeat => self.repeat_bar_line(ctx),
+            Nav::Repeat => {
+                for _ in 0..times {
+                    self.repeat_bar_line(ctx);
+                }
+            }
             Nav::Type => self.set_picking(false),
         }
     }
@@ -322,7 +439,8 @@ impl MastikApp {
     /// ([`nearest_toward`]); with `extend`, add it to the selection rather than
     /// replace it. The canvas, not the Layers panel: z-order often runs against
     /// what the eye sees, and `↓` should go down. Nothing that way stays put.
-    fn nav_step(&mut self, step: Step, extend: bool) {
+    /// Answers whether it moved.
+    fn nav_step(&mut self, step: Step, extend: bool) -> bool {
         let doc = &self.session.doc;
         let target = match self.nav_current() {
             // Nothing to move from: the scope's first layer.
@@ -341,6 +459,7 @@ impl MastikApp {
         if let Some(target) = target {
             self.nav_land(target, extend);
         }
+        target.is_some()
     }
 
     /// `parent`'s visible children as the eye reads them on the canvas: rows top
@@ -531,6 +650,8 @@ impl MastikApp {
             })
             .collect();
         self.navigate.deal = deal;
+        // The filter's matches are read against the view just dealt.
+        self.refilter();
     }
 
     /// Whether `id` is drawn with a container's dashed outline and dark label.
@@ -659,61 +780,333 @@ impl MastikApp {
         out
     }
 
-    /// In Pick, take the home-row letters out of this frame's keys before the
-    /// keymap reads them: a label's letters select it (with Shift, add it), the
-    /// first of two narrows, and `Backspace` takes a first letter back.
-    pub(crate) fn leap_keys(&mut self, ctx: &egui::Context) {
+    /// In Pick, take the keys Pick reads itself out of this frame's events before
+    /// the keymap sees them, one at a time in order ([`Self::pick_key`]): the
+    /// labels' letters, a count's digits, a mark's `m`, `'` and letter, and the
+    /// name filter's `/` and everything typed into it. Answers whether a key
+    /// press was left for the keymap, which ends a count it did not use.
+    pub(crate) fn leap_keys(&mut self, ctx: &egui::Context) -> bool {
         if !self.picking() || self.mode != Mode::Normal {
-            return;
+            return false;
         }
-        let typing = !self.navigate.typed.is_empty();
-        let presses: Vec<(egui::Key, egui::Modifiers)> = ctx.input_mut(|i| {
-            let mut out = Vec::new();
-            i.events.retain(|e| match e {
+        let events = ctx.input_mut(|i| std::mem::take(&mut i.events));
+        let mut kept = Vec::with_capacity(events.len());
+        // The text a key spent here also types, read with its key.
+        let mut skip: Option<&'static str> = None;
+        let mut passed = false;
+        for e in events {
+            let spent = match &e {
+                egui::Event::Text(t) if skip == Some(t.as_str()) => {
+                    skip = None;
+                    true
+                }
+                egui::Event::Text(t) => self.filter_text(t),
                 egui::Event::Key {
                     key,
                     pressed: true,
                     modifiers,
                     ..
-                } if !modifiers.command
-                    && !modifiers.alt
-                    && (home_letter(*key).is_some()
-                        || (typing && *key == egui::Key::Backspace)) =>
-                {
-                    out.push((*key, *modifiers));
-                    false
+                } if !modifiers.command && !modifiers.alt => {
+                    let spent = self.pick_key(*key, *modifiers, &mut skip);
+                    passed |= !spent;
+                    spent
                 }
-                _ => true,
-            });
-            out
-        });
-        for (key, m) in presses {
-            if key == egui::Key::Backspace {
-                self.navigate.typed.pop();
-                continue;
+                _ => false,
+            };
+            if !spent {
+                kept.push(e);
             }
-            let Some(c) = home_letter(key) else { continue };
-            let typed = format!("{}{c}", self.navigate.typed);
-            let hit = self.navigate.deal.iter().find(|d| d.label == typed);
-            if let Some(id) = hit.map(|d| d.id) {
-                self.navigate.typed.clear();
-                self.nav_land(id, m.shift);
-            } else if self
-                .navigate
-                .deal
-                .iter()
-                .any(|d| d.label.starts_with(&typed))
-            {
-                self.navigate.typed = typed;
-            } else {
-                self.navigate.typed.clear();
-            }
+        }
+        ctx.input_mut(|i| i.events = kept);
+        passed
+    }
+
+    /// After the keymap has read a frame of Pick's keys: a count the keys
+    /// left over did not use ends with them.
+    pub(crate) fn pick_keys_read(&mut self, passed: bool) {
+        if passed {
+            self.navigate.count = None;
         }
     }
 
-    /// The letters typed of a label in Pick, for the bar's field to show.
-    pub(crate) fn pick_typed(&self) -> &str {
-        &self.navigate.typed
+    /// Text typed while the name filter is open goes into it.
+    fn filter_text(&mut self, t: &str) -> bool {
+        let Some(f) = self.navigate.filter.as_mut().filter(|f| f.typing) else {
+            return false;
+        };
+        f.text.push_str(t);
+        self.refilter();
+        true
+    }
+
+    /// One key press in Pick, answering whether Pick spent it. In order: the
+    /// filter while typed takes every key; a mark's prefix takes the next
+    /// letter; `Escape` clears anything half typed; then the digits, `m`, `'`,
+    /// `/` and the labels' letters. `skip` takes the text the key will also
+    /// type, so it does not reach the filter it just opened.
+    fn pick_key(
+        &mut self,
+        key: egui::Key,
+        m: egui::Modifiers,
+        skip: &mut Option<&'static str>,
+    ) -> bool {
+        use egui::Key as K;
+        if let Some(f) = self.navigate.filter.as_mut().filter(|f| f.typing) {
+            match key {
+                K::Backspace if f.text.is_empty() => self.navigate.filter = None,
+                K::Backspace => {
+                    f.text.pop();
+                    self.refilter();
+                }
+                K::Escape => self.navigate.filter = None,
+                K::Enter => match *f.matches.as_slice() {
+                    [one] => {
+                        self.navigate.filter = None;
+                        self.nav_land(one, m.shift);
+                    }
+                    [] => {}
+                    _ => f.typing = false,
+                },
+                // Its text arrives as `Event::Text`.
+                _ => {}
+            }
+            return true;
+        }
+        if let Some(mark) = self.navigate.marking.take() {
+            if mark == MarkKey::Jump && key == K::Quote && !m.shift {
+                *skip = Some("'");
+                self.jump_back();
+                return true;
+            }
+            if let Some(c) = letter(key) {
+                match mark {
+                    MarkKey::Set => self.set_mark(c),
+                    MarkKey::Jump => self.jump_to_mark(c),
+                }
+                return true;
+            }
+            // Escape only cancels the prefix; any other key is read as itself.
+            if key == K::Escape {
+                return true;
+            }
+        }
+        if key == K::Escape && self.navigate.pending() {
+            self.navigate.clear_pending();
+            return true;
+        }
+        if !m.shift
+            && let Some(d) = digit(key)
+            && (d > 0 || self.navigate.count.is_some())
+        {
+            let n = self.navigate.count.unwrap_or(0) * 10 + d;
+            self.navigate.count = Some(n.min(COUNT_MAX));
+            self.navigate.typed.clear();
+            return true;
+        }
+        if key == K::Backspace && self.navigate.count.is_some() {
+            self.navigate.count = self.navigate.count.map(|n| n / 10).filter(|n| *n > 0);
+            return true;
+        }
+        if !m.shift && matches!(key, K::M | K::Quote) {
+            self.navigate.typed.clear();
+            self.navigate.count = None;
+            self.navigate.marking = Some(match key {
+                K::M => MarkKey::Set,
+                _ => MarkKey::Jump,
+            });
+            *skip = Some(if key == K::M { "m" } else { "'" });
+            return true;
+        }
+        if !m.shift && key == K::Slash {
+            self.navigate.typed.clear();
+            self.navigate.count = None;
+            match self.navigate.filter.as_mut() {
+                // `/` again goes back to typing what is there.
+                Some(f) => f.typing = true,
+                None => {
+                    self.navigate.filter = Some(Filter {
+                        text: String::new(),
+                        typing: true,
+                        matches: Vec::new(),
+                    });
+                }
+            }
+            *skip = Some("/");
+            return true;
+        }
+        if key == K::Backspace && !self.navigate.typed.is_empty() {
+            self.navigate.typed.pop();
+            return true;
+        }
+        let Some(c) = home_letter(key) else {
+            return false;
+        };
+        self.navigate.count = None;
+        let typed = format!("{}{c}", self.navigate.typed);
+        let open = |d: &&Dealt| self.filter_admits(d.id);
+        let hit = self
+            .navigate
+            .deal
+            .iter()
+            .filter(open)
+            .find(|d| d.label == typed);
+        if let Some(id) = hit.map(|d| d.id) {
+            self.navigate.typed.clear();
+            self.navigate.filter = None;
+            self.nav_land(id, m.shift);
+        } else if self
+            .navigate
+            .deal
+            .iter()
+            .filter(open)
+            .any(|d| d.label.starts_with(&typed))
+        {
+            self.navigate.typed = typed;
+        } else {
+            self.navigate.typed.clear();
+        }
+        true
+    }
+
+    /// Whether the name filter leaves `id`'s label: always with no filter or
+    /// nothing typed in it.
+    fn filter_admits(&self, id: NodeId) -> bool {
+        self.navigate
+            .filter
+            .as_ref()
+            .is_none_or(|f| f.text.is_empty() || f.matches.contains(&id))
+    }
+
+    /// The layers the name filter leaves: every one in view inside the scope,
+    /// at any depth, shown and unlocked, whose name as drawn holds the text,
+    /// case aside. Each is given a label in the deal if it has none, so the
+    /// letters can pick it.
+    fn refilter(&mut self) {
+        let Some(text) = self.navigate.filter.as_ref().map(|f| f.text.to_lowercase()) else {
+            return;
+        };
+        let mut ids = Vec::new();
+        if !text.is_empty() {
+            let doc = &self.session.doc;
+            let scope = self.nav_scope();
+            let view = self.session.camera.viewport(self.canvas_px).view;
+            ids = mastik_core::nodes_in_view(&self.session.resolved, self.session.page, view)
+                .into_iter()
+                .filter(|id| *id != scope && mastik_core::is_within(doc, *id, scope))
+                .filter(|id| shown(doc, *id) && !mastik_core::is_effectively_locked(doc, *id))
+                .filter(|id| {
+                    crate::private::layer(doc, *id)
+                        .to_lowercase()
+                        .contains(&text)
+                })
+                .collect();
+            ids = self.reading_sort(ids);
+            ids.truncate(LABELS_MAX);
+        }
+        for id in &ids {
+            if !self.navigate.deal.iter().any(|d| d.id == *id) {
+                let _ = self.label_for(*id);
+            }
+        }
+        if let Some(f) = self.navigate.filter.as_mut() {
+            f.matches = ids;
+        }
+    }
+
+    /// Where things stand now, for a mark or for `''`.
+    fn place(&self) -> Place {
+        Place {
+            page: self.session.page,
+            camera: self.session.camera,
+            selection: self.session.selection.ids().to_vec(),
+            entered: self.entered_group,
+        }
+    }
+
+    /// Go back to `place`: its page, view, entered group and what of its
+    /// selection is still there. A page gone since says so and goes nowhere.
+    fn go_to_place(&mut self, place: &Place) -> bool {
+        if !self.session.doc.is_page(place.page) {
+            self.session.info("That mark's page is gone");
+            return false;
+        }
+        self.go_to_page(place.page);
+        self.session.camera = place.camera;
+        let doc = &self.session.doc;
+        self.entered_group = place.entered.filter(|g| doc.contains(*g));
+        let kept: Vec<NodeId> = place
+            .selection
+            .iter()
+            .copied()
+            .filter(|id| doc.contains(*id))
+            .collect();
+        self.session.selection.set(kept);
+        // Deal for the view arrived at now, not once it has rested.
+        self.navigate.dealt_for = None;
+        true
+    }
+
+    /// `m` + `c`: remember where things stand under `c`.
+    fn set_mark(&mut self, c: char) {
+        let here = self.place();
+        self.session.marks.by_letter.insert(c, here);
+        self.session
+            .info(format!("Mark {} set", c.to_ascii_uppercase()));
+    }
+
+    /// `'` + `c`: go to mark `c`, leaving where things stood for `''`.
+    fn jump_to_mark(&mut self, c: char) {
+        let Some(there) = self.session.marks.by_letter.get(&c).cloned() else {
+            self.session
+                .info(format!("No mark {}", c.to_ascii_uppercase()));
+            return;
+        };
+        let here = self.place();
+        if self.go_to_place(&there) {
+            self.session.marks.back = Some(here);
+        }
+    }
+
+    /// `''`: back to where the last jump left from, which then becomes the way
+    /// back again.
+    fn jump_back(&mut self) {
+        let Some(there) = self.session.marks.back.clone() else {
+            self.session.info("No jump to go back from");
+            return;
+        };
+        let here = self.place();
+        if self.go_to_place(&there) {
+            self.session.marks.back = Some(here);
+        }
+    }
+
+    /// What Pick has half typed, as the bar's field shows it at the line's
+    /// right edge: a count, a mark's prefix, the name filter, a label's first
+    /// letter.
+    pub(crate) fn pick_typed(&self) -> String {
+        let n = &self.navigate;
+        if let Some(f) = &n.filter {
+            return format!("/{}", f.text);
+        }
+        match n.marking {
+            Some(MarkKey::Set) => return "M".to_owned(),
+            Some(MarkKey::Jump) => return "'".to_owned(),
+            None => {}
+        }
+        let count = n.count.map(|c| c.to_string()).unwrap_or_default();
+        format!("{count}{}", n.typed.to_uppercase())
+    }
+
+    /// The bar's footer while it picks: the keys that mean something now.
+    pub(crate) fn pick_hint(&self) -> &'static str {
+        let n = &self.navigate;
+        match (&n.filter, n.marking) {
+            (Some(f), _) if f.typing => "Type a name · Enter picks · Esc clears",
+            (Some(_), _) => "Labels pick what the name left · / edits it · Esc clears",
+            (None, Some(MarkKey::Set)) => "A letter names the mark",
+            (None, Some(MarkKey::Jump)) => "A letter goes to its mark · ' goes back",
+            (None, None) => "Labels pick · Enter in · Backspace out · / name · m mark · ' jump",
+        }
     }
 
     /// The names from the page down to the current layer's parent, the bar's head
@@ -771,6 +1164,8 @@ impl MastikApp {
             .deal
             .iter()
             .filter(|d| only.is_none_or(|o| o == d.id))
+            // The name filter leaves only what it matched.
+            .filter(|d| self.filter_admits(d.id))
             .collect();
         let matched = |d: &Dealt| d.label.starts_with(&typed);
         // What is picked wears the selection's blue, label and outline both, so
@@ -1178,7 +1573,7 @@ mod tests {
         tap(&ctx, &mut f.app, letter_key(first));
         assert_eq!(
             f.app.pick_typed(),
-            first.to_string(),
+            first.to_ascii_uppercase().to_string(),
             "the first letter narrows"
         );
         assert_eq!(selected(&f.app), [f.b], "one letter selects nothing");
@@ -1833,5 +2228,175 @@ mod tests {
             "the index fingers lead"
         );
         assert_eq!(pairs.last().unwrap(), "aa", "both pinkies last");
+    }
+
+    /// A square like `square`'s, named.
+    fn named(id: NodeId, parent: NodeId, index: usize, x: f64, y: f64, name: &str) -> Operation {
+        let mut op = square(id, parent, index, x, y);
+        if let Operation::CreateNode { name: n, .. } = &mut op {
+            *n = Some(name.to_owned());
+        }
+        op
+    }
+
+    /// The text a key types, sent with its key as a keyboard sends both.
+    fn typed_keys(ctx: &egui::Context, app: &mut MastikApp, text: &str) {
+        for c in text.chars() {
+            let key = egui::Key::from_name(&c.to_ascii_uppercase().to_string())
+                .or_else(|| egui::Key::from_name(&c.to_string()))
+                .expect("a key for the character");
+            frame(
+                ctx,
+                app,
+                vec![
+                    key_with(key, egui::Modifiers::NONE),
+                    egui::Event::Text(c.to_string()),
+                ],
+            );
+        }
+    }
+
+    /// Six squares in a row under the fixture's, in view; the first selected.
+    fn row(ctx: &egui::Context, f: &mut F) -> Vec<NodeId> {
+        let page = f.app.session.page;
+        let ids: Vec<NodeId> = (0..6).map(|_| f.app.session.ids.mint()).collect();
+        let ops = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| square(*id, page, 3, i as f64 * 30.0, 30.0))
+            .collect();
+        f.app.session.commit(Transaction(ops));
+        f.app.zoom_to(Some(Rect::new(-20.0, -20.0, 340.0, 70.0)));
+        f.app.session.selection.set_one(ids[0]);
+        frame(ctx, &mut f.app, Vec::new());
+        ids
+    }
+
+    /// A count runs the arrow that many times and stops at the last layer that
+    /// way; a key the count does not go with spends it, so the next arrow
+    /// moves once; `Escape` clears a count without leaving Pick.
+    ///
+    /// flip: `nav_action` ignoring the count → fails at "3 → moves three".
+    #[test]
+    fn a_count_runs_the_arrow_that_many_times() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let ids = row(&ctx, &mut f);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        tap(&ctx, &mut f.app, egui::Key::Num3);
+        assert_eq!(f.app.pick_typed(), "3", "the field shows the count");
+        tap(&ctx, &mut f.app, egui::Key::ArrowRight);
+        assert_eq!(selected(&f.app), [ids[3]], "3 → moves three");
+        tap(&ctx, &mut f.app, egui::Key::Num1);
+        tap(&ctx, &mut f.app, egui::Key::Num2);
+        tap(&ctx, &mut f.app, egui::Key::ArrowLeft);
+        assert_eq!(selected(&f.app), [ids[0]], "12 ← stops at the last");
+        tap(&ctx, &mut f.app, egui::Key::Num2);
+        tap(&ctx, &mut f.app, egui::Key::R);
+        tap(&ctx, &mut f.app, egui::Key::ArrowRight);
+        assert_eq!(selected(&f.app), [ids[1]], "a resting key spent the count");
+        tap(&ctx, &mut f.app, egui::Key::Num2);
+        tap(&ctx, &mut f.app, egui::Key::Escape);
+        assert!(f.app.picking(), "Escape cleared the count and stayed");
+        tap(&ctx, &mut f.app, egui::Key::ArrowRight);
+        assert_eq!(selected(&f.app), [ids[2]], "and the next arrow moves once");
+        tap(&ctx, &mut f.app, egui::Key::Num0);
+        assert_eq!(f.app.pick_typed(), "", "0 starts no count");
+    }
+
+    /// `m` + a letter remembers the selection and the view; `'` + the letter
+    /// goes back to them from anywhere, and `''` returns to where that jump
+    /// left from. The letter is the mark's even when it is a label's letter.
+    ///
+    /// flip: `pick_key` reading a home-row letter as a label before a pending
+    /// mark → fails at "the mark took the letter".
+    #[test]
+    fn a_mark_remembers_the_selection_and_the_view() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.session.selection.set_one(f.a);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        let marked_view = f.app.session.camera;
+        tap(&ctx, &mut f.app, egui::Key::M);
+        assert_eq!(f.app.pick_typed(), "M", "the field shows the prefix");
+        tap(&ctx, &mut f.app, egui::Key::F);
+        assert!(
+            f.app.session.marks.by_letter.contains_key(&'f'),
+            "the mark took the letter"
+        );
+        assert_eq!(f.app.pick_typed(), "", "and no label began");
+
+        let lb = label_of(&f.app, f.b);
+        spell(&ctx, &mut f.app, &lb, egui::Modifiers::NONE);
+        f.app.session.camera.center.x += 500.0;
+        let left_view = f.app.session.camera;
+        tap(&ctx, &mut f.app, egui::Key::Quote);
+        tap(&ctx, &mut f.app, egui::Key::F);
+        assert_eq!(selected(&f.app), [f.a], "back to the mark's selection");
+        assert_eq!(f.app.session.camera, marked_view, "and its view");
+
+        tap(&ctx, &mut f.app, egui::Key::Quote);
+        tap(&ctx, &mut f.app, egui::Key::Quote);
+        assert_eq!(selected(&f.app), [f.b], "'' goes back");
+        assert_eq!(f.app.session.camera, left_view);
+
+        tap(&ctx, &mut f.app, egui::Key::Quote);
+        tap(&ctx, &mut f.app, egui::Key::Z);
+        assert_eq!(selected(&f.app), [f.b], "an unset mark goes nowhere");
+        assert!(f.app.picking());
+    }
+
+    /// `/` and a name leave only the layers in view whose name holds it, at
+    /// any depth inside the scope, with labels for them; `Enter` on one match
+    /// selects it, on several hands the letters back to pick among them. The
+    /// letters typed into the filter never reach the labels.
+    ///
+    /// flip: `refilter` matching only the dealt layers → fails at "a layer
+    /// inside a group".
+    #[test]
+    fn the_name_filter_leaves_what_matches() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let page = f.app.session.page;
+        let (ghost, solid) = (f.app.session.ids.mint(), f.app.session.ids.mint());
+        let inner = f.app.session.ids.mint();
+        f.app.session.commit(Transaction(vec![
+            named(ghost, page, 3, 0.0, 30.0, "Button ghost"),
+            named(solid, page, 4, 60.0, 30.0, "Button solid"),
+            named(inner, f.g, 0, 120.0, 0.0, "Ghost inner"),
+        ]));
+        f.app.zoom_to(Some(Rect::new(-20.0, -20.0, 340.0, 70.0)));
+        frame(&ctx, &mut f.app, Vec::new());
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        let before = selected(&f.app);
+
+        typed_keys(&ctx, &mut f.app, "/gh");
+        assert_eq!(selected(&f.app), before, "the letters typed no label");
+        assert_eq!(f.app.pick_typed(), "/gh");
+        let matches = |app: &MastikApp| app.navigate.filter.as_ref().unwrap().matches.clone();
+        let mut got = matches(&f.app);
+        got.sort();
+        let mut want = vec![ghost, inner];
+        want.sort();
+        assert_eq!(got, want, "both ghosts, one of them a layer inside a group");
+
+        tap(&ctx, &mut f.app, egui::Key::Enter);
+        assert!(
+            f.app.navigate.filter.as_ref().is_some_and(|f| !f.typing),
+            "two matches: Enter hands the letters to the labels"
+        );
+        let li = label_of(&f.app, inner);
+        spell(&ctx, &mut f.app, &li, egui::Modifiers::NONE);
+        assert_eq!(selected(&f.app), [inner], "a label among the matches picks");
+        assert!(f.app.navigate.filter.is_none(), "and ends the filter");
+
+        typed_keys(&ctx, &mut f.app, "/solid");
+        tap(&ctx, &mut f.app, egui::Key::Enter);
+        assert_eq!(selected(&f.app), [solid], "one match: Enter picks it");
+
+        typed_keys(&ctx, &mut f.app, "/x");
+        tap(&ctx, &mut f.app, egui::Key::Escape);
+        assert!(f.app.navigate.filter.is_none(), "Escape clears the filter");
+        assert!(f.app.picking(), "and stays in Pick");
     }
 }

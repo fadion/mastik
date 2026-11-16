@@ -2320,10 +2320,11 @@ impl MastikApp {
         if self.picking() && !self.modal_is_up() {
             // The bar's Pick focus: the labels take the letters, then its keymap
             // the rest; every other editor key rests.
-            self.leap_keys(&ctx);
+            let passed = self.leap_keys(&ctx);
             for action in input::resolve(&ctx, self.keymap_mode(), self.prefs.nudge) {
                 self.dispatch(&ctx, action);
             }
+            self.pick_keys_read(passed);
         } else if let Some(bar) = self.command_bar.as_ref()
             && !self.modal_is_up()
         {

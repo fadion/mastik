@@ -507,6 +507,9 @@ pub struct EditorSession {
     pub disk: Option<crate::library::disk::Stamp>,
     /// Whether a save found the file changed by someone else.
     pub clash: Clash,
+    /// The command bar's marks in this document (`crate::navigate`), for the
+    /// sitting only.
+    pub(crate) marks: crate::navigate::Marks,
 
     /// Uncommitted gesture preview, as per-node patches over the committed
     /// state (§6.2, invariant 5). Empty when no gesture is live.
@@ -847,6 +850,7 @@ impl EditorSession {
             path,
             disk: None,
             clash: Clash::Clear,
+            marks: Default::default(),
             overrides: RenderOverrides::default(),
             session_preview: None,
             preview_holds_gesture: false,
@@ -2152,6 +2156,8 @@ impl EditorSession {
         self.resolved = Resolved::settled(&mut doc);
         self.page = doc.first_page();
         self.parked.clear();
+        // Their ids belonged to the document going.
+        self.marks = Default::default();
         self.first_visit = false;
         self.home_pending = false;
         self.doc = doc;

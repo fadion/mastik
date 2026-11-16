@@ -649,7 +649,11 @@ selects its layer, `Shift` + a label adds it; a label is two letters, the first 
 | `Shift+1` | zoom to fit |
 | `Shift+2` | zoom to the selection (physical `Num2`, §0) |
 | `.` | run the last line in the log again on the selection |
-| `` ` `` · `:` · `Escape` | back to the field |
+| `1`–`99` | a count: the next arrow or `.` runs that many times |
+| `/` | filter the labels by layer name, at any depth in view; `Enter` picks a lone match |
+| `m` + letter | mark the selection and view |
+| `'` + letter · `''` | go to a mark · back to before the last jump |
+| `` ` `` · `:` · `Escape` | back to the field; `Escape` first clears anything half typed |
 
 ---
 

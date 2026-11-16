@@ -1206,7 +1206,8 @@ impl MastikApp {
             .and_then(|id| self.session.doc.get(*id))
             .map(|n| crate::panels::layers::node_icon(n).0);
         let path = self.pick_path();
-        let typed = self.pick_typed().to_owned();
+        let typed = self.pick_typed();
+        let pick_hint = self.pick_hint();
         let mut focus_click: Option<bool> = None;
         let parsed = mastik_vm::desugar(bar.text.trim());
         // An `/ai` line's footer says where its request stands.
@@ -1329,8 +1330,7 @@ impl MastikApp {
                 let hint = |s: &str| (crate::input::keys(s).into_owned(), false);
                 match error {
                     _ if picking => {
-                        let (left, _) =
-                            hint("Labels pick · Shift adds · Enter in · Backspace out · * in each repeat");
+                        let (left, _) = hint(pick_hint);
                         footer(ui, &left, false, "` types");
                     }
                     Some(e) => error_line(ui, e),
@@ -1725,9 +1725,9 @@ fn head(
 
 /// The field: the subject's pill, or with nothing selected the `:` prompt in the
 /// accent; the line with its pills (`Pills`); a read's value at the right edge,
-/// and a squiggle under the token an error names. Asleep (`sleep`, the letters
-/// typed of a label) while the bar picks: the line is kept but dimmed and
-/// unfocused, and the right edge shows the letters typed. Answers the layer of
+/// and a squiggle under the token an error names. Asleep (`sleep`, what Pick has
+/// half typed) while the bar picks: the line is kept but dimmed and unfocused,
+/// and the right edge shows what is half typed. Answers the layer of
 /// the pill under the pointer.
 fn field(
     ui: &mut egui::Ui,
@@ -1750,9 +1750,8 @@ fn field(
     let text_left = rect.left() + FOOTER_INSET;
     let mut tips: Vec<(egui::Rect, String, Option<NodeId>)> = Vec::new();
     let edge = match sleep {
-        Some(typed) => {
-            (!typed.is_empty()).then(|| (format!("{}…", typed.to_uppercase()), color::leap()))
-        }
+        // Already spelled for show (`MastikApp::pick_typed`): a filter keeps its case.
+        Some(typed) => (!typed.is_empty()).then(|| (format!("{typed}…"), color::leap())),
         None => value.map(|v| (format!("= {v}"), theme::text::dim())),
     };
     let value_w = edge.map_or(0.0, |(v, ink)| {
