@@ -669,4 +669,118 @@ pub(crate) mod tests {
             assert_eq!(&r.text[r.hit.lit[0].clone()], query, "{text}");
         }
     }
+
+    /// A fresh folder of its own under the system's temp directory.
+    fn temp(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mastik-index-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A library entry for `path` with a minted id, edited at `modified`.
+    fn entry(path: &Path, modified: u64) -> Entry {
+        Entry {
+            path: path.to_path_buf(),
+            stem: "doc".into(),
+            meta: mastik_core::meta::DocumentMeta {
+                id: Some(ids::mint()),
+                ..Default::default()
+            },
+            modified,
+            size: 0,
+            unread: false,
+        }
+    }
+
+    /// The sweep deletes the cached facts no live document claims and nothing
+    /// else, and an empty list sweeps nothing.
+    /// flip: `sweep` without its `live.is_empty()` guard → fails at "an empty
+    /// list sweeps nothing".
+    #[test]
+    fn the_sweep_drops_unclaimed_facts_only() {
+        let dir = temp("sweep");
+        let index = ContentIndex::with_dir(Some(dir.clone()));
+        let live = entry(&dir.join("a.mastik"), 10);
+        let claimed = dir.join(format!("{}.json", key(&live).unwrap()));
+        let stale = dir.join("superseded-f1.json");
+        let other = dir.join("notes.txt");
+        for p in [&claimed, &stale, &other] {
+            std::fs::write(p, "{}").unwrap();
+        }
+        index.sweep(&[]);
+        assert!(stale.exists(), "an empty list sweeps nothing");
+        index.sweep(std::slice::from_ref(&live));
+        assert!(!stale.exists(), "unclaimed facts go");
+        assert!(claimed.exists(), "a live document's stay");
+        assert!(other.exists(), "and what is not facts is left alone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cached answer is read back under its key, and the key moves with the
+    /// file's modification time, so a document edited elsewhere is read again.
+    /// flip: `key` leaving out `modified` → fails at "an edit is a new key".
+    #[test]
+    fn the_cache_is_keyed_by_the_files_edit() {
+        let dir = temp("key");
+        let path = dir.join("wallet.mastik");
+        std::fs::write(&path, mastik_core::io::save(&doc()).unwrap()).unwrap();
+        let before = entry(&path, 10);
+        let after = Entry {
+            modified: 11,
+            ..before.clone()
+        };
+        let (k1, k2) = (key(&before).unwrap(), key(&after).unwrap());
+        assert_ne!(k1, k2, "an edit is a new key");
+
+        let read_it = |k: &str| read(Some(&dir), &path, k).unwrap().frames;
+        assert_eq!(read_it(&k1), ["Wallet"], "loaded");
+        let cached = dir.join(format!("{k1}.json"));
+        assert!(cached.exists(), "and kept");
+        // Facts planted under the key are what a second read answers.
+        let planted = Facts {
+            frames: vec!["Cached".into()],
+            ..Facts::default()
+        };
+        std::fs::write(&cached, serde_json::to_vec(&planted).unwrap()).unwrap();
+        assert_eq!(read_it(&k1), ["Cached"], "the cache answers");
+        assert_eq!(read_it(&k2), ["Wallet"], "an edited file is loaded again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Who uses a kit is not answered until every document has been read, so a
+    /// count is never a part-count.
+    /// flip: `kit_users` skipping an unread document → fails at "not while one
+    /// is unread".
+    #[test]
+    fn a_kits_users_wait_for_every_document() {
+        let mut index = ContentIndex::with_dir(None);
+        let dir = std::env::temp_dir();
+        let (a, b) = (
+            entry(&dir.join("a.mastik"), 1),
+            entry(&dir.join("b.mastik"), 1),
+        );
+        let uses = Facts {
+            kits: vec![KitUse {
+                kit: "kit-1".into(),
+                version: 2,
+            }],
+            ..Facts::default()
+        };
+        index.facts.insert(key(&a).unwrap(), Some(uses));
+        let both = [a.clone(), b.clone()];
+        assert!(
+            index.kit_users("kit-1", &both).is_none(),
+            "not while one is unread"
+        );
+        assert!(index.kit_counts(&both).is_none());
+        index.facts.insert(key(&b).unwrap(), None);
+        let users = index.kit_users("kit-1", &both).unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(
+            (users[0].0.path.as_path(), users[0].1),
+            (a.path.as_path(), 2)
+        );
+        assert_eq!(index.kit_counts(&both).unwrap().get("kit-1"), Some(&1));
+    }
 }
