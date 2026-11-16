@@ -991,9 +991,10 @@ fn within_budget(text: &str, what: &str, instead: &str) -> Result<(), String> {
 const NARROWER: &str =
     "reach the part you need with `find_nodes` or `get_outline`, then `get_node` on it";
 
-/// The most `export_png`'s `max` is taken at: a raster held in the person's
+/// The most `export_png`'s `max` is taken at, and the longest side an
+/// attached layer is drawn at for the assistant: a raster held in the person's
 /// window, where an unbounded one could exhaust its memory and lose every tab.
-const PNG_CEILING: u64 = 4096;
+pub(crate) const PNG_CEILING: u64 = 4096;
 
 /// The viewport `export_png` draws `view` through, refused when it would pass
 /// `max` pixels: the renderer floors its scale, so a huge box would otherwise
@@ -4409,6 +4410,32 @@ mod tests {
             .collect();
         assert_eq!(files.len(), listed.len());
         assert!(files[0].contains("Badge"), "{files:?}");
+    }
+
+    /// A row whose raster would pass the per-file pixel ceiling is refused by
+    /// name before anything is drawn.
+    ///
+    /// flip: `run_exports` without its pixel check → fails at "refused". The
+    /// 120×80 rectangle at 100× sits just past the ceiling, so the flip draws
+    /// 384 MB, not gigabytes.
+    #[test]
+    fn run_exports_refuses_a_raster_past_the_ceiling() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let id = rect(&mut engine, &mut docs, 1, "Badge");
+        let huge = vec![mastik_core::ExportSpec::new(
+            mastik_core::ExportFormat::Png,
+            mastik_core::ExportScale::Times(100.0),
+        )];
+        let args = json!({ "nodes": [id], "exports": huge });
+        ok(&call(&mut engine, &mut docs, 1, "set_exports", args));
+        let out = call(&mut engine, &mut docs, 1, "run_exports", json!({}));
+        assert!(out.is_error, "refused");
+        let text = format!("{:?}", out.content);
+        assert!(
+            text.contains("Badge@100x.png") && text.contains(&id),
+            "{text}"
+        );
     }
 
     /// `export_code` answers files and the three report lists.

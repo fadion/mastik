@@ -28,8 +28,20 @@ fn mime(path: &str) -> &'static str {
     }
 }
 
+/// The most pixels one raster file of `run_exports` may have: each is drawn on
+/// the person's UI thread, where a failed allocation aborts the window. 8192²,
+/// 256 MB as RGBA, still takes a 2× export of a long landing page.
+const EXPORT_PIXELS: u64 = 8192 * 8192;
+
+/// The most bytes `run_exports` answers across its files. Every file crosses
+/// the pipe as base64 inside one JSON line, held whole on both ends.
+const FILES_BUDGET: usize = 16 * 1024 * 1024;
+
 /// Render the export settings on `ids`, or on every layer that has some,
 /// through the plan *Export all* and `mastik export --all` use.
+///
+/// A raster past [`EXPORT_PIXELS`] is refused before anything is drawn, and
+/// the answer stops once its files pass [`FILES_BUDGET`].
 pub(super) fn run_exports(s: &EditorSession, ids: Option<Vec<NodeId>>) -> Result<Answer, String> {
     let subjects = match ids {
         Some(ids) => mastik_core::build::all_in_document_order(&s.doc, &ids),
@@ -44,11 +56,32 @@ pub(super) fn run_exports(s: &EditorSession, ids: Option<Vec<NodeId>>) -> Result
     if plan.is_empty() {
         return Err("No layer has export settings: add them with `set_exports`.".into());
     }
+    if let Some(file) = plan.iter().find(|f| {
+        f.pixels
+            .is_some_and(|(w, h)| u64::from(w) * u64::from(h) > EXPORT_PIXELS)
+    }) {
+        let (w, h) = file.pixels.unwrap_or_default();
+        return Err(format!(
+            "`{}` of layer `{}` would be {w}×{h} pixels, past the 8192² one file may \
+             have: lower that row's scale with `set_exports`, or look with `export_png`",
+            file.path,
+            file.node.to_wire(),
+        ));
+    }
     let mut listed = Vec::new();
     let mut files = Vec::new();
+    let mut total = 0;
     for file in &plan {
         let entry = match mastik_export::plan::render(&s.doc, &s.resolved, file) {
             Some(bytes) => {
+                total += bytes.len();
+                if total > FILES_BUDGET {
+                    return Err(format!(
+                        "The files come to more than {} MB, past what one answer carries: \
+                         export fewer layers with `ids`, or look with `export_png`",
+                        FILES_BUDGET / (1024 * 1024)
+                    ));
+                }
                 let entry = json!({ "path": file.path, "layer": file.node.to_wire(), "bytes": bytes.len() });
                 files.push(Content::File {
                     name: file.path.clone(),

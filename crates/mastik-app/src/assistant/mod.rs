@@ -1246,14 +1246,18 @@ impl MastikApp {
         true
     }
 
-    /// Each attached layer at 1×, for a harness whose input takes images.
+    /// Each attached layer at 1×, or smaller where its longer side would pass
+    /// [`crate::mcp::PNG_CEILING`], for a harness whose input takes images.
     fn chip_renders(&self, chips: &[Chip]) -> Vec<Vec<u8>> {
         chips
             .iter()
             .filter_map(|c| {
                 let id = NodeId::from_wire(&c.id)?;
+                // 1×, scaled down so a large board stays a bounded raster.
+                let view = mastik_export::extent(&self.session.resolved, &[id])?;
+                let longest = view.width().max(view.height()).max(1.0);
                 let opts = mastik_export::png::RasterOpts {
-                    scale: 1.0,
+                    scale: (crate::mcp::PNG_CEILING as f64 / longest).min(1.0),
                     ..Default::default()
                 };
                 let r = mastik_export::png::raster_of(
@@ -1585,6 +1589,35 @@ mod tests {
         let id = crate::palette::tests::add_rect(&mut app);
         app.session.selection.set_one(id);
         (app, id)
+    }
+
+    /// An attached layer longer than the ceiling is drawn scaled down to it.
+    /// flip: `chip_renders` at a fixed 1× → fails at the width.
+    #[test]
+    fn a_long_chip_is_drawn_within_the_ceiling() {
+        use mastik_core::{NodeKind, Operation, Transaction};
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let s = &mut app.session;
+        let (id, parent) = (s.ids.mint(), s.doc.first_page());
+        assert!(s.commit(Transaction(vec![Operation::CreateNode {
+            id,
+            parent,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: mastik_core::kurbo::Size::new(20_000.0, 10.0),
+                corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        }])));
+        let chip = app.chip_of(id).unwrap();
+        let [png] = &app.chip_renders(&[chip])[..] else {
+            panic!("one render");
+        };
+        let w = image::load_from_memory(png).unwrap().width();
+        assert!(w <= crate::mcp::PNG_CEILING as u32 && w > 4000, "{w}");
     }
 
     /// *Ask the assistant* attaches the selection once, opens the panel and

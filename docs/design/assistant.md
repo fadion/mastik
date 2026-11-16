@@ -309,7 +309,8 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   wheel and a pinch to the canvas beneath, as its other overlays do.
 - **A chip is a reference, not a copy** (`ui::layer_chip`): the layer's id, name, kind and size go
   with the question, and the agent reads the rest through the tools. For a harness that takes
-  images, an attached layer also goes with a 1× render. A chip's × removes it; a chip whose layer
+  images, an attached layer also goes with a 1× render, scaled down to 4096 on its longer side
+  (`export_png`'s ceiling) since it is drawn on the UI thread. A chip's × removes it; a chip whose layer
   is deleted shows struck through and is not sent.
 - **While the panel is open, an attached layer wears a dashed accent outline** 5 outside it; its
   number is on its lit ask button. A closed panel leaves no outline. Hovering a chip outlines its
