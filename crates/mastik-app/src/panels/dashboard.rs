@@ -1121,6 +1121,9 @@ impl MastikApp {
             .frame(egui::Frame::NONE.fill(color::bg()).inner_margin(20))
             .show(ui, |ui| self.dashboard_body(ui, &mut act));
         self.library_drop_hint(ui, body.response.rect);
+        if self.status_bar(ui.ctx(), body.response.rect, true) {
+            self.cancel_exports();
+        }
 
         self.new_project_modal(ui.ctx(), &mut act);
         self.edit_project_modal(ui.ctx(), &mut act);
@@ -1160,7 +1163,7 @@ impl MastikApp {
                         .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // The gap to the update pill is `TOP_GAP`, set here because
                             // egui adds an item's gap when the item is placed; with no
-                            // pill the status dot follows and keeps the row's 12.
+                            // pill the private pill follows and keeps the row's 12.
                             let pill = self.updater.state().label().is_some();
                             ui.spacing_mut().item_spacing.x =
                                 if pill { crate::app::TOP_GAP } else { 12.0 };
@@ -1187,9 +1190,6 @@ impl MastikApp {
                             {
                                 self.restart_to_update();
                             }
-                            // A dot with the message on hover: a width-bound message
-                            // would fade out on narrow windows.
-                            crate::app::status_dot(ui, self.session.status());
                             if crate::private::pill(ui) && !self.dash.menu_was_up {
                                 self.set_private(false);
                             }
@@ -6677,21 +6677,21 @@ mod tests {
         (app, root)
     }
 
-    /// The colour of the library's status dot this frame, or `None` when the top bar
-    /// painted none. Found by radius; a tooltip never reaches `.shapes`, so wording
-    /// is asserted via `session.status().text`.
-    fn status_dot_color(app: &mut MastikApp, ctx: &egui::Context) -> Option<egui::Color32> {
-        fn walk(s: &egui::Shape, out: &mut Vec<egui::Color32>) {
+    /// The colour the library's status bar painted the session's message in this
+    /// frame, or `None` when the message is not on screen.
+    fn status_message_color(app: &mut MastikApp, ctx: &egui::Context) -> Option<egui::Color32> {
+        fn walk(s: &egui::Shape, want: &str, out: &mut Vec<egui::Color32>) {
             match s {
-                egui::Shape::Circle(c)
-                    if (c.radius - crate::app::STATUS_DOT_R).abs() < 0.01
-                        && c.fill != egui::Color32::TRANSPARENT =>
-                {
-                    out.push(c.fill);
+                egui::Shape::Text(t) if t.galley.text() == want => {
+                    out.push(t.galley.job.sections[0].format.color);
                 }
-                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, want, out)),
                 _ => {}
             }
+        }
+        let want = crate::input::keys(&app.session.status().text).to_string();
+        if want.is_empty() {
+            return None;
         }
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
@@ -6703,9 +6703,9 @@ mod tests {
             found.clear();
             full.shapes
                 .iter()
-                .for_each(|cs| walk(&cs.shape, &mut found));
+                .for_each(|cs| walk(&cs.shape, &want, &mut found));
         }
-        assert!(found.len() < 2, "one status dot at most, got {found:?}");
+        assert!(found.len() < 2, "one status message at most, got {found:?}");
         found.first().copied()
     }
 
@@ -7686,7 +7686,7 @@ mod tests {
 
         // The dot is the surface and the slot is the wording.
         assert!(
-            status_dot_color(&mut app, &ctx).is_some(),
+            status_message_color(&mut app, &ctx).is_some(),
             "the bar is marked"
         );
         assert!(
@@ -8732,11 +8732,11 @@ mod tests {
         );
     }
 
-    /// Every failure and report the library screen writes is painted on it as a
-    /// status dot (failure and info in different colours; none when quiet), with the
-    /// wording in `session.status().text`. flip: remove the `status_dot` call from
-    /// `dashboard_top_bar` → fails at the first `Some(...)` assertion; swap
-    /// `status_color`'s arms → fails at the failure-colour assertion.
+    /// Every failure and report the library screen writes is painted on it in the
+    /// floating status bar (failure and info in different colours; none when quiet).
+    /// flip: remove the `status_bar` call from `dashboard_ui` → fails at the first
+    /// `Some(...)` assertion; swap `status_color`'s arms → fails at the
+    /// failure-colour assertion.
     #[test]
     fn a_library_failure_is_painted_on_the_library_screen() {
         let ctx = egui::Context::default();
@@ -8756,7 +8756,7 @@ mod tests {
             "the control: nothing has happened yet"
         );
         assert_eq!(
-            status_dot_color(&mut app, &ctx),
+            status_message_color(&mut app, &ctx),
             None,
             "and nothing is marked on the bar either"
         );
@@ -8764,7 +8764,7 @@ mod tests {
         let fail_text = "SENTINEL-FAIL Rename failed: Access is denied.";
         app.session.fail(fail_text);
         assert_eq!(
-            status_dot_color(&mut app, &ctx),
+            status_message_color(&mut app, &ctx),
             Some(theme::color::error()),
             "a failure on this screen has to be visible on this screen, in the \
              colour a failure takes"
@@ -8772,16 +8772,14 @@ mod tests {
         assert_eq!(
             app.session.status().text,
             fail_text,
-            "and the hover reads the whole sentence rather than an ellipsis of it \
-             — which is the half no probe can see, `on_hover_text` deferring an \
-             Area whose galley never reaches `.shapes`"
+            "and the slot holds the whole sentence"
         );
 
         let info_text = "SENTINEL-INFO Imported 3 documents";
         // A later action's report, so a later frame's: in one frame it would join.
         app.session.next_status_pass();
         app.session.info(info_text);
-        let lit = status_dot_color(&mut app, &ctx).expect("a report is marked too");
+        let lit = status_message_color(&mut app, &ctx).expect("a report is marked too");
         assert_ne!(
             lit,
             theme::color::error(),
@@ -8792,14 +8790,14 @@ mod tests {
 
         // Absent, not a colourless dot, when there is nothing to say.
         app.session.info("");
-        assert_eq!(status_dot_color(&mut app, &ctx), None);
+        assert_eq!(status_message_color(&mut app, &ctx), None);
         assert_eq!(runs(&mut app).len(), quiet.len());
 
         // The latched unreadable records report through the same line.
         app.prefs.unreadable = true;
         app.report_unreadable_records();
         assert!(
-            status_dot_color(&mut app, &ctx).is_some(),
+            status_message_color(&mut app, &ctx).is_some(),
             "the bar is marked, which is what makes the sentence reachable at all"
         );
         assert!(
@@ -11627,7 +11625,7 @@ mod tests {
             app.session.status().text
         );
         assert!(
-            status_dot_color(&mut app, &ctx).is_some(),
+            status_message_color(&mut app, &ctx).is_some(),
             "and it is marked on the screen the user is now looking at, which is \
              the whole finding — a message written where nobody can read it is \
              the state §15 D426 was written to end"

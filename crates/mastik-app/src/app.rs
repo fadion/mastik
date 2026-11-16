@@ -2474,7 +2474,7 @@ impl MastikApp {
             })
             .response
             .rect;
-        if self.status_bar(&ctx, canvas) {
+        if self.status_bar(&ctx, canvas, false) {
             self.cancel_exports();
         }
         self.contrast_chrome(&ctx);
@@ -8042,39 +8042,14 @@ pub(crate) fn status_hold(status: &crate::session::Status) -> std::time::Duratio
 /// The fade at the end of [`status_hold`].
 const STATUS_FADE: f32 = 0.3;
 
-/// The colour a status is drawn in, shared by the library's dot and the editor's
-/// [`MastikApp::status_bar`].
-fn status_color(status: &crate::session::Status) -> egui::Color32 {
+/// The colour [`MastikApp::status_bar`] draws a status message in.
+pub(crate) fn status_color(status: &crate::session::Status) -> egui::Color32 {
     if status.kind == StatusKind::Error {
         theme::color::error()
     } else {
         theme::text::faint()
     }
 }
-
-/// The library's half of the status line: a dot with the whole message on hover, in a
-/// fixed box so it shows at every window width. A painted circle, not an icon
-/// glyph. The hit box ([`STATUS_DOT_HIT`]) is far larger
-/// than the ink ([`STATUS_DOT_R`]).
-pub(crate) fn status_dot(ui: &mut egui::Ui, status: &crate::session::Status) {
-    if status.text.is_empty() {
-        return;
-    }
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(STATUS_DOT_HIT, STATUS_DOT_HIT),
-        egui::Sense::hover(),
-    );
-    ui.painter()
-        .circle_filled(rect.center(), STATUS_DOT_R, status_color(status));
-    resp.on_hover_text(crate::input::keys(&status.text));
-}
-
-/// The library status dot's radius: an 8pt mark, the cap height of the status text.
-pub(crate) const STATUS_DOT_R: f32 = 4.0;
-
-/// The box [`status_dot`] allocates, matched to the header's other controls
-/// (`HEADER_CONTROL_H`).
-const STATUS_DOT_HIT: f32 = 28.0;
 
 /// Should a panel `width` points wide, in a parent with `room` to spare, replace the
 /// `stored` one? Only once the drag is released (`down`), when the window is not what
@@ -8937,13 +8912,23 @@ impl MastikApp {
     /// itself says it.
     /// *View ▸ Show messages* hides the message, never the mode. Drawn in focus
     /// mode too (its Escape hint). Truncated so it never runs under the inspector.
+    /// The library draws it too (`library`), at its body's corner, with no mode.
     ///
     /// While exports run it also says so ([`Self::exporting`]) with *Cancel*, and
     /// answers whether that was clicked. **Interactable only then**: the rest of the
     /// time every click and drop passes through it to the canvas.
-    fn status_bar(&self, ctx: &egui::Context, canvas: egui::Rect) -> bool {
+    pub(crate) fn status_bar(
+        &self,
+        ctx: &egui::Context,
+        canvas: egui::Rect,
+        library: bool,
+    ) -> bool {
         let status = self.session.status();
-        let mode = self.keymap_mode();
+        let mode = if library {
+            Mode::Normal
+        } else {
+            self.keymap_mode()
+        };
         let moded = mode == Mode::TextInsert;
         let exporting = self.exporting();
         let age = status.at.elapsed().as_secs_f32();
@@ -8970,7 +8955,11 @@ impl MastikApp {
         }
         let max_w = (canvas.width() * 0.6).min(560.0);
         // Beside the minimap, which holds the corner.
-        let beside = self.minimap_clearance();
+        let beside = if library {
+            0.0
+        } else {
+            self.minimap_clearance()
+        };
         egui::Area::new(egui::Id::new("status-bar"))
             .order(egui::Order::Middle)
             .interactable(exporting.is_some())
@@ -16020,7 +16009,7 @@ mod library_wiring_tests {
             for _ in 0..2 {
                 out = ctx
                     .run_ui(Default::default(), |ui| {
-                        app.status_bar(ui.ctx(), canvas);
+                        app.status_bar(ui.ctx(), canvas, false);
                     })
                     .shapes
                     .iter()
@@ -16059,7 +16048,7 @@ mod library_wiring_tests {
         for _ in 0..2 {
             faded = ctx
                 .run_ui(Default::default(), |ui| {
-                    app.status_bar(ui.ctx(), canvas);
+                    app.status_bar(ui.ctx(), canvas, false);
                 })
                 .shapes
                 .iter()
