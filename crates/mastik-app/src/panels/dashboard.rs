@@ -3797,13 +3797,15 @@ impl MastikApp {
                     picked = Some(field);
                 }
             }
-            // The hairline that closes the header off from the rows.
+            // The hairline that closes the header off from the rows, 2 under the
+            // header's foot, in the air above the first row.
             let ppp = ui.ctx().pixels_per_point();
             let weight = (ppp.round().max(1.0)) / ppp;
+            let y = ((rect.bottom() + 2.0) * ppp).round() / ppp;
             ui.painter().rect_filled(
                 egui::Rect::from_min_max(
-                    egui::pos2(rect.left(), rect.bottom() - weight),
-                    rect.right_bottom(),
+                    egui::pos2(rect.left(), y - weight),
+                    egui::pos2(rect.right(), y),
                 ),
                 0,
                 ui::sep_ink(),
