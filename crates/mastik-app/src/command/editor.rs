@@ -413,6 +413,22 @@ impl MastikApp {
             .collect()
     }
 
+    /// What the palette's *Recent* keeps each *Run* row under, in the rows'
+    /// order: the script it runs, never its place in the list, which another
+    /// document or a script added since would shift onto a script never run.
+    pub(crate) fn saved_script_keys(&self) -> Vec<String> {
+        let doc = self.session.doc.meta().id.clone().unwrap_or_default();
+        self.saved_scripts()
+            .into_iter()
+            .map(|(which, _)| match which {
+                Which::Document(id) => format!("RunScript document {doc} {:?}", id.0),
+                Which::Library(name) => format!("RunScript library {name}"),
+                Which::Kit { kit, id, .. } => format!("RunScript kit {kit} {:?}", id.0),
+                Which::Unsaved(serial) => format!("RunScript unsaved {serial}"),
+            })
+            .collect()
+    }
+
     /// Read the library folder again, as the palette opens.
     pub(crate) fn refresh_script_library(&mut self) {
         self.scripts.library = library::list();

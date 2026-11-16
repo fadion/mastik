@@ -540,7 +540,9 @@ modal that opens closes the palette. App actions only; typed syntax belongs to t
 - **Running.** Enter or a click closes the palette first, then `run_palette_item` records the row
   in *Recent* and dispatches it as its menu row would, so a dialog never opens under it.
 - **Empty query.** *Recent* (the last five rows run, keyed by `verb_key`, the `Item`'s `Debug`
-  form, so *Hide* and *Show* are one; `prefs.palette_recent`), then the target's own menu rows
+  form, so *Hide* and *Show* are one; a *Run* row by the script it runs, never its place in the
+  list, so a script added or removed meanwhile never stands in for it; `prefs.palette_recent`),
+  then the target's own menu rows
   (*For the selection*, *For the page*, *For the text*, …). The first enabled row is highlighted,
   and again whenever the query or scope changes.
 - **Layers.** Matching layers follow the commands: `layers::name_hits`, the layers panel's own

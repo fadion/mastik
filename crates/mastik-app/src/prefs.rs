@@ -668,8 +668,9 @@ pub struct Prefs {
     /// dashboard.
     pub last_document: Option<PathBuf>,
     /// The command palette's last rows run, most recent first, as
-    /// `crate::palette::verb_key` names them: by verb, so a renamed label
-    /// (*Hide* / *Show*) is still the same entry. A habit, hence a preference.
+    /// `crate::palette::recent_key` names them: by verb, so a renamed label
+    /// (*Hide* / *Show*) is still the same entry, and a *Run* row by its
+    /// script. A habit, hence a preference.
     pub palette_recent: Vec<String>,
     /// The View and Snap switches, written as they change
     /// (`MastikApp::remember_view_switches`).

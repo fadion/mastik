@@ -153,6 +153,16 @@ pub(crate) fn verb_key(item: Item) -> String {
     format!("{item:?}")
 }
 
+/// [`verb_key`], but a *Run* row by the script it runs (`runs`, from
+/// `MastikApp::saved_script_keys`). A key kept by position before, as
+/// `RunScript(0)`, matches no row and leaves *Recent* as it ages out.
+fn recent_key(item: Item, runs: &[String]) -> String {
+    match item {
+        Item::RunScript(i) => runs.get(i).cloned().unwrap_or_else(|| verb_key(item)),
+        _ => verb_key(item),
+    }
+}
+
 /// One command row, resolved for this frame.
 struct Cmd {
     item: Item,
@@ -987,11 +997,10 @@ impl MastikApp {
         }
         let cmds = self.palette_commands(pal);
         let recents = &self.prefs.palette_recent;
+        let runs = self.saved_script_keys();
         let recency = |c: &Cmd| {
-            recents
-                .iter()
-                .position(|k| *k == verb_key(c.item))
-                .unwrap_or(usize::MAX)
+            let key = recent_key(c.item, &runs);
+            recents.iter().position(|k| *k == key).unwrap_or(usize::MAX)
         };
         if needle.is_empty() {
             let mut recent: Vec<(usize, Cmd)> = Vec::new();
@@ -1098,7 +1107,7 @@ impl MastikApp {
     /// Run a command row: remembered in *Recent*, then dispatched as its menu row
     /// would be. The palette is already closed, so a dialog never opens under it.
     fn run_palette_item(&mut self, ctx: &egui::Context, item: Item, target: Target) {
-        let key = verb_key(item);
+        let key = recent_key(item, &self.saved_script_keys());
         let recent = &mut self.prefs.palette_recent;
         recent.retain(|k| *k != key);
         recent.insert(0, key);
@@ -1905,6 +1914,52 @@ pub(crate) mod tests {
 
     fn q(s: &str) -> Vec<String> {
         query_words(s)
+    }
+
+    /// *Recent* keeps a *Run* row by its script: once the list shifts under it,
+    /// the row that runs that script is the recent one, and no other.
+    /// flip: `recent_key` answering `verb_key` for a *Run* row → fails at "the
+    /// script that ran".
+    #[test]
+    fn recent_keeps_a_run_by_its_script() {
+        use mastik_core::{Operation, Script, Transaction};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let add = |app: &mut MastikApp, name: &str, index: usize| {
+            let id = app.session.ids.mint_script();
+            let script = Script {
+                id,
+                name: name.into(),
+                source: "print(1)".into(),
+            };
+            assert!(
+                app.session
+                    .commit(Transaction(vec![Operation::AddScript { script, index }]))
+            );
+            id
+        };
+        let a = add(&mut app, "Align", 0);
+        add(&mut app, "Tidy", 1);
+        app.run_palette_item(&ctx, Item::RunScript(1), Target::Canvas);
+        let kept = app.prefs.palette_recent.first().cloned();
+        assert!(
+            app.session
+                .commit(Transaction(vec![Operation::RemoveScript { id: a }]))
+        );
+        let runs = app.saved_script_keys();
+        assert_eq!(
+            Some(recent_key(Item::RunScript(0), &runs)),
+            kept,
+            "the script that ran"
+        );
+        add(&mut app, "Zeta", 1);
+        let runs = app.saved_script_keys();
+        assert_ne!(
+            Some(recent_key(Item::RunScript(1), &runs)),
+            kept,
+            "not another"
+        );
     }
 
     /// A footer's right text of any length or lines stays on one row inside
