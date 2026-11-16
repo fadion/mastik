@@ -1272,6 +1272,11 @@ pub mod icon {
     /// A script: Tools ▸ *Scripts…*, a run's undo step and log line, the editor's
     /// head. A page with angle brackets on it, [`CODE`] being a tag.
     pub const FILE_CODE: &str = "\u{f06b}";
+    /// The frame the assistant is scoped to: its scope button, the composer's
+    /// scope pill, the menu row and a question's scope line. [`ZOOM_FIT`]'s
+    /// corner brackets around a small [`SPARKLE`]; not [`TARGET`], which is a
+    /// variable's scope.
+    pub const SCOPE_FRAME: &str = "\u{f06c}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1574,6 +1579,7 @@ pub mod icon {
         ("leap-label", LEAP_LABEL),
         ("terminal-window", TERMINAL_WINDOW),
         ("file-code", FILE_CODE),
+        ("scope-frame", SCOPE_FRAME),
     ];
 }
 
