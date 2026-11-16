@@ -63,6 +63,9 @@ const PROJECT_ROW_GAP: f32 = 9.0;
 /// A project card on *Recent*: taller than a file card, carrying a picture of up to
 /// five documents.
 const PROJECT_CARD_H: f32 = PROJECT_PAD * 2.0 + MOSAIC_H + PROJECT_ROW_GAP * 2.0 + 16.0 + 13.0;
+/// The most pages a card steps through under the pointer; the rest are left out,
+/// or a long document's strips would be too thin to aim at.
+const HOVER_PAGES_MAX: usize = 5;
 /// The widest a card on the grid may be; a row holds as many cards as keep each
 /// this wide or narrower.
 const CARD_MAX_W: f32 = 300.0;
@@ -664,6 +667,9 @@ pub(crate) struct DashboardState {
     pub(crate) menu_for: Option<PathBuf>,
     /// Where a right-click opened that menu; `None` hangs it under the ⋮.
     pub(crate) menu_at: Option<egui::Pos2>,
+    /// The card stepped through its pages and the page it was left on, so the
+    /// page holds while the pointer is in the card's caption or its menu is open.
+    pub(crate) card_step: Option<(PathBuf, usize)>,
     /// The keyboard half of whichever floating menu is up: the ⋮ menu, the
     /// project dropdown or the sort menu, one at a time. Cleared by each door that
     /// opens one.
@@ -3108,7 +3114,10 @@ impl MastikApp {
         );
         let opacity = ui.opacity();
         ui.multiply_opacity(self.opening_alpha(entry));
-        let lit = resp.hovered();
+        // Lit anywhere over the card, its ⋮ included (`resp.hovered()` is not,
+        // the ⋮ being a widget of its own), and while its menu is up.
+        let menu_up = self.dash.menu_for.as_deref() == Some(entry.path.as_path());
+        let lit = ui.rect_contains_pointer(rect) || menu_up;
         let picked = self.dash.selected.as_deref() == Some(entry.path.as_path());
         self.follow_selection(ui, picked, rect);
         let dot = self
@@ -3148,15 +3157,35 @@ impl MastikApp {
         // `Covers::unreadable` is known only for documents the grid has shown.
         // Under the pointer, a document of several pages steps through them: the
         // cover is cut into one strip per page, drafts left out, and the pointer's
-        // strip picks the page. The first strip is the rest cover.
+        // strip picks the page. The first strip is the rest cover. Only the cover
+        // steps: over the caption or with the menu up, the page holds.
         let pages = self.hover_pages(entry);
-        let step = (lit && pages.len() > 1)
-            .then(|| ui.ctx().pointer_hover_pos())
-            .flatten()
-            .map(|at| {
-                let t = ((at.x - thumb.left()) / thumb.width()).clamp(0.0, 0.999);
-                (t * pages.len() as f32) as usize
-            });
+        let held = |s: &Option<(PathBuf, usize)>| {
+            s.as_ref()
+                .filter(|(p, i)| *p == entry.path && *i < pages.len())
+                .map(|(_, i)| *i)
+        };
+        let step = match lit && pages.len() > 1 {
+            true => match ui
+                .ctx()
+                .pointer_hover_pos()
+                .filter(|_| ui.rect_contains_pointer(thumb))
+            {
+                Some(at) => {
+                    let t = ((at.x - thumb.left()) / thumb.width()).clamp(0.0, 0.999);
+                    let i = (t * pages.len() as f32) as usize;
+                    self.dash.card_step = Some((entry.path.clone(), i));
+                    Some(i)
+                }
+                None => held(&self.dash.card_step),
+            },
+            false => {
+                if held(&self.dash.card_step).is_some() {
+                    self.dash.card_step = None;
+                }
+                None
+            }
+        };
         let shot = match step {
             Some(i) if i > 0 => cover::Shot::Page(pages[i].id.clone()),
             _ => cover::Shot::Rest,
@@ -3181,7 +3210,9 @@ impl MastikApp {
                     egui::Color32::WHITE,
                 );
             }
-            // A page whose cover is still being drawn turns the small spinner.
+            // A page whose cover is still being drawn turns the small spinner; an
+            // empty page answers with no picture and shows the bare plate.
+            None if shot != cover::Shot::Rest && !self.covers.pending(entry, &shot) => {}
             None if shot != cover::Shot::Rest => {
                 let now = ui.input(|i| i.time);
                 ui::paint_spinner(
@@ -3324,12 +3355,20 @@ impl MastikApp {
         );
     }
 
-    /// The pages a card steps through under the pointer: its pages that are not
-    /// drafts, once the index has read it; fewer than two and nothing steps.
+    /// The pages a card steps through under the pointer: the first
+    /// [`HOVER_PAGES_MAX`] of its pages that are not drafts, once the index has
+    /// read it; fewer than two and nothing steps.
     fn hover_pages(&self, entry: &Entry) -> Vec<index::PageFact> {
         self.index
             .get(entry)
-            .map(|f| f.pages.iter().filter(|p| !p.draft).cloned().collect())
+            .map(|f| {
+                f.pages
+                    .iter()
+                    .filter(|p| !p.draft)
+                    .take(HOVER_PAGES_MAX)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -3728,7 +3767,9 @@ impl MastikApp {
         );
         let opacity = ui.opacity();
         ui.multiply_opacity(self.opening_alpha(entry));
-        let lit = resp.hovered();
+        // As a card is lit: over its ⋮ too, and while its menu is up.
+        let lit = ui.rect_contains_pointer(rect)
+            || self.dash.menu_for.as_deref() == Some(entry.path.as_path());
         let picked = self.dash.selected.as_deref() == Some(entry.path.as_path());
         self.follow_selection(ui, picked, rect);
         // A wash rather than a border marks a row.
@@ -9486,9 +9527,12 @@ mod tests {
     }
 
     /// Over a card of two pages the pointer's half picks the page: the right half
-    /// shows the second page's name and asks for its cover, and leaving goes back
-    /// to the rest cover at once.
-    /// flip: `hover_pages` keeping drafts → fails at "the draft is skipped".
+    /// shows the second page's name and asks for its cover, the caption holds it,
+    /// an empty page's answer ends the wait, and leaving goes back to the rest
+    /// cover at once.
+    /// flip: `hover_pages` keeping drafts → fails at "the draft is skipped";
+    /// `file_card` stepping from the pointer anywhere on the card → fails at "over
+    /// the caption the page holds".
     #[test]
     fn a_card_steps_through_its_pages_under_the_pointer() {
         let ctx = egui::Context::default();
@@ -9551,6 +9595,19 @@ mod tests {
         assert!(
             runs.iter().any(|(_, _, t)| t == "Receipt"),
             "the right end shows the last page's name"
+        );
+        // The caption's left end, under the first page's strip.
+        let runs = hover(&mut app, egui::pos2(name_at.x + 4.0, name_at.y + 6.0));
+        assert!(
+            runs.iter().any(|(_, _, t)| t == "Receipt"),
+            "over the caption the page holds"
+        );
+        // *Receipt* has nothing on it: its answer is no picture, and no longer owed.
+        let receipt = cover::Shot::Page(app.hover_pages(&entry)[2].id.clone());
+        app.covers.settle(&ctx);
+        assert!(
+            !app.covers.pending(&entry, &receipt),
+            "an empty page is answered, so its card stops spinning"
         );
         let runs = hover(&mut app, egui::pos2(5.0, 5.0));
         assert!(

@@ -530,6 +530,13 @@ impl Covers {
         key(entry).is_some_and(|k| matches!(self.covers.get(&k), Some(Cover::Unreadable)))
     }
 
+    /// Whether `shot` of `entry` is still owed an answer: asked for, or about to
+    /// be, and not yet back. An empty page answers with no picture, so a card's
+    /// spinner reads this rather than the missing texture.
+    pub fn pending(&self, entry: &Entry, shot: &Shot) -> bool {
+        shot_key(entry, shot).is_some_and(|k| !self.covers.contains_key(&k))
+    }
+
     /// Forget every texture — after the base folder changes, when the documents
     /// on screen are a different set entirely.
     ///
