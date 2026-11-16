@@ -548,12 +548,15 @@ pub(crate) const NAMES: &[(&str, &str)] = &[
     ("print", "Show values in the output"),
 ];
 
-/// The most a run may print, in bytes: the output is held in the host's memory,
-/// outside the Lua memory limit.
+/// The most a run may print, in bytes, each line counted one more for its own
+/// keeping: the output is held in the host's memory, outside the Lua memory limit.
 const PRINT_CAP: usize = 1 << 20;
 
+/// The most lines a run may print: each is a row the editor's output keeps.
+const PRINT_LINES: usize = 10_000;
+
 /// Why a run stopped printing.
-const PRINTED_TOO_MUCH: &str = "Stopped after printing more than 1 MB";
+const PRINTED_TOO_MUCH: &str = "Stopped after printing more than 10,000 lines or 1 MB";
 
 /// What the host and the run accumulate.
 struct State<'h> {
@@ -581,8 +584,9 @@ impl State<'_> {
 
     /// Keep `line` as printed output; `false` once the run has printed too much.
     fn say(&mut self, line: String) -> bool {
-        self.printed_bytes += line.len();
-        if self.printed_bytes > PRINT_CAP {
+        // An empty line costs one, so no run prints without end.
+        self.printed_bytes += line.len() + 1;
+        if self.printed_bytes > PRINT_CAP || self.printed.len() >= PRINT_LINES {
             return false;
         }
         self.printed.push(line);

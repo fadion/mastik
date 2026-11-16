@@ -909,8 +909,17 @@ impl MastikApp {
         }
     }
 
-    /// Add a run's lines to the output pane, under a rule with the time.
+    /// Add a run's lines to the output pane, under a rule with the time: one row
+    /// per line, a printed line that holds newlines split, a very long one cut.
     fn push_output(&mut self, lines: Vec<(String, bool)>, secs: f32) {
+        let lines = lines
+            .into_iter()
+            .flat_map(|(text, bad)| {
+                text.split('\n')
+                    .map(|row| (output_row(row), bad))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let now = crate::library::clock::now();
         let local = now as i64 + crate::library::clock::local_offset(now);
         let day = local.rem_euclid(86_400);
@@ -2683,32 +2692,54 @@ fn output_pane(ui: &mut egui::Ui, runs: &[RunOut], h: f32) {
     if lines_h < 1.0 {
         return;
     }
+    // The code's face and size, as the pane above it.
+    let font = egui::FontId::monospace(ui::CODE_PT);
+    let row_h = ui.fonts_mut(|f| f.row_height(&font));
+    // Each run is its rule and its lines, one row each; only the rows in view
+    // are laid out, so a run that printed thousands of lines costs no more.
+    let total: usize = runs.iter().map(|r| 1 + r.lines.len()).sum();
     egui::ScrollArea::vertical()
         .id_salt("script-output")
         .max_height(lines_h)
         .min_scrolled_height(lines_h)
         .auto_shrink([false, false])
         .stick_to_bottom(true)
-        .show(ui, |ui| {
+        .show_rows(ui, row_h, total, |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            // The code's face and size, as the pane above it.
-            let font = egui::FontId::monospace(ui::CODE_PT);
+            let mut first = 0;
             for run in runs {
-                for (text, ink) in
-                    std::iter::once((format!("— run at {} —", run.at), theme::text::faint())).chain(
-                        run.lines.iter().map(|(l, bad)| {
+                let rows = 1 + run.lines.len();
+                for row in range.start.max(first)..range.end.min(first + rows) {
+                    let (text, ink) = match row - first {
+                        0 => (format!("— run at {} —", run.at), theme::text::faint()),
+                        n => {
+                            let (l, bad) = &run.lines[n - 1];
                             (l.clone(), if *bad { color::error() } else { color::text() })
-                        }),
-                    )
-                {
+                        }
+                    };
                     ui.horizontal(|ui| {
+                        ui.set_height(row_h);
                         ui.add_space(HEAD_INSET);
                         ui.label(egui::RichText::new(text).font(font.clone()).color(ink));
                     });
                 }
+                first += rows;
             }
-            ui.add_space(6.0);
+            if range.end == total {
+                ui.add_space(6.0);
+            }
         });
+}
+
+/// The most of one printed line the output pane keeps, in characters.
+const OUTPUT_ROW_CHARS: usize = 2_000;
+
+/// `line` as an output row: cut to [`OUTPUT_ROW_CHARS`] with an ellipsis.
+fn output_row(line: &str) -> String {
+    match line.char_indices().nth(OUTPUT_ROW_CHARS) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line.to_owned(),
+    }
 }
 
 /// The code pane's completion list's width.
@@ -3969,5 +4000,54 @@ mod tests {
                 a.min(b)..a.max(b)
             });
         assert_eq!(range, Some(6..9), "the declaration");
+    }
+
+    /// The output pane lays out only the rows in view, however much the kept
+    /// runs printed, and still ends on the newest line; a printed line is split
+    /// at its newlines and a very long one cut.
+    /// flip: `output_pane` walking each run's every row, not the range in view
+    /// → fails at "only the rows in view".
+    #[test]
+    fn the_output_lays_out_only_the_rows_in_view() {
+        let (ctx, mut app) = open_on("print(1)");
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut rows = |app: &mut MastikApp| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1320.0, 820.0),
+                )),
+                ..Default::default()
+            };
+            let out = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+            let mut texts = Vec::new();
+            for s in out.shapes {
+                if let egui::Shape::Text(t) = s.shape
+                    && t.galley.job.text.starts_with("row ")
+                {
+                    texts.push(t.galley.job.text.clone());
+                }
+            }
+            texts
+        };
+        // The text cache keeps what the last frame laid out, drawn or clipped.
+        let laid_out = || ctx.fonts(|f| f.num_galleys_in_cache());
+        rows(&mut app);
+        let before = laid_out();
+        for _ in 0..20 {
+            let lines = (0..10_000).map(|i| (format!("row {i}"), false)).collect();
+            app.push_output(lines, 0.1);
+        }
+        rows(&mut app);
+        rows(&mut app);
+        let texts = rows(&mut app);
+        let grew = laid_out().saturating_sub(before);
+        assert!(grew < 200, "only the rows in view: {grew} laid out");
+        assert!(texts.iter().any(|t| t == "row 9999"), "the newest line");
+
+        app.push_output(vec![("a\nb".into(), false), ("x".repeat(3_000), true)], 0.1);
+        let run = app.scripts.output.last().unwrap();
+        assert_eq!(run.lines.len(), 3, "split at the newline");
+        assert_eq!(run.lines[2].0.chars().count(), OUTPUT_ROW_CHARS + 1);
     }
 }

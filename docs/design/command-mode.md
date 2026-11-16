@@ -184,7 +184,9 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
 - **Budgets**, counted by `set_interrupt` (Luau calls it at every call and loop iteration; the clock
   is read every 256th, and at once after a verb or commit, which may be slow) and
   `set_memory_limit` above what the fresh state holds. Printed output lives outside Lua's memory,
-  so a run may print at most 1 MB (`PRINT_CAP`):
+  so a run may print at most 10,000 lines (`PRINT_LINES`) and 1 MB (`PRINT_CAP`, each line counted
+  one byte more, so empty lines count too). The editor's output pane lays out only the rows in
+  view, and cuts a printed line past 2,000 characters:
 
   | Budget | Time | Steps | Memory |
   | --- | --- | --- | --- |

@@ -873,8 +873,9 @@ fn print_collects_into_the_outcome() {
     assert_eq!(out.printed, ["1\tA\t10", "2\tB\t50", "3\tC\t90"]);
 }
 
-/// Printing is held to `PRINT_CAP`, which Lua's memory limit does not count.
-/// flip: `State::say` keeping every line → fails at `unwrap_err`.
+/// Printing is held to `PRINT_CAP` bytes and `PRINT_LINES` lines, which Lua's
+/// memory limit does not count: long lines and many empty ones both stop.
+/// flip: `State::say` without its `PRINT_LINES` test → fails at "the line cap".
 #[test]
 fn printing_too_much_stops_the_run() {
     let (mut h, ids) = three();
@@ -883,7 +884,17 @@ fn printing_too_much_stops_the_run() {
     let src = "local s = string.rep('x', 400000) for i = 1, 10 do print(s) end";
     let err = run_script(&mut h, &e, src).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Budget);
-    assert_eq!(err.message, "Stopped after printing more than 1 MB");
+    assert_eq!(
+        err.message,
+        "Stopped after printing more than 10,000 lines or 1 MB"
+    );
+    let err =
+        run_script(&mut h, &e, "for i = 1, 3e6 do print() end").expect_err("empty lines stop");
+    assert_eq!(err.kind, ErrorKind::Budget);
+    let out = run_script(&mut h, &e, "for i = 1, 10000 do print(i) end").unwrap();
+    assert_eq!(out.printed.len(), 10_000, "the cap's own count is kept");
+    let err = run_script(&mut h, &e, "for i = 1, 10001 do print(i) end").map(|o| o.printed.len());
+    assert!(err.is_err(), "the line cap: {err:?}");
 }
 
 /// Luau's wording for a read-only table and for runaway recursion is said in the
