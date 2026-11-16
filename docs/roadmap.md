@@ -13,6 +13,35 @@ variables and scripts during play, smart animate and springs, a player over the 
 into its own window or fullscreen, and export as one HTML file running the player in WebAssembly.
 The design and its open questions are in `prototyping.md`.
 
+## Now · Image editing
+
+Make the image-editing card feel complete without turning Mastik into a photo editor
+(`design/app-image-editing.md`, `design/images.md`). The bound is that the canvas, the PNG export
+and the SVG export all draw the same thing. An adjustment must stay a colour matrix plus a tone
+table (`AdjustPipeline`), a neighbourhood filter goes in the effect stack with an SVG filter to
+match, and only an explicit action changes a picture's stored bytes.
+
+- **Quarter turn.** A *Rotate 90°* beside the Settings tab's two mirrors. `OrientOp::Turn` is
+  built and carries the crop, but nothing writes it, so four of the eight orientations cannot be
+  reached. A photo shot sideways is the commonest repair.
+- **Crop aspect.** Presets in the card (Free, Original, 1:1, 4:3, 3:2, 16:9) and Shift on the crop
+  handles holding the ratio, as Shift does on a resize (`edit::crop_resized`). A crop is usually
+  made for a slot of known shape.
+- **Black point, white point, fade.** Three more `Adjustment`s, each only a different tone table,
+  so the SVG writer needs no new primitive. Fade (lifted blacks) is the muted look duotone almost
+  covers.
+- **Purge unused images, and what each picture weighs.** Every picture is embedded and nothing
+  collects the table (`Document::images`), so a file grows with no way to see why. The op exists
+  (`Operation::RemoveImage`); the command and a size readout in the card do not.
+- **Sharpen.** An unsharp mask (original + k·(original − blur)) in the effect stack, reusing the
+  blur passes in `fx.wgsl`; SVG writes it as `feGaussianBlur` plus an arithmetic `feComposite`.
+- **Reduce the picture, apply the crop.** Explicit, destructive actions with their own undo step:
+  re-encode at a chosen size or quality, or keep only the cropped pixels. A large photograph
+  placed as a thumbnail is what makes files heavy. They are the exception to "the original goes
+  out", so they never run on their own.
+- **Curves.** An editor for the tone table `AdjustPipeline` already holds. A real piece of chrome,
+  so it follows black and white point and is taken up only if those see use.
+
 ## Later · Platform and dependencies
 
 - **egui 0.36** is blocked by vello requiring wgpu 29 (check — last asked 2026-09-03). Re-derive
@@ -43,6 +72,20 @@ Ideas worth weighing, not yet decided or scheduled.
 - **A centroid snap during a move.** A layer's visual centre (`mastik_core::centroid`) as a source
   in `snap_rect` while the Align card's visual-centre toggle is on. Worth weighing only once the
   toggle has seen use.
+- **Background removal by a model.** The feature designers expect of an image card, but it brings
+  a model and a native runtime, so it is a project of its own. The model must be MIT or Apache
+  licensed: BiRefNet's lite variant (about 1024 px input, good on hair) cuts out a subject in one
+  step; BRIA's RMBG is non-commercial without a licence. ONNX Runtime through `ort` with
+  `load-dynamic` (DirectML, CoreML, CPU); BiRefNet's deformable convolutions rule out the pure-Rust
+  runtimes and are the export's known snag. It runs in the reader child process, as PDFs do
+  (`reader::pdf`), so a runtime or driver crash costs the action, not the app, and the main binary
+  never links the runtime. Model and runtime are downloaded once when switched on in Settings,
+  pinned by SHA-256 and cached per machine, as the icon sets are; nothing ships in the installer.
+  The result is a matte stored as its own image entry and named by `ImageRef` (`matte`), so it
+  shares the picture's framing, rides undo and save as any picture does, folds into the
+  adjusted-pixel cache, and exports as an SVG luminance `<mask>` and CSS `mask-image`. The matte is
+  scaled to full size by a guided filter over the photograph, since a plain upscale softens hair,
+  and the card's *Shift edge* and *Feather* edit it without running the model again.
 
 ## Parked decisions
 
