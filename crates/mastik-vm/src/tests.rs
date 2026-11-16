@@ -509,6 +509,82 @@ fn a_runaway_loop_stops_at_the_budget() {
     );
 }
 
+/// The sandbox's walls: no name off the allowlist resolves, the memory budget
+/// stops a run that allocates past it, and the interrupt stops a runaway inside
+/// a function Luau's own library calls back. A comment gives each part's flip.
+#[test]
+fn the_sandbox_holds() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    // flip: `resolve` falling back to `lua.globals()` → fails at "getfenv".
+    for name in [
+        "getfenv",
+        "setfenv",
+        "load",
+        "loadstring",
+        "pcall",
+        "xpcall",
+        "rawset",
+        "rawget",
+        "rawequal",
+        "setmetatable",
+        "getmetatable",
+        "_G",
+        "_VERSION",
+        "coroutine",
+        "debug",
+        "utf8",
+        "buffer",
+        "bit32",
+        "os",
+        "require",
+        "newproxy",
+        "gcinfo",
+        "collectgarbage",
+    ] {
+        let err = run_script(&mut h, &e, &format!("return {name}"))
+            .map(|o| o.value)
+            .expect_err(name);
+        assert!(
+            err.message.starts_with(&format!("No name “{name}”")),
+            "{name}: {}",
+            err.message
+        );
+    }
+    // flip: `set_memory_limit` dropped → fails at "string.rep".
+    for (what, src) in [
+        ("string.rep", "local s = string.rep('x', 1e8) return #s"),
+        ("table.create", "local t = table.create(1e7, 0) return #t"),
+    ] {
+        let err = run_script(&mut h, &e, src)
+            .map(|o| o.value)
+            .expect_err(what);
+        assert_eq!(err.kind, ErrorKind::Budget, "{what}: {}", err.message);
+        assert_eq!(
+            err.message, "Stopped: the run used more than 64 MB",
+            "{what}"
+        );
+    }
+    // No edit of this crate breaks only these two: Luau calls the interrupt in
+    // every frame. They hold that for the next mlua or Luau bump.
+    let err = eval_read(
+        &mut h,
+        &e,
+        "(function() local t = {3, 2, 1} table.sort(t, function(a, b) while true do end end) end)()",
+    )
+    .expect_err("a sort's comparator");
+    assert_eq!(err.kind, ErrorKind::Budget, "{}", err.message);
+    let err = run_script(
+        &mut h,
+        &e,
+        "sel:adjust(\"x\", function(x) while true do end end)",
+    )
+    .map(|o| o.value)
+    .expect_err("an adjust callback");
+    assert_eq!(err.kind, ErrorKind::Budget, "{}", err.message);
+}
+
 /// A live read refuses to write or call a verb, and the document stays as it was.
 /// flip: `writable` answering Ok in `Mode::Read` → fails at the first `unwrap_err`.
 #[test]
