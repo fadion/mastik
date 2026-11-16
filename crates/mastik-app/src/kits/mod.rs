@@ -27,6 +27,52 @@ use mastik_core::meta::KitMark;
 /// The document menu's width.
 const MENU_W: f32 = 232.0;
 
+/// The document menu's area id, which its *Export ▸* list hangs from.
+const DOC_MENU: &str = "document-menu";
+
+/// A row of the document menu's *Export ▸* list, in its order: the files other
+/// tools open, then the frames as images, then the tokens.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DocExport {
+    Pdf,
+    Penpot,
+    Sketch,
+    Frames,
+    FramesAllPages,
+    Layers,
+    Tokens,
+}
+
+impl DocExport {
+    pub(crate) const ALL: [DocExport; 7] = [
+        DocExport::Pdf,
+        DocExport::Penpot,
+        DocExport::Sketch,
+        DocExport::Frames,
+        DocExport::FramesAllPages,
+        DocExport::Layers,
+        DocExport::Tokens,
+    ];
+
+    /// The row's words: the menu's *Export* says the verb, so the row names what.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            DocExport::Pdf => "Frames as one PDF…",
+            DocExport::Penpot => "Penpot file…",
+            DocExport::Sketch => "Sketch file…",
+            DocExport::Frames => "All frames…",
+            DocExport::FramesAllPages => "Frames, all pages…",
+            DocExport::Layers => "Layers set to export",
+            DocExport::Tokens => "Tokens…",
+        }
+    }
+
+    /// Whether a hairline separates this row from the one above.
+    fn after_sep(self) -> bool {
+        matches!(self, DocExport::Frames | DocExport::Tokens)
+    }
+}
+
 /// *Make this a kit*'s tooltip, in the menu and the palette alike.
 pub(crate) const MAKE_KIT_TIP: &str = "Other documents can use its components once you publish it";
 
@@ -59,10 +105,10 @@ impl MastikApp {
     /// The document's title as the **document menu's head** (§5.3e) — the
     /// caret beside the name.
     ///
-    /// ⚠️ **The menu holds only rows whose verbs exist**: *Rename*, *Duplicate* and
-    /// *Export…* are left out, with no editor verb behind them yet, and a row that
-    /// does nothing is worse than a short menu. *Version history…*, *Save named
-    /// version…* lead, the document's own verbs above a
+    /// ⚠️ **The menu holds only rows whose verbs exist**: *Rename* and *Duplicate*
+    /// are left out, with no editor verb behind them yet, and a row that does
+    /// nothing is worse than a short menu. *Version history…*, *Save named
+    /// version…* and *Export ▸* lead, the document's own verbs above a
     /// separator; on a kit, *Publish kit…* heads the kit
     /// rows, disabled with *No changes* when there is nothing to publish; *Kits
     /// used…* is offered while the vault holds anything.
@@ -87,7 +133,9 @@ impl MastikApp {
             self.toggle_menu(TopMenu::Document);
         }
         // The *Kit* tag is the top bar's, after the save dot (§15 D1025).
+        let flyout_at = Self::flyout_id(DOC_MENU).with("row");
         if self.open_menu != TopMenu::Document {
+            ctx.data_mut(|d| d.remove::<egui::Rect>(flyout_at));
             return;
         }
 
@@ -101,7 +149,7 @@ impl MastikApp {
             let spec = item.spec();
             crate::ui::menu_item(ui, spec.glyph, spec.label, crate::ui::MENU_ROW_H)
         };
-        self.dropdown(&ctx, "document-menu", anchor, MENU_W, &head, |app, ui| {
+        self.dropdown(&ctx, DOC_MENU, anchor, MENU_W, &head, |app, ui| {
             const H: f32 = crate::ui::MENU_ROW_H;
             // The document's own verbs, above the kit's.
             if item(ui, Item::VersionHistory).clicked() {
@@ -121,6 +169,19 @@ impl MastikApp {
                     app.open_menu = TopMenu::None;
                     app.credits_open = true;
                 }
+            }
+            // *Export ▸*, the document's own exports, lit while its list is open.
+            let mut flyout = ui.ctx().data(|d| d.get_temp::<egui::Rect>(flyout_at));
+            let export = crate::ui::submenu_row(
+                ui,
+                crate::ui::MenuRow::new(icon::EXPORT, "Export"),
+                flyout.is_some(),
+            );
+            if export.hovered() || export.clicked() {
+                flyout = Some(export.rect);
+            }
+            if let Some(row) = flyout {
+                app.document_export_flyout(ui.ctx(), row);
             }
             crate::ui::menu_sep(ui);
             if shared {
@@ -175,7 +236,77 @@ impl MastikApp {
                 app.open_menu = TopMenu::None;
                 app.go_to_dashboard();
             }
+            // Any other row of this menu hovered closes the list.
+            let elsewhere = ui
+                .ctx()
+                .pointer_hover_pos()
+                .is_some_and(|p| ui.min_rect().contains(p) && !export.rect.contains(p));
+            ui.ctx().data_mut(|d| match flyout.filter(|_| !elsewhere) {
+                Some(row) => {
+                    d.insert_temp(flyout_at, row);
+                }
+                None => d.remove::<egui::Rect>(flyout_at),
+            });
         });
+    }
+
+    /// The document menu's *Export ▸* list beside `row`: the whole document's
+    /// exports, each also in the palette. A row that cannot run is dimmed with
+    /// its reason; *Frames, all pages…* shows only when there is more than one page.
+    fn document_export_flyout(&mut self, ctx: &egui::Context, row: egui::Rect) {
+        const H: f32 = crate::ui::MENU_ROW_H;
+        let no_frames = self
+            .exported_frames()
+            .is_empty()
+            .then_some("No frames on the canvas");
+        let no_exports = (!self.document_exports_anything())
+            .then_some("No layer in this document has export settings");
+        let pages = self.session.doc.pages().len() > 1;
+        let rows: Vec<DocExport> = DocExport::ALL
+            .into_iter()
+            .filter(|r| pages || *r != DocExport::FramesAllPages)
+            .collect();
+        let labels: Vec<(&str, Option<&str>)> = rows.iter().map(|r| (r.label(), None)).collect();
+        let w = crate::ui::menu_check_accel_width(ctx, &labels, false, crate::ui::MENU_PAD, 160.0);
+        let seps = rows.iter().filter(|r| r.after_sep()).count();
+        let mut picked = None;
+        crate::ui::flyout(Self::flyout_id(DOC_MENU), row, w)
+            .pad(crate::ui::MENU_PAD)
+            .order(egui::Order::Foreground)
+            .show(ctx, (rows.len(), seps), |ui| {
+                for r in &rows {
+                    if r.after_sep() {
+                        crate::ui::menu_sep(ui);
+                    }
+                    let why = match r {
+                        DocExport::Pdf | DocExport::Frames | DocExport::FramesAllPages => no_frames,
+                        DocExport::Layers => no_exports,
+                        _ => None,
+                    };
+                    let style = crate::ui::MenuRow::new("", r.label()).enabled(why.is_none());
+                    let resp = crate::ui::menu_row(ui, style, H);
+                    if let Some(why) = why {
+                        resp.on_hover_text(why);
+                    } else if resp.clicked() {
+                        picked = Some(*r);
+                    }
+                }
+            });
+        let Some(r) = picked else {
+            return;
+        };
+        self.open_menu = TopMenu::None;
+        use crate::input::Action;
+        use crate::panels::EditableFormat;
+        match r {
+            DocExport::Pdf => self.export_frames_pdf(),
+            DocExport::Penpot => self.dispatch(ctx, Action::ExportEditable(EditableFormat::Penpot)),
+            DocExport::Sketch => self.dispatch(ctx, Action::ExportEditable(EditableFormat::Sketch)),
+            DocExport::Frames => self.export_frames(),
+            DocExport::FramesAllPages => self.export_frames_all_pages(),
+            DocExport::Layers => self.dispatch(ctx, Action::ExportAll),
+            DocExport::Tokens => self.dispatch(ctx, Action::ExportTokens),
+        }
     }
 
     /// *Make this a kit* (§5.3e): write the mark and save. One click and safe —

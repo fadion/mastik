@@ -15514,6 +15514,75 @@ mod library_wiring_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The document menu's *Export ▸* opens its list on hover, with the frame rows
+    /// dimmed while there are no frames, and closes it when another row is hovered.
+    /// flip: `document_menu` not calling `document_export_flyout` → fails at "the
+    /// list opens".
+    #[test]
+    fn the_document_menu_exports_through_a_submenu() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        app.open_menu = TopMenu::Document;
+        let run = |app: &mut MastikApp, at: Option<egui::Pos2>| {
+            let input = egui::RawInput {
+                events: at.map(egui::Event::PointerMoved).into_iter().collect(),
+                ..Default::default()
+            };
+            let out = ctx.run_ui(input, |ui| app.top_bar(ui));
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((
+                        t.galley.text().to_string(),
+                        t.pos + t.galley.rect.center().to_vec2(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        run(&mut app, None);
+        let painted = run(&mut app, None);
+        let at = |painted: &[(String, egui::Pos2)], label: &str| {
+            painted
+                .iter()
+                .find(|(t, _)| t == label)
+                .map(|(_, p)| *p)
+                .unwrap_or_else(|| panic!("{label} painted: {painted:?}"))
+        };
+        assert!(
+            !painted.iter().any(|(t, _)| t == "Penpot file…"),
+            "the control: shut until hovered"
+        );
+        let export = at(&painted, "Export");
+        for _ in 0..3 {
+            run(&mut app, Some(export));
+        }
+        let open = run(&mut app, Some(export));
+        for label in [
+            "Frames as one PDF…",
+            "Penpot file…",
+            "Sketch file…",
+            "Tokens…",
+        ] {
+            at(&open, label);
+        }
+        assert!(
+            !open.iter().any(|(t, _)| t == "Frames, all pages…"),
+            "one page: no all-pages row"
+        );
+        let history = at(&open, crate::menu::Item::VersionHistory.spec().label);
+        for _ in 0..3 {
+            run(&mut app, Some(history));
+        }
+        let shut = run(&mut app, Some(history));
+        assert!(
+            !shut.iter().any(|(t, _)| t == "Penpot file…"),
+            "another row hovered shuts the list"
+        );
+        assert_eq!(app.open_menu, TopMenu::Document, "the menu itself stays");
+    }
+
     /// The document menu makes a kit the library finds by its first 4 KB; stopping
     /// sharing keeps the version, and the Kit tag shows only while shared.
     ///
