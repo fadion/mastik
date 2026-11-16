@@ -649,7 +649,7 @@ selects its layer, `Shift` + a label adds it; a label is two letters, the first 
 | `Shift+8` (`*`) | the same layer in each repeat (`select_matching`) |
 | `Shift+1` | zoom to fit |
 | `Shift+2` | zoom to the selection (physical `Num2`, §0) |
-| `.` | run the last line in the log again on the selection |
+| `.` | run the last line in the log again, on its opening label's layer or else the selection |
 | `1`–`99` | a count: the next arrow or `.` runs that many times |
 | `/` | filter the labels by layer name, at any depth in view; `Enter` picks a lone match |
 | `m` + letter | mark the selection and view |

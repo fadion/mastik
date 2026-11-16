@@ -90,6 +90,9 @@ pub(crate) struct Navigate {
     marking: Option<MarkKey>,
     /// The name filter `/` opened, while it holds.
     filter: Option<Filter>,
+    /// The bar's line as this frame began, read by [`MastikApp::free_label`]
+    /// while the bar is taken out to be drawn.
+    line: String,
 }
 
 /// What a mark's letter does once it comes.
@@ -360,6 +363,7 @@ impl MastikApp {
     /// would end it), and the selection stays.
     pub(crate) fn end_bar_session(&mut self) {
         self.navigate.clear_pending();
+        self.navigate.line.clear();
         let Some(on) = self.navigate.on.take() else {
             return;
         };
@@ -565,9 +569,10 @@ impl MastikApp {
     /// or once a moved view or an edited document has rested. Never mid-press,
     /// so a drag ends before its layers are relabelled.
     pub(crate) fn deal_tick(&mut self, ctx: &egui::Context) {
-        if self.command_bar.is_none() {
+        let Some(bar) = self.command_bar.as_ref() else {
             return;
-        }
+        };
+        self.navigate.line.clone_from(&bar.text);
         let key = DealKey {
             page: self.session.page,
             scope: self.entered_group,
@@ -623,6 +628,8 @@ impl MastikApp {
                 .map(|n| n.children().to_vec())
                 .unwrap_or_default()
                 .into_iter()
+                // What a click could reach, as the hit test admits it.
+                .filter(|id| shown(doc, *id) && !mastik_core::is_effectively_locked(doc, *id))
                 .filter(|id| {
                     self.session
                         .preview_world_bounds(*id)
@@ -686,11 +693,11 @@ impl MastikApp {
         {
             return Some(l);
         }
+        // While the bar is drawn it is taken out, and its line is the frame's.
         let line = self
             .command_bar
             .as_ref()
-            .map(|b| b.text.clone())
-            .unwrap_or_default();
+            .map_or_else(|| self.navigate.line.clone(), |b| b.text.clone());
         let held = words(&line);
         let doc = &self.session.doc;
         let seen = &self.navigate.seen_at;
@@ -787,6 +794,13 @@ impl MastikApp {
     /// press was left for the keymap, which ends a count it did not use.
     pub(crate) fn leap_keys(&mut self, ctx: &egui::Context) -> bool {
         if !self.picking() || self.mode != Mode::Normal {
+            return false;
+        }
+        // A text field focused in a panel types its keys, as `input::resolve` leaves them.
+        let typing = ctx
+            .memory(|m| m.focused())
+            .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
+        if typing {
             return false;
         }
         let events = ctx.input_mut(|i| std::mem::take(&mut i.events));
@@ -894,7 +908,10 @@ impl MastikApp {
             self.navigate.clear_pending();
             return true;
         }
-        if !m.shift
+        // A layout may type its digits with Shift (AZERTY), so Shift is read
+        // past, except on the digits whose shifted spelling Pick's keymap binds.
+        let bound_shifted = m.shift && matches!(key, K::Num1 | K::Num2 | K::Num8);
+        if !bound_shifted
             && let Some(d) = digit(key)
             && (d > 0 || self.navigate.count.is_some())
         {
@@ -917,7 +934,8 @@ impl MastikApp {
             *skip = Some(if key == K::M { "m" } else { "'" });
             return true;
         }
-        if !m.shift && key == K::Slash {
+        // `Key::Slash` is only ever `/`, typed with Shift on many layouts.
+        if key == K::Slash {
             self.navigate.typed.clear();
             self.navigate.count = None;
             match self.navigate.filter.as_mut() {
@@ -1024,7 +1042,8 @@ impl MastikApp {
     }
 
     /// Go back to `place`: its page, view, entered group and what of its
-    /// selection is still there. A page gone since says so and goes nowhere.
+    /// selection is still on that page, as a selection never spans pages. A
+    /// page gone since says so and goes nowhere.
     fn go_to_place(&mut self, place: &Place) -> bool {
         if !self.session.doc.is_page(place.page) {
             self.session.info("That mark's page is gone");
@@ -1033,13 +1052,9 @@ impl MastikApp {
         self.go_to_page(place.page);
         self.session.camera = place.camera;
         let doc = &self.session.doc;
-        self.entered_group = place.entered.filter(|g| doc.contains(*g));
-        let kept: Vec<NodeId> = place
-            .selection
-            .iter()
-            .copied()
-            .filter(|id| doc.contains(*id))
-            .collect();
+        let here = |id: &NodeId| doc.page_of(*id) == Some(place.page);
+        self.entered_group = place.entered.filter(here);
+        let kept: Vec<NodeId> = place.selection.iter().copied().filter(here).collect();
         self.session.selection.set(kept);
         // Deal for the view arrived at now, not once it has rested.
         self.navigate.dealt_for = None;
@@ -1871,18 +1886,47 @@ mod tests {
         assert_ne!(got, held, "not the line's");
         assert!(!taken.contains(&got), "not one in view");
         assert_eq!(f.app.leap_labels().get(&got), Some(&fresh));
+        // The same through a whole frame, where the bar is taken out to be drawn
+        // when its subject pill gives a label to a layer out of view.
+        // flip: `free_label` reading only `command_bar` → fails at "kept".
+        let holder = f.app.leap_labels()[&held];
+        let far = f.app.session.ids.mint();
+        f.app
+            .session
+            .commit(Transaction(vec![square(far, page, 3, 5000.0, 0.0)]));
+        frame(&ctx, &mut f.app, Vec::new());
+        f.app.session.selection.set_one(far);
+        frame(&ctx, &mut f.app, Vec::new());
+        assert!(
+            f.app.leap_labels().values().any(|v| *v == far),
+            "fixture: the pill gave the far layer a label"
+        );
+        assert_eq!(
+            f.app.leap_labels().get(&held),
+            Some(&holder),
+            "kept: the line's label"
+        );
     }
 
-    /// Over 81 candidates, only the current layer's children are labelled, with
-    /// the current layer itself, which the bar's subject pill deals a label.
+    /// Over 81 candidates, only the current layer's children a click could reach
+    /// are labelled, with the current layer itself, which the bar's subject pill
+    /// deals a label; a hidden child is not.
     ///
-    /// flip: dropping the `LABELS_MAX` fallback in `deal` → fails at the set.
+    /// flip: dropping the `LABELS_MAX` fallback in `deal` → fails at the set;
+    /// the fallback not filtering hidden layers → fails at the set too.
     #[test]
     fn over_81_candidates_label_only_the_children_of_the_current_layer() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         let page = f.app.session.page;
-        let mut ops = Vec::new();
+        let hidden = f.app.session.ids.mint();
+        let mut ops = vec![
+            square(hidden, f.g, 0, 120.0, 0.0),
+            Operation::SetVisible {
+                id: hidden,
+                visible: false,
+            },
+        ];
         for i in 0..90 {
             let id = f.app.session.ids.mint();
             let (x, y) = ((i % 15) as f64 * 22.0, 40.0 + (i / 15) as f64 * 22.0);
@@ -2170,6 +2214,12 @@ mod tests {
         tap(&ctx, &mut f.app, egui::Key::Enter);
         assert_eq!(left_of(&f.app, f.a), a0 + 10.0, "a moved");
         assert_eq!(left_of(&f.app, f.b), b0, "b did not");
+        // `.` in Pick runs the line again as written: its label is still its subject.
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert!(f.app.picking(), "fixture: picking");
+        tap(&ctx, &mut f.app, egui::Key::Period);
+        assert_eq!(left_of(&f.app, f.a), a0 + 20.0, "`.` moved a again");
+        assert_eq!(left_of(&f.app, f.b), b0, "and not the selection");
     }
 
     fn left_of(app: &MastikApp, id: NodeId) -> f64 {
@@ -2344,6 +2394,111 @@ mod tests {
         tap(&ctx, &mut f.app, egui::Key::Z);
         assert_eq!(selected(&f.app), [f.b], "an unset mark goes nowhere");
         assert!(f.app.picking());
+    }
+
+    /// In Pick, a text field focused in a panel keeps its keys: `m`, a letter
+    /// and `/` type into it rather than arm a mark, pick or open the filter.
+    ///
+    /// flip: `leap_keys` not asking whether a text field is focused → fails at
+    /// "every event reaches the field".
+    #[test]
+    fn a_focused_field_keeps_its_keys_in_pick() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert!(f.app.picking(), "fixture: picking");
+        let before = selected(&f.app);
+        let la = label_of(&f.app, f.a);
+        let mut events = Vec::new();
+        for c in format!("m{la}/").chars() {
+            let key = match c {
+                '/' => egui::Key::Slash,
+                c => letter_key(c),
+            };
+            events.push(key_with(key, egui::Modifiers::NONE));
+            events.push(egui::Event::Text(c.to_string()));
+        }
+        let sent = events.len();
+        let field = egui::Id::new("a panel field");
+        let mut kept = 0;
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::text_edit::TextEditState::default().store(ui.ctx(), field);
+                ui.memory_mut(|m| m.request_focus(field));
+                f.app.leap_keys(ui.ctx());
+                kept = ui.input(|i| i.events.len());
+            },
+        );
+        assert_eq!(kept, sent, "every event reaches the field");
+        assert!(f.app.navigate.marking.is_none(), "no mark armed");
+        assert!(f.app.navigate.filter.is_none(), "no filter opened");
+        assert_eq!(selected(&f.app), before, "no layer picked");
+    }
+
+    /// A layout that types `/` or a digit with Shift (German, AZERTY) still
+    /// opens the filter and counts; Shift+1 stays the keymap's `!`.
+    ///
+    /// flip: `pick_key` refusing a shifted `/` → fails at "a shifted slash".
+    #[test]
+    fn shifted_slash_and_digits_reach_pick() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        shift_tap(&ctx, &mut f.app, egui::Key::Num3);
+        assert_eq!(f.app.navigate.count, Some(3), "a shifted digit counts");
+        tap(&ctx, &mut f.app, egui::Key::Escape);
+        shift_tap(&ctx, &mut f.app, egui::Key::Num1);
+        assert_eq!(f.app.navigate.count, None, "Shift+1 is left to the keymap");
+        shift_tap(&ctx, &mut f.app, egui::Key::Slash);
+        assert!(
+            f.app.navigate.filter.as_ref().is_some_and(|f| f.typing),
+            "a shifted slash opens the filter"
+        );
+    }
+
+    /// A jump to a mark selects only what is still on the mark's page: a layer
+    /// moved to another page since is left out.
+    ///
+    /// flip: `go_to_place` keeping every layer the document holds → fails at
+    /// "nothing from another page".
+    #[test]
+    fn a_mark_never_selects_across_pages() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let first = f.app.session.page;
+        f.app.session.selection.set_one(f.a);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        tap(&ctx, &mut f.app, egui::Key::M);
+        tap(&ctx, &mut f.app, egui::Key::F);
+        let doc = &f.app.session.doc;
+        let (tx, second) = mastik_core::page::add(
+            doc,
+            &mut f.app.session.ids,
+            doc.pages().len(),
+            None,
+            doc.own_ground(first),
+        );
+        f.app.session.commit(tx);
+        f.app.session.selection.set_one(f.a);
+        f.app.move_selection_to_page(second);
+        assert_eq!(
+            f.app.session.doc.page_of(f.a),
+            Some(second),
+            "fixture: moved"
+        );
+        f.app.session.selection.set_one(f.b);
+        tap(&ctx, &mut f.app, egui::Key::Quote);
+        tap(&ctx, &mut f.app, egui::Key::F);
+        assert_eq!(f.app.session.page, first, "the mark's page");
+        assert!(
+            selected(&f.app).is_empty(),
+            "nothing from another page: {:?}",
+            selected(&f.app)
+        );
     }
 
     /// `/` and a name leave only the layers in view whose name holds it, at

@@ -494,7 +494,7 @@ text edit took the keys. A text edit started under the bar (a double-click on te
 | `↑` `↓` `←` `→` | the nearest sibling that way on the canvas (`nearest_toward`): of the siblings whose centre lies past the current layer's that way, the least gap along the arrow plus twice the gap across it, so one in line beats a nearer one off to the side. The canvas, not the Layers panel's z-order, which often runs against what the eye sees. Nothing that way stays put; an arrow onto a group selects it without stepping in. With nothing selected, any arrow takes the scope's first layer in reading order. `Shift` adds |
 | `*` (`Shift+8`) | the same layer in each repeat (`select_matching`) |
 | `Shift+1` / `Shift+2` | zoom to fit / to the selection |
-| `.` | run the last line in the log again on the selection (`Log::last_line`): typed, or written for an edit made elsewhere, such as a drag's `.x += 24`; a script's run is no line, and neither is an `/ai` request, which would ask again |
+| `.` | run the last line in the log again as written (`Log::last_line`): a line that opens with a label acts on that label's layer again, as Enter did, and any other on the selection. The line is typed, or written for an edit made elsewhere, such as a drag's `.x += 24`; a script's run is no line, and neither is an `/ai` request, which would ask again |
 | `` ` `` `:` `Escape` | back to Type; `Escape` first clears anything half typed (a count, a mark's prefix, the filter, a label's first letter) |
 
 Every other editor key rests; the history chords and the cheatsheet's stay, and opened from Pick

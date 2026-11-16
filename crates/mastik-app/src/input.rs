@@ -69,7 +69,8 @@ pub enum Nav {
     Fit,
     /// `Shift+2`: fit the selection in the view.
     Zoom,
-    /// `.`: the last line in the log again, on the selection.
+    /// `.`: the last line in the log again, as written: on its opening label's
+    /// layer, else on the selection.
     Repeat,
     /// `` ` ``, `:`, `Esc`: back to the field.
     Type,
