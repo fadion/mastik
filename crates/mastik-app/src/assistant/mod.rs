@@ -129,6 +129,9 @@ struct Running {
     diagnostics: String,
     /// *Stop* was pressed; the turn ends when the harness says it has.
     stopping: bool,
+    /// What the agent had been shown before this turn, put back if the turn
+    /// is refused before the harness reads it.
+    look_before: Option<prompt::Look>,
 }
 
 /// Finding the program, off the UI thread: a probe runs it.
@@ -154,8 +157,10 @@ pub(crate) enum Why {
     Private,
     Looking(ai::Harness),
     NotFound(ai::Harness, ai::NotFound),
+    /// The probe did not finish: nothing was refused, and looking again may
+    /// answer.
+    Unanswered(ai::Harness),
     Unsealed(ai::Harness),
-    SignedOut(ai::Harness),
     NoDocument,
 }
 
@@ -182,18 +187,37 @@ impl Why {
                     nf.program
                 )
             }
+            Why::Unanswered(h) => format!(
+                "{} did not answer when Mastik checked how it can be restricted, so Mastik has \
+                 not started it.",
+                h.label()
+            ),
             Why::Unsealed(h) => format!(
                 "{} could not be started with its own tools off, so Mastik will not start it.",
                 h.label()
             ),
-            Why::SignedOut(h) => format!(
-                "{} isn't signed in. Run {} once in a terminal to sign in, then ask again.",
-                h.label(),
-                h.program()
-            ),
             Why::NoDocument => "Save the document to ask about it.".into(),
         }
     }
+
+    /// Whether another look may change the answer: the program installed or
+    /// updated since, or a probe that did not finish.
+    pub(crate) fn looks_again(&self) -> bool {
+        matches!(
+            self,
+            Why::NotFound(..) | Why::Unanswered(_) | Why::Unsealed(_)
+        )
+    }
+}
+
+/// The note a harness that exited signed out leaves: what to do, then *Ask
+/// again*, which starts a new session.
+fn signed_out_note(h: ai::Harness) -> String {
+    format!(
+        "{} isn't signed in. Run {} once in a terminal to sign in, then ask again.",
+        h.label(),
+        h.program()
+    )
 }
 
 /// The assistant's state in the window.
@@ -226,8 +250,6 @@ pub(crate) struct Assistant {
     /// Settings' own lookup, for the agent and path not yet saved, so its
     /// hint answers the moment either changes without moving the panel's.
     settings_lookup: Option<Lookup>,
-    /// The harness said it is not signed in, until a turn succeeds.
-    signed_out: Option<ai::Harness>,
     /// A reply arrived while the panel was shut.
     pub(crate) unseen: bool,
     /// Move the keyboard to the composer this frame.
@@ -525,15 +547,22 @@ impl MastikApp {
         if self.session.path.is_none() {
             return Some(Why::NoDocument);
         }
-        if self.assistant.signed_out == Some(h) {
-            return Some(Why::SignedOut(h));
-        }
         match self.assistant_lookup(h) {
             None => Some(Why::Looking(h)),
             Some(Err(nf)) => Some(Why::NotFound(h, nf)),
+            Some(Ok(f)) if !f.answered => Some(Why::Unanswered(h)),
             Some(Ok(f)) if f.seal == ai::Seal::Unknown => Some(Why::Unsealed(h)),
             Some(Ok(_)) => None,
         }
+    }
+
+    /// *Look again*: find the program afresh, its `--help` probed again, for a
+    /// program installed or updated since, or a probe that did not finish.
+    pub(crate) fn assistant_look_again(&mut self) {
+        if let Some(h) = self.prefs.assistant.harness() {
+            ai::forget_probes(h);
+        }
+        self.assistant.lookup = None;
     }
 
     /// Hold the panel's lookup for `h` as running (`None`) or as ended with
@@ -681,6 +710,13 @@ impl MastikApp {
         self.assistant.open = true;
         self.assistant.unseen = false;
         self.assistant.focus = true;
+        // A program missing or a probe that did not finish is looked for again
+        // each time the panel opens; a probe's answer is kept.
+        if let Some(Lookup::Done(_, _, found)) = &self.assistant.lookup
+            && !found.as_ref().is_ok_and(|f| f.answered)
+        {
+            self.assistant.lookup = None;
+        }
     }
 
     /// Attach the selection as chips, open the panel and focus the composer:
@@ -910,6 +946,8 @@ impl MastikApp {
             let Some(r) = self.assistant.running.take() else {
                 return;
             };
+            // The harness never read the turn, so it was never shown this look.
+            self.assistant.look = r.look_before;
             self.assistant.msgs.push(Msg::Note(Note::Failed {
                 text: why.to_string(),
                 question: r.question,
@@ -997,7 +1035,6 @@ impl MastikApp {
                     }));
                 }
                 a.running = None;
-                a.signed_out = None;
                 if !a.open {
                     a.unseen = true;
                 }
@@ -1010,11 +1047,10 @@ impl MastikApp {
             } => {
                 let r = a.running.take().expect("checked above");
                 let label = r.harness.label();
+                // Signed out blocks nothing: the session ends below, so once
+                // the person has signed in, *Ask again* starts a new one.
                 let text = match (signed_out, code) {
-                    (true, _) => {
-                        a.signed_out = Some(r.harness);
-                        format!("{label} isn't signed in.")
-                    }
+                    (true, _) => signed_out_note(r.harness),
                     (false, Some(c)) => {
                         format!("{label} stopped before answering (exit code {c}).")
                     }
@@ -1209,7 +1245,7 @@ impl MastikApp {
             earlier: &earlier_refs,
             page_id: &page_id,
         });
-        self.assistant.look = Some(prompt::Look::of(rev, &snap));
+        let look = prompt::Look::of(rev, &snap);
         let images = match h.takes_images() {
             true => self.chip_renders(&chips),
             false => Vec::new(),
@@ -1223,7 +1259,9 @@ impl MastikApp {
             None => return true,
         };
         match sent {
+            // What the agent was shown moves on only with a turn it was sent.
             Ok(()) => {
+                let look_before = self.assistant.look.replace(look);
                 self.assistant.running = Some(Running {
                     msg,
                     question,
@@ -1232,6 +1270,7 @@ impl MastikApp {
                     harness: h,
                     diagnostics: String::new(),
                     stopping: false,
+                    look_before,
                 });
             }
             Err(refusal) => {
@@ -1432,7 +1471,6 @@ impl MastikApp {
         self.assistant.end_session(None);
         self.assistant.msgs.clear();
         self.assistant.applied.clear();
-        self.assistant.signed_out = None;
         self.assistant.recall = None;
         self.assistant.thread_epoch += 1;
         self.assistant.save();
@@ -1462,7 +1500,9 @@ impl MastikApp {
         }
     }
 
-    /// Drop the last turn and ask its question again.
+    /// Drop the last turn and ask its question again. A send that is not taken
+    /// (the assistant blocked, a turn running) puts the turn back; the panel
+    /// draws the button disabled while nothing can be sent.
     pub(crate) fn assistant_regenerate(&mut self) {
         let Some(q) = self
             .assistant
@@ -1475,8 +1515,10 @@ impl MastikApp {
         let Some(Msg::Person { text, chips, scope }) = self.assistant.msgs.get(q).cloned() else {
             return;
         };
-        self.assistant.msgs.truncate(q);
-        self.assistant_send(text, chips, scope);
+        let dropped = self.assistant.msgs.split_off(q);
+        if !self.assistant_send(text, chips, scope) {
+            self.assistant.msgs.extend(dropped);
+        }
     }
 
     /// After Settings saves: a change to what the session was started with
@@ -1486,7 +1528,6 @@ impl MastikApp {
         let now = &self.prefs.assistant;
         if before.agent != now.agent || before.program != now.program {
             self.assistant.lookup = None;
-            self.assistant.signed_out = None;
         }
         let changed = before.agent != now.agent
             || before.program != now.program
@@ -1738,6 +1779,136 @@ mod tests {
         assert!(matches!(app.assistant_blocked(), Some(Why::Off)));
         app.assistant_send("Why does it wrap?".into(), Vec::new(), None);
         assert!(app.assistant.msgs.is_empty());
+    }
+
+    /// A program found and probed, `answered` or not.
+    fn found(seal: ai::Seal, answered: bool) -> ai::Found {
+        ai::Found {
+            path: PathBuf::new(),
+            seal,
+            seal_sentence: String::new(),
+            answered,
+        }
+    }
+
+    /// A window whose assistant is Claude Code, found sealed, on a saved
+    /// document, its thread a question and the answer being written.
+    fn app_asking(ctx: &egui::Context) -> MastikApp {
+        let (mut app, _) = app_with_card(ctx);
+        app.prefs.assistant.agent = "claude".into();
+        let h = app.prefs.assistant.harness().expect("an agent");
+        app.session.path = Some(PathBuf::from("asking.mastik"));
+        app.hold_lookup(h, Some(Ok(found(ai::Seal::Sealed, true))));
+        app.assistant.msgs = vec![
+            Msg::Person {
+                text: "Why does it wrap?".into(),
+                chips: Vec::new(),
+                scope: None,
+            },
+            Msg::Agent {
+                speaker: h.speaker().into(),
+                harness: h.key().into(),
+                parts: Vec::new(),
+                stats: None,
+            },
+        ];
+        app.assistant.running = Some(Running {
+            msg: 1,
+            question: 0,
+            sent: 0.0,
+            alive: false,
+            harness: h,
+            diagnostics: String::new(),
+            stopping: false,
+            look_before: None,
+        });
+        app
+    }
+
+    /// A harness that exits signed out leaves a note saying how to sign in,
+    /// and blocks nothing, so *Ask again* works once the person has.
+    /// flip: `assistant_blocked` refusing after a signed-out note → fails at
+    /// "the composer can send".
+    #[test]
+    fn a_signed_out_exit_says_how_and_blocks_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = app_asking(&ctx);
+        assert!(app.assistant_blocked().is_none(), "the fixture can send");
+        app.assistant_event(ai::Event::Exited {
+            code: Some(1),
+            signed_out: true,
+            diagnostics: "Not logged in".into(),
+        });
+        let Some(Msg::Note(Note::Failed { text, question, .. })) = app.assistant.msgs.last() else {
+            panic!("no failure note: {:?}", app.assistant.msgs);
+        };
+        assert!(text.contains("Run claude once in a terminal"), "{text}");
+        assert_eq!(*question, 0, "Ask again asks the question");
+        assert!(app.assistant_blocked().is_none(), "the composer can send");
+    }
+
+    /// *Regenerate* while nothing can be sent keeps the turn it would drop.
+    /// flip: `assistant_regenerate` not putting the turn back → fails at the
+    /// message count.
+    #[test]
+    fn regenerating_while_blocked_keeps_the_turn() {
+        let ctx = egui::Context::default();
+        let mut app = app_asking(&ctx);
+        app.assistant.running = None;
+        if let Some(Msg::Agent { stats, .. }) = app.assistant.msgs.get_mut(1) {
+            *stats = Some(Stats {
+                seconds: 3.0,
+                tokens: None,
+            });
+        }
+        app.prefs.assistant.agent.clear();
+        assert!(matches!(app.assistant_blocked(), Some(Why::Off)));
+        app.assistant_regenerate();
+        assert_eq!(app.assistant.msgs.len(), 2, "{:?}", app.assistant.msgs);
+        assert!(matches!(app.assistant.msgs[1], Msg::Agent { .. }));
+    }
+
+    /// A probe that did not finish blocks with *Look again*, not as a refusal,
+    /// and is looked for again when the panel opens; a probe's answer is kept.
+    /// flip: `open_assistant` keeping every lookup → fails at "opening looks
+    /// again".
+    #[test]
+    fn an_unanswered_probe_is_looked_for_again() {
+        let ctx = egui::Context::default();
+        let mut app = app_asking(&ctx);
+        app.assistant.running = None;
+        let h = app.prefs.assistant.harness().unwrap();
+        app.hold_lookup(h, Some(Ok(found(ai::Seal::Unknown, false))));
+        let why = app.assistant_blocked();
+        assert!(matches!(why, Some(Why::Unanswered(_))), "{why:?}");
+        assert!(why.is_some_and(|w| w.looks_again()));
+        app.open_assistant();
+        assert!(app.assistant.lookup.is_none(), "opening looks again");
+        app.hold_lookup(h, Some(Ok(found(ai::Seal::Unknown, true))));
+        assert!(matches!(app.assistant_blocked(), Some(Why::Unsealed(_))));
+        app.open_assistant();
+        assert!(app.assistant.found().is_some(), "an answer is kept");
+    }
+
+    /// A turn refused before the harness read it leaves what the agent was
+    /// shown as it was, so the next turn's changes and outline are not lost.
+    /// flip: the `Refused` arm without putting `look_before` back → fails at
+    /// the revision.
+    #[test]
+    fn a_refused_turn_keeps_what_the_agent_was_shown() {
+        let ctx = egui::Context::default();
+        let mut app = app_asking(&ctx);
+        let look = |rev| prompt::Look {
+            rev,
+            ..Default::default()
+        };
+        app.assistant.look = Some(look(7));
+        if let Some(r) = app.assistant.running.as_mut() {
+            r.look_before = Some(look(3));
+        }
+        app.assistant_event(ai::Event::Refused(ai::Refusal::Busy));
+        assert!(app.assistant.running.is_none());
+        assert_eq!(app.assistant.look.map(|l| l.rev), Some(3));
     }
 
     /// The panel draws a thread holding every kind of message, and its marks.

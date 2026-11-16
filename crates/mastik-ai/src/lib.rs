@@ -18,7 +18,7 @@ mod run;
 mod session;
 mod stream;
 
-pub use find::{Found, NotFound, find, warm};
+pub use find::{Found, NotFound, find, forget_probes, warm};
 pub use harness::{Harness, Seal};
 pub use process::process_running;
 pub use run::sweep;

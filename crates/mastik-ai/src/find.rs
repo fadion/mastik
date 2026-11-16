@@ -15,6 +15,10 @@ pub struct Found {
     pub seal: Seal,
     /// What the seal means, for Settings and the panel's head.
     pub seal_sentence: String,
+    /// The probe ran to an answer. `false`, with the seal `Unknown`, when it
+    /// could not run or did not finish in time: nothing was refused, and
+    /// looking again may answer.
+    pub answered: bool,
 }
 
 /// A harness's program, not found anywhere Mastik looked.
@@ -31,12 +35,23 @@ pub struct NotFound {
 /// could not run is not cached.
 pub fn find(h: Harness, program_override: Option<&Path>) -> Result<Found, NotFound> {
     let path = locate(h, program_override)?;
-    let probe = probe(h, &path);
+    let answer = probe_answer(h, &path);
+    let probe = answer.unwrap_or_else(|| Probe::read(h, false, "", ""));
     Ok(Found {
         seal: probe.seal,
         seal_sentence: seal_sentence(h, probe.seal),
+        answered: answer.is_some(),
         path,
     })
+}
+
+/// Forget what `--help` said about every program of `h`, so the next lookup
+/// probes again: after *Look again*, an update may have added the flags the
+/// seal needs.
+pub fn forget_probes(h: Harness) {
+    if let Ok(mut c) = cache().lock() {
+        c.retain(|(of, _), _| *of != h);
+    }
 }
 
 /// [`find`] on a background thread, so the first session finds its probe done.
@@ -523,20 +538,26 @@ pub(crate) mod fake {
 /// Settings' Path) never answers.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// What `--help` says about the program at `path`, cached per (harness, path).
-/// A probe that could not run or did not finish (an antivirus lock, an upgrade
-/// in place, a program that is not a CLI) is not an answer and is not cached.
+/// What `--help` says about the program at `path`, cached per (harness, path);
+/// a probe with no answer reads as unsealed.
 pub(crate) fn probe(h: Harness, path: &Path) -> Probe {
+    probe_answer(h, path).unwrap_or_else(|| Probe::read(h, false, "", ""))
+}
+
+/// [`probe`], or `None` when it could not run or did not finish (an antivirus
+/// lock, an upgrade in place, a program that is not a CLI): that is not an
+/// answer and is not cached.
+fn probe_answer(h: Harness, path: &Path) -> Option<Probe> {
     let key = (h, path.to_path_buf());
     if let Some(p) = cache().lock().ok().and_then(|c| c.get(&key).copied()) {
-        return p;
+        return Some(p);
     }
     let mut cmd = launch(h, path).command();
     cmd.args(h.help_args())
         .env(crate::AGENT_CHILD_ENV, "1")
         .stdin(std::process::Stdio::null());
     let Ok(Some(out)) = crate::process::run_bounded(&mut cmd, PROBE_TIMEOUT) else {
-        return Probe::read(h, false, "", "");
+        return None;
     };
     let probe = Probe::read(
         h,
@@ -547,7 +568,7 @@ pub(crate) fn probe(h: Harness, path: &Path) -> Probe {
     if let Ok(mut c) = cache().lock() {
         c.insert(key, probe);
     }
-    probe
+    Some(probe)
 }
 
 #[cfg(test)]

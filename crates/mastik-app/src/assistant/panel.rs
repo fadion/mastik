@@ -41,6 +41,8 @@ enum Act {
     RemoveScope,
     AskAgain(usize),
     Regenerate,
+    /// Find the program again: *Look again*.
+    LookAgain,
     OpenSettings,
     Close,
     Width(f32),
@@ -137,7 +139,7 @@ impl MastikApp {
                     ui.set_min_height(thread_h);
                     scroll.show(ui, |ui| {
                         ui.set_width(inner);
-                        self.assistant_thread(ui, now, &mut acts);
+                        self.assistant_thread(ui, now, blocked.as_ref(), &mut acts);
                     })
                 })
                 .inner;
@@ -237,6 +239,7 @@ impl MastikApp {
             Act::RemoveScope => self.assistant.scope = None,
             Act::AskAgain(q) => self.assistant_ask_again(q),
             Act::Regenerate => self.assistant_regenerate(),
+            Act::LookAgain => self.assistant_look_again(),
             Act::OpenSettings => {
                 self.assistant.open = false;
                 let ctx = self.egui_ctx.clone();
@@ -324,8 +327,15 @@ impl MastikApp {
         );
     }
 
-    /// Every message, the live turn's stage under its parts.
-    fn assistant_thread(&self, ui: &mut egui::Ui, now: f64, acts: &mut Vec<Act>) {
+    /// Every message, the live turn's stage under its parts; `blocked` is why
+    /// nothing can be sent now, which disables *Regenerate*.
+    fn assistant_thread(
+        &self,
+        ui: &mut egui::Ui,
+        now: f64,
+        blocked: Option<&Why>,
+        acts: &mut Vec<Act>,
+    ) {
         ui.spacing_mut().item_spacing.y = MSG_GAP;
         let msgs = &self.assistant.msgs;
         if msgs.is_empty() {
@@ -376,7 +386,7 @@ impl MastikApp {
                         }
                         if let Some(s) = stats {
                             let prose = m.prose();
-                            turn_foot(ui, s, &prose, last, acts);
+                            turn_foot(ui, s, &prose, last.then_some(blocked), acts);
                         }
                     });
                 }
@@ -688,14 +698,24 @@ impl MastikApp {
                     );
                     let fix = match why {
                         Why::Off => Some("Open settings"),
-                        Why::NotFound(..) => Some("Set the path"),
+                        Why::NotFound(..) | Why::Unsealed(_) => Some("Set the path"),
                         _ => None,
                     };
-                    if let Some(word) = fix
-                        && ui::word_link(ui, word, false).clicked()
-                    {
-                        acts.push(Act::OpenSettings);
+                    if !why.looks_again() && fix.is_none() {
+                        return;
                     }
+                    ui.horizontal(|ui| {
+                        // The failure note's own gap between its links.
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        if why.looks_again() && ui::word_link(ui, "Look again", false).clicked() {
+                            acts.push(Act::LookAgain);
+                        }
+                        if let Some(word) = fix
+                            && ui::word_link(ui, word, false).clicked()
+                        {
+                            acts.push(Act::OpenSettings);
+                        }
+                    });
                 });
             return;
         }
@@ -1185,12 +1205,13 @@ fn fold_row(ui: &mut egui::Ui, more: usize) -> egui::Response {
 }
 
 /// Under a finished turn: its time and tokens, *Copy*, and on the last turn
-/// *Regenerate*.
+/// (`regenerate` is `Some`) *Regenerate*, disabled with its reason while
+/// nothing can be sent.
 fn turn_foot(
     ui: &mut egui::Ui,
     s: &super::thread::Stats,
     prose: &str,
-    last: bool,
+    regenerate: Option<Option<&Why>>,
     acts: &mut Vec<Act>,
 ) {
     ui.horizontal(|ui| {
@@ -1210,12 +1231,26 @@ fn turn_foot(
         {
             ui.ctx().copy_text(prose.to_owned());
         }
-        if last
-            && ui::icon_button(ui, icon::ARROW_CLOCKWISE, 18.0, 12.0, false, true)
-                .on_hover_text("Regenerate")
-                .clicked()
-        {
-            acts.push(Act::Regenerate);
+        let Some(blocked) = regenerate else {
+            return;
+        };
+        let b = ui::icon_button(
+            ui,
+            icon::ARROW_CLOCKWISE,
+            18.0,
+            12.0,
+            false,
+            blocked.is_none(),
+        );
+        match blocked {
+            Some(why) => {
+                b.on_hover_text(why.sentence());
+            }
+            None => {
+                if b.on_hover_text("Regenerate").clicked() {
+                    acts.push(Act::Regenerate);
+                }
+            }
         }
     });
 }
@@ -1281,6 +1316,7 @@ mod tests {
                 path: std::path::PathBuf::new(),
                 seal: ai::Seal::Sealed,
                 seal_sentence: String::new(),
+                answered: true,
             })),
         );
         assert!(app.assistant_blocked().is_none(), "the fixture can send");

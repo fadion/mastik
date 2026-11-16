@@ -106,7 +106,8 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 - **Mastik never installs a harness.** A missing one is said in the panel with the program it
   looked for.
 - **A probe reads `--help` once per program path** and caches what it finds: which sealing flags
-  exist, and so how sealed a session can be (§4). A probe that could not run is not cached.
+  exist, and so how sealed a session can be (§4). A probe that could not run is not cached, and
+  `Found::answered` says so, since a probe that did not finish refused nothing.
   `mastik_ai::warm` runs it in the background only while the assistant is on.
 - **`mastik_ai::sweep` runs at every launch** on a background thread (`assistant::at_launch`):
   leftovers carry their owner's pid and start time, and only those whose owner is gone are removed,
@@ -291,7 +292,9 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   own memory of earlier turns is unreliable; and `style: brief`. The scope line and `style: brief`
   go on every turn, since an instruction given once fades over a long thread. The page outline,
   names and ids only, goes only on a session's first turn, the scoped frame first when it is on
-  the page in front, so the outline's cap never cuts it. A name
+  the page in front, so the outline's cap never cuts it. "Since the last turn" means since the last
+  turn the harness was sent: what the agent was shown moves on only when the send succeeds, and
+  back again when the turn is refused before the harness reads it. A name
   in the preamble is written on one line with `<` and `>` as `‹` and `›`, so no layer or page name can
   close the `<mastik-turn>` block and write words the model would read as the person's.
 - **The design is never sent whole.** The agent's earlier reads stay in its session, and the
@@ -448,7 +451,8 @@ layers being asked about, and is one more kind of surface.
 - **A tool call is a row**, 22 tall: its name in mono, its argument, a status dot and its result
   cut short. After a turn's third call the rest fold into *+N calls*.
 - **Under each finished turn:** its time and tokens, *Copy*, and on the last turn *Regenerate*
-  (`icon::ARROW_CLOCKWISE`), which drops that turn and asks again.
+  (`icon::ARROW_CLOCKWISE`), which drops that turn and asks again. While nothing can be sent it is
+  disabled, its tooltip the composer's reason, and a send that is not taken puts the turn back.
 - **The composer** is a bare `ui::text_area` in a field ground with the scope and the chips above
   it and the hint and send button on its foot, all on one left edge; it grows to 15 lines, then
   scrolls.
@@ -463,8 +467,13 @@ layers being asked about, and is one more kind of surface.
   *Regenerate* and *Ask again* send the `/ai …` text again as an ordinary question.
 - **When it cannot send**, the composer is replaced by the reason, and off wins over every other:
   the assistant is off (*Open settings*); private mode; the document is unsaved (*Save the document
-  to ask about it.*); not signed in, saying to run the program once in a terminal; the program not
-  found, naming what was looked for and where (*Set the path*); the program not sealable.
+  to ask about it.*); the program not found, naming what was looked for and where (*Look again*,
+  *Set the path*); its probe not finished in time, which refuses nothing (*Look again*); the
+  program not sealable (*Look again*, *Set the path*). *Look again* finds the program afresh and
+  probes it again, for one installed or updated since; a program not found or a probe not finished
+  is also looked for again each time the panel opens, while a probe's answer is kept.
+- **Not signed in blocks nothing.** The harness's exit ends the session, and its note says to run
+  the program once in a terminal to sign in, then ask again: *Ask again* starts a new session.
 - **The app's own words** (a refused spawn, a stopped turn, a replay withheld) are notes beside a
   turn, never message text, so they are never sent back to the model.
 - **One conversation per document**, kept per machine in `<machine data>/chats/<document id>.json`
