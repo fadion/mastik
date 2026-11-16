@@ -2306,6 +2306,7 @@ pub(crate) mod tests {
         assert_eq!(replace.why.as_deref(), Some("No layers have been copied"));
         for head in [
             Item::CopyPasteAs,
+            Item::ExportMenu,
             Item::Arrange,
             Item::AlignMenu,
             Item::BooleanMenu,

@@ -79,7 +79,7 @@ Precedence on canvas: text session → point edit → guide → layer → empty 
 | # | Group | Contents |
 |---|---|---|
 | 1 | Head | the kind's own verbs (§5) |
-| 2 | Clipboard | Cut · Copy · Paste here · Copy/Paste as ▸ · Duplicate · Delete |
+| 2 | Clipboard | Cut · Copy · Paste here · Copy/Paste as ▸ · Export ▸ · Duplicate · Delete |
 | 3 | Structure | Group · Frame · Slice · component rows · Ungroup · mask · even-odd · Boolean ▸ · Flatten · conversions · Pixel-fit · Join paths · Warp… · Align ▸ · Arrange ▸ · Move to page ▸ |
 | 4 | State | Hide/Show · Lock/Unlock · Rename *or* Batch rename… · Reset origin |
 | 5 | View | the canvas menu's view switches (§6.1, §6.3 only) |
@@ -97,9 +97,9 @@ function, not bucketed by `build`.
   Head rows: see §5.8.
 - **Lock**: editing rows dim with *"This layer is locked"*, or *"A group containing this layer is
   locked"* when only an ancestor is (§5.9).
-- **Length**, with the assistant *Off* (on, its group adds one row, two on a top-level frame): a primitive is 21 rows in three groups, text 24, a boolean 24, railed text 26, a main
-  frame 19, an instance frame 20; the long end is a bound text child on a rail at 28
-  (`a_primitives_menu_is_twenty_one_rows_in_three_groups`, `the_menus_the_two_ends_do_not_count`).
+- **Length**, with the assistant *Off* (on, its group adds one row, two on a top-level frame): a primitive is 22 rows in three groups, text 25, a boolean 25, railed text 27, a main
+  frame 20, an instance frame 21; the long end is a bound text child on a rail at 29
+  (`a_primitives_menu_is_twenty_two_rows_in_three_groups`, `the_menus_the_two_ends_do_not_count`).
   The ceiling is "needs neither a scrollbar nor a large monitor", which is why the alternate
   clipboards, the boolean operations, the aligns and the restacks sit behind submenus and Flip H/V
   and *Zoom to selection* are left to their other doors (§7).
@@ -116,6 +116,7 @@ function, not bucketed by `build`.
 | Copy | `Ctrl+C` | always live |
 | Paste here (canvas) / Paste (panel) | `Ctrl+V` | dims *"Nothing has been copied yet"* unless the OS clipboard has a picture, the app's own payload is still current, or the OS clipboard has text. Canvas: at the pointer; a picture is aimed like a drop |
 | Copy/Paste as ▸ | — | `Item::CopyPasteAs`, `CLIPBOARD` glyph; a submenu (below), the row itself never dims |
+| Export ▸ | — | `Item::ExportMenu`, `EXPORT` glyph; *HTML…*, *React…*, *Vue…* (`Item::ExportCode`), the selection as code (`export.md`); never dims, a lock included |
 | Duplicate | `Ctrl+D` | dims on lock |
 | Delete | `Del` | dims on lock; destructive styling |
 
@@ -303,7 +304,7 @@ every other head row needs a single layer.
 The whole menu is present and every editing row dims, *Boolean ▸*, *Align ▸*, *Arrange ▸* and *Move to page ▸*
 with it.
 Live over a lock: *Copy*, *Paste*, *Copy/Paste as ▸* with its *Copy as SVG/CSS/PNG* and *Copy
-properties*, *Unlock*, *Show*/*Hide*, *Rename* or *Batch rename…*, *Slice selection*, *Enter
+properties*, *Export ▸*, *Unlock*, *Show*/*Hide*, *Rename* or *Batch rename…*, *Slice selection*, *Enter
 group/boolean*, *Make this the key layer*, *Go to main*, *Select all instances*. A layer inside a
 locked group is treated as locked, with the group's sentence; *Lock/Unlock* reads the layer's own
 flag. A hidden, unlocked layer gets an ordinary menu reading *Show*.

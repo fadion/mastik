@@ -209,6 +209,9 @@ pub enum Item {
     /// *Copy/Paste as ▸* — the layer menu's row holding the copies in other formats,
     /// *Paste to replace* and the properties clipboard.
     CopyPasteAs,
+    /// *Export ▸* — the layer menu's row holding the code exports
+    /// ([`Self::ExportCode`]) of the selection.
+    ExportMenu,
     Duplicate,
     Delete,
 
@@ -658,6 +661,7 @@ impl Item {
         Item::PasteInPlace,
         Item::PasteToReplace,
         Item::CopyPasteAs,
+        Item::ExportMenu,
         Item::Duplicate,
         Item::Delete,
         Item::CopyProperties,
@@ -736,6 +740,9 @@ impl Item {
         Item::ExportFrames,
         Item::ExportFramesAllPages,
         Item::ExportFramesPdf,
+        Item::ExportCode(mastik_export::code::Target::Html),
+        Item::ExportCode(mastik_export::code::Target::React),
+        Item::ExportCode(mastik_export::code::Target::Vue),
         Item::ViewSwitch(ViewSwitch::Rulers),
         Item::ViewSwitch(ViewSwitch::Guides),
         Item::ViewSwitch(ViewSwitch::GuideLock),
@@ -825,6 +832,7 @@ impl Item {
             ),
             Item::PasteToReplace => s("Paste to replace", icon::CLIPBOARD, None, Group::Clipboard),
             Item::CopyPasteAs => s("Copy/Paste as", icon::CLIPBOARD, None, Group::Clipboard),
+            Item::ExportMenu => s("Export", icon::EXPORT, None, Group::Clipboard),
             Item::Duplicate => s("Duplicate", icon::COPY_SIMPLE, None, Group::Clipboard),
             // Both rows wear the same glyph: one clipboard read two ways.
             Item::CopyProperties => s(
@@ -2200,6 +2208,18 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
             .label(if panel { "Paste" } else { "Paste here" })
             .dim_if(!cx.can_paste, "Nothing has been copied yet"),
         copy_paste_as,
+        // *Export ▸* writes the selection out as code; reading is not editing, so
+        // it stays live over a lock. The menu's word is the verb, a row names what.
+        Row::new(Item::ExportMenu).sub(vec![
+            [
+                (mastik_export::code::Target::Html, "HTML…"),
+                (mastik_export::code::Target::React, "React…"),
+                (mastik_export::code::Target::Vue, "Vue…"),
+            ]
+            .into_iter()
+            .map(|(t, label)| Row::new(Item::ExportCode(t)).label(label))
+            .collect(),
+        ]),
         Row::new(Item::Duplicate).dim_if(locked, why),
         Row::new(Item::Delete).dim_if(locked, why),
     ]);
@@ -3609,6 +3629,7 @@ impl MastikApp {
             // Submenus: each opens its rows beside it (`context_menu_ui`) and runs nothing.
             Item::MoveToPage
             | Item::CopyPasteAs
+            | Item::ExportMenu
             | Item::Arrange
             | Item::AlignMenu
             | Item::BooleanMenu => {}
@@ -4364,12 +4385,13 @@ mod tests {
         }
     }
 
-    /// A primitive's menu is 21 rows in three groups, the empty head collapsed, with
-    /// the clipboard's rest, the aligns and the order in *Copy/Paste as ▸*, *Align ▸*
-    /// and *Arrange ▸*. Asserts the label sequence, since `build` buckets by
-    /// `Spec::group` and only a wrong assignment in `spec()` can still break order.
+    /// A primitive's menu is 22 rows in three groups, the empty head collapsed, with
+    /// the clipboard's rest, the code exports, the aligns and the order in
+    /// *Copy/Paste as ▸*, *Export ▸*, *Align ▸* and *Arrange ▸*. Asserts the label
+    /// sequence, since `build` buckets by `Spec::group` and only a wrong assignment
+    /// in `spec()` can still break order.
     #[test]
-    fn a_primitives_menu_is_twenty_one_rows_in_three_groups() {
+    fn a_primitives_menu_is_twenty_two_rows_in_three_groups() {
         let sel = [id(1)];
         let kinds = [Kind::Shape];
         let mut cx = open(
@@ -4382,7 +4404,7 @@ mod tests {
         );
         cx.other_pages = vec![(id(7), "Page 2".into())];
         let groups = build(&cx);
-        assert_eq!(flat(&groups).len(), 21, "{:?}", labels(&groups));
+        assert_eq!(flat(&groups).len(), 22, "{:?}", labels(&groups));
         assert_eq!(groups.len(), 3, "the head is empty and must collapse");
 
         assert_eq!(
@@ -4392,6 +4414,7 @@ mod tests {
                 "Copy",
                 "Paste here",
                 "Copy/Paste as",
+                "Export",
                 "Duplicate",
                 "Delete",
                 "Group selection",
@@ -4433,6 +4456,10 @@ mod tests {
                 ],
                 vec!["Paste to replace", "Copy properties", "Paste properties"],
             ]
+        );
+        assert_eq!(
+            sub_labels(&groups, Item::ExportMenu),
+            [vec!["HTML…", "React…", "Vue…"]]
         );
         assert_eq!(
             sub_labels(&groups, Item::Arrange),
@@ -4628,9 +4655,9 @@ mod tests {
         assert_eq!(ticked, ["Subtract"]);
     }
 
-    /// A plain boolean's menu: head 3 · Clipboard 6 · Structure 12 · State 3.
+    /// A plain boolean's menu: head 3 · Clipboard 7 · Structure 12 · State 3.
     #[test]
-    fn a_booleans_menu_is_twenty_four_rows() {
+    fn a_booleans_menu_is_twenty_five_rows() {
         let sel = [id(1)];
         let kinds = [Kind::Boolean(BoolOp::Subtract)];
         let groups = build(&open(
@@ -4641,12 +4668,12 @@ mod tests {
             &sel,
             &kinds,
         ));
-        assert_eq!(flat(&groups).len(), 24, "{:?}", labels(&groups));
+        assert_eq!(flat(&groups).len(), 25, "{:?}", labels(&groups));
     }
 
     /// Row counts for a text layer on a rail and the component roles, with the
     /// arithmetic in each case's message. The bound text child on a rail is the long
-    /// end, at 28.
+    /// end, at 29.
     #[test]
     fn the_menus_the_two_ends_do_not_count() {
         let sel = [id(1)];
@@ -4663,41 +4690,41 @@ mod tests {
         };
         let cases: [(&str, usize, (usize, String)); 7] = [
             (
-                "text on a rail: the plain 24, plus *Flip to other side* and \
+                "text on a rail: the plain 25, plus *Flip to other side* and \
                  *Detach from path*",
-                26,
+                27,
                 count(Kind::Text, &|cx| {
                     cx.state.text_sizing = Some(0);
                     cx.on_a_rail = true;
                 }),
             ),
             (
-                "a main frame: head 1 · Clipboard 6 · Structure 9 (*Group \
+                "a main frame: head 1 · Clipboard 7 · Structure 9 (*Group \
                  selection*, *Frame selection*, *Slice selection*, *Duplicate as \
                  component*, *Select all instances*, *Pixel-fit*, *Align*, \
                  *Arrange*, *Move to page*) · State 3",
-                19,
+                20,
                 count(Kind::Frame, &|cx| cx.role = Role::Main),
             ),
             (
                 "an instance frame: a main's, with *Go to main component*, *Reset \
                  all* and *Detach instance* for its two",
-                20,
+                21,
                 count(Kind::Frame, &|cx| cx.role = Role::Instance),
             ),
             (
-                "a linked shape in an instance: the primitive's 21, with *Go to \
+                "a linked shape in an instance: the primitive's 22, with *Go to \
                  main component* and *Reset <layer>* for *Create component*",
-                22,
+                23,
                 count(Kind::Shape, &|cx| {
                     cx.role = Role::Member;
                     cx.layer_name = "Label".into();
                 }),
             ),
             (
-                "a bound text child: text's 24, with *Go to main component*, \
+                "a bound text child: text's 25, with *Go to main component*, \
                  *Reset <property>* and *Reset <layer>* for *Create component*",
-                26,
+                27,
                 count(Kind::Text, &|cx| {
                     cx.state.text_sizing = Some(0);
                     cx.role = Role::Member;
@@ -4706,9 +4733,9 @@ mod tests {
                 }),
             ),
             (
-                "a bound text child on a rail: the railed 26, with the bound \
+                "a bound text child on a rail: the railed 27, with the bound \
                  child's three rows for *Create component* — the long end",
-                28,
+                29,
                 count(Kind::Text, &|cx| {
                     cx.state.text_sizing = Some(0);
                     cx.on_a_rail = true;
@@ -4719,8 +4746,8 @@ mod tests {
             ),
             (
                 "a linked boolean whose bound visibility differs: the boolean's \
-                 24, with the bound child's three rows for *Create component*",
-                26,
+                 25, with the bound child's three rows for *Create component*",
+                27,
                 count(Kind::Boolean(BoolOp::Union), &|cx| {
                     cx.role = Role::Member;
                     cx.layer_name = "Label".into();
@@ -4752,10 +4779,10 @@ mod tests {
         }
     }
 
-    /// A text layer's menu is 24 rows: head 5 · Clipboard 6 · Structure 10 · State 3.
+    /// A text layer's menu is 25 rows: head 5 · Clipboard 7 · Structure 10 · State 3.
     /// The fixture must carry a `text_sizing`, which a real text layer always has.
     #[test]
-    fn a_text_layers_menu_is_twenty_four_rows() {
+    fn a_text_layers_menu_is_twenty_five_rows() {
         let sel = [id(1)];
         let kinds = [Kind::Text];
         let mut cx = open(
@@ -4771,7 +4798,7 @@ mod tests {
             ..LayerState::default()
         };
         let groups = build(&cx);
-        assert_eq!(flat(&groups).len(), 24, "{:?}", labels(&groups));
+        assert_eq!(flat(&groups).len(), 25, "{:?}", labels(&groups));
     }
 
     /// The component rows sit in Structure directly after *Slice selection*, the
@@ -4892,7 +4919,7 @@ mod tests {
             ..LayerState::default()
         };
         let groups = build(&cx);
-        assert_eq!(flat(&groups).len(), 21, "{:?}", labels(&groups));
+        assert_eq!(flat(&groups).len(), 22, "{:?}", labels(&groups));
 
         let row = |item: Item| {
             deep(&groups)
@@ -4906,6 +4933,7 @@ mod tests {
         for live in [
             Item::Copy,
             Item::CopyPasteAs,
+            Item::ExportMenu,
             Item::CopyProperties,
             Item::Rename,
             Item::ToggleHidden,
@@ -5504,7 +5532,7 @@ mod tests {
             .map(|r| r.item)
             .collect();
         let all = flat(&groups).len();
-        assert_eq!(all, 21, "{:?}", labels(&groups));
+        assert_eq!(all, 22, "{:?}", labels(&groups));
         assert!(
             live.len() > 1 && live.len() < all,
             "the fixture needs live rows *and* dimmed ones, and has {} of {all}",
