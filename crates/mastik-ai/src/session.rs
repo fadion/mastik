@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 /// How long a child gets to exit, after its turn or a Stop, before it is killed.
 const EXIT_GRACE: Duration = Duration::from_secs(10);
 
+/// How long a check that reads a harness's resolved configuration back may
+/// take: OpenCode's `debug config`, DeepSeek Harness's `--dump-config`.
+const HELPER_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// How much of a child's stderr is kept for the diagnostics of a failed turn.
 const STDERR_KEPT: usize = 64 * 1024;
 
@@ -736,36 +740,52 @@ impl Inner {
         }
     }
 
-    /// Run the slow setup once; its verdict stands for the session.
+    /// Run the slow setup until it holds. A success stands for the session, and
+    /// so does a configuration that would leak, which no retry changes; any
+    /// other failure (a helper past its deadline, a busy settings lock) is tried
+    /// again on the next turn.
     fn prepare(&self) -> Result<(), Refusal> {
         if let Some(done) = self.lock().prepared.clone() {
             return done;
         }
-        let result = match self.prep {
-            Prep::None => Ok(()),
-            Prep::Antigravity => crate::antigravity::Registration::install(
-                launch(self.harness, &self.program),
-                &self.program,
-                &self.run_root,
-                &self.mcp_exe,
-                &self.mcp_args,
-                &self.base.allowed_tools,
-            )
-            .map(|reg| self.lock().registration = Some(reg))
-            .map_err(Refusal::ConfigNotWritten),
-            Prep::CursorApproval => crate::cursor::approve(
-                &launch(self.harness, &self.program),
-                &self.cwd,
-                &self.env_strings(),
-                INHERITED_ENV_TO_CLEAR,
-            )
-            .map_err(|e| {
-                Refusal::ConfigNotWritten(format!("Cursor did not approve Mastik's server: {e}"))
-            }),
+        let (result, stands) = match self.prep {
+            Prep::None => (Ok(()), true),
+            Prep::Antigravity => (self.register_antigravity(), false),
+            Prep::CursorApproval => (self.approve_cursor(), false),
             Prep::OpenCodeCheck => self.opencode_check(),
         };
-        self.lock().prepared = Some(result.clone());
+        if result.is_ok() || stands {
+            self.lock().prepared = Some(result.clone());
+        }
         result
+    }
+
+    /// Register Mastik's server with Antigravity for this session. A failed
+    /// attempt withdraws what it wrote, so another can follow.
+    fn register_antigravity(&self) -> Result<(), Refusal> {
+        crate::antigravity::Registration::install(
+            launch(self.harness, &self.program),
+            &self.program,
+            &self.run_root,
+            &self.mcp_exe,
+            &self.mcp_args,
+            &self.base.allowed_tools,
+        )
+        .map(|reg| self.lock().registration = Some(reg))
+        .map_err(Refusal::ConfigNotWritten)
+    }
+
+    /// Have Cursor approve Mastik's project server.
+    fn approve_cursor(&self) -> Result<(), Refusal> {
+        crate::cursor::approve(
+            &launch(self.harness, &self.program),
+            &self.cwd,
+            &self.env_strings(),
+            INHERITED_ENV_TO_CLEAR,
+        )
+        .map_err(|e| {
+            Refusal::ConfigNotWritten(format!("Cursor did not approve Mastik's server: {e}"))
+        })
     }
 
     fn env_strings(&self) -> Vec<(String, String)> {
@@ -820,8 +840,8 @@ impl Inner {
         let stderr = child.stderr.take();
         let out = collect(stdout, usize::MAX);
         let err = collect(stderr, STDERR_KEPT);
-        let ok = wait_bounded(&self.tracker, &Mutex::new(child), Duration::from_secs(30))
-            .is_some_and(|c| c == 0);
+        let ok =
+            wait_bounded(&self.tracker, &Mutex::new(child), HELPER_TIMEOUT).is_some_and(|c| c == 0);
         let dump = out.join().unwrap_or_default();
         if !ok || !harness::dsh_dump_is_headless(&dump) {
             let first = err.join().unwrap_or_default();
@@ -848,30 +868,38 @@ impl Inner {
 
     /// OpenCode's seal, read off the configuration it resolves with the
     /// session's environment: only Mastik's server, and the agent's tools off.
-    fn opencode_check(&self) -> Result<(), Refusal> {
+    /// The flag is whether the verdict stands: a configuration that was read
+    /// does, one that could not be read is worth reading again.
+    fn opencode_check(&self) -> (Result<(), Refusal>, bool) {
         let refuse = |why: String| Refusal::Unsealed {
             harness: Harness::OpenCode,
             why,
         };
         let mut c = self.command(&self.with_prefix(vec!["debug".into(), "config".into()]));
         c.stdin(Stdio::null());
-        let out = crate::process::run_bounded(&mut c, Duration::from_secs(30));
+        let out = crate::process::run_bounded(&mut c, HELPER_TIMEOUT);
         let text = match out {
             Ok(Some(h)) if h.status.success() => String::from_utf8_lossy(&h.stdout).into_owned(),
             _ => String::new(),
         };
         match harness::opencode_config_leaks(&text) {
-            None => Err(refuse(
-                "Mastik could not read the configuration OpenCode resolves, so it could not check \
-                 that it is sealed, and did not start it."
-                    .into(),
-            )),
-            Some(leaks) if leaks.is_empty() => Ok(()),
-            Some(leaks) => Err(refuse(format!(
-                "OpenCode's own configuration would still give this session more than Mastik's \
-                 tools ({}), so Mastik did not start it.",
-                leaks.join(", ")
-            ))),
+            None => (
+                Err(refuse(
+                    "Mastik could not read the configuration OpenCode resolves, so it could not \
+                     check that it is sealed, and did not start it."
+                        .into(),
+                )),
+                false,
+            ),
+            Some(leaks) if leaks.is_empty() => (Ok(()), true),
+            Some(leaks) => (
+                Err(refuse(format!(
+                    "OpenCode's own configuration would still give this session more than \
+                     Mastik's tools ({}), so Mastik did not start it.",
+                    leaks.join(", ")
+                ))),
+                true,
+            ),
         }
     }
 
@@ -1502,6 +1530,31 @@ mod tests {
                 say("Error: Not logged in. Run `codex login`.");
                 std::process::exit(3);
             }
+            // OpenCode's `debug config`, counted in the working folder: the
+            // first read fails (`flaky`) or leaks (`leaky`), later ones are
+            // sealed. A turn reads its prompt and ends without a word.
+            "opencode-flaky" | "opencode-leaky" if args.iter().any(|a| a == "debug") => {
+                let runs = Path::new("config-reads");
+                let n: u32 = std::fs::read_to_string(runs)
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                std::fs::write(runs, (n + 1).to_string()).unwrap();
+                match (mode.as_str(), n) {
+                    ("opencode-flaky", 0) => std::process::exit(1),
+                    ("opencode-leaky", 0) => {
+                        say(r#"{"agent":{"mastik":{"permission":{"*":"deny","bash":"allow"}}}}"#)
+                    }
+                    _ => say(&harness::opencode_config_json(
+                        "mastik",
+                        &[],
+                        &["get_node".into()],
+                    )),
+                }
+            }
+            "opencode-flaky" | "opencode-leaky" => {
+                let _ = std::io::stdin().read_to_string(&mut String::new());
+            }
             "claude" => {
                 for line in std::io::stdin().lock().lines() {
                     let Ok(line) = line else { break };
@@ -1654,6 +1707,42 @@ mod tests {
         assert_eq!(*code, Some(3));
         assert!(*signed_out);
         assert!(diagnostics.contains("Not logged in"));
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A setup that failed to run is tried again on the next turn, while a
+    /// configuration found leaking refuses every turn without being read again.
+    /// flip: `prepare` keeping every verdict → fails at "the second turn ran";
+    /// keeping only a success → fails at the leak's second refusal.
+    #[test]
+    fn a_failed_setup_is_retried_and_a_leak_stands() {
+        let turn = |s: &mut Session| {
+            s.send(Turn::default()).unwrap();
+            until_idle(s).pop()
+        };
+        let (mut s, root) = fake_session(Harness::OpenCode, "opencode-flaky");
+        assert!(
+            matches!(turn(&mut s), Some(Event::Refused(Refusal::Unsealed { .. }))),
+            "the first read fails"
+        );
+        let second = turn(&mut s);
+        assert!(
+            matches!(second, Some(Event::Exited { code: Some(0), .. })),
+            "the second turn ran: {second:?}"
+        );
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (mut s, root) = fake_session(Harness::OpenCode, "opencode-leaky");
+        for _ in 0..2 {
+            assert!(matches!(
+                turn(&mut s),
+                Some(Event::Refused(Refusal::Unsealed { .. }))
+            ));
+        }
+        let reads = std::fs::read_to_string(s.inner.cwd.join("config-reads")).unwrap();
+        assert_eq!(reads, "1", "read once");
         drop(s);
         let _ = std::fs::remove_dir_all(&root);
     }

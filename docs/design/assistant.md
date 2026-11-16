@@ -60,6 +60,10 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
   would be signed out.
 - **Cursor needs its server approved** (`cursor-agent mcp enable`) before the first turn; a failed
   approval refuses the turn.
+- **One-time setup holds once it succeeds** (Antigravity's registration, Cursor's approval,
+  OpenCode's read-back): a failure refuses only its turn, since a helper past its deadline or a busy
+  settings lock passes, and the next turn tries again. An OpenCode configuration read and found
+  leaking is the exception: it refuses every turn of the session.
 - **OpenCode reads its configuration from the session**: `XDG_CONFIG_HOME` at the session's
   `opencode.json`, project config off, and `OPENCODE_TEST_HOME` at an empty folder, since
   `~/.opencode/opencode.json` is merged over everything and no option turns it off. Because it
