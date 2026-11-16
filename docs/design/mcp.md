@@ -55,38 +55,38 @@ Phase 1 — read/export (ship first):
 
 Phase 2 — write (1:1 with operations/composites):
 `create_node`, `create_text(parent, text, x?, y?, width?)`, `insert_subtree`, `import_svg(parent, svg, x?, y?, name?)`, `delete_node`,
-`reparent`, `reorder`, `arrange(ids, move)`, `group(nodes)`, `frame(nodes)`, `ungroup(id)`, `convert_container(node)`, `boolean(nodes, op)`, `flatten(ids)`,
-`outline_shape(id)`, `outline_stroke(id)`, `outline_text(id)`, `divide(ids)`, `blend_shapes(ids, steps?, paint?, reverse?)`,
-`duplicate(nodes, dx?, dy?)`, `join_paths(id, other)`, `repeat(ids, count, angle?, turn?)`, `align(ids, edge)`,
-`distribute(ids, axis)`, `tidy_up(ids)`, `slice(ids)`, `set_transform`, `set_pivot`, `set_geometry`,
-`set_point(node, point, subpath?, x?, y?, in_x?, in_y?, out_x?, out_y?, radius?)`, `set_size(id, width, height)`, `fit_to_content(node)`, `pixel_fit(ids)`, `set_name`, `set_visible`,
+`reparent`, `reorder`, `arrange(nodes, move)`, `group(nodes)`, `frame(nodes)`, `ungroup(nodes)`, `convert_container(node)`, `boolean(nodes, op)`, `flatten(nodes)`,
+`outline_shape(node)`, `outline_stroke(node)`, `outline_text(node)`, `divide(nodes)`, `blend_shapes(nodes, steps?, paint?, reverse?)`,
+`duplicate(nodes, dx?, dy?)`, `join_paths(node, other)`, `repeat(nodes, count, angle?, turn?)`, `align(nodes, edge)`,
+`distribute(nodes, axis)`, `tidy_up(nodes)`, `slice(nodes)`, `set_transform`, `set_pivot`, `set_geometry`,
+`set_point(node, point, subpath?, x?, y?, in_x?, in_y?, out_x?, out_y?, radius?)`, `set_size(node, width, height)`, `fit_to_content(node)`, `pixel_fit(nodes)`, `set_name`, `set_visible`,
 `set_locked`, `set_opacity`, `set_blend(nodes, blend)`, `set_clip(nodes, clip)`, `set_mask(nodes, mask, mode?)`, `set_element(node, element?)`,
 `set_link(node, href)`, `set_text`, `replace_text(find, replace, nodes?, …)`, `replace_font(from, to)`, `set_text_style(nodes, style, spans?)`,
-`set_text_spans`, `set_paragraph_style(nodes, paragraph)`, `set_block_style(nodes, block)`, `style_text(id, attrs, start?, end?)`,
-`style_paragraphs(id, attrs, start?, end?)`, `set_fills(nodes, fills)`, `set_strokes(nodes, strokes)`,
-`set_effects(nodes, effects)`, `merge_colours(colours, into, nodes?)`, `add_image(bytes) -> ImageId`, `replace_image(id, image, index?)`, `fix_contrast(ids, level?, colour?, variable?)`, `clean_up(ids?, hidden_paint?, covered_fills?, hidden_layers?, empty_layers?, one_layer_groups?, guides?, skip_locked?)`, `fill_content(ids, locale?, kind?, records?, avatars?, seed?, example_emails?)`, `set_display(nodes, display?)`, `set_layout_item(nodes, item)`, `set_insets(nodes, insets)`,
-`insert_chart(parent, kind, table?, mapping?, x?, y?, width?, height?)`, `set_chart(id, kind?, mapping?, options?)`, `set_chart_data(id, table)`, `flatten_chart(ids)`,
+`set_text_spans`, `set_paragraph_style(nodes, paragraph)`, `set_block_style(nodes, block)`, `style_text(node, attrs, start?, end?)`,
+`style_paragraphs(node, attrs, start?, end?)`, `set_fills(nodes, fills)`, `set_strokes(nodes, strokes)`,
+`set_effects(nodes, effects)`, `merge_colours(colours, into, nodes?)`, `add_image(bytes) -> ImageId`, `replace_image(node, image, index?)`, `fix_contrast(nodes, level?, colour?, variable?)`, `clean_up(nodes?, hidden_paint?, covered_fills?, hidden_layers?, empty_layers?, one_layer_groups?, guides?, skip_locked?)`, `fill_content(nodes, locale?, kind?, records?, avatars?, seed?, example_emails?)`, `set_display(nodes, display?)`, `set_layout_item(nodes, item)`, `set_insets(nodes, insets)`,
+`insert_chart(parent, kind, table?, mapping?, x?, y?, width?, height?)`, `set_chart(node, kind?, mapping?, options?)`, `set_chart_data(node, table)`, `flatten_chart(nodes)`,
 `set_exports(nodes, exports)`, `add_page(name?, index?)`, `duplicate_page(page)`, `delete_page(page)`,
 `move_page(page, index)`, `set_page_draft(page, draft)`, `undo()`, `redo()`, `set_selection(ids)`, `batch(steps)`, `set(nodes, props)`, `run_script(source, nodes?, layers?)`, `call(tool, args?)`.
 
 Phase 3 — components, variables and styles (through the verbs, never the raw ops):
-`make_component(nodes)`, `duplicate_as_component(id)`, `create_instance(main, parent, x?, y?)`, `detach_instance(id)`,
-`swap_instance(id, main)`, `combine_as_variants(ids)`, `add_variant(id)`, `set_variant_value(node, property, value)`,
+`make_component(nodes)`, `duplicate_as_component(node)`, `create_instance(main, parent, x?, y?)`, `detach_instance(nodes)`,
+`swap_instance(node, main)`, `combine_as_variants(nodes)`, `add_variant(node)`, `set_variant_value(node, property, value)`,
 `add_variant_property(node, name?, value?)`, `rename_variant_property(node, property, name)`, `delete_variant_property(node, property)`,
 `add_variant_value(node, property, value?)`, `rename_variant_value(node, property, value, name)`,
 `move_variant_value(node, property, value, index)`, `delete_variant_value(node, property, value)`,
-`tie_state(node, property, value, state?)`, `switch_variant(id, property, value)`,
+`tie_state(node, property, value, state?)`, `switch_variant(node, property, value)`,
 `define_property(node, kind, property?, name?)`, `edit_property(node, property, name?, filter?, preferred?)`,
 `delete_property(node, property)`, `show_nested_properties(node, shown)`, `set_description(text, node? | style? | variable?)`,
-`set_doc_link(node, url)`, `set_instance_property(id, property, value)`,
-`reset_overrides(nodes, scope)`, `push_to_main(node, scope?)`, `add_variable(kind, name, value)`, `remove_variable(id)`,
-`rename_variable(id, name)`, `set_variable_value(variable, mode?, value | alias)`, `add_mode(name, collection?)`,
-`remove_mode(id)`, `rename_mode(id, name)`, `set_frame_mode(id, mode?, collection?)` (one pick, the frame's
+`set_doc_link(node, url)`, `set_instance_property(node, property, value)`,
+`reset_overrides(nodes, scope)`, `push_to_main(node, scope?)`, `add_variable(kind, name, value)`, `remove_variable(variable)`,
+`rename_variable(variable, name)`, `set_variable_value(variable, mode?, value | alias)`, `add_mode(name, collection?)`,
+`remove_mode(mode)`, `rename_mode(mode, name)`, `set_frame_mode(node, mode?, collection?)` (one pick, the frame's
 other collections' modes kept), `move_mode(mode, index)`, `add_collection(name?)`, `rename_collection(collection, name)`,
 `duplicate_collection(collection, name?)`, `delete_collection(collection)`, `set_by_width(collection, on)`,
 `set_breakpoint(mode, width)`, `set_width_query(node, on, collection?)`, `set_scope(variable, scope?)`,
-`bind_variable(nodes, field, variable?)`, `add_style(slot, name, value)`, `remove_style(id)`,
-`rename_style(id, name)`, `set_style_value(id, value)`, `apply_style(id, slot, style?)`,
+`bind_variable(nodes, field, variable?)`, `add_style(slot, name, value)`, `remove_style(style)`,
+`rename_style(style, name)`, `set_style_value(style, value)`, `apply_style(nodes, style?, slot?)`,
 `add_script(name, source)`, `set_script(script, name?, source?)`, `remove_script(script)`.
 
 Phase 4 — kits and the library (the app's own actions, some outside undo):
