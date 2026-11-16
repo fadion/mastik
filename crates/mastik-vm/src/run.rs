@@ -923,15 +923,24 @@ pub(crate) fn run(
             };
             let returned: MultiValue = function.call(())?;
             match returned.into_iter().next() {
-                None => Ok(None),
-                Some(v) => shown(&lua, state, &v),
+                None => Ok((None, None)),
+                Some(Value::String(s)) => {
+                    let raw = s.to_str()?.to_owned();
+                    Ok((Some(format!("\"{raw}\"")), Some(raw)))
+                }
+                Some(v) => {
+                    let shown = shown(&lua, state, &v)?;
+                    Ok((shown.clone(), shown))
+                }
             }
         })
         .map_err(fail)?;
+    let (value, copied) = value;
     let state = state.into_inner();
     Ok(Outcome {
         printed: state.printed,
         value,
+        copied,
         created: state.created,
         selection: state.selection,
     })

@@ -600,7 +600,8 @@ rules*): a row's name is never cut for its note.
   row, when `Enter` runs the line. Otherwise `↑`/`↓`
   recall typed lines and `/ai` requests, `↓` past the newest giving back what was being typed (a
   click on a log row also puts its line in the field, a script run's excepted); `Tab` takes an error's
-  fix; `Enter` runs (a read copies its value and makes no step; a write is one step named after its
+  fix; `Enter` runs (a read copies its value, a string without Luau's quotes so it pastes into a
+  field as the text, and makes no step; a write is one step named after its
   verb, else *Edit*, with `TERMINAL_WINDOW`). `Escape` closes the log's menu if it is open, else the
   list, else clears the text, then closes.
   A failed line stays in the field with its error.

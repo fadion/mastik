@@ -191,6 +191,13 @@ fn pill_galley(
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
+/// A live read's value: as the bar shows it, and as `Enter` copies it.
+#[derive(Clone, Debug)]
+struct ReadValue {
+    shown: String,
+    copied: String,
+}
+
 /// The open bar.
 #[derive(Default)]
 pub(crate) struct Bar {
@@ -206,7 +213,7 @@ pub(crate) struct Bar {
     /// The last error, with the text it was for: an edit clears it.
     error: Option<(String, mastik_vm::VmError)>,
     /// The live read: the text and revision it was taken for, and its value.
-    read: Option<(String, u64, Option<String>)>,
+    read: Option<(String, u64, Option<ReadValue>)>,
     /// The log rows picked for *Copy as script*: first and last, by entry index.
     picked: Option<(usize, usize)>,
     /// The log's context menu, where it opened.
@@ -661,11 +668,13 @@ impl MastikApp {
             };
             // Enter runs a read under the run budget, through the read-only host:
             // the live read's budget is for every keystroke, not for Enter.
-            return match mastik_vm::run_line(&mut h, &env, line).map(|o| o.value) {
-                Ok(value) => {
-                    if let Some(v) = &value {
-                        ctx.copy_text(v.clone());
+            return match mastik_vm::run_line(&mut h, &env, line) {
+                Ok(outcome) => {
+                    // Copied as a field takes it: a string without its quotes.
+                    if let Some(v) = outcome.copied {
+                        ctx.copy_text(v);
                     }
+                    let value = outcome.value;
                     let result = value.map(|v| format!("= {v}")).unwrap_or_default();
                     self.session.command_log.push(log::Entry::typed(
                         line,
@@ -900,7 +909,10 @@ impl MastikApp {
                     read_only: true,
                 };
                 // While a read is incomplete or raises, the edge stays empty.
-                mastik_vm::eval_read(&mut h, &env, &text).ok().flatten()
+                mastik_vm::read_line(&mut h, &env, &text)
+                    .ok()
+                    .and_then(|o| o.value.zip(o.copied))
+                    .map(|(shown, copied)| ReadValue { shown, copied })
             })
             .flatten();
         bar.read = Some((text, rev, value));
@@ -1316,7 +1328,12 @@ impl MastikApp {
                 }
                 let error = bar.error.as_ref().map(|(_, e)| e.clone());
                 let error = error.as_ref();
-                let value = bar.read.as_ref().and_then(|(_, _, v)| v.clone());
+                let (value, copied) = bar
+                    .read
+                    .as_ref()
+                    .and_then(|(_, _, v)| v.clone())
+                    .map(|v| (v.shown, v.copied))
+                    .unzip();
                 if let Some(pick) = head(ui, picking, &path, subject_glyph, &subject) {
                     focus_click = Some(pick);
                 }
@@ -1345,7 +1362,7 @@ impl MastikApp {
                         // The subject is the head row's; the right edge says how
                         // to pick one.
                         let picks = "` picks".to_owned();
-                        let (left, right) = match (&list, &value) {
+                        let (left, right) = match (&list, &copied) {
                             (List::Complete(_), _) => {
                                 (hint("Tab completes · ↑↓ choose · Esc hides"), picks)
                             }
@@ -2277,7 +2294,7 @@ pub(crate) mod tests {
         let (ctx, mut app, _) = typed(".width * 2");
         let value = app.command_bar.as_ref().and_then(|b| b.read.clone());
         assert_eq!(
-            value.and_then(|r| r.2).as_deref(),
+            value.and_then(|r| r.2).map(|v| v.shown).as_deref(),
             Some("20"),
             "the live value"
         );

@@ -72,6 +72,9 @@ pub struct Outcome {
     pub printed: Vec<String>,
     /// A read line's value, or what a script returned, as the bar shows it.
     pub value: Option<String>,
+    /// [`Self::value`] as the bar's `Enter` copies it, to paste into a field:
+    /// a string without Luau's quotes, anything else as shown.
+    pub copied: Option<String>,
     /// Every layer the run created, in order.
     pub created: Vec<NodeId>,
     /// What to select once the run ends: what the last creating verb made, or
@@ -115,8 +118,14 @@ impl std::error::Error for VmError {}
 /// Evaluate bar `line` for its value as it is typed, under [`READ_BUDGET`]: any
 /// attempt to change the document is an error, so nothing changes. `None` for nil.
 pub fn eval_read(host: &mut dyn Host, env: &Env, line: &str) -> Result<Option<String>, VmError> {
+    read_line(host, env, line).map(|o| o.value)
+}
+
+/// [`eval_read`], answering the whole [`Outcome`]: the value as shown and as
+/// copied.
+pub fn read_line(host: &mut dyn Host, env: &Env, line: &str) -> Result<Outcome, VmError> {
     let luau = desugar(line).luau;
-    run::run(host, env, &luau, line, run::Mode::Read, true).map(|o| o.value)
+    run::run(host, env, &luau, line, run::Mode::Read, true)
 }
 
 /// Run bar `line` through [`desugar`] under [`RUN_BUDGET`]; a read line's value

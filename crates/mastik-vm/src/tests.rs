@@ -312,6 +312,11 @@ fn a_mixed_read_raises_naming_the_values() {
         eval_read(&mut h, &e, "sel[1].name").unwrap().as_deref(),
         Some("\"A\"")
     );
+    // flip: `run` copying the value as shown → fails at "copied bare".
+    let read = read_line(&mut h, &e, "sel[1].name").unwrap();
+    assert_eq!(read.copied.as_deref(), Some("A"), "copied bare");
+    let read = run_line(&mut h, &e, "sel[2].width").unwrap();
+    assert_eq!(read.copied, read.value, "a number copies as shown");
 }
 
 /// `.x = 10` moves every layer's left to 10 in world space.
