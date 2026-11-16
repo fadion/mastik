@@ -8831,7 +8831,8 @@ impl MastikApp {
     /// rather than a gesture (§5.5a), under two tabs in one `Area`.
     ///
     /// The mode owns it: it appears when a picture is double-clicked and goes when
-    /// `Enter` or `Escape` leaves, so there is no close button and no click-away rule.
+    /// `Enter`, `Escape` or the ✕ beside its tabs leaves the mode. No click-away
+    /// rule: a canvas click is often the next crop drag.
     #[allow(clippy::too_many_lines)]
     fn image_edit_card(
         &mut self,
@@ -8872,6 +8873,7 @@ impl MastikApp {
         // detach the style.
         let locked = !ui.is_enabled();
         let mut picked_tab: Option<ImageCard> = None;
+        let mut close = false;
         egui::Area::new(egui::Id::new(("image-edit", id)))
             .order(egui::Order::Foreground)
             .fixed_pos(anchor)
@@ -8888,18 +8890,27 @@ impl MastikApp {
                     // pitch in effect when it is placed.
                     ui.spacing_mut().item_spacing.y = IMAGE_CARD_GAP;
 
-                    // The strip is also the card's heading.
+                    // The strip is also the card's heading, with the ✕ that leaves
+                    // the mode beside it, as the colour picker's tabs have.
                     let current = ImageCard::ALL.iter().position(|c| *c == card).unwrap_or(0);
-                    if let Some(i) = segmented(
-                        ui,
-                        inner,
-                        TRACK_CELL,
-                        ImageCard::ALL.len(),
-                        current,
-                        |p, i, r, on| segment_label(p, r, ImageCard::ALL[i].title(), on),
-                    ) {
-                        picked_tab = Some(ImageCard::ALL[i]);
-                    }
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = ui::TABS_CLOSE_GAP;
+                        if let Some(i) = segmented(
+                            ui,
+                            inner - ui::CLOSE_BUTTON_W - ui::TABS_CLOSE_GAP,
+                            TRACK_CELL,
+                            ImageCard::ALL.len(),
+                            current,
+                            |p, i, r, on| segment_label(p, r, ImageCard::ALL[i].title(), on),
+                        ) {
+                            picked_tab = Some(ImageCard::ALL[i]);
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui::close_button(ui).clicked() {
+                                close = true;
+                            }
+                        });
+                    });
 
                     if card == ImageCard::Settings {
                         // Leaving Crop re-frames the picture in the box the crop left;
@@ -9276,6 +9287,10 @@ impl MastikApp {
         }
         if let Some(keep_framing) = replace {
             self.replace_image_action(id, slot, keep_framing);
+        }
+        // The ✕ leaves the mode as `Enter` does; the crop made stays made.
+        if close {
+            self.choose_tool(crate::tools::Tool::Select);
         }
     }
 
@@ -25360,7 +25375,7 @@ mod blend_menu_tests {
         (app, group, rect)
     }
 
-    fn frame(
+    pub(super) fn frame(
         app: &mut MastikApp,
         ctx: &egui::Context,
         events: Vec<egui::Event>,
@@ -25405,7 +25420,11 @@ mod blend_menu_tests {
         frame(app, ctx, Vec::new())
     }
 
-    fn click(app: &mut MastikApp, ctx: &egui::Context, at: egui::Pos2) -> egui::FullOutput {
+    pub(super) fn click(
+        app: &mut MastikApp,
+        ctx: &egui::Context,
+        at: egui::Pos2,
+    ) -> egui::FullOutput {
         hover(app, ctx, at);
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
@@ -25629,5 +25648,81 @@ mod blend_menu_tests {
             app.session.doc.get(rect).unwrap().blend(),
             BlendMode::Normal
         );
+    }
+}
+
+#[cfg(test)]
+mod image_card_tests {
+    //! Image editing's card, driven through `inspector_ui`.
+    use super::blend_menu_tests::{click, frame};
+    use super::*;
+    use crate::app::MastikApp;
+    use mastik_core::kurbo::Size;
+
+    /// The ✕ beside the card's tabs leaves image editing, as `Enter` does.
+    /// flip: `image_edit_card` not acting on `close` → fails at "the ✕ leaves".
+    #[test]
+    fn the_image_cards_close_button_leaves_the_mode() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let mut app = MastikApp::headless(&ctx);
+        let mut ids = mastik_core::IdSource::new(0xC1);
+        let root = ids.mint();
+        let rect = ids.mint();
+        let mut doc = mastik_core::Document::new(root);
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: rect,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size: Size::new(100.0, 100.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetFills {
+                id: rect,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: mastik_core::image_brush(mastik_core::ImageId("a-photo".into())).into(),
+                    visible: true,
+                }]),
+            },
+        ]))
+        .unwrap();
+        app.session.adopt_document(doc, None);
+        app.session.selection.set_one(rect);
+        app.tool = crate::tools::Tool::ImageEdit;
+        assert_eq!(app.edited_image(), Some((rect, 0)), "fixture: editing");
+
+        frame(&mut app, &ctx, Vec::new());
+        let out = frame(&mut app, &ctx, Vec::new());
+        let painted: Vec<(String, egui::Rect)> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => {
+                    Some((t.galley.text().to_owned(), t.visual_bounding_rect()))
+                }
+                _ => None,
+            })
+            .collect();
+        let tab = painted
+            .iter()
+            .find(|(t, _)| t == "Adjustments")
+            .map(|(_, r)| *r)
+            .expect("the card is open");
+        let x = painted
+            .iter()
+            .find(|(t, r)| t == icon::X && (r.center().y - tab.center().y).abs() < 6.0)
+            .map(|(_, r)| r.center())
+            .unwrap_or_else(|| panic!("a ✕ level with the tabs: {painted:?}"));
+        assert!(x.x > tab.right(), "right of the tabs");
+        click(&mut app, &ctx, x);
+        assert_eq!(app.tool, crate::tools::Tool::Select, "the ✕ leaves");
+        assert_eq!(app.edited_image(), None);
     }
 }

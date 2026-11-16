@@ -26,11 +26,13 @@ Part of §9.4.
 
 - A `POPOVER_W` `Foreground` `Area` in `menu_frame`, at `popover_anchor` taken from the **paint row's**
   rect, in the shared lane (`picker_lane_right`, which asks `edited_image`).
-- **No button and no close**: it appears with the mode and goes when `Enter`/`Escape` leaves it. There
-  is no click-away rule. `MastikApp` keeps only `image_tab: ImageCard` (the last tab, kept across
-  entries); which layer and paint is `canvas::edited_image`'s answer.
-- **The tab strip is the header**: a full-width two-cell `ui::segmented` with `ImageCard::title`
-  labels. Controls are `CELL` = 26; both tracks (this and Settings' mode strip) ask for `TRACK_CELL`,
+- **It goes with the mode**: it appears with the mode and goes when `Enter`, `Escape` or its ✕ leaves
+  it. There is no click-away rule, since a canvas click is often the next crop drag. `MastikApp` keeps
+  only `image_tab: ImageCard` (the last tab, kept across entries); which layer and paint is
+  `canvas::edited_image`'s answer.
+- **The tab strip is the header**: a two-cell `ui::segmented` with `ImageCard::title` labels, then
+  `ui::TABS_CLOSE_GAP` and `ui::close_button`, as the colour picker's header reads; the ✕ leaves the
+  mode (`choose_tool(Tool::Select)`), keeping the crop made. Controls are `CELL` = 26; both tracks (this and Settings' mode strip) ask for `TRACK_CELL`,
   four less, since `ui::segmented` pads two each side.
 
 ### Settings tab

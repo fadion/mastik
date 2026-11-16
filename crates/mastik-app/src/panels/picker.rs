@@ -537,7 +537,7 @@ impl MastikApp {
         // is another kind of paint. A bound paint opens on it; leaving it for *Solid*
         // detaches to the colour drawn, and for *Gradient* converts what is drawn,
         // which detaches too.
-        const TAB_GAP: f32 = 6.0;
+        const TAB_GAP: f32 = ui::TABS_CLOSE_GAP;
         let gradients = slot.takes_gradients();
         // A variable's cell rides the same tab: a pick makes the cell an alias, and
         // *Solid* writes the colour drawn, ending it.

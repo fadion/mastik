@@ -325,6 +325,10 @@ pub fn drag_edge(
 
 /// The width of a [`close_button`]'s box.
 pub const CLOSE_BUTTON_W: f32 = 18.0;
+
+/// Between a popover's tab strip and the [`close_button`] beside it (the colour
+/// picker's, image editing's).
+pub const TABS_CLOSE_GAP: f32 = 6.0;
 /// A [`close_button`]'s ×, and a removable [`layer_chip`]'s.
 pub const CLOSE_GLYPH_PT: f32 = 13.0;
 
