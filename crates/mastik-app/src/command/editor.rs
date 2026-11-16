@@ -1577,9 +1577,10 @@ impl MastikApp {
             _ => format!("“{}” came with this document", d.name),
         };
         let mut decided: Option<u8> = None;
-        let lines = d.source.lines().count().max(1);
+        // Laid out as Luau reads it: no line break or character hides code.
+        let mut shown = mastik_vm::as_read(&d.source);
+        let lines = shown.lines().count().max(1);
         let names = mastik_vm::names_used(&d.source);
-        let mut shown = d.source.clone();
         let outside = settings::canvas_card(
             ctx,
             "script-disclosure",

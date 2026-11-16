@@ -5,6 +5,7 @@
 
 use mastik_core::kurbo::{Affine, Vec2};
 use mastik_core::{Document, NodeId, Operation, Resolved, Transaction};
+use mastik_vm::quoted;
 use std::collections::VecDeque;
 
 /// How many entries a document's log keeps; the bar shows the newest few.
@@ -274,25 +275,6 @@ fn luau_of(line: &str) -> String {
     mastik_vm::desugar(line).luau
 }
 
-/// `s` as a Luau string literal.
-pub(crate) fn quoted(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 /// `v` as the bar writes a number: at most two decimals, no trailing zeros.
 pub(crate) fn number(v: f64) -> String {
     let r = (v * 100.0).round() / 100.0;
@@ -385,10 +367,5 @@ mod tests {
         assert_eq!(number(0.6), "0.6");
         assert_eq!(number(12.345), "12.35");
         assert_eq!(number(-0.001), "0");
-    }
-
-    #[test]
-    fn a_name_is_quoted_with_its_quotes_escaped() {
-        assert_eq!(quoted(r#"My "Frame""#), r#""My \"Frame\"""#);
     }
 }

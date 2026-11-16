@@ -666,6 +666,52 @@ fn tokens_mark_the_api() {
     assert_eq!(names_used(src), ["sel", "width", "align"]);
 }
 
+/// A lone `\r` ends a comment for the lexer as it does for Luau, and the code in
+/// a backtick string's `{…}` is lexed as code: both run, so neither may be read
+/// as a comment or a string.
+/// flip: `line_end` stopping only at `\n` → fails at "the comment ends at `\r`".
+#[test]
+fn the_lexer_ends_lines_where_luau_does() {
+    let src = "-- a\rb()";
+    let got: Vec<(&str, Tok)> = tokens(src).into_iter().map(|(r, t)| (&src[r], t)).collect();
+    assert_eq!(
+        got,
+        [
+            ("-- a", Tok::Comment),
+            ("b", Tok::Function),
+            ("(", Tok::Plain),
+            (")", Tok::Plain),
+        ],
+        "the comment ends at `\\r`"
+    );
+    assert_eq!(names_used("-- tidy\rsel.x = 5"), ["sel", "x"]);
+    assert_eq!(names_used("local s = \"a\rgroup()"), ["group"]);
+    let src = "print(`n {#sel} {group({})}`)";
+    let strings: Vec<&str> = tokens(src)
+        .into_iter()
+        .filter(|(_, t)| *t == Tok::String)
+        .map(|(r, _)| &src[r])
+        .collect();
+    assert_eq!(strings, ["`n {", "} {", "}`"], "the braces' code is code");
+    assert_eq!(names_used(src), ["sel", "group"]);
+    assert_eq!(
+        as_read("-- a\rb()\r\nc = \"\u{202e}\0\"\t`\\u{41}`"),
+        "-- a\nb()\nc = \"\\u{202e}\\u{0}\"\t`\\u{41}`",
+        "the disclosure's view"
+    );
+    let src = "`\\u{41} {group()}`";
+    assert_eq!(
+        names_used(src),
+        ["group"],
+        "an escape's brace opens nothing"
+    );
+    // Luau agrees: the code after the `\r` runs.
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    run_script(&mut h, &env(&ids[..1], &labels), "-- tidy\rsel.x = 5").unwrap();
+    assert_eq!(h.x(ids[0]), 5.0, "Luau ran the line");
+}
+
 /// The editor's tokens tell constants, the standard library and called names
 /// from plain ones; a verb called stays Mastik's.
 /// flip: `tokens` checking `calls` before `is_builtin` → fails at the list,

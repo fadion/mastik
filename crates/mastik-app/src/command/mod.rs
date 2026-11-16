@@ -1497,7 +1497,7 @@ pub(crate) fn as_script(entries: &[log::Entry]) -> String {
         match (&e.luau, &e.source) {
             (Some(luau), _) => out.push_str(luau),
             (None, log::Source::Script(name)) => {
-                out.push_str(&format!("-- run {}", log::quoted(name)));
+                out.push_str(&format!("-- run {}", mastik_vm::quoted(name)));
             }
             (None, log::Source::Edit { label, .. }) => {
                 out.push_str(&format!("-- {label}: no command yet"));

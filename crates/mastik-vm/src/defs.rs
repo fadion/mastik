@@ -114,6 +114,28 @@ pub fn names_used(source: &str) -> Vec<String> {
     out
 }
 
+/// `source` laid out as Luau reads it, for a person to check before it runs: a
+/// lone `\r` breaks the line, as it ends a comment or a string for Luau, and any
+/// other control character, or one drawn as nothing ([`crate::invisible`]),
+/// shows as its `\u{…}` escape. Each escape is ASCII and keeps the lexeme it
+/// stands in, so the view highlights as the source does.
+pub fn as_read(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\r' => out.push('\n'),
+            '\n' | '\t' => out.push(c),
+            c if c.is_control() || crate::invisible(c) => {
+                let _ = write!(out, "\\u{{{:x}}}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// A parameter's Luau type.
 pub(crate) fn param_type(kind: ParamKind) -> String {
     match kind {

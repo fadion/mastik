@@ -48,6 +48,9 @@ pub(crate) fn ident_char(c: char) -> bool {
 pub(crate) fn lex(src: &str) -> Vec<Lexeme> {
     let b = src.as_bytes();
     let mut out = Vec::new();
+    // One entry per open interpolation in a backtick string: the depth of the
+    // ordinary braces opened inside it, so its own `}` resumes the string.
+    let mut interp: Vec<usize> = Vec::new();
     let mut i = 0;
     while i < b.len() {
         let c = b[i] as char;
@@ -62,8 +65,19 @@ pub(crate) fn lex(src: &str) -> Vec<Lexeme> {
                 None => i = line_end(b, i),
             }
             Lx::Comment
-        } else if c == '"' || c == '\'' || c == '`' {
+        } else if c == '"' || c == '\'' {
             i = close_quote(b, i);
+            Lx::String
+        } else if c == '`' || (c == '}' && interp.last() == Some(&0)) {
+            // The code in a `{…}` is lexed as code: it runs.
+            if c == '}' {
+                interp.pop();
+            }
+            let (end, opens) = interp_section(b, i + 1);
+            i = end;
+            if opens {
+                interp.push(0);
+            }
             Lx::String
         } else if c == '[' && long_bracket(b, i).is_some() {
             let level = long_bracket(b, i).unwrap_or(0);
@@ -84,6 +98,13 @@ pub(crate) fn lex(src: &str) -> Vec<Lexeme> {
                 Lx::Ident
             }
         } else {
+            if let Some(depth) = interp.last_mut() {
+                match c {
+                    '{' => *depth += 1,
+                    '}' => *depth -= 1,
+                    _ => {}
+                }
+            }
             let op = OPERATORS.iter().find(|op| src[i..].starts_with(**op));
             i += op.map_or_else(
                 || src[i..].chars().next().map_or(1, char::len_utf8),
@@ -125,27 +146,49 @@ fn close_long(b: &[u8], i: usize, level: usize) -> usize {
         .map_or(b.len(), |p| from + p + close.len())
 }
 
-/// The end of the line holding `i`, before its newline.
+/// The end of the line holding `i`, before its newline. A lone `\r` ends it too,
+/// as it ends a comment or a string for Luau: code after one runs, so it must
+/// not be read as part of the comment before it.
 fn line_end(b: &[u8], i: usize) -> usize {
     b[i..]
         .iter()
-        .position(|c| *c == b'\n')
+        .position(|c| matches!(c, b'\n' | b'\r'))
         .map_or(b.len(), |p| i + p)
 }
 
-/// The end of the quoted string opening at `i`: past its closing quote, or its line's end.
+/// The end of the quoted string opening at `i` (`"` or `'`): past its closing
+/// quote, or its line's end.
 fn close_quote(b: &[u8], i: usize) -> usize {
     let quote = b[i];
     let mut j = i + 1;
     while j < b.len() {
         match b[j] {
             b'\\' => j += 2,
-            b'\n' if quote != b'`' => return j,
+            b'\n' | b'\r' => return j,
             c if c == quote => return j + 1,
             _ => j += 1,
         }
     }
     b.len()
+}
+
+/// The end of an interpolated string's text section starting at `i`, just past
+/// a backtick or a `}` closing an interpolation: past the closing backtick, past
+/// a `{` that opens an interpolation (then `true`), or its line's end.
+fn interp_section(b: &[u8], i: usize) -> (usize, bool) {
+    let mut j = i;
+    while j < b.len() {
+        match b[j] {
+            // `\u{…}` is an escape, its brace no interpolation.
+            b'\\' if b.get(j + 1..j + 3) == Some(b"u{") => j += 3,
+            b'\\' => j += 2,
+            b'\n' | b'\r' => return (j, false),
+            b'`' => return (j + 1, false),
+            b'{' => return (j + 1, true),
+            _ => j += 1,
+        }
+    }
+    (b.len(), false)
 }
 
 /// The end of the number starting at `i`: digits, letters (a hex digit, an

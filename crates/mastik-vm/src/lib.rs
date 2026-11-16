@@ -27,7 +27,7 @@ mod sugar;
 mod tests;
 
 pub use complete::{Completion, Row, Section, complete, complete_script};
-pub use defs::{Tok, definitions, names_used, tokens};
+pub use defs::{Tok, as_read, definitions, names_used, tokens};
 pub use header::{Header, Input, InputType, header};
 pub use help::{
     ACTS_ON_SELECTION, Hover, Problem, Severity, SigParam, Signature, check, declaration_at,
@@ -35,7 +35,7 @@ pub use help::{
 };
 pub use props::{METHODS, Method, PROPERTIES, PropType, Property};
 pub use run::{Budget, READ_BUDGET, RUN_BUDGET};
-pub use sugar::{Line, LineKind, Marks, desugar, marks};
+pub use sugar::{Line, LineKind, Marks, desugar, invisible, marks, quoted};
 
 /// What the language reaches the document through: the app's session, or a test's
 /// plain document.

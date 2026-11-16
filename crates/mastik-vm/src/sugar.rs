@@ -83,7 +83,7 @@ fn verb_call(line: &str) -> Option<String> {
             {
                 w.to_owned()
             } else {
-                lua_string(w)
+                quoted(w)
             }
         })
         .collect();
@@ -118,8 +118,9 @@ fn words(text: &str) -> Vec<&str> {
     out
 }
 
-/// `s` as a double-quoted Luau string literal.
-pub(crate) fn lua_string(s: &str) -> String {
+/// `s` as a double-quoted Luau string literal, every control character and
+/// every [`invisible`] one escaped, so the literal reads as the text it holds.
+pub fn quoted(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -127,11 +128,32 @@ pub(crate) fn lua_string(s: &str) -> String {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() || invisible(c) => {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32));
+            }
             c => out.push(c),
         }
     }
     out.push('"');
     out
+}
+
+/// Whether `c` is drawn as nothing yet changes what is read: a zero-width
+/// character, a direction control or the byte-order mark.
+pub fn invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'
+            | '\u{061c}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+    )
 }
 
 /// Whether the lexeme before a `.` puts that `.` in prefix position: the line's
@@ -297,7 +319,7 @@ fn compound(line: &str) -> (String, bool) {
         out.push_str(lead_ws);
         out.push_str(&format!(
             "{subject}:adjust({}, {by})",
-            lua_string(&line[prop.range.clone()])
+            quoted(&line[prop.range.clone()])
         ));
         copied = end;
         rewrote = true;

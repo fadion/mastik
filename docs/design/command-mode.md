@@ -260,7 +260,10 @@ document records what its run committed and never needs it.
   popover says so.
 
 **The first-run disclosure.** Before a document's or a kit's script first runs on this machine, a
-box says who wrote it and what a script can and cannot do, and shows its source. It is recorded in
+box says who wrote it and what a script can and cannot do, and shows its source laid out as Luau
+reads it (`mastik_vm::as_read`): a lone carriage return breaks the line, as it ends a comment for
+Luau, and a control or zero-width character, or a direction control, shows as its `\u{…}` escape,
+so no code hides on a comment's line or behind an invisible character. It is recorded in
 the preferences (`Prefs::script_disclosed`), never in the file, so a sender cannot mark a script as
 shown: the SHA-256 of the source shown, keyed by `prefs::disclosure_key` (the document's or kit's id
 and the script's). A changed source is shown again. The person's own scripts (library, unsaved)
