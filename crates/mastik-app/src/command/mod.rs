@@ -2747,6 +2747,7 @@ pub(crate) mod tests {
         app.assistant.msgs.push(Msg::Person {
             text: question.into(),
             chips: Vec::new(),
+            scope: None,
         });
         let msg = app.assistant.msgs.len();
         app.assistant.msgs.push(Msg::Agent {

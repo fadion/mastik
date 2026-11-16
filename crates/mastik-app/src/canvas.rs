@@ -9323,6 +9323,14 @@ impl MastikApp {
                 words(job, &format!("· {}", modes.join(" · ")), 4.0, ink);
             }
         };
+        // The frame the assistant works in leads its tag with the scope glyph
+        // while the panel is open, the one mark it makes on the canvas.
+        let scoped = self.assistant.open && !self.prefs.private && self.scoped_to(id);
+        let scope_mark = |job: &mut egui::text::LayoutJob| {
+            if scoped {
+                glyph(job, icon::SCOPE_FRAME, egui::Color32::PLACEHOLDER);
+            }
+        };
         if is_set {
             glyph(&mut job, icon::VARIANT_SET, egui::Color32::PLACEHOLDER);
             words(&mut job, &shown, 4.0, egui::Color32::PLACEHOLDER);
@@ -9345,6 +9353,7 @@ impl MastikApp {
         } else if is_main {
             // A filled hexagon on a violet chip: the outline glyph holds the cell
             // unpainted and `draw_frame_labels` paints `ui::paint_hexagon_filled` in it.
+            scope_mark(&mut job);
             if clashing {
                 glyph(&mut job, icon::WARNING, egui::Color32::PLACEHOLDER);
             }
@@ -9392,13 +9401,14 @@ impl MastikApp {
                 }
             }
         } else {
+            scope_mark(&mut job);
             if clashing {
                 glyph(&mut job, icon::WARNING, egui::Color32::PLACEHOLDER);
             }
             words(
                 &mut job,
                 &shown,
-                if clashing { 4.0 } else { 0.0 },
+                if clashing || scoped { 4.0 } else { 0.0 },
                 egui::Color32::PLACEHOLDER,
             );
             mode_word(&mut job, ground_text(self.session.preview_ground(), 179));
@@ -9596,7 +9606,8 @@ impl MastikApp {
                 painter.galley(label.min + SET_TAB_PAD, galley, theme::text::strong());
                 continue;
             }
-            let ink = if self.session.selection.contains(id) {
+            let scoped = self.assistant.open && !self.prefs.private && self.scoped_to(id);
+            let ink = if self.session.selection.contains(id) || scoped {
                 color::SELECT
             } else {
                 // The dark theme's muted alpha in either theme: the page, not the

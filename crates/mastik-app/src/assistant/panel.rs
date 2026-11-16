@@ -38,6 +38,7 @@ enum Act {
     Select(String),
     Hover(String),
     RemoveChip(usize),
+    RemoveScope,
     AskAgain(usize),
     Regenerate,
     OpenSettings,
@@ -202,24 +203,26 @@ impl MastikApp {
     fn assistant_act(&mut self, act: Act) {
         match act {
             Act::Send(text, chips) => {
-                if self.assistant_send(text, chips) {
+                // The scope stays for the next question; the chips go.
+                let scope = self.scope_now();
+                if self.assistant_send(text, chips, scope) {
                     self.assistant.draft.clear();
                     self.assistant.chips.clear();
                 }
             }
             Act::Choose(text) => {
-                // An option answers with the chips its question carried.
-                let chips = self
+                // An option answers with the chips and scope its question carried.
+                let (chips, scope) = self
                     .assistant
                     .msgs
                     .iter()
                     .rev()
                     .find_map(|m| match m {
-                        Msg::Person { chips, .. } => Some(chips.clone()),
+                        Msg::Person { chips, scope, .. } => Some((chips.clone(), scope.clone())),
                         _ => None,
                     })
                     .unwrap_or_default();
-                self.assistant_send(text, chips);
+                self.assistant_send(text, chips, scope);
             }
             Act::Stop => self.assistant_stop(),
             Act::NewChat => self.assistant_new_chat(),
@@ -231,6 +234,7 @@ impl MastikApp {
                     self.assistant.chips.remove(i);
                 }
             }
+            Act::RemoveScope => self.assistant.scope = None,
             Act::AskAgain(q) => self.assistant_ask_again(q),
             Act::Regenerate => self.assistant_regenerate(),
             Act::OpenSettings => {
@@ -251,7 +255,8 @@ impl MastikApp {
                     .map(|p| p.writes.iter().map(|w| w.to_wire()).collect())
                     .unwrap_or_default();
                 let chips = self.selection_chips_of(&writes);
-                self.assistant_send(format!("{name} changed. Propose again."), chips);
+                let scope = self.scope_now();
+                self.assistant_send(format!("{name} changed. Propose again."), chips, scope);
             }
         }
     }
@@ -339,7 +344,9 @@ impl MastikApp {
         let last_person = msgs.iter().rposition(|m| matches!(m, Msg::Person { .. }));
         for (i, m) in msgs.iter().enumerate() {
             match m {
-                Msg::Person { text, chips } => self.person_bubble(ui, text, chips, acts),
+                Msg::Person { text, chips, scope } => {
+                    self.person_bubble(ui, text, chips, scope.as_ref(), acts);
+                }
                 Msg::Agent {
                     speaker,
                     parts,
@@ -389,8 +396,16 @@ impl MastikApp {
         }
     }
 
-    /// A question: right-aligned and shrink-wrapped, its chips above its words.
-    fn person_bubble(&self, ui: &mut egui::Ui, text: &str, chips: &[Chip], acts: &mut Vec<Act>) {
+    /// A question: right-aligned and shrink-wrapped, the frame it was asked in
+    /// and its chips above its words.
+    fn person_bubble(
+        &self,
+        ui: &mut egui::Ui,
+        text: &str,
+        chips: &[Chip],
+        scope: Option<&Chip>,
+        acts: &mut Vec<Act>,
+    ) {
         let max = ui.available_width() * BUBBLE_SHARE;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             egui::Frame::NONE
@@ -402,8 +417,25 @@ impl MastikApp {
                     ui.set_max_width(max - 20.0);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.spacing_mut().item_spacing.y = 6.0;
+                        if let Some(s) = scope {
+                            let name = self.layer_name(&s.id).unwrap_or_else(|| s.name.clone());
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                let ink = theme::text::faint();
+                                ui.label(
+                                    egui::RichText::new(icon::SCOPE_FRAME)
+                                        .font(theme::icon_font(ui::CAPTION_PT))
+                                        .color(ink),
+                                );
+                                ui.label(
+                                    egui::RichText::new(&name).size(ui::CAPTION_PT).color(ink),
+                                );
+                            })
+                            .response
+                            .on_hover_text(format!("Asked in {name}"));
+                        }
                         if !chips.is_empty() {
-                            self.chip_row(ui, chips, false, acts);
+                            self.chip_row(ui, chips, None, false, acts);
                         }
                         ui.add(
                             egui::Label::new(
@@ -418,10 +450,24 @@ impl MastikApp {
         });
     }
 
-    /// Chips in a wrapping row; `removable` above the composer.
-    fn chip_row(&self, ui: &mut egui::Ui, chips: &[Chip], removable: bool, acts: &mut Vec<Act>) {
+    /// Chips in a wrapping row; `removable` above the composer, where `scope`
+    /// leads the row as a pill with a hairline after it.
+    fn chip_row(
+        &self,
+        ui: &mut egui::Ui,
+        chips: &[Chip],
+        scope: Option<&Chip>,
+        removable: bool,
+        acts: &mut Vec<Act>,
+    ) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+            if let Some(s) = scope {
+                self.scope_pill(ui, s, acts);
+                if !chips.is_empty() {
+                    ui::rule(ui, ui::CHIP_H);
+                }
+            }
             for (n, c) in chips.iter().enumerate() {
                 let gone = self.chip_gone(c);
                 let name = self.layer_name(&c.id).unwrap_or_else(|| c.name.clone());
@@ -433,6 +479,7 @@ impl MastikApp {
                         gone,
                         removable,
                         lit: false,
+                        ..Default::default()
                     },
                 );
                 if out.removed {
@@ -447,6 +494,50 @@ impl MastikApp {
                 }
             }
         });
+    }
+
+    /// The scope above the composer: a chip like the attached ones, which
+    /// outlines its frame on hover and goes to it on a click, naming its page
+    /// when that is not the one in front.
+    fn scope_pill(&self, ui: &mut egui::Ui, scope: &Chip, acts: &mut Vec<Act>) {
+        let gone = self.chip_gone(scope);
+        let name = self
+            .layer_name(&scope.id)
+            .unwrap_or_else(|| scope.name.clone());
+        let page = mastik_core::NodeId::from_wire(&scope.id)
+            .and_then(|id| self.session.doc.page_of(id))
+            .filter(|p| *p != self.session.page)
+            .and_then(|p| self.session.doc.get(p))
+            .map(|n| n.name().to_owned());
+        let out = ui::layer_chip(
+            ui,
+            ui::LayerChip {
+                name: &name,
+                gone,
+                removable: true,
+                scope: true,
+                aside: page.as_deref(),
+                ..Default::default()
+            },
+        );
+        if out.removed {
+            acts.push(Act::RemoveScope);
+            return;
+        }
+        if gone {
+            out.resp
+                .on_hover_text(format!("{name} was deleted. Questions are not scoped."));
+            return;
+        }
+        if out.hovered {
+            acts.push(Act::Hover(scope.id.clone()));
+        }
+        let resp = out
+            .resp
+            .on_hover_text(format!("The assistant works in {name}. Click to go to it."));
+        if resp.clicked() {
+            acts.push(Act::Select(scope.id.clone()));
+        }
     }
 
     /// An agent turn's parts in order: tool rows (after the third folded into
@@ -612,6 +703,12 @@ impl MastikApp {
         let stopping = self.assistant_stopping();
         let edit_id = egui::Id::new("assistant-composer");
         let chips = self.assistant.chips.clone();
+        let scope = self.assistant.scope.clone();
+        // A scope whose frame is gone names nothing in the hint.
+        let scope_name = scope
+            .as_ref()
+            .filter(|s| !self.chip_gone(s))
+            .and_then(|s| self.layer_name(&s.id));
         let mut draft = std::mem::take(&mut self.assistant.draft);
         let mut send = false;
         // The text has no inset of its own (`TextArea::bare`), so the chips,
@@ -621,14 +718,17 @@ impl MastikApp {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 8.0;
-                if !chips.is_empty() {
-                    self.chip_row(ui, &chips, true, acts);
+                if !chips.is_empty() || scope.is_some() {
+                    self.chip_row(ui, &chips, scope.as_ref(), true, acts);
                 }
-                let hint = match self.assistant.msgs.is_empty() {
-                    true => "Ask about this design",
-                    false => "Ask a follow-up",
+                let first = self.assistant.msgs.is_empty();
+                let hint = match (scope_name.as_deref(), first) {
+                    (None, true) => "Ask about this design".to_owned(),
+                    (None, false) => "Ask a follow-up".to_owned(),
+                    (Some(name), true) => format!("Ask about {name}"),
+                    (Some(name), false) => format!("Ask a follow-up in {name}"),
                 };
-                let mut area = ui::TextArea::new(hint, 2);
+                let mut area = ui::TextArea::new(&hint, 2);
                 area.id = Some(edit_id);
                 area.enter_sends = true;
                 area.bare = true;
@@ -1161,6 +1261,54 @@ mod tests {
         assert_eq!(recall_step(Some(1), true, 2), Some(0));
         assert_eq!(recall_step(Some(0), false, 2), Some(1));
         assert_eq!(recall_step(None, true, 0), None);
+    }
+
+    /// A question asked in a scope records it, and the scope stays for the next
+    /// question while the chips go; *New chat* keeps it; a deleted frame's
+    /// scope is not sent.
+    /// flip: `assistant_act`'s `Send` clearing the scope with the chips → fails
+    /// at "the scope stays".
+    #[test]
+    fn a_scope_stays_after_a_question_and_goes_with_its_frame() {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        app.prefs.assistant.agent = "claude".into();
+        let h = app.prefs.assistant.harness().expect("an agent");
+        app.session.path = Some(std::env::temp_dir().join("assistant-scope.mastik"));
+        app.hold_lookup(
+            h,
+            Some(Ok(ai::Found {
+                path: std::path::PathBuf::new(),
+                seal: ai::Seal::Sealed,
+                seal_sentence: String::new(),
+            })),
+        );
+        assert!(app.assistant_blocked().is_none(), "the fixture can send");
+        let page = app.session.page;
+        let home = crate::assistant::canvas::tests::add_frame(&mut app, page, "Home");
+        let card = crate::palette::tests::add_rect(&mut app);
+        app.session.selection.set_one(home);
+        app.toggle_assistant_scope();
+        assert!(app.scoped_to(home), "the menu's row scopes");
+        app.session.selection.set_one(card);
+        app.ask_assistant();
+        let chips = app.assistant.chips.clone();
+        app.assistant_act(Act::Send("Add a hero image".into(), chips));
+        let Some(Msg::Person { scope, chips, .. }) = app.assistant.msgs.first() else {
+            panic!("the question was not recorded: {:?}", app.assistant.msgs);
+        };
+        assert_eq!(scope.as_ref().map(|c| c.name.as_str()), Some("Home"));
+        assert_eq!(chips.len(), 1, "the fixture attached the card");
+        assert!(app.assistant.chips.is_empty(), "the chips go");
+        assert!(app.scoped_to(home), "the scope stays");
+
+        app.assistant_new_chat();
+        assert!(app.scoped_to(home), "New chat keeps it");
+
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::DeleteNode { id: home }
+        ])));
+        assert!(app.scope_now().is_none(), "a gone frame scopes nothing");
     }
 
     /// *Apply* ends the person's open text edit first, as its own step, and a

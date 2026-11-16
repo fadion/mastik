@@ -1288,7 +1288,8 @@ fn sweep_on(theme: Theme) {
         a.assistant.msgs = vec![
             Msg::Person {
                 text: "Which way?".into(),
-                chips: vec![chip],
+                chips: vec![chip.clone()],
+                scope: Some(chip.clone()),
             },
             Msg::Agent {
                 speaker: "Claude".into(),
@@ -1300,6 +1301,8 @@ fn sweep_on(theme: Theme) {
                 }),
             },
         ];
+        // A scope, so the composer draws its pill beside the chips' kind.
+        a.assistant.scope = Some(chip);
         a.open_assistant();
     });
     assert!(

@@ -84,6 +84,9 @@ pub(crate) enum Msg {
     Person {
         text: String,
         chips: Vec<Chip>,
+        /// The frame the question was asked in, which *Ask again* asks in too.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<Chip>,
     },
     Agent {
         /// The speaker the turn was written by, kept with it.
@@ -258,6 +261,7 @@ mod tests {
         Msg::Person {
             text: text.into(),
             chips: Vec::new(),
+            scope: None,
         }
     }
 
@@ -319,6 +323,19 @@ mod tests {
     fn a_streaming_turn_is_not_saved() {
         let saved = for_saving(&[person("q"), agent("half", None)], Some(1));
         assert_eq!(saved, vec![person("q")]);
+    }
+
+    /// A thread saved before questions carried a scope still loads, and a
+    /// question with none saves without the field. The load holds without
+    /// `serde(default)` too, since serde reads a missing `Option` as `None`.
+    /// flip: `scope` without `skip_serializing_if` → fails at the saved text.
+    #[test]
+    fn a_thread_without_scopes_loads() {
+        let old = r#"[{"Person":{"text":"q","chips":[]}}]"#;
+        let msgs: Vec<Msg> = serde_json::from_str(old).expect("loads");
+        assert_eq!(msgs, vec![person("q")]);
+        let saved = serde_json::to_string(&msgs).expect("saves");
+        assert!(!saved.contains("scope"), "{saved}");
     }
 
     /// A document's chat file is named by its id, else by its path.

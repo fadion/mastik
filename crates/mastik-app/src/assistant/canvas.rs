@@ -1,6 +1,6 @@
 //! The assistant on the canvas: the ask buttons over the selection and over
-//! each attached layer, and while the panel is open a dashed outline on each
-//! attached layer.
+//! each attached layer, the scope button beside them over a top-level frame,
+//! and while the panel is open a dashed outline on each attached layer.
 
 use crate::app::MastikApp;
 use crate::preview::Drag;
@@ -21,21 +21,43 @@ const ASK_PAD: f32 = 7.0;
 const ASK_NUM_GAP: f32 = 4.0;
 /// The sparkle's size on the button.
 const ASK_GLYPH_PT: f32 = 14.0;
+/// Between the scope button and the ask button on its right.
+const SCOPE_GAP: f32 = 4.0;
+
+/// What an ask button stands for, and so what a click on it does.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AskKind {
+    /// The selection's: attaches it.
+    Ask,
+    /// An attached layer's, lit with its chip's number: detaches it.
+    Attached(String, usize),
+    /// A top-level frame's scope button: scopes the assistant to it, or, lit
+    /// on the scoped frame, removes the scope.
+    Scope { wire: String, lit: bool },
+}
 
 /// One ask button: where it sits and what a click does.
 pub(crate) struct AskButton {
     pub(crate) place: egui::Rect,
-    /// The attached layer it stands for and its chip's number; `None` for the
-    /// unattached selection's.
-    pub(crate) attached: Option<(String, usize)>,
+    pub(crate) kind: AskKind,
 }
 
 impl AskButton {
     /// The button's area, whose layer the canvas hands the wheel back from.
     pub(crate) fn area_id(&self) -> egui::Id {
-        match &self.attached {
-            Some((wire, _)) => egui::Id::new(("assistant-ask", wire.as_str())),
-            None => egui::Id::new("assistant-ask"),
+        match &self.kind {
+            AskKind::Ask => egui::Id::new("assistant-ask"),
+            AskKind::Attached(wire, _) => egui::Id::new(("assistant-ask", wire.as_str())),
+            AskKind::Scope { wire, .. } => egui::Id::new(("assistant-scope", wire.as_str())),
+        }
+    }
+
+    /// Lit: it stands for something already attached or scoped.
+    fn lit(&self) -> bool {
+        match &self.kind {
+            AskKind::Ask => false,
+            AskKind::Attached(..) => true,
+            AskKind::Scope { lit, .. } => *lit,
         }
     }
 }
@@ -93,7 +115,8 @@ impl MastikApp {
     /// one carrying its chip's number while the panel is open or the layer is
     /// selected, whatever *Show ask assistant* says. The selection has an unlit
     /// one while that switch is on and some selected layer is not attached; a
-    /// lit button it would cover gives way.
+    /// lit button it would cover gives way. The scope button follows
+    /// [`Self::scope_button`].
     pub(crate) fn ask_buttons(&self, ctx: &egui::Context) -> Vec<AskButton> {
         let mut out = Vec::new();
         if !self.ask_live(ctx) {
@@ -126,16 +149,74 @@ impl MastikApp {
             }
             out.push(AskButton {
                 place,
-                attached: Some((c.id.clone(), n + 1)),
+                kind: AskKind::Attached(c.id.clone(), n + 1),
             });
         }
         if let Some(place) = unlit {
             out.push(AskButton {
                 place,
-                attached: None,
+                kind: AskKind::Ask,
             });
         }
+        // Lit over the scoped frame on this page while the panel is open or the
+        // frame is selected, whatever *Show ask assistant* says; unlit over a
+        // selected top-level frame while that switch is on.
+        let scoped = self
+            .assistant
+            .scope
+            .as_ref()
+            .and_then(|c| NodeId::from_wire(&c.id))
+            .filter(|id| self.session.doc.get(*id).is_some())
+            .filter(|id| self.session.doc.page_of(*id) == Some(self.session.page));
+        if let Some(id) = scoped
+            && (self.assistant.open || self.session.selection.contains(id))
+            && let Some(b) = self.scope_button(id, true, ppp, screen, &out)
+        {
+            out.push(b);
+        }
+        if self.show_ask
+            && let Some(id) = self.scope_candidate().filter(|id| Some(*id) != scoped)
+            && let Some(b) = self.scope_button(id, false, ppp, screen, &out)
+        {
+            out.push(b);
+        }
         out
+    }
+
+    /// Frame `id`'s scope button, left of the ask button standing at the same
+    /// corner. Where it would leave the canvas it is dropped, and the ask
+    /// button stays.
+    fn scope_button(
+        &self,
+        id: NodeId,
+        lit: bool,
+        ppp: f32,
+        screen: egui::Rect,
+        others: &[AskButton],
+    ) -> Option<AskButton> {
+        let wire = id.to_wire();
+        // The ask button at this frame's corner: its own lit one, or the
+        // selection's when the frame is the selection.
+        let selected = self.session.selection.ids() == [id];
+        let beside = others.iter().find(|b| match &b.kind {
+            AskKind::Attached(w, _) => *w == wire,
+            AskKind::Ask => selected,
+            AskKind::Scope { .. } => false,
+        });
+        let place = match beside {
+            Some(b) => egui::Rect::from_min_size(
+                egui::pos2(b.place.left() - SCOPE_GAP - ASK, b.place.top()),
+                egui::vec2(ASK, ASK),
+            ),
+            None => {
+                let b = self.session.preview_world_bounds(id)?;
+                self.ask_button_place(self.screen_rect(b, ppp), screen, ASK)
+            }
+        };
+        self.canvas_rect.contains_rect(place).then_some(AskButton {
+            place,
+            kind: AskKind::Scope { wire, lit },
+        })
     }
 
     /// Whether `layer` is an ask button's, which hands the wheel to the canvas.
@@ -148,11 +229,18 @@ impl MastikApp {
     }
 
     /// A click on an ask button: the selection's attaches it and opens the
-    /// panel; a lit one's detaches its layer, a toggle.
-    pub(crate) fn ask_button_clicked(&mut self, attached: Option<String>) {
-        match attached {
-            Some(wire) => self.assistant.chips.retain(|c| c.id != wire),
-            None => self.ask_assistant(),
+    /// panel; a lit one's detaches its layer, a toggle. The scope button
+    /// scopes the assistant to its frame, or, lit, removes the scope.
+    pub(crate) fn ask_button_clicked(&mut self, kind: AskKind) {
+        match kind {
+            AskKind::Ask => self.ask_assistant(),
+            AskKind::Attached(wire, _) => self.assistant.chips.retain(|c| c.id != wire),
+            AskKind::Scope { lit: true, .. } => self.assistant.scope = None,
+            AskKind::Scope { wire, lit: false } => {
+                if let Some(id) = NodeId::from_wire(&wire) {
+                    self.scope_assistant_to(id);
+                }
+            }
         }
     }
 
@@ -160,24 +248,22 @@ impl MastikApp {
     pub(crate) fn assistant_canvas_ui(&mut self, ctx: &egui::Context) {
         let mut clicked = None;
         for b in self.ask_buttons(ctx) {
-            let lit = b.attached.is_some();
+            let lit = b.lit();
             let resp = egui::Area::new(b.area_id())
                 .order(egui::Order::Middle)
                 .fixed_pos(b.place.min)
                 .show(ctx, |ui| {
                     let resp = crate::ui::float_button(ui, b.place.size(), lit, |p, r, ink| {
                         let glyph = theme::icon_font(ASK_GLYPH_PT);
-                        match &b.attached {
-                            None => {
-                                p.text(
-                                    r.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    icon::SPARKLE,
-                                    glyph,
-                                    ink,
-                                );
+                        match &b.kind {
+                            AskKind::Ask | AskKind::Scope { .. } => {
+                                let g = match b.kind {
+                                    AskKind::Ask => icon::SPARKLE,
+                                    _ => icon::SCOPE_FRAME,
+                                };
+                                p.text(r.center(), egui::Align2::CENTER_CENTER, g, glyph, ink);
                             }
-                            Some((_, n)) => {
+                            AskKind::Attached(_, n) => {
                                 let x = r.left() + ASK_PAD;
                                 p.text(
                                     egui::pos2(x + ASK_GLYPH_PT / 2.0, r.center().y),
@@ -196,18 +282,20 @@ impl MastikApp {
                             }
                         }
                     });
-                    resp.on_hover_text(match lit {
-                        true => "Detach from the assistant",
-                        false => "Ask the assistant",
+                    resp.on_hover_text(match &b.kind {
+                        AskKind::Ask => "Ask the assistant",
+                        AskKind::Attached(..) => "Detach from the assistant",
+                        AskKind::Scope { lit: false, .. } => "Scope the assistant to this frame",
+                        AskKind::Scope { lit: true, .. } => "Remove the scope",
                     })
                 })
                 .inner;
             if resp.clicked() {
-                clicked = Some(b.attached.map(|(wire, _)| wire));
+                clicked = Some(b.kind);
             }
         }
-        if let Some(attached) = clicked {
-            self.ask_button_clicked(attached);
+        if let Some(kind) = clicked {
+            self.ask_button_clicked(kind);
         }
     }
 
@@ -256,11 +344,11 @@ impl MastikApp {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The ask buttons for `app` in a 2000×1400 window.
-    fn buttons(ctx: &egui::Context, app: &MastikApp) -> Vec<(Option<usize>, egui::Rect)> {
+    fn buttons(ctx: &egui::Context, app: &MastikApp) -> Vec<(AskKind, egui::Rect)> {
         let mut out = Vec::new();
         for _ in 0..2 {
             let _ = ctx.run_ui(
@@ -275,7 +363,7 @@ mod tests {
                     out = app
                         .ask_buttons(ui.ctx())
                         .into_iter()
-                        .map(|b| (b.attached.map(|(_, n)| n), b.place))
+                        .map(|b| (b.kind, b.place))
                         .collect();
                 },
             );
@@ -303,24 +391,134 @@ mod tests {
         );
         let shown = buttons(&ctx, &app);
         assert_eq!(shown.len(), 1, "the selection's button: {shown:?}");
-        assert_eq!(shown[0].0, None, "unlit before it is attached");
+        assert_eq!(shown[0].0, AskKind::Ask, "unlit before it is attached");
 
-        app.ask_button_clicked(None);
+        app.ask_button_clicked(AskKind::Ask);
         assert_eq!(app.assistant.chips.len(), 1, "a click attaches");
         app.show_ask = false;
         let shown = buttons(&ctx, &app);
         assert_eq!(
-            shown.iter().map(|b| b.0).collect::<Vec<_>>(),
-            vec![Some(1)],
+            shown.iter().map(|b| b.0.clone()).collect::<Vec<_>>(),
+            vec![AskKind::Attached(id.to_wire(), 1)],
             "one button, lit with the chip's number, despite the switch"
         );
 
-        app.ask_button_clicked(Some(id.to_wire()));
+        app.ask_button_clicked(AskKind::Attached(id.to_wire(), 1));
         assert!(
             app.assistant.chips.is_empty(),
             "a lit button's click detaches"
         );
         assert!(buttons(&ctx, &app).is_empty(), "the switch is off");
+    }
+
+    /// A frame named `name`, 400×300 at the origin, as the last child of
+    /// `parent`.
+    pub(crate) fn add_frame(app: &mut MastikApp, parent: NodeId, name: &str) -> NodeId {
+        use mastik_core::{NodeKind, Operation, Transaction};
+        let s = &mut app.session;
+        let id = s.ids.mint();
+        let index = s.doc.get(parent).map_or(0, |n| n.children().len());
+        assert!(s.commit(Transaction(vec![Operation::CreateNode {
+            id,
+            parent,
+            index,
+            kind: NodeKind::Artboard {
+                size: mastik_core::kurbo::Size::new(400.0, 300.0),
+                corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: Some(name.into()),
+        }])));
+        id
+    }
+
+    /// An app with the assistant on and a canvas laid out, for the buttons.
+    fn scoping_app(ctx: &egui::Context) -> MastikApp {
+        let mut app = MastikApp::headless(ctx);
+        app.prefs.assistant.agent = "claude".into();
+        app.canvas_rect =
+            egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(1600.0, 1200.0));
+        app.canvas_px = (1600, 1200);
+        app
+    }
+
+    /// A selected top-level frame has a scope button left of its ask button,
+    /// level with it; a click scopes the assistant to the frame and opens the
+    /// panel, and the button is lit then. A click on the lit one removes it.
+    /// flip: `scope_button` placed by `ask_button_place` alone → fails at "left of".
+    #[test]
+    fn a_top_level_frame_has_a_scope_button_beside_its_ask_button() {
+        let ctx = egui::Context::default();
+        let mut app = scoping_app(&ctx);
+        let page = app.session.page;
+        let home = add_frame(&mut app, page, "Home");
+        app.session.selection.set_one(home);
+        let shown = buttons(&ctx, &app);
+        let ask = shown.iter().find(|b| b.0 == AskKind::Ask).expect("ask").1;
+        let (kind, scope) = shown
+            .iter()
+            .find(|b| matches!(b.0, AskKind::Scope { .. }))
+            .cloned()
+            .unwrap_or_else(|| panic!("a scope button: {shown:?}"));
+        assert_eq!(
+            kind,
+            AskKind::Scope {
+                wire: home.to_wire(),
+                lit: false
+            }
+        );
+        assert_eq!(scope.top(), ask.top(), "level with the ask button");
+        assert!(
+            (ask.left() - SCOPE_GAP - scope.right()).abs() < 0.01,
+            "left of the ask button, {SCOPE_GAP} apart: {scope:?} {ask:?}"
+        );
+
+        app.ask_button_clicked(kind);
+        assert!(app.scoped_to(home), "a click scopes");
+        assert!(app.assistant.open, "and opens the panel");
+        assert!(app.assistant.chips.is_empty(), "attaching nothing");
+        let lit = AskKind::Scope {
+            wire: home.to_wire(),
+            lit: true,
+        };
+        assert!(
+            buttons(&ctx, &app).iter().any(|b| b.0 == lit),
+            "lit once scoped"
+        );
+
+        // With the panel open, the lit button stays over its frame unselected.
+        app.session.selection.clear();
+        assert!(buttons(&ctx, &app).iter().any(|b| b.0 == lit));
+
+        app.ask_button_clicked(lit);
+        assert!(app.assistant.scope.is_none(), "the lit button removes it");
+    }
+
+    /// A layer inside a frame, or two frames, get no scope button: a scope is
+    /// one screen.
+    /// flip: `scope_candidate` without its page-parent test → fails at "nested".
+    #[test]
+    fn only_one_top_level_frame_offers_a_scope() {
+        let ctx = egui::Context::default();
+        let mut app = scoping_app(&ctx);
+        let page = app.session.page;
+        let home = add_frame(&mut app, page, "Home");
+        let hero = add_frame(&mut app, home, "Hero");
+        let about = add_frame(&mut app, page, "About");
+        let scope_buttons = |app: &MastikApp| {
+            buttons(&ctx, app)
+                .into_iter()
+                .filter(|b| matches!(b.0, AskKind::Scope { .. }))
+                .count()
+        };
+        app.session.selection.set_one(hero);
+        assert_eq!(scope_buttons(&app), 0, "nested");
+        app.session.selection.set_one(home);
+        app.session.selection.add(about);
+        assert_eq!(scope_buttons(&app), 0, "two frames");
+        app.session.selection.set_one(about);
+        assert_eq!(scope_buttons(&app), 1, "the fixture can show one");
     }
 
     /// A link hovered in a reply outlines its layer on this page, and nothing

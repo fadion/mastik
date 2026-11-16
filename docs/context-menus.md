@@ -83,7 +83,7 @@ Precedence on canvas: text session → point edit → guide → layer → empty 
 | 3 | Structure | Group · Frame · Slice · component rows · Ungroup · mask · even-odd · Boolean ▸ · Flatten · conversions · Pixel-fit · Join paths · Warp… · Align ▸ · Arrange ▸ · Move to page ▸ |
 | 4 | State | Hide/Show · Lock/Unlock · Rename *or* Batch rename… · Reset origin |
 | 5 | View | the canvas menu's view switches (§6.1, §6.3 only) |
-| 6 | Assistant | *Ask the assistant* (`menu::Group::Assistant`), a layer menu's last group, alone: the one row that leaves the document. Omitted while the assistant is *Off*, as its ask button is hidden; dims *"Not available in private mode"*. It attaches the selection and opens the assistant (`design/assistant.md` §4) |
+| 6 | Assistant | *Ask the assistant* (`menu::Group::Assistant`), a layer menu's last group: the rows that leave the document. It attaches the selection and opens the assistant (`design/assistant.md` §4). On a single top-level frame *Scope the assistant here* follows it, reading *Remove the scope* on the scoped frame; it never names the frame, whose long name would overrun the menu's width. The group is omitted while the assistant is *Off*, as its buttons are hidden; its rows dim *"Not available in private mode"* |
 
 A layer menu emits no row in the registry's Properties, Order, Transform, Navigate or Export groups:
 those verbs sit in its submenus, the inspector or the palette, where the groups still name them. The
@@ -97,7 +97,7 @@ function, not bucketed by `build`.
   Head rows: see §5.8.
 - **Lock**: editing rows dim with *"This layer is locked"*, or *"A group containing this layer is
   locked"* when only an ancestor is (§5.9).
-- **Length**, with the assistant *Off* (on, its row adds one group of one): a primitive is 21 rows in three groups, text 24, a boolean 24, railed text 26, a main
+- **Length**, with the assistant *Off* (on, its group adds one row, two on a top-level frame): a primitive is 21 rows in three groups, text 24, a boolean 24, railed text 26, a main
   frame 19, an instance frame 20; the long end is a bound text child on a rail at 28
   (`a_primitives_menu_is_twenty_one_rows_in_three_groups`, `the_menus_the_two_ends_do_not_count`).
   The ceiling is "needs neither a scrollbar nor a large monitor", which is why the alternate

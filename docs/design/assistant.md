@@ -251,8 +251,9 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
 ### Context sent with a turn
 
 - **The system prompt** (`assistant::prompt::system`) says what Mastik is, the access level and its
-  tools truthfully, how to propose an edit, and how to answer, then the person's own instructions
-  from Settings, which come last and so win.
+  tools truthfully, how to propose an edit, how to read a scope (work in that frame, read it
+  first, put new layers inside it, unless the question names another place), and how to answer,
+  then the person's own instructions from Settings, which come last and so win.
 - **Answers are short**, since the panel is narrow: one or two sentences, the answer first, no
   preamble, recap or offer of more. A choice is at most three options in an ` ```options ` block,
   one short line each, and a question. A layer is named by its id, so it renders as a link. A table
@@ -266,11 +267,14 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   prompt, so neither is on the command line. OpenCode
   would also wrap an argument holding a space in quotes, escaping the quotes inside it, before the
   model saw it.
-- **Each turn opens with a preamble**, fenced as data: the revision; the layers added, changed and
-  removed since the last turn, by id and name (forty at most, then how many more); the page; the
-  selection; the attached layers; the person's last three questions, since a harness's own memory
-  of earlier turns is unreliable; and `style: brief`, since an instruction given once fades over a
-  long thread. The page outline, names and ids only, goes only on a session's first turn. A name
+- **Each turn opens with a preamble**, fenced as data: the revision; the page; the selection; the
+  layers added, changed and removed since the last turn, by id and name (forty at most, then how
+  many more); the scope, as `scope: ‹name› ‹id› (kind, w×h); work in this frame unless the question
+  names another place`; the attached layers; the person's last three questions, since a harness's
+  own memory of earlier turns is unreliable; and `style: brief`. The scope line and `style: brief`
+  go on every turn, since an instruction given once fades over a long thread. The page outline,
+  names and ids only, goes only on a session's first turn, the scoped frame first when it is on
+  the page in front, so the outline's cap never cuts it. A name
   in the preamble is written on one line with `<` and `>` as `‹` and `›`, so no layer or page name can
   close the `<mastik-turn>` block and write words the model would read as the person's.
 - **The design is never sent whole.** The agent's earlier reads stay in its session, and the
@@ -300,7 +304,7 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   sparkle and its chip's number, whatever *Show ask assistant* says. It shows while the panel is
   open or the layer is selected, on its own page; the selection's button gives way to it once every
   selected layer is attached. A click on it detaches the layer: the button is a toggle.
-- **The ask buttons hide** while the selection is dragged, resized or rotated, while text or a path
+- **The ask buttons, the scope button among them, hide** while the selection is dragged, resized or rotated, while text or a path
   is edited, in Present, focus and private mode, and while the assistant is *Off*. They pass the
   wheel and a pinch to the canvas beneath, as its other overlays do.
 - **A chip is a reference, not a copy** (`ui::layer_chip`): the layer's id, name, kind and size go
@@ -313,6 +317,42 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
 - **The agent's reply can name layers.** A layer id in a reply the document holds renders as a
   link naming the layer, in the accent; hovering it outlines the layer and clicking it selects it
   and zooms to it, as a chip does.
+
+### The scope
+
+- **The person can pin the assistant to one top-level frame**: a frame whose parent is a page
+  (`scope_candidate`), a main component among them. It is a hint, not a gate: the agent is told to
+  work in the frame unless the question names another place, and nothing refuses a write outside
+  it.
+- **One scope at a time**; scoping another frame replaces it. It belongs to the document in
+  front, per tab, and lives in memory only: switching tabs stashes it and brings it back, *New
+  chat* keeps it, private mode keeps it, and closing the tab drops it.
+- **Two doors**, neither of which attaches anything:
+  - **The scope button** (`icon::SCOPE_FRAME`, `AskKind::Scope`): unlit over a selection that is
+    exactly one top-level frame while *Show ask assistant* is on; lit over the scoped frame on its
+    page while the panel is open or the frame is selected, whatever that switch says. It stands
+    `SCOPE_GAP` (4) left of the ask button at that corner and level with it, or in the ask
+    button's place when none stands there; where it would leave the canvas it is dropped and the
+    ask button stays. Unlit, a click scopes the assistant and opens the panel with the composer
+    focused (*Scope the assistant to this frame*); lit, it removes the scope (*Remove the scope*).
+  - **The layer menu's *Scope the assistant here***, after *Ask the assistant* on a single
+    top-level frame, reading *Remove the scope* on the scoped one (`context-menus.md` §3).
+- **The composer leads its chip row with the scope** as a pill (`ui::layer_chip` with `scope`),
+  parted from the chips by a `ui::rule`; `aside` names the frame's page, faint, when it is not
+  the one in front. Hovering it outlines the frame; clicking it selects the frame and zooms to it
+  (*The assistant works in ‹name›. Click to go to it.*); its × removes the scope. A deleted
+  frame's pill is struck through and faint (*‹name› was deleted. Questions are not scoped.*) and
+  is not sent. Chips leave with a question; the scope stays. The hint reads *Ask about ‹name›*,
+  then *Ask a follow-up in ‹name›*.
+- **Each question records its scope** (`Msg::Person::scope`, left out of the saved thread when
+  there is none, so older threads load), shown in its bubble as a faint glyph and name above the
+  chips. *Ask again*, *Regenerate* and an option resend in the question's own scope; a fresh
+  send, a proposal's *Ask again* and the command bar's `/ai` use the current one, its name and
+  size as they are now.
+- **While the panel is open, the scoped frame's name tag** leads with the scope glyph and takes
+  the selection's ink; private mode leaves it plain. It gets no outline, which would read as the
+  dashed one an attached layer wears.
+- **No render goes with the scope**, and the MCP server knows nothing of it.
 
 ## 5. Settings
 
@@ -364,8 +404,8 @@ layers being asked about, and is one more kind of surface.
   private mode end the session, each with a note.
 - **Private mode turns the assistant off** while it is on. The panel closes and the session ends;
   the rail button and the context menu's row are disabled with *Not available in private mode*;
-  `Ctrl+Shift+A` answers on the status line; the ask buttons and the outlines are not drawn. The thread
-  and its chips are kept.
+  `Ctrl+Shift+A` answers on the status line; the ask buttons, the outlines and the scope's mark are
+  not drawn. The thread, its chips and the scope are kept.
 - **The head**: the harness's label, the seal's grade beside a lock, then the Access dropdown and
   *New chat* (a plus). *New chat* clears the thread at once, without asking, and ends a running
   turn.
@@ -386,13 +426,14 @@ layers being asked about, and is one more kind of surface.
   numbered from its first number. A reply's text is parsed once, not every frame (an egui
   `FrameCache` keyed by the text). A proposal renders as its card (§4).
 - **An ` ```options ` block renders as a stack of `ui::field_button`s**; a click sends its line as
-  the next question, with the same chips. Only the last turn's options are live.
+  the next question, with the same chips and scope. Only the last turn's options are live.
 - **A tool call is a row**, 22 tall: its name in mono, its argument, a status dot and its result
   cut short. After a turn's third call the rest fold into *+N calls*.
 - **Under each finished turn:** its time and tokens, *Copy*, and on the last turn *Regenerate*
   (`icon::ARROW_CLOCKWISE`), which drops that turn and asks again.
-- **The composer** is a bare `ui::text_area` in a field ground with the chips above it and the
-  hint and send button on its foot, all on one left edge; it grows to 15 lines, then scrolls.
+- **The composer** is a bare `ui::text_area` in a field ground with the scope and the chips above
+  it and the hint and send button on its foot, all on one left edge; it grows to 15 lines, then
+  scrolls.
   Enter sends, Shift+Enter breaks the line, and the send button becomes *Stop* (`icon::STOP`)
   while a turn runs. `Ctrl+↑`/`Ctrl+↓` step through earlier
   questions.
@@ -423,8 +464,8 @@ layers being asked about, and is one more kind of surface.
   registration (its `mastik` and eight hex digits) from the person's Antigravity config, with the
   `agy` its marker recorded, else the one found now: a standing grant there is worse than one
   command. A marker whose withdrawal did not hold stays for the next launch.
-- **What leaves the machine** is what the harness sends: the question, the attached layers'
-  references, and whatever the agent reads through the tools. No document file is handed over, and
+- **What leaves the machine** is what the harness sends: the question, the attached layers' and
+  the scope's references, and whatever the agent reads through the tools. No document file is handed over, and
   no telemetry is sent by Mastik.
 - **The agent log** (`mcp::agent_log`) is `agent_log.jsonl` in the machine data folder: one line
   `{at, tool, document, key, ok}` per granted call, refusals included, a call through `call` under

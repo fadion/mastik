@@ -486,6 +486,9 @@ pub enum Item {
     AssetsBrowser,
     Assistant,
     AskAssistant,
+    /// Scope the assistant to the top-level frame the menu was opened on, or
+    /// remove the scope it has.
+    ScopeAssistant,
     Credits,
     VariablesBrowser,
     ImportTokens,
@@ -754,6 +757,7 @@ impl Item {
         Item::ReverseSubpaths,
         Item::Join,
         Item::AskAssistant,
+        Item::ScopeAssistant,
     ];
 
     /// The row's spec. Its accelerator is the table's (`input::accel`) when the
@@ -1229,6 +1233,12 @@ impl Item {
             Item::AssetsBrowser => s("Assets…", icon::ASSETS, None, Group::Kits),
             Item::Assistant => s("Assistant", icon::SPARKLE, None, Group::Panels),
             Item::AskAssistant => s("Ask the assistant", icon::SPARKLE, None, Group::Assistant),
+            Item::ScopeAssistant => s(
+                "Scope the assistant here",
+                icon::SCOPE_FRAME,
+                None,
+                Group::Assistant,
+            ),
             Item::Credits => s("Credits…", icon::QUOTES, None, Group::File),
             Item::VariablesBrowser => s("Styles and variables", icon::SWATCHES, None, Group::Kits),
             Item::ImportTokens => s("Import tokens…", icon::IMPORT, None, Group::Kits),
@@ -1390,6 +1400,7 @@ impl Item {
             Item::InsertPicker => &["component", "kit"],
             Item::AssetsBrowser => &["icons", "photos", "stock", "images", "unsplash"],
             Item::Assistant | Item::AskAssistant => &["ai", "agent", "chat", "claude", "codex"],
+            Item::ScopeAssistant => &["ai", "agent", "focus", "screen", "artboard"],
             Item::Credits => &["attribution", "licence", "license", "photographer"],
             Item::VariablesBrowser => &["tokens", "colours", "colors"],
             Item::ImportTokens | Item::ExportTokens => {
@@ -1537,6 +1548,7 @@ impl Item {
             Item::AssetsBrowser => Action::AssetsBrowser,
             Item::Assistant => Action::Assistant,
             Item::AskAssistant => Action::AskAssistant,
+            Item::ScopeAssistant => Action::ScopeAssistant,
             Item::Credits => Action::Credits,
             Item::VariablesBrowser => Action::VariablesBrowser,
             Item::ImportTokens => Action::ImportTokens,
@@ -1682,6 +1694,16 @@ impl Row {
     }
 }
 
+/// What the scope row says on a top-level frame's menu. It never names the
+/// frame: a long name would run into the menu's edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ScopeRow {
+    /// *Scope the assistant here*.
+    Offer,
+    /// The frame is the scope already: *Remove the scope*.
+    Remove,
+}
+
 /// What the registry needs to know about the app to answer a menu open.
 ///
 /// A snapshot passed in rather than `&MastikApp`, so building a menu cannot touch
@@ -1716,6 +1738,8 @@ pub struct Context<'a> {
     pub focus: bool,
     /// Whether the assistant is on: an agent is picked in Settings.
     pub assistant_on: bool,
+    /// The scope row, when the menu is on one top-level frame.
+    pub scope_row: Option<ScopeRow>,
     /// Whether a segment (rather than only anchors) is part of the point
     /// selection — what separates §6.5's two Delete rows.
     pub segment_selected: bool,
@@ -2513,6 +2537,14 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
             Row::new(Item::AskAssistant)
                 .dim_if(crate::private::on(), "Not available in private mode"),
         );
+        if let Some(scope) = cx.scope_row {
+            let row = Row::new(Item::ScopeAssistant);
+            let row = match scope {
+                ScopeRow::Offer => row,
+                ScopeRow::Remove => row.label("Remove the scope"),
+            };
+            rows.push(row.dim_if(crate::private::on(), "Not available in private mode"));
+        }
     }
 
     rows
@@ -3316,6 +3348,16 @@ impl MastikApp {
             },
             focus: self.focus,
             assistant_on: self.prefs.assistant.harness().is_some(),
+            // The menu acts on the selection, which a right-click selects first.
+            scope_row: match target {
+                Target::Layer { id, .. } if self.scope_candidate() == Some(id) => {
+                    Some(match self.scoped_to(id) {
+                        true => ScopeRow::Remove,
+                        false => ScopeRow::Offer,
+                    })
+                }
+                _ => None,
+            },
             segment_selected: self
                 .edited_path()
                 .is_some_and(|id| self.points.segments(id).next().is_some()),
@@ -3897,6 +3939,7 @@ impl MastikApp {
             | Item::AssetsBrowser
             | Item::Assistant
             | Item::AskAssistant
+            | Item::ScopeAssistant
             | Item::Credits
             | Item::VariablesBrowser
             | Item::ImportTokens
@@ -4032,6 +4075,7 @@ mod tests {
             can_paste: false,
             can_replace: false,
             assistant_on: false,
+            scope_row: None,
             kinds,
             state: LayerState::default(),
             any_guides: false,
@@ -4471,6 +4515,17 @@ mod tests {
         let with = build(&on);
         assert_eq!(state(&with), ["Ask the assistant"]);
         assert_eq!(state(&with[..with.len() - 1]), ["Hide", "Lock", "Rename"]);
+        // On a top-level frame, the scope row follows it.
+        on.scope_row = Some(ScopeRow::Offer);
+        assert_eq!(
+            state(&build(&on)),
+            ["Ask the assistant", "Scope the assistant here"]
+        );
+        on.scope_row = Some(ScopeRow::Remove);
+        assert_eq!(
+            state(&build(&on)),
+            ["Ask the assistant", "Remove the scope"]
+        );
         let two = build(&open(target, &[id(1), id(2)], &[Kind::Shape, Kind::Shape]));
         assert_eq!(state(&two), ["Hide", "Lock", "Batch rename…"]);
 

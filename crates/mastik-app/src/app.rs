@@ -2735,6 +2735,7 @@ impl MastikApp {
             Action::AssetsBrowser => self.toggle_assets(),
             Action::Assistant => self.toggle_assistant(),
             Action::AskAssistant => self.ask_assistant(),
+            Action::ScopeAssistant => self.toggle_assistant_scope(),
             Action::Credits if self.has_credits() => self.credits_open = true,
             Action::Credits => {}
             Action::VariablesBrowser => self.toggle_var_browser(),

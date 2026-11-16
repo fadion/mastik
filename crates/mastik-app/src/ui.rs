@@ -3292,6 +3292,12 @@ pub struct LayerChip<'a> {
     pub removable: bool,
     /// Lit: its layer is outlined on the canvas.
     pub lit: bool,
+    /// The assistant's scope, which stays when a question is sent: an outline
+    /// in place of the wash that marks what leaves with it, round ends and
+    /// [`icon::SCOPE_FRAME`].
+    pub scope: bool,
+    /// Faint words after the name: the page a scope's frame is on.
+    pub aside: Option<&'a str>,
 }
 
 /// What a [`layer_chip`] was asked.
@@ -3320,9 +3326,19 @@ pub fn layer_chip(ui: &mut egui::Ui, chip: LayerChip<'_>) -> LayerChipOut {
         Some(n) => format!("{n} · {}", chip.name),
         None => chip.name.to_owned(),
     };
-    let (ground, ink) = match chip.gone {
-        true => (color::field(), theme::text::faint()),
-        false => (color::accent_a(46), color::accent_100()),
+    let (ground, ink) = match (chip.gone, chip.scope) {
+        (true, false) => (color::field(), theme::text::faint()),
+        (true, true) => (egui::Color32::TRANSPARENT, theme::text::faint()),
+        (false, false) => (color::accent_a(46), color::accent_100()),
+        (false, true) => (egui::Color32::TRANSPARENT, color::accent_100()),
+    };
+    let radius = match chip.scope {
+        true => CHIP_H / 2.0,
+        false => 4.0,
+    };
+    let glyph = match chip.scope {
+        true => icon::SCOPE_FRAME,
+        false => icon::FRAME,
     };
     let glyph_w = SMALL_PT;
     // The × stands in the trailing inset, its box [`X_INSET`] from the edge.
@@ -3335,8 +3351,17 @@ pub fn layer_chip(ui: &mut egui::Ui, chip: LayerChip<'_>) -> LayerChipOut {
     // and the chip says it whole on hover; it never widens what holds it. The
     // room is a whole row's, so a wrapping row moves a chip down before cutting.
     let room = (ui.max_rect().width() - PAD - glyph_w - GAP - tail).max(0.0);
-    let mut job =
-        egui::text::LayoutJob::single_section(label.clone(), egui::TextFormat::simple(font, ink));
+    let mut job = egui::text::LayoutJob::single_section(
+        label.clone(),
+        egui::TextFormat::simple(font.clone(), ink),
+    );
+    if let Some(aside) = chip.aside {
+        job.append(
+            &format!(" · {aside}"),
+            0.0,
+            egui::TextFormat::simple(font, theme::text::faint()),
+        );
+    }
     job.wrap = egui::text::TextWrapping {
         max_width: room,
         max_rows: 1,
@@ -3362,19 +3387,31 @@ pub fn layer_chip(ui: &mut egui::Ui, chip: LayerChip<'_>) -> LayerChipOut {
     });
     let hovered = resp.hovered() || x.as_ref().is_some_and(|(_, r)| r.hovered());
     let p = ui.painter();
-    p.rect_filled(rect, 4.0, ground);
-    if chip.lit || (hovered && !chip.gone) {
+    let lit = chip.lit || (hovered && !chip.gone);
+    // A scope at rest wears a softer outline, which hover brings to full.
+    let ground = match chip.scope && lit {
+        true => color::accent_a(20),
+        false => ground,
+    };
+    p.rect_filled(rect, radius, ground);
+    let outline = match (lit, chip.scope, chip.gone) {
+        (true, ..) => Some(color::accent_300()),
+        (false, true, false) => Some(color::accent_300().gamma_multiply(0.55)),
+        (false, true, true) => Some(color::field_border()),
+        (false, false, _) => None,
+    };
+    if let Some(c) = outline {
         p.rect_stroke(
             rect,
-            4.0,
-            egui::Stroke::new(1.0, color::accent_300()),
+            radius,
+            egui::Stroke::new(1.0, c),
             egui::StrokeKind::Inside,
         );
     }
     p.text(
         egui::pos2(rect.left() + PAD + glyph_w / 2.0, rect.center().y),
         egui::Align2::CENTER_CENTER,
-        icon::FRAME,
+        glyph,
         theme::icon_font(SMALL_PT),
         ink,
     );

@@ -271,6 +271,9 @@ pub enum Action {
     /// Attach the selection to the assistant's next question and open it: the
     /// context menu's *Ask the assistant*.
     AskAssistant,
+    /// Scope the assistant to the selected top-level frame, or remove the scope
+    /// it has: the context menu's row and the scope button's verb.
+    ScopeAssistant,
     /// *Credits…*: the document's credits card, from the Document menu and the
     /// palette.
     Credits,

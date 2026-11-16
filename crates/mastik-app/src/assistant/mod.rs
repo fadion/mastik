@@ -206,6 +206,12 @@ pub(crate) struct Assistant {
     doc: Option<(Option<crate::tabs::TabId>, Option<String>, Option<PathBuf>)>,
     /// Attached to the next question.
     pub(crate) chips: Vec<Chip>,
+    /// The top-level frame every question is asked in until it is removed. It
+    /// belongs to the document in front, not the thread, so *New chat* keeps it.
+    pub(crate) scope: Option<Chip>,
+    /// The scopes of the documents behind, by tab, put back when one comes to
+    /// the front. Never saved.
+    scopes: std::collections::HashMap<Option<crate::tabs::TabId>, Chip>,
     pub(crate) draft: String,
     /// The earlier question `Ctrl+↑` has stepped to, from the newest.
     pub(crate) recall: Option<usize>,
@@ -691,23 +697,75 @@ impl MastikApp {
 
     /// The selection as chips.
     pub(crate) fn selection_chips(&self) -> Vec<Chip> {
-        let doc = &self.session.doc;
         self.session
             .selection
             .ids()
             .iter()
-            .filter_map(|id| {
-                let n = doc.get(*id)?;
-                let r = self.session.resolved.world_bounds(*id);
-                Some(Chip {
-                    id: id.to_wire(),
-                    name: n.name().to_owned(),
-                    kind: mastik_export::snapshot::kind_name(n.kind()).to_owned(),
-                    w: r.map_or(0.0, |r| r.width()),
-                    h: r.map_or(0.0, |r| r.height()),
-                })
-            })
+            .filter_map(|id| self.chip_of(*id))
             .collect()
+    }
+
+    /// A layer as a chip, as it is now.
+    fn chip_of(&self, id: NodeId) -> Option<Chip> {
+        let n = self.session.doc.get(id)?;
+        let r = self.session.resolved.world_bounds(id);
+        Some(Chip {
+            id: id.to_wire(),
+            name: n.name().to_owned(),
+            kind: mastik_export::snapshot::kind_name(n.kind()).to_owned(),
+            w: r.map_or(0.0, |r| r.width()),
+            h: r.map_or(0.0, |r| r.height()),
+        })
+    }
+
+    /// The layer the assistant could be scoped to: the selection when it is
+    /// one frame placed directly on its page, a screen.
+    pub(crate) fn scope_candidate(&self) -> Option<NodeId> {
+        let [id] = self.session.selection.ids()[..] else {
+            return None;
+        };
+        let n = self.session.doc.get(id)?;
+        (matches!(n.kind(), mastik_core::NodeKind::Artboard { .. })
+            && n.parent().is_some_and(|p| self.session.doc.is_page(p)))
+        .then_some(id)
+    }
+
+    /// Whether the assistant is scoped to `id`.
+    pub(crate) fn scoped_to(&self, id: NodeId) -> bool {
+        self.assistant
+            .scope
+            .as_ref()
+            .is_some_and(|c| c.id == id.to_wire())
+    }
+
+    /// The scope button and the menu's row: scope the assistant to the
+    /// selected frame, opening the panel, or remove the scope it already has.
+    pub(crate) fn toggle_assistant_scope(&mut self) {
+        let Some(id) = self.scope_candidate() else {
+            return;
+        };
+        if self.scoped_to(id) {
+            self.assistant.scope = None;
+            return;
+        }
+        self.scope_assistant_to(id);
+    }
+
+    /// Scope the assistant to frame `id`, replacing any scope it had, and open
+    /// the panel with the composer focused, as attaching does.
+    pub(crate) fn scope_assistant_to(&mut self, id: NodeId) {
+        if self.prefs.private {
+            return self.open_assistant();
+        }
+        self.assistant.scope = self.chip_of(id);
+        self.open_assistant();
+    }
+
+    /// The scope as it goes with a question: its name and size as they are now,
+    /// and nothing once its frame is gone.
+    pub(crate) fn scope_now(&self) -> Option<Chip> {
+        let c = self.assistant.scope.as_ref()?;
+        self.chip_of(NodeId::from_wire(&c.id)?)
     }
 
     /// Whether every selected layer is attached already: the selection's ask
@@ -822,6 +880,17 @@ impl MastikApp {
         let file = thread::file_for(now.1.as_deref(), now.2.as_deref());
         self.assistant.msgs = file.as_deref().map(thread::load).unwrap_or_default();
         self.assistant.file = file;
+        let a = &mut self.assistant;
+        if let Some((tab, ..)) = &a.doc
+            && let Some(scope) = a.scope.take()
+        {
+            a.scopes.insert(*tab, scope);
+        }
+        a.scope = a.scopes.remove(&now.0);
+        // A closed tab's scope goes with it.
+        let tabs = &self.tabs;
+        a.scopes
+            .retain(|tab, _| tab.is_none_or(|t| tabs.get(t).is_some()));
         self.assistant.doc = Some(now);
         self.assistant.chips.clear();
         self.assistant.applied.clear();
@@ -970,11 +1039,16 @@ impl MastikApp {
         }
     }
 
-    /// Send a question with the chips attached; `text` is the person's words.
-    /// Answers whether the question was taken: `false` leaves the draft for the
-    /// person, as while the program is still being looked for.
-    pub(crate) fn assistant_send(&mut self, text: String, chips: Vec<Chip>) -> bool {
-        self.assistant_send_as(text, chips, None)
+    /// Send a question with the chips attached, asked in `scope`; `text` is the
+    /// person's words. Answers whether the question was taken: `false` leaves
+    /// the draft for the person, as while the program is still being looked for.
+    pub(crate) fn assistant_send(
+        &mut self,
+        text: String,
+        chips: Vec<Chip>,
+        scope: Option<Chip>,
+    ) -> bool {
+        self.assistant_send_as(text, chips, scope, None)
     }
 
     /// The command bar's `/ai`: send `request` with the selection attached, for
@@ -1001,7 +1075,8 @@ impl MastikApp {
                 id.to_wire()
             ));
         }
-        self.assistant_send_as(format!("/ai {request}"), chips, Some(turn));
+        let scope = self.scope_now();
+        self.assistant_send_as(format!("/ai {request}"), chips, scope, Some(turn));
         match &self.assistant.running {
             Some(r) => Asked::Sent(r.msg),
             None => Asked::Refused(
@@ -1048,7 +1123,13 @@ impl MastikApp {
 
     /// [`Self::assistant_send`], the model given `turn` in place of `text` when
     /// there is one, while the thread shows `text`.
-    fn assistant_send_as(&mut self, text: String, chips: Vec<Chip>, turn: Option<String>) -> bool {
+    fn assistant_send_as(
+        &mut self,
+        text: String,
+        chips: Vec<Chip>,
+        scope: Option<Chip>,
+        turn: Option<String>,
+    ) -> bool {
         let text = text.trim().to_owned();
         if text.is_empty() || self.assistant.running.is_some() {
             return false;
@@ -1065,6 +1146,7 @@ impl MastikApp {
             return false;
         };
         let chips: Vec<Chip> = chips.into_iter().filter(|c| !self.chip_gone(c)).collect();
+        let scope = scope.filter(|c| !self.chip_gone(c));
         let earlier: Vec<String> = {
             let q = self.assistant.questions();
             q.iter()
@@ -1077,6 +1159,7 @@ impl MastikApp {
         self.assistant.msgs.push(Msg::Person {
             text: text.clone(),
             chips: chips.clone(),
+            scope: scope.clone(),
         });
         let question = self.assistant.msgs.len() - 1;
         self.assistant.msgs.push(Msg::Agent {
@@ -1122,6 +1205,7 @@ impl MastikApp {
             page: &page,
             selection: &selection,
             attached: &chips,
+            scope: scope.as_ref(),
             earlier: &earlier_refs,
             page_id: &page_id,
         });
@@ -1353,10 +1437,12 @@ impl MastikApp {
         }
     }
 
-    /// Ask the question a failure note answered again, with its chips.
+    /// Ask the question a failure note answered again, with its chips and in
+    /// its scope.
     pub(crate) fn assistant_ask_again(&mut self, question: usize) {
-        if let Some(Msg::Person { text, chips }) = self.assistant.msgs.get(question).cloned() {
-            self.assistant_send(text, chips);
+        if let Some(Msg::Person { text, chips, scope }) = self.assistant.msgs.get(question).cloned()
+        {
+            self.assistant_send(text, chips, scope);
         }
     }
 
@@ -1370,11 +1456,11 @@ impl MastikApp {
         else {
             return;
         };
-        let Some(Msg::Person { text, chips }) = self.assistant.msgs.get(q).cloned() else {
+        let Some(Msg::Person { text, chips, scope }) = self.assistant.msgs.get(q).cloned() else {
             return;
         };
         self.assistant.msgs.truncate(q);
-        self.assistant_send(text, chips);
+        self.assistant_send(text, chips, scope);
     }
 
     /// After Settings saves: a change to what the session was started with
@@ -1562,6 +1648,7 @@ mod tests {
         app.assistant.msgs.push(Msg::Person {
             text: "q".into(),
             chips: Vec::new(),
+            scope: None,
         });
         let mut meta = app.session.doc.meta().clone();
         meta.id = Some("minted-id-test".into());
@@ -1604,7 +1691,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (mut app, _) = app_with_card(&ctx);
         assert!(matches!(app.assistant_blocked(), Some(Why::Off)));
-        app.assistant_send("Why does it wrap?".into(), Vec::new());
+        app.assistant_send("Why does it wrap?".into(), Vec::new(), None);
         assert!(app.assistant.msgs.is_empty());
     }
 
@@ -1618,10 +1705,13 @@ mod tests {
         app.assistant_button =
             egui::Rect::from_min_size(egui::pos2(8.0, 700.0), egui::vec2(30.0, 30.0));
         app.ask_assistant();
+        // A scope, so the composer's pill and the question's scope line draw too.
+        app.assistant.scope = app.assistant.chips.first().cloned();
         app.assistant.msgs = vec![
             Msg::Person {
                 text: "Why does it wrap?".into(),
                 chips: app.assistant.chips.clone(),
+                scope: app.assistant.scope.clone(),
             },
             Msg::Agent {
                 speaker: "Claude".into(),
@@ -1732,6 +1822,7 @@ mod tests {
             .map(|i| Msg::Person {
                 text: format!("Question {i}"),
                 chips: Vec::new(),
+                scope: None,
             })
             .collect();
         // The last question's top, the composer text's top and the head's top.
