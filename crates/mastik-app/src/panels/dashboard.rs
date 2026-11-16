@@ -13,7 +13,7 @@
 use crate::app::MastikApp;
 use crate::library::scan::Entry;
 use crate::library::state::{Sort, SortBy};
-use crate::library::{clock, ids, naming, project, search, store};
+use crate::library::{clock, ids, index, naming, project, search, store};
 use crate::menu::{Nav as MenuNav, navigate_index, pointer_moved};
 use crate::settings;
 use crate::theme;
@@ -147,20 +147,75 @@ fn list_head(
     }
 }
 
+/// One document a search found: by its name (`hit` lights it) or, with a
+/// `reason`, by what it holds.
+pub(crate) struct SearchMatch {
+    pub(crate) entry: Entry,
+    pub(crate) hit: search::Hit,
+    pub(crate) reason: Option<index::Reason>,
+}
+
+/// What a search row says in its meta slot at the right edge.
+#[derive(Clone, Copy)]
+enum Meta<'a> {
+    /// A kind, faint: *Project*, *File*.
+    Plain(&'a str),
+    /// Why a document matched by what it holds: the kind dim, the matched words
+    /// in full ink.
+    Reason(&'a index::Reason),
+}
+
+/// The most of a search row its reason may take, so the name keeps the rest.
+const REASON_SHARE: f32 = 0.55;
+
+/// A content match's reason as one line, `page: Checkout`: the kind and the text
+/// dim, the matched words in full ink, cut with an ellipsis at `max_w`.
+fn reason_job(reason: &index::Reason, font: egui::FontId, max_w: f32) -> egui::text::LayoutJob {
+    let dim = egui::TextFormat::simple(font.clone(), theme::text::dim());
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&format!("{}: ", reason.kind.word()), 0.0, dim);
+    let words = crate::palette::lit_label(
+        &reason.text,
+        &reason.hit.lit,
+        font,
+        theme::text::dim(),
+        theme::text::strong(),
+    );
+    job.sections.extend(words.sections.into_iter().map(|mut s| {
+        s.byte_range = s.byte_range.start + job.text.len()..s.byte_range.end + job.text.len();
+        s
+    }));
+    job.text.push_str(&words.text);
+    job.wrap = egui::text::TextWrapping {
+        max_width: max_w,
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    job
+}
+
 /// A search row's texts: the label from the glyph column on, its matched letters
-/// lit as the palette lights them, and the faint `meta` at the right edge. The
+/// lit as the palette lights them, and the `meta` at the right edge. A reason
+/// takes up to [`REASON_SHARE`] of the row, elided, never a second line; the
 /// label is cut to leave the meta its room.
 fn search_row_texts(
     p: &egui::Painter,
     row: egui::Rect,
     label: &str,
     lit: &[std::ops::Range<usize>],
-    meta: &str,
+    meta: Meta<'_>,
 ) {
     let meta_font = egui::FontId::proportional(ui::CAPTION_PT);
     let mut right = row.right() - 10.0;
-    if !meta.is_empty() {
-        let g = p.layout_no_wrap(meta.to_owned(), meta_font, theme::text::faint());
+    let g = match meta {
+        Meta::Plain("") => None,
+        Meta::Plain(word) => {
+            Some(p.layout_no_wrap(word.to_owned(), meta_font, theme::text::faint()))
+        }
+        Meta::Reason(r) => Some(p.layout_job(reason_job(r, meta_font, row.width() * REASON_SHARE))),
+    };
+    if let Some(g) = g {
         right -= g.size().x;
         p.galley(
             egui::pos2(right, row.center().y - g.size().y / 2.0),
@@ -739,6 +794,8 @@ impl MastikApp {
 
         // Before any card asks: take the worker's finished answers and drop unwanted covers.
         self.covers.pass(ui.ctx());
+        // Every document, on or off screen: a search reads the whole library.
+        self.index.pass(ui.ctx(), &self.library.entries);
 
         // Taken here, not in the editor's `take_dropped_images`, which sits below the
         // `View::Dashboard` return. A modal backdrop does not stop a drop, so
@@ -1035,7 +1092,7 @@ impl MastikApp {
             Vec::new()
         };
         let mut projects = self.ranked_projects(&words);
-        let mut files = self.ranked_files(&words);
+        let mut files = self.search_matches(&words);
         // A project's own search lists its files and, last, the way out to the library.
         let scope = self
             .dash
@@ -1044,13 +1101,20 @@ impl MastikApp {
             .filter(|s| self.library.projects.get(s).is_some());
         if let Some(s) = &scope {
             projects.clear();
-            files.retain(|(e, _)| e.meta.project.as_deref() == Some(s.as_str()));
+            files.retain(|m| m.entry.meta.project.as_deref() == Some(s.as_str()));
         }
         // Past the cap, a row opens every match on the results page.
         let show_all =
             (files.len() > SEARCH_MAX || projects.len() > SEARCH_MAX).then_some(files.len());
         projects.truncate(SEARCH_MAX);
         files.truncate(SEARCH_MAX);
+        // Names lead; a rule parts them from content matches when both are there.
+        let by_name = files.iter().filter(|m| m.reason.is_none()).count();
+        let rule = by_name > 0 && by_name < files.len();
+        // While the index fills, the foot says so and unread documents are found
+        // by name alone.
+        let (read, total) = self.index.progress(&self.library.entries);
+        let reading = !needle.is_empty() && read < total;
         let rows = recents.len()
             + projects.len()
             + files.len()
@@ -1097,17 +1161,27 @@ impl MastikApp {
         let mut refill: Option<String> = None;
         let mut open_page = false;
         let mut widen = false;
-        let h = rows as f32 * ui::MENU_ROW_H;
+        let h = rows as f32 * ui::MENU_ROW_H
+            + if rule { ui::MENU_SEP_H } else { 0.0 }
+            + if reading { ui::MENU_ROW_H } else { 0.0 };
         let panel = Self::search_panel(ui, anchor, h, |ui, rect| {
             let mut y = rect.top();
+            // Answers whether the row was taken, and its centre line.
             let mut row = |ui: &mut egui::Ui,
                            i: usize,
                            glyph: &str,
                            ink: egui::Color32,
                            label: &str,
                            lit: &[std::ops::Range<usize>],
-                           meta: &str|
-             -> bool {
+                           meta: Meta<'_>,
+                           rule_above: bool|
+             -> (bool, f32) {
+                if rule_above {
+                    let at = y + ui::SEP_ABOVE;
+                    ui.painter()
+                        .hline(rect.x_range(), at, egui::Stroke::new(1.0, ui::sep_ink()));
+                    y += ui::MENU_SEP_H;
+                }
                 let r = egui::Rect::from_min_size(
                     egui::pos2(rect.left(), y),
                     egui::vec2(rect.width(), ui::MENU_ROW_H),
@@ -1130,75 +1204,68 @@ impl MastikApp {
                     );
                 }
                 search_row_texts(p, r, label, lit, meta);
-                resp.clicked() || (enter && i == sel)
+                (resp.clicked() || (enter && i == sel), r.center().y)
             };
             let mut i = 0;
             for q in &recents {
-                if row(
-                    ui,
-                    i,
-                    icon::CLOCK_COUNTER_CLOCKWISE,
-                    theme::text::faint(),
-                    q,
-                    &[],
-                    "",
-                ) {
+                let icon = icon::CLOCK_COUNTER_CLOCKWISE;
+                let none = Meta::Plain("");
+                if row(ui, i, icon, theme::text::faint(), q, &[], none, false).0 {
                     refill = Some(q.clone());
                 }
                 i += 1;
             }
             for (p, hit) in &projects {
                 let name = self.library.shown_project(p);
-                if row(ui, i, "", swatch(&p.color), &name, &hit.lit, "Project") {
+                let meta = Meta::Plain("Project");
+                if row(ui, i, "", swatch(&p.color), &name, &hit.lit, meta, false).0 {
                     nav_to = Some(Nav::Project(p.id.clone()));
                 }
                 i += 1;
             }
-            for (e, hit) in &files {
-                if row(
-                    ui,
-                    i,
-                    icon::DOCUMENT,
-                    theme::text::dim(),
-                    &self.library.shown_entry(e),
-                    &hit.lit,
-                    "File",
-                ) {
-                    chosen = Some(Act::Open(e.path.clone()));
+            for (n, m) in files.iter().enumerate() {
+                let meta = match &m.reason {
+                    Some(r) => Meta::Reason(r),
+                    None => Meta::Plain("File"),
+                };
+                let name = self.library.shown_entry(&m.entry);
+                let ink = theme::text::dim();
+                let above = rule && n == by_name;
+                if row(ui, i, icon::DOCUMENT, ink, &name, &m.hit.lit, meta, above).0 {
+                    chosen = Some(Act::Open(m.entry.path.clone()));
                 }
                 i += 1;
             }
             if let Some(n) = show_all {
                 let label = format!("Show all {}", ui::count(n, "result"));
-                if row(
-                    ui,
-                    i,
-                    icon::MAGNIFYING_GLASS,
-                    theme::text::faint(),
-                    &label,
-                    &[],
-                    "",
-                ) {
-                    open_page = true;
-                }
-                let y = rect.top() + i as f32 * ui::MENU_ROW_H + ui::MENU_ROW_H / 2.0;
-                crate::palette::chip(ui, rect.right() - 8.0, y, "Enter", true);
+                let ink = theme::text::faint();
+                let none = Meta::Plain("");
+                let (hit, cy) = row(ui, i, icon::MAGNIFYING_GLASS, ink, &label, &[], none, false);
+                open_page = hit;
+                crate::palette::chip(ui, rect.right() - 8.0, cy, "Enter", true);
                 i += 1;
             }
             if scope.is_some() {
-                if row(
-                    ui,
-                    i,
-                    icon::FILES,
+                let label = "Search the whole library";
+                let ink = theme::text::faint();
+                let none = Meta::Plain("");
+                let (hit, cy) = row(ui, i, icon::FILES, ink, label, &[], none, false);
+                widen = hit;
+                crate::palette::chip(ui, rect.right() - 8.0, cy, "Backspace", true);
+            }
+            if reading {
+                let cy = rect.bottom() - ui::MENU_ROW_H / 2.0;
+                let p = ui.painter();
+                let at = egui::pos2(rect.left() + 10.0 + 6.5, cy);
+                ui::paint_spinner(p, at, 13.0, theme::text::faint(), ui.input(|i| i.time));
+                ui.ctx().request_repaint();
+                p.text(
+                    egui::pos2(rect.left() + 30.0, cy),
+                    egui::Align2::LEFT_CENTER,
+                    format!("Reading {read} of {}", ui::count(total, "document")),
+                    egui::FontId::proportional(ui::CAPTION_PT),
                     theme::text::faint(),
-                    "Search the whole library",
-                    &[],
-                    "",
-                ) {
-                    widen = true;
-                }
-                let y = rect.top() + i as f32 * ui::MENU_ROW_H + ui::MENU_ROW_H / 2.0;
-                crate::palette::chip(ui, rect.right() - 8.0, y, "Backspace", true);
+                );
             }
         });
 
@@ -1313,6 +1380,48 @@ impl MastikApp {
             ))
         });
         out.into_iter().map(|(p, h, _)| (p, h)).collect()
+    }
+
+    /// Every document answering `words`, for the dropdown and the results page:
+    /// those whose names match first ([`Self::ranked_files`]), then those that
+    /// match only by what they hold, each with its reason, by tier and then most
+    /// recently edited. A name always outranks content, whatever the tiers.
+    pub(crate) fn search_matches(&self, words: &[String]) -> Vec<SearchMatch> {
+        let mut out: Vec<SearchMatch> = self
+            .ranked_files(words)
+            .into_iter()
+            .map(|(entry, hit)| SearchMatch {
+                entry,
+                hit,
+                reason: None,
+            })
+            .collect();
+        let mut by_content: Vec<SearchMatch> = self
+            .library
+            .entries
+            .iter()
+            .filter(|e| !out.iter().any(|m| m.entry.path == e.path))
+            .filter_map(|e| {
+                let reason = self.index.reason(e, words)?;
+                Some(SearchMatch {
+                    entry: e.clone(),
+                    hit: search::Hit {
+                        tier: reason.hit.tier,
+                        lit: Vec::new(),
+                    },
+                    reason: Some(reason),
+                })
+            })
+            .collect();
+        by_content.sort_by(|a, b| {
+            a.hit
+                .tier
+                .cmp(&b.hit.tier)
+                .then_with(|| b.entry.modified.cmp(&a.entry.modified))
+                .then_with(|| a.entry.stem.cmp(&b.entry.stem))
+        });
+        out.extend(by_content);
+        out
     }
 
     /// The documents whose names answer `words`, best first and then most
@@ -1684,9 +1793,9 @@ impl MastikApp {
             // Ranked, which *Best match* keeps; nothing while names are masked.
             (Some(_), _) if crate::private::on() => Vec::new(),
             (Some(q), _) => self
-                .ranked_files(&search::words(q))
+                .search_matches(&search::words(q))
                 .into_iter()
-                .map(|(e, _)| e)
+                .map(|m| m.entry)
                 .collect(),
             (None, nav) => self.nav_entries(nav),
         };
@@ -2212,6 +2321,17 @@ impl MastikApp {
         }
     }
 
+    /// Why `entry` is on the results page, when its name does not say: the
+    /// reason its content matched. `None` off the page and for a name match.
+    fn page_reason(&self, entry: &Entry) -> Option<index::Reason> {
+        let q = self.dash.search_page.as_deref()?;
+        let words = search::words(q);
+        if search::rank(&entry.display_name(), &words).is_some() {
+            return None;
+        }
+        self.index.reason(entry, &words)
+    }
+
     /// The results page's matching projects, as the header's link: the best
     /// one's id, which the link opens, and how many match.
     fn page_project(&self) -> Option<(String, usize)> {
@@ -2713,13 +2833,31 @@ impl MastikApp {
             );
         }
         let p = ui.painter();
-        p.text(
-            egui::pos2(rect.left() + 12.0, thumb.bottom() + 31.0),
-            egui::Align2::LEFT_CENTER,
-            clock::relative_label(clock::since(entry.modified)),
-            egui::FontId::proportional(ui::SMALL_PT),
-            theme::text::faint(),
-        );
+        let line_at = egui::pos2(rect.left() + 12.0, thumb.bottom() + 31.0);
+        // On the results page a content match says why where the age would be.
+        match self.page_reason(entry) {
+            Some(reason) => {
+                let g = p.layout_job(reason_job(
+                    &reason,
+                    egui::FontId::proportional(ui::SMALL_PT),
+                    w - 46.0,
+                ));
+                p.galley(
+                    line_at - egui::vec2(0.0, g.size().y / 2.0),
+                    g,
+                    theme::text::faint(),
+                );
+            }
+            None => {
+                p.text(
+                    line_at,
+                    egui::Align2::LEFT_CENTER,
+                    clock::relative_label(clock::since(entry.modified)),
+                    egui::FontId::proportional(ui::SMALL_PT),
+                    theme::text::faint(),
+                );
+            }
+        }
 
         self.pick_or_open(&resp, entry, act);
         self.file_menu_button(
@@ -4793,6 +4931,7 @@ impl MastikApp {
             // it runs before the migration and cancels rather than waits: a job queued
             // before the move would cache `Unreadable` for a healthy moved document.
             self.covers.clear();
+            self.index.clear();
             if d.migrate {
                 // Drain the snapshot writer first: `relocate` carries `.recovery/` across,
                 // and a write in flight to the old root would be copied then deleted.
@@ -8647,6 +8786,46 @@ mod tests {
             enter_opens(&mut app).as_deref(),
             Some(paths[0].as_path()),
             "and a tie goes to the name, whatever order the folder lists them in"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A document that holds the words is found once the index has read it, after
+    /// every name match whatever the tiers, and its row says why in the meta slot.
+    /// flip: `search_matches` sorting name and content matches together by tier →
+    /// fails at "a name beats content".
+    #[test]
+    fn a_search_finds_what_a_document_holds_and_says_why() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "content-search");
+        let mut wallet = crate::library::index::tests::doc();
+        store::file_document(&root, None, "Wallet", &mut wallet).unwrap();
+        let mut repay = mastik_core::Document::new(app.session.ids.mint());
+        store::file_document(&root, None, "Repay", &mut repay).unwrap();
+        app.library.refresh();
+        let words = search::words("pay");
+        assert_eq!(
+            app.search_matches(&words).len(),
+            1,
+            "before the index has read it, only the name matches"
+        );
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let found = app.search_matches(&words);
+        let names: Vec<String> = found.iter().map(|m| m.entry.display_name()).collect();
+        assert_eq!(names, ["Repay", "Wallet"], "a name beats content");
+        let reason = found[1]
+            .reason
+            .as_ref()
+            .expect("a content match has a reason");
+        assert_eq!(reason.kind, crate::library::index::ReasonKind::Text);
+
+        app.dash.search = Some("pay".into());
+        let runs = galleys(&mut app, &ctx);
+        assert!(
+            runs.iter().any(|(_, _, t)| t == "text: “Pay now, safely”"),
+            "the row says why"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

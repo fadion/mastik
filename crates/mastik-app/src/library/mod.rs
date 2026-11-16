@@ -24,6 +24,7 @@ pub mod cover;
 pub mod disk;
 pub mod history;
 pub mod ids;
+pub mod index;
 pub mod naming;
 pub mod project;
 pub mod recovery;

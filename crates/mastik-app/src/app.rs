@@ -601,6 +601,9 @@ pub struct MastikApp {
     /// Rendered whole-document pictures for the grid's cards (`crate::library::cover`),
     /// disk-cached; distinct from `thumbs`.
     pub(crate) covers: crate::library::cover::Covers,
+    /// What each library document holds, read in the background for search
+    /// inside documents and the cards' page counts (`crate::library::index`).
+    pub(crate) index: crate::library::index::ContentIndex,
     /// The library's Settings modal draft while it is up, separate from [`Self::settings`];
     /// Save applies it.
     pub(crate) library_settings: Option<crate::panels::dashboard::LibrarySettings>,
@@ -2041,6 +2044,7 @@ impl MastikApp {
                 ..Default::default()
             },
             covers: crate::library::cover::Covers::default(),
+            index: Default::default(),
             library_settings: None,
             stranded: None,
             chrome_focus: false,
@@ -6510,6 +6514,7 @@ impl MastikApp {
         self.library.reload_projects();
         // Once per visit, not per refresh: the sweep is a `read_dir` over the cover cache.
         self.covers.sweep(&self.library.entries);
+        self.index.sweep(&self.library.entries);
         // Editor chrome that would otherwise float over the dashboard. An armed
         // eyedropper first: its input gate runs on every screen, and the library
         // has no canvas and no Escape to disarm it from.
