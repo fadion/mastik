@@ -140,6 +140,18 @@ fn byte_under(out: &egui::text_edit::TextEditOutput, text: &str, pos: egui::Pos2
     })
 }
 
+/// A layer's hover card line: *Rectangle on Page 1, 100 × 50 · outlined on the
+/// canvas*. The size is the layer's own box, as the inspector's W and H: not
+/// stroked out, nor widened by a rotation.
+fn layer_said(doc: &Document, res: &Resolved, page: NodeId, id: NodeId) -> String {
+    let kind = doc.get(id).map_or("Layer", |n| n.kind().default_name());
+    let page_name = doc.get(page).map_or("", |p| p.name());
+    let size = mastik_core::local_box(doc, res, id)
+        .map(|b| format!(", {} × {}", dimension(b.width()), dimension(b.height())))
+        .unwrap_or_default();
+    format!("{kind} on {page_name}{size} · outlined on the canvas")
+}
+
 /// The line (from 0) of byte `b`.
 fn line_of(text: &str, b: usize) -> usize {
     text[..b.min(text.len())].matches('\n').count()
@@ -404,17 +416,9 @@ impl Help {
             let layer = h.layer.and_then(|id| doc.get(id).map(|n| (id, n)));
             self.lit_layer = layer.map(|(id, _)| id);
             let layer_doc = layer.map(|(id, n)| {
-                let page_name = doc.get(page).map_or("", |p| p.name());
-                let size = res
-                    .world_bounds(id)
-                    .map(|b| format!(", {} × {}", dimension(b.width()), dimension(b.height())))
-                    .unwrap_or_default();
                 (
                     crate::panels::layers::node_glyph(n).0,
-                    format!(
-                        "{} on {page_name}{size} · outlined on the canvas",
-                        n.kind().default_name()
-                    ),
+                    layer_said(doc, res, page, id),
                 )
             });
             hover_card(&ctx, window.with("hover"), &h, layer_doc, word);
@@ -867,6 +871,29 @@ pub(crate) fn held_reason_at(line: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layer's hover card gives its own width and height, not the stroked,
+    /// rotated box it covers on the page.
+    /// flip: `layer_said` measuring `Resolved::world_bounds` → fails at "its own
+    /// size".
+    #[test]
+    fn a_layers_card_gives_its_own_size() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = crate::app::MastikApp::headless(&ctx);
+        let card = crate::palette::tests::add_rect(&mut app);
+        app.session.selection.set_one(card);
+        let line = ".width = 100; .height = 50; .stroke = \"#000000\"; .rotation = 45";
+        assert!(
+            app.run_bar_line(&ctx, line).is_none(),
+            "fixture: the line ran"
+        );
+        let world = app.session.resolved.world_bounds(card).unwrap();
+        assert!(world.width() > 101.0, "fixture: the page box is wider");
+        let s = &app.session;
+        let said = layer_said(&s.doc, &s.resolved, s.page, card);
+        assert!(said.contains(", 100 × 50 ·"), "its own size: {said}");
+    }
 
     /// The head's counts draw the warning glyph in the icon font, where the
     /// text font has no such character and shows a box.
