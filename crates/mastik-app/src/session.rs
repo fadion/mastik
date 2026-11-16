@@ -2131,7 +2131,7 @@ impl EditorSession {
     /// [`Self::adopt_document`] read the file it was saved with: the step on top is
     /// the state on disk.
     pub fn resume_history(&mut self, saved: mastik_core::SavedHistory) {
-        self.history = History::restore(saved);
+        self.history = History::restore_after(saved, &self.history);
         self.saved_step = Some(self.history.current());
         self.command_log.seen_up_to(self.history.current());
         self.resumed = true;
@@ -2181,7 +2181,9 @@ impl EditorSession {
         self.doc = doc;
         self.ids = IdSource::new(random_actor());
         mastik_core::reserve_existing_ids(&self.doc, &mut self.ids);
-        self.history = History::new();
+        // Serials go on from the old history: the command log and the
+        // assistant's cards still hold its serials.
+        self.history = History::after(&self.history);
         self.selection.clear();
         self.clear_preview();
         self.run = None;
@@ -4368,6 +4370,26 @@ mod tests {
         s.undo();
         let said = crate::input::keys_for(&s.status().text, true);
         assert_eq!(said, "Undo · on “Ctrl+K menu”");
+    }
+
+    /// A document read again into the same session mints serials past the old
+    /// history's, so a serial the command log or a proposal card still holds
+    /// never names a new step.
+    /// flip: `adopt_document` starting `History::new()` → fails at "a fresh serial".
+    #[test]
+    fn a_document_read_again_never_reuses_a_serial() {
+        let mut s = EditorSession::new();
+        let page = s.page;
+        rename(&mut s, page, "One");
+        let held = s.history.current().expect("a step");
+        let doc = s.doc.clone();
+        s.adopt_document(doc, None);
+        let page = s.page;
+        rename(&mut s, page, "Two");
+        assert!(
+            s.history.current().expect("a step") > held,
+            "a fresh serial"
+        );
     }
 
     /// A previewed `SetChart` draws the parts the new description generates in

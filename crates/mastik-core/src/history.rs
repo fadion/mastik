@@ -163,6 +163,16 @@ impl History {
         Self::default()
     }
 
+    /// An empty history whose serials continue past `prev`'s, for a document
+    /// read again into the same session: a serial someone still holds from
+    /// `prev` never names one of its steps.
+    pub fn after(prev: &History) -> Self {
+        Self {
+            next_serial: prev.next_serial,
+            ..Self::default()
+        }
+    }
+
     /// Apply `tx`, push its inverse to the undo stack, and clear the redo stack.
     /// On error the document is untouched (atomic `apply`) and history unchanged.
     /// Returns the `DirtySet` so the caller can update its `Resolved` (§9.2).
@@ -481,7 +491,13 @@ impl History {
     /// A history from a saved one, its steps minted fresh serials. The caller
     /// vouches that the document stands where the saved history left it.
     pub fn restore(saved: SavedHistory) -> Self {
-        let mut history = Self::new();
+        Self::restore_after(saved, &Self::new())
+    }
+
+    /// [`Self::restore`], its serials continuing past `prev`'s as
+    /// [`Self::after`]'s do.
+    pub fn restore_after(saved: SavedHistory, prev: &History) -> Self {
+        let mut history = Self::after(prev);
         let mut step = |s: SavedStep| {
             history.next_serial += 1;
             Step {
