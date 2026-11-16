@@ -1842,7 +1842,8 @@ impl Default for FooterLine<'_> {
 
 /// A canvas card's footer, [`FOOTER_H`] tall and as wide as the card: the
 /// palette's, the command bar's and its error caption. The right text is kept
-/// whole and the left is cut to the room left.
+/// whole up to half the footer, past which it is cut to one row (a value the
+/// bar copies can be any length), and the left is cut to the room left.
 pub(crate) fn footer_line(ui: &mut egui::Ui, line: FooterLine<'_>) {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), FOOTER_H),
@@ -1853,7 +1854,17 @@ pub(crate) fn footer_line(ui: &mut egui::Ui, line: FooterLine<'_>) {
     let y = rect.center().y - FOOTER_TEXT_LIFT;
     let mut right = rect.right() - FOOTER_INSET;
     if let Some((text, ink)) = line.right {
-        let g = p.layout_no_wrap(text.to_owned(), caption_font(), ink);
+        let mut job = egui::text::LayoutJob::single_section(
+            text.to_owned(),
+            egui::TextFormat::simple(caption_font(), ink),
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width: ((rect.width() - 2.0 * FOOTER_INSET) / 2.0).max(0.0),
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('…'),
+        };
+        let g = p.layout_job(job);
         right -= g.size().x;
         p.galley(egui::pos2(right, y - g.size().y / 2.0), g, ink);
         right -= 16.0;
@@ -1894,6 +1905,51 @@ pub(crate) mod tests {
 
     fn q(s: &str) -> Vec<String> {
         query_words(s)
+    }
+
+    /// A footer's right text of any length or lines stays on one row inside
+    /// the card, the left text still shown.
+    /// flip: `footer_line` laying the right text out unwrapped → fails at
+    /// "inside the card".
+    #[test]
+    fn a_long_right_text_stays_inside_the_footer() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let card = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(560.0, 200.0));
+        let copied = format!("Enter copies {}\nand more", "x".repeat(400));
+        let mut footer = egui::Rect::NOTHING;
+        let out = ctx.run_ui(Default::default(), |ui| {
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(card));
+            footer_line(
+                &mut child,
+                FooterLine {
+                    left: ("sel.text", caption_font(), egui::Color32::WHITE),
+                    right: Some((&copied, egui::Color32::WHITE)),
+                    ..Default::default()
+                },
+            );
+            footer = child.min_rect();
+        });
+        let texts: Vec<egui::Rect> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.rect.translate(t.pos.to_vec2())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 2, "fixture: both texts are drawn");
+        for r in &texts {
+            assert!(
+                r.left() >= footer.left() && r.right() <= footer.right(),
+                "inside the card: {r:?} in {footer:?}"
+            );
+            assert!(r.bottom() <= footer.bottom(), "one row: {r:?}");
+        }
+        assert!(
+            texts.iter().all(|r| r.width() > 20.0),
+            "the left text shows"
+        );
     }
 
     /// A rectangle named *Card* at the top of the document's root.
