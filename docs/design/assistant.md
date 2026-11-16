@@ -240,7 +240,11 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   - **`<layer> changed after this was proposed`**, in the warning colour, with *Ask again*, which
     asks *`<name>` changed. Propose again.* with the proposal's written layers that still exist
     attached.
-  - **Applied as one step**, with *Undo* while that step is the last (`propose::is_last`).
+  - **Applied as one step**, with *Undo* while that step is done and not taken back
+    (`propose::can_undo`): while it is the last step *Undo* undoes it; under later steps it takes
+    the proposal back alone as a new step when they changed other things (`EditorSession::revert`,
+    as an agent's `undo` does, `mcp.md` §8.3), and otherwise says on the status line which later
+    step changed what it changed, and nothing moves.
   - **Made in another document**.
 
 ### Context sent with a turn

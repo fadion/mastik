@@ -337,7 +337,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "undo",
-        doc: "Undo the last step in the document's history when you made it, answering its name as `undone` (null when there was none) and the layers it changed; refused, naming it, when the person or another client did.",
+        doc: "Undo your latest step, answering its name as `undone` and the layers it changed. Under others' later steps it is taken back alone when they changed other things, else refused.",
         params: &[],
     },
     Tool {

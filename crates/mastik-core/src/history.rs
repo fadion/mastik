@@ -69,6 +69,36 @@ pub struct StepNote {
     pub subject: Option<String>,
     /// The page the subjects were on at the commit.
     pub page: Option<NodeId>,
+    /// The serial of the step this one took back alone ([`History::revert`]).
+    /// Not kept between sessions, whose serials are minted afresh.
+    #[serde(skip)]
+    pub reverts: Option<u64>,
+}
+
+/// Why [`History::revert`] took nothing back.
+#[derive(Debug)]
+pub enum RevertError {
+    /// No done step has that serial.
+    NoStep,
+    /// A step done after it changed what it changed: taking it back alone would
+    /// not leave the document as if it had never been made. Carries that later
+    /// step's label when one names a layer the step does.
+    Tangled(Option<String>),
+    /// Its inverse no longer applies.
+    Op(OpError),
+}
+
+impl std::fmt::Display for RevertError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RevertError::NoStep => f.write_str("that step is no longer in the history"),
+            RevertError::Tangled(Some(label)) => {
+                write!(f, "a later step, `{label}`, changed what it changed")
+            }
+            RevertError::Tangled(None) => f.write_str("a later step changed what it changed"),
+            RevertError::Op(e) => write!(f, "{e}"),
+        }
+    }
 }
 
 /// One undo step: the transaction that takes it back (or, on the redo stack,
@@ -323,6 +353,71 @@ impl History {
             ..step
         });
         Ok(Some(outcome.dirty))
+    }
+
+    /// Take back the done step `serial` alone, under the steps done after it, as
+    /// a new step carrying `note` with its `reverts` set. Refused unless exact:
+    /// on a copy the later steps are undone, then this one, then the later ones
+    /// redone, and that must be the document its inverse gives applied now. The
+    /// step stays in the history, so undoing the new one brings it back.
+    pub fn revert(
+        &mut self,
+        doc: &mut Document,
+        serial: u64,
+        mut note: StepNote,
+    ) -> Result<DirtySet, RevertError> {
+        let at = self
+            .undo
+            .iter()
+            .position(|s| s.serial == serial)
+            .ok_or(RevertError::NoStep)?;
+        let step = &self.undo[at].tx;
+        let mut reverted = doc.clone();
+        reverted.apply_restoring(step).map_err(RevertError::Op)?;
+        let mut replayed = doc.clone();
+        let mut forward = Vec::new();
+        for later in self.undo[at + 1..].iter().rev() {
+            let out = replayed
+                .apply_restoring(&later.tx)
+                .map_err(|_| self.tangled(at))?;
+            forward.push(out.inverse);
+        }
+        replayed
+            .apply_restoring(step)
+            .map_err(|_| self.tangled(at))?;
+        for tx in forward.iter().rev() {
+            replayed.apply_restoring(tx).map_err(|_| self.tangled(at))?;
+        }
+        if replayed != reverted {
+            return Err(self.tangled(at));
+        }
+        let outcome = doc.apply_restoring(step).map_err(RevertError::Op)?;
+        note.reverts = Some(serial);
+        self.next_serial += 1;
+        self.undo.push(Step {
+            tx: outcome.inverse,
+            note,
+            serial: self.next_serial,
+        });
+        self.redo.clear();
+        self.run = None;
+        Ok(outcome.dirty)
+    }
+
+    /// Whether a done step took back the step `serial` ([`Self::revert`]).
+    pub fn is_reverted(&self, serial: u64) -> bool {
+        self.undo.iter().any(|s| s.note.reverts == Some(serial))
+    }
+
+    /// [`RevertError::Tangled`] for the step at `at`, naming the latest later step
+    /// that names a layer it does.
+    fn tangled(&self, at: usize) -> RevertError {
+        let ours = self.undo[at].tx.subjects();
+        let later = self.undo[at + 1..]
+            .iter()
+            .rev()
+            .find(|s| s.tx.subjects().iter().any(|id| ours.contains(id)));
+        RevertError::Tangled(later.map(|s| s.note.label.clone()))
     }
 
     /// The transaction [`Self::undo`] would apply next, for a caller that must
@@ -862,6 +957,64 @@ mod tests {
             label: label.into(),
             ..StepNote::default()
         }
+    }
+
+    /// A step takes back alone under a later step on another layer, as a new
+    /// step whose undo brings it back; under a later step on its own layer it is
+    /// refused, naming that step, and nothing moves.
+    ///
+    /// flip: `revert` skipping the replay comparison → fails at "refused under
+    /// a later move of its layer".
+    #[test]
+    fn a_step_reverts_alone_only_under_steps_it_does_not_share() {
+        let (mut doc, mut history, rect) = doc_with_rect();
+        let other = NodeId { actor: 1, seq: 3 };
+        let create = Operation::CreateNode {
+            id: other,
+            parent: doc.first_page(),
+            index: 1,
+            kind: NodeKind::Rect {
+                size: Size::new(10.0, 10.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::IDENTITY),
+            name: None,
+        };
+        history.commit(&mut doc, Transaction(vec![create])).unwrap();
+        history
+            .commit_noted(&mut doc, move_to(rect, 5.0), note("Move A"))
+            .unwrap();
+        let a = history.current().unwrap();
+        history
+            .commit_noted(&mut doc, move_to(other, 7.0), note("Move B"))
+            .unwrap();
+        history.revert(&mut doc, a, note("Undo Move A")).unwrap();
+        assert_eq!((x_of(&doc, rect), x_of(&doc, other)), (0.0, 7.0));
+        assert_eq!(history.done().next_back().unwrap().note.reverts, Some(a));
+        history.undo(&mut doc).unwrap();
+        assert_eq!(x_of(&doc, rect), 5.0, "undoing the revert brings it back");
+
+        history
+            .commit_noted(&mut doc, move_to(rect, 2.0), note("Move C"))
+            .unwrap();
+        let c = history.current().unwrap();
+        history
+            .commit_noted(&mut doc, move_to(rect, 4.0), note("Move D"))
+            .unwrap();
+        let depth = history.undo_depth();
+        assert!(
+            matches!(
+                history.revert(&mut doc, c, note("Undo Move C")),
+                Err(RevertError::Tangled(Some(l))) if l == "Move D"
+            ),
+            "refused under a later move of its layer"
+        );
+        assert_eq!((x_of(&doc, rect), history.undo_depth()), (4.0, depth));
+        assert!(matches!(
+            history.revert(&mut doc, 999, note("x")),
+            Err(RevertError::NoStep)
+        ));
     }
 
     /// A step keeps its note and serial across undo and redo, and a run's merged

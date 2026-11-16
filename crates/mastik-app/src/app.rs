@@ -2615,7 +2615,7 @@ impl MastikApp {
     /// - [`PenState`] snapshots the subpaths; finishing would resurrect undone geometry.
     /// - [`MastikApp::cut_move`] is parked when undone below its `depth`, restored by a
     ///   redo with no commit between, dropped once a commit branches.
-    fn document_rewound(&mut self) {
+    pub(crate) fn document_rewound(&mut self) {
         self.points.clear();
         self.pen = None;
         self.pencil = None;

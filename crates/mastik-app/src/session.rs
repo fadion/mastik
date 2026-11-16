@@ -1608,6 +1608,7 @@ impl EditorSession {
                 .map(|n| n.name().to_string()),
             page: first.and_then(|id| self.doc.page_of(id)),
             subjects,
+            reverts: None,
         }
     }
 
@@ -1938,6 +1939,35 @@ impl EditorSession {
                 false
             }
         }
+    }
+
+    /// Take back the done step `serial` alone, under later steps that changed
+    /// other things, as a new step named *Undo* and the step's name, with its
+    /// glyph and origin (`History::revert`). Nothing is said; the error is why
+    /// nothing moved.
+    pub fn revert(&mut self, serial: u64) -> Result<(), String> {
+        if self.compare.is_some() {
+            return Err(crate::compare::READ_ONLY.to_owned());
+        }
+        let Some(step) = self.history.done().find(|s| s.serial == serial) else {
+            return Err("That step is no longer in the history".into());
+        };
+        let mut note = step.note.clone();
+        note.label = format!("Undo {}", step.note.label);
+        self.end_edit_run();
+        let dirty = self
+            .history
+            .revert(&mut self.doc, serial, note)
+            .map_err(|e| format!("Not undone: {e}"))?;
+        let revision = next_revision();
+        self.ink
+            .record((self.revision, revision), &self.doc, &self.resolved, &dirty);
+        self.resolved.update(&self.doc, &dirty);
+        self.settle_derived((self.revision, revision));
+        self.keep_page();
+        self.dirty = true;
+        self.revision = revision;
+        Ok(())
     }
 
     /// Undo the step on top with nothing said and no page followed, and leave no

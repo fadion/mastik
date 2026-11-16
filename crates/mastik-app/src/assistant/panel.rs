@@ -799,9 +799,9 @@ impl MastikApp {
                             match (applied, &stale, here) {
                                 (Some(a), _, _) => {
                                     ui.label(faint("Applied as one step"));
-                                    let last =
-                                        here && crate::mcp::propose::is_last(&self.session, &a);
-                                    if last {
+                                    let undoable =
+                                        here && crate::mcp::propose::can_undo(&self.session, &a);
+                                    if undoable {
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
@@ -900,16 +900,23 @@ impl MastikApp {
         }
     }
 
-    /// Undo an applied proposal while its step is the last.
+    /// Undo an applied proposal: its step while it is the last, else alone
+    /// under the later ones when they changed other things, saying why not.
     fn assistant_undo(&mut self, id: u64) {
         let Some(a) = self.assistant.applied.get(&id).copied() else {
             return;
         };
         // A text edit still open would land after the proposal's step.
         self.finish_text_first();
-        if crate::mcp::propose::is_last(&self.session, &a) {
-            self.undo();
-            self.assistant.applied.remove(&id);
+        if !crate::mcp::propose::can_undo(&self.session, &a) {
+            return;
+        }
+        match crate::mcp::propose::undo(&mut self.session, &a) {
+            Ok(()) => {
+                self.document_rewound();
+                self.assistant.applied.remove(&id);
+            }
+            Err(why) => self.session.info(why),
         }
     }
 

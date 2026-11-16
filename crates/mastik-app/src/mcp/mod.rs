@@ -1314,10 +1314,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
             Ok(Answer::Image(png))
         }
         "undo" | "redo" if s.compare.is_some() => Err(READ_ONLY.to_owned()),
-        "undo" => {
-            let step = own_step(s.history.done().next_back(), &call.client, "undo")?;
-            json(json!({ "undone": s.undo().then_some(step).flatten() }))
-        }
+        "undo" => undo(s, &call.client),
         "redo" => {
             let step = own_step(s.history.undone().next(), &call.client, "redo")?;
             json(json!({ "redone": s.redo().then_some(step).flatten() }))
@@ -1332,6 +1329,35 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
         "batch" => batch(conn, s, &call.client, args),
         "set" => set(conn, s, &call.client, args),
         tool => write(conn, s, &call.client, tool, args),
+    }
+}
+
+/// `undo`: take back the latest step this client made and has not taken back.
+/// On top of the history it is undone; under later steps, the person's or
+/// another client's, it is taken back alone as a new step when those changed
+/// other things (`EditorSession::revert`), and refused, naming why, when not.
+fn undo(s: &mut EditorSession, client: &str) -> Result<Answer, String> {
+    let mine = |n: &mastik_core::StepNote| matches!(&n.origin, mastik_core::Origin::Mcp { client: c, .. } if c == client);
+    let latest = s
+        .history
+        .done()
+        .rev()
+        .find(|v| mine(v.note) && v.note.reverts.is_none() && !s.history.is_reverted(v.serial))
+        .map(|v| (v.serial, v.note.label.clone()));
+    let top = s.history.done().next_back().map(|v| v.serial);
+    let json = |v: Value| Ok(Answer::Json(v));
+    match latest {
+        Some((serial, label)) if Some(serial) == top => {
+            json(json!({ "undone": s.undo().then_some(label) }))
+        }
+        Some((serial, label)) => match s.revert(serial) {
+            Ok(()) => json(json!({ "undone": label, "under_later_steps": true })),
+            Err(why) => Err(format!("Your step `{label}`: {why}. Nothing was changed")),
+        },
+        None => {
+            let step = own_step(s.history.done().next_back(), client, "undo")?;
+            json(json!({ "undone": s.undo().then_some(step).flatten() }))
+        }
     }
 }
 
@@ -3740,6 +3766,45 @@ mod tests {
         assert!(engine.handle(&mut docs, other).is_error, "another client's");
         ok(&call(&mut engine, &mut docs, 1, "undo", json!({})));
         assert_eq!(docs.session.history.undo_depth(), 0, "its own is undone");
+    }
+
+    /// Under the person's later step on another layer, an agent's `undo` takes
+    /// back its own step alone, as a new step, and leaves theirs; a second
+    /// `undo` reaches the step before, not the one it made, and is refused
+    /// there since the person renamed that layer.
+    ///
+    /// flip: `undo` taking the latest own step without skipping a revert step →
+    /// fails at "the second undo reaches the step before".
+    #[test]
+    fn undo_reaches_under_the_persons_step_on_another_layer() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let first = NodeId::from_wire(&rect(&mut engine, &mut docs, 1, "First")).unwrap();
+        let mine = NodeId::from_wire(&rect(&mut engine, &mut docs, 1, "Mine")).unwrap();
+        let theirs = mastik_core::Transaction(vec![mastik_core::Operation::SetName {
+            id: first,
+            name: "Theirs".into(),
+        }]);
+        docs.session.try_commit(theirs).unwrap();
+        let out = call(&mut engine, &mut docs, 1, "undo", json!({}));
+        assert_eq!(ok(&out)["under_later_steps"], true);
+        assert!(
+            docs.session.doc.get(mine).is_none(),
+            "its step is taken back"
+        );
+        assert_eq!(docs.session.doc.get(first).unwrap().name(), "Theirs");
+        assert_eq!(docs.session.history.undo_depth(), 4, "as a step of its own");
+        let again = call(&mut engine, &mut docs, 1, "undo", json!({}));
+        assert!(
+            again.is_error && docs.session.doc.get(mine).is_none(),
+            "the second undo reaches the step before: {:?}",
+            again.content
+        );
+        assert_eq!(
+            docs.session.history.undo_depth(),
+            4,
+            "which the rename keeps"
+        );
     }
 
     /// `undo` and `redo` answer the name of the step they moved, as the history

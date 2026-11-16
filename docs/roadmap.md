@@ -13,8 +13,6 @@ set (`mastik_mcp::tools::CORE`), and `schema`'s `the_tool_list_stays_within_its_
 and the whole list to byte budgets. Each item lands with a size budget test, and the set is checked
 by re-running the same agent task on the old and new build.
 
-- **Revert one step** — for the assistant (`design/assistant.md`): undo an agent's own step under
-  later edits that touch other layers.
 - **A script tool** — Command Mode's language (`mastik-vm`, `design/command-mode.md`) exposed to
   agents as one tool, so a loop runs in one call.
 

@@ -281,6 +281,23 @@ pub(crate) fn is_last(session: &EditorSession, a: &Applied) -> bool {
         && session.history.done().next_back().map(|s| s.serial) == Some(a.serial)
 }
 
+/// Whether the step `a` made is done and not yet taken back alone, so the
+/// card can offer *Undo*: plainly while it is the last step, else as a revert
+/// under the later ones (`EditorSession::revert`).
+pub(crate) fn can_undo(session: &EditorSession, a: &Applied) -> bool {
+    session.history.done().any(|s| s.serial == a.serial) && !session.history.is_reverted(a.serial)
+}
+
+/// Take back the step `a` made: an undo while it is the last step, else alone
+/// under the later steps, refused with why when they changed what it changed.
+pub(crate) fn undo(session: &mut EditorSession, a: &Applied) -> Result<(), String> {
+    if is_last(session, a) {
+        session.undo();
+        return Ok(());
+    }
+    session.revert(a.serial)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +429,37 @@ mod tests {
         assert_eq!(stale(&docs.session, p).as_deref(), Some("Card"));
         assert!(docs.session.undo());
         assert!(!is_last(&docs.session, &applied), "undone");
+    }
+
+    /// The card's *Undo* takes back an applied proposal alone under a later edit
+    /// of another layer, and is offered no more once it has.
+    ///
+    /// flip: `undo` answering `Ok` without the revert when the step is not
+    /// last → fails at "the proposal is taken back".
+    #[test]
+    fn undo_takes_a_proposal_back_under_a_later_edit_elsewhere() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let card = rect(&mut engine, &mut docs, 1, "Card");
+        let other = rect(&mut engine, &mut docs, 1, "Other");
+        let calls = json!([{ "verb": "set_name", "args": { "node": card, "name": "Hero" } }]);
+        let answer = ok(&propose(&mut engine, &mut docs, calls)).clone();
+        let p = engine
+            .proposal(answer["proposal"].as_u64().unwrap())
+            .unwrap()
+            .clone();
+        let applied = apply(&mut docs.session, &p).unwrap();
+        let args = json!({ "node": other, "name": "Moved" });
+        ok(&call(&mut engine, &mut docs, 1, "set_name", args));
+        assert!(!is_last(&docs.session, &applied) && can_undo(&docs.session, &applied));
+        undo(&mut docs.session, &applied).unwrap();
+        let name = |w: &str| {
+            let id = NodeId::from_wire(w).unwrap();
+            docs.session.doc.get(id).unwrap().name().to_owned()
+        };
+        assert_eq!(name(&card), "Card", "the proposal is taken back");
+        assert_eq!(name(&other), "Moved");
+        assert!(!can_undo(&docs.session, &applied), "offered no more");
     }
 
     /// A proposal whose call reaches across the document is refused at Apply
