@@ -99,8 +99,10 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
   each child leads a process group of its own, and the group is ended when the child is reaped, so
   what it leaves behind (a server it did not reap) does not outlive it.
 - **A helper** (the `--help` probe, `agy mcp …`, `cursor-agent mcp enable`) runs in a private empty
-  folder and is ended, with its tree, past a deadline: 15 seconds for the probe, 30 for `agy`
-  (`process::run_bounded`).
+  folder and is ended, with its tree, past a deadline (`process::run_bounded`): 15 seconds for the
+  probe, 30 for `agy`, 60 for `cursor-agent mcp enable`. The read-backs of a resolved
+  configuration, OpenCode's `debug config` and DeepSeek Harness's `--dump-config`, run with the
+  session's environment in its working folder and are ended past 30 seconds.
 - **Mastik never installs a harness.** A missing one is said in the panel with the program it
   looked for.
 - **A probe reads `--help` once per program path** and caches what it finds: which sealing flags
@@ -133,9 +135,12 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
   has not ended the turn in ten seconds kills the process, and the next turn respawns it with
   `--resume <session id>`. Stop runs on the UI thread and never waits on the harness's stdin: the
   interrupt is written on a thread of its own, and while the turn's line is still being written
-  the harness has not read the turn, so its process is killed at once. The turn ends only when the harness reports `Event::Stopped`; until then
-  the send button reads *Stopping…*, disabled, and then a note says *Stopped. The next question
-  resumes the session.*
+  the harness has not read the turn, so its process is killed at once. The turn ends only when the
+  harness reports `Event::Stopped`; until then the send button reads *Stopping…*, disabled, and
+  then a note says *Stopped. The next question resumes the session.* A conversation the harness
+  had not yet named cannot be resumed (Copilot names it only as a turn ends, so a first turn
+  stopped early has none): the session ends instead, the note says *Stopped. The next question
+  starts a new session with the thread so far.*, and that session replays the prose.
 - **A harness that exits before answering ends the session** as any ending does (the grant revoked
   at once, the rest off the UI thread): the next question starts a new one, with the thread's prose
   replayed as a restored conversation is.

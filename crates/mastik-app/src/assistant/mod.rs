@@ -1387,8 +1387,7 @@ impl MastikApp {
         }
     }
 
-    /// Stop the running turn; it ends when the harness says it has, and the
-    /// next question resumes the session.
+    /// Stop the running turn; it ends when the harness says it has.
     pub(crate) fn assistant_stop(&mut self) {
         let Some(r) = self.assistant.running.as_mut() else {
             return;
@@ -1400,14 +1399,27 @@ impl MastikApp {
         }
     }
 
-    /// The stopped turn has ended.
+    /// The stopped turn has ended. The next question resumes the session, or,
+    /// when the harness never named its conversation (Copilot names it only as
+    /// a turn ends), starts a new one with the thread's prose replayed.
     fn assistant_stopped(&mut self) {
-        if self.assistant.running.take().is_some() {
-            self.assistant.msgs.push(Msg::Note(Note::Said(
-                "Stopped. The next question resumes the session.".into(),
-            )));
-            self.assistant.save();
+        if self.assistant.running.take().is_none() {
+            return;
         }
+        let resumes = self
+            .assistant
+            .live
+            .as_ref()
+            .is_some_and(|l| l.session.resumable());
+        let note = match resumes {
+            true => "Stopped. The next question resumes the session.",
+            false => {
+                self.assistant.end_session(None);
+                "Stopped. The next question starts a new session with the thread so far."
+            }
+        };
+        self.assistant.msgs.push(Msg::Note(Note::Said(note.into())));
+        self.assistant.save();
     }
 
     /// Whether *Stop* was pressed and the harness has not yet ended the turn.

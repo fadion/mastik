@@ -401,6 +401,15 @@ impl Session {
         self.inner.in_flight.load(Ordering::Acquire)
     }
 
+    /// Whether the next turn carries on this conversation: the process holding
+    /// it is still running, or the harness has named it for a resume. A turn
+    /// stopped before a per-turn harness named its conversation (Copilot names
+    /// it only as the turn ends) leaves nothing to carry on.
+    pub fn resumable(&self) -> bool {
+        let st = self.inner.lock();
+        st.resume.is_some() || st.stdin.is_some()
+    }
+
     /// Does `pid` belong to this session's harness? See [`Session::owner`].
     pub fn owns_process(&self, pid: u32) -> bool {
         self.inner.tracker.owns(pid)
@@ -1536,6 +1545,13 @@ mod tests {
                 say(r#"{"type":"thread.started","thread_id":"t-1"}"#);
                 std::thread::sleep(Duration::from_secs(60));
             }
+            // A turn that names its conversation only at its end, as Copilot's.
+            "hang-unnamed" => {
+                say(
+                    r#"{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"Let me look."}}"#,
+                );
+                std::thread::sleep(Duration::from_secs(60));
+            }
             // A persistent harness still starting: it reads nothing on stdin.
             "deaf" => std::thread::sleep(Duration::from_secs(60)),
             "exit" => {
@@ -1671,34 +1687,42 @@ mod tests {
     }
 
     /// Stop kills a per-turn child and ends the turn as stopped, well inside
-    /// the grace; the process belonged to the session until then.
+    /// the grace; the process belonged to the session until then. The
+    /// conversation carries on only when the harness named it before the stop.
+    /// flip: `resumable` answering `true` always → fails at "nothing to carry on".
     #[test]
     fn stop_ends_a_hanging_turn() {
-        let (mut s, root) = fake_session(Harness::Codex, "hang");
-        let owner = s.owner();
-        s.send(Turn::default()).unwrap();
-        let until = Instant::now() + Duration::from_secs(30);
-        let mut evs = Vec::new();
-        while !evs.contains(&Event::Alive) && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(20));
-            evs.extend(s.poll());
+        for (mode, named) in [("hang", true), ("hang-unnamed", false)] {
+            let (mut s, root) = fake_session(Harness::Codex, mode);
+            let owner = s.owner();
+            s.send(Turn::default()).unwrap();
+            let until = Instant::now() + Duration::from_secs(30);
+            let mut evs = Vec::new();
+            while !evs.contains(&Event::Alive) && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+                evs.extend(s.poll());
+            }
+            let pid = s
+                .inner
+                .lock()
+                .child
+                .as_ref()
+                .map(|c| c.lock().unwrap().id())
+                .unwrap();
+            assert!(owner(pid));
+            let stopped = Instant::now();
+            s.stop();
+            let evs = until_idle(&mut s);
+            assert!(stopped.elapsed() < EXIT_GRACE);
+            assert_eq!(evs.last(), Some(&Event::Stopped));
+            match named {
+                true => assert!(s.resumable(), "{mode}: it carries on"),
+                false => assert!(!s.resumable(), "{mode}: nothing to carry on"),
+            }
+            drop(s);
+            assert!(!owner(pid), "a dropped session owns nothing");
+            let _ = std::fs::remove_dir_all(&root);
         }
-        let pid = s
-            .inner
-            .lock()
-            .child
-            .as_ref()
-            .map(|c| c.lock().unwrap().id())
-            .unwrap();
-        assert!(owner(pid));
-        let stopped = Instant::now();
-        s.stop();
-        let evs = until_idle(&mut s);
-        assert!(stopped.elapsed() < EXIT_GRACE);
-        assert_eq!(evs.last(), Some(&Event::Stopped));
-        drop(s);
-        assert!(!owner(pid), "a dropped session owns nothing");
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A harness that dies before its turn is done is reported with its words,
