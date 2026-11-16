@@ -305,8 +305,8 @@ impl Assistant {
             .collect()
     }
 
-    /// Save the thread, leaving out a turn still streaming.
-    /// Write the chat; a failure is logged, since the thread is still in memory.
+    /// Save the thread, leaving out a turn still streaming; a failure is
+    /// logged, since the thread is still in memory.
     fn save(&self) -> bool {
         let Some(file) = &self.file else {
             return true;
@@ -337,11 +337,10 @@ impl Assistant {
                 .name("assistant-end".into())
                 .spawn(move || drop(live));
         }
-        if let Some(r) = self.running.take() {
-            if let Some(why) = why {
-                self.msgs.push(Msg::Note(Note::Said(why.into())));
-            }
-            let _ = r;
+        if self.running.take().is_some()
+            && let Some(why) = why
+        {
+            self.msgs.push(Msg::Note(Note::Said(why.into())));
         }
         self.look = None;
     }
@@ -353,6 +352,9 @@ fn client_key(n: u64) -> String {
 }
 
 const CLIENT_KEY_PREFIX: &str = "assistant-";
+
+/// The note a session that cannot replay the thread leaves, once per thread.
+const WITHHELD: &str = "The earlier thread was written by another agent and is not replayed.";
 
 /// Whether `key` is one [`client_key`] makes: the proxy serving it is a chat's.
 pub(crate) fn is_client_key(key: &str) -> bool {
@@ -1356,13 +1358,13 @@ impl MastikApp {
         let replay = match prompt::replay(earlier, h.key()) {
             Some(r) => r,
             None => {
-                self.assistant.msgs.insert(
-                    self.assistant.msgs.len() - 2,
-                    Msg::Note(Note::Said(
-                        "The earlier thread was written by another agent and is not replayed."
-                            .into(),
-                    )),
-                );
+                // Said once per thread, not at every session that cannot replay it.
+                let note = Msg::Note(Note::Said(WITHHELD.into()));
+                if !earlier.contains(&note) {
+                    self.assistant
+                        .msgs
+                        .insert(self.assistant.msgs.len() - 2, note);
+                }
                 String::new()
             }
         };

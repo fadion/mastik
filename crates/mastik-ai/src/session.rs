@@ -796,22 +796,10 @@ impl Inner {
 
     /// Have Cursor approve Mastik's project server.
     fn approve_cursor(&self) -> Result<(), Refusal> {
-        crate::cursor::approve(
-            &launch(self.harness, &self.program),
-            &self.cwd,
-            &self.env_strings(),
-            INHERITED_ENV_TO_CLEAR,
-        )
-        .map_err(|e| {
+        let args = crate::cursor::APPROVE_ARGS.map(String::from).to_vec();
+        crate::cursor::approve(self.command(&self.with_prefix(args))).map_err(|e| {
             Refusal::ConfigNotWritten(format!("Cursor did not approve Mastik's server: {e}"))
         })
-    }
-
-    fn env_strings(&self) -> Vec<(String, String)> {
-        self.env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.to_string_lossy().into_owned()))
-            .collect()
     }
 
     /// A command for this harness: launch prefix, cleared and set environment,

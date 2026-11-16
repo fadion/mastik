@@ -11,33 +11,25 @@
 //! person's own can match.
 
 use crate::MCP_SERVER;
-use crate::find::Launch;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// How long `mcp enable` may take; measured runs took a few seconds.
 const APPROVE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The arguments that approve Mastik's server, after the launch prefix.
+pub(crate) const APPROVE_ARGS: [&str; 3] = ["mcp", "enable", MCP_SERVER];
+
 /// The working folder inside a session's run folder.
 pub(crate) fn workspace_in(run_folder: &Path) -> PathBuf {
     run_folder.join("cursor")
 }
 
-/// Approve Mastik's server for `workspace`. `Err` carries what the CLI said.
-pub(crate) fn approve(
-    launch: &Launch,
-    workspace: &Path,
-    env: &[(String, String)],
-    clear: &[&str],
-) -> Result<(), String> {
-    let mut c = launch.command();
-    c.args(["mcp", "enable", MCP_SERVER]).current_dir(workspace);
-    for k in clear {
-        c.env_remove(k);
-    }
-    c.envs(env.iter().map(|(k, v)| (k, v)))
-        .env(crate::AGENT_CHILD_ENV, "1")
-        .stdin(std::process::Stdio::null());
+/// Approve Mastik's server, running `c`: the session's own command for
+/// [`APPROVE_ARGS`], so it has the session's environment and runs in its
+/// workspace. `Err` carries what the CLI said.
+pub(crate) fn approve(mut c: std::process::Command) -> Result<(), String> {
+    c.stdin(std::process::Stdio::null());
     let Some(done) =
         crate::process::run_bounded(&mut c, APPROVE_TIMEOUT).map_err(|e| e.to_string())?
     else {
