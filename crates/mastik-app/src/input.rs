@@ -39,14 +39,14 @@ impl Mode {
     }
 }
 
-/// A sibling step in Pick, in reading order on the canvas (rows top to bottom,
-/// each left to right), not the Layers panel's z-order.
+/// A sibling step in Pick: to the nearest sibling that way on the canvas
+/// (`MastikApp::nav_step`), not through the Layers panel's z-order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
-    /// `↓`: the next sibling read.
-    Next,
-    /// `↑`: the one read before.
-    Prev,
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 /// A key of the bar's Pick keymap ([`Mode::Navigate`]). The home-row letters are
@@ -54,12 +54,13 @@ pub enum Step {
 /// here is a letter.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Nav {
-    /// `↑`, `↓`: a sibling; `true` with Shift, which adds it to the selection.
+    /// The arrows: the nearest sibling that way; `true` with Shift, which adds it
+    /// to the selection.
     Step(Step, bool),
-    /// `Enter`, `→`: into the selected group, or back to the field from a layer
-    /// with nothing to step into.
+    /// `Enter`: into the selected group, or back to the field from a layer with
+    /// nothing to step into.
     StepIn,
-    /// `Backspace`, `←`: out to the group the selection sits in.
+    /// `Backspace`: out to the group the selection sits in.
     StepOut,
     /// `*`: the same layer in each copy of its repeated blocks
     /// (`MastikApp::select_matching`).
@@ -76,11 +77,13 @@ pub enum Nav {
 
 impl Nav {
     /// The cheatsheet's rows, in its order; the Shift steps share one hand row.
-    pub(crate) const SHEET: [Nav; 9] = [
+    pub(crate) const SHEET: [Nav; 11] = [
         Nav::StepIn,
         Nav::StepOut,
-        Nav::Step(Step::Next, false),
-        Nav::Step(Step::Prev, false),
+        Nav::Step(Step::Up, false),
+        Nav::Step(Step::Down, false),
+        Nav::Step(Step::Left, false),
+        Nav::Step(Step::Right, false),
         Nav::Matching,
         Nav::Repeat,
         Nav::Fit,
@@ -91,8 +94,10 @@ impl Nav {
     /// The cheatsheet's label for the key.
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Nav::Step(Step::Next, _) => "Next layer on the canvas",
-            Nav::Step(Step::Prev, _) => "Previous layer on the canvas",
+            Nav::Step(Step::Up, _) => "The layer above",
+            Nav::Step(Step::Down, _) => "The layer below",
+            Nav::Step(Step::Left, _) => "The layer to the left",
+            Nav::Step(Step::Right, _) => "The layer to the right",
             Nav::StepIn => "Step in",
             Nav::StepOut => "Step out",
             Nav::Matching => "The same layer in each repeat",
@@ -913,14 +918,17 @@ const BINDINGS: &[Binding] = {
         // The command bar's Pick focus: opened from the editor, and its own
         // keymap while it has the keys. No row is a letter: those are labels.
         bind(NONE, K::Backtick, A::Navigate),
+        // The arrows move on the canvas; only Enter and Backspace change depth.
         nav(NONE, K::Enter, Nav::StepIn),
-        nav(NONE, K::ArrowRight, Nav::StepIn),
         nav(NONE, K::Backspace, Nav::StepOut),
-        nav(NONE, K::ArrowLeft, Nav::StepOut),
-        nav(NONE, K::ArrowDown, Nav::Step(Step::Next, false)),
-        nav(NONE, K::ArrowUp, Nav::Step(Step::Prev, false)),
-        extend(K::ArrowDown, Step::Next),
-        extend(K::ArrowUp, Step::Prev),
+        nav(NONE, K::ArrowUp, Nav::Step(Step::Up, false)),
+        nav(NONE, K::ArrowDown, Nav::Step(Step::Down, false)),
+        nav(NONE, K::ArrowLeft, Nav::Step(Step::Left, false)),
+        nav(NONE, K::ArrowRight, Nav::Step(Step::Right, false)),
+        extend(K::ArrowUp, Step::Up),
+        extend(K::ArrowDown, Step::Down),
+        extend(K::ArrowLeft, Step::Left),
+        extend(K::ArrowRight, Step::Right),
         // `*` and `@` have no egui key, so they reach it as their physical digit
         // with Shift; `!` has one, read beside this table (`navigate_mode`).
         nav(SHIFT, K::Num8, Nav::Matching),

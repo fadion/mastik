@@ -162,6 +162,38 @@ fn home_letter(key: egui::Key) -> Option<char> {
     })
 }
 
+/// The box in `boxes` nearest `from` toward `step`: of those whose centre lies
+/// past `from`'s that way, the least gap along the step plus twice the gap
+/// across it, so a layer in line beats a nearer one off to the side; ties go to
+/// the centre most in line. `boxes` in reading order, which breaks any tie left.
+fn nearest_toward(step: Step, from: Rect, boxes: &[(NodeId, Rect)]) -> Option<NodeId> {
+    // Each box as (along, across): along grows toward the step.
+    let axes = |r: Rect| -> ((f64, f64), (f64, f64)) {
+        match step {
+            Step::Right => ((r.x0, r.x1), (r.y0, r.y1)),
+            Step::Left => ((-r.x1, -r.x0), (r.y0, r.y1)),
+            Step::Down => ((r.y0, r.y1), (r.x0, r.x1)),
+            Step::Up => ((-r.y1, -r.y0), (r.x0, r.x1)),
+        }
+    };
+    let mid = |(a, b): (f64, f64)| (a + b) / 2.0;
+    let (f_along, f_across) = axes(from);
+    let score = |r: Rect| -> Option<(f64, f64)> {
+        let (along, across) = axes(r);
+        if mid(along) <= mid(f_along) + 0.5 {
+            return None;
+        }
+        let gap = (along.0 - f_along.1).max(0.0);
+        let side = (across.0 - f_across.1).max(f_across.0 - across.1).max(0.0);
+        Some((gap + 2.0 * side, (mid(across) - mid(f_across)).abs()))
+    };
+    boxes
+        .iter()
+        .filter_map(|(id, r)| Some((*id, score(*r)?)))
+        .min_by(|a, b| a.1.0.total_cmp(&b.1.0).then(a.1.1.total_cmp(&b.1.1)))
+        .map(|(id, _)| id)
+}
+
 /// The labels `text` holds as words: a line in the field names them, so a deal
 /// must not move them to other layers under it.
 fn words(text: &str) -> HashSet<&str> {
@@ -286,22 +318,24 @@ impl MastikApp {
             .unwrap_or(self.session.page)
     }
 
-    /// Move to the next or previous sibling of the current layer in reading
-    /// order on the canvas ([`Self::reading_order`]); with `extend`, add it to
-    /// the selection rather than replace it. The canvas, not the Layers panel:
-    /// z-order often runs against what the eye sees, and `↓` should go down.
+    /// Move to the current layer's nearest sibling that way on the canvas
+    /// ([`nearest_toward`]); with `extend`, add it to the selection rather than
+    /// replace it. The canvas, not the Layers panel: z-order often runs against
+    /// what the eye sees, and `↓` should go down. Nothing that way stays put.
     fn nav_step(&mut self, step: Step, extend: bool) {
         let doc = &self.session.doc;
         let target = match self.nav_current() {
             // Nothing to move from: the scope's first layer.
             None => self.reading_order(self.nav_scope()).first().copied(),
             Some(at) => doc.get(at).and_then(|n| n.parent()).and_then(|p| {
-                let order = self.reading_order(p);
-                let i = order.iter().position(|c| *c == at)?;
-                match step {
-                    Step::Next => order.get(i + 1).copied(),
-                    Step::Prev => i.checked_sub(1).map(|j| order[j]),
-                }
+                let from = self.session.preview_world_bounds(at)?;
+                let boxes: Vec<(NodeId, Rect)> = self
+                    .reading_order(p)
+                    .into_iter()
+                    .filter(|id| *id != at)
+                    .filter_map(|id| Some((id, self.session.preview_world_bounds(id)?)))
+                    .collect();
+                nearest_toward(step, from, &boxes)
             }),
         };
         if let Some(target) = target {
@@ -739,6 +773,9 @@ impl MastikApp {
             .filter(|d| only.is_none_or(|o| o == d.id))
             .collect();
         let matched = |d: &Dealt| d.label.starts_with(&typed);
+        // What is picked wears the selection's blue, label and outline both, so
+        // it stands apart from every other label at a glance.
+        let chosen = |d: &Dealt| self.session.selection.contains(d.id);
         let boxes: Vec<Option<egui::Rect>> = deal
             .iter()
             .map(|d| {
@@ -752,7 +789,12 @@ impl MastikApp {
             if let Some(b) = b
                 && matched(d)
             {
-                outline(painter, *b, d.container, color::leap());
+                let hue = if chosen(d) {
+                    color::SELECT
+                } else {
+                    color::leap()
+                };
+                outline(painter, *b, d.container, hue);
             }
         }
         let font = egui::FontId::proportional(crate::ui::BADGE_PT);
@@ -775,7 +817,9 @@ impl MastikApp {
                 at = at.translate(egui::vec2(hit.right() + LABEL_GAP - at.left(), 0.0));
             }
             placed.push(at);
-            let hue = if d.container {
+            let hue = if chosen(d) {
+                color::SELECT
+            } else if d.container {
                 color::LEAP_INK
             } else {
                 color::leap()
@@ -1209,25 +1253,68 @@ mod tests {
         assert_eq!(selected(&f.app), [f.a]);
     }
 
-    /// `↓` and `↑` step through siblings in reading order on the canvas; Shift
-    /// adds.
+    /// `←` and `→` step to the nearest sibling that way on the canvas, `→` onto a
+    /// group without stepping into it; `↑` with nothing above stays; Shift adds.
     ///
-    /// flip: `nav_step` walking `children` as the panel does → fails at "nothing
-    /// after b, the last read".
+    /// flip: `nearest_toward` dropping its "past the centre" test → fails at
+    /// "nothing to the right of b".
     #[test]
     fn the_arrows_walk_siblings_and_shift_adds() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         tap(&ctx, &mut f.app, egui::Key::Backtick);
         // The row reads a, g, b left to right, though the panel lists b, g, a.
-        tap(&ctx, &mut f.app, egui::Key::ArrowDown);
-        assert_eq!(selected(&f.app), [f.b], "nothing after b, the last read");
-        tap(&ctx, &mut f.app, egui::Key::ArrowUp);
-        assert_eq!(selected(&f.app), [f.g], "the one before b");
-        shift_tap(&ctx, &mut f.app, egui::Key::ArrowUp);
+        tap(&ctx, &mut f.app, egui::Key::ArrowRight);
+        assert_eq!(selected(&f.app), [f.b], "nothing to the right of b");
+        tap(&ctx, &mut f.app, egui::Key::ArrowLeft);
+        assert_eq!(selected(&f.app), [f.g], "the group, nearer than a");
+        shift_tap(&ctx, &mut f.app, egui::Key::ArrowLeft);
         assert_eq!(selected(&f.app), [f.g, f.a], "and a, added");
-        tap(&ctx, &mut f.app, egui::Key::ArrowDown);
+        tap(&ctx, &mut f.app, egui::Key::ArrowRight);
         assert_eq!(selected(&f.app), [f.g], "a plain step selects alone");
+        assert_eq!(
+            f.app.entered_group, None,
+            "→ onto a group does not enter it"
+        );
+        tap(&ctx, &mut f.app, egui::Key::ArrowUp);
+        assert_eq!(selected(&f.app), [f.g], "nothing above the row");
+    }
+
+    /// Four squares in a grid: each arrow goes to the neighbour that way, and a
+    /// layer in line beats a nearer one off the line.
+    ///
+    /// flip: `nearest_toward` scoring the gap along alone → fails at "in line,
+    /// past the nearer one off to the side".
+    #[test]
+    fn the_arrows_move_across_a_grid_by_direction() {
+        let r = |x: f64, y: f64| Rect::new(x, y, x + 20.0, y + 20.0);
+        let id = |seq| NodeId { actor: 1, seq };
+        let (tl, tr, bl, br) = (id(1), id(2), id(3), id(4));
+        let boxes = [
+            (tl, r(0.0, 0.0)),
+            (tr, r(100.0, 0.0)),
+            (bl, r(0.0, 100.0)),
+            (br, r(100.0, 100.0)),
+        ];
+        let from = |me: NodeId| {
+            let at = boxes.iter().find(|(i, _)| *i == me).unwrap().1;
+            let rest: Vec<_> = boxes.iter().copied().filter(|(i, _)| *i != me).collect();
+            move |s| nearest_toward(s, at, &rest)
+        };
+        assert_eq!(from(tl)(Step::Right), Some(tr));
+        assert_eq!(from(tl)(Step::Down), Some(bl), "down, not along the row");
+        assert_eq!(from(tl)(Step::Up), None);
+        assert_eq!(from(tl)(Step::Left), None);
+        assert_eq!(from(br)(Step::Up), Some(tr));
+        assert_eq!(from(br)(Step::Left), Some(bl));
+        // Just below and off to the right, against further down and in line.
+        let near_side = (id(9), Rect::new(60.0, 30.0, 80.0, 50.0));
+        let in_line = (id(10), Rect::new(0.0, 80.0, 20.0, 100.0));
+        assert_eq!(
+            nearest_toward(Step::Down, r(0.0, 0.0), &[near_side, in_line]),
+            Some(id(10)),
+            "in line, past the nearer one off to the side"
+        );
     }
 
     /// `↓` goes down the canvas whatever the z-order: three squares stacked so
@@ -1419,17 +1506,83 @@ mod tests {
         assert_eq!(dealt(&f.app), HashSet::from([f.r1, f.r2, f.g]));
     }
 
-    /// The yellow closed outlines a frame of the label overlay alone paints, with
-    /// the pointer on `pointed`.
-    fn solid(ctx: &egui::Context, app: &MastikApp, pointed: Option<NodeId>) -> usize {
+    /// The closed outlines in `hue` a frame of the label overlay alone paints,
+    /// with the pointer on `pointed`.
+    fn solid_in(
+        ctx: &egui::Context,
+        app: &MastikApp,
+        pointed: Option<NodeId>,
+        hue: egui::Color32,
+    ) -> usize {
         let out = ctx.run_ui(egui::RawInput::default(), |ui| {
             app.draw_leap_labels(ui.painter(), app.canvas_rect, app.canvas_ppp, pointed);
         });
-        let yellow = egui::epaint::ColorMode::Solid(color::leap());
+        let ink = egui::epaint::ColorMode::Solid(hue);
         out.shapes
             .iter()
-            .filter(|c| matches!(&c.shape, egui::Shape::Path(p) if p.closed && p.stroke.color == yellow))
+            .filter(
+                |c| matches!(&c.shape, egui::Shape::Path(p) if p.closed && p.stroke.color == ink),
+            )
             .count()
+    }
+
+    /// The solid outlines, yellow and the picked layers' blue alike.
+    fn solid(ctx: &egui::Context, app: &MastikApp, pointed: Option<NodeId>) -> usize {
+        solid_in(ctx, app, pointed, color::leap()) + solid_in(ctx, app, pointed, color::SELECT)
+    }
+
+    /// The label pills a frame of the overlay paints on a ground of `hue`.
+    fn pills_in(ctx: &egui::Context, app: &MastikApp, hue: egui::Color32) -> usize {
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.draw_leap_labels(ui.painter(), app.canvas_rect, app.canvas_ppp, None);
+        });
+        out.shapes
+            .iter()
+            .filter(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == hue))
+            .count()
+    }
+
+    /// The picked layer wears the selection's blue, its label and its outline,
+    /// and the blue follows the pick; every other label stays yellow.
+    ///
+    /// flip: `draw_leap_labels` dropping its `chosen` hue for the label → fails
+    /// at "the picked label is blue".
+    #[test]
+    fn the_picked_layer_wears_the_selection_blue() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        tap(&ctx, &mut f.app, egui::Key::Backtick);
+        assert_eq!(selected(&f.app), [f.b], "fixture: b picked");
+        assert_eq!(
+            pills_in(&ctx, &f.app, color::SELECT),
+            1,
+            "the picked label is blue"
+        );
+        assert_eq!(
+            solid_in(&ctx, &f.app, None, color::SELECT),
+            1,
+            "and its outline"
+        );
+        let la = label_of(&f.app, f.a);
+        spell(&ctx, &mut f.app, &la, egui::Modifiers::SHIFT);
+        assert_eq!(selected(&f.app), [f.b, f.a], "fixture: a added");
+        assert_eq!(
+            pills_in(&ctx, &f.app, color::SELECT),
+            2,
+            "both picked are blue"
+        );
+        tap(&ctx, &mut f.app, egui::Key::ArrowRight);
+        assert_eq!(selected(&f.app), [f.g], "fixture: on to the group");
+        assert_eq!(pills_in(&ctx, &f.app, color::SELECT), 1, "the blue follows");
+        assert_eq!(
+            solid_in(&ctx, &f.app, None, color::SELECT),
+            0,
+            "the group's outline is dashed, so no solid blue"
+        );
+        assert!(
+            pills_in(&ctx, &f.app, color::leap()) >= 2,
+            "a and b are back to yellow"
+        );
     }
 
     /// In Pick every label shows, and after a first letter only those it still
@@ -1567,7 +1720,7 @@ mod tests {
         frame(&ctx, &mut f.app, Vec::new());
         assert_eq!(line(&f.app), format!(".x = {la}"), "written as it goes");
         assert_eq!(selected(&f.app), [f.a], "and selected");
-        tap(&ctx, &mut f.app, egui::Key::ArrowDown);
+        tap(&ctx, &mut f.app, egui::Key::ArrowRight);
         frame(&ctx, &mut f.app, Vec::new());
         let lg = label_of(&f.app, f.g);
         assert_eq!(

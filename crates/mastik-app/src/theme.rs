@@ -453,7 +453,7 @@ pub mod color {
     pub const LEAP_INK: Color32 = Color32::from_rgb(0x26, 0x20, 0x08);
 
     /// The hues the command bar gives the layers a line names other than its
-    /// subject (which wears [`leap`]), in order of first mention, cycling: a
+    /// subject (which wears [`SELECT`]), in order of first mention, cycling: a
     /// layer's pill in the field and its outline on the canvas share one, so the
     /// line says which layer is which. Light, so [`BADGE_INK`] reads on them, and
     /// clear of [`SELECT`], [`KEY`], [`COMPONENT`], [`MEASURE`] and [`leap`].

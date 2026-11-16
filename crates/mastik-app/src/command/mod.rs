@@ -53,7 +53,7 @@ const ASLEEP: f32 = 0.5;
 struct Pills {
     /// The subject's letters (`SK`, `SK +2`) and what it is, for its tooltip.
     subject: Option<(String, String)>,
-    /// The line's subject: a label naming one of these wears the subject's yellow.
+    /// The line's subject: a label naming one of these wears the selection's blue.
     subject_ids: Vec<NodeId>,
     /// The labels a line may name.
     labels: rustc_hash::FxHashMap<String, NodeId>,
@@ -75,7 +75,7 @@ impl Pills {
             .collect()
     }
 
-    /// Each layer `text` names, with its hue: the subject's yellow for a
+    /// Each layer `text` names, with its hue: the selection's blue for a
     /// selected layer, else the next of `color::REFERENCE` in order of first
     /// mention, so one layer keeps one hue however often it is named.
     fn hues(&self, text: &str) -> Vec<(NodeId, egui::Color32)> {
@@ -86,7 +86,7 @@ impl Pills {
                 continue;
             }
             let hue = match self.subject_ids.contains(&id) {
-                true => color::leap(),
+                true => color::SELECT,
                 false => {
                     next += 1;
                     color::REFERENCE[(next - 1) % color::REFERENCE.len()]
@@ -1866,7 +1866,7 @@ fn field(
         let hue = hues
             .iter()
             .find(|(h, _)| *h == id)
-            .map_or(color::leap(), |(_, c)| *c);
+            .map_or(color::SELECT, |(_, c)| *c);
         let (rect, s) = pill(&clipped, at, egui::Align2::LEFT_CENTER, &letters, hue);
         shapes.extend(s);
         let name = pills.names.get(&id).cloned().unwrap_or_default();
@@ -1881,7 +1881,7 @@ fn field(
                 at,
                 egui::Align2::RIGHT_CENTER,
                 letters,
-                color::leap(),
+                color::SELECT,
             );
             shapes.extend(s);
             tips.push((rect.intersect(text_rect), what.clone(), None));
@@ -2181,7 +2181,7 @@ pub(crate) mod tests {
         assert_eq!(pills.named(line).len(), 1, "still typed");
     }
 
-    /// A selected layer named in the line wears the subject's yellow; the others
+    /// A selected layer named in the line wears the selection's blue; the others
     /// take the reference hues in order of first mention, one hue per layer
     /// however often it is named.
     ///
@@ -2207,7 +2207,7 @@ pub(crate) mod tests {
             hues,
             [
                 (b, color::REFERENCE[0]),
-                (sel, color::leap()),
+                (sel, color::SELECT),
                 (a, color::REFERENCE[1]),
             ],
             "one hue per layer"

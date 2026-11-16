@@ -460,9 +460,9 @@ text edit took the keys. A text edit started under the bar (a double-click on te
 | Key | Act |
 | --- | --- |
 | a label's letters | select its layer; `Shift` on the last adds it. Of two-letter labels the first narrows and `Backspace` takes it back (`leap_keys`, read before the table) |
-| `Enter` `→` | into the one selected layer when it holds others (group, boolean, frame, instance root), by `enter_container`, on its first child in reading order (not the topmost in z-order the editor's Enter lands on), so `↓` walks on from there; from anything else, back to Type |
-| `Backspace` `←` | out: with a group entered, select it and enter the rung above it (`group_chain(doc, g, None).last()`); else select the current layer's parent |
-| `↓` / `↑` | the next / previous sibling in reading order on the canvas (`reading_order`: rows top to bottom, a layer joining a row when its centre falls within the row's first layer's height, each row left to right), not the Layers panel's z-order, which often runs against what the eye sees; `Shift` adds |
+| `Enter` | into the one selected layer when it holds others (group, boolean, frame, instance root), by `enter_container`, on its first child in reading order (not the topmost in z-order the editor's Enter lands on); from anything else, back to Type |
+| `Backspace` | out: with a group entered, select it and enter the rung above it (`group_chain(doc, g, None).last()`); else select the current layer's parent |
+| `↑` `↓` `←` `→` | the nearest sibling that way on the canvas (`nearest_toward`): of the siblings whose centre lies past the current layer's that way, the least gap along the arrow plus twice the gap across it, so one in line beats a nearer one off to the side. The canvas, not the Layers panel's z-order, which often runs against what the eye sees. Nothing that way stays put; an arrow onto a group selects it without stepping in. With nothing selected, any arrow takes the scope's first layer in reading order. `Shift` adds |
 | `*` (`Shift+8`) | the same layer in each repeat (`select_matching`) |
 | `Shift+1` / `Shift+2` | zoom to fit / to the selection |
 | `.` | run the last line in the log again on the selection (`Log::last_line`): typed, or written for an edit made elsewhere, such as a drag's `.x += 24`; a script's run is no line, and neither is an `/ai` request, which would ask again |
@@ -506,8 +506,10 @@ so it can be named. Typed letters keep outlines only on the labels they still ma
 rest. Each labelled layer is outlined on its bounds, outset 3: dashed with the dark label for a
 group, boolean or frame, solid with the yellow label for any other layer, so *the group or the layer
 inside it* is told by line and lightness, not hue. Every line is two inks, `LEAP_INK` inside and
-`color::leap()` outside, so it reads on any artwork. In Pick the label of the layer under the
-pointer wears a ring in `color::SELECT`. They are egui chrome painted in `draw_canvas` over
+`color::leap()` outside, so it reads on any artwork. **What is picked is blue**: a selected layer's
+label and the outer line of its outline wear `color::SELECT`, the canvas's selection blue, in place
+of the yellow or the dark label, so the layer a label just took stands apart from every other label
+at a glance. In Pick the label of the layer under the pointer wears a ring in `color::SELECT`. They are egui chrome painted in `draw_canvas` over
 everything a layer wears, not a `RenderOverrides` overlay.
 
 ## The command bar (`command/mod.rs`)
@@ -539,7 +541,8 @@ rules*): a row's name is never cut for its note.
   subject wears the subject's pill before it (its label, `SK +2` for a selection of more), so
   `fj.x = dk.x - .x` reads *FJ.x = DK.x − FJ.x*. The field's layouter lays a label's hidden letters
   out exactly as wide as its pill, so the caret at either end of a label stands at the pill's edge,
-  never inside it. **Colour says which layer is which**: the subject wears the leap yellow; every
+  never inside it. **Colour says which layer is which**: the subject wears the selection's blue,
+  `color::SELECT`, as its label does on the canvas; every
   other layer named takes the next of `color::REFERENCE` (green, orange, teal, pink) in order of
   first mention, one hue per layer however often it is named, and is outlined on the canvas in that
   hue while the bar is open (`draw_line_references`), as a spreadsheet colours a formula's ranges.

@@ -642,9 +642,9 @@ selects its layer, `Shift` + a label adds it; a label is two letters, the first 
 
 | Key | Action |
 |---|---|
-| `Enter` · `→` | step into the one selected layer when it holds others (group, boolean, frame, instance root), on its top-left child; otherwise back to the field |
-| `Backspace` · `←` | step out: out of the entered group, selecting it; with none entered, to the current layer's parent |
-| `↓` / `↑` | the next / previous sibling in reading order on the canvas (rows top to bottom, each left to right); `Shift` adds the layer to the selection |
+| `Enter` | step into the one selected layer when it holds others (group, boolean, frame, instance root), on its top-left child; otherwise back to the field |
+| `Backspace` | step out: out of the entered group, selecting it; with none entered, to the current layer's parent |
+| `↑` · `↓` · `←` · `→` | the nearest sibling that way on the canvas, one in line before a nearer one off to the side; nothing that way stays put; `Shift` adds the layer to the selection |
 | `Shift+8` (`*`) | the same layer in each repeat (`select_matching`) |
 | `Shift+1` | zoom to fit |
 | `Shift+2` | zoom to the selection (physical `Num2`, §0) |
