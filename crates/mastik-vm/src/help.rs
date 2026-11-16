@@ -710,6 +710,7 @@ pub fn check(doc: &Document, page: NodeId, source: &str) -> Vec<Problem> {
     let decls = declarations(source, &lexemes, &(0..0));
     let declared_at: Vec<usize> = decls.iter().map(|d| d.at).collect();
     let declared: Vec<&str> = decls.iter().map(|d| text(d.at)).collect();
+    let typed = crate::complete::in_types(source, &lexemes, &decls);
     let layers = crate::layer_names(doc, page);
     let globals = global_names(doc, page);
     let inputs: Vec<String> = crate::header::header(source)
@@ -795,7 +796,7 @@ pub fn check(doc: &Document, page: NodeId, source: &str) -> Vec<Problem> {
             }
             _ => {}
         }
-        if l.kind != Lx::Ident || declared_at.contains(&i) {
+        if l.kind != Lx::Ident || declared_at.contains(&i) || typed[i] {
             continue;
         }
         let word = text(i);

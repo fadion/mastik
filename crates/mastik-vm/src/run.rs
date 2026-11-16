@@ -72,15 +72,16 @@ pub(crate) const LIBRARY: &[(&str, &[&str])] = &[
         "math",
         &[
             "abs", "acos", "asin", "atan", "atan2", "ceil", "clamp", "cos", "cosh", "deg", "exp",
-            "floor", "fmod", "frexp", "huge", "ldexp", "log", "log10", "max", "min", "modf",
-            "noise", "pi", "pow", "rad", "round", "sign", "sin", "sinh", "sqrt", "tan", "tanh",
+            "floor", "fmod", "frexp", "huge", "isfinite", "isinf", "isnan", "ldexp", "lerp", "log",
+            "log10", "map", "max", "min", "modf", "noise", "pi", "pow", "rad", "round", "sign",
+            "sin", "sinh", "sqrt", "tan", "tanh",
         ],
     ),
     (
         "string",
         &[
-            "byte", "char", "find", "format", "gmatch", "gsub", "len", "lower", "match", "rep",
-            "reverse", "split", "sub", "upper",
+            "byte", "char", "find", "format", "gmatch", "gsub", "len", "lower", "match", "pack",
+            "packsize", "rep", "reverse", "split", "sub", "unpack", "upper",
         ],
     ),
     (
@@ -220,10 +221,34 @@ pub(crate) const LIB_DOCS: &[LibDoc] = &[
         "Infinity, larger than any number",
     ),
     lib(
+        "math.isfinite",
+        Some("x: number"),
+        "boolean",
+        "Whether x is neither infinite nor NaN",
+    ),
+    lib(
+        "math.isinf",
+        Some("x: number"),
+        "boolean",
+        "Whether x is infinite",
+    ),
+    lib(
+        "math.isnan",
+        Some("x: number"),
+        "boolean",
+        "Whether x is NaN, not a number",
+    ),
+    lib(
         "math.ldexp",
         Some("m: number, e: number"),
         "number",
         "m × 2^e",
+    ),
+    lib(
+        "math.lerp",
+        Some("a: number, b: number, t: number"),
+        "number",
+        "The number t of the way from a to b: a at 0, b at 1",
     ),
     lib(
         "math.log",
@@ -242,6 +267,12 @@ pub(crate) const LIB_DOCS: &[LibDoc] = &[
         Some("...: number"),
         "number",
         "The largest of the numbers given",
+    ),
+    lib(
+        "math.map",
+        Some("x: number, inmin: number, inmax: number, outmin: number, outmax: number"),
+        "number",
+        "x moved from the range inmin to inmax onto outmin to outmax",
     ),
     lib(
         "math.min",
@@ -376,6 +407,18 @@ pub(crate) const LIB_DOCS: &[LibDoc] = &[
         "The first match of pattern in s, or its captures",
     ),
     lib(
+        "string.pack",
+        Some("fmt: string, ...: any"),
+        "string",
+        "The values packed into a binary string as fmt lays them out",
+    ),
+    lib(
+        "string.packsize",
+        Some("fmt: string"),
+        "number",
+        "The length in bytes of a string string.pack makes with fmt",
+    ),
+    lib(
         "string.rep",
         Some("s: string, n: number, sep: string?"),
         "string",
@@ -399,6 +442,12 @@ pub(crate) const LIB_DOCS: &[LibDoc] = &[
         Some("s: string"),
         "string",
         "s in upper case",
+    ),
+    lib(
+        "string.unpack",
+        Some("fmt: string, s: string, pos: number?"),
+        "...any",
+        "The values string.pack packed into s with fmt",
     ),
     lib(
         "table.clear",
@@ -976,7 +1025,7 @@ fn resolve(
     match name {
         "print" => return Ok((Value::Function(print.clone()), true)),
         "percent" => return Ok((Value::Function(percent.clone()), true)),
-        "math" => return Ok((Value::Table(safe_math(lua)?), true)),
+        "math" | "table" => return Ok((Value::Table(safe_library(lua, name)?), true)),
         "param" => return Ok((Value::Table(params.clone()), true)),
         n if STDLIB.contains(&n) => return Ok((lua.globals().get(n)?, true)),
         _ => {}
@@ -1039,14 +1088,21 @@ pub(crate) fn named(doc: &mastik_core::Document, page: NodeId, name: &str) -> Ve
     out
 }
 
-/// `math` without its random numbers: a run is deterministic.
-fn safe_math(lua: &Lua) -> mlua::Result<Table> {
-    let math: Table = lua.globals().get("math")?;
+/// A read-only copy of library `name`: `math` without its random numbers, since
+/// a run is deterministic, and `table` without the deprecated `foreach`,
+/// `foreachi` and `getn`, so every member a script reaches is one [`LIBRARY`] lists.
+fn safe_library(lua: &Lua, name: &str) -> mlua::Result<Table> {
+    let library: Table = lua.globals().get(name)?;
+    let left_out: &[&str] = match name {
+        "math" => &["random", "randomseed"],
+        "table" => &["foreach", "foreachi", "getn"],
+        _ => &[],
+    };
     let safe = lua.create_table()?;
-    for pair in math.pairs::<Value, Value>() {
+    for pair in library.pairs::<Value, Value>() {
         let (k, v) = pair?;
         if let Value::String(s) = &k
-            && matches!(&*s.to_str()?, "random" | "randomseed")
+            && left_out.contains(&&*s.to_str()?)
         {
             continue;
         }

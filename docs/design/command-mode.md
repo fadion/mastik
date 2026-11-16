@@ -90,7 +90,8 @@ The environment's `__index` (`run::resolve`) answers an unknown name in this ord
    document is open (*Pick*). A label whose layer was deleted raises.
 4. **Registry verbs**, by their registry names.
 5. `print` (to the bar's result or the editor's output), `percent`, `math` without `random` and
-   `randomseed`, `param` (a script's inputs, §10), and the allowlist `string`, `table`, `ipairs`,
+   `randomseed`, `table` without the deprecated `foreach`, `foreachi` and `getn`, `param` (a
+   script's inputs, §10), and the allowlist `string`, `ipairs`,
    `pairs`, `select`, `tonumber`, `tostring`, `type`, `assert`, `error`. A name off the allowlist
    (`os`, `debug`, `require`, `load`, `pcall`, `setmetatable`…) is an unknown name.
 6. **A layer name** on the current page, matched exactly. Two or more raise, naming the count and
@@ -412,7 +413,9 @@ sized from their laid-out text each frame.
   | error (`color::error()`) | a property no layer has, after an expression that holds layers (a collection name, a layer name, a local or loop variable over one, a `Layers` property, an index of one); a missing member of `math`, `string` or `table`; a missing `param` input; an assignment to a global or a non-local named function (*No global “x” — write `local x = …`*) |
 
   Unknown names are only warnings because a layer name resolves at the run, on the page the run
-  sees. A field of the script's own table is never checked. The check runs once typing has rested
+  sees. A field of the script's own table is never checked, nor a name in a type annotation (after
+  a declared name's `:`, a function's return `:` or `::`); a typed name in a parameter or `local`
+  list is declared as an untyped one is. The check runs once typing has rested
   `script_help::CHECK_AFTER` (600 ms, the library write's delay) and at once on opening a script;
   nothing is marked while the text differs from the text checked, nor a name's problem under the
   caret (a syntax error is). `ui::code_editor` takes `ui::CodeMark`s: each inks its line's number and

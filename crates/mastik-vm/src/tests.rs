@@ -822,7 +822,9 @@ fn script_completion_keeps_quiet_where_no_name_goes() {
 }
 
 /// Every library member highlighting and completion offer is one a script can
-/// reach in the sandbox, and `math`'s random numbers are not offered.
+/// reach in the sandbox, every member a script can reach is offered, and
+/// `math`'s random numbers are neither.
+/// flip: `math.lerp` dropped from `LIBRARY` → fails at "math.lerp is listed".
 #[test]
 fn the_listed_library_is_the_sandboxs() {
     let (mut h, ids) = three();
@@ -835,8 +837,29 @@ fn the_listed_library_is_the_sandboxs() {
                 .unwrap_or_else(|err| panic!("{lib}.{m}: {}", err.message));
             assert_eq!(out.value.as_deref(), Some("true"), "{lib}.{m} is there");
         }
+        let out = run_script(
+            &mut h,
+            &e,
+            &format!("for k in pairs({lib}) do print(k) end"),
+        )
+        .unwrap();
+        assert!(!out.printed.is_empty(), "{lib} was walked");
+        for m in &out.printed {
+            assert!(members.contains(&m.as_str()), "{lib}.{m} is listed");
+        }
     }
     assert!(!crate::run::library("math").contains(&"random"));
+    let out = run_script(
+        &mut h,
+        &e,
+        "return math.random == nil and table.getn == nil",
+    )
+    .unwrap();
+    assert_eq!(
+        out.value.as_deref(),
+        Some("true"),
+        "left out of the sandbox"
+    );
 }
 
 /// The definitions describe the collection, the names and every verb.
@@ -1139,6 +1162,35 @@ fn the_check_marks_what_a_run_would_refuse() {
     );
 }
 
+/// Typed parameters and typed `local` lists declare every name, and the
+/// library members Luau adds are known: the check marks nothing here.
+/// flip: `declarations`' `list` not skipping a `: type` → fails at "nothing marked".
+#[test]
+fn typed_names_and_luaus_library_are_known() {
+    let (h, _) = three();
+    let src = "local function f(a: number, b: { number }, c: (number) -> string?)\n\
+               \treturn math.lerp(a, b[1], 0.5), c\nend\n\
+               local x: number, y: Map<string, number> = 1, {}\n\
+               for i: number, v in ipairs(sel) do print(i, v, x, y) end\n\
+               print(math.map(0.5, 0, 1, 0, 10), math.isnan(0), string.packsize(\"i4\"))";
+    let found: Vec<String> = check(&h.doc, h.page, src)
+        .into_iter()
+        .map(|p| p.message)
+        .collect();
+    assert_eq!(found, Vec::<String>::new(), "nothing marked");
+    // A return type ends before the body, whose names are still checked.
+    let found: Vec<String> = check(
+        &h.doc,
+        h.page,
+        "local function g(): number?\n\tzork() return 1\nend",
+    )
+    .into_iter()
+    .map(|p| p.message)
+    .collect();
+    assert_eq!(found.len(), 1, "the body's name: {found:?}");
+    assert!(found[0].starts_with("No name “zork”"), "{found:?}");
+}
+
 /// Go to declaration finds the nearest declaration above a use, a function
 /// called above its own, and an input's header line; never a Mastik name.
 #[test]
@@ -1156,4 +1208,8 @@ fn declaration_is_the_nearest_above() {
     assert_eq!(at("print(sel)", "sel"), None);
     let src = "local function f(by) return by end";
     assert_eq!(at(src, "by end"), Some(17), "a parameter");
+    let src = "local function f(a: number, by: number) return by end";
+    assert_eq!(at(src, "by end"), Some(28), "a typed parameter");
+    let src = "local a: number, b = 1, 2\nprint(b)";
+    assert_eq!(at(src, "b)"), Some(17), "a typed local list");
 }

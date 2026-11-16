@@ -473,7 +473,83 @@ pub(crate) struct Decl {
     pub what: &'static str,
 }
 
-/// Every declaration in `lexemes`, in source order: `local` names, `local
+/// The lexeme past a type annotation starting at `i`: a run of names, `nil`,
+/// strings and bracketed parts joined by `|`, `&`, `?`, `->`, `.` and `<…>`; it
+/// ends at the first lexeme outside its brackets that continues no type, so a
+/// return type stops before the body's first statement.
+fn past_type(source: &str, lexemes: &[lex::Lexeme], mut i: usize) -> usize {
+    let mut depth = 0usize;
+    // Whether a part is still owed: at the start and after a joining operator.
+    let mut owed = true;
+    while let Some(l) = lexemes.get(i) {
+        let t = &source[l.range.clone()];
+        let joins = matches!(t, "|" | "&" | "->" | ".");
+        if depth == 0 && !owed && !joins && !matches!(t, "?" | "<") {
+            return i;
+        }
+        match t {
+            "(" | "{" | "[" | "<" => depth += 1,
+            ")" | "}" | "]" | ">" if depth == 0 => return i,
+            ")" | "}" | "]" | ">" => {
+                depth -= 1;
+                owed = depth > 0;
+            }
+            _ if depth > 0 => {}
+            _ if joins => owed = true,
+            "?" => {}
+            "," | "=" => return i,
+            _ if l.kind == lex::Lx::Keyword && t != "nil" => return i,
+            _ => owed = false,
+        }
+        i += 1;
+    }
+    i
+}
+
+/// Whether each of `lexemes` is part of a type annotation: after a declared
+/// name's `:`, after a function's `)` and `:` (its return type), or after `::`.
+/// The names in a type are types, not values a run looks up.
+pub(crate) fn in_types(source: &str, lexemes: &[lex::Lexeme], decls: &[Decl]) -> Vec<bool> {
+    let text = |i: usize| lexemes.get(i).map_or("", |l| &source[l.range.clone()]);
+    let mut out = vec![false; lexemes.len()];
+    let mut mark = |from: usize| {
+        let end = past_type(source, lexemes, from);
+        out[from.min(end)..end].fill(true);
+    };
+    for d in decls {
+        if text(d.at + 1) == ":" {
+            mark(d.at + 2);
+        }
+    }
+    for i in 0..lexemes.len() {
+        match text(i) {
+            "::" => mark(i + 1),
+            "function" => {
+                let Some(open) = (i + 1..lexemes.len()).find(|&j| text(j) == "(") else {
+                    continue;
+                };
+                let mut depth = 0usize;
+                let close = (open..lexemes.len()).find(|&j| {
+                    match text(j) {
+                        "(" => depth += 1,
+                        ")" => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                });
+                if let Some(close) = close
+                    && text(close + 1) == ":"
+                {
+                    mark(close + 2);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Every declaration in `lexemes`, in source order: `local
 /// function` and `function` names (a dotted or method name declares nothing),
 /// a function's parameters (`self` is implicit, never listed) and loop
 /// variables. The lexeme at `typing` is the word being typed, never a name.
@@ -489,16 +565,21 @@ pub(crate) fn declarations(
             .is_some_and(|l| l.kind == lex::Lx::Ident && l.range != *typing)
     };
     let mut out: Vec<Decl> = Vec::new();
-    // Names after `at`, separated by commas, as `local a, b` and `for k, v` list them.
+    // Names after `at`, separated by commas, as `local a, b` and `for k, v` list
+    // them, each perhaps typed: `a: number` skips its type to the next comma.
     let list = |at: usize| {
         let mut names = Vec::new();
         let mut i = at;
         while ident(i) {
             names.push(i);
-            if text(i + 1) != "," {
+            i += 1;
+            if text(i) == ":" {
+                i = past_type(source, lexemes, i + 1);
+            }
+            if text(i) != "," {
                 break;
             }
-            i += 2;
+            i += 1;
         }
         names
     };
