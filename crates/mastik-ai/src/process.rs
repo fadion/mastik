@@ -262,14 +262,21 @@ impl Tracker {
     }
 
     /// A child that has exited is no longer a root: its pid may be reissued.
+    /// Off Windows what it left in its group (a server it did not reap) is
+    /// ended now, while those survivors keep the group's id from being
+    /// reissued; once forgotten, `end` would never reach them, and reparented
+    /// they no longer walk up to a root. The session Job covers this on Windows.
     pub(crate) fn forget(&self, pid: u32) {
         #[cfg(windows)]
         if let Ok(mut c) = self.children.lock() {
             c.retain(|(p, _)| *p != pid);
         }
         #[cfg(not(windows))]
-        if let Ok(mut roots) = self.roots.lock() {
-            roots.retain(|p| *p != pid);
+        if let Ok(mut roots) = self.roots.lock()
+            && let Some(at) = roots.iter().position(|p| *p == pid)
+        {
+            roots.swap_remove(at);
+            kill_group(pid);
         }
     }
 
@@ -711,6 +718,46 @@ mod tests {
         let code = wait_bounded(&tracker, &child, std::time::Duration::from_secs(10));
         assert_eq!(code, Some(0));
         assert_eq!(tracker.roots(), 0);
+    }
+
+    /// A child that exits leaving a process in its group takes that survivor
+    /// with it when it is reaped.
+    /// flip: `Tracker::forget` without its `kill_group` → fails at "the survivor
+    /// is ended".
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_reaped_child_s_group_goes_with_it() {
+        use std::io::Read;
+        let tracker = Tracker::new();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!"])
+            .stdout(std::process::Stdio::piped());
+        let mut child = tracker.spawn(&mut cmd).expect("spawn");
+        let mut out = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut out)
+            .unwrap();
+        let survivor: u32 = out.trim().parse().expect("the survivor's pid");
+        assert!(process_running(survivor), "the fixture leaves a survivor");
+        let child = Mutex::new(child);
+        assert_eq!(
+            wait_bounded(&tracker, &child, std::time::Duration::from_secs(10)),
+            Some(0)
+        );
+        // Reparented, it is reaped by whoever adopts it; give that a moment.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while process_running(survivor) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let gone = !process_running(survivor);
+        if !gone {
+            // SAFETY: a signal to the live process this test started.
+            unsafe { libc::kill(survivor as libc::pid_t, libc::SIGKILL) };
+        }
+        assert!(gone, "the survivor is ended");
     }
 
     /// A helper that does not finish in time is ended and reported as such.

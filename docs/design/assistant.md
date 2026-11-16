@@ -95,7 +95,9 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 - **On Windows** npm's `.cmd` shims come last, since Rust refuses a multi-line argument to a batch
   file. Behind a shim, the real program is started directly. Every child is started with
   `CREATE_NO_WINDOW` and `NoDefaultCurrentDirectoryInExePath=1`, in a Job Object of its own nested
-  in the session's, so *Stop* and a grace kill end the harness's whole process tree.
+  in the session's, so *Stop* and a grace kill end the harness's whole process tree. Off Windows
+  each child leads a process group of its own, and the group is ended when the child is reaped, so
+  what it leaves behind (a server it did not reap) does not outlive it.
 - **A helper** (the `--help` probe, `agy mcp …`, `cursor-agent mcp enable`) runs in a private empty
   folder and is ended, with its tree, past a deadline: 15 seconds for the probe, 30 for `agy`
   (`process::run_bounded`).
