@@ -29,6 +29,7 @@ pub mod project;
 pub mod recovery;
 pub mod relocate;
 pub mod scan;
+pub mod search;
 pub mod state;
 pub mod store;
 pub mod writer;

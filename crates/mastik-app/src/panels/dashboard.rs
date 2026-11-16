@@ -13,7 +13,7 @@
 use crate::app::MastikApp;
 use crate::library::scan::Entry;
 use crate::library::state::Sort;
-use crate::library::{clock, ids, naming, project, store};
+use crate::library::{clock, ids, naming, project, search, store};
 use crate::menu::{Nav as MenuNav, navigate_index, pointer_moved};
 use crate::settings;
 use crate::theme;
@@ -94,6 +94,45 @@ fn search_rect(centre_x: f32, centre_y: f32, left: f32, right: f32) -> egui::Rec
     let x = centre_x.min(hi - w / 2.0).max(lo + w / 2.0);
     egui::Rect::from_center_size(egui::pos2(x, centre_y), egui::vec2(w, ui::CONTROL_H))
 }
+/// A search row's texts: the label from the glyph column on, its matched letters
+/// lit as the palette lights them, and the faint `meta` at the right edge. The
+/// label is cut to leave the meta its room.
+fn search_row_texts(
+    p: &egui::Painter,
+    row: egui::Rect,
+    label: &str,
+    lit: &[std::ops::Range<usize>],
+    meta: &str,
+) {
+    let meta_font = egui::FontId::proportional(ui::CAPTION_PT);
+    let mut right = row.right() - 10.0;
+    if !meta.is_empty() {
+        let g = p.layout_no_wrap(meta.to_owned(), meta_font, theme::text::faint());
+        right -= g.size().x;
+        p.galley(
+            egui::pos2(right, row.center().y - g.size().y / 2.0),
+            g,
+            theme::text::faint(),
+        );
+        right -= 12.0;
+    }
+    let left = row.left() + 30.0;
+    let mut job = crate::palette::lit_label(
+        label,
+        lit,
+        egui::FontId::proportional(ui::CONTROL_PT),
+        theme::text::strong(),
+        color::accent_300(),
+    );
+    job.wrap.max_width = (right - left).max(0.0);
+    let g = p.layout_job(job);
+    p.galley(
+        egui::pos2(left, row.center().y - g.size().y / 2.0),
+        g,
+        theme::text::strong(),
+    );
+}
+
 /// The row a [`field_label`] is allocated: its galley and nothing else.
 const FIELD_LABEL_H: f32 = 12.0;
 /// What the project filter says when nothing is filtered, and the first row of
@@ -826,7 +865,8 @@ impl MastikApp {
             .search
             .as_deref()
             .is_some_and(|s| !s.trim().is_empty());
-        let needle = query.trim().to_lowercase();
+        let words = search::words(&query);
+        let needle = words.join(" ");
         let recents: Vec<String> = if private {
             Vec::new()
         } else if needle.is_empty() {
@@ -834,35 +874,10 @@ impl MastikApp {
         } else {
             Vec::new()
         };
-        // Archived projects are included, unlike `Projects::active`: the name is typed already.
-        let projects: Vec<(String, String, String)> = if needle.is_empty() {
-            Vec::new()
-        } else {
-            self.library
-                .projects
-                .projects
-                .iter()
-                .filter(|p| p.name.to_lowercase().contains(&needle))
-                .take(SEARCH_MAX)
-                .map(|p| (p.id.clone(), p.name.clone(), p.color.clone()))
-                .collect()
-        };
-        // Most recently edited first, ties by name, before the cap: `Library::entries`
-        // is in directory order, which differs by platform.
-        let files: Vec<Entry> = if needle.is_empty() {
-            Vec::new()
-        } else {
-            let mut found: Vec<Entry> = self
-                .library
-                .entries
-                .iter()
-                .filter(|e| e.display_name().to_lowercase().contains(&needle))
-                .cloned()
-                .collect();
-            self.library.sort_entries(&mut found, Sort::Edited);
-            found.truncate(SEARCH_MAX);
-            found
-        };
+        let mut projects = self.ranked_projects(&words);
+        projects.truncate(SEARCH_MAX);
+        let mut files = self.ranked_files(&words);
+        files.truncate(SEARCH_MAX);
         let rows = recents.len() + projects.len() + files.len();
         if rows == 0 && (!needle.is_empty() || (private && typed)) {
             return Some(Self::search_panel(ui, anchor, 36.0, |ui, rect| {
@@ -908,6 +923,7 @@ impl MastikApp {
                            glyph: &str,
                            ink: egui::Color32,
                            label: &str,
+                           lit: &[std::ops::Range<usize>],
                            meta: &str|
              -> bool {
                 let r = egui::Rect::from_min_size(
@@ -931,22 +947,7 @@ impl MastikApp {
                         ink,
                     );
                 }
-                p.text(
-                    egui::pos2(r.left() + 30.0, r.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    egui::FontId::proportional(ui::CONTROL_PT),
-                    theme::text::strong(),
-                );
-                if !meta.is_empty() {
-                    p.text(
-                        egui::pos2(r.right() - 10.0, r.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        meta,
-                        egui::FontId::proportional(ui::CAPTION_PT),
-                        theme::text::faint(),
-                    );
-                }
+                search_row_texts(p, r, label, lit, meta);
                 resp.clicked() || (enter && i == sel)
             };
             let mut i = 0;
@@ -957,25 +958,28 @@ impl MastikApp {
                     icon::CLOCK_COUNTER_CLOCKWISE,
                     theme::text::faint(),
                     q,
+                    &[],
                     "",
                 ) {
                     refill = Some(q.clone());
                 }
                 i += 1;
             }
-            for (id, name, color) in &projects {
-                if row(ui, i, "", swatch(color), name, "Project") {
-                    nav_to = Some(Nav::Project(id.clone()));
+            for (p, hit) in &projects {
+                let name = self.library.shown_project(p);
+                if row(ui, i, "", swatch(&p.color), &name, &hit.lit, "Project") {
+                    nav_to = Some(Nav::Project(p.id.clone()));
                 }
                 i += 1;
             }
-            for e in &files {
+            for (e, hit) in &files {
                 if row(
                     ui,
                     i,
                     icon::DOCUMENT,
                     theme::text::dim(),
                     &self.library.shown_entry(e),
+                    &hit.lit,
                     "File",
                 ) {
                     chosen = Some(Act::Open(e.path.clone()));
@@ -1046,6 +1050,54 @@ impl MastikApp {
         recents.insert(0, q.to_string());
         recents.truncate(SEARCH_RECENTS);
         self.library.local.save();
+    }
+
+    /// The projects whose names answer `words` ([`search::rank`]), best first and
+    /// then most recently touched. Archived ones are included, unlike
+    /// `Projects::active`: the name is typed already.
+    pub(crate) fn ranked_projects(&self, words: &[String]) -> Vec<(project::Project, search::Hit)> {
+        let mut out: Vec<(project::Project, search::Hit, Option<u64>)> = self
+            .library
+            .projects
+            .projects
+            .iter()
+            .filter_map(|p| {
+                let hit = search::rank(&p.name, words)?;
+                Some((p.clone(), hit, self.library.project_touched(&p.id)))
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            (a.1.tier, std::cmp::Reverse(a.2), a.0.name.to_lowercase()).cmp(&(
+                b.1.tier,
+                std::cmp::Reverse(b.2),
+                b.0.name.to_lowercase(),
+            ))
+        });
+        out.into_iter().map(|(p, h, _)| (p, h)).collect()
+    }
+
+    /// The documents whose names answer `words`, best first and then most
+    /// recently edited, ties by name: `Library::entries` is in directory order,
+    /// which differs by platform.
+    pub(crate) fn ranked_files(&self, words: &[String]) -> Vec<(Entry, search::Hit)> {
+        let mut out: Vec<(Entry, search::Hit)> = self
+            .library
+            .entries
+            .iter()
+            .filter_map(|e| Some((e.clone(), search::rank(&e.display_name(), words)?)))
+            .collect();
+        out.sort_by(|a, b| {
+            a.1.tier
+                .cmp(&b.1.tier)
+                .then_with(|| b.0.modified.cmp(&a.0.modified))
+                .then_with(|| {
+                    a.0.display_name()
+                        .to_lowercase()
+                        .cmp(&b.0.display_name().to_lowercase())
+                })
+                .then_with(|| a.0.stem.cmp(&b.0.stem))
+        });
+        out
     }
 
     fn dashboard_sidebar(&mut self, ui: &mut egui::Ui, act: &mut Option<Act>) {
@@ -7947,6 +7999,39 @@ mod tests {
             Some(paths[0].as_path()),
             "and a tie goes to the name, whatever order the folder lists them in"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A better match outranks a more recent one: *Checkout*, older, opens on Enter
+    /// over *Quickcheck onboarding*, edited later, which only contains the word.
+    /// flip: sort `ranked_files` by recency alone → fails at "listed above".
+    #[test]
+    fn a_better_match_outranks_a_more_recent_edit() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "search-rank");
+        let mut paths = Vec::new();
+        for name in ["Checkout", "Quickcheck onboarding"] {
+            let mut doc = mastik_core::Document::new(app.session.ids.mint());
+            paths.push(store::file_document(&root, None, name, &mut doc).unwrap());
+        }
+        for (path, secs) in paths.iter().zip([1_700_000_000u64, 1_700_086_400]) {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+                .unwrap();
+        }
+        app.library.refresh();
+        app.dash.search = Some("check".into());
+        let runs = galleys(&mut app, &ctx);
+        assert!(
+            run_at(&runs, "Checkout").1 < run_at(&runs, "Quickcheck onboarding").1,
+            "the prefix match is listed above the newer substring match"
+        );
+        press(&mut app, &ctx, egui::Key::Enter);
+        assert_eq!(app.session.path.as_deref(), Some(paths[0].as_path()));
         let _ = std::fs::remove_dir_all(&root);
     }
 
