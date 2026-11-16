@@ -4,7 +4,8 @@
 //! person's document, its revision and their redo stay as they were; applying
 //! runs them again on the document as it is then, as one undo step.
 
-use super::{Connection, write};
+use super::Connection;
+use super::writes::write;
 use crate::session::EditorSession;
 use mastik_core::{Node, NodeId};
 use serde_json::{Value, json};

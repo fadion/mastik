@@ -6,7 +6,8 @@
 //! the app's wording for what they say. A kit is named by its document id or
 //! its name; the library's state is read again for every call.
 
-use super::{Answer, Documents, READ_ONLY, commit, required};
+use super::writes::{READ_ONLY, commit};
+use super::{Answer, Documents, required};
 use crate::kits::index::{KitEntry, kits_in};
 use crate::kits::picker::{Source, build_placement};
 use crate::kits::updates::{stack_local, waiting};

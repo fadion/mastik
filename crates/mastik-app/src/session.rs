@@ -1991,6 +1991,12 @@ impl EditorSession {
         taken
     }
 
+    /// [`Self::take_back`] each step above undo depth `depth`, stopping early
+    /// when one cannot be: an agent's refused call taking back what it made.
+    pub fn take_back_to(&mut self, depth: usize) {
+        while self.history.undo_depth() > depth && self.take_back() {}
+    }
+
     /// Where the document stands now, for [`Self::rewind`].
     pub fn mark(&self) -> Mark {
         Mark {

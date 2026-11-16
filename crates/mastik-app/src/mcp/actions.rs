@@ -3,7 +3,8 @@
 //! document's versions. Tokens land as one undo step through the commit door; a version is
 //! a file the library pins, outside history.
 
-use super::{Answer, Documents, commit};
+use super::writes::commit;
+use super::{Answer, Documents};
 use crate::session::EditorSession;
 use mastik_mcp::queue::Call;
 use serde_json::{Value, json};
