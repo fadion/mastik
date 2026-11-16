@@ -11,6 +11,14 @@ pub struct Tool {
     pub params: &'static [Param],
 }
 
+/// The `query` of a list read that answers every entry of its kind.
+const QUERY_NAME: Param = param(
+    "query",
+    ParamKind::Text,
+    false,
+    "Only those whose name holds this, ignoring case.",
+);
+
 const fn param(name: &'static str, kind: ParamKind, required: bool, doc: &'static str) -> Param {
     Param {
         name,
@@ -122,6 +130,12 @@ pub static TOOLS: &[Tool] = &[
                 true,
                 "What they share.",
             ),
+            param(
+                "limit",
+                ParamKind::Index,
+                false,
+                "At most this many; 200 when absent.",
+            ),
         ],
     },
     Tool {
@@ -218,17 +232,17 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "list_components",
         doc: "Every main component and variant set: id, name, page, description and documentation link; a variant's set and values, a set's properties.",
-        params: &[],
+        params: &[QUERY_NAME],
     },
     Tool {
         name: "list_variables",
         doc: "Every variable collection with its modes, and every variable with its cells per mode (aliases as written) and the value each resolves to.",
-        params: &[],
+        params: &[QUERY_NAME],
     },
     Tool {
         name: "list_styles",
         doc: "Every style: id, slot, name, value, description and how many layers use it.",
-        params: &[],
+        params: &[QUERY_NAME],
     },
     Tool {
         name: "export_tokens",
@@ -897,8 +911,8 @@ mod tests {
     /// budget.
     #[test]
     fn the_tool_list_stays_within_its_budget() {
-        const CORE_BUDGET: usize = 24_400;
-        const ALL_BUDGET: usize = 96_600;
+        const CORE_BUDGET: usize = 24_700;
+        const ALL_BUDGET: usize = 97_000;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

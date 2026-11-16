@@ -639,6 +639,7 @@ impl Engine {
         } else {
             run(conn, session, &call)
         };
+        let answer = answer.and_then(|a| read_fits(&call.tool, a));
         let Some(session) = docs.session(&path) else {
             return Output::error(format!("{} closed during the call", path.display()));
         };
@@ -969,7 +970,7 @@ fn is_page(s: &EditorSession, id: NodeId) -> bool {
 /// The default longest side of `export_png`.
 const PNG_MAX: u64 = 1600;
 
-/// The longest answer a whole-part read gives, in bytes. Harnesses cut a tool
+/// The longest answer any read gives, in bytes. Harnesses cut a tool
 /// result past their own limit (Claude Code's is about 25,000 tokens), and a
 /// snapshot cut mid-way reads as a smaller document; a refusal naming the size
 /// and the narrower reads is what the model can act on.
@@ -990,6 +991,48 @@ fn within_budget(text: &str, what: &str, instead: &str) -> Result<(), String> {
 /// What a read past the budget points to.
 const NARROWER: &str =
     "reach the part you need with `find_nodes` or `get_outline`, then `get_node` on it";
+
+/// A read's answer, refused past [`ANSWER_BUDGET`] with the narrower call that
+/// tool takes. Every read passes here, behind any budget it applies itself;
+/// `run_exports` carries binary files under its own, and an image is bounded by
+/// its pixels.
+fn read_fits(tool: &str, answer: Answer) -> Result<Answer, String> {
+    use mastik_mcp::schema::{Class, class};
+    if class(tool) != Class::Read || tool == "run_exports" {
+        return Ok(answer);
+    }
+    let size = match &answer {
+        Answer::Json(v) => v.to_string().len(),
+        Answer::Files(report, files) => {
+            let bytes = files.iter().map(|f| match f {
+                Content::File { bytes, .. } => bytes.len(),
+                Content::Text(t) => t.len(),
+                Content::Image { bytes, .. } => bytes.len(),
+            });
+            report.to_string().len() + bytes.sum::<usize>()
+        }
+        Answer::Image(_) => return Ok(answer),
+    };
+    if size <= ANSWER_BUDGET {
+        return Ok(answer);
+    }
+    let instead = match tool {
+        "find_like" => "pass a smaller `limit`",
+        "list_components" | "list_variables" | "list_styles" => {
+            "pass `query` to list the ones whose name holds it"
+        }
+        "export_tokens" => "read them in parts with `list_variables` and `list_styles`",
+        "check_layout" | "check_contrast" | "review_colours" | "export_code" => {
+            "pass `ids` to read one part of the page"
+        }
+        _ => NARROWER,
+    };
+    Err(format!(
+        "This answer is {} KB, past the {} KB a client is sure to read whole: {instead}",
+        size / 1000,
+        ANSWER_BUDGET / 1000
+    ))
+}
 
 /// The most `export_png`'s `max` is taken at, and the longest side an
 /// attached layer is drawn at for the assistant: a raster held in the person's
@@ -1021,7 +1064,8 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
     match call.tool.as_str() {
         "get_document" => {
             let snap = snapshot_of(s);
-            if let Some(since) = since(conn, args, s.revision(), &snap)? {
+            if let Some(since) = since(conn, args, s.revision(), &snap, Scope::Document)? {
+                within_budget(&since.to_string(), "What changed", NARROWER)?;
                 return json(since);
             }
             let whole = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
@@ -1053,7 +1097,13 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
             }
             let id = id.to_wire();
             let snap = snapshot_of(s);
-            if let Some(since) = since(conn, args, s.revision(), &snap)? {
+            let subtree = args.get("subtree").and_then(Value::as_bool) == Some(true);
+            let scope = match subtree {
+                true => Scope::Subtree(&id),
+                false => Scope::Node(&id),
+            };
+            if let Some(since) = since(conn, args, s.revision(), &snap, scope)? {
+                within_budget(&since.to_string(), "What changed", NARROWER)?;
                 return json(since);
             }
             let by_id: HashMap<&str, &mastik_export::snapshot::NodeSnapshot> =
@@ -1062,7 +1112,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
                 .get(id.as_str())
                 .ok_or_else(|| format!("no layer `{id}`"))?;
             let mut nodes = vec![*root];
-            if args.get("subtree").and_then(Value::as_bool) == Some(true) {
+            if subtree {
                 let mut i = 0;
                 while i < nodes.len() {
                     for c in &nodes[i].children {
@@ -1098,18 +1148,32 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
                 return Err(format!("no layer `{}`", id.to_wire()));
             }
             let snap = snapshot_of(s);
-            if let Some(since) = since(conn, args, s.revision(), &snap)? {
-                return json(since);
-            }
-            let Some(id) = id else {
+            let wire = id.map(NodeId::to_wire);
+            // Answered in its own rows: whole when any of them, or the parent's
+            // order of them, moved.
+            let moved = match since(
+                conn,
+                args,
+                s.revision(),
+                &snap,
+                Scope::Children(wire.as_deref()),
+            )? {
+                Some(v) if v.get("unchanged").is_some() => return json(v),
+                Some(v) => v.get("since").cloned(),
+                None => None,
+            };
+            let rows = |children: Vec<Value>| match &moved {
+                Some(since) => json!({ "since": since, "children": children }),
+                None => json!({ "children": children }),
+            };
+            let Some(id) = wire else {
                 let pages: Vec<Value> = snap
                     .pages
                     .iter()
                     .map(|p| json!({ "id": p.id, "name": p.name, "kind": "page" }))
                     .collect();
-                return json(json!({ "children": pages }));
+                return json(rows(pages));
             };
-            let id = id.to_wire();
             let by_id: HashMap<&str, &mastik_export::snapshot::NodeSnapshot> =
                 snap.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
             let parent = by_id
@@ -1121,7 +1185,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
                 .filter_map(|c| by_id.get(c.as_str()))
                 .map(|n| json!({ "id": n.id, "name": n.name, "kind": n.kind }))
                 .collect();
-            json(json!({ "children": children }))
+            json(rows(children))
         }
         "get_outline" => {
             let root = match node(args, "id")? {
@@ -1322,9 +1386,9 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
         }
         "run_exports" => reads::run_exports(s, nodes(args, "ids")?),
         "export_code" => reads::export_code(s, args, nodes(args, "ids")?),
-        "list_components" => json(reads::components(&s.doc)),
-        "list_variables" => json(reads::variables(&s.doc)),
-        "list_styles" => json(reads::styles(&s.doc)),
+        "list_components" => json(reads::named(reads::components(&s.doc), "components", args)),
+        "list_variables" => json(reads::named(reads::variables(&s.doc), "variables", args)),
+        "list_styles" => json(reads::named(reads::styles(&s.doc), "styles", args)),
         tool if inspect::TOOLS.contains(&tool) => inspect::run(s, tool, args),
         tool if context::TOOLS.contains(&tool) => context::run(s, tool, args),
         "run_script" => run_script(conn, s, &call.client, args),
@@ -1493,13 +1557,53 @@ fn fonts(docs: &mut impl Documents, args: &Value) -> Value {
     })
 }
 
-/// A read's `since`: `unchanged`, or the layers changed and removed since that
-/// revision; `None` to answer in full (no `since`, or one too old to diff).
+/// The layers a read with `since` covers, so its answer names only those.
+#[derive(Clone, Copy)]
+enum Scope<'a> {
+    Document,
+    /// One layer.
+    Node(&'a str),
+    /// A layer and everything under it.
+    Subtree(&'a str),
+    /// A layer and its own children; with no layer, the pages.
+    Children(Option<&'a str>),
+}
+
+impl Scope<'_> {
+    /// Whether `id`, as `layers` places it, is covered.
+    fn covers(self, id: &str, layers: &HashMap<String, Layer>) -> bool {
+        match self {
+            Scope::Document => true,
+            Scope::Node(root) => id == root,
+            Scope::Subtree(root) => {
+                let mut at = Some(id);
+                while let Some(here) = at {
+                    if here == root {
+                        return true;
+                    }
+                    at = layers.get(here).and_then(|l| l.parent.as_deref());
+                }
+                false
+            }
+            Scope::Children(parent) => {
+                parent == Some(id)
+                    || layers
+                        .get(id)
+                        .is_some_and(|l| l.parent.as_deref() == parent)
+            }
+        }
+    }
+}
+
+/// A read's `since`: `unchanged` when nothing `scope` covers moved, or the
+/// covered layers changed and removed since that revision; `None` to answer in
+/// full (no `since`, or one too old to diff).
 fn since(
     conn: &Connection,
     args: &Value,
     rev: u64,
     snap: &mastik_export::Snapshot,
+    scope: Scope<'_>,
 ) -> Result<Option<Value>, String> {
     let Some(since) = index(args, "since") else {
         return Ok(None);
@@ -1517,13 +1621,28 @@ fn since(
     };
     let now = layers(snap);
     let d = delta(then, &now);
+    let fresh: std::collections::HashSet<&str> = d
+        .added
+        .iter()
+        .chain(&d.changed)
+        .map(String::as_str)
+        .filter(|id| scope.covers(id, &now))
+        .collect();
+    let removed: Vec<&String> = d
+        .removed
+        .iter()
+        .filter(|id| scope.covers(id, then))
+        .collect();
+    if fresh.is_empty() && removed.is_empty() {
+        return Ok(Some(json!({ "unchanged": true })));
+    }
     let fresh: Vec<&mastik_export::snapshot::NodeSnapshot> = snap
         .nodes
         .iter()
-        .filter(|n| d.added.contains(&n.id) || d.changed.contains(&n.id))
+        .filter(|n| fresh.contains(n.id.as_str()))
         .collect();
     Ok(Some(
-        json!({ "since": since, "nodes": fresh, "removed": d.removed }),
+        json!({ "since": since, "nodes": fresh, "removed": removed }),
     ))
 }
 
@@ -4410,6 +4529,97 @@ mod tests {
             .collect();
         assert_eq!(files.len(), listed.len());
         assert!(files[0].contains("Badge"), "{files:?}");
+    }
+
+    /// `since` on `get_node` and `list_children` answers only what the read
+    /// covers: another layer's rename leaves one layer `unchanged`, and the
+    /// parent's children come back in their own rows.
+    ///
+    /// flip: `since` ignoring its `scope` → fails at "the other layer's
+    /// rename is not this one's".
+    #[test]
+    fn since_answers_only_the_layers_a_read_covers() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        open(&mut engine, &mut docs, 2);
+        let a = rect(&mut engine, &mut docs, 1, "A");
+        let b = rect(&mut engine, &mut docs, 1, "B");
+        let read = call(&mut engine, &mut docs, 2, "get_node", json!({ "id": a }));
+        let base = ok(&read)["rev"].clone();
+        let args = json!({ "node": b, "name": "Renamed" });
+        ok(&call(&mut engine, &mut docs, 1, "set_name", args));
+
+        let node = |engine: &mut Engine, docs: &mut One, id: &str| {
+            let args = json!({ "id": id, "since": base });
+            ok(&call(engine, docs, 2, "get_node", args)).clone()
+        };
+        let one = node(&mut engine, &mut docs, &a);
+        assert_eq!(
+            one["unchanged"], true,
+            "the other layer's rename is not this one's: {one}"
+        );
+        let other = node(&mut engine, &mut docs, &b);
+        let ids: Vec<&Value> = other["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| &n["id"])
+            .collect();
+        assert_eq!(ids, [&json!(b)], "{other}");
+
+        let page = docs.session.doc.first_page().to_wire();
+        let args = json!({ "id": page, "since": base });
+        let rows = call(&mut engine, &mut docs, 2, "list_children", args);
+        let rows = ok(&rows);
+        assert_eq!(rows["since"], base, "{rows}");
+        let names: Vec<&Value> = rows["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| &c["name"])
+            .collect();
+        assert!(
+            names.contains(&&json!("Renamed")) && names.contains(&&json!("A")),
+            "{rows}"
+        );
+        assert!(rows.get("nodes").is_none(), "in its own rows: {rows}");
+    }
+
+    /// The list reads narrow by name with `query`, `find_like` cuts at `limit`
+    /// and counts the rest, and any read past the budget is refused naming the
+    /// narrower call it takes.
+    ///
+    /// flip: `read_fits` answering `Ok` always → fails at "refused".
+    #[test]
+    fn list_reads_narrow_and_every_read_keeps_the_budget() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let a = rect(&mut engine, &mut docs, 1, "A");
+        let b = rect(&mut engine, &mut docs, 1, "B");
+        let fills = mastik_core::verbs::example("[Fill]").unwrap();
+        let args = json!({ "nodes": [a, b], "fills": fills });
+        ok(&call(&mut engine, &mut docs, 1, "set_fills", args));
+        let args = json!({ "id": a, "by": "fill", "limit": 1 });
+        let like = call(&mut engine, &mut docs, 1, "find_like", args);
+        let like = ok(&like);
+        assert_eq!(like["nodes"].as_array().unwrap().len(), 1, "{like}");
+        assert_eq!(like["more"], 1, "{like}");
+
+        let answer = json!({ "styles": [{ "name": "Brand/Blue" }, { "name": "Grey" }] });
+        let kept = reads::named(answer, "styles", &json!({ "query": "blue" }));
+        assert_eq!(kept["styles"].as_array().unwrap().len(), 1, "{kept}");
+
+        let big = Answer::Json(json!({ "styles": "x".repeat(ANSWER_BUDGET) }));
+        let refused = read_fits("list_styles", big);
+        assert!(
+            refused.as_ref().is_err_and(|why| why.contains("`query`")),
+            "refused"
+        );
+        let write = Answer::Json(json!({ "made": "x".repeat(ANSWER_BUDGET) }));
+        assert!(
+            read_fits("set_name", write).is_ok(),
+            "a write is never refused after the fact"
+        );
     }
 
     /// A row whose raster would pass the per-file pixel ceiling is refused by

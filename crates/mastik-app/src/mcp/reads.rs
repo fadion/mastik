@@ -178,6 +178,23 @@ pub(super) fn components(doc: &Document) -> Value {
     json!({ "components": out })
 }
 
+/// `answer` with its `list` kept to the entries whose name holds `args`'
+/// `query`, ignoring case; whole when there is none.
+pub(super) fn named(mut answer: Value, list: &str, args: &Value) -> Value {
+    let Some(query) = args.get("query").and_then(Value::as_str) else {
+        return answer;
+    };
+    let query = query.to_lowercase();
+    if let Some(Value::Array(entries)) = answer.get_mut(list) {
+        entries.retain(|e| {
+            e.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|n| n.to_lowercase().contains(&query))
+        });
+    }
+    answer
+}
+
 /// A colour as the reads write one, `#rrggbbaa`.
 pub(super) fn hex(c: mastik_core::peniko::Color) -> Value {
     let [r, g, b, a] = c.to_rgba8().to_u8_array();

@@ -33,7 +33,8 @@ pub(super) fn run(s: &EditorSession, tool: &str, args: &Value) -> Result<Answer,
 /// Every layer like `id` by `by`: sharing its fills, strokes, font or effects
 /// (*Select same*), the same layer in each copy of its block (*Select matching
 /// layers*), or a main's or set's instances (*Select all instances*). The
-/// source is listed too; the vault's mains never are.
+/// source is listed too; the vault's mains never are. At most `limit` (200 when
+/// absent), with `more` counting the rest.
 fn find_like(s: &EditorSession, args: &Value) -> Result<Answer, String> {
     let doc = &s.doc;
     let id = super::required(args, "id")?;
@@ -88,8 +89,11 @@ fn find_like(s: &EditorSession, args: &Value) -> Result<Answer, String> {
             found
         }
     };
+    let limit = super::index(args, "limit").unwrap_or(200) as usize;
+    let more = found.len().saturating_sub(limit);
     let listed: Vec<Value> = found
         .iter()
+        .take(limit)
         .filter_map(|i| {
             let n = doc.get(*i)?;
             Some(json!({
@@ -99,7 +103,7 @@ fn find_like(s: &EditorSession, args: &Value) -> Result<Answer, String> {
             }))
         })
         .collect();
-    Ok(Answer::Json(json!({ "nodes": listed })))
+    Ok(Answer::Json(json!({ "nodes": listed, "more": more })))
 }
 
 /// The contrast check (*Check contrast*, `mastik check contrast`): each shown
