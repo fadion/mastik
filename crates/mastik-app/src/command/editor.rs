@@ -1162,13 +1162,14 @@ impl MastikApp {
         let (mut row_clicked, mut row_hovered) = (None, None);
         let s = &mut self.scripts;
         let id = egui::Id::new("script-editor");
-        // Hung as every card over the canvas is, by its top-left: the window is
-        // resizable, so its width is last frame's.
+        // Placed as every dialog over the canvas is (`ui::canvas_dialog_area`), by
+        // its top-left: the window is resizable, so its width is last frame's.
         let w = ctx
             .memory(|m| m.area_rect(id))
             .map_or(START.x, |r| r.width());
         let x = ui::card_lane(ctx).unwrap_or(canvas).center().x - w / 2.0;
-        let at = egui::pos2(x, canvas.top() + ui::CANVAS_POPUP_TOP) + ui::card_drag(ctx, id);
+        let y = ctx.content_rect().top() + ui::dialog_top(ctx, id);
+        let at = egui::pos2(x, y) + ui::card_drag(ctx, id);
         let window = egui::Window::new("Scripts")
             .id(id)
             .title_bar(false)

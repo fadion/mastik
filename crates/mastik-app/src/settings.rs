@@ -1286,11 +1286,11 @@ fn show_card<R>(
 /// Shared so every settings-shaped modal is the same object. The caller sets its
 /// own width: [`CARD_W`] is this file's, and a modal with a wider row may be wider.
 ///
-/// Hung as a canvas card is when [`ui::card_lane`] is set: centred across the
-/// lane, [`ui::CANVAS_POPUP_TOP`] under its top. With no lane (the library) it
-/// centres on the window. Either way it is kept [`CARD_EDGE`] inside the window,
-/// measured on last frame's card: not `Area::constrain_to`, which clips the
-/// backdrop the card blocks clicks with.
+/// At [`ui::dialog_top`] (centred on the window's height by the height it
+/// opened at), and across [`ui::card_lane`] when one is set (the canvas short of
+/// the inspector), else across the window. The move off the window's centre is
+/// cut short [`CARD_EDGE`] from the edge, measured on last frame's card: not
+/// `Area::constrain_to`, which clips the backdrop the card blocks clicks with.
 pub(crate) fn card_modal(ctx: &egui::Context, id: &str) -> egui::Modal {
     card_modal_moved(ctx, id, egui::Vec2::ZERO)
 }
@@ -1304,16 +1304,10 @@ pub(crate) fn card_modal_moved(ctx: &egui::Context, id: &str, moved: egui::Vec2)
         .memory(|m| m.area_rect(id))
         .map_or(egui::Vec2::ZERO, |r| r.size());
     let room = ((screen.size() - size) / 2.0 - egui::Vec2::splat(CARD_EDGE)).max(egui::Vec2::ZERO);
-    // From the window's centre-top, by its top edge: a card that grows keeps
-    // its top where it opened.
-    let centred = (screen.height() - size.y) / 2.0;
-    let offset = ui::card_lane(ctx).map_or(egui::vec2(0.0, centred), |lane| {
-        let top = lane.top() - screen.top() + ui::CANVAS_POPUP_TOP;
-        egui::vec2(
-            (lane.center().x - screen.center().x).clamp(-room.x, room.x),
-            top.clamp(centred - room.y, centred + room.y),
-        )
+    let x = ui::card_lane(ctx).map_or(0.0, |lane| {
+        (lane.center().x - screen.center().x).clamp(-room.x, room.x)
     });
+    let offset = egui::vec2(x, ui::dialog_top(ctx, id));
     egui::Modal::new(id)
         .area(egui::Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, offset + moved))
         // Half black: a modal over a canvas must dim more than
@@ -1479,7 +1473,7 @@ fn canvas_card_moved(
     moved: egui::Vec2,
     body: impl FnOnce(&mut egui::Ui),
 ) -> bool {
-    let area = ui::canvas_popup_area(ctx, egui::Id::new(id), canvas, moved);
+    let area = ui::canvas_dialog_area(ctx, egui::Id::new(id), canvas, moved);
     let rows = |ui: &mut egui::Ui| {
         ui.set_width(w);
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -2787,12 +2781,11 @@ mod tests {
         );
     }
 
-    /// A card hangs `ui::CANVAS_POPUP_TOP` under the lane `ui::set_card_lane` names,
-    /// centred across it, lifted when too tall to clear the window's foot; with no
-    /// lane it centres on the window.
-    /// flip: `card_modal_moved` centring on the lane's middle → fails at "hung".
+    /// A card centres across the lane `ui::set_card_lane` names and on the
+    /// window's height; with no lane it centres on the window.
+    /// flip: `card_modal_moved` hanging from the lane's top → fails at "centred".
     #[test]
-    fn a_card_hangs_from_the_canvas_top_when_there_is_one() {
+    fn a_card_centres_on_the_window_height_and_across_the_lane() {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
         let rect_of = |lane: Option<egui::Rect>, h: f32| {
             let ctx = egui::Context::default();
@@ -2814,19 +2807,67 @@ mod tests {
             rect
         };
         let lane = egui::Rect::from_center_size(egui::pos2(500.0, 330.0), egui::vec2(400.0, 500.0));
-        let hung = rect_of(Some(lane), 100.0);
+        let centred = rect_of(Some(lane), 100.0);
         assert!(
-            (hung.center().x - lane.center().x).abs() < 1.0
-                && (hung.top() - (lane.top() + ui::CANVAS_POPUP_TOP)).abs() < 1.0,
-            "hung: {hung:?}"
-        );
-        let tall = rect_of(Some(lane), 500.0);
-        assert!(
-            (tall.bottom() - (screen.bottom() - CARD_EDGE)).abs() < 1.0,
-            "a tall card stops short of the window's foot: {tall:?}"
+            (centred.center().x - lane.center().x).abs() < 1.0
+                && (centred.center().y - screen.center().y).abs() < 1.0,
+            "centred: {centred:?}"
         );
         let centre = rect_of(None, 100.0).center();
         assert!((centre - screen.center()).length() < 1.0, "{centre:?}");
+    }
+
+    /// A card keeps the top it opened at while its height changes, so a row
+    /// that folds stays under the pointer; reopened, it centres on its new height.
+    /// flip: `ui::dialog_top` centring on this pass's height → fails at "kept".
+    #[test]
+    fn a_card_keeps_its_top_as_its_rows_fold() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let ctx = egui::Context::default();
+        let frame = |h: Option<f32>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut rect = egui::Rect::NOTHING;
+            let _ = ctx.run_ui(input, |ui| {
+                if let Some(h) = h {
+                    rect = card("probe-fold", ui.ctx(), |ui| {
+                        ui.allocate_exact_size(egui::vec2(200.0, h), egui::Sense::hover());
+                    })
+                    .response
+                    .rect;
+                }
+            });
+            rect
+        };
+        for _ in 0..3 {
+            frame(Some(300.0));
+        }
+        let opened = frame(Some(300.0));
+        assert!(
+            (opened.center().y - screen.center().y).abs() < 1.0,
+            "opens centred: {opened:?}"
+        );
+        for _ in 0..3 {
+            frame(Some(100.0));
+        }
+        let folded = frame(Some(100.0));
+        assert!(
+            (folded.top() - opened.top()).abs() < 1.0,
+            "kept: {folded:?}"
+        );
+
+        frame(None);
+        frame(None);
+        for _ in 0..3 {
+            frame(Some(100.0));
+        }
+        let reopened = frame(Some(100.0));
+        assert!(
+            (reopened.center().y - screen.center().y).abs() < 1.0,
+            "reopened on its new height: {reopened:?}"
+        );
     }
 
     /// A movable card follows a drag on its title row, not one on its body, stops

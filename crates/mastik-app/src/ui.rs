@@ -1084,6 +1084,68 @@ pub fn canvas_popup_area(
     )
 }
 
+/// The place every dialog card over the canvas opens — batch rename, tokens
+/// import, Colour review and the other tool cards: centred across [`card_lane`]
+/// (or else `canvas`), at [`dialog_top`], then `moved` by [`card_drag`]. Bars
+/// and search cards a person keeps working past (the command palette, Find)
+/// hang from [`canvas_popup_area`] instead.
+pub fn canvas_dialog_area(
+    ctx: &egui::Context,
+    id: egui::Id,
+    canvas: egui::Rect,
+    moved: egui::Vec2,
+) -> egui::Area {
+    let screen = ctx.content_rect();
+    let x = card_lane(ctx).unwrap_or(canvas).center().x;
+    egui::Modal::default_area(id).anchor(
+        egui::Align2::CENTER_TOP,
+        egui::vec2(x - screen.center().x, dialog_top(ctx, id)) + moved,
+    )
+}
+
+/// How far below the window's top the dialog `card` stands: centred on the
+/// window's height by the height it opened at, then kept, so a card whose rows
+/// fold or unfold stays under the pointer. Lifted only as far as a card grown
+/// past the window's foot needs. A card not shown last pass starts over.
+pub fn dialog_top(ctx: &egui::Context, card: egui::Id) -> f32 {
+    let pass = ctx.cumulative_pass_nr();
+    let screen = ctx.content_rect();
+    let shown = ctx.memory(|m| m.area_rect(card)).map(|r| r.height());
+    let opened_h = ctx.data_mut(|d| {
+        let e = d.get_temp_mut_or_insert_with(card.with("dialog-top"), || DialogTop {
+            h: None,
+            opened: pass,
+            pass,
+        });
+        if e.pass + 1 < pass {
+            *e = DialogTop {
+                h: None,
+                opened: pass,
+                pass,
+            };
+        }
+        // The opening pass measures the last opening's card; the next, this one's.
+        if e.h.is_none() && pass > e.opened {
+            e.h = shown;
+        }
+        e.pass = pass;
+        e.h
+    });
+    let now = shown.unwrap_or(0.0);
+    let top = (screen.height() - opened_h.unwrap_or(now)) / 2.0;
+    top.min(screen.height() - now - SCREEN_MARGIN)
+        .max(SCREEN_MARGIN)
+}
+
+/// [`dialog_top`]'s memory of one card: the height it opened at, and the
+/// passes it opened and was last shown in.
+#[derive(Clone, Copy)]
+struct DialogTop {
+    h: Option<f32>,
+    opened: u64,
+    pass: u64,
+}
+
 /// Where this frame's cards centre across: the canvas up to the inspector's
 /// cards in the editor, `None` elsewhere. Written by `MastikApp::ui` before
 /// any card is shown.

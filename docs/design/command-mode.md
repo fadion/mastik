@@ -321,8 +321,8 @@ failure opens the editor on the script with its line marked.
 
 **The editor** (`command/editor.rs`) is in the app: *Tools ▸ Scripts…*, and the palette's *Scripts…*
 and a *Run ‹name›* row per saved script. One floating, resizable window that leaves the canvas
-live, hung as the canvas cards are (centred on the card lane, `ui::CANVAS_POPUP_TOP` under the
-canvas's top) and movable by its head: a list on the left (a
+live, placed as the dialog cards are (centred on the card lane, at `ui::dialog_top`) and movable
+by its head: a list on the left (a
 `ui::search_box`; sections *This document*, *Library*, *Kit · ‹name›*, *Unsaved*; *+ New script*,
 a `ui::action_button`, and the folder button at its foot), the script's head (its name, where it
 lives, its problem counts, the find and ⋯ toggles and *Run*), the code pane and an output pane

@@ -1532,14 +1532,14 @@ mod tests {
         assert_eq!(f.app.colour_review.seen.groups.len(), 1, "a hair apart");
     }
 
-    /// The card hangs at the command palette's place — centred on the canvas,
-    /// `ui::CANVAS_POPUP_TOP` under its top — as tall as its rows with a group
-    /// unfolded, and no taller than its list's cap with many groups.
+    /// The card opens where every dialog does — centred across the canvas and on
+    /// the window's height — as tall as its rows with a group unfolded, and no
+    /// taller than its list's cap with many groups.
     ///
     /// flip: `list` scrolling past the room left rather than `CANVAS_POPUP_LIST_H`
     /// → fails at "capped".
     #[test]
-    fn the_card_sits_at_the_palettes_place_and_keeps_its_height() {
+    fn the_card_sits_at_the_dialogs_place_and_keeps_its_height() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         f.app.open_colour_review();
@@ -1557,7 +1557,11 @@ mod tests {
             (rect.center().x - canvas.center().x).abs() < 1.0,
             "{rect:?}"
         );
-        assert!((rect.top() - canvas.top() - ui::CANVAS_POPUP_TOP).abs() < 1.0);
+        let screen = ctx.content_rect();
+        assert!(
+            (rect.center().y - screen.center().y).abs() < 1.0,
+            "{rect:?} in {screen:?}"
+        );
         assert!(rect.height() < 320.0, "as tall as its rows: {rect:?}");
 
         // Twenty pairs of greys a level apart, each pair ten levels from the next.
