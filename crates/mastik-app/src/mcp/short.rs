@@ -40,6 +40,11 @@ pub(crate) fn shorten(out: &mut Output, known: &[u64]) {
     }
 }
 
+/// The keys whose values are the document's own words, never ids: a text, a
+/// name, a description or a script's source stays as stored, so what an agent
+/// copies back is what was there.
+const WORDS: [&str; 4] = ["text", "name", "description", "source"];
+
 fn shorten_value(v: &mut Value, known: &[u64]) {
     match v {
         Value::String(s) => {
@@ -54,13 +59,68 @@ fn shorten_value(v: &mut Value, known: &[u64]) {
                 let Some(mut value) = map.remove(&key) else {
                     continue;
                 };
-                shorten_value(&mut value, known);
+                if !(WORDS.contains(&key.as_str()) && value.is_string()) {
+                    shorten_value(&mut value, known);
+                }
                 let key = shorten_text(&key, known).unwrap_or(key);
                 map.insert(key, value);
             }
         }
         _ => {}
     }
+}
+
+/// Write every script `source` in `args`, at any depth (a `batch` step's, a
+/// `call`'s), with its short ids in full: a stored script runs outside MCP,
+/// where only the full form reads.
+pub(crate) fn expand_sources(args: &mut Value, known: &[u64]) {
+    match args {
+        Value::Array(items) => items.iter_mut().for_each(|i| expand_sources(i, known)),
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                match value {
+                    Value::String(s) if key == "source" => {
+                        if let Some(full) = expand_text(s, known) {
+                            *s = full;
+                        }
+                    }
+                    _ => expand_sources(value, known),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `text` with each short id of a `known` actor written in full, `None` when
+/// none is. A short id is `n`, a hex run, `_` and a decimal run, standing
+/// alone as [`shorten_text`]'s ids do.
+fn expand_text(text: &str, known: &[u64]) -> Option<String> {
+    let bytes = text.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut out = String::new();
+    let mut copied = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'n' || (i > 0 && word(bytes[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let mut k = i + 1;
+        while k < bytes.len() && word(bytes[k]) {
+            k += 1;
+        }
+        if let Some(id) = NodeId::from_short(&text[i..k], known) {
+            out.push_str(&text[copied..i]);
+            out.push_str(&id.to_wire());
+            copied = k;
+        }
+        i = k;
+    }
+    (copied > 0).then(|| {
+        out.push_str(&text[copied..]);
+        out
+    })
 }
 
 /// `text` with each full id of a `known` actor written short, `None` when
@@ -131,6 +191,41 @@ mod tests {
         ] {
             assert_eq!(shorten_text(s, &known), None, "{s:?} stays");
         }
+    }
+
+    /// A script's source is stored with its ids in full, and a stored text,
+    /// name or source is answered as stored, while an id beside them is
+    /// written short.
+    ///
+    /// flip: `shorten_value` without its `WORDS` arm → fails at "a text stays";
+    /// `expand_sources` skipping a step → fails at "a batch step's source".
+    #[test]
+    fn stored_words_keep_their_ids_in_full() {
+        let known = [0xaa];
+        let mut args = serde_json::json!({
+            "source": "set_name(\"naa_36\", \"Hero\") -- not nab_1 or xnaa_2",
+            "steps": [{ "args": { "source": "print(naa_7)" } }],
+        });
+        expand_sources(&mut args, &known);
+        assert_eq!(
+            args["source"],
+            "set_name(\"aa:36\", \"Hero\") -- not nab_1 or xnaa_2"
+        );
+        assert_eq!(
+            args["steps"][0]["args"]["source"], "print(aa:7)",
+            "a batch step's source"
+        );
+        let mut answer = serde_json::json!({
+            "id": "aa:3",
+            "text": "see aa:3",
+            "name": "aa:4",
+            "source": "x = aa:5",
+        });
+        shorten_value(&mut answer, &known);
+        assert_eq!(answer["id"], "naa_3");
+        assert_eq!(answer["text"], "see aa:3", "a text stays");
+        assert_eq!(answer["name"], "aa:4");
+        assert_eq!(answer["source"], "x = aa:5");
     }
 
     /// An actor that minted only a style stays known after the session's own

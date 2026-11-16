@@ -310,6 +310,8 @@ impl Engine {
                 .unwrap_or_default()
         };
         let before = known(self, docs);
+        let mut call = call;
+        short::expand_sources(&mut call.args, &before);
         let mut out = mastik_core::with_short_ids(&before, || self.answer_ids(docs, call));
         short::shorten(&mut out, &known(self, docs));
         out
