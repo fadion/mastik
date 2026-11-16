@@ -363,20 +363,34 @@ pub struct ContentIndex {
     queued: HashSet<String>,
     reader: Option<Reader>,
     dir: Option<PathBuf>,
+    /// Moves whenever `facts` does, so what is derived from them can tell it is stale.
+    generation: u64,
 }
 
 impl Default for ContentIndex {
     fn default() -> Self {
-        Self {
-            facts: HashMap::new(),
-            queued: HashSet::new(),
-            reader: None,
-            dir: index_dir(),
-        }
+        Self::with_dir(index_dir())
     }
 }
 
 impl ContentIndex {
+    /// An index caching its facts in `dir`, or nowhere for `None`.
+    fn with_dir(dir: Option<PathBuf>) -> Self {
+        Self {
+            facts: HashMap::new(),
+            queued: HashSet::new(),
+            reader: None,
+            dir,
+            generation: 0,
+        }
+    }
+
+    /// How many times the facts have changed; equal across two frames, nothing
+    /// was read or forgotten between them.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Once per library pass: take the worker's answers, then send it every
     /// document in `entries` not yet read or asked for.
     pub fn pass(&mut self, ctx: &egui::Context, entries: &[Entry]) {
@@ -420,6 +434,7 @@ impl ContentIndex {
                     reader.in_flight = reader.in_flight.saturating_sub(1);
                     self.queued.remove(&key);
                     self.facts.insert(key, facts);
+                    self.generation += 1;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -474,6 +489,23 @@ impl ContentIndex {
         Some(out)
     }
 
+    /// How many of `entries` use each kit, by the kit's `meta.id`, counted as
+    /// [`Self::kit_users`] counts them; `None` until every one has been read.
+    pub fn kit_counts(&self, entries: &[Entry]) -> Option<HashMap<String, usize>> {
+        let mut out: HashMap<String, usize> = HashMap::new();
+        for e in entries {
+            if !self.is_read(e) {
+                return None;
+            }
+            for k in self.get(e).map_or(&[][..], |f| &f.kits[..]) {
+                if e.meta.id.as_deref() != Some(k.kit.as_str()) {
+                    *out.entry(k.kit.clone()).or_default() += 1;
+                }
+            }
+        }
+        Some(out)
+    }
+
     /// The strongest reason `entry` answers `words` by what it holds.
     pub fn reason(&self, entry: &Entry, words: &[String]) -> Option<Reason> {
         self.get(entry)?.reason(words)
@@ -484,6 +516,7 @@ impl ContentIndex {
         self.facts.clear();
         self.queued.clear();
         self.reader = None;
+        self.generation += 1;
     }
 
     /// Delete cached facts no live document claims, as `Covers::sweep` does; an
@@ -521,6 +554,7 @@ impl ContentIndex {
                     reader.in_flight -= 1;
                     self.queued.remove(&key);
                     self.facts.insert(key, facts);
+                    self.generation += 1;
                 }
                 Err(_) => {
                     self.reader = None;

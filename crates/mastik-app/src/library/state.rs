@@ -408,7 +408,8 @@ impl Library {
 
     /// [`Self::sort_entries`] with each document's page count, which the content
     /// index holds and the library does not; a count still unknown sorts last
-    /// under [`Sort::Pages`] either way.
+    /// under [`Sort::Pages`] either way. Each document's keys are read once, not
+    /// per comparison: the library sorts its list every frame.
     pub fn sort_entries_with(
         &self,
         entries: &mut [Entry],
@@ -419,9 +420,30 @@ impl Library {
         if by.field == Sort::Best {
             return;
         }
-        let name = |e: &Entry| e.display_name().to_lowercase();
-        let project = |e: &Entry| self.project_of(e).map(|p| p.name.to_lowercase());
-        let opened = |e: &Entry| self.local.opened_at(e.meta.id.as_deref());
+        struct Keys {
+            name: String,
+            project: Option<String>,
+            opened: Option<u64>,
+            pages: Option<usize>,
+        }
+        let keys: Vec<Keys> = entries
+            .iter()
+            .map(|e| Keys {
+                name: e.display_name().to_lowercase(),
+                project: match by.field {
+                    Sort::Project => self.project_of(e).map(|p| p.name.to_lowercase()),
+                    _ => None,
+                },
+                opened: match by.field {
+                    Sort::Opened => self.local.opened_at(e.meta.id.as_deref()),
+                    _ => None,
+                },
+                pages: match by.field {
+                    Sort::Pages => pages(e),
+                    _ => None,
+                },
+            })
+            .collect();
         fn run<T: Ord>(a: T, b: T, flip: bool) -> Ordering {
             match flip {
                 true => b.cmp(&a),
@@ -435,25 +457,36 @@ impl Library {
                 (a, b) => b.is_some().cmp(&a.is_some()),
             }
         }
-        entries.sort_by(|a, b| {
+        let mut order: Vec<usize> = (0..entries.len()).collect();
+        order.sort_by(|&i, &j| {
+            let (a, b) = (&entries[i], &entries[j]);
+            let (ka, kb) = (&keys[i], &keys[j]);
             let down = !by.ascending();
             let primary = match by.field {
                 Sort::Edited => run(a.modified, b.modified, down),
                 Sort::Created => run(a.meta.created, b.meta.created, down),
                 Sort::Size => run(a.size, b.size, down),
-                Sort::Opened => run(opened(a), opened(b), down),
-                Sort::Pages => present(pages(a), pages(b), down),
-                Sort::Name => run(name(a), name(b), down),
+                Sort::Opened => run(ka.opened, kb.opened, down),
+                Sort::Pages => present(ka.pages, kb.pages, down),
+                Sort::Name => run(&ka.name, &kb.name, down),
                 // Within a project, the last edited first.
-                Sort::Project => {
-                    present(project(a), project(b), down).then_with(|| b.modified.cmp(&a.modified))
-                }
+                Sort::Project => present(ka.project.as_ref(), kb.project.as_ref(), down)
+                    .then_with(|| b.modified.cmp(&a.modified)),
                 Sort::Best => Ordering::Equal,
             };
             primary
-                .then_with(|| name(a).cmp(&name(b)))
+                .then_with(|| ka.name.cmp(&kb.name))
                 .then_with(|| a.stem.cmp(&b.stem))
         });
+        // Put each entry where `order` says, by swaps: position `i` takes the entry
+        // first at `order[i]`, found by following the swaps already made.
+        for i in 0..order.len() {
+            let mut from = order[i];
+            while from < i {
+                from = order[from];
+            }
+            entries.swap(i, from);
+        }
     }
 
     /// The documents this machine has opened, most recent first.

@@ -269,10 +269,56 @@ fn list_head(
 
 /// One document a search found: by its name (`hit` lights it) or, with a
 /// `reason`, by what it holds.
+#[derive(Clone)]
 pub(crate) struct SearchMatch {
     pub(crate) entry: Entry,
     pub(crate) hit: search::Hit,
     pub(crate) reason: Option<index::Reason>,
+}
+
+/// One query's matches in order, and where each document sits among them, so a
+/// card on the results page finds its reason without ranking again.
+pub(crate) struct Matches {
+    list: Vec<SearchMatch>,
+    at: std::collections::HashMap<PathBuf, usize>,
+}
+
+impl Matches {
+    fn new(list: Vec<SearchMatch>) -> Self {
+        let at = list
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.entry.path.clone(), i))
+            .collect();
+        Self { list, at }
+    }
+
+    /// `path`'s match, if it is one.
+    fn of(&self, path: &Path) -> Option<&SearchMatch> {
+        self.at.get(path).map(|&i| &self.list[i])
+    }
+}
+
+impl std::ops::Deref for Matches {
+    type Target = [SearchMatch];
+    fn deref(&self) -> &[SearchMatch] {
+        &self.list
+    }
+}
+
+/// What the search and the *Kits* cards derive from the whole library, kept
+/// across frames: the per-frame cost is one comparison of the list, and the
+/// work is redone only when the list, the content index or the query changes.
+#[derive(Default)]
+pub(crate) struct LibraryMemo {
+    /// The library's list and the index's generation the rest was derived from.
+    entries: Vec<Entry>,
+    index: u64,
+    /// The last query's words and what it matched.
+    search: Option<(Vec<String>, std::sync::Arc<Matches>)>,
+    /// How many documents use each kit; the inner `None` until the index has
+    /// read them all, the outer until it is asked.
+    kit_counts: Option<Option<std::collections::HashMap<String, usize>>>,
 }
 
 /// What a search row says in its meta slot at the right edge.
@@ -733,6 +779,9 @@ pub(crate) struct DashboardState {
     /// first document match, which the groups above can push down as the query
     /// changes. Cleared when the query changes and when the overlay opens.
     pub(crate) search_row: Option<usize>,
+    /// The search's matches and the kits' usage, derived across frames; read
+    /// through `MastikApp::memo`, which drops it when it is stale.
+    pub(crate) memo: std::cell::RefCell<LibraryMemo>,
 }
 
 /// A migration that did not move everything, kept so the modal can report it and
@@ -1282,22 +1331,31 @@ impl MastikApp {
             Vec::new()
         };
         let mut projects = self.ranked_projects(&words);
-        let mut files = self.search_matches(&words);
         // A project's own search lists its files and, last, the way out to the library.
         let scope = self
             .dash
             .search_scope
             .clone()
             .filter(|s| self.library.projects.get(s).is_some());
-        if let Some(s) = &scope {
+        if scope.is_some() {
             projects.clear();
-            files.retain(|m| m.entry.meta.project.as_deref() == Some(s.as_str()));
         }
+        let matches = self.search_matches(&words);
+        let in_scope = |m: &&SearchMatch| {
+            scope
+                .as_deref()
+                .is_none_or(|s| m.entry.meta.project.as_deref() == Some(s))
+        };
+        let matched = matches.iter().filter(in_scope).count();
+        let files: Vec<SearchMatch> = matches
+            .iter()
+            .filter(in_scope)
+            .take(SEARCH_MAX)
+            .cloned()
+            .collect();
         // Past the cap, a row opens every match on the results page.
-        let show_all =
-            (files.len() > SEARCH_MAX || projects.len() > SEARCH_MAX).then_some(files.len());
+        let show_all = (matched > SEARCH_MAX || projects.len() > SEARCH_MAX).then_some(matched);
         projects.truncate(SEARCH_MAX);
-        files.truncate(SEARCH_MAX);
         // Names lead; a rule parts them from content matches when both are there.
         let by_name = files.iter().filter(|m| m.reason.is_none()).count();
         let rule = by_name > 0 && by_name < files.len();
@@ -1576,7 +1634,46 @@ impl MastikApp {
     /// those whose names match first ([`Self::ranked_files`]), then those that
     /// match only by what they hold, each with its reason, by tier and then most
     /// recently edited. A name always outranks content, whatever the tiers.
-    pub(crate) fn search_matches(&self, words: &[String]) -> Vec<SearchMatch> {
+    /// Memoised: ranked again only when the query, the list or the index moves.
+    pub(crate) fn search_matches(&self, words: &[String]) -> std::sync::Arc<Matches> {
+        let mut memo = self.memo();
+        if let Some((asked, found)) = &memo.search
+            && asked.as_slice() == words
+        {
+            return std::sync::Arc::clone(found);
+        }
+        let found = std::sync::Arc::new(Matches::new(self.rank_documents(words)));
+        memo.search = Some((words.to_vec(), std::sync::Arc::clone(&found)));
+        found
+    }
+
+    /// The derived state [`LibraryMemo`] keeps, emptied first when the library's
+    /// list or the content index has moved since it was filled.
+    fn memo(&self) -> std::cell::RefMut<'_, LibraryMemo> {
+        let mut memo = self.dash.memo.borrow_mut();
+        let generation = self.index.generation();
+        if memo.index != generation || memo.entries != self.library.entries {
+            *memo = LibraryMemo {
+                entries: self.library.entries.clone(),
+                index: generation,
+                ..LibraryMemo::default()
+            };
+        }
+        memo
+    }
+
+    /// How many documents use the kit `kit` (its `meta.id`); `None` until the
+    /// index has read every document, so a count is never a part-count.
+    fn kit_user_count(&self, kit: &str) -> Option<usize> {
+        let mut memo = self.memo();
+        let counts = memo
+            .kit_counts
+            .get_or_insert_with(|| self.index.kit_counts(&self.library.entries));
+        counts.as_ref().map(|c| c.get(kit).copied().unwrap_or(0))
+    }
+
+    /// [`Self::search_matches`]'s work, done when the memo is stale.
+    fn rank_documents(&self, words: &[String]) -> Vec<SearchMatch> {
         let mut out: Vec<SearchMatch> = self
             .ranked_files(words)
             .into_iter()
@@ -1586,11 +1683,13 @@ impl MastikApp {
                 reason: None,
             })
             .collect();
+        let named: std::collections::HashSet<&Path> =
+            out.iter().map(|m| m.entry.path.as_path()).collect();
         let mut by_content: Vec<SearchMatch> = self
             .library
             .entries
             .iter()
-            .filter(|e| !out.iter().any(|m| m.entry.path == e.path))
+            .filter(|e| !named.contains(e.path.as_path()))
             .filter_map(|e| {
                 let reason = self.index.reason(e, words)?;
                 Some(SearchMatch {
@@ -2003,8 +2102,8 @@ impl MastikApp {
             (Some(_), _) if crate::private::on() => Vec::new(),
             (Some(q), _) => self
                 .search_matches(&search::words(q))
-                .into_iter()
-                .map(|m| m.entry)
+                .iter()
+                .map(|m| m.entry.clone())
                 .collect(),
             (None, nav) => self.nav_entries(nav),
         };
@@ -2626,11 +2725,10 @@ impl MastikApp {
     /// reason its content matched. `None` off the page and for a name match.
     fn page_reason(&self, entry: &Entry) -> Option<index::Reason> {
         let q = self.dash.search_page.as_deref()?;
-        let words = search::words(q);
-        if search::rank(&entry.display_name(), &words).is_some() {
-            return None;
-        }
-        self.index.reason(entry, &words)
+        self.search_matches(&search::words(q))
+            .of(&entry.path)?
+            .reason
+            .clone()
     }
 
     /// The results page's matching projects, as the header's link: the best
@@ -3270,8 +3368,17 @@ impl MastikApp {
         // Under the pointer, a document of several pages steps through them: the
         // cover is cut into one strip per page, drafts left out, and the pointer's
         // strip picks the page. The first strip is the rest cover. Only the cover
-        // steps: over the caption or with the menu up, the page holds.
-        let pages = self.hover_pages(entry);
+        // steps: over the caption or with the menu up, the page holds. Read only
+        // for the card that can step, as the grid draws every card every frame.
+        let stepped = self
+            .dash
+            .card_step
+            .as_ref()
+            .is_some_and(|(p, _)| *p == entry.path);
+        let pages = match lit || stepped {
+            true => self.hover_pages(entry),
+            false => Vec::new(),
+        };
         let held = |s: &Option<(PathBuf, usize)>| {
             s.as_ref()
                 .filter(|(p, i)| *p == entry.path && *i < pages.len())
@@ -4038,9 +4145,9 @@ impl MastikApp {
             .then_some(entry.meta.id.as_deref())
             .flatten()
             .filter(|_| is_kit(&self.library, entry))
-            .and_then(|id| self.index.kit_users(id, &self.library.entries));
+            .and_then(|id| self.kit_user_count(id));
         if let Some(users) = usage {
-            parts.push(match users.len() {
+            parts.push(match users {
                 0 => "Not used yet".to_string(),
                 n => format!("Used in {}", ui::count(n, "document")),
             });
@@ -9657,6 +9764,81 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A kit nobody uses says so on its card; one used by six lists the four most
+    /// recently edited under *Used in* and counts the rest.
+    /// flip: `kit_users_rows` dropping `.take(KIT_USERS_SHOWN)` → fails at "four,
+    /// newest first".
+    #[test]
+    fn a_kits_users_are_capped_newest_first() {
+        use crate::kits::picker::tests::{app_on, file_kit, temp_root};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let dir = temp_root("kit-usage-cap");
+        let (kit, _, badge) = file_kit(&dir);
+        let mut app = app_on(&ctx, dir.clone());
+        let kit_entry = |app: &MastikApp| {
+            app.library
+                .entries
+                .iter()
+                .find(|e| e.meta.id.as_deref() == Some(kit.as_str()))
+                .unwrap()
+                .clone()
+        };
+        let published = mastik_core::io::load(&std::fs::read(&kit_entry(&app).path).unwrap())
+            .ok()
+            .and_then(|d| d.published().cloned())
+            .expect("the kit is published");
+        app.go_to_dashboard();
+        app.library.refresh();
+        app.dash.nav = Nav::Kits;
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        assert_eq!(app.card_line(&kit_entry(&app)), "v4 · Not used yet");
+
+        for i in 0..6u64 {
+            let mut doc = mastik_core::Document::new(app.session.ids.mint());
+            let name = format!("User {i}");
+            let path = store::file_document(&dir, None, &name, &mut doc).unwrap();
+            let mut ids = mastik_core::IdSource::new(0xC0 + i);
+            let page = doc.first_page();
+            let (tx, _) =
+                mastik_core::kit::insert(&doc, &mut ids, &kit, 4, &published, badge, page).unwrap();
+            doc.apply(&tx).unwrap();
+            store::write_document(&path, &doc).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + i * 60),
+                )
+                .unwrap();
+        }
+        app.library.refresh();
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let entry = kit_entry(&app);
+        assert_eq!(app.card_line(&entry), "v4 · Used in 6 documents");
+        let rows = app.kit_users_rows(&entry);
+        let names: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                FileRow::User(name, _, _) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            names,
+            ["User 5", "User 4", "User 3", "User 2"],
+            "four, newest first"
+        );
+        assert!(
+            matches!(rows.last(), Some(FileRow::More(2))),
+            "and the other two counted"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Over a card of two pages the pointer's half picks the page: the right half
     /// shows the second page's name and asks for its cover, the caption holds it,
     /// an empty page's answer ends the wait, and leaving goes back to the rest
@@ -9745,6 +9927,39 @@ mod tests {
             !runs.iter().any(|(_, _, t)| t == "Receipt"),
             "and leaving shows none"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A card of more pages than `HOVER_PAGES_MAX` steps through its first ones.
+    /// flip: `hover_pages` dropping `.take(HOVER_PAGES_MAX)` → fails at "capped".
+    #[test]
+    fn a_card_steps_through_its_first_pages_only() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "page-hover-cap");
+        let mut ids = mastik_core::IdSource::new(0x9A6F);
+        let mut doc = mastik_core::Document::new(ids.mint());
+        let ops = (1..7)
+            .map(|i| mastik_core::Operation::AddPage {
+                id: ids.mint(),
+                index: i,
+                name: format!("Step {i}"),
+                ground: None,
+                draft: false,
+                modes: Vec::new(),
+            })
+            .collect();
+        doc.apply(&mastik_core::Transaction(ops)).unwrap();
+        store::file_document(&root, None, "Wizard", &mut doc).unwrap();
+        app.library.refresh();
+        app.dash.nav = Nav::All;
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let entry = app.library.entries[0].clone();
+        assert_eq!(app.index.get(&entry).unwrap().pages.len(), 7);
+        let pages = app.hover_pages(&entry);
+        assert_eq!(pages.len(), HOVER_PAGES_MAX, "capped");
+        assert_eq!(pages[1].name, "Step 1", "at the first ones");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -10057,6 +10272,46 @@ mod tests {
         assert!(
             runs.iter().any(|(_, _, t)| t == "text: “Pay now, safely”"),
             "the row says why"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A search is ranked once and kept until the query, the library's list or
+    /// the content index moves.
+    /// flip: `search_matches` skipping its memo → fails at "the same answer twice";
+    /// `memo` ignoring the list → fails at "a list that moved is ranked again".
+    #[test]
+    fn a_search_is_ranked_again_only_when_what_it_reads_moves() {
+        use std::sync::Arc;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "search-memo");
+        let mut wallet = crate::library::index::tests::doc();
+        store::file_document(&root, None, "Wallet", &mut wallet).unwrap();
+        let mut repay = mastik_core::Document::new(app.session.ids.mint());
+        store::file_document(&root, None, "Repay", &mut repay).unwrap();
+        app.library.refresh();
+        let words = search::words("pay");
+        let first = app.search_matches(&words);
+        assert!(
+            Arc::ptr_eq(&first, &app.search_matches(&words)),
+            "the same answer twice"
+        );
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let read = app.search_matches(&words);
+        assert!(!Arc::ptr_eq(&first, &read), "the index read the documents");
+        assert_eq!(read.len(), 2, "and the content match joins");
+        let other = app.search_matches(&search::words("wal"));
+        assert!(!Arc::ptr_eq(&read, &other), "another query");
+        assert_eq!(app.search_matches(&words).len(), 2);
+        let mut prepay = mastik_core::Document::new(app.session.ids.mint());
+        store::file_document(&root, None, "Prepay", &mut prepay).unwrap();
+        app.library.refresh();
+        assert_eq!(
+            app.search_matches(&words).len(),
+            3,
+            "a list that moved is ranked again"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
