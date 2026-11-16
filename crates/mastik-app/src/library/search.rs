@@ -43,7 +43,12 @@ pub fn rank(name: &str, words: &[String]) -> Option<Hit> {
         return None;
     }
     let folded = name.to_lowercase();
-    let offsets_kept = folded.len() == name.len();
+    // Per character: one letter growing and another shrinking can keep the total.
+    let offsets_kept = folded.chars().count() == name.chars().count()
+        && name
+            .chars()
+            .zip(folded.chars())
+            .all(|(a, b)| a.len_utf8() == b.len_utf8());
     // Where each word of the name starts, by the name's own letters and digits.
     let starts: Vec<usize> = folded
         .char_indices()
@@ -140,5 +145,17 @@ mod tests {
         assert_eq!(hit.lit, vec![0..2, 7..12]);
         let hit = rank("Quickcheck", &words("check")).unwrap();
         assert_eq!(hit.lit, vec![5..10]);
+    }
+
+    /// A name whose folding grows one letter and shrinks another by the same
+    /// bytes lights nothing rather than letters off by those bytes.
+    /// flip: `offsets_kept` comparing total lengths → fails at the `İİxK` assert.
+    #[test]
+    fn a_name_whose_folding_moves_its_letters_lights_nothing() {
+        // `İ` folds from two bytes to three, the Kelvin sign from three to one.
+        let hit = rank("\u{130}\u{130}x\u{212A}", &words("x")).unwrap();
+        assert!(hit.lit.is_empty(), "{:?}", hit.lit);
+        let hit = rank("École", &words("éc")).unwrap();
+        assert_eq!(hit.lit, vec![0..3], "a fold that keeps every width lights");
     }
 }

@@ -191,7 +191,7 @@ impl Facts {
                 .min_by_key(|(_, h)| h.tier);
             if let Some((name, hit)) = best {
                 return Some(match kind {
-                    ReasonKind::Text => quoted(name, hit),
+                    ReasonKind::Text => quoted(name, words, hit.tier),
                     kind => Reason {
                         kind,
                         text: name.to_string(),
@@ -208,14 +208,24 @@ impl Facts {
 const QUOTE_LEAD: usize = 12;
 
 /// A text reason: quoted, one line, cut to start a little before the match.
-fn quoted(text: &str, hit: Hit) -> Reason {
+/// Ranked again against the one-line copy, since a multi-byte space (U+00A0,
+/// U+3000) becomes one byte there and every offset after it moves.
+fn quoted(text: &str, words: &[String], tier: search::Tier) -> Reason {
     let line: String = text
         .chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
         .collect();
-    let first = hit.lit.first().map_or(0, |r| r.start);
+    let hit = search::rank(&line, words).unwrap_or(Hit {
+        tier,
+        lit: Vec::new(),
+    });
+    let first = hit.lit.first().map_or(0, |r| r.start).min(line.len());
+    let first = match line.is_char_boundary(first) {
+        true => first,
+        false => 0,
+    };
     // Cut on a character boundary at most `QUOTE_LEAD` characters before the match.
-    let cut = line[..first.min(line.len())]
+    let cut = line[..first]
         .char_indices()
         .rev()
         .nth(QUOTE_LEAD)
@@ -234,10 +244,7 @@ fn quoted(text: &str, hit: Hit) -> Reason {
     Reason {
         kind: ReasonKind::Text,
         text: format!("{lead}{body}”"),
-        hit: Hit {
-            tier: hit.tier,
-            lit,
-        },
+        hit: Hit { tier, lit },
     }
 }
 
@@ -605,5 +612,27 @@ pub(crate) mod tests {
         let r = facts.reason(&search::words("inbox")).unwrap();
         assert!(r.text.starts_with("“… "), "{}", r.text);
         assert_eq!(&r.text[r.hit.lit[0].clone()], "inbox");
+    }
+
+    /// A match after a multi-byte space lights the matched letters, cut or not.
+    /// flip: `quoted` ranking the text rather than its one-line copy → fails at
+    /// the no-break space's case.
+    #[test]
+    fn a_match_after_a_wide_space_lights_its_own_letters() {
+        for (text, query) in [
+            ("Prix\u{A0}: école", "école"),
+            ("東京\u{3000}渋谷", "渋谷"),
+            (
+                "Une longue phrase avant\u{A0}: la réponse est là, école",
+                "école",
+            ),
+        ] {
+            let facts = Facts {
+                texts: vec![text.into()],
+                ..Facts::default()
+            };
+            let r = facts.reason(&search::words(query)).unwrap();
+            assert_eq!(&r.text[r.hit.lit[0].clone()], query, "{text}");
+        }
     }
 }
