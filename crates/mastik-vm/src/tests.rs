@@ -548,6 +548,62 @@ fn the_header_reads_inputs() {
     );
     let err = header("---@input cols integer = 30 -- Columns {1..12}").unwrap_err();
     assert!(err.message.contains("outside"), "{}", err.message);
+    // A quoted default may hold ` --`; the label starts after it.
+    let h = header("---@input sep string = \"a -- b\" -- Separator").unwrap();
+    assert_eq!(h.inputs[0].default, json!("a -- b"));
+    assert_eq!(h.inputs[0].label.as_deref(), Some("Separator"));
+}
+
+/// Each header refusal says why and underlines the text it is about.
+/// flip: the duplicate-name refusal underlining the input's text after `@input`
+/// rather than its whole line → fails at "Two inputs".
+#[test]
+fn the_header_refuses_with_a_span() {
+    let cases = [
+        (
+            "---@inptu cols integer = 3",
+            "No header tag “@inptu”",
+            "@inptu",
+        ),
+        (
+            "---@input a number\n---@input a number",
+            "Two inputs are called “a”",
+            "---@input a number",
+        ),
+        (
+            "---@input o choice(a, b",
+            "`choice(` needs its closing `)`",
+            "choice(a, b",
+        ),
+        (
+            "---@input o choice(a, )",
+            "A choice lists its words",
+            "choice(a, )",
+        ),
+        ("---@input c color = red", "“red” is not a colour", "red"),
+        (
+            "---@input s string = x -- Name {1..2}",
+            "Only a number or an integer takes a range",
+            " s string = x -- Name {1..2}",
+        ),
+        (
+            "---@input n number = 5 -- N {12..1}",
+            "A range reads `{lo..hi}`, low first",
+            " n number = 5 -- N {12..1}",
+        ),
+        ("---@input n number 5", "A default follows `=`", " 5"),
+        ("---@input n", "“n” needs a type", " n"),
+    ];
+    for (source, message, underlined) in cases {
+        let err = header(source).unwrap_err();
+        assert!(
+            err.message.starts_with(message),
+            "{source}: {}",
+            err.message
+        );
+        let span = err.span.clone().unwrap();
+        assert_eq!(&source[span], underlined, "{message}");
+    }
 }
 
 /// Inputs reach the script as `param`, and an unknown one raises.
@@ -1377,6 +1433,48 @@ fn the_check_marks_what_a_run_would_refuse() {
                 Some("height".to_owned())
             ),
         ]
+    );
+    // An input the header does not declare, and a property through `local c = sel`.
+    // flip: `check` skipping the `param` arm → fails at "colz".
+    let src = "---@input cols integer = 3\nprint(param.colz)\nlocal c = sel\nc.widht = 1";
+    let found: Vec<(u32, String)> = check(&h.doc, h.page, src)
+        .into_iter()
+        .map(|p| (p.line, p.message))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (2, "No input “colz” — did you mean cols?".to_owned()),
+            (4, "No property “widht” — did you mean width?".to_owned()),
+        ]
+    );
+}
+
+/// A type alias and a generic function's type parameters are types, and its
+/// parameters are declared: the check marks nothing in either.
+/// flip: `declarations` not skipping a generic `<…>` → fails at "generic".
+#[test]
+fn type_aliases_and_generics_are_known() {
+    let (h, _) = three();
+    let src = "type Point = { x: number, y: number }\n\
+               export type Pair<T> = { a: T, b: T }\n\
+               local function id<T>(v: T): T return v end\n\
+               local p: Point = { x = 1, y = 2 }\nprint(id(p))";
+    let found: Vec<String> = check(&h.doc, h.page, src)
+        .into_iter()
+        .map(|p| p.message)
+        .collect();
+    assert_eq!(found, Vec::<String>::new(), "generic: nothing marked");
+    let marked = |src: &str| -> Vec<String> {
+        check(&h.doc, h.page, src)
+            .into_iter()
+            .map(|p| p.message)
+            .collect()
+    };
+    assert_eq!(
+        marked("function f<T>(v: T) return v end"),
+        marked("function f(v) return v end"),
+        "a generic global function reads as a plain one"
     );
 }
 

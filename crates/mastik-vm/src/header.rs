@@ -137,12 +137,37 @@ pub fn header(source: &str) -> Result<Header, VmError> {
     Ok(out)
 }
 
+/// The byte past the closing quote of an input's quoted default, which may hold
+/// ` --`; 0 when the default before the first ` --` is not quoted or not closed.
+fn quoted_end(text: &str) -> usize {
+    let dash = text.find(" --").unwrap_or(text.len());
+    let Some(eq) = text[..dash].find('=') else {
+        return 0;
+    };
+    let value = text[eq + 1..].trim_start();
+    let open = text.len() - value.len();
+    let Some(quote) = value.bytes().next().filter(|q| matches!(q, b'"' | b'\'')) else {
+        return 0;
+    };
+    let b = text.as_bytes();
+    let mut j = open + 1;
+    while j < b.len() {
+        match b[j] {
+            b'\\' => j += 2,
+            c if c == quote => return j + 1,
+            _ => j += 1,
+        }
+    }
+    0
+}
+
 /// One input from the text after `@input`, which starts at byte `at` of the source.
 fn input(text: &str, at: usize, line: u32) -> Result<Input, VmError> {
     let whole = at..at + text.len();
-    // The label is what follows the first ` --`.
-    let (decl, label) = match text.find(" --") {
-        Some(p) => (&text[..p], Some(&text[p + 3..])),
+    // The label is what follows the first ` --` past a quoted default.
+    let from = quoted_end(text);
+    let (decl, label) = match text[from..].find(" --") {
+        Some(p) => (&text[..from + p], Some(&text[from + p + 3..])),
         None => (text, None),
     };
     let (label, range_text) = match label {

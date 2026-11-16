@@ -506,25 +506,50 @@ fn past_type(source: &str, lexemes: &[lex::Lexeme], mut i: usize) -> usize {
     i
 }
 
-/// Whether each of `lexemes` is part of a type annotation: after a declared
-/// name's `:`, after a function's `)` and `:` (its return type), or after `::`.
-/// The names in a type are types, not values a run looks up.
+/// Whether each of `lexemes` is part of a type: after a declared name's `:`,
+/// after a function's `)` and `:` (its return type), after `::`, a function's
+/// generic `<…>`, or a whole `type` (or `export type`) declaration. The names in
+/// a type are types, not values a run looks up.
 pub(crate) fn in_types(source: &str, lexemes: &[lex::Lexeme], decls: &[Decl]) -> Vec<bool> {
     let text = |i: usize| lexemes.get(i).map_or("", |l| &source[l.range.clone()]);
+    let ident = |i: usize| lexemes.get(i).is_some_and(|l| l.kind == lex::Lx::Ident);
     let mut out = vec![false; lexemes.len()];
-    let mut mark = |from: usize| {
+    // Marks from `start` to the end of the type starting at `from`.
+    let mut mark_from = |start: usize, from: usize| {
         let end = past_type(source, lexemes, from);
-        out[from.min(end)..end].fill(true);
+        out[start.min(end)..end].fill(true);
     };
     for d in decls {
         if text(d.at + 1) == ":" {
-            mark(d.at + 2);
+            mark_from(d.at + 2, d.at + 2);
         }
     }
     for i in 0..lexemes.len() {
         match text(i) {
-            "::" => mark(i + 1),
+            "::" => mark_from(i + 1, i + 1),
+            "type" if ident(i + 1) && matches!(text(i + 2), "=" | "<") => {
+                let mut eq = i + 2;
+                if text(eq) == "<" {
+                    eq = past_type(source, lexemes, eq);
+                }
+                if text(eq) == "=" {
+                    let start = if text(i.wrapping_sub(1)) == "export" {
+                        i - 1
+                    } else {
+                        i
+                    };
+                    mark_from(start, eq + 1);
+                }
+            }
             "function" => {
+                let mut name = i + 1;
+                while ident(name) && matches!(text(name + 1), "." | ":") {
+                    name += 2;
+                }
+                let generic = if ident(name) { name + 1 } else { name };
+                if text(generic) == "<" {
+                    mark_from(generic, generic);
+                }
                 let Some(open) = (i + 1..lexemes.len()).find(|&j| text(j) == "(") else {
                     continue;
                 };
@@ -540,7 +565,7 @@ pub(crate) fn in_types(source: &str, lexemes: &[lex::Lexeme], decls: &[Decl]) ->
                 if let Some(close) = close
                     && text(close + 1) == ":"
                 {
-                    mark(close + 2);
+                    mark_from(close + 2, close + 2);
                 }
             }
             _ => {}
@@ -551,7 +576,7 @@ pub(crate) fn in_types(source: &str, lexemes: &[lex::Lexeme], decls: &[Decl]) ->
 
 /// Every declaration in `lexemes`, in source order: `local
 /// function` and `function` names (a dotted or method name declares nothing),
-/// a function's parameters (`self` is implicit, never listed) and loop
+/// a function's parameters, past any generic `<…>` (`self` is implicit, never listed) and loop
 /// variables. The lexeme at `typing` is the word being typed, never a name.
 pub(crate) fn declarations(
     source: &str,
@@ -603,10 +628,15 @@ pub(crate) fn declarations(
                     while matches!(text(open), "." | ":") && ident(open + 1) {
                         open += 2;
                     }
-                    if open == first + 1 && text(open) == "(" && text(i.wrapping_sub(1)) != "local"
-                    {
+                    let plain = open == first + 1;
+                    if text(open) == "<" {
+                        open = past_type(source, lexemes, open);
+                    }
+                    if plain && text(open) == "(" && text(i.wrapping_sub(1)) != "local" {
                         add(first, "function");
                     }
+                } else if text(open) == "<" {
+                    open = past_type(source, lexemes, open);
                 }
                 if text(open) == "(" {
                     list(open + 1).into_iter().for_each(|n| add(n, "parameter"));

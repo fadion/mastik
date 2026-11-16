@@ -848,13 +848,14 @@ pub fn check(doc: &Document, page: NodeId, source: &str) -> Vec<Problem> {
         }
         let word = text(i);
         let before = text(i.wrapping_sub(1));
-        let line = line_of(source, l.range.start);
         let span = l.range.clone();
+        // The line is counted only for a problem: counting it for every name
+        // would make the check quadratic in the script's length.
         let problem =
             |severity, message: String, fix: Option<String>, note: Option<&str>| Problem {
                 severity,
                 message,
-                line,
+                line: line_of(source, span.start),
                 span: span.clone(),
                 fix: fix.map(|f| (span.clone(), f)),
                 note: note.map(str::to_owned),
