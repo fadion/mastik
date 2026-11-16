@@ -413,8 +413,19 @@ pub(super) fn stale(
                 _ => None,
             })
             .collect();
+    // A run's inverses carry a delete as the subtree that puts it back, every
+    // layer of it already gone from the document.
+    let restored = tx.0.iter().flat_map(|op| match op {
+        mastik_core::Operation::InsertSubtree { nodes, .. } => {
+            nodes.iter().map(|n| n.id()).collect()
+        }
+        _ => Vec::new(),
+    });
     let mut written = tx.subjects();
-    for id in mastik_core::build::subtree_nodes(&s.doc, &deleted) {
+    for id in mastik_core::build::subtree_nodes(&s.doc, &deleted)
+        .into_iter()
+        .chain(restored)
+    {
         if !written.contains(&id) {
             written.push(id);
         }
@@ -612,6 +623,51 @@ mod tests {
         assert!(late.is_error, "refused");
         let id = mastik_core::NodeId::from_wire(&child).unwrap();
         assert!(docs.session.doc.get(id).is_some(), "the child stays");
+    }
+
+    /// `run_script` holds a stale `base_rev` to the same rule: a script deleting
+    /// a group whose child changed is refused and nothing changes.
+    ///
+    /// flip: `stale` without the layers an inverse `InsertSubtree` restores →
+    /// fails at "refused".
+    #[test]
+    fn a_stale_script_delete_checks_what_it_removes() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        open(&mut engine, &mut docs, 2);
+        let child = rect(&mut engine, &mut docs, 1, "Label");
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "group",
+            json!({ "nodes": [child] }),
+        );
+        let group = ok(&out)["created"][0].as_str().unwrap().to_owned();
+        let read = call(
+            &mut engine,
+            &mut docs,
+            2,
+            "get_node",
+            json!({ "id": group }),
+        );
+        let base = ok(&read)["rev"].clone();
+        let rename = json!({ "node": child, "name": "Edited" });
+        ok(&call(&mut engine, &mut docs, 1, "set_name", rename));
+        let args = json!({ "source": "delete_node(sel)", "nodes": [group], "base_rev": base });
+        let late = call(&mut engine, &mut docs, 2, "run_script", args);
+        assert!(late.is_error, "refused: {:?}", late.content);
+        let id = mastik_core::NodeId::from_wire(&child).unwrap();
+        assert!(docs.session.doc.get(id).is_some(), "the child stays");
+        let fresh = call(
+            &mut engine,
+            &mut docs,
+            2,
+            "run_script",
+            json!({ "source": "delete_node(sel)", "nodes": [group] }),
+        );
+        ok(&fresh);
+        assert!(docs.session.doc.get(id).is_none(), "the script deletes");
     }
 
     /// Writes off one read keep passing its `base_rev` long after the last few
