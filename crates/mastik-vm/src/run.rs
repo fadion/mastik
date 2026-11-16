@@ -1068,33 +1068,20 @@ fn resolve(
     }
 }
 
-/// Every global name a script could have meant: the language's, the labels,
-/// the verbs, the standard library and the page's layers.
+/// Every global name a script could have meant: the check's
+/// (`help::global_names`) and the leap labels.
 fn global_names(state: &RefCell<State<'_>>, env: &crate::Env<'_>) -> Vec<String> {
     let st = state.borrow();
-    let mut out: Vec<String> = NAMES.iter().map(|(n, _)| (*n).to_owned()).collect();
+    let mut out = crate::help::global_names(st.host.doc(), st.host.page());
     out.extend(env.labels.keys().cloned());
-    out.extend(verbs::VERBS.iter().map(|v| v.name.to_owned()));
-    out.extend(STDLIB.iter().map(|s| (*s).to_owned()));
-    out.extend(crate::layer_names(st.host.doc(), st.host.page()));
     out
 }
 
 /// The layers under `page` called exactly `name`.
 pub(crate) fn named(doc: &mastik_core::Document, page: NodeId, name: &str) -> Vec<NodeId> {
-    let mut out = Vec::new();
-    let mut stack: Vec<NodeId> = doc
-        .get(page)
-        .map(|p| p.children().to_vec())
-        .unwrap_or_default();
-    while let Some(id) = stack.pop() {
-        let Some(node) = doc.get(id) else { continue };
-        if node.name() == name {
-            out.push(id);
-        }
-        stack.extend(node.children());
-    }
-    out
+    crate::layers_under(doc, page)
+        .filter(|id| doc.get(*id).is_some_and(|n| n.name() == name))
+        .collect()
 }
 
 /// A read-only copy of library `name`: `math` without its random numbers, since

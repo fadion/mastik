@@ -380,9 +380,10 @@ pub(crate) struct Keys {
 /// before any panel draws.
 pub(crate) fn read_keys(ctx: &egui::Context, text: &str) -> Keys {
     let none = egui::Modifiers::NONE;
-    // Inside a string the backtick is Luau's own, an interpolated string's quote.
+    // Inside a string the backtick is Luau's own, an interpolated string's
+    // quote; a quote in a comment opens no string.
     let caret = caret_of(ctx, text);
-    let quoted = in_string(&text[..caret]);
+    let quoted = code_keys::caret_in(text, caret) == code_keys::In::String;
     ctx.input_mut(|i| {
         let pick = !quoted && i.consume_key(none, egui::Key::Backtick);
         if pick {
@@ -409,24 +410,6 @@ fn caret_of(ctx: &egui::Context, text: &str) -> usize {
         .and_then(|s| s.cursor.char_range())
         .map(|r| char_to_byte(text, r.primary.index.0))
         .unwrap_or(text.len())
-}
-
-/// Whether `before` ends inside a Luau string: an open `"`, `'` or `` ` ``, a
-/// backslash escaping the next character.
-fn in_string(before: &str) -> bool {
-    let mut open: Option<char> = None;
-    let mut escaped = false;
-    for c in before.chars() {
-        match open {
-            Some(_) if escaped => escaped = false,
-            Some(_) if c == '\\' => escaped = true,
-            Some(q) if c == q => open = None,
-            Some(_) => {}
-            None if matches!(c, '"' | '\'' | '`') => open = Some(c),
-            None => {}
-        }
-    }
-    open.is_some()
 }
 
 /// What the list above the field shows.
@@ -752,6 +735,63 @@ impl MastikApp {
         };
         if let Some(e) = self.run_bar_line(ctx, &line) {
             self.session.fail(e.message);
+        }
+    }
+
+    /// An `/ai` line's footer: where its request stands, what the keys do with
+    /// its reply, the right edge's words and the mark that leads it.
+    fn bar_ai_footer(&self, bar: &Bar) -> (String, String, Mark) {
+        let who = self
+            .prefs
+            .assistant
+            .harness()
+            .map_or_else(|| "the assistant".to_owned(), |h| h.speaker().to_owned());
+        match &bar.ai {
+            Some(Ai::Waiting { .. }) => (
+                self.prefs.assistant.harness().map_or_else(
+                    || "Looking for the assistant…".to_owned(),
+                    |h| format!("Looking for {}…", h.label()),
+                ),
+                "Esc clears".to_owned(),
+                Mark::Working,
+            ),
+            Some(Ai::Asking { .. }) => (
+                format!("Asking {who} · the reply shows in the assistant panel"),
+                "Esc clears".to_owned(),
+                Mark::Working,
+            ),
+            Some(Ai::Replied { reply, .. }) => match reply {
+                BarReply::Script { script, .. } => {
+                    let n = script.lines().count();
+                    (
+                        match self.assistant_level() {
+                            Level::Look => "Enter opens it in the editor · the chat can only look",
+                            _ => "Enter runs it as one step · Tab opens it in the editor",
+                        }
+                        .to_owned(),
+                        format!("{n} {}", if n == 1 { "line" } else { "lines" }),
+                        Mark::None,
+                    )
+                }
+                BarReply::Proposals { ids, .. } => (
+                    match ids.len() {
+                        1 => "Enter applies it · Tab opens the assistant panel".to_owned(),
+                        _ => "Enter applies them · Tab opens the assistant panel".to_owned(),
+                    },
+                    "Esc clears".to_owned(),
+                    Mark::Waiting,
+                ),
+                BarReply::Said(_) => (
+                    "Tab opens the assistant panel".to_owned(),
+                    "Enter clears".to_owned(),
+                    Mark::None,
+                ),
+            },
+            None => (
+                format!("Enter asks {who}"),
+                "` picks".to_owned(),
+                Mark::None,
+            ),
         }
     }
 
@@ -1270,59 +1310,7 @@ impl MastikApp {
         let pick_hint = self.pick_hint();
         let mut focus_click: Option<bool> = None;
         let parsed = mastik_vm::desugar(bar.text.trim());
-        // An `/ai` line's footer says where its request stands.
-        let who = self
-            .prefs
-            .assistant
-            .harness()
-            .map_or_else(|| "the assistant".to_owned(), |h| h.speaker().to_owned());
-        let ai_footer: Option<(String, String, Mark)> = ai_line.then(|| match &bar.ai {
-            Some(Ai::Waiting { .. }) => (
-                self.prefs.assistant.harness().map_or_else(
-                    || "Looking for the assistant…".to_owned(),
-                    |h| format!("Looking for {}…", h.label()),
-                ),
-                "Esc clears".to_owned(),
-                Mark::Working,
-            ),
-            Some(Ai::Asking { .. }) => (
-                format!("Asking {who} · the reply shows in the assistant panel"),
-                "Esc clears".to_owned(),
-                Mark::Working,
-            ),
-            Some(Ai::Replied { reply, .. }) => match reply {
-                BarReply::Script { script, .. } => {
-                    let n = script.lines().count();
-                    (
-                        match self.assistant_level() {
-                            Level::Look => "Enter opens it in the editor · the chat can only look",
-                            _ => "Enter runs it as one step · Tab opens it in the editor",
-                        }
-                        .to_owned(),
-                        format!("{n} {}", if n == 1 { "line" } else { "lines" }),
-                        Mark::None,
-                    )
-                }
-                BarReply::Proposals { ids, .. } => (
-                    match ids.len() {
-                        1 => "Enter applies it · Tab opens the assistant panel".to_owned(),
-                        _ => "Enter applies them · Tab opens the assistant panel".to_owned(),
-                    },
-                    "Esc clears".to_owned(),
-                    Mark::Waiting,
-                ),
-                BarReply::Said(_) => (
-                    "Tab opens the assistant panel".to_owned(),
-                    "Enter clears".to_owned(),
-                    Mark::None,
-                ),
-            },
-            None => (
-                format!("Enter asks {who}"),
-                "` picks".to_owned(),
-                Mark::None,
-            ),
-        });
+        let ai_footer = ai_line.then(|| self.bar_ai_footer(&bar));
         let mut clicked_row: Option<usize> = None;
         let mut hovered_row: Option<usize> = None;
         let row_layers = bar
@@ -2471,6 +2459,26 @@ pub(crate) mod tests {
         let bar = app.command_bar.as_ref().expect("the bar stays open");
         assert_eq!(bar.text, ".x", "the line stays");
         assert!(bar.log_menu.is_none(), "the menu closed");
+    }
+
+    /// `` ` `` picks unless the caret is in a string, where it is Luau's quote:
+    /// a `'` in a comment opens no string.
+    /// flip: `read_keys` reading quotes without comments → fails at "after a comment".
+    #[test]
+    fn a_backtick_picks_past_a_comment_but_not_in_a_string() {
+        let picks = |text: &str| {
+            let ctx = egui::Context::default();
+            let mut pick = None;
+            let input = egui::RawInput {
+                events: vec![key(egui::Key::Backtick, NONE)],
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| pick = Some(read_keys(ui.ctx(), text).pick));
+            pick.unwrap()
+        };
+        assert!(picks(".x = 1 -- it's"), "after a comment");
+        assert!(!picks("print(\"a"), "in a string");
+        assert!(picks(".x = 1"));
     }
 
     /// With the log's menu open, the arrows light its rows and Enter takes the

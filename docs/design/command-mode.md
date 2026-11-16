@@ -36,10 +36,11 @@ calls and loop edges); a bump re-runs the crate's tests first.
 **The crate is headless**: `mastik-core`, `serde_json`, `rustc-hash` and `mlua`, held to the
 headless list by `deps_forbidden` (`foundations.md` §3). It reaches the document only through the
 caller's `Host` (`doc`, `resolved`, `page`, `verb`, `commit`). Its surface: `Env` (selection, leap
-labels, a script's input values), `Outcome` (printed lines, a read's value, layers created, the
-selection to set), `VmError { kind: Error | Budget, message, line, span, fix }`, `desugar`,
-`eval_read`, `run_line`, `run_script`, `header`, `complete`, `tokens`, `names_used`, `definitions`,
-`PROPERTIES`, `RUN_BUDGET`, `READ_BUDGET`.
+labels, a script's input values), `Outcome` (printed lines, a read's value as shown and as
+copied, layers created, the selection to set), `VmError { kind: Error | Budget, message, line,
+span, fix }`, `desugar`, `eval_read`, `read_line`, `run_line`, `run_script`, `header`,
+`complete`, `tokens`, `names_used`, `as_read`, `quoted`, `definitions`. The property tables and
+the budgets stay inside the crate.
 
 **One sandboxed state per evaluation.** Each evaluation makes a fresh `Lua`, turns on
 `Lua::sandbox` (the global table read-only) and loads the chunk with an environment table of its

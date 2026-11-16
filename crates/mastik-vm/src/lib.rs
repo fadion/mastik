@@ -29,13 +29,14 @@ mod tests;
 pub use complete::{Completion, Row, Section, complete, complete_script};
 pub use defs::{Tok, as_read, definitions, names_used, tokens};
 pub use header::{Header, Input, InputType, header};
+#[cfg(test)]
+use help::ACTS_ON_SELECTION;
 pub use help::{
-    ACTS_ON_SELECTION, Hover, Problem, Severity, SigParam, Signature, check, declaration_at,
-    hover_at, signature_at, syntax_error,
+    Hover, Problem, Severity, SigParam, Signature, check, declaration_at, hover_at, signature_at,
+    syntax_error,
 };
-pub use props::{METHODS, Method, PROPERTIES, PropType, Property};
-pub use run::{Budget, READ_BUDGET, RUN_BUDGET};
-pub use sugar::{Line, LineKind, Marks, desugar, invisible, marks, quoted};
+pub(crate) use sugar::invisible;
+pub use sugar::{Line, LineKind, Marks, desugar, marks, quoted};
 
 /// What the language reaches the document through: the app's session, or a test's
 /// plain document.
@@ -115,7 +116,7 @@ impl std::fmt::Display for VmError {
 
 impl std::error::Error for VmError {}
 
-/// Evaluate bar `line` for its value as it is typed, under [`READ_BUDGET`]: any
+/// Evaluate bar `line` for its value as it is typed, under [`run::READ_BUDGET`]: any
 /// attempt to change the document is an error, so nothing changes. `None` for nil.
 pub fn eval_read(host: &mut dyn Host, env: &Env, line: &str) -> Result<Option<String>, VmError> {
     read_line(host, env, line).map(|o| o.value)
@@ -128,7 +129,7 @@ pub fn read_line(host: &mut dyn Host, env: &Env, line: &str) -> Result<Outcome, 
     run::run(host, env, &luau, line, run::Mode::Read, true)
 }
 
-/// Run bar `line` through [`desugar`] under [`RUN_BUDGET`]; a read line's value
+/// Run bar `line` through [`desugar`] under [`run::RUN_BUDGET`]; a read line's value
 /// lands in [`Outcome::value`].
 pub fn run_line(host: &mut dyn Host, env: &Env, line: &str) -> Result<Outcome, VmError> {
     let desugared = desugar(line);
@@ -136,7 +137,7 @@ pub fn run_line(host: &mut dyn Host, env: &Env, line: &str) -> Result<Outcome, V
     run::run(host, env, &desugared.luau, line, run::Mode::Bar, expression)
 }
 
-/// Run a whole script as written, with no line sugar, under [`RUN_BUDGET`].
+/// Run a whole script as written, with no line sugar, under [`run::RUN_BUDGET`].
 pub fn run_script(host: &mut dyn Host, env: &Env, source: &str) -> Result<Outcome, VmError> {
     run::run(host, env, source, source, run::Mode::Script, false)
 }
@@ -168,14 +169,11 @@ pub(crate) fn describe(doc: &Document, ids: &[NodeId]) -> String {
 
 /// The names of the layers under `page` that Luau can spell as a bare name.
 pub(crate) fn layer_names(doc: &Document, page: NodeId) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut stack: Vec<NodeId> = doc
-        .get(page)
-        .map(|p| p.children().to_vec())
-        .unwrap_or_default();
-    while let Some(id) = stack.pop() {
-        let Some(node) = doc.get(id) else { continue };
-        let name = node.name();
+    let mut out: Vec<String> = Vec::new();
+    for id in layers_under(doc, page) {
+        let Some(name) = doc.get(id).map(|n| n.name()) else {
+            continue;
+        };
         if name.starts_with(lex::ident_start)
             && name.chars().all(lex::ident_char)
             && !lex::KEYWORDS.contains(&name)
@@ -183,7 +181,22 @@ pub(crate) fn layer_names(doc: &Document, page: NodeId) -> Vec<String> {
         {
             out.push(name.to_owned());
         }
-        stack.extend(node.children());
     }
     out
+}
+
+/// Every layer under `page`, depth first, the page itself left out: the one
+/// walk a name is looked up and listed by.
+pub(crate) fn layers_under(doc: &Document, page: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+    let mut stack: Vec<NodeId> = doc
+        .get(page)
+        .map(|p| p.children().to_vec())
+        .unwrap_or_default();
+    std::iter::from_fn(move || {
+        let id = stack.pop()?;
+        if let Some(node) = doc.get(id) {
+            stack.extend(node.children());
+        }
+        Some(id)
+    })
 }

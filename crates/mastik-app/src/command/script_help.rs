@@ -7,6 +7,7 @@
 
 use std::ops::Range;
 
+use super::char_to_byte as byte_of;
 use crate::theme::{self, color, icon};
 use crate::ui;
 use eframe::egui;
@@ -81,11 +82,6 @@ fn hash(text: &str) -> u64 {
 /// The char index of byte `b` of `text`.
 fn chars_to(text: &str, b: usize) -> usize {
     text.get(..b).map_or(0, |t| t.chars().count())
-}
-
-/// The byte of char index `c` of `text`.
-fn byte_of(text: &str, c: usize) -> usize {
-    text.char_indices().nth(c).map_or(text.len(), |(b, _)| b)
 }
 
 /// The screen rect `range` of `text` takes in the laid-out pane (one row: a

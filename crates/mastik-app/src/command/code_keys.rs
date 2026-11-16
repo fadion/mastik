@@ -333,6 +333,21 @@ fn close_of(c: char) -> Option<char> {
 /// Whether the caret at `at` sits in a string or a comment on its line: an
 /// odd count of a quote before it, or a `--` outside quotes.
 fn in_string_or_comment(text: &str, at: usize) -> bool {
+    caret_in(text, at) != In::Code
+}
+
+/// What the caret at `at` sits in on its line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum In {
+    Code,
+    /// An open `"`, `'` or `` ` `` before it, a backslash escaping the next character.
+    String,
+    /// A `--` outside quotes before it.
+    Comment,
+}
+
+/// [`In`] for the caret at `at` in `text`.
+pub(crate) fn caret_in(text: &str, at: usize) -> In {
     let mut open: Option<char> = None;
     let mut escaped = false;
     let mut prev = '\0';
@@ -342,13 +357,16 @@ fn in_string_or_comment(text: &str, at: usize) -> bool {
             Some(_) if c == '\\' => escaped = true,
             Some(q) if c == q => open = None,
             Some(_) => {}
-            None if c == '-' && prev == '-' => return true,
+            None if c == '-' && prev == '-' => return In::Comment,
             None if matches!(c, '"' | '\'' | '`') => open = Some(c),
             None => {}
         }
         prev = c;
     }
-    open.is_some()
+    match open {
+        Some(_) => In::String,
+        None => In::Code,
+    }
 }
 
 /// Typing `c` where pairs help, `None` where the text edit should type it as

@@ -730,8 +730,9 @@ pub(crate) fn plain_syntax(message: &str) -> String {
     "Something is missing at the end".to_owned()
 }
 
-/// The names a bare word may be besides the script's own.
-fn global_names(doc: &Document, page: NodeId) -> Vec<String> {
+/// The names a bare word may be besides the script's own: the language's, the
+/// verbs, the standard library and the page's layers.
+pub(crate) fn global_names(doc: &Document, page: NodeId) -> Vec<String> {
     let mut out: Vec<String> = NAMES.iter().map(|(n, _)| (*n).to_owned()).collect();
     out.extend(verbs::VERBS.iter().map(|v| v.name.to_owned()));
     out.extend(STDLIB.iter().map(|s| (*s).to_owned()));
