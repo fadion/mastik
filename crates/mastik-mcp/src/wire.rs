@@ -179,6 +179,22 @@ pub fn read_line(
     }
 }
 
+/// A file's name as a URI path: its `/`s kept, every byte outside RFC 3986's
+/// unreserved set percent-encoded, so a layer named with spaces or accents
+/// still makes a valid resource URI.
+fn uri_path(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for b in name.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(char::from(b));
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// The answer to a line past [`MAX_LINE`].
 pub fn too_long() -> Value {
     failure(Value::Null, -32600, "line too long")
@@ -282,7 +298,7 @@ fn result_of(output: Output) -> Value {
                 "mimeType": mime,
             }),
             Content::File { name, bytes, mime } => {
-                let uri = format!("mastik:///{name}");
+                let uri = format!("mastik:///{}", uri_path(&name));
                 let resource = match String::from_utf8(bytes) {
                     Ok(text) if is_text(mime) => {
                         json!({ "uri": uri, "mimeType": mime, "text": text })
@@ -578,5 +594,18 @@ mod tests {
         assert_eq!(svg["uri"], "mastik:///icons/close.svg");
         assert_eq!(svg["text"], "<svg/>");
         assert_eq!(r["content"][1]["resource"]["blob"], "YWI=");
+    }
+
+    /// A file named with spaces, a `%` or accents gets a valid URI, its `/`s
+    /// kept.
+    ///
+    /// flip: `uri_path` passing every byte through → fails at the first assert.
+    #[test]
+    fn a_file_uri_is_percent_encoded() {
+        assert_eq!(
+            uri_path("Hero card/Café 100%.png"),
+            "Hero%20card/Caf%C3%A9%20100%25.png"
+        );
+        assert_eq!(uri_path("icons/close-1_a~.svg"), "icons/close-1_a~.svg");
     }
 }

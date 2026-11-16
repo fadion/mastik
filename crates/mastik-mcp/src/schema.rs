@@ -717,11 +717,17 @@ fn entry(name: &str, doc: &str, params: &[Param], extra: Option<Param>) -> Value
             required.push(json!(p.name));
         }
     }
+    // Every tool acts on the person's documents only, never the outside world,
+    // which the protocol assumes unless told.
     let annotations = match class(name) {
-        Class::Read => json!({ "readOnlyHint": true }),
+        Class::Read => json!({ "readOnlyHint": true, "openWorldHint": false }),
         // Undo reverts it: not destructive in the protocol's sense.
-        Class::Write => json!({ "readOnlyHint": false, "destructiveHint": false }),
-        Class::OutsideUndo => json!({ "readOnlyHint": false, "destructiveHint": true }),
+        Class::Write => {
+            json!({ "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false })
+        }
+        Class::OutsideUndo => {
+            json!({ "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false })
+        }
     };
     json!({
         "name": name,
@@ -734,6 +740,21 @@ fn entry(name: &str, doc: &str, params: &[Param], extra: Option<Param>) -> Value
     })
 }
 
+/// The JSON type a model's argument has at its top, for a client that turns
+/// tools into strict function schemas and drops a property with none. Only the
+/// models whose every short form keeps that shape: a cell, a colour, a patch or
+/// insets also read as a number or a string, and stay untyped. `string` is
+/// always allowed beside it, since a model may arrive as JSON text.
+fn model_type(model: &str) -> Option<&'static str> {
+    match model {
+        "Steps" | "Region" | "[CharAttr]" | "[Effect]" | "[ExportSpec]" | "[Fill]" | "[Hex]"
+        | "[Name]" | "[Node]" | "[ParaAttr]" | "[Stroke]" => Some("array"),
+        "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "KitModeMap" | "DtcgFile"
+        | "BlockStyle" | "ParagraphStyle" | "TextStyle" | "LayoutItem" => Some("object"),
+        _ => None,
+    }
+}
+
 /// One parameter's JSON Schema.
 fn property(p: &Param) -> Value {
     let mut schema = match p.kind {
@@ -744,7 +765,10 @@ fn property(p: &Param) -> Value {
         ParamKind::Bool => json!({ "type": "boolean" }),
         ParamKind::Text => json!({ "type": "string" }),
         ParamKind::Choice(words) => json!({ "type": "string", "enum": words }),
-        ParamKind::Model(_) => json!({}),
+        ParamKind::Model(model) => match model_type(model) {
+            Some(t) => json!({ "type": [t, "string"] }),
+            None => json!({}),
+        },
         ParamKind::Id(_) => json!({ "type": "string" }),
     };
     // A layer id's form is said once, in the server instructions.
@@ -894,6 +918,63 @@ mod tests {
         );
     }
 
+    /// A typed model's example has the type its schema says (a model with no
+    /// example, such as `Region`, is checked by its handler alone), every
+    /// annotation says the tools stay within the person's documents, and a
+    /// model argument a client could send as JSON text is never typed so it is
+    /// refused.
+    ///
+    /// flip: `model_type` answering `object` for `[Fill]` → fails at "[Fill]".
+    #[test]
+    fn typed_models_match_their_examples() {
+        let typed = [
+            "Steps",
+            "Region",
+            "[Fill]",
+            "[Stroke]",
+            "[Effect]",
+            "[ExportSpec]",
+            "[Name]",
+            "[Hex]",
+            "[Node]",
+            "[CharAttr]",
+            "[ParaAttr]",
+            "Props",
+            "Args",
+            "Tree",
+            "ChartMapping",
+            "ChartOptions",
+            "KitModeMap",
+            "DtcgFile",
+            "BlockStyle",
+            "ParagraphStyle",
+            "TextStyle",
+            "LayoutItem",
+        ];
+        for model in typed {
+            let Some(example) = verbs::example(model) else {
+                continue;
+            };
+            let found = match example {
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+                _ => "other",
+            };
+            assert_eq!(model_type(model), Some(found), "{model}");
+        }
+        let set = definition("set").unwrap();
+        let props = &set["inputSchema"]["properties"]["props"]["type"];
+        assert_eq!(
+            props,
+            &json!(["object", "string"]),
+            "JSON text stays allowed"
+        );
+        for name in PHASE_1.iter().chain(&PHASE_4) {
+            let d = definition(name).unwrap();
+            assert_eq!(d["annotations"]["openWorldHint"], false, "{name}");
+        }
+    }
+
     /// The bytes `tools/list` sends, every phase's definitions as compact JSON.
     fn listed_bytes<'a>(names: impl Iterator<Item = &'a &'a str>) -> usize {
         names
@@ -911,8 +992,8 @@ mod tests {
     /// budget.
     #[test]
     fn the_tool_list_stays_within_its_budget() {
-        const CORE_BUDGET: usize = 24_700;
-        const ALL_BUDGET: usize = 97_000;
+        const CORE_BUDGET: usize = 25_800;
+        const ALL_BUDGET: usize = 101_500;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,
