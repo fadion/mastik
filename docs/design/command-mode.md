@@ -231,7 +231,10 @@ language covers.
   in the typed line's ink.
 - A right-click on picked rows: *Copy as script* (*Copy N lines as script*) and *Open in editor*
   (a new unsaved script). A hole is written as a comment naming its step, an `/ai` entry that ran
-  no script as the comment `-- /ai ‹request›`.
+  no script as the comment `-- /ai ‹request›`. The menu takes `↑`/`↓` and `Enter` as a context
+  menu does, so nothing is recalled behind it. Rows are picked by their place in the log
+  (`log::Entry::seq`), not by index, so an edit logged while the bar is open, which drops the
+  oldest entry from a full log, leaves the same rows picked.
 
 ## 10. Where scripts live
 

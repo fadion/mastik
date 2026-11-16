@@ -43,6 +43,9 @@ pub(crate) struct Entry {
     pub(crate) failed: bool,
     /// The undo step it made, so the watcher does not list that step twice.
     serial: Option<u64>,
+    /// Its place in the log, counted from the session's first entry: what the
+    /// bar picks rows by, since an index shifts as old entries fall off.
+    seq: u64,
 }
 
 /// A document's log for the session. Not saved.
@@ -57,6 +60,8 @@ pub(crate) struct Log {
     /// as its own, until the person edits, the bar logs another line, or the
     /// panel asks another question.
     ai_open: bool,
+    /// The next entry's place in the log.
+    next_seq: u64,
 }
 
 impl Log {
@@ -71,6 +76,13 @@ impl Log {
         if let Some(serial) = entry.serial {
             self.seen = Some((serial, u64::MAX));
         }
+        self.append(entry);
+    }
+
+    /// Add `entry` as the newest, numbered, the oldest dropped past [`KEEP`].
+    fn append(&mut self, mut entry: Entry) {
+        entry.seq = self.next_seq;
+        self.next_seq += 1;
         self.entries.push_back(entry);
         while self.entries.len() > KEEP {
             self.entries.pop_front();
@@ -87,6 +99,7 @@ impl Log {
             result: "Asked".into(),
             failed: false,
             serial: None,
+            seq: 0,
         });
         self.ai_open = true;
     }
@@ -236,7 +249,7 @@ impl Log {
         if agents && line.is_none() {
             return;
         }
-        self.entries.push_back(Entry {
+        self.append(Entry {
             luau: line.as_deref().map(luau_of),
             line,
             source: Source::Edit {
@@ -246,10 +259,8 @@ impl Log {
             result: String::new(),
             failed: false,
             serial: Some(step.serial),
+            seq: 0,
         });
-        while self.entries.len() > KEEP {
-            self.entries.pop_front();
-        }
     }
 
     /// The newest line that ran, typed in the bar or written for an edit made
@@ -280,6 +291,7 @@ impl Entry {
             result,
             failed,
             serial,
+            seq: 0,
         }
     }
 
@@ -293,7 +305,13 @@ impl Entry {
             result,
             failed,
             serial,
+            seq: 0,
         }
+    }
+
+    /// Its place in the log, which the bar picks rows by.
+    pub(crate) fn seq(&self) -> u64 {
+        self.seq
     }
 }
 

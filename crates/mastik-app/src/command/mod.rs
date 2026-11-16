@@ -214,10 +214,13 @@ pub(crate) struct Bar {
     error: Option<(String, mastik_vm::VmError)>,
     /// The live read: the text and revision it was taken for, and its value.
     read: Option<(String, u64, Option<ReadValue>)>,
-    /// The log rows picked for *Copy as script*: first and last, by entry index.
-    picked: Option<(usize, usize)>,
+    /// The log rows picked for *Copy as script*: first and last, by their place
+    /// in the log (`log::Entry::seq`), which an edit logged meanwhile leaves alone.
+    picked: Option<(u64, u64)>,
     /// The log's context menu, where it opened.
     log_menu: Option<egui::Pos2>,
+    /// The log menu's row the arrows lit, if they have.
+    log_menu_lit: Option<usize>,
     /// Put the caret at the end of the field next frame, after a recall or a
     /// completion wrote the text.
     caret_to: Option<usize>,
@@ -919,7 +922,12 @@ impl MastikApp {
     }
 
     /// Draw the open bar and act on this frame's keys.
-    pub(crate) fn command_bar_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect, keys: Keys) {
+    pub(crate) fn command_bar_ui(
+        &mut self,
+        ctx: &egui::Context,
+        canvas: egui::Rect,
+        mut keys: Keys,
+    ) {
         // Before the bar is taken out: the deal reads the line, for the labels it holds.
         self.deal_tick(ctx);
         let Some(mut bar) = self.command_bar.take() else {
@@ -1039,6 +1047,19 @@ impl MastikApp {
             } else {
                 bar = Bar::default();
             }
+        }
+        // While the log's menu is open, the arrows and Enter are its own, as a
+        // context menu's: nothing is recalled or run behind it.
+        let mut menu_nav = None;
+        if bar.log_menu.is_some() {
+            use crate::menu::{Nav, Step};
+            menu_nav = match (keys.down, keys.up, keys.enter) {
+                (true, _, _) => Some(Nav::Move(Step::Next)),
+                (_, true, _) => Some(Nav::Move(Step::Prev)),
+                (_, _, true) => Some(Nav::Activate),
+                _ => None,
+            };
+            (keys.up, keys.down, keys.enter) = (false, false, false);
         }
         let replied = match &bar.ai {
             Some(Ai::Replied { reply, .. }) => Some(reply.clone()),
@@ -1279,9 +1300,9 @@ impl MastikApp {
             .map(|c| c.layers.clone())
             .unwrap_or_default();
         let mut pointed_pill: Option<NodeId> = None;
-        let mut log_click: Option<(usize, bool)> = None;
-        let mut log_menu_at: Option<(usize, egui::Pos2)> = None;
-        let entries: Vec<log::Entry> = self.session.command_log.entries().cloned().collect();
+        // Log rows by their place in the log, never by index.
+        let mut log_click: Option<(u64, bool)> = None;
+        let mut log_menu_at: Option<(u64, egui::Pos2)> = None;
         area.show(ctx, |ui| {
             crate::settings::card_frame().show(ui, |ui| {
                 ui.set_width(W);
@@ -1289,22 +1310,20 @@ impl MastikApp {
                 match &list {
                     List::None => {}
                     List::Log => {
-                        let first = entries.len().saturating_sub(LOG_ROWS);
+                        let log = &self.session.command_log;
+                        let first = log.entries().len().saturating_sub(LOG_ROWS);
                         list_frame(ui, list_h, |ui| {
                             palette::section_label(ui, "Log");
-                            for (i, e) in entries.iter().enumerate().skip(first) {
-                                let picked = bar
-                                    .picked
-                                    .is_some_and(|(a, b)| (a.min(b)..=a.max(b)).contains(&i));
-                                let resp = log_row(ui, e, picked);
+                            for e in log.entries().skip(first) {
+                                let resp = log_row(ui, e, picks(bar.picked, e));
                                 if resp.clicked() {
                                     let shift = ui.input(|i| i.modifiers.shift);
-                                    log_click = Some((i, shift));
+                                    log_click = Some((e.seq(), shift));
                                 }
                                 if resp.secondary_clicked()
                                     && let Some(p) = resp.interact_pointer_pos()
                                 {
-                                    log_menu_at = Some((i, p));
+                                    log_menu_at = Some((e.seq(), p));
                                 }
                             }
                         });
@@ -1399,31 +1418,39 @@ impl MastikApp {
             bar.accept(c, i);
             bar.suggest.seen = bar.text.clone();
         }
-        if let Some((i, shift)) = log_click {
+        if let Some((seq, shift)) = log_click {
             bar.picked = match (shift, bar.picked) {
-                (true, Some((a, _))) => Some((a, i)),
-                _ => Some((i, i)),
+                (true, Some((a, _))) => Some((a, seq)),
+                _ => Some((seq, seq)),
             };
             if !shift
-                && let Some(line) = entries.get(i).and_then(|e| e.line.clone())
-                && !matches!(entries[i].source, log::Source::Script(_))
+                && let Some(e) = self.session.command_log.entries().find(|e| e.seq() == seq)
+                && let Some(line) = e.line.clone()
+                && !matches!(e.source, log::Source::Script(_))
             {
                 bar.text = line;
                 bar.caret_to = Some(bar.text.len());
                 bar.suggest.seen = bar.text.clone();
             }
         }
-        if let Some((i, at)) = log_menu_at {
+        if let Some((seq, at)) = log_menu_at {
             if !bar
                 .picked
-                .is_some_and(|(a, b)| (a.min(b)..=a.max(b)).contains(&i))
+                .is_some_and(|(a, b)| (a.min(b)..=a.max(b)).contains(&seq))
             {
-                bar.picked = Some((i, i));
+                bar.picked = Some((seq, seq));
             }
             bar.log_menu = Some(at);
+            bar.log_menu_lit = None;
         }
         if let Some(at) = bar.log_menu {
-            match self.log_menu_ui(ctx, at, &entries, bar.picked) {
+            let picked: Vec<&log::Entry> = self
+                .session
+                .command_log
+                .entries()
+                .filter(|e| picks(bar.picked, e))
+                .collect();
+            match log_menu_ui(ctx, at, &picked, &mut bar.log_menu_lit, menu_nav) {
                 LogMenu::Open => {}
                 LogMenu::Closed => bar.log_menu = None,
                 LogMenu::Copied => {
@@ -1449,52 +1476,76 @@ impl MastikApp {
             .collect();
         self.command_bar = Some(bar);
     }
+}
 
-    /// The log's right-click menu: *Copy N lines as script* and *Open in editor*.
-    fn log_menu_ui(
-        &mut self,
-        ctx: &egui::Context,
-        at: egui::Pos2,
-        entries: &[log::Entry],
-        picked: Option<(usize, usize)>,
-    ) -> LogMenu {
-        let Some((a, b)) = picked else {
-            return LogMenu::Closed;
-        };
-        let script = as_script(&entries[a.min(b)..=a.max(b).min(entries.len() - 1)]);
-        let n = a.abs_diff(b) + 1;
-        let copy = match n {
-            1 => "Copy as script".to_owned(),
-            n => format!("Copy {n} lines as script"),
-        };
-        let mut out = LogMenu::Open;
-        let size = egui::vec2(crate::menu::MENU_W, crate::ui::menu_height(2, 0));
-        let resp = egui::Area::new(egui::Id::new("command-log-menu"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(crate::ui::menu_place(ctx, at, size))
-            .show(ctx, |ui| {
-                crate::ui::menu_frame(crate::ui::MENU_PAD).show(ui, |ui| {
-                    ui.set_width(crate::ui::menu_inner_w(
-                        crate::menu::MENU_W,
-                        crate::ui::MENU_PAD,
-                    ));
-                    crate::ui::popup_rows(ui);
-                    let h = crate::ui::MENU_ROW_H;
-                    if crate::ui::menu_item(ui, icon::COPY, &copy, h).clicked() {
-                        ctx.copy_text(script.clone());
-                        out = LogMenu::Copied;
+/// Whether log entry `e` is among the `picked` rows.
+fn picks(picked: Option<(u64, u64)>, e: &log::Entry) -> bool {
+    picked.is_some_and(|(a, b)| (a.min(b)..=a.max(b)).contains(&e.seq()))
+}
+
+/// The log's right-click menu over the `picked` entries: *Copy N lines as
+/// script* and *Open in editor*, its rows taking the arrows and Enter (`nav`)
+/// as a context menu's do, `lit` the row they lit.
+fn log_menu_ui(
+    ctx: &egui::Context,
+    at: egui::Pos2,
+    picked: &[&log::Entry],
+    lit: &mut Option<usize>,
+    nav: Option<crate::menu::Nav>,
+) -> LogMenu {
+    use crate::menu::{Nav, navigate_index, pointer_moved};
+    if picked.is_empty() {
+        return LogMenu::Closed;
+    }
+    let script = as_script(picked);
+    let copy = match picked.len() {
+        1 => "Copy as script".to_owned(),
+        n => format!("Copy {n} lines as script"),
+    };
+    let rows = [
+        (icon::COPY, copy.as_str()),
+        (icon::FILE_CODE, "Open in editor"),
+    ];
+    let mut chosen = None;
+    match nav {
+        Some(Nav::Move(step)) => *lit = navigate_index(rows.len(), *lit, step),
+        Some(Nav::Activate) => chosen = *lit,
+        Some(Nav::Open | Nav::Back) => {}
+        None if pointer_moved(ctx) => *lit = None,
+        None => {}
+    }
+    let size = egui::vec2(crate::menu::MENU_W, crate::ui::menu_height(rows.len(), 0));
+    let resp = egui::Area::new(egui::Id::new("command-log-menu"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(crate::ui::menu_place(ctx, at, size))
+        .show(ctx, |ui| {
+            crate::ui::menu_frame(crate::ui::MENU_PAD).show(ui, |ui| {
+                ui.set_width(crate::ui::menu_inner_w(
+                    crate::menu::MENU_W,
+                    crate::ui::MENU_PAD,
+                ));
+                crate::ui::popup_rows(ui);
+                for (i, (glyph, label)) in rows.into_iter().enumerate() {
+                    let mut row = crate::ui::MenuRow::new(glyph, label);
+                    if let Some(hl) = *lit {
+                        row = row.highlight(i == hl);
                     }
-                    if crate::ui::menu_item(ui, icon::FILE_CODE, "Open in editor", h).clicked() {
-                        out = LogMenu::Editor(script.clone());
+                    if crate::ui::menu_row(ui, row, crate::ui::MENU_ROW_H).clicked() {
+                        chosen = Some(i);
                     }
-                });
+                }
             });
-        if matches!(out, LogMenu::Open)
-            && (ctx.input(|i| i.pointer.any_pressed()) && !resp.response.contains_pointer())
-        {
-            return LogMenu::Closed;
+        });
+    match chosen {
+        Some(0) => {
+            ctx.copy_text(script);
+            LogMenu::Copied
         }
-        out
+        Some(_) => LogMenu::Editor(script),
+        None if ctx.input(|i| i.pointer.any_pressed()) && !resp.response.contains_pointer() => {
+            LogMenu::Closed
+        }
+        None => LogMenu::Open,
     }
 }
 
@@ -1508,7 +1559,7 @@ enum LogMenu {
 
 /// The Luau a run of log entries writes as a script: each line's footer form; an
 /// edit with no command yet as a comment naming its step.
-pub(crate) fn as_script(entries: &[log::Entry]) -> String {
+pub(crate) fn as_script(entries: &[&log::Entry]) -> String {
     let mut out = String::new();
     for e in entries {
         match (&e.luau, &e.source) {
@@ -2389,6 +2440,57 @@ pub(crate) mod tests {
         let bar = app.command_bar.as_ref().expect("the bar stays open");
         assert_eq!(bar.text, ".x", "the line stays");
         assert!(bar.log_menu.is_none(), "the menu closed");
+    }
+
+    /// With the log's menu open, the arrows light its rows and Enter takes the
+    /// lit one: nothing is recalled behind it. The picked rows stay on their
+    /// entries when a full log drops its oldest.
+    /// flip: `command_bar_ui` leaving the arrows to the recall while the menu is
+    /// open → fails at "nothing recalled".
+    #[test]
+    fn the_log_menu_takes_the_arrows_and_its_rows_stay_picked() {
+        let (ctx, mut app, _) = typed("");
+        for i in 0..200 {
+            app.session.command_log.push(log::Entry::typed(
+                &format!(".x = {i}"),
+                format!("sel.x = {i}"),
+                String::new(),
+                false,
+                None,
+            ));
+        }
+        let newest = app.session.command_log.entries().last().unwrap().seq();
+        let bar = app.command_bar.as_mut().unwrap();
+        bar.picked = Some((newest, newest));
+        bar.log_menu = Some(egui::pos2(400.0, 400.0));
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        // Up from none lights the last row, and again the first.
+        pass(&ctx, &mut app, vec![key(egui::Key::ArrowUp, NONE)], NONE);
+        pass(&ctx, &mut app, vec![key(egui::Key::ArrowUp, NONE)], NONE);
+        let bar = app.command_bar.as_ref().unwrap();
+        assert!(bar.recalled.is_none(), "nothing recalled");
+        assert_eq!(bar.log_menu_lit, Some(0), "the first row lit");
+
+        app.session.command_log.push(log::Entry::typed(
+            ".y = 1",
+            "sel.y = 1".into(),
+            String::new(),
+            false,
+            None,
+        ));
+        let picked: Vec<String> = app
+            .session
+            .command_log
+            .entries()
+            .filter(|e| picks(app.command_bar.as_ref().unwrap().picked, e))
+            .filter_map(|e| e.line.clone())
+            .collect();
+        assert_eq!(picked, [".x = 199"], "still the row picked");
+
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        let bar = app.command_bar.as_ref().expect("the bar stays open");
+        assert!(bar.log_menu.is_none(), "Enter took the lit row");
+        assert_eq!(bar.text, "", "nothing ran or was recalled");
     }
 
     /// An error's fix lands on the right word when the line starts with spaces,
