@@ -3382,11 +3382,12 @@ impl MastikApp {
     /// does nothing else: [`MastikApp::pick_or_open`] (file card and row), the dashed
     /// *New file* card and list row, the sidebar's hand-rolled *New file* button,
     /// [`Self::nav_row`], [`Self::project_row`] (both hits), `project_cards`' call of
-    /// [`Self::project_card`], the body header's controls and the top bar's search,
-    /// settings, update chip, caption buttons and drag strip.
+    /// [`Self::project_card`], the continue card and its button, the list headers,
+    /// the body header's controls, the results page's project link, and the top
+    /// bar's search, settings, update chip, caption buttons and drag strip.
     ///
-    /// Not gated: [`Self::file_menu_button`] (the ⋮ anchor both dismissals exempt),
-    /// rows inside either menu, and `dashboard_act`, where gating would swallow the ⋮
+    /// Not gated: [`Self::file_menu_button`] (the ⋮ anchor the dismissals exempt),
+    /// rows inside a menu, and `dashboard_act`, where gating would swallow the ⋮
     /// menu's own rows. The body background dismisses a menu on purpose.
     pub(crate) fn library_menu_open(&self) -> bool {
         self.dash.menu_for.is_some() || self.dash.filter_open || self.dash.sort_open

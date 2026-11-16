@@ -142,6 +142,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **D364** `Ctrl+S` pins a version under `.versions/`. Autosave is silent and only when dirty, and holds and asks when the file changed outside Mastik. There is no Save As.
 - Version history says under each version what it changed against the one pinned before it, counted as the compare counts (topmost changed layers). The summary is worked out off the UI thread and cached for the app's life by the pair's two paths, since a pinned version never changes.
 - **D366** Recent files, stars and covers are local to the machine.
+- The library's content index (what each document holds, for search and the cards) is derived and per machine like covers, and read for every document on a worker of its own: the cover worker draws only cards on screen and skips the load when its picture is cached. A search lists documents matched by name before those matched only by content, whatever their tiers.
 - **D377** Crash recovery is a whole-document snapshot every 10 s, not a journal. **D393** One writer thread serialises autosave, snapshots and forgets; `Ctrl+S` stays synchronous.
 - **D378** Every record is written atomically (`atomic::write`: temp, fsync, rename). **D975** It keeps the file's mode and writes through a symlink.
 - **D418** A record that failed to read is never overwritten with defaults.

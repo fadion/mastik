@@ -551,6 +551,14 @@ modal that opens closes the palette. App actions only; typed syntax belongs to t
   Backspace on an empty query removes the chip), capped at 200 rows. Enter selects the layer as
   clicking its panel row does; the panel opens its parents and `reveal_selection` brings it into
   view without changing zoom. Shift+Enter or Shift-click adds it to the selection.
+- **Documents.** *Go to document…* (`Item::GoToDocument`, unbound, the palette's alone) keeps the
+  palette open, emptied, on a documents scope (`palette::Scope::Documents`, a *Documents* chip in the
+  field; Tab keeps it, Backspace on an empty query removes it). With no query it lists the
+  documents last opened here first, then the rest by last edit; typed for, the library's name
+  ranking (`MastikApp::ranked_files`, `library.md` §9.5), its matched letters lit. Each row notes
+  the project (or *Unfiled*) and edit age, *Open* first when a tab holds it; the footer says *Recent
+  first* or *Best match first*. Enter or a click opens it through `begin_open` in a tab of its own,
+  or brings its tab forward. The plain palette lists no documents.
 - **Verbs with no other door.** *Export as HTML… / React… / Vue…*, one row per `code::Target`, dim
   with nothing selected, aliases *code*, *html*, *react*, *vue*, *zip*. *Export as Penpot file…*
   and *Export as Sketch file…*, one row per `EditableFormat`, never dim since each writes the

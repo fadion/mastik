@@ -311,7 +311,7 @@ when a sentence happened to be copied elsewhere. The event arm only silences the
 | `Ctrl+S` | **save and pin a version** | ✅ writes *and* copies into `.versions/<document id>/<unix seconds>.mastik`, keyed on the id so a rename cannot orphan history (§15 D364); a save of nothing new since the newest version pins none. Autosave runs every thirty seconds, so bare save meant nothing. The top bar's disk button is the same action |
 | `Ctrl+Shift+S` | ~~save as~~ | ⛔ every document lives in the base folder (§9.5); *Duplicate* in the dashboard mints a new id. ⚠️ Exact matching is all that keeps it unbound: `Save`'s row holds Ctrl alone; `save_takes_the_bare_chord_and_the_shifted_one_is_free` asserts the **empty** result |
 | `Ctrl+O` | **the library** | ✅ the library tab: `go_to_dashboard`, which saves the document in front; its tab stays open. No file dialog exists |
-| `Ctrl+K` / `Ctrl+P` | **search files and projects** | ✅ **dashboard only**, read in `search_field` because `input::resolve` does not run while the library is up. `Enter` takes the first document match, never a project: most recently edited, ties by name (§15 D967). **`Ctrl` without Alt and Shift** (§15 D712) |
+| `Ctrl+K` / `Ctrl+P` | **search files and projects** | ✅ **dashboard only**, read in `search_field` because `input::resolve` does not run while the library is up. Inside a project it searches that project, with a chip to widen to the library (`Backspace` on the empty query). Unsteered, `Enter` takes *Show all N results* when the list is capped, else the first document match, never a project: the best ranked, then most recently edited (`library::search::rank`). **`Ctrl` without Alt and Shift** (§15 D712) |
 | `Ctrl+N` | **new document** | ✅ the dashboard's *New file*, from both screens, in a new tab; the strip's `+` is the same. **The project is computed at the door**: the library reads the nav being viewed, the editor the open document's project — *the project in front of you*. Unfiled at the root from *Recent*, *All files*, *Starred*, the trash, or a session not in the library (§15 D383) |
 | `Ctrl+W` | **close the tab** | ✅ the browser's meaning, not the window's: `close_tab` on the tab in front, which saves a filed document and asks only about work that cannot be saved; the next tab comes forward, else the library. A pinned tab stays open and the status line says to unpin it. Nothing on the library |
 | `Ctrl+Shift+T` | **reopen the closed tab** | ✅ the browser's: the last closed, at its old place in the strip |
@@ -343,10 +343,11 @@ draws the box.
 
 | Key | Action | |
 |---|---|---|
-| `←` `→` `↑` `↓` | **move the selection** | ✅ (§15 D374). The grid steps in reading order, so `→` off a row's end is the next row's start; `↑`/`↓` move a whole row of `grid_cols` cards (§15 D964). In **list** view verticals are single rows and horizontals do nothing. Off either end **clamps**. With nothing selected, `↓`/`→` enter at the top and `↑`/`←` at the bottom (`arrow_target`) |
+| `←` `→` `↑` `↓` | **move the selection** | ✅ (§15 D374). The grid steps in reading order, so `→` off a row's end is the next row's start; `↑`/`↓` move a whole row as laid (§15 D964), a day heading starting a new one (`grid_rows`). In **list** view verticals are single rows and horizontals do nothing. Off either end **clamps**. With nothing selected, `↓`/`→` enter at the top and `↑`/`←` at the bottom (`arrow_target`) |
 | `Enter` | **open the selection** | ✅ same predicate as a double click (`can_open`), ⚠️ **false in the trash**: opening there puts the editor on a file the purge deletes |
 | `Delete` / `Backspace` | **delete the selection** | ✅ through the confirmation (a key can be the tail of a chord meant elsewhere). In the trash it says *Delete permanently* |
-| `Escape` | **clear the selection** | ✅ the keyboard's click on the empty body. The search overlay, a file's **⋮ menu** and the **All projects ⌄** dropdown take it first (`library_menu_open`): the last two are bare `Area`s that took only an outside click, unlike `card_modal`s (§15 D578) |
+| `Escape` | **clear the selection** | ✅ the keyboard's click on the empty body. The search overlay, a file's **⋮ menu**, the **All projects ⌄** dropdown and the sort menu take it first (`library_menu_open`): the last three are bare `Area`s that took only an outside click, unlike `card_modal`s (§15 D578). In the results page's field it leaves the results page |
+| any printable key | **search** | ✅ opens the search with that character typed. Read from text events only (no Ctrl or Alt; Shift types a capital), so `Delete` and `Backspace` stay the delete card's; a space opens nothing |
 | `F2` · `Ctrl+R` | **rename the selection** | ✅ (§15 D383). The ⋮'s *Rename*, pre-filled from `Entry::display_name` (stem minus a sync conflict suffix). Refused in the trash. The two keys sit on opposite sides of the `modifiers.is_none()` gate, so the verb is one function, `start_rename` |
 | `Ctrl+D` | **duplicate the selection** | ✅ (§15 D383), the ⋮'s *Duplicate*: one chord, one verb, two nouns (§4). Refused in the trash |
 
@@ -355,7 +356,7 @@ draws the box.
 ⚠️ **None of these goes through `input::resolve`, and none can**: `MastikApp::ui` returns before it
 while the library is up, so `dashboard_keys` reads the context. Its guard (`library_keys_are_free`)
 lists what owns the keyboard: the two confirmations, the ⋮ menu, the *All projects ⌄* dropdown, the
-*Move to project* sheet, the *New project* and *Settings* cards, the rename field, the search
+sort menu, the *Move to project* sheet, the *New project* and *Settings* cards, the rename field, the search
 overlay, and `egui_wants_keyboard_input`. Plus `modifiers.is_none()`, which keeps `Ctrl+K` from
 also stepping the selection; the three chords are read above that gate, so everything unnamed is
 still refused by one line.
@@ -678,6 +679,8 @@ selects its layer, `Shift` + a label adds it; a label is two letters, the first 
 - **Clean up…** — a Tools menu row and a palette verb (`Action::CleanUp`), no chord.
 - **Fill with content…** — a Tools menu row, a palette verb and a text layer's menu row
   (`Action::FillContent`), no chord.
+- **Go to document…** — the palette alone (`Item::GoToDocument`), no chord and no `Action`: it turns
+  the palette to its documents scope rather than running anything.
 - **Numeric distribute spacing** — a panel affordance.
 - **`Tab` to hide panels** (Adobe) — `Tab` steps the point selection and `Ctrl+\` covers the intent.
   `Tab` is egui's focus key and costs a frame to claim (§15 D123): the last key worth a second

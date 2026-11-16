@@ -6,47 +6,9 @@ work is described in `architecture.md`. Refs are file + function name, never lin
 the code before picking an item up — an item's premise can go stale while its ask still reads
 true.
 
-## Now · Library
-
-Documents are found by name alone: search is a lowercase substring of the display name or a
-project's name (`MastikApp::search_results`), and the scan reads only a file's first 4 KB, so the
-library knows nothing of what a document holds. A card shows its cover, name and age.
-
-- **Ranked search** — every word must match, exact before prefix before word start before
-  substring, as `assets::sets::rank_name` ranks icons; one rule for search, the palette and the
-  results page.
-- **Sortable list columns** — a click on a *Name*, *Project*, *Edited*, *Created* or *Size* header
-  (`MastikApp::file_list`) sorts by it, a second reverses; `Sort` gains a direction the sort control
-  offers too.
-- **Day headings under a date sort** — *Today*, *Yesterday*, *This week*, *Earlier*, worded as the
-  version-history card's (`versions.rs`).
-- **Search inside documents** — page, top-level frame, component and style names and text
-  content, each result saying why it matched (*page: Checkout*). An index built on the cover
-  worker (`library::cover`), which already loads the whole file, cached in `machine_dir` keyed as
-  covers are (id plus mtime), filled for off-screen documents in the background.
-- **A results page** — *Show all N results* (or `Enter` with no row steered) opens the matches as a
-  grid or list where sort, the project filter and the view switch apply; the dropdown stays capped
-  at `SEARCH_MAX`.
-- **Documents in the command palette** — *Go to document…*, recent first, ranked as search is, so
-  switching needs no trip to the library.
-- **Continue where you left off** — a wide card heading *Recent* for the last document, its cover
-  drawn at the page and camera it was left on (`LocalIndex::last_page`, `last_view`).
-- **More on a card** — page count and a kit's version on the caption's second line (*4 pages · 2h
-  ago*), and *Pages* and *Opened* list columns; from the search index, so after it.
-- **Pages on hover** — moving across a cover steps through each page's cover; needs a cover per
-  page in `Covers`, so after the card line.
-- **Kit usage on *Kits*** — *Used in N documents* on a kit's card and the documents in its menu,
-  from `kits::users`.
-- **A project page header** — the project's colour, file count, last edit and the *Recent* mosaic
-  (`mosaic_cells`), and an optional one-line description edited in *Edit project*, kept in
-  `projects.json` so no document is rewritten.
-- **Small keys** — typing over the grid opens search with that letter; `Ctrl+K` inside a project
-  searches it, with a chip to widen to the library; *Starred* and *Kits* offer *Last opened* as a
-  sort.
-
 ## Now · Prototyping
 
-A release of its own, after the work above: the document played, with interactions, flows,
+A release of its own: the document played, with interactions, flows,
 variables and scripts during play, smart animate and springs, a player over the canvas, detached
 into its own window or fullscreen, and export as one HTML file running the player in WebAssembly.
 The design and its open questions are in `prototyping.md`.
