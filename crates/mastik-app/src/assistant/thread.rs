@@ -101,17 +101,19 @@ pub(crate) enum Msg {
 }
 
 impl Msg {
-    /// The agent's prose in this message, its text parts joined.
+    /// The agent's prose in this message, for *Copy* and a replay: its text
+    /// parts as the paragraphs the panel draws them as, since the text on
+    /// either side of a tool call is a part of its own.
     pub(crate) fn prose(&self) -> String {
         match self {
             Msg::Agent { parts, .. } => parts
                 .iter()
                 .filter_map(|p| match p {
-                    Part::Text(t) => Some(t.as_str()),
+                    Part::Text(t) => Some(t.trim()).filter(|t| !t.is_empty()),
                     Part::Tool(_) => None,
                 })
                 .collect::<Vec<_>>()
-                .join(""),
+                .join("\n\n"),
             Msg::Person { text, .. } => text.clone(),
             Msg::Note(_) => String::new(),
         }
@@ -263,6 +265,23 @@ mod tests {
             chips: Vec::new(),
             scope: None,
         }
+    }
+
+    /// The text on either side of a tool call reads as two paragraphs.
+    /// flip: `prose` joining with `""` → fails at the `assert_eq`.
+    #[test]
+    fn prose_parts_are_paragraphs() {
+        let Msg::Agent { mut parts, .. } = agent("Let me look.", Some("get_node")) else {
+            unreachable!()
+        };
+        parts.push(Part::Text("The frame is Fixed.\n".into()));
+        let m = Msg::Agent {
+            speaker: "Claude".into(),
+            harness: "claude".into(),
+            parts,
+            stats: None,
+        };
+        assert_eq!(m.prose(), "Let me look.\n\nThe frame is Fixed.");
     }
 
     /// A saved thread keeps the calls but not their results.
