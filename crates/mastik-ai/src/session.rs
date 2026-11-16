@@ -912,6 +912,8 @@ impl Inner {
 
     /// One turn on a per-turn harness: setup, spawn, read to the end.
     fn run_turn(self: Arc<Self>, turn: u64, spec: TurnSpec, args: Vec<String>) {
+        // The last turn's child is reaped; *Stop* during setup must not reach it.
+        self.lock().child = None;
         let refused = self.prepare().and_then(|_| match self.harness {
             Harness::DeepSeek => self.dsh_check(),
             _ => Ok(()),

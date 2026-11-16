@@ -247,7 +247,9 @@ impl Tracker {
     }
 
     /// End one child's tree (behind an npm shim the agent is a grandchild)
-    /// and forget it as a root.
+    /// and forget it as a root. Off Windows the group is signalled by `forget`,
+    /// only while the child is still a root: a reaped child's pid may since
+    /// lead someone else's group.
     pub(crate) fn kill(&self, child: &mut Child) {
         #[cfg(windows)]
         if let Ok(c) = self.children.lock()
@@ -255,8 +257,6 @@ impl Tracker {
         {
             own.terminate();
         }
-        #[cfg(not(windows))]
-        kill_group(child.id());
         let _ = child.kill();
         self.forget(child.id());
     }
@@ -758,6 +758,39 @@ mod tests {
             unsafe { libc::kill(survivor as libc::pid_t, libc::SIGKILL) };
         }
         assert!(gone, "the survivor is ended");
+    }
+
+    /// Killing a child no longer a root leaves its group alone, the stand-in
+    /// for a reaped pid reissued to another group's leader.
+    /// flip: `Tracker::kill` signalling the group unconditionally → fails at
+    /// "the group is not signalled".
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_forgotten_child_s_group_is_not_signalled() {
+        use std::io::Read;
+        let tracker = Tracker::new();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!; sleep 30"])
+            .stdout(std::process::Stdio::piped());
+        let mut child = tracker.spawn(&mut cmd).expect("spawn");
+        let mut line = String::new();
+        let mut out = child.stdout.take().unwrap();
+        let mut byte = [0u8; 1];
+        while out.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {
+            line.push(byte[0] as char);
+        }
+        let survivor: u32 = line.trim().parse().expect("the survivor's pid");
+        assert!(process_running(survivor), "the fixture leaves a survivor");
+        if let Ok(mut roots) = tracker.roots.lock() {
+            roots.retain(|p| *p != child.id());
+        }
+        tracker.kill(&mut child);
+        let _ = child.wait();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let alive = process_running(survivor);
+        // SAFETY: a signal to the live process this test started.
+        unsafe { libc::kill(survivor as libc::pid_t, libc::SIGKILL) };
+        assert!(alive, "the group is not signalled");
     }
 
     /// A helper that does not finish in time is ended and reported as such.
