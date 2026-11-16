@@ -220,9 +220,11 @@ pub(crate) fn toggle_comment(text: &mut String, sel: Sel) -> Sel {
     if filled.is_empty() {
         return sel;
     }
-    let commented = filled
-        .iter()
-        .all(|s| body(text, *s).trim_start().starts_with("--"));
+    // Past the same indent the removal measures, so the mark is where it looks.
+    let commented = filled.iter().all(|s| {
+        let line = body(text, *s);
+        line[indent_of(&line).len()..].starts_with("--")
+    });
     let column = filled
         .iter()
         .map(|s| indent_of(&body(text, *s)).len())
@@ -234,22 +236,28 @@ pub(crate) fn toggle_comment(text: &mut String, sel: Sel) -> Sel {
         let at = s.saturating_add_signed(delta);
         let change: isize = match commented {
             true => {
-                let mark = at + indent_of(&body(text, at)).len();
+                let indent = indent_of(&body(text, at)).len();
+                let mark = at + indent;
                 let len = match text[mark..].starts_with("-- ") {
                     true => 3,
                     false => 2,
                 };
                 text.replace_range(mark..mark + len, "");
+                // A caret at or inside the mark lands where the mark was.
+                let mark_was = s + indent;
+                if sel.caret > mark_was {
+                    caret_delta -= len.min(sel.caret - mark_was) as isize;
+                }
                 -(len as isize)
             }
             false => {
                 text.insert_str(at + column, "-- ");
+                if sel.caret >= s + column {
+                    caret_delta += 3;
+                }
                 3
             }
         };
-        if sel.caret >= s + column {
-            caret_delta += change;
-        }
         delta += change;
     }
     match sel.range().is_empty() {
@@ -629,6 +637,31 @@ mod tests {
             "[-- -- a\n-- b]",
             "mixed: comment all"
         );
+    }
+
+    /// Uncommenting keeps a caret at or inside the mark on its own line, and a
+    /// line led by other whitespace is not read as commented.
+    /// flip: `toggle_comment` shifting the caret by the whole mark from the line's
+    /// indent → the first case's caret lands inside `→` and panics.
+    #[test]
+    fn uncommenting_keeps_the_caret_on_its_line() {
+        assert_eq!(
+            run("x→\n|-- y", toggle_comment),
+            "x→\n|y",
+            "a caret before the mark"
+        );
+        assert_eq!(
+            run("x→\n-|- y", toggle_comment),
+            "x→\n|y",
+            "inside the mark"
+        );
+        assert_eq!(run("  -- y|", toggle_comment), "  y|", "after it");
+        assert_eq!(
+            run("\u{3000}-- x|", toggle_comment),
+            "-- \u{3000}-- x|",
+            "a full-width space is no indent"
+        );
+        assert_eq!(run("\u{c}-- x|", toggle_comment), "-- \u{c}-- x|");
     }
 
     /// Lines move and copy with their selection, and stop at the text's ends.

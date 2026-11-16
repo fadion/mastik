@@ -437,6 +437,7 @@ impl MastikApp {
         self.flush_library_write();
         self.scripts.buffer = self.script_source(&which).unwrap_or_default();
         self.scripts.shown += 1;
+        self.scripts.word_drag = None;
         self.scripts.current = Some(which);
         self.scripts.menu = None;
         self.scripts.renaming = None;
@@ -1809,9 +1810,12 @@ fn selection(ctx: &egui::Context, id: egui::Id, text: &str) -> Option<code_keys:
     })
 }
 
-/// Give the text edit `id` the selection `sel` in `text`, for its next draw.
+/// Give the text edit `id` the selection `sel` in `text`, for its next draw. An
+/// offset past the end or inside a character goes back to the nearest boundary
+/// rather than panicking.
 fn put_selection(ctx: &egui::Context, id: egui::Id, text: &str, sel: code_keys::Sel) {
-    let at = |b: usize| egui::text::CCursor::new(text[..b.min(text.len())].chars().count());
+    let at =
+        |b: usize| egui::text::CCursor::new(text[..text.floor_char_boundary(b)].chars().count());
     let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
     state
         .cursor
@@ -2481,7 +2485,9 @@ fn drag_words(ui: &egui::Ui, s: &mut Scripts, out: &egui::text_edit::TextEditOut
     let (Some(first), Some(p)) = (s.word_drag.clone(), pos) else {
         return;
     };
-    if first.end > s.buffer.len() {
+    // An undo or an outside write while the button is held leaves the word's
+    // offsets from another text.
+    if !s.buffer.is_char_boundary(first.start) || !s.buffer.is_char_boundary(first.end) {
         s.word_drag = None;
         return;
     }
@@ -3402,6 +3408,41 @@ mod tests {
         pass(&ctx, &mut app, vec![button(b, false)], none);
     }
 
+    /// A word drag whose text changed under the held button (an undo, an
+    /// outside write) lets go of the word instead of slicing inside a character.
+    /// flip: `drag_words` testing only the word's end against the length →
+    /// panics at the move.
+    #[test]
+    fn a_word_drag_over_a_changed_text_lets_go() {
+        use crate::command::tests::pass;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        app.open_script_editor_with("aé cd".into());
+        let none = egui::Modifiers::NONE;
+        for _ in 0..3 {
+            pass(&ctx, &mut app, Vec::new(), none);
+        }
+        let code = ctx
+            .read_response(app.scripts.code_id())
+            .expect("fixture: the code is drawn")
+            .rect;
+        let at = egui::pos2(code.left() + 14.0, code.top() + 10.0);
+        pass(&ctx, &mut app, vec![egui::Event::PointerMoved(at)], none);
+        let press = egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: none,
+        };
+        pass(&ctx, &mut app, vec![press], none);
+        app.scripts.buffer = "aéééé".into();
+        app.scripts.word_drag = Some(4..6);
+        let moved = at + egui::vec2(20.0, 0.0);
+        pass(&ctx, &mut app, vec![egui::Event::PointerMoved(moved)], none);
+        assert_eq!(app.scripts.word_drag, None, "the word is let go");
+    }
+
     /// The code pane takes its editing keys before the text edit: `Enter`
     /// after `then` indents, `end` typed a letter a frame steps back, `(` types
     /// its close, and `Ctrl+/` comments the line.
@@ -3435,6 +3476,40 @@ mod tests {
             app.scripts.buffer, "if a then\n  x = f()\n-- end",
             "Ctrl+/ comments the line"
         );
+    }
+
+    /// `Ctrl+/` with the caret at a comment line's start, under a line ending in
+    /// a multibyte character, uncomments it and leaves the caret there.
+    /// flip: `toggle_comment` shifting the caret by the whole mark → fails at
+    /// "the line's start".
+    #[test]
+    fn uncommenting_under_a_multibyte_line_keeps_the_caret() {
+        use crate::command::tests::{key, pass};
+        let (ctx, mut app) = typing_at_end("x→\n-- y");
+        let id = app.scripts.code_id();
+        put_selection(&ctx, id, &app.scripts.buffer, code_keys::Sel::caret(5));
+        let ctrl = egui::Modifiers::COMMAND;
+        pass(&ctx, &mut app, vec![key(egui::Key::Slash, ctrl)], ctrl);
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(app.scripts.buffer, "x→\ny", "uncommented");
+        assert_eq!(caret(&ctx, &app), Some(3), "the line's start");
+    }
+
+    /// A selection put past the text's end or inside a character goes back to
+    /// the nearest boundary.
+    /// flip: `put_selection` slicing at the raw offset → panics at "inside →".
+    #[test]
+    fn a_selection_inside_a_character_is_put_at_its_start() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("put-selection-probe");
+        let chars = |sel| {
+            put_selection(&ctx, id, "x→y", sel);
+            egui::TextEdit::load_state(&ctx, id)
+                .and_then(|s| s.cursor.char_range())
+                .map(|r| r.primary.index.0)
+        };
+        assert_eq!(chars(code_keys::Sel::caret(2)), Some(1), "inside →");
+        assert_eq!(chars(code_keys::Sel::caret(99)), Some(3), "past the end");
     }
 
     /// A run that fails changes nothing, says where, and puts the editor on the line.
