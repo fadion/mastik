@@ -1421,8 +1421,9 @@ pub(crate) fn row_texts_note_kept(
     full_w > room + 0.5
 }
 
-/// A chord as keycaps would read it in one chip: `Ctrl + K`, `⌘K` on macOS.
-fn chip(ui: &egui::Ui, right: f32, y: f32, accel: &str, live: bool) -> f32 {
+/// A chord as keycaps would read it in one chip, `Ctrl + K` (`⌘K` on macOS), its
+/// right edge at `right`; answers its width. The library's search rows wear it too.
+pub(crate) fn chip(ui: &egui::Ui, right: f32, y: f32, accel: &str, live: bool) -> f32 {
     let p = ui.painter();
     let text = crate::input::keys(accel).replace('+', " + ");
     let galley = p.layout_no_wrap(

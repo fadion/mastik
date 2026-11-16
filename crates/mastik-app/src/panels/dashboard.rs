@@ -430,6 +430,14 @@ pub(crate) struct DashboardState {
     pub(crate) list_sort: Option<SortBy>,
     /// Whether the body header's sort menu is showing.
     pub(crate) sort_open: bool,
+    /// The results page's query while it is the body: a state of the body over
+    /// whatever page the search started on, not a sidebar entry, so it is never a
+    /// preference and never what a launch opens on. Leaving it is setting `None`.
+    pub(crate) search_page: Option<String>,
+    /// The results page's sort; `None` is *Best match*.
+    pub(crate) page_sort: Option<SortBy>,
+    /// Set when the results page opens, so its field takes the caret once.
+    pub(crate) page_focus: bool,
     pub(crate) list_view: bool,
     /// How many columns the file grid was last laid in, for the arrow keys; `0`
     /// before the first frame, which `arrow_target` reads as one.
@@ -880,6 +888,28 @@ impl MastikApp {
             .inner
         };
 
+        // On the results page the field holds its query and edits it in place: typing
+        // narrows the page live, and `Escape` or clearing it leaves.
+        if self.dash.search.is_none()
+            && let Some(mut query) = self.dash.search_page.clone()
+        {
+            let focused = ctx.memory(|m| m.has_focus(id));
+            if focused && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
+                self.dash.search_page = None;
+                ctx.memory_mut(|m| m.surrender_focus(id));
+                return;
+            }
+            let edit = field(ui, &mut query);
+            if std::mem::take(&mut self.dash.page_focus) {
+                edit.request_focus();
+            }
+            if edit.changed() {
+                self.dash.selected = None;
+                self.dash.search_page = (!query.trim().is_empty()).then_some(query);
+            }
+            return;
+        }
         if self.dash.search.is_none() {
             let mut idle = String::new();
             let edit = field(ui, &mut idle);
@@ -967,10 +997,13 @@ impl MastikApp {
             Vec::new()
         };
         let mut projects = self.ranked_projects(&words);
-        projects.truncate(SEARCH_MAX);
         let mut files = self.ranked_files(&words);
+        // Past the cap, a last row opens every match on the results page.
+        let show_all =
+            (files.len() > SEARCH_MAX || projects.len() > SEARCH_MAX).then_some(files.len());
+        projects.truncate(SEARCH_MAX);
         files.truncate(SEARCH_MAX);
-        let rows = recents.len() + projects.len() + files.len();
+        let rows = recents.len() + projects.len() + files.len() + usize::from(show_all.is_some());
         if rows == 0 && (!needle.is_empty() || (private && typed)) {
             return Some(Self::search_panel(ui, anchor, 36.0, |ui, rect| {
                 ui.painter().text(
@@ -991,8 +1024,11 @@ impl MastikApp {
         }
 
         // `Enter` takes the highlighted row, whatever its kind. Unsteered, it sits on
-        // the first document match, recomputed as the groups above change length.
-        let default = if files.is_empty() {
+        // *Show all* when there is one, else the first document match, recomputed
+        // as the groups above change length.
+        let default = if show_all.is_some() {
+            rows - 1
+        } else if files.is_empty() {
             0
         } else {
             recents.len() + projects.len()
@@ -1007,6 +1043,7 @@ impl MastikApp {
         let mut chosen: Option<Act> = None;
         let mut nav_to: Option<Nav> = None;
         let mut refill: Option<String> = None;
+        let mut open_page = false;
         let h = rows as f32 * ui::MENU_ROW_H;
         let panel = Self::search_panel(ui, anchor, h, |ui, rect| {
             let mut y = rect.top();
@@ -1078,8 +1115,28 @@ impl MastikApp {
                 }
                 i += 1;
             }
+            if let Some(n) = show_all {
+                let label = format!("Show all {}", ui::count(n, "result"));
+                if row(
+                    ui,
+                    i,
+                    icon::MAGNIFYING_GLASS,
+                    theme::text::faint(),
+                    &label,
+                    &[],
+                    "",
+                ) {
+                    open_page = true;
+                }
+                let y = rect.top() + i as f32 * ui::MENU_ROW_H + ui::MENU_ROW_H / 2.0;
+                crate::palette::chip(ui, rect.right() - 8.0, y, "Enter", true);
+            }
         });
 
+        if open_page {
+            self.open_results(&query);
+            return Some(panel);
+        }
         if let Some(q) = refill {
             self.dash.search = Some(q);
             self.dash.search_row = None;
@@ -1087,6 +1144,7 @@ impl MastikApp {
         }
         if let Some(nav) = nav_to {
             self.dash.nav = nav;
+            self.dash.search_page = None;
             self.remember_search(&query);
             self.dash.search = None;
             return Some(panel);
@@ -1128,6 +1186,17 @@ impl MastikApp {
                     .rect
             })
             .inner
+    }
+
+    /// Make the results page for `query` the body, over the page the search
+    /// started on, in *Best match* order.
+    fn open_results(&mut self, query: &str) {
+        self.remember_search(query);
+        self.dash.search_page = Some(query.trim().to_string());
+        self.dash.page_sort = None;
+        self.dash.page_focus = true;
+        self.dash.search = None;
+        self.dash.selected = None;
     }
 
     /// Push a query onto the per-machine recent-search list, only when it led
@@ -1218,8 +1287,11 @@ impl MastikApp {
         ] {
             let count = self.nav_count(&nav);
             let label = nav.label();
-            if self.nav_row(ui, glyph, label, Some(count), self.dash.nav == nav) {
+            // The results page lights no entry, and any entry leaves it.
+            let page = self.dash.search_page.is_some();
+            if self.nav_row(ui, glyph, label, Some(count), !page && self.dash.nav == nav) {
                 self.dash.nav = nav;
+                self.dash.search_page = None;
             }
         }
 
@@ -1227,13 +1299,15 @@ impl MastikApp {
         section_label(ui, "Projects");
         // Cloned because the row draws while `self` is borrowed.
         let projects: Vec<project::Project> = self.library.projects.active().cloned().collect();
+        let page = self.dash.search_page.is_some();
         for p in &projects {
-            let selected = self.dash.nav == Nav::Project(p.id.clone());
+            let selected = !page && self.dash.nav == Nav::Project(p.id.clone());
             let count = self.library.file_count(&p.id);
             if self.project_row(ui, p, ProjectRowKind::Active(count), selected)
                 == ProjectRowHit::Select
             {
                 self.dash.nav = Nav::Project(p.id.clone());
+                self.dash.search_page = None;
             }
         }
         if self.nav_row(ui, icon::PLUS, "New project", None, false) {
@@ -1248,9 +1322,12 @@ impl MastikApp {
             }
             if self.dash.archived_open {
                 for p in &archived {
-                    let selected = self.dash.nav == Nav::Project(p.id.clone());
+                    let selected = !page && self.dash.nav == Nav::Project(p.id.clone());
                     match self.project_row(ui, p, ProjectRowKind::Archived, selected) {
-                        ProjectRowHit::Select => self.dash.nav = Nav::Project(p.id.clone()),
+                        ProjectRowHit::Select => {
+                            self.dash.nav = Nav::Project(p.id.clone());
+                            self.dash.search_page = None;
+                        }
                         ProjectRowHit::Unarchive => {
                             *act = Some(Act::SetArchived(p.id.clone(), false));
                         }
@@ -1456,7 +1533,9 @@ impl MastikApp {
         ui.add_space(14.0);
 
         // The same predicate the cards are drawn from, or the heading appears over nothing.
-        let show_projects = self.dash.nav == Nav::Recent && !self.recent_projects().is_empty();
+        let show_projects = self.dash.nav == Nav::Recent
+            && self.dash.search_page.is_none()
+            && !self.recent_projects().is_empty();
         // A project's grid ends in a *New file* card, so it needs no empty state, except
         // while the library's folder is missing (`new_file_into`).
         let new_file = self.new_file_into();
@@ -1523,7 +1602,30 @@ impl MastikApp {
     /// The documents the current nav and filter select, sorted. Cloned rather than
     /// borrowed so the drawing code can call back into `&mut self` (see [`Act`]).
     fn visible_entries(&self) -> Vec<Entry> {
-        let mut out = match &self.dash.nav {
+        let mut out = match (&self.dash.search_page, &self.dash.nav) {
+            // Ranked, which *Best match* keeps; nothing while names are masked.
+            (Some(_), _) if crate::private::on() => Vec::new(),
+            (Some(q), _) => self
+                .ranked_files(&search::words(q))
+                .into_iter()
+                .map(|(e, _)| e)
+                .collect(),
+            (None, nav) => self.nav_entries(nav),
+        };
+        if self.filter_applies()
+            && let Some(filter) = &self.dash.filter
+        {
+            out.retain(|e| e.meta.project.as_deref() == Some(filter.as_str()));
+        }
+        if self.sort_applies() {
+            self.library.sort_entries(&mut out, self.sort_by());
+        }
+        out
+    }
+
+    /// The documents a sidebar entry holds, before the filter and the sort.
+    fn nav_entries(&self, nav: &Nav) -> Vec<Entry> {
+        match nav {
             Nav::Recent => self.library.recent(),
             Nav::All => self.library.entries.clone(),
             Nav::Starred => self
@@ -1549,49 +1651,47 @@ impl MastikApp {
                 .filter(|e| e.meta.project.as_deref() == Some(id.as_str()))
                 .cloned()
                 .collect(),
-        };
-        if self.filter_applies()
-            && let Some(filter) = &self.dash.filter
-        {
-            out.retain(|e| e.meta.project.as_deref() == Some(filter.as_str()));
         }
-        if self.sort_applies() {
-            self.library.sort_entries(&mut out, self.sort_by());
-        }
-        out
     }
 
     /// Whether the sort control is offered, and so whether
     /// [`MastikApp::visible_entries`] applies it.
     ///
     /// False on *Recent*, whose order (when this machine opened each document) is
-    /// the page's point and which no `Sort` reproduces.
+    /// the page's point and which no `Sort` reproduces; true on the results page,
+    /// whichever page it was opened over.
     fn sort_applies(&self) -> bool {
-        self.dash.nav != Nav::Recent
+        self.dash.search_page.is_some() || self.dash.nav != Nav::Recent
     }
 
     /// The fields the sort menu and the list headers offer on this page, in the
-    /// menu's order. *Last opened* only on *Starred* and *Kits*, lists you return
-    /// to, where it leads; *Project* not inside a project, where it sorts nothing.
+    /// menu's order. *Best match* only on the results page, where it leads; *Last
+    /// opened* only on *Starred* and *Kits*, lists you return to, where it leads;
+    /// *Project* not inside a project, where it sorts nothing.
     fn sort_fields(&self) -> Vec<Sort> {
         let mut out = Vec::new();
-        if matches!(self.dash.nav, Nav::Starred | Nav::Kits) {
+        let page = self.dash.search_page.is_some();
+        if page {
+            out.push(Sort::Best);
+        } else if matches!(self.dash.nav, Nav::Starred | Nav::Kits) {
             out.push(Sort::Opened);
         }
         out.extend([Sort::Edited, Sort::Name]);
-        if !matches!(self.dash.nav, Nav::Project(_)) {
+        if page || !matches!(self.dash.nav, Nav::Project(_)) {
             out.push(Sort::Project);
         }
         out.extend([Sort::Created, Sort::Size]);
         out
     }
 
-    /// The sort in force on this page: *Starred* and *Kits* keep their own,
-    /// *Last opened* until one is picked, and a field this page does not offer
-    /// falls back to *Last edited* without forgetting the choice.
+    /// The sort in force on this page: the results page and *Starred* and *Kits*
+    /// keep their own (*Best match* and *Last opened* until one is picked), and a
+    /// field this page does not offer falls back to *Last edited* without
+    /// forgetting the choice.
     pub(crate) fn sort_by(&self) -> SortBy {
-        let by = match self.dash.nav {
-            Nav::Starred | Nav::Kits => {
+        let by = match (&self.dash.search_page, &self.dash.nav) {
+            (Some(_), _) => self.dash.page_sort.unwrap_or(SortBy::natural(Sort::Best)),
+            (None, Nav::Starred | Nav::Kits) => {
                 self.dash.list_sort.unwrap_or(SortBy::natural(Sort::Opened))
             }
             _ => self.dash.sort,
@@ -1605,8 +1705,9 @@ impl MastikApp {
     /// Put `by` in force on this page, into the slot [`Self::sort_by`] reads.
     /// Session state: the default lives in Settings.
     fn set_sort(&mut self, by: SortBy) {
-        match self.dash.nav {
-            Nav::Starred | Nav::Kits => self.dash.list_sort = Some(by),
+        match (&self.dash.search_page, &self.dash.nav) {
+            (Some(_), _) => self.dash.page_sort = Some(by),
+            (None, Nav::Starred | Nav::Kits) => self.dash.list_sort = Some(by),
             _ => self.dash.sort = by,
         }
     }
@@ -1636,11 +1737,29 @@ impl MastikApp {
                         .size(ui::HEADING_PT)
                         .color(theme::text::strong()),
                 );
-                ui.label(
-                    egui::RichText::new(subheading)
-                        .size(ui::SMALL_PT)
-                        .color(theme::text::dim()),
-                );
+                // On the results page a matching project is no card but a link in
+                // the line: *14 files and 1 project*.
+                let project = self.page_project();
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label(
+                        egui::RichText::new(subheading)
+                            .size(ui::SMALL_PT)
+                            .color(theme::text::dim()),
+                    );
+                    if let Some((id, n)) = project {
+                        ui.label(
+                            egui::RichText::new(" and ")
+                                .size(ui::SMALL_PT)
+                                .color(theme::text::dim()),
+                        );
+                        let link = ui::word_link(ui, &ui::count(n, "project"), false);
+                        if link.clicked() && !self.dash.menu_was_up {
+                            self.dash.nav = Nav::Project(id);
+                            self.dash.search_page = None;
+                        }
+                    }
+                });
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1714,10 +1833,12 @@ impl MastikApp {
     /// *Recent* with no control to unset it. Not on *Recent*, not inside a project,
     /// and not without an active project to filter by.
     fn filter_applies(&self) -> bool {
-        matches!(
-            self.dash.nav,
-            Nav::All | Nav::Starred | Nav::Kits | Nav::Trash
-        ) && self.library.projects.active().next().is_some()
+        (self.dash.search_page.is_some()
+            || matches!(
+                self.dash.nav,
+                Nav::All | Nav::Starred | Nav::Kits | Nav::Trash
+            ))
+            && self.library.projects.active().next().is_some()
     }
 
     /// *All projects ⌄* — the body header's project filter: a button and an `Area`, not
@@ -1976,6 +2097,14 @@ impl MastikApp {
     fn heading(&self, n: usize) -> (String, String) {
         let nav = &self.dash.nav;
         let files = ui::count(n, "file");
+        if let Some(q) = &self.dash.search_page {
+            // The query may name what private mode hides.
+            let shown = match crate::private::on() {
+                true => "Results".to_string(),
+                false => format!("Results for “{}”", q.trim()),
+            };
+            return (shown, files);
+        }
         match nav {
             Nav::Recent => (nav.label().into(), "Picked up where you left off".into()),
             Nav::All | Nav::Starred => (nav.label().into(), files),
@@ -2005,17 +2134,34 @@ impl MastikApp {
         }
     }
 
+    /// The results page's matching projects, as the header's link: the best
+    /// one's id, which the link opens, and how many match.
+    fn page_project(&self) -> Option<(String, usize)> {
+        let q = self.dash.search_page.as_deref()?;
+        if crate::private::on() {
+            return None;
+        }
+        let projects = self.ranked_projects(&search::words(q));
+        let best = projects.first()?.0.id.clone();
+        Some((best, projects.len()))
+    }
+
     fn empty_state(&mut self, ui: &mut egui::Ui) {
         ui.add_space(60.0);
         ui.vertical_centered(|ui| {
             // A missing folder (`library::state::Library::root_unavailable`) answers
             // every nav, first: the other sentences would lie.
             let unavailable = self.library.root_unavailable;
+            let page = self.dash.search_page.is_some();
             let (glyph, line) = match &self.dash.nav {
                 _ if unavailable => (
                     icon::FOLDER_SIMPLE,
                     "This library's folder isn't available. Check the base folder in Settings.",
                 ),
+                _ if page && crate::private::on() => {
+                    (icon::MAGNIFYING_GLASS, crate::private::DECLINE_SEARCH)
+                }
+                _ if page => (icon::MAGNIFYING_GLASS, "No files match"),
                 Nav::Recent => (
                     icon::CLOCK_COUNTER_CLOCKWISE,
                     "Nothing opened on this computer yet.",
@@ -2196,7 +2342,7 @@ impl MastikApp {
     /// folder is there ([`MastikApp::library_writable`]); `None` also lets the empty
     /// state through. `pub(crate)` so a test in `app.rs` can check card and act agree.
     pub(crate) fn new_file_into(&self) -> Option<String> {
-        if self.library.root_unavailable {
+        if self.library.root_unavailable || self.dash.search_page.is_some() {
             return None;
         }
         match &self.dash.nav {
@@ -8408,6 +8554,60 @@ mod tests {
             Some(paths[0].as_path()),
             "and a tie goes to the name, whatever order the folder lists them in"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Past the cap the dropdown ends in *Show all N results*, which unsteered
+    /// `Enter` takes: the results page lists every match in rank order over the
+    /// page the search began on, offers *Best match* first, and a sidebar entry
+    /// leaves it.
+    /// flip: `default` sitting on the first file even with *Show all* → fails at
+    /// "Enter opens the page".
+    #[test]
+    fn enter_past_the_cap_opens_the_results_page() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "results-page");
+        for i in 0..SEARCH_MAX + 2 {
+            let mut doc = mastik_core::Document::new(app.session.ids.mint());
+            store::file_document(&root, None, &format!("Check {i}"), &mut doc).unwrap();
+        }
+        let mut doc = mastik_core::Document::new(app.session.ids.mint());
+        store::file_document(&root, None, "Wallet", &mut doc).unwrap();
+        app.library.refresh();
+        app.dash.nav = Nav::Starred;
+        app.dash.search = Some("check".into());
+        let runs = galleys(&mut app, &ctx);
+        assert!(
+            runs.iter().any(|(_, _, t)| t == "Show all 8 results"),
+            "the dropdown offers the rest"
+        );
+        press(&mut app, &ctx, egui::Key::Enter);
+        assert_eq!(
+            app.dash.search_page.as_deref(),
+            Some("check"),
+            "Enter opens the page"
+        );
+        assert!(app.session.path.is_none(), "and opens no document");
+        assert_eq!(app.visible_entries().len(), SEARCH_MAX + 2, "every match");
+        assert_eq!(app.sort_by(), SortBy::natural(Sort::Best));
+        assert_eq!(app.dash.nav, Nav::Starred, "over the page it began on");
+        assert!(in_body(&galleys(&mut app, &ctx), "Results for “check”"));
+
+        // Typing on the page narrows it; clearing it leaves.
+        app.dash.search_page = Some("check 7".into());
+        assert_eq!(app.visible_entries().len(), 1);
+        let at = {
+            let runs = galleys(&mut app, &ctx);
+            let (x, y) = run_at(&runs, "All files");
+            egui::pos2(x, y)
+        };
+        click_at(&mut app, &ctx, at);
+        assert_eq!(
+            app.dash.search_page, None,
+            "a sidebar entry leaves the page"
+        );
+        assert_eq!(app.dash.nav, Nav::All);
         let _ = std::fs::remove_dir_all(&root);
     }
 
