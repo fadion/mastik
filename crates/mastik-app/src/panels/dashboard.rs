@@ -13,7 +13,7 @@
 use crate::app::MastikApp;
 use crate::library::scan::Entry;
 use crate::library::state::{Sort, SortBy};
-use crate::library::{clock, ids, index, naming, project, search, store};
+use crate::library::{clock, cover, ids, index, naming, project, search, store};
 use crate::menu::{Nav as MenuNav, navigate_index, pointer_moved};
 use crate::settings;
 use crate::theme;
@@ -43,6 +43,10 @@ const CARD_CAPTION_H: f32 = 46.0;
 /// project's files in it.
 const MOSAIC_H: f32 = 118.0;
 const MOSAIC_GAP: f32 = 7.0;
+/// The continue card's height: a grid card's and a third, short of two cards.
+const CONTINUE_H: f32 = (CARD_THUMB_H + CARD_CAPTION_H) * 4.0 / 3.0;
+/// How much of the continue card's width its cover takes.
+const CONTINUE_COVER_SHARE: f32 = 0.55;
 /// A project page header's mosaic: [`MOSAIC_H`] tall and as wide as a project
 /// card's mosaic at the grid's widest card.
 const PROJECT_HEADER_MOSAIC_W: f32 = CARD_MAX_W - PROJECT_PAD * 2.0;
@@ -1893,6 +1897,10 @@ impl MastikApp {
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
+                    if let Some(entry) = self.continue_entry() {
+                        self.continue_card(ui, &entry, act);
+                        ui.add_space(20.0);
+                    }
                     if show_projects {
                         self.project_cards(ui);
                         ui.add_space(20.0);
@@ -2619,6 +2627,167 @@ impl MastikApp {
         });
     }
 
+    /// The document *Recent*'s continue card offers: the one last opened here,
+    /// only while no tab holds it (its tab is a click away) and it is still in
+    /// the library. Never on the results page.
+    pub(crate) fn continue_entry(&self) -> Option<Entry> {
+        if self.dash.nav != Nav::Recent || self.dash.search_page.is_some() {
+            return None;
+        }
+        let entry = self.library.recent().into_iter().next()?;
+        self.tab_of_path(&entry.path).is_none().then_some(entry)
+    }
+
+    /// Where `entry` was left here, as the continue card draws and names it: the
+    /// camera's shot, and *Cart · at 140%*. The page's name comes from the
+    /// index; with no camera recorded, the rest cover and no line.
+    fn left_at(&self, entry: &Entry) -> (cover::Shot, Option<String>) {
+        let view = entry
+            .meta
+            .id
+            .as_ref()
+            .and_then(|id| self.library.local.last_view.get(id));
+        let Some(v) = view else {
+            return (cover::Shot::Rest, None);
+        };
+        let shot = cover::Shot::View {
+            page: v.page.clone(),
+            x: v.x,
+            y: v.y,
+            zoom: v.zoom,
+        };
+        let page = self.index.get(entry).and_then(|f| {
+            let at = f.pages.iter().position(|p| p.id == v.page)?;
+            Some(crate::private::page_named(&f.pages[at].name, at).into_owned())
+        });
+        let zoom = format!("at {}%", (v.zoom * 100.0).round() as i64);
+        let line = match page {
+            Some(page) => format!("{page} · {zoom}"),
+            None => zoom,
+        };
+        (shot, Some(line))
+    }
+
+    /// *Continue* at the top of *Recent*: the last document, its cover drawn at
+    /// the camera it was left on, cropped to the card rather than framed on the
+    /// page, so it shows what you were looking at; then its name, where it was
+    /// left, its project and age, and a *Continue* button. A click anywhere on it
+    /// opens the document, as every card does.
+    fn continue_card(&mut self, ui: &mut egui::Ui, entry: &Entry, act: &mut Option<Act>) {
+        section_label(ui, "Continue");
+        ui.add_space(6.0);
+        let w = ui.available_width();
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, CONTINUE_H), egui::Sense::click());
+        let opacity = ui.opacity();
+        ui.multiply_opacity(self.opening_alpha(entry));
+        let dot = self
+            .library
+            .project_of(entry)
+            .map(|p| swatch(&p.color))
+            .unwrap_or(theme::text::faint());
+        let p = ui.painter();
+        p.rect_filled(rect, egui::CornerRadius::same(9), color::card());
+        p.rect_stroke(
+            rect,
+            egui::CornerRadius::same(9),
+            egui::Stroke::new(
+                1.0,
+                if resp.hovered() {
+                    color::accent_700()
+                } else {
+                    color::card_border()
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        let plate = egui::Rect::from_min_size(
+            rect.min + egui::Vec2::splat(PROJECT_PAD),
+            egui::vec2(
+                (w * CONTINUE_COVER_SHARE).max(1.0),
+                CONTINUE_H - PROJECT_PAD * 2.0,
+            ),
+        );
+        ui.painter()
+            .rect_filled(plate, egui::CornerRadius::same(6), dot.gamma_multiply(0.14));
+        let (shot, line) = self.left_at(entry);
+        let texture = match ui.is_rect_visible(plate) {
+            true => self.covers.get_shot(ui.ctx(), entry, &shot).cloned(),
+            false => None,
+        };
+        if let Some(texture) = texture {
+            // Fitted inside the plate, for `file_card`'s reasons.
+            let size = texture.size_vec2();
+            let room = plate.shrink(6.0);
+            let scale = (room.width() / size.x).min(room.height() / size.y).min(1.0);
+            ui.painter().image(
+                texture.id(),
+                egui::Rect::from_center_size(room.center(), size * scale),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        let x = plate.right() + 20.0;
+        let text_w = (rect.right() - x - 20.0).max(0.0);
+        let p = ui.painter();
+        let mut y = plate.top() + 14.0;
+        p.text(
+            egui::pos2(x, y),
+            egui::Align2::LEFT_CENTER,
+            elide(ui, &self.library.shown_entry(entry), ui::TITLE_PT, text_w),
+            egui::FontId::proportional(ui::TITLE_PT),
+            theme::text::strong(),
+        );
+        if let Some(line) = line {
+            y += 22.0;
+            p.text(
+                egui::pos2(x, y),
+                egui::Align2::LEFT_CENTER,
+                elide(ui, &line, ui::SMALL_PT, text_w),
+                egui::FontId::proportional(ui::SMALL_PT),
+                theme::text::dim(),
+            );
+        }
+        let project = self
+            .library
+            .project_of(entry)
+            .map(|p| self.library.shown_project(p))
+            .unwrap_or_else(|| "Unfiled".into());
+        let age = clock::relative_label(clock::since(entry.modified)).to_lowercase();
+        y += 18.0;
+        p.text(
+            egui::pos2(x, y),
+            egui::Align2::LEFT_CENTER,
+            elide(
+                ui,
+                &format!("{project} · edited {age}"),
+                ui::SMALL_PT,
+                text_w,
+            ),
+            egui::FontId::proportional(ui::SMALL_PT),
+            theme::text::faint(),
+        );
+        let button = egui::Rect::from_min_size(
+            egui::pos2(x, plate.bottom() - ui::CONTROL_H),
+            egui::vec2(ui::action_button_w(ui.ctx(), "Continue"), ui::CONTROL_H),
+        );
+        let pressed = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(button), |ui| {
+                ui::action_button(
+                    ui,
+                    icon::ARROW_RIGHT,
+                    "Continue",
+                    FieldButton::Primary,
+                    button.size(),
+                )
+            })
+            .inner
+            .clicked();
+        if (pressed || resp.clicked()) && !self.dash.menu_was_up && self.can_open() {
+            *act = Some(Act::Open(entry.path.clone()));
+        }
+        ui.set_opacity(opacity);
+    }
+
     /// The row of project cards at the top of *Recent*.
     fn project_cards(&mut self, ui: &mut egui::Ui) {
         section_label(ui, "Projects");
@@ -2977,8 +3146,23 @@ impl MastikApp {
         // Only while the plate is on screen: the grid is not virtualised, so an
         // unconditional `get` would render the whole library on the first frame. So
         // `Covers::unreadable` is known only for documents the grid has shown.
+        // Under the pointer, a document of several pages steps through them: the
+        // cover is cut into one strip per page, drafts left out, and the pointer's
+        // strip picks the page. The first strip is the rest cover.
+        let pages = self.hover_pages(entry);
+        let step = (lit && pages.len() > 1)
+            .then(|| ui.ctx().pointer_hover_pos())
+            .flatten()
+            .map(|at| {
+                let t = ((at.x - thumb.left()) / thumb.width()).clamp(0.0, 0.999);
+                (t * pages.len() as f32) as usize
+            });
+        let shot = match step {
+            Some(i) if i > 0 => cover::Shot::Page(pages[i].id.clone()),
+            _ => cover::Shot::Rest,
+        };
         let cover = if ui.is_rect_visible(thumb) {
-            self.covers.get(ui.ctx(), entry).cloned()
+            self.covers.get_shot(ui.ctx(), entry, &shot).cloned()
         } else {
             None
         };
@@ -2997,6 +3181,18 @@ impl MastikApp {
                     egui::Color32::WHITE,
                 );
             }
+            // A page whose cover is still being drawn turns the small spinner.
+            None if shot != cover::Shot::Rest => {
+                let now = ui.input(|i| i.time);
+                ui::paint_spinner(
+                    ui.painter(),
+                    thumb.center(),
+                    16.0,
+                    theme::text::faint(),
+                    now,
+                );
+                ui.ctx().request_repaint();
+            }
             None => {
                 ui.painter().text(
                     thumb.center(),
@@ -3006,6 +3202,22 @@ impl MastikApp {
                     theme::color::text_a(40), // text-ink: a placeholder mark on the cover plate
                 );
             }
+        }
+        // While stepping, the bar says how many pages and which is up, and the
+        // page's name takes the top-left; the chips step aside until the pointer
+        // leaves.
+        if let Some(i) = step {
+            page_bar(ui.painter(), thumb, pages.len(), i);
+            ui::canvas_pill(
+                ui.painter(),
+                thumb.left_top() + egui::vec2(7.0, 7.0),
+                egui::Align2::LEFT_TOP,
+                &crate::private::page_named(&pages[i].name, i),
+                color::accent(),
+            );
+            self.file_card_tail(ui, entry, rect, thumb, &resp, act);
+            ui.set_opacity(opacity);
+            return;
         }
         let mut corner = egui::pos2(thumb.left() + 8.0, thumb.bottom() - 8.0);
         if let Some(mark) = self.mark_of(entry) {
@@ -3037,6 +3249,22 @@ impl MastikApp {
             ));
             p.add(star_shape(at, STAR_R, theme::color::star()));
         }
+        self.file_card_tail(ui, entry, rect, thumb, &resp, act);
+        ui.set_opacity(opacity);
+    }
+
+    /// A card's caption and its doors, under the cover: the name (or the rename
+    /// field over it), the second line, the click and the ⋮.
+    fn file_card_tail(
+        &mut self,
+        ui: &mut egui::Ui,
+        entry: &Entry,
+        rect: egui::Rect,
+        thumb: egui::Rect,
+        resp: &egui::Response,
+        act: &mut Option<Act>,
+    ) {
+        let w = rect.width();
         // The field's text lands on the painted name: the inset to its left, and the
         // box centred on the name's line.
         let name_box = egui::Rect::from_min_size(
@@ -3087,14 +3315,22 @@ impl MastikApp {
             }
         }
 
-        self.pick_or_open(&resp, entry, act);
+        self.pick_or_open(resp, entry, act);
         self.file_menu_button(
             ui,
             entry,
             egui::pos2(rect.right() - 20.0, thumb.bottom() + 22.0),
             act,
         );
-        ui.set_opacity(opacity);
+    }
+
+    /// The pages a card steps through under the pointer: its pages that are not
+    /// drafts, once the index has read it; fewer than two and nothing steps.
+    fn hover_pages(&self, entry: &Entry) -> Vec<index::PageFact> {
+        self.index
+            .get(entry)
+            .map(|f| f.pages.iter().filter(|p| !p.draft).cloned().collect())
+            .unwrap_or_default()
     }
 
     /// How opaque `entry`'s card or row draws: the open pulse's value while
@@ -5553,6 +5789,26 @@ fn section_label(ui: &mut egui::Ui, text: &str) {
         egui::Align2::LEFT_CENTER,
         text,
     );
+}
+
+/// The bar under a card's cover while the pointer steps it through its pages:
+/// one segment per page across the cover's foot, the one showing in the accent.
+fn page_bar(p: &egui::Painter, thumb: egui::Rect, pages: usize, on: usize) {
+    const INSET: f32 = 10.0;
+    const GAP: f32 = 3.0;
+    const H: f32 = 3.0;
+    let span = thumb.width() - INSET * 2.0;
+    let seg = (span - GAP * (pages as f32 - 1.0)) / pages as f32;
+    for i in 0..pages {
+        let x = thumb.left() + INSET + i as f32 * (seg + GAP);
+        let r =
+            egui::Rect::from_min_size(egui::pos2(x, thumb.bottom() - 8.0 - H), egui::vec2(seg, H));
+        let ink = match i == on {
+            true => color::accent(),
+            false => theme::color::text_a(60),
+        };
+        p.rect_filled(r, egui::CornerRadius::same(2), ink);
+    }
 }
 
 /// A day heading over a date sort's group: a [`section_label`]'s eyebrow, and
@@ -9226,6 +9482,124 @@ mod tests {
             "Notes, at the version it took"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Over a card of two pages the pointer's half picks the page: the right half
+    /// shows the second page's name and asks for its cover, and leaving goes back
+    /// to the rest cover at once.
+    /// flip: `hover_pages` keeping drafts → fails at "the draft is skipped".
+    #[test]
+    fn a_card_steps_through_its_pages_under_the_pointer() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "page-hover");
+        let mut ids = mastik_core::IdSource::new(0x9A6E);
+        let mut doc = mastik_core::Document::new(ids.mint());
+        let pages = [("Cart", false), ("Scratch", true), ("Receipt", false)];
+        let ops = pages
+            .iter()
+            .enumerate()
+            .map(|(i, (name, draft))| mastik_core::Operation::AddPage {
+                id: ids.mint(),
+                index: i + 1,
+                name: (*name).into(),
+                ground: None,
+                draft: *draft,
+                modes: Vec::new(),
+            })
+            .collect();
+        doc.apply(&mastik_core::Transaction(ops)).unwrap();
+        store::file_document(&root, None, "Checkout", &mut doc).unwrap();
+        app.library.refresh();
+        app.dash.nav = Nav::All;
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let entry = app.library.entries[0].clone();
+        let names: Vec<String> = app
+            .hover_pages(&entry)
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(
+            names.len(),
+            3,
+            "the first page and two more, the draft is skipped"
+        );
+        assert!(
+            !names.contains(&"Scratch".to_string()),
+            "the draft is skipped"
+        );
+
+        // The card's name sits 15 under the cover; the cover's right end is the
+        // last page's strip.
+        let (name_at, _, _) = galleys(&mut app, &ctx)
+            .into_iter()
+            .find(|(_, _, t)| t == "Checkout")
+            .unwrap();
+        let over = egui::pos2(name_at.x + 180.0, name_at.y - 60.0);
+        let hover = |app: &mut MastikApp, at: egui::Pos2| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events: vec![egui::Event::PointerMoved(at)],
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| app.dashboard_ui(ui));
+            galleys(app, &ctx)
+        };
+        let runs = hover(&mut app, over);
+        assert!(
+            runs.iter().any(|(_, _, t)| t == "Receipt"),
+            "the right end shows the last page's name"
+        );
+        let runs = hover(&mut app, egui::pos2(5.0, 5.0));
+        assert!(
+            !runs.iter().any(|(_, _, t)| t == "Receipt"),
+            "and leaving shows none"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// *Recent* offers the last document opened here as *Continue*, saying the
+    /// page and zoom it was left at, and not while a tab holds it.
+    /// flip: `continue_entry` ignoring the open tab → fails at "not while a tab
+    /// holds it".
+    #[test]
+    fn recent_offers_to_continue_the_last_document() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "continue");
+        let mut doc = crate::library::index::tests::doc();
+        let page = doc.first_page().to_wire();
+        let path = store::file_document(&root, None, "Wallet", &mut doc).unwrap();
+        app.library.refresh();
+        let id = app.library.entries[0].meta.id.clone().unwrap();
+        app.library.local.mark_opened(&id);
+        app.library.local.last_view.insert(
+            id,
+            crate::library::cache::LastView {
+                page,
+                x: 50.0,
+                y: 50.0,
+                zoom: 1.4,
+            },
+        );
+        app.dash.nav = Nav::Recent;
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let entry = app.continue_entry().expect("the last document is offered");
+        assert_eq!(entry.path, path);
+        let (shot, line) = app.left_at(&entry);
+        assert!(
+            matches!(shot, cover::Shot::View { .. }),
+            "drawn at its camera"
+        );
+        assert_eq!(line.as_deref(), Some("Page 1 · at 140%"));
+        assert!(in_body(&galleys(&mut app, &ctx), "CONTINUE"));
+
+        app.open_path(&path);
+        app.go_to_dashboard();
+        assert!(app.continue_entry().is_none(), "not while a tab holds it");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A project's page heads with its name and description, and the card counts

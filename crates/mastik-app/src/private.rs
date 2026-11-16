@@ -146,6 +146,15 @@ pub(crate) fn page(doc: &Document, page: NodeId) -> Cow<'_, str> {
     Cow::Owned(format!("Page {place}"))
 }
 
+/// [`page`] for a page known by name and place (from 0) rather than in a loaded
+/// document: the library's cards, which read their pages from the index.
+pub(crate) fn page_named(name: &str, place: usize) -> Cow<'_, str> {
+    if !on() {
+        return Cow::Borrowed(name);
+    }
+    Cow::Owned(format!("Page {}", place + 1))
+}
+
 /// A document's name as drawn, given its place (from 0) among the documents it
 /// is shown beside: the name, or "Document" and that place.
 pub(crate) fn document(name: &str, place: usize) -> Cow<'_, str> {

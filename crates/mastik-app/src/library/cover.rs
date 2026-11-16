@@ -54,6 +54,61 @@ fn key(entry: &Entry) -> Option<String> {
     Some(format!("{id}-{}", entry.modified))
 }
 
+/// Which picture of a document a cover is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Shot {
+    /// The first page that is not a draft, framed on everything on it: the card's.
+    Rest,
+    /// One page, by its root's wire id, framed on everything on it: a card being
+    /// stepped through its pages under the pointer.
+    Page(String),
+    /// Where the camera was last left: the page, the world point at the centre
+    /// and the zoom, as `LocalIndex::last_view` holds them; the continue card's.
+    View {
+        page: String,
+        x: f64,
+        y: f64,
+        zoom: f64,
+    },
+}
+
+/// `entry`'s key for `shot`: [`key`] for the rest cover, with the page or the
+/// camera after it otherwise, so a shot of an edited document is new too. `None`
+/// for a page id that would not be a plain filename.
+fn shot_key(entry: &Entry, shot: &Shot) -> Option<String> {
+    let k = key(entry)?;
+    // A wire id is `actor:seq`; the colon is no filename on Windows.
+    let page = |p: &str| {
+        let p = p.replace(':', ".");
+        (!p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '.')).then_some(p)
+    };
+    Some(match shot {
+        Shot::Rest => k,
+        Shot::Page(p) => format!("{k}-p{}", page(p)?),
+        Shot::View {
+            page: p,
+            x,
+            y,
+            zoom,
+        } => format!(
+            "{k}-v{}_{}_{}_{}",
+            page(p)?,
+            x.round() as i64,
+            y.round() as i64,
+            (zoom * 1000.0).round() as i64
+        ),
+    })
+}
+
+/// The cover key a cache file's stem belongs to: up to its second `-`, the id
+/// and the mtime, whatever shot follows.
+fn base_of(stem: &str) -> &str {
+    match stem.match_indices('-').nth(1) {
+        Some((i, _)) => &stem[..i],
+        None => stem,
+    }
+}
+
 /// The cover cache's directory, as a [`Covers`] made by `Default` is given it.
 ///
 /// **`None` under `cfg(test)`, a seam rather than a skipped path**: otherwise the
@@ -160,7 +215,7 @@ impl Default for Covers {
 struct Renderer {
     /// `None` only while [`Drop`] is taking it; dropping the sender ends the
     /// worker's loop.
-    tx: Option<std::sync::mpsc::Sender<(Entry, String)>>,
+    tx: Option<std::sync::mpsc::Sender<(Entry, String, Shot)>>,
     done: std::sync::mpsc::Receiver<(String, Result<Rgba, NoCover>)>,
     /// Jobs sent and not yet answered, for `Covers::settle` (plain backticks: that
     /// method is `cfg(test)`).
@@ -184,14 +239,14 @@ static POISONED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 impl Renderer {
     fn spawn(ctx: &egui::Context, dir: Option<PathBuf>) -> Self {
-        let (tx, jobs) = std::sync::mpsc::channel::<(Entry, String)>();
+        let (tx, jobs) = std::sync::mpsc::channel::<(Entry, String, Shot)>();
         let (report, done) = std::sync::mpsc::channel::<(String, Result<Rgba, NoCover>)>();
         let ctx = ctx.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::clone(&cancel);
         let handle = std::thread::spawn(move || {
             let mut faces = Faces::for_covers();
-            for (entry, key) in jobs {
+            for (entry, key, shot) in jobs {
                 if cancelled.load(Ordering::Relaxed) {
                     return;
                 }
@@ -206,7 +261,7 @@ impl Renderer {
                     if POISONED.lock().is_ok_and(|p| p.as_deref() == Some(&key)) {
                         panic!("synthetic cover panic — cover::POISONED({key})");
                     }
-                    render(dir.as_deref(), &entry, &key, &mut faces)
+                    render(dir.as_deref(), &entry, &key, &shot, &mut faces)
                 }))
                 .unwrap_or(Err(NoCover::Blank));
                 if report.send((key, answer)).is_err() {
@@ -249,10 +304,23 @@ impl Covers {
     /// plate either way. The worker requests the repaint when it sends, so this
     /// function requests none.
     pub fn get(&mut self, ctx: &egui::Context, entry: &Entry) -> Option<&egui::TextureHandle> {
+        self.get_shot(ctx, entry, &Shot::Rest)
+    }
+
+    /// [`Self::get`] for any [`Shot`] of the document: one page, or the camera it
+    /// was left at. Each shot is a cover of its own in both caches, counted
+    /// against [`MAX_RESIDENT_COVERS`] like the rest and aged out first, being
+    /// asked for least.
+    pub fn get_shot(
+        &mut self,
+        ctx: &egui::Context,
+        entry: &Entry,
+        shot: &Shot,
+    ) -> Option<&egui::TextureHandle> {
         #[cfg(test)]
         self.calls.push("get");
         self.drain(ctx);
-        let key = key(entry)?;
+        let key = shot_key(entry, shot)?;
         let now = self.pass;
         if let Some(cover) = self.covers.get_mut(&key) {
             return match cover {
@@ -274,7 +342,7 @@ impl Covers {
             let sent = render
                 .tx
                 .as_ref()
-                .is_some_and(|tx| tx.send((entry.clone(), key.clone())).is_ok());
+                .is_some_and(|tx| tx.send((entry.clone(), key.clone(), shot.clone())).is_ok());
             if sent {
                 render.in_flight += 1;
             } else {
@@ -507,7 +575,8 @@ impl Covers {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            if !keep.contains(stem) {
+            // A page's or a camera's shot lives and goes with its document's key.
+            if !keep.contains(base_of(stem)) {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -526,6 +595,7 @@ fn render(
     dir: Option<&Path>,
     entry: &Entry,
     key: &str,
+    shot: &Shot,
     faces: &mut Faces,
 ) -> Result<Rgba, NoCover> {
     let path = dir.map(|d| cache_path(d, key));
@@ -538,7 +608,7 @@ fn render(
     }
     // No cached file and a cached file that will not decode (a half-written PNG)
     // both mean "render it again"; re-rendering writes over the bad one.
-    let png = rasterize(entry, faces)?;
+    let png = rasterize(entry, shot, faces)?;
     if let Some(p) = &path {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -551,25 +621,54 @@ fn render(
     decode(&png).ok_or(NoCover::Blank)
 }
 
-/// Render the document's first page that is not a draft to a PNG, framed on
-/// everything on it.
+/// The canvas a [`Shot::View`] is taken through, in points at the zoom it was
+/// left at: the continue card's proportions, about as wide as an editor's canvas.
+const VIEW_PT: (f64, f64) = (1200.0, 480.0);
+/// A [`Shot::View`]'s longest edge in pixels: the continue card spans the body,
+/// so twice a card's cover.
+const VIEW_MAX_PX: f64 = COVER_MAX_PX * 2.0;
+
+/// Render a shot of the document to a PNG: [`Shot::Rest`] the first page that is
+/// not a draft and [`Shot::Page`] one page, each framed on everything on it;
+/// [`Shot::View`] what a canvas of [`VIEW_PT`] showed at the camera left there.
 ///
 /// A file that will not read or load is `Unreadable` (a broken document the
-/// dashboard marks); a page with no extent is `Blank` (an ordinary empty one).
-fn rasterize(entry: &Entry, faces: &mut Faces) -> Result<Vec<u8>, NoCover> {
+/// dashboard marks); a page with no extent, or a page the document no longer
+/// has, is `Blank` (nothing to mark).
+fn rasterize(entry: &Entry, shot: &Shot, faces: &mut Faces) -> Result<Vec<u8>, NoCover> {
     let bytes = std::fs::read(&entry.path).map_err(|_| NoCover::Unreadable)?;
     let doc = mastik_core::io::load(&bytes).map_err(|_| NoCover::Unreadable)?;
     faces.register_for(&doc);
     let res = mastik_core::Resolved::rebuild(&doc);
-    // The first page that is not a draft, or the first page when every one is.
-    let page = doc.gathered_pages().next().unwrap_or(doc.first_page());
-    // An empty page gets no cover: the card's plain plate is its honest
-    // picture, and an invented square would repeat on every fresh file.
-    let view = mastik_export::extent(&res, &[page]).ok_or(NoCover::Blank)?;
+    let named = |wire: &str| {
+        mastik_core::NodeId::from_wire(wire)
+            .filter(|p| doc.is_page(*p))
+            .ok_or(NoCover::Blank)
+    };
+    let (page, view, max_px) = match shot {
+        Shot::Rest | Shot::Page(_) => {
+            // The first page that is not a draft, or the first page when every one is.
+            let page = match shot {
+                Shot::Page(wire) => named(wire)?,
+                _ => doc.gathered_pages().next().unwrap_or(doc.first_page()),
+            };
+            // An empty page gets no cover: the card's plain plate is its honest
+            // picture, and an invented square would repeat on every fresh file.
+            let view = mastik_export::extent(&res, &[page]).ok_or(NoCover::Blank)?;
+            (page, view, COVER_MAX_PX)
+        }
+        Shot::View { page, x, y, zoom } => {
+            let zoom = zoom.max(1e-3);
+            let size = mastik_core::kurbo::Size::new(VIEW_PT.0 / zoom, VIEW_PT.1 / zoom);
+            let centre = mastik_core::kurbo::Point::new(*x, *y);
+            let view = mastik_core::kurbo::Rect::from_center_size(centre, size);
+            (named(page)?, view, VIEW_MAX_PX)
+        }
+    };
     let (w, h) = (view.width().max(1.0), view.height().max(1.0));
     // Fit the longest edge, never magnify: a 40×40 icon document should be drawn
     // at 40 pixels and centred by the card, not blown up to 400 and blurred.
-    let scale = (COVER_MAX_PX / w.max(h)).min(1.0);
+    let scale = (max_px / w.max(h)).min(1.0);
     let vp = mastik_export::png::viewport_at(view, scale);
     Ok(mastik_export::png::png(&doc, &res, &vp, page))
 }
@@ -728,13 +827,13 @@ mod tests {
             .find(|e| e.display_name() == "Glyph")
             .unwrap();
         // First with nothing to register, since a family registered stays.
-        let inter = rasterize(&entry, &mut no_faces()).expect("a cover in Inter");
+        let inter = rasterize(&entry, &Shot::Rest, &mut no_faces()).expect("a cover in Inter");
         let mut faces = Faces {
             dirs: vec![fonts],
             system: false,
             fonts: None,
         };
-        let own = rasterize(&entry, &mut faces).expect("a cover in its family");
+        let own = rasterize(&entry, &Shot::Rest, &mut faces).expect("a cover in its family");
         assert_ne!(own, inter, "drawn in its family");
         assert!(mastik_core::text::is_family_available(&family));
         let _ = std::fs::remove_dir_all(&root_dir);
@@ -770,11 +869,82 @@ mod tests {
     fn a_document_with_something_in_it_rasterizes_to_its_own_shape() {
         let root = temp("raster");
         let entry = doc_with_a_rect(&root, "Landing v4");
-        let png = rasterize(&entry, &mut no_faces()).expect("a document with a rect must render");
+        let png = rasterize(&entry, &Shot::Rest, &mut no_faces())
+            .expect("a document with a rect must render");
         let rgba = decode(&png).expect("and the PNG must decode");
         // 80×60 is under the cap, so it is drawn 1:1 rather than magnified.
         assert_eq!((rgba.width, rgba.height), (80, 60));
         assert_eq!(rgba.pixels.len(), 80 * 60 * 4);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A page's shot frames that page, a camera's shot what a canvas showed at
+    /// that zoom, and a page the document no longer has is blank, not broken.
+    /// flip: `rasterize` drawing the first page for `Shot::Page` → fails at "the
+    /// second page".
+    #[test]
+    fn a_shot_draws_its_own_page_or_camera() {
+        let root = temp("shots");
+        let mut ids = IdSource::new(0x5407);
+        let r = ids.mint();
+        let mut doc = Document::new(r);
+        let second = ids.mint();
+        let rect = |id, parent, w, h| Operation::CreateNode {
+            id,
+            parent,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(w, h),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        };
+        doc.apply(&Transaction(vec![
+            rect(ids.mint(), r, 80.0, 60.0),
+            Operation::AddPage {
+                id: second,
+                index: 1,
+                name: "Cart".into(),
+                ground: None,
+                draft: false,
+                modes: Vec::new(),
+            },
+            rect(ids.mint(), second, 200.0, 100.0),
+        ]))
+        .expect("build");
+        store::file_document(&root, None, "Shop", &mut doc).unwrap();
+        let entry = scan::scan(&root).into_iter().next().unwrap();
+        let size = |shot: &Shot| {
+            let png = rasterize(&entry, shot, &mut no_faces()).expect("renders");
+            let rgba = decode(&png).unwrap();
+            (rgba.width, rgba.height)
+        };
+        assert_eq!(size(&Shot::Rest), (80, 60));
+        assert_eq!(
+            size(&Shot::Page(second.to_wire())),
+            (200, 100),
+            "the second page"
+        );
+        let view = Shot::View {
+            page: second.to_wire(),
+            x: 100.0,
+            y: 50.0,
+            zoom: 2.0,
+        };
+        assert_eq!(size(&view), (600, 240), "a 1200×480 canvas at 200%");
+        assert_eq!(
+            rasterize(&entry, &Shot::Page("ff:999".into()), &mut no_faces()).err(),
+            Some(NoCover::Blank)
+        );
+        let key = shot_key(&entry, &Shot::Page(second.to_wire())).unwrap();
+        assert!(!key.contains(':'), "a filename on every platform: {key}");
+        assert_eq!(
+            base_of(&key),
+            super::key(&entry).unwrap(),
+            "swept with its document"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -788,7 +958,7 @@ mod tests {
         let entry = scan::scan(&root).into_iter().next().unwrap();
         // `Blank`, not merely "no cover": the two failures must be told apart.
         assert_eq!(
-            rasterize(&entry, &mut no_faces()).err(),
+            rasterize(&entry, &Shot::Rest, &mut no_faces()).err(),
             Some(NoCover::Blank)
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -805,7 +975,7 @@ mod tests {
         let root = temp("unreadable");
         let entry = written_by_a_newer_build(&root);
         assert_eq!(
-            rasterize(&entry, &mut no_faces()).err(),
+            rasterize(&entry, &Shot::Rest, &mut no_faces()).err(),
             Some(NoCover::Unreadable)
         );
         assert!(
