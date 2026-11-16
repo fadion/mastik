@@ -529,6 +529,9 @@ pub enum Item {
     ShowCard(&'static str),
     Palette,
     Cheatsheet,
+    /// The palette's documents scope; the palette alone offers it, and opens the
+    /// scope rather than running anything, so it has no `Action`.
+    GoToDocument,
 }
 
 /// A layer's kind, as much of it as a menu needs.
@@ -1331,6 +1334,7 @@ impl Item {
             // Renamed for its card by the palette; this is the label the table sees.
             Item::ShowCard(_) => s("Show card", icon::SLIDERS_HORIZONTAL, None, Group::Panels),
             Item::Palette => s("Command palette", icon::MAGNIFYING_GLASS, None, Group::File),
+            Item::GoToDocument => s("Go to document…", icon::FILES, None, Group::File),
             Item::Cheatsheet => s(
                 "Keyboard shortcuts",
                 icon::LIST,
@@ -1377,6 +1381,7 @@ impl Item {
             Item::Delete => &["remove"],
             Item::Tool(Tool::Chart) => &["chart", "graph", "plot"],
             Item::Library => &["open", "files", "dashboard", "home"],
+            Item::GoToDocument => &["open", "switch", "file", "recent"],
             Item::NextTab | Item::PreviousTab => &["switch", "document", "file"],
             Item::ReopenTab => &["restore", "undo close", "document", "file"],
             Item::Settings => &["preferences", "options"],
@@ -3915,7 +3920,8 @@ impl MastikApp {
             | Item::SelectInverse
             | Item::TextChord(_)
             | Item::Palette
-            | Item::Cheatsheet => {
+            | Item::Cheatsheet
+            | Item::GoToDocument => {
                 if let Some(action) = item.action() {
                     self.dispatch(ctx, action);
                 }

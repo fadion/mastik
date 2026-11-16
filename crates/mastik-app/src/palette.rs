@@ -58,8 +58,9 @@ const PAGE: usize = 8;
 /// The open palette.
 pub(crate) struct Palette {
     pub(crate) query: String,
-    /// `Tab`'s scope: layers only, shown as a chip in the field.
-    layers_only: bool,
+    /// What the list searches: everything, or one scope shown as a chip in the
+    /// field (`Tab`'s layers, *Go to document…*'s documents).
+    scope: Scope,
     /// An index into this frame's selectable entries, top to bottom.
     highlight: usize,
     /// The clipboard state at open, which the rows read as a context menu's do.
@@ -70,10 +71,22 @@ pub(crate) struct Palette {
     publish_why: Option<&'static str>,
     /// The query and scope the highlight was last reset for; any change sends it
     /// back to the first live row.
-    reset_for: Option<(String, bool)>,
+    reset_for: Option<(String, Scope)>,
     /// Scroll the highlighted row into view: set by a key, so a pointer hover
     /// does not scroll under the hand.
     scroll: bool,
+}
+
+/// What the palette's list searches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Scope {
+    /// Commands, then layers.
+    #[default]
+    All,
+    /// Layers only: `Tab`, or *N more layers*.
+    Layers,
+    /// The library's documents: *Go to document…*.
+    Documents,
 }
 
 /// This frame's palette keys, taken out of `Events` at the top of the frame so the
@@ -218,9 +231,19 @@ struct LayerHit {
     hits: Vec<Range<usize>>,
 }
 
+/// One library document in the documents scope.
+struct DocHit {
+    path: std::path::PathBuf,
+    name: String,
+    /// Its project and age, and *Open* when a tab holds it.
+    note: String,
+    hits: Vec<Range<usize>>,
+}
+
 enum Entry {
     Cmd(Cmd),
     Layer(LayerHit),
+    Doc(DocHit),
     /// *N more layers*, which `Tab` and `Enter` both open.
     More(usize),
 }
@@ -234,6 +257,7 @@ struct Section {
 enum Run {
     Cmd(Item),
     Layer { id: NodeId, add: bool },
+    Doc(std::path::PathBuf),
     More,
 }
 
@@ -452,7 +476,7 @@ impl MastikApp {
         };
         self.palette = Some(Palette {
             query: String::new(),
-            layers_only: false,
+            scope: Scope::All,
             highlight: 0,
             snapshot: self.menu_snapshot(egui::Pos2::ZERO, target, None),
             publish_why,
@@ -770,6 +794,7 @@ impl MastikApp {
             Item::PreviousTab,
             Item::ReopenTab,
             Item::Library,
+            Item::GoToDocument,
             Item::Settings,
             Item::Cheatsheet,
         ] {
@@ -882,16 +907,83 @@ impl MastikApp {
         (hits, total)
     }
 
+    /// The documents scope's rows: with no query the documents last opened here
+    /// first, then the rest by last edit; typed for, ranked as the library's search
+    /// ranks them (`MastikApp::ranked_files`). Nothing while names are masked.
+    fn palette_documents(&self, needle: &str) -> Vec<DocHit> {
+        if crate::private::on() {
+            return Vec::new();
+        }
+        let words = crate::library::search::words(needle);
+        let ranked: Vec<(crate::library::scan::Entry, Vec<Range<usize>>)> = if words.is_empty() {
+            let mut out = self.library.recent();
+            let mut rest: Vec<_> = self
+                .library
+                .entries
+                .iter()
+                .filter(|e| !out.iter().any(|r| r.path == e.path))
+                .cloned()
+                .collect();
+            self.library.sort_entries(
+                &mut rest,
+                crate::library::state::SortBy::natural(crate::library::state::Sort::Edited),
+            );
+            out.extend(rest);
+            out.into_iter().map(|e| (e, Vec::new())).collect()
+        } else {
+            self.ranked_files(&words)
+                .into_iter()
+                .map(|(e, h)| (e, h.lit))
+                .collect()
+        };
+        ranked
+            .into_iter()
+            .take(LAYERS_MAX)
+            .map(|(e, hits)| {
+                let project = self
+                    .library
+                    .project_of(&e)
+                    .map(|p| self.library.shown_project(p))
+                    .unwrap_or_else(|| "Unfiled".into());
+                let age =
+                    crate::library::clock::relative_label(crate::library::clock::since(e.modified));
+                let open = self.tab_of_path(&e.path).is_some();
+                DocHit {
+                    name: self.library.shown_entry(&e),
+                    note: match open {
+                        true => format!("Open · {project} · {age}"),
+                        false => format!("{project} · {age}"),
+                    },
+                    path: e.path,
+                    hits,
+                }
+            })
+            .collect()
+    }
+
     /// The list for this frame: ranked commands, then layers, then the verbs not
     /// available here; or *Recent* and the target's own rows for an empty query.
     fn palette_sections(&self, pal: &Palette) -> Vec<Section> {
         let needle = pal.query.trim();
-        if pal.layers_only {
-            let (hits, _) = self.palette_layers(needle, LAYERS_MAX);
-            return vec![Section {
-                title: None,
-                entries: hits.into_iter().map(Entry::Layer).collect(),
-            }];
+        match pal.scope {
+            Scope::Layers => {
+                let (hits, _) = self.palette_layers(needle, LAYERS_MAX);
+                return vec![Section {
+                    title: None,
+                    entries: hits.into_iter().map(Entry::Layer).collect(),
+                }];
+            }
+            Scope::Documents => {
+                return vec![Section {
+                    title: None,
+                    entries: self
+                        .palette_documents(needle)
+                        .into_iter()
+                        .map(Entry::Doc)
+                        .collect(),
+                }];
+            }
+            Scope::All => {}
         }
         let cmds = self.palette_commands(pal);
         let recents = &self.prefs.palette_recent;
@@ -1050,24 +1142,29 @@ impl MastikApp {
         if self.modal_is_up() || keys.escape || keys.close {
             return;
         }
+        // `Tab` swaps commands and layers; the documents scope keeps it.
         if keys.tab {
-            pal.layers_only = !pal.layers_only;
+            pal.scope = match pal.scope {
+                Scope::All => Scope::Layers,
+                Scope::Layers => Scope::All,
+                Scope::Documents => Scope::Documents,
+            };
         }
         let target = self.palette_target();
         pal.snapshot.target = target;
 
-        // Backspace on an empty field takes the Layers chip off; read before the
+        // Backspace on an empty field takes the scope's chip off; read before the
         // field, which would see nothing to delete.
-        if pal.layers_only
+        if pal.scope != Scope::All
             && pal.query.is_empty()
             && ctx.input(|i| i.key_pressed(egui::Key::Backspace))
         {
-            pal.layers_only = false;
+            pal.scope = Scope::All;
         }
 
         let sections = self.palette_sections(&pal);
         let count: usize = sections.iter().map(|s| s.entries.len()).sum();
-        let now = (pal.query.clone(), pal.layers_only);
+        let now = (pal.query.clone(), pal.scope);
         if pal.reset_for.as_ref() != Some(&now) {
             pal.reset_for = Some(now);
             pal.highlight = sections
@@ -1097,6 +1194,7 @@ impl MastikApp {
         let run_of = |e: &Entry, add: bool| match e {
             Entry::Cmd(c) => c.enabled.then_some(Run::Cmd(c.item)),
             Entry::Layer(l) => Some(Run::Layer { id: l.id, add }),
+            Entry::Doc(d) => Some(Run::Doc(d.path.clone())),
             Entry::More(_) => Some(Run::More),
         };
         let mut run: Option<Run> = None;
@@ -1151,6 +1249,7 @@ impl MastikApp {
                                         let resp = match entry {
                                             Entry::Cmd(c) => cmd_row(ui, c, lit),
                                             Entry::Layer(l) => layer_row(ui, l, lit),
+                                            Entry::Doc(d) => doc_row(ui, d, lit),
                                             Entry::More(n) => more_row(ui, *n, lit),
                                         };
                                         if lit && pal.scroll {
@@ -1173,7 +1272,12 @@ impl MastikApp {
                     Some(Entry::Cmd(c)) if !c.enabled => c.why.as_deref(),
                     _ => None,
                 };
-                footer(ui, why, &note, pal.layers_only);
+                let note = match pal.scope {
+                    Scope::Documents if pal.query.trim().is_empty() => "Recent first".into(),
+                    Scope::Documents => "Best match first".into(),
+                    _ => note,
+                };
+                footer(ui, why, &note, pal.scope);
             });
         pal.scroll = false;
         if let Some(i) = hovered {
@@ -1192,6 +1296,12 @@ impl MastikApp {
             return;
         }
         match run {
+            // A scope, not a verb: the palette stays, emptied, on the documents.
+            Some(Run::Cmd(Item::GoToDocument)) => {
+                pal.scope = Scope::Documents;
+                pal.query.clear();
+                self.palette = Some(pal);
+            }
             Some(Run::Cmd(item)) => {
                 // Closed first: the verb may open a dialog or a modal.
                 self.run_palette_item(ctx, item, target);
@@ -1201,8 +1311,12 @@ impl MastikApp {
                 self.pick_palette_layer(id, add);
                 ctx.request_repaint();
             }
+            Some(Run::Doc(path)) => {
+                self.begin_open(&path);
+                ctx.request_repaint();
+            }
             Some(Run::More) => {
-                pal.layers_only = true;
+                pal.scope = Scope::Layers;
                 self.palette = Some(pal);
             }
             None => self.palette = Some(pal),
@@ -1224,8 +1338,10 @@ fn palette_field(ui: &mut egui::Ui, pal: &mut Palette) {
                     .font(theme::icon_font(16.0))
                     .color(theme::text::faint()),
             );
-            if pal.layers_only {
-                layers_chip(ui);
+            match pal.scope {
+                Scope::Layers => scope_chip(ui, icon::STACK, "Layers"),
+                Scope::Documents => scope_chip(ui, icon::FILES, "Documents"),
+                Scope::All => {}
             }
             #[expect(
                 clippy::disallowed_methods,
@@ -1239,10 +1355,10 @@ fn palette_field(ui: &mut egui::Ui, pal: &mut Palette) {
                     .font(egui::FontId::proportional(crate::ui::HEAD_PT))
                     .text_color(color::text())
                     .hint_text(
-                        egui::RichText::new(if pal.layers_only {
-                            "Search layers"
-                        } else {
-                            "Search commands and layers"
+                        egui::RichText::new(match pal.scope {
+                            Scope::Layers => "Search layers",
+                            Scope::Documents => "Search documents",
+                            Scope::All => "Search commands and layers",
                         })
                         .size(crate::ui::HEAD_PT)
                         .color(theme::text::faint()),
@@ -1590,6 +1706,46 @@ fn layer_row(ui: &mut egui::Ui, l: &LayerHit, lit: bool) -> egui::Response {
     resp
 }
 
+/// One document row: the file glyph, its name with the match lit, and its
+/// project and age, as the library's search rows carry them.
+fn doc_row(ui: &mut egui::Ui, d: &DocHit, lit: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_H),
+        egui::Sense::click(),
+    );
+    let p = ui.painter().clone();
+    row_ground(&p, rect, lit, true);
+    row_glyph(
+        &p,
+        rect,
+        icon::DOCUMENT,
+        if lit {
+            color::accent_200()
+        } else {
+            theme::text::dim()
+        },
+    );
+    let job = lit_label(
+        &d.name,
+        &d.hits,
+        row_font(),
+        if lit {
+            color::text()
+        } else {
+            theme::text::strong()
+        },
+        color::accent_300(),
+    );
+    row_texts(
+        &p,
+        rect,
+        rect.right() - 8.0,
+        job,
+        Some((&d.note, theme::text::faint())),
+    );
+    resp
+}
+
 /// *N more layers*, which opens the layers-only scope.
 fn more_row(ui: &mut egui::Ui, n: usize, lit: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
@@ -1617,11 +1773,15 @@ fn more_row(ui: &mut egui::Ui, n: usize, lit: bool) -> egui::Response {
 fn no_match(ui: &mut egui::Ui, pal: &Palette) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::empty());
-    let text = match (pal.layers_only, pal.query.trim().is_empty()) {
-        (true, _) if crate::private::on() => crate::private::DECLINE_SEARCH,
-        (true, true) => "This document has no layers",
-        (true, false) => "No layers match",
-        (false, _) => "No commands or layers match",
+    let text = match (pal.scope, pal.query.trim().is_empty()) {
+        (Scope::Layers | Scope::Documents, _) if crate::private::on() => {
+            crate::private::DECLINE_SEARCH
+        }
+        (Scope::Layers, true) => "This document has no layers",
+        (Scope::Layers, false) => "No layers match",
+        (Scope::Documents, true) => "The library has no documents",
+        (Scope::Documents, false) => "No documents match",
+        (Scope::All, _) => "No commands or layers match",
     };
     ui.scope_builder(
         egui::UiBuilder::new()
@@ -1631,12 +1791,13 @@ fn no_match(ui: &mut egui::Ui, pal: &Palette) {
     );
 }
 
-/// The *Layers* chip in the field.
-fn layers_chip(ui: &mut egui::Ui) {
+/// A scope's chip in a search field, its glyph before its word: the palette's
+/// *Layers* and *Documents*.
+fn scope_chip(ui: &mut egui::Ui, glyph: &str, label: &str) {
     let font = egui::FontId::proportional(crate::ui::SMALL_PT);
     let galley = ui
         .painter()
-        .layout_no_wrap("Layers".into(), font, color::accent_100());
+        .layout_no_wrap(label.into(), font, color::accent_100());
     let size = egui::vec2(galley.size().x + 7.0 + 12.0 + 5.0 + 7.0, 20.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::empty());
     let p = ui.painter();
@@ -1650,7 +1811,7 @@ fn layers_chip(ui: &mut egui::Ui) {
     p.text(
         egui::pos2(rect.left() + 7.0 + 6.0, rect.center().y),
         egui::Align2::CENTER_CENTER,
-        icon::STACK,
+        glyph,
         theme::icon_font(12.0),
         color::accent_100(),
     );
@@ -1665,11 +1826,11 @@ fn layers_chip(ui: &mut egui::Ui) {
 }
 
 /// The target (or the highlighted row's reason) and the keys.
-fn footer(ui: &mut egui::Ui, why: Option<&str>, note: &str, layers_only: bool) {
-    let keys = if layers_only {
-        "Enter select · Shift+Enter add · Tab commands · Esc close"
-    } else {
-        "↑↓ move · Enter run · Tab layers · Esc close"
+fn footer(ui: &mut egui::Ui, why: Option<&str>, note: &str, scope: Scope) {
+    let keys = match scope {
+        Scope::Layers => "Enter select · Shift+Enter add · Tab commands · Esc close",
+        Scope::Documents => "Enter open · Bksp all commands · Esc close",
+        Scope::All => "↑↓ move · Enter run · Tab layers · Esc close",
     };
     let text = match why {
         Some(why) => crate::input::keys(why),
@@ -2091,6 +2252,76 @@ pub(crate) mod tests {
             Some(text),
             "fixture: the query was typed"
         );
+    }
+
+    /// *Go to document…* turns the palette to its documents scope, emptied, the
+    /// last opened first; typing ranks as the library's search does, Enter opens
+    /// the row in a tab, and Backspace on the empty field leaves the scope.
+    /// flip: `Run::Cmd(Item::GoToDocument)` running as a verb → fails at "the
+    /// palette stays open".
+    #[test]
+    fn go_to_document_lists_the_library_and_opens_the_row() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let root = std::env::temp_dir().join(format!("mastik-pal-docs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        app.library = crate::library::state::Library::open(root.clone());
+        let mut paths = Vec::new();
+        for name in ["Wallet", "Checkout", "Mobile checkout"] {
+            let mut doc = mastik_core::Document::new(app.session.ids.mint());
+            paths.push(crate::library::store::file_document(&root, None, name, &mut doc).unwrap());
+        }
+        app.library.refresh();
+        let wallet = app
+            .library
+            .entries
+            .iter()
+            .find(|e| e.path == paths[0])
+            .unwrap();
+        let id = wallet.meta.id.clone().unwrap();
+        app.library.local.mark_opened(&id);
+
+        type_into_palette(&ctx, &mut app, "go to doc");
+        let none = egui::Modifiers::NONE;
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, none)], none);
+        let pal = app.palette.as_ref().expect("the palette stays open");
+        assert_eq!(pal.scope, Scope::Documents, "the documents scope");
+        assert!(pal.query.is_empty());
+        let names: Vec<String> = app
+            .palette_documents("")
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names[0], "Wallet", "the last opened leads");
+
+        let ranked: Vec<String> = app
+            .palette_documents("check")
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(ranked, ["Checkout", "Mobile checkout"]);
+
+        // Backspace on the empty field leaves the scope.
+        pass(&ctx, &mut app, vec![key(egui::Key::Backspace, none)], none);
+        assert_eq!(app.palette.as_ref().map(|p| p.scope), Some(Scope::All));
+
+        app.palette.as_mut().unwrap().scope = Scope::Documents;
+        pass(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("checkout".into())],
+            none,
+        );
+        pass(&ctx, &mut app, Vec::new(), none);
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, none)], none);
+        assert!(app.palette.is_none(), "Enter closes the palette");
+        assert!(
+            app.tab_of_path(&paths[1]).is_some(),
+            "and opens the document in a tab"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// **A query with no words answers no command**: `🔥` lists the layer it
