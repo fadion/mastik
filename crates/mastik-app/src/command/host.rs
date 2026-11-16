@@ -35,16 +35,6 @@ impl mastik_vm::Host for SessionHost<'_> {
             return Err(A_READ_WRITES_NOTHING.into());
         }
         let s = &mut *self.s;
-        // A kit's vendored component changes only when the kit does.
-        if let Some(id) = vault_node(&s.doc, args) {
-            return Err(format!(
-                "“{}” is a kit's component, which changes only when the kit does",
-                s.doc
-                    .get(id)
-                    .map(|n| n.name().to_string())
-                    .unwrap_or_default()
-            ));
-        }
         verbs::call(
             &mut Ctx {
                 doc: &s.doc,
@@ -62,6 +52,18 @@ impl mastik_vm::Host for SessionHost<'_> {
     fn commit(&mut self, tx: Transaction) -> Result<(), String> {
         if self.read_only {
             return Err(A_READ_WRITES_NOTHING.into());
+        }
+        // Every write a run makes, a verb's or a property's, passes here, so this
+        // one check keeps a kit's vendored component changing only with its kit.
+        if let Some(id) = vault_touched(&self.s.doc, &tx) {
+            return Err(format!(
+                "“{}” is a kit's component, which changes only when the kit does",
+                self.s
+                    .doc
+                    .get(id)
+                    .map(|n| n.name().to_string())
+                    .unwrap_or_default()
+            ));
         }
         // The style browser's *Edit* is set aside, as for an agent: a script's
         // edit of a style's users means the same whatever panel is open.
@@ -163,20 +165,20 @@ pub(crate) fn counts(inverse: &Transaction) -> Counts {
     }
 }
 
-/// The first layer `args` names that is a kit's vendored component: `node`,
-/// `other`, `parent` or one of `nodes`.
-fn vault_node(doc: &Document, args: &Value) -> Option<NodeId> {
-    let one = ["node", "other", "parent"]
+/// The first layer in `doc`'s kit vault that `tx` would change, or would put a
+/// layer under: its subjects, and the parents its creates, inserts and moves name.
+/// Reading a vendored main, as an instance does, is not a change to it.
+fn vault_touched(doc: &Document, tx: &Transaction) -> Option<NodeId> {
+    use mastik_core::Operation as Op;
+    doc.vault()?;
+    let parents = tx.0.iter().filter_map(|op| match op {
+        Op::CreateNode { parent, .. } | Op::InsertSubtree { parent, .. } => Some(*parent),
+        Op::Reparent { new_parent, .. } => Some(*new_parent),
+        _ => None,
+    });
+    tx.subjects()
         .into_iter()
-        .filter_map(|k| args.get(k).and_then(Value::as_str));
-    let many = args
-        .get("nodes")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str);
-    one.chain(many)
-        .filter_map(NodeId::from_wire)
+        .chain(parents)
         .find(|id| doc.in_vault(*id))
 }
 
@@ -243,5 +245,119 @@ pub(crate) fn run_as_step<T>(
             let serial = (made > 0).then(|| s.history.current()).flatten();
             Ok((answer, counts, serial))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::MastikApp;
+    use mastik_core::kurbo::{RoundedRectRadii, Size};
+    use mastik_core::{IdSource, NodeKind, Operation};
+
+    /// A session holding one kit instance, its main vendored into the vault:
+    /// the app, the instance and the main.
+    fn with_kit_instance() -> (MastikApp, NodeId, NodeId) {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let mut lids = IdSource::new(0xAD);
+        let lroot = lids.mint();
+        let mut kit = Document::new(lroot);
+        let m = lids.mint();
+        kit.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: m,
+                parent: lroot,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(40.0, 40.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Badge".into()),
+            },
+            Operation::SetComponent {
+                id: m,
+                component: true,
+            },
+        ]))
+        .unwrap();
+        let published = mastik_core::kit::freeze(&kit).unwrap();
+        let root = app.session.doc.first_page();
+        let (tx, inst) = mastik_core::kit::insert(
+            &app.session.doc,
+            &mut app.session.ids,
+            "5eed0000000000000000000000000002",
+            1,
+            &published,
+            m,
+            root,
+        )
+        .unwrap();
+        assert!(app.session.commit(tx));
+        let main = app.session.doc.get(inst).unwrap().link().unwrap();
+        assert!(app.session.doc.in_vault(main), "the fixture vendored it");
+        (app, inst, main)
+    }
+
+    /// Run `script` with `selection` as one step; its error message, if any.
+    fn run(app: &mut MastikApp, selection: &[NodeId], script: &str) -> Option<String> {
+        let labels = Default::default();
+        let env = mastik_vm::Env {
+            selection,
+            labels: &labels,
+            params: Default::default(),
+        };
+        run_as_step(&mut app.session, "Edit", "", |h| {
+            mastik_vm::run_script(h, &env, script)
+        })
+        .err()
+        .map(|e| e.message)
+    }
+
+    /// A script's property writes and verbs on a kit's vendored component are
+    /// refused, the main left as it was; the instance showing it still moves.
+    ///
+    /// flip: `commit` without `vault_touched` → fails at "refused on the main".
+    #[test]
+    fn a_script_never_changes_a_kits_component() {
+        let (mut app, inst, main) = with_kit_instance();
+        let before = app.session.doc.get(main).unwrap().clone();
+        // The vault is never laid out, so `.x` and `.rotation` find no box and
+        // write nothing; the main is checked unchanged below all the same.
+        assert_eq!(
+            run(&mut app, &[main], "sel.x = 10; sel.rotation = 15"),
+            None
+        );
+        for script in [
+            "sel.name = \"Mine\"",
+            "sel.opacity = 0.5",
+            "sel.visible = false",
+            "sel.width = 5",
+            "group()",
+            "duplicate()",
+        ] {
+            let why = run(&mut app, &[main], script);
+            assert!(
+                why.as_deref()
+                    .is_some_and(|w| w.contains("kit's component")),
+                "refused on the main: {script}: {why:?}"
+            );
+        }
+        assert_eq!(
+            app.session.doc.get(main),
+            Some(&before),
+            "the main unchanged"
+        );
+        assert_eq!(
+            run(&mut app, &[inst], "sel.x = 10"),
+            None,
+            "the instance moves"
+        );
+        assert_eq!(
+            app.session.resolved.world_bounds(inst).map(|b| b.x0),
+            Some(10.0)
+        );
     }
 }

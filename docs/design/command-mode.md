@@ -144,8 +144,9 @@ collection, else the id of what it made, else nil. What the last creating verb m
 
 **Bound:** every registry verb, the properties through the world-space facade, and the selection.
 The host lends no image sink and no contrast probe, so the verbs that need one (`add_image`,
-`fix_contrast`) refuse, and it refuses a write to a kit's vendored component, which changes only
-when the kit does.
+`fix_contrast`) refuse. It refuses a write to a kit's vendored component, which changes only
+when the kit does: the check is on each commit, so it covers a verb, a property write and MCP's
+`run_script`, which takes raw ids, alike. Reading a vendored main, as an instance does, is fine.
 
 **Not bound, by design:** gestures, tools as interaction, previews, `RenderOverrides` and egui
 chrome. A script can only say a committed outcome; it starts where the edit valve ends.
