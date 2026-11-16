@@ -16,31 +16,50 @@ use super::scan::{self, Entry};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// How the dashboard orders what it shows.
+/// The field the dashboard orders what it shows by; [`SortBy`] adds the direction.
 ///
-/// The four the dashboard's sort control cycles. Stored in preferences by
-/// [`Sort::id`] rather than by index, so inserting one cannot change what an
-/// existing install opens on.
+/// Stored in preferences by [`Sort::id`] rather than by index, so inserting one
+/// cannot change what an existing install opens on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sort {
     #[default]
     Edited,
     Name,
+    /// By project name, then last edited; unfiled documents last.
+    Project,
     Created,
     Size,
+    /// When this machine last opened it, never-opened last.
+    Opened,
+    /// The order a search ranked the matches in, on the results page only.
+    Best,
 }
 
 impl Sort {
-    /// The order the control cycles through.
+    /// What Settings offers as the default sort.
     pub const ALL: [Sort; 4] = [Sort::Edited, Sort::Name, Sort::Created, Sort::Size];
+
+    /// Every field, for reading a key back.
+    const EVERY: [Sort; 7] = [
+        Sort::Edited,
+        Sort::Name,
+        Sort::Project,
+        Sort::Created,
+        Sort::Size,
+        Sort::Opened,
+        Sort::Best,
+    ];
 
     /// The stable key written to preferences.
     pub fn id(self) -> &'static str {
         match self {
             Sort::Edited => "edited",
             Sort::Name => "name",
+            Sort::Project => "project",
             Sort::Created => "created",
             Sort::Size => "size",
+            Sort::Opened => "opened",
+            Sort::Best => "best",
         }
     }
 
@@ -49,23 +68,72 @@ impl Sort {
         match self {
             Sort::Edited => "Last edited",
             Sort::Name => "Name",
+            Sort::Project => "Project",
             Sort::Created => "Date created",
             Sort::Size => "Size",
+            Sort::Opened => "Last opened",
+            Sort::Best => "Best match",
         }
+    }
+
+    /// The two directions as the sort menu words them, natural first; `None` for
+    /// [`Sort::Best`], which has one.
+    pub fn directions(self) -> Option<[&'static str; 2]> {
+        match self {
+            Sort::Name | Sort::Project => Some(["A to Z", "Z to A"]),
+            Sort::Edited | Sort::Created | Sort::Opened => Some(["Newest first", "Oldest first"]),
+            Sort::Size => Some(["Largest first", "Smallest first"]),
+            Sort::Best => None,
+        }
+    }
+
+    /// Whether the field's natural direction runs from the smallest value up:
+    /// names A to Z, where dates and sizes start from the largest.
+    pub fn ascends(self) -> bool {
+        matches!(self, Sort::Name | Sort::Project | Sort::Best)
     }
 
     /// Read a preference back, degrading to the default rather than failing.
     pub fn from_id(id: &str) -> Sort {
-        Sort::ALL
+        Sort::EVERY
             .into_iter()
             .find(|s| s.id() == id)
             .unwrap_or_default()
     }
+}
 
-    /// The next in the cycle — the sort control is one button, not a menu.
-    pub fn next(self) -> Sort {
-        let i = Sort::ALL.iter().position(|s| *s == self).unwrap_or(0);
-        Sort::ALL[(i + 1) % Sort::ALL.len()]
+/// A sort as the dashboard holds it: a field and whether it runs against that
+/// field's natural direction ([`Sort::directions`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SortBy {
+    pub field: Sort,
+    pub reversed: bool,
+}
+
+impl SortBy {
+    /// `field` in its natural direction.
+    pub fn natural(field: Sort) -> Self {
+        Self {
+            field,
+            reversed: false,
+        }
+    }
+
+    /// What a click on `field`'s list header gives: the field in its natural
+    /// direction, or this sort reversed when it is already on `field`.
+    pub fn clicked(self, field: Sort) -> Self {
+        match self.field == field {
+            true => Self {
+                field,
+                reversed: !self.reversed,
+            },
+            false => Self::natural(field),
+        }
+    }
+
+    /// Whether the list runs from the smallest value up, as its header's arrow says.
+    pub fn ascending(self) -> bool {
+        self.field.ascends() != self.reversed
     }
 }
 
@@ -313,26 +381,46 @@ impl Library {
             .max()
     }
 
-    /// Order a set of entries in place.
+    /// Order a set of entries in place. [`Sort::Best`] leaves the order the caller
+    /// ranked them in.
     ///
-    /// Every sort is broken by name and then by stem, so the order is total; ties
-    /// (a bulk import shares a created second) would otherwise follow directory
-    /// order and shuffle between visits.
-    pub fn sort_entries(&self, entries: &mut [Entry], sort: Sort) {
+    /// The field's own order runs in its natural direction, flipped when
+    /// `by.reversed`; every sort is then broken by name and by stem, so the order is
+    /// total: ties (a bulk import shares a created second) would otherwise follow
+    /// directory order and shuffle between visits. A document with no value for the
+    /// field (unfiled, never opened) sorts last either way.
+    pub fn sort_entries(&self, entries: &mut [Entry], by: SortBy) {
+        use std::cmp::Ordering;
+        if by.field == Sort::Best {
+            return;
+        }
+        let name = |e: &Entry| e.display_name().to_lowercase();
+        let project = |e: &Entry| self.project_of(e).map(|p| p.name.to_lowercase());
+        let opened = |e: &Entry| self.local.opened_at(e.meta.id.as_deref());
+        // Values missing sort last, whichever way the present ones run.
+        fn present<T: Ord>(a: Option<T>, b: Option<T>, flip: bool) -> Ordering {
+            match (a, b) {
+                (Some(a), Some(b)) if flip => b.cmp(&a),
+                (Some(a), Some(b)) => a.cmp(&b),
+                (a, b) => b.is_some().cmp(&a.is_some()),
+            }
+        }
         entries.sort_by(|a, b| {
-            let primary = match sort {
-                // Descending: largest or most recent first.
-                Sort::Edited => b.modified.cmp(&a.modified),
-                Sort::Created => b.meta.created.cmp(&a.meta.created),
-                Sort::Size => b.size.cmp(&a.size),
-                Sort::Name => std::cmp::Ordering::Equal,
+            let down = !by.ascending();
+            let primary = match by.field {
+                Sort::Edited => present(Some(a.modified), Some(b.modified), down),
+                Sort::Created => present(a.meta.created, b.meta.created, down),
+                Sort::Size => present(Some(a.size), Some(b.size), down),
+                Sort::Opened => present(opened(a), opened(b), down),
+                Sort::Name => present(Some(name(a)), Some(name(b)), down),
+                // Within a project, the last edited first.
+                Sort::Project => {
+                    present(project(a), project(b), down).then_with(|| b.modified.cmp(&a.modified))
+                }
+                Sort::Best => Ordering::Equal,
             };
             primary
-                .then_with(|| {
-                    a.display_name()
-                        .to_lowercase()
-                        .cmp(&b.display_name().to_lowercase())
-                })
+                .then_with(|| name(a).cmp(&name(b)))
                 .then_with(|| a.stem.cmp(&b.stem))
         });
     }
@@ -387,19 +475,63 @@ mod tests {
     }
 
     #[test]
-    fn the_sort_cycle_round_trips_through_its_preference_key() {
-        for s in Sort::ALL {
+    fn every_sort_round_trips_through_its_preference_key() {
+        for s in Sort::EVERY {
             assert_eq!(Sort::from_id(s.id()), s);
         }
         // An unknown key degrades rather than failing.
         assert_eq!(Sort::from_id("by-vibes"), Sort::Edited);
         assert_eq!(Sort::from_id(""), Sort::Edited);
-        // And the cycle closes.
-        let mut s = Sort::Edited;
-        for _ in 0..Sort::ALL.len() {
-            s = s.next();
+    }
+
+    /// A header click on a new field starts it in its natural direction; on the
+    /// lit field it reverses.
+    #[test]
+    fn a_header_click_starts_natural_and_a_second_reverses() {
+        let by = SortBy::natural(Sort::Edited).clicked(Sort::Name);
+        assert_eq!(by, SortBy::natural(Sort::Name));
+        assert!(by.ascending(), "names run A to Z");
+        let again = by.clicked(Sort::Name);
+        assert!(again.reversed && !again.ascending());
+        assert!(
+            !SortBy::natural(Sort::Size).ascending(),
+            "sizes largest first"
+        );
+    }
+
+    /// Reversed, the field runs the other way and a missing value stays last.
+    /// flip: `present`'s missing-value arm ordered by `flip` → fails at "never
+    /// opened stays last".
+    #[test]
+    fn a_reversed_sort_flips_the_field_and_keeps_missing_values_last() {
+        let mut lib = Library::open(temp_root("reverse"));
+        let mut entries = vec![
+            entry("Small old", "a", 100, 100, 10),
+            entry("Big new", "b", 300, 300, 30),
+            entry("Middle", "c", 200, 200, 20),
+        ];
+        let reversed = SortBy {
+            field: Sort::Size,
+            reversed: true,
+        };
+        lib.sort_entries(&mut entries, reversed);
+        let names: Vec<String> = entries.iter().map(|e| e.display_name()).collect();
+        assert_eq!(names, ["Small old", "Middle", "Big new"]);
+
+        lib.local.opened.insert("a".into(), 50);
+        lib.local.opened.insert("c".into(), 60);
+        for reversed in [false, true] {
+            lib.sort_entries(
+                &mut entries,
+                SortBy {
+                    field: Sort::Opened,
+                    reversed,
+                },
+            );
+            let names: Vec<String> = entries.iter().map(|e| e.display_name()).collect();
+            assert_eq!(names[2], "Big new", "never opened stays last ({reversed})");
         }
-        assert_eq!(s, Sort::Edited);
+        let _ = std::fs::remove_dir_all(&lib.root);
     }
 
     /// Build an entry directly, so the display name and the stem can be set
@@ -442,7 +574,7 @@ mod tests {
             entry("Zebra", "a", 100, 100, 10),
             entry("Apple", "c", 100, 100, 10),
         ];
-        lib.sort_entries(&mut entries, Sort::Created);
+        lib.sort_entries(&mut entries, SortBy::natural(Sort::Created));
         let names: Vec<String> = entries.iter().map(|e| e.display_name()).collect();
         assert_eq!(names, vec!["Apple", "Mango", "Zebra"]);
         let _ = std::fs::remove_dir_all(&lib.root);
@@ -456,7 +588,7 @@ mod tests {
             entry("Gamma", "y", 0, 0, 0),
             entry("Alpha", "z", 0, 0, 0),
         ];
-        lib.sort_entries(&mut entries, Sort::Name);
+        lib.sort_entries(&mut entries, SortBy::natural(Sort::Name));
         let names: Vec<String> = entries.iter().map(|e| e.display_name()).collect();
         // Byte order would give "Alpha", "Gamma", "beta"; the stems run reverse so
         // the fall-through cannot produce this by accident.
@@ -478,7 +610,7 @@ mod tests {
         };
         for sort in [Sort::Edited, Sort::Created, Sort::Size] {
             let mut entries = build();
-            lib.sort_entries(&mut entries, sort);
+            lib.sort_entries(&mut entries, SortBy::natural(sort));
             let names: Vec<String> = entries.iter().map(|e| e.display_name()).collect();
             assert_eq!(names, vec!["Big new", "Middle", "Small old"], "{sort:?}");
         }

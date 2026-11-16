@@ -2034,7 +2034,9 @@ impl MastikApp {
             rename_entry: None,
             dash: crate::panels::dashboard::DashboardState {
                 nav: crate::panels::dashboard::Nav::from_id(&prefs_page),
-                sort: crate::library::state::Sort::from_id(&prefs_sort),
+                sort: crate::library::state::SortBy::natural(crate::library::state::Sort::from_id(
+                    &prefs_sort,
+                )),
                 list_view: prefs_list_view,
                 ..Default::default()
             },

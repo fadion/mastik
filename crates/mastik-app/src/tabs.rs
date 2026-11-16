@@ -1465,6 +1465,7 @@ impl MastikApp {
             self.context_menu = None;
             self.dash.menu_for = None;
             self.dash.filter_open = false;
+            self.dash.sort_open = false;
         }
         // Only over a name the tab had to cut: a whole one says it already.
         let resp = if cut {
