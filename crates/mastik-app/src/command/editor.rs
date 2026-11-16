@@ -1717,6 +1717,11 @@ impl MastikApp {
         match decided {
             None => self.scripts.form = Some(form),
             Some(false) => {}
+            // A colour that is not one keeps the form up, saying so.
+            Some(true) if let Err(why) = form_colours(&form.header, &mut form.values) => {
+                self.session.fail(why);
+                self.scripts.form = Some(form);
+            }
             Some(true) => {
                 self.scripts
                     .last_values
@@ -2998,15 +3003,19 @@ fn input_field(ui: &mut egui::Ui, w: f32, input: &mastik_vm::Input, value: &mut 
                 *value = Value::String(s);
             }
         }
+        // Any colour the app's other colour fields read; the run takes it as
+        // `#rrggbb[aa]` (`form_colours`).
         T::Color => {
             let mut s = value
                 .as_str()
                 .unwrap_or("#000000")
                 .trim_start_matches('#')
                 .to_owned();
-            let ink = parse_hex(&s).unwrap_or(egui::Color32::BLACK);
+            let ink = crate::colour_text::parse(&s).map_or(egui::Color32::TRANSPARENT, |t| {
+                ui::color_to_egui(t.color(1.0))
+            });
             if ui::colour_text_field(ui, size, &mut s, ink).changed() {
-                *value = Value::String(format!("#{}", s.trim().trim_start_matches('#')));
+                *value = Value::String(s.trim().to_owned());
             }
         }
         T::Choice(words) => {
@@ -3049,18 +3058,32 @@ fn title_case(s: &str) -> String {
     }
 }
 
-/// `#rrggbb` or `rrggbb` as a colour.
-fn parse_hex(s: &str) -> Option<egui::Color32> {
-    let s = s.trim().trim_start_matches('#');
-    if s.len() != 6 {
-        return None;
+/// The form's colour values as a script reads them, `#rrggbb` (`#rrggbbaa`
+/// when not opaque), whatever form each was typed in; the refusal for the
+/// first that is not a colour.
+fn form_colours(
+    header: &mastik_vm::Header,
+    values: &mut serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    for input in &header.inputs {
+        if input.ty != mastik_vm::InputType::Color {
+            continue;
+        }
+        let Some(Value::String(text)) = values.get_mut(&input.name) else {
+            continue;
+        };
+        let Some(t) = crate::colour_text::parse(text) else {
+            return Err(crate::colour_text::refusal(text)
+                .unwrap_or_else(|| format!("{} needs a colour", input.name)));
+        };
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let [r, g, b] = t.rgb.map(byte);
+        *text = match t.alpha.map(byte) {
+            Some(a) if a < 255 => format!("#{r:02x}{g:02x}{b:02x}{a:02x}"),
+            _ => format!("#{r:02x}{g:02x}{b:02x}"),
+        };
     }
-    let n = u32::from_str_radix(s, 16).ok()?;
-    Some(egui::Color32::from_rgb(
-        (n >> 16) as u8,
-        (n >> 8) as u8,
-        n as u8,
-    ))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3225,6 +3248,28 @@ mod tests {
         form.values.insert("by".into(), Value::from(7.0));
         app.run_script_now(form.which, form.name, form.source, form.values);
         assert_eq!(left(&app, card), x + 7.0);
+    }
+
+    /// A colour input reads whatever the app's colour fields read and reaches
+    /// the script as `#rrggbb[aa]`; text that is no colour is refused.
+    /// flip: `form_colours` writing the alpha off → fails at "with its alpha".
+    #[test]
+    fn a_colour_input_reads_as_every_colour_field_does() {
+        let header = mastik_vm::header("---@input a color\n---@input b color\n---@input c color\n")
+            .expect("fixture: the header parses");
+        let mut values = serde_json::Map::new();
+        values.insert("a".into(), Value::from("ff000080"));
+        values.insert("b".into(), Value::from("red"));
+        values.insert("c".into(), Value::from("f00"));
+        assert_eq!(form_colours(&header, &mut values), Ok(()));
+        assert_eq!(values["a"], "#ff000080", "with its alpha");
+        assert_eq!(values["b"], "#ff0000", "a named colour");
+        assert_eq!(values["c"], "#ff0000", "short hex");
+        values.insert("c".into(), Value::from("#red"));
+        assert_eq!(
+            form_colours(&header, &mut values),
+            Err("Not a colour: #red".into())
+        );
     }
 
     /// The values an unsaved script's form last ran with stay its own when an

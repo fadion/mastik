@@ -306,7 +306,8 @@ a form before the run, read in the script as `param.name` (an unknown one raises
 `integer`, `boolean`, `string`, `color` (`"#rrggbb"`, or `"#rrggbbaa"`), `choice(a, b, …)`. A missing default is the
 type's zero (the range's low end, the first choice); only a number or an integer takes a range. A
 header that does not parse fails the run at its line. The form draws each by its type: a
-`ui::value_field`, a `ui::colour_text_field`, a `ui::segmented` for up to three choices and a
+`ui::value_field`, a `ui::colour_text_field` (reading any colour `colour_text::parse` does, and
+handing the script `#rrggbb[aa]`; *Run* refuses text that is no colour), a `ui::segmented` for up to three choices and a
 dropdown past that, a `ui::switch_row` carrying the input's label, a `ui::text_field`. Values are
 remembered per script for the session.
 
