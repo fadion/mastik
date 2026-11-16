@@ -115,7 +115,9 @@ pub use build::{
 };
 pub use container::{AutoMargins, Insets, LengthPct};
 pub use credit::{Credit, CreditKind};
-pub use document::{DEFAULT_CANVAS_BACKGROUND, Document, remap_subtree, reserve_existing_ids};
+pub use document::{
+    DEFAULT_CANVAS_BACKGROUND, Document, minted_ids, remap_subtree, reserve_existing_ids,
+};
 pub use effect::{
     BLUR_CUTOFF, BLUR_DEVIATION, DEFAULT_BLUR_RADIUS, EFFECT_BLUR, EFFECT_SPREAD, EFFECT_X,
     EFFECT_Y, Effect, EffectKind, EffectVars, FilterChannel, Filters, Shadow, deviation, reach,

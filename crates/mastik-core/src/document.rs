@@ -3994,10 +3994,19 @@ impl Drop for InPlace<'_> {
 /// this whenever a document is loaded into an existing session.
 pub fn reserve_existing_ids(doc: &Document, ids: &mut IdSource) {
     let actor = ids.actor();
-    // Guides are minted from the same stream (`crate::guide::GuideId`), so they
-    // are reserved past as well.
-    //
-    // Item ids too (§15 D980), from the same stream (`IdSource::mint_item`): the
+    let highest = minted_ids(doc)
+        .filter(|id| id.actor == actor)
+        .map(|id| id.seq)
+        .max();
+    if let Some(seq) = highest {
+        ids.skip_to(seq + 1);
+    }
+}
+
+/// Every id `doc` holds that an [`IdSource`] minted: its layers', guides',
+/// keyed items', variables' and modes', styles' and scripts'.
+pub fn minted_ids(doc: &Document) -> impl Iterator<Item = NodeId> + '_ {
+    // Item ids are minted from the same stream (`IdSource::mint_item`); the
     // positional ids a migration writes are actor 0, and `session::random_actor`
     // is an unguarded hash, so a session could draw 0.
     let items = doc.nodes.values().flat_map(|n| {
@@ -4012,23 +4021,14 @@ pub fn reserve_existing_ids(doc: &Document, ids: &mut IdSource) {
             // The component properties' too — the sixth keyed list.
             .chain(n.props.iter().map(|k| k.id.0))
     });
-    let highest = doc
-        .nodes
+    doc.nodes
         .keys()
         .copied()
         .chain(doc.guides.iter().map(|g| g.id.0))
         .chain(items)
-        // Variables and modes too (§15 D1039), minted from the same stream.
         .chain(doc.variables.ids())
-        // And styles (§15 D1062).
         .chain(doc.styles.ids())
         .chain(doc.scripts.iter().map(|s| s.id.0))
-        .filter(|id| id.actor == actor)
-        .map(|id| id.seq)
-        .max();
-    if let Some(seq) = highest {
-        ids.skip_to(seq + 1);
-    }
 }
 
 /// Clone a captured subtree with fresh ids minted from `ids`, rewriting every

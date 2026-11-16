@@ -10,12 +10,12 @@ use mastik_core::{Document, NodeId};
 use mastik_mcp::wire::{Content, Output};
 use serde_json::Value;
 
-/// The actors an id may be written short for, sorted: those the document's
-/// layers were minted by, and the session's own. Actor 0, which a migration's
-/// item ids carry, is left out, so a text reading `0:30` stays as written.
+/// The actors an id may be written short for, sorted: those any id the
+/// document holds was minted by (a layer's, a variable's, a style's, a
+/// script's…), and the session's own. Actor 0, which a migration's item ids
+/// carry, is left out, so a text reading `0:30` stays as written.
 pub(crate) fn known_actors(doc: &Document, own: u64) -> Vec<u64> {
-    let mut known: Vec<u64> = doc
-        .node_ids()
+    let mut known: Vec<u64> = mastik_core::minted_ids(doc)
         .map(|id| id.actor)
         .chain([own])
         .filter(|a| *a != 0)
@@ -131,5 +131,33 @@ mod tests {
         ] {
             assert_eq!(shorten_text(s, &known), None, "{s:?} stays");
         }
+    }
+
+    /// An actor that minted only a style stays known after the session's own
+    /// actor changes, so a short id for that style still reads.
+    ///
+    /// flip: `known_actors` reading the layers' ids alone → fails at "the
+    /// style's actor".
+    #[test]
+    fn an_actor_known_only_by_a_style_stays_known() {
+        let mut pages = mastik_core::IdSource::new(0xaa);
+        let mut doc = Document::new(pages.mint());
+        let mut styles = mastik_core::IdSource::new(0xbb);
+        let style = styles.mint_style();
+        doc.apply(&mastik_core::Transaction(vec![
+            mastik_core::Operation::AddStyle {
+                style: mastik_core::style::Style {
+                    id: style,
+                    name: "Surface".into(),
+                    value: mastik_core::style::StyleValue::Fills(Vec::new()),
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ]))
+        .unwrap();
+        let known = known_actors(&doc, 0xcc);
+        assert!(known.contains(&0xbb), "the style's actor: {known:x?}");
     }
 }
