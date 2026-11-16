@@ -2619,6 +2619,7 @@ pub fn code_editor(
     // and theme and kept under the edit's id.
     let dark = ui.visuals().dark_mode;
     let inks_key = id.with("code-inks");
+    let galley_key = id.with("code-galley");
     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
         let s = buf.as_str();
         let hash = egui::util::hash((s, dark));
@@ -2652,13 +2653,29 @@ pub fn code_editor(
         }
         job.append(&s[at..], 0.0, fmt(color::text()));
         job.wrap.max_width = f32::INFINITY;
-        let mut galley = ui.fonts_mut(|f| f.layout_job(job));
+        let laid = ui.fonts_mut(|f| f.layout_job(job));
         // egui sets a row's glyphs an ascent below its top and makes the row the
         // whole line tall, so the ink sat at the top with the line's air under
         // it: the caret ran into that air, and a press just over a line's text
         // landed on the line above. Each row is cut to `CODE_ROW_H` and centred
         // on the ink in its line; a press between rows takes the nearer one.
         let (drop, lift) = code_row_offsets(ui);
+        // The shift copies the galley epaint's cache shares, so the shifted one
+        // is kept while epaint hands back that same galley (the text, inks,
+        // fonts and scale unchanged) and the shift is the same.
+        let shift = [drop.to_bits(), lift.to_bits()];
+        type Shifted = (
+            std::sync::Arc<egui::Galley>,
+            [u32; 2],
+            std::sync::Arc<egui::Galley>,
+        );
+        if let Some((from, at, shifted)) = ui.data(|d| d.get_temp::<Shifted>(galley_key))
+            && std::sync::Arc::ptr_eq(&from, &laid)
+            && at == shift
+        {
+            return shifted;
+        }
+        let mut galley = laid.clone();
         let g = std::sync::Arc::make_mut(&mut galley);
         for placed in &mut g.rows {
             placed.pos.y += lift;
@@ -2670,6 +2687,8 @@ pub fn code_editor(
             row.visuals.mesh.translate(egui::vec2(0.0, drop));
             row.visuals.mesh_bounds = row.visuals.mesh_bounds.translate(egui::vec2(0.0, drop));
         }
+        let kept: Shifted = (laid, shift, galley.clone());
+        ui.data_mut(|d| d.insert_temp(galley_key, kept));
         galley
     };
     let (gutter, out) = ui
@@ -9032,6 +9051,39 @@ mod tests {
             code_editor(ui, id, &mut text, &inks, &[], false);
         });
         assert_eq!(calls.get(), 2, "a new text is inked again");
+    }
+
+    /// `code_editor` shifts its rows once per laid-out text and keeps the
+    /// result, rather than copying the whole galley every frame; a new text is
+    /// shifted again, once.
+    /// flip: the layouter shifting a copy without its kept galley → fails at
+    /// "the same galley".
+    #[test]
+    fn code_rows_are_shifted_once_per_text() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let mut text = "local a = 1\nprint(a)".repeat(50);
+        let id = egui::Id::new("galley-kept");
+        let frame = |text: &mut String| {
+            let mut laid = None;
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                laid = Some(code_editor(ui, id, text, &|_| CodeInks::new(), &[], true).galley);
+            });
+            laid.expect("laid out")
+        };
+        let _ = frame(&mut text);
+        let (a, b) = (frame(&mut text), frame(&mut text));
+        assert!(std::sync::Arc::ptr_eq(&a, &b), "the same galley");
+        assert_eq!(
+            a.pos_from_cursor(egui::text::CCursor::new(14)).height(),
+            CODE_ROW_H,
+            "still shifted"
+        );
+        text.push('x');
+        let c = frame(&mut text);
+        assert!(!std::sync::Arc::ptr_eq(&b, &c), "a new text, a new galley");
+        assert!(c.text().ends_with('x'));
     }
 
     /// A code row is the caret's height, centred on its ink within its line,
