@@ -457,13 +457,15 @@ enum FileRow {
     More(usize),
 }
 
-/// An [`anchored_menu`]'s rows: how many, which a rule goes before, and which
-/// are inert.
+/// An [`anchored_menu`]'s rows: how many, which a rule goes before, which are
+/// inert, and which hold the value in force (lit on the selection ground, as a
+/// dropdown's chosen row is, never ticked).
 #[derive(Clone, Copy, Default)]
 struct MenuShape<'a> {
     rows: usize,
     seps: &'a [usize],
     inert: &'a [usize],
+    chosen: &'a [usize],
 }
 
 impl MenuShape<'_> {
@@ -507,7 +509,12 @@ fn anchored_menu(
     keys: &mut MenuKeys,
     paint: impl Fn(&egui::Painter, usize, egui::Rect, bool),
 ) -> MenuOutcome {
-    let MenuShape { rows, seps, inert } = shape;
+    let MenuShape {
+        rows,
+        seps,
+        inert,
+        chosen: in_force,
+    } = shape;
     if keys.rows != rows {
         keys.rows = rows;
         keys.highlight = None;
@@ -576,7 +583,10 @@ fn anchored_menu(
                         Some(hl) => hl == i,
                         None => r.hovered(),
                     };
-                ui::list_row_ground(ui.painter(), row, false, lit);
+                match in_force.contains(&i) {
+                    true => ui::menu_selected_ground(ui, ui.painter(), row),
+                    false => ui::list_row_ground(ui.painter(), row, false, lit),
+                }
                 paint(ui.painter(), i, row, lit);
                 if r.clicked() {
                     clicked = Some(i);
@@ -625,7 +635,8 @@ const DELETE_W: f32 = 32.0;
 
 /// Between the sort control's glyph and its label, and its label and the chevron.
 const SORT_GLYPH_GAP: f32 = 6.0;
-/// The sort menu's width: the longest direction, *Smallest first*, with its tick.
+/// The sort menu's width: the longest direction, *Smallest first*, with air
+/// after it.
 const SORT_MENU_W: f32 = 170.0;
 
 /// How wide the sort control must be: the widest of the page's `fields`, not the
@@ -2612,13 +2623,22 @@ impl MastikApp {
     }
 
     /// The sort menu: the page's fields, a rule, then the two directions worded for
-    /// the field in force, each list ticking its choice. A field picked starts in
+    /// the field in force, each list lighting its choice. A field picked starts in
     /// its natural direction. [`Sort::Best`] has no direction rows.
     fn sort_menu(&mut self, ui: &mut egui::Ui, anchor: egui::Rect, fields: &[Sort]) {
         let by = self.sort_by();
         let directions = by.field.directions();
         let rows = fields.len() + directions.map_or(0, |d| d.len());
         let seps = [fields.len()];
+        let mut in_force: Vec<usize> = fields
+            .iter()
+            .position(|f| *f == by.field)
+            .into_iter()
+            .collect();
+        if directions.is_some() {
+            in_force.push(fields.len() + usize::from(by.reversed));
+        }
+        let chosen_ink = ui::menu_selected_ink(ui);
         let out = anchored_menu(
             ui,
             egui::Id::new("library-sort-menu"),
@@ -2628,15 +2648,15 @@ impl MastikApp {
                 rows,
                 seps: if directions.is_some() { &seps } else { &[] },
                 inert: &[],
+                chosen: &in_force,
             },
             &mut self.dash.menu_keys,
             |p, i, row, lit| {
-                let (label, on) = match fields.get(i) {
-                    Some(f) => (f.label(), *f == by.field),
+                let label = match fields.get(i) {
+                    Some(f) => f.label(),
                     None => {
-                        let d = i - fields.len();
                         let words = directions.expect("a direction row has directions");
-                        (words[d], (d == 1) == by.reversed)
+                        words[i - fields.len()]
                     }
                 };
                 p.text(
@@ -2644,21 +2664,12 @@ impl MastikApp {
                     egui::Align2::LEFT_CENTER,
                     label,
                     egui::FontId::proportional(ui::CONTROL_PT),
-                    if on || lit {
-                        color::text()
-                    } else {
-                        theme::text::muted()
+                    match () {
+                        _ if in_force.contains(&i) => chosen_ink,
+                        _ if lit => color::text(),
+                        _ => theme::text::muted(),
                     },
                 );
-                if on {
-                    p.text(
-                        egui::pos2(row.right() - 10.0, row.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        icon::CHECK,
-                        theme::icon_font(13.0),
-                        color::accent(),
-                    );
-                }
             },
         );
         if let Some(i) = out.chosen {
@@ -2678,7 +2689,7 @@ impl MastikApp {
     }
 
     /// The filter's dropdown: *All projects* and then every project, each with its
-    /// swatch and a tick on the one in force.
+    /// swatch, the one in force lit.
     fn project_filter_menu(&mut self, ui: &mut egui::Ui, anchor: egui::Rect) {
         let mut rows: Vec<(Option<String>, String, egui::Color32)> =
             vec![(None, ALL_PROJECTS.to_owned(), theme::text::dim())];
@@ -2689,16 +2700,24 @@ impl MastikApp {
 
         let w = FILTER_MENU_W;
         let current = self.dash.filter.clone();
+        let in_force: Vec<usize> = rows
+            .iter()
+            .position(|r| r.0 == current)
+            .into_iter()
+            .collect();
+        let chosen_ink = ui::menu_selected_ink(ui);
         let out = anchored_menu(
             ui,
             egui::Id::new("library-filter-menu"),
             anchor,
             w,
-            MenuShape::plain(rows.len()),
+            MenuShape {
+                chosen: &in_force,
+                ..MenuShape::plain(rows.len())
+            },
             &mut self.dash.menu_keys,
             |p, i, row, lit| {
-                let (id, name, dot) = &rows[i];
-                let on = &current == id;
+                let (_, name, dot) = &rows[i];
                 p.rect_filled(
                     egui::Rect::from_center_size(
                         egui::pos2(row.left() + 8.0 + DOT / 2.0, row.center().y),
@@ -2712,22 +2731,12 @@ impl MastikApp {
                     egui::Align2::LEFT_CENTER,
                     elide(p.ctx(), name, ui::CONTROL_PT, w - 60.0),
                     egui::FontId::proportional(ui::CONTROL_PT),
-                    if on || lit {
-                        color::text()
-                    } else {
-                        theme::text::muted()
+                    match () {
+                        _ if in_force.contains(&i) => chosen_ink,
+                        _ if lit => color::text(),
+                        _ => theme::text::muted(),
                     },
                 );
-                // The tick's column is reserved either way, so rows do not shift.
-                if on {
-                    p.text(
-                        egui::pos2(row.right() - 10.0, row.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        icon::CHECK,
-                        theme::icon_font(13.0),
-                        color::accent(),
-                    );
-                }
             },
         );
 
@@ -2906,22 +2915,8 @@ impl MastikApp {
             .project_of(entry)
             .map(|p| swatch(&p.color))
             .unwrap_or(theme::text::faint());
-        let p = ui.painter();
-        p.rect_filled(rect, egui::CornerRadius::same(9), color::card());
-        p.rect_stroke(
-            rect,
-            egui::CornerRadius::same(9),
-            egui::Stroke::new(
-                1.0,
-                // Over the *Continue* button too, which `resp.hovered()` is not.
-                if ui.rect_contains_pointer(rect) {
-                    color::accent_700()
-                } else {
-                    color::card_border()
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
+        // Lit over the *Continue* button too, which `resp.hovered()` is not.
+        card_ground(ui.painter(), rect, false, ui.rect_contains_pointer(rect));
         let plate = egui::Rect::from_min_size(
             rect.min + egui::Vec2::splat(PROJECT_PAD),
             egui::vec2(
@@ -2937,16 +2932,7 @@ impl MastikApp {
             false => None,
         };
         if let Some(texture) = texture {
-            // Fitted inside the plate, for `file_card`'s reasons.
-            let size = texture.size_vec2();
-            let room = plate.shrink(6.0);
-            let scale = (room.width() / size.x).min(room.height() / size.y).min(1.0);
-            ui.painter().image(
-                texture.id(),
-                egui::Rect::from_center_size(room.center(), size * scale),
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
+            fit_cover(ui.painter(), &texture, plate, 6.0);
         }
         let x = plate.right() + 20.0;
         let text_w = (rect.right() - x - 20.0).max(0.0);
@@ -3104,23 +3090,8 @@ impl MastikApp {
         let shown = self.library.shown_project(p);
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(w, PROJECT_CARD_H), egui::Sense::click());
-        let lit = resp.hovered();
         let dot = swatch(&p.color);
-        let painter = ui.painter();
-        painter.rect_filled(rect, egui::CornerRadius::same(9), color::card());
-        painter.rect_stroke(
-            rect,
-            egui::CornerRadius::same(9),
-            egui::Stroke::new(
-                1.0,
-                if lit {
-                    color::accent_700()
-                } else {
-                    color::card_border()
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
+        card_ground(ui.painter(), rect, false, resp.hovered());
         let mosaic = egui::Rect::from_min_size(
             rect.min + egui::Vec2::splat(PROJECT_PAD),
             egui::vec2(w - PROJECT_PAD * 2.0, MOSAIC_H),
@@ -3187,17 +3158,8 @@ impl MastikApp {
         for (entry, cell) in files.iter().zip(mosaic_cells(files.len(), rect)) {
             ui.painter()
                 .rect_filled(cell, egui::CornerRadius::same(4), dot.gamma_multiply(0.14));
-            // Fitted and inset, for `file_card`'s reasons.
             if let Some(texture) = self.covers.get(ui.ctx(), entry).cloned() {
-                let size = texture.size_vec2();
-                let room = cell.shrink(4.0);
-                let scale = (room.width() / size.x).min(room.height() / size.y).min(1.0);
-                ui.painter().image(
-                    texture.id(),
-                    egui::Rect::from_center_size(room.center(), size * scale),
-                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                fit_cover(ui.painter(), &texture, cell, 4.0);
             }
         }
     }
@@ -3401,22 +3363,7 @@ impl MastikApp {
             .unwrap_or(theme::text::faint());
         let thumb = egui::Rect::from_min_size(rect.min, egui::vec2(w, CARD_THUMB_H));
         let p = ui.painter();
-        p.rect_filled(rect, egui::CornerRadius::same(9), color::card());
-        // Three tiers: the top is the keyboard's cursor, a full accent border against
-        // hover's muted `accent_700()`, since the two can coexist.
-        p.rect_stroke(
-            rect,
-            egui::CornerRadius::same(9),
-            egui::Stroke::new(
-                1.0,
-                match (picked, lit) {
-                    (true, _) => color::accent(),
-                    (false, true) => color::accent_700(),
-                    (false, false) => color::card_border(),
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
+        card_ground(p, rect, picked, lit);
         // The plate the cover sits on, also shown for a document with no cover yet
         // (`library::cover::Covers::get` does not distinguish the cases).
         let plate_radius = egui::CornerRadius {
@@ -3479,20 +3426,7 @@ impl MastikApp {
             None
         };
         match cover {
-            Some(texture) => {
-                // Fitted, never filled: bleeding to the edges would show square
-                // corners over the rounded plate.
-                let size = texture.size_vec2();
-                let room = thumb.shrink(10.0);
-                let scale = (room.width() / size.x).min(room.height() / size.y).min(1.0);
-                let at = egui::Rect::from_center_size(room.center(), size * scale);
-                ui.painter().image(
-                    texture.id(),
-                    at,
-                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
+            Some(texture) => fit_cover(ui.painter(), &texture, thumb, 10.0),
             // A page whose cover is still being drawn turns the small spinner; an
             // empty page answers with no picture and shows the bare plate.
             None if shot != cover::Shot::Rest && !self.covers.pending(entry, &shot) => {}
@@ -4425,6 +4359,7 @@ impl MastikApp {
                 rows: rows.len(),
                 seps: &seps,
                 inert: &inert,
+                chosen: &[],
             },
             &mut self.dash.menu_keys,
             |p, i, row, lit| {
@@ -6126,6 +6061,40 @@ fn section_label(ui: &mut egui::Ui, text: &str) {
         egui::pos2(rect.left() + 12.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         text,
+    );
+}
+
+/// A library card's ground and hairline, the file, project and continue cards
+/// alike: the full accent for the keyboard's cursor (`picked`), the muted
+/// `accent_700()` under the pointer (`lit`), since the two can coexist.
+fn card_ground(p: &egui::Painter, rect: egui::Rect, picked: bool, lit: bool) {
+    let corner = egui::CornerRadius::same(9);
+    p.rect_filled(rect, corner, color::card());
+    let ink = match (picked, lit) {
+        (true, _) => color::accent(),
+        (false, true) => color::accent_700(),
+        (false, false) => color::card_border(),
+    };
+    p.rect_stroke(
+        rect,
+        corner,
+        egui::Stroke::new(1.0, ink),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// A cover drawn into `plate` less `inset` all round, centred: fitted, never
+/// filled, since bleeding to the edges would show square corners over a rounded
+/// plate, and never scaled up past its own pixels.
+fn fit_cover(p: &egui::Painter, texture: &egui::TextureHandle, plate: egui::Rect, inset: f32) {
+    let size = texture.size_vec2();
+    let room = plate.shrink(inset);
+    let scale = (room.width() / size.x).min(room.height() / size.y).min(1.0);
+    p.image(
+        texture.id(),
+        egui::Rect::from_center_size(room.center(), size * scale),
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
     );
 }
 
@@ -10322,10 +10291,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The sort menu is as wide as it says, its rule included, and a second click
-    /// on its button closes it, as the project filter's does.
+    /// The sort menu is as wide as it says, its rule included, lights its choice
+    /// without a tick, and a second click on its button closes it, as the project
+    /// filter's does.
     /// flip: `anchored_menu` not holding its card's width → fails at "as wide as
-    /// it says"; `sort_control` refusing a click while a menu is up → fails at "a
+    /// it says"; `sort_menu` painting a tick on its chosen rows → fails at "never
+    /// ticks it"; `sort_control` refusing a click while a menu is up → fails at "a
     /// second click closes it".
     #[test]
     fn the_sort_menu_keeps_its_width_and_its_button_toggles_it() {
@@ -10352,6 +10323,12 @@ mod tests {
             (rect.width() - SORT_MENU_W).abs() < 1.0,
             "as wide as it says: {}",
             rect.width()
+        );
+        assert!(
+            !galleys(&mut app, &ctx)
+                .iter()
+                .any(|(_, _, t)| t == icon::CHECK),
+            "a dropdown of one value lights its choice, never ticks it"
         );
         click_at(&mut app, &ctx, button);
         assert!(!app.dash.sort_open, "a second click closes it");

@@ -752,8 +752,7 @@ pub fn menu_row(ui: &mut egui::Ui, row: MenuRow<'_>, height: f32) -> egui::Respo
     let lit = row.selected;
     let p = ui.painter();
     if lit {
-        let selection = ui.visuals().selection.bg_fill;
-        p.rect_filled(rect, ui.visuals().widgets.inactive.corner_radius, selection);
+        menu_selected_ground(ui, p, rect);
     } else if hovered {
         p.rect_filled(rect, egui::CornerRadius::same(4), color::hover());
     }
@@ -770,7 +769,7 @@ pub fn menu_row(ui: &mut egui::Ui, row: MenuRow<'_>, height: f32) -> egui::Respo
             color::danger().gamma_multiply(0.55),
         ),
         _ if lit => {
-            let ink = ui.visuals().selection.stroke.color;
+            let ink = menu_selected_ink(ui);
             (ink, ink, theme::text::faint())
         }
         _ if on => (color::accent(), color::text(), theme::text::faint()),
@@ -863,6 +862,19 @@ pub fn menu_row(ui: &mut egui::Ui, row: MenuRow<'_>, height: f32) -> egui::Respo
         (true, ..) => resp.on_hover_text(row.label),
         _ => resp,
     }
+}
+
+/// A dropdown's chosen row's ground, as [`menu_row`] paints a
+/// [`MenuRow::selected`] one, for a menu that draws its own rows (the library's
+/// sort and project filter); its words take [`menu_selected_ink`].
+pub fn menu_selected_ground(ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect) {
+    let v = ui.visuals();
+    painter.rect_filled(rect, v.widgets.inactive.corner_radius, v.selection.bg_fill);
+}
+
+/// The ink of a [`menu_selected_ground`] row's words.
+pub fn menu_selected_ink(ui: &egui::Ui) -> egui::Color32 {
+    ui.visuals().selection.stroke.color
 }
 
 /// Where a [`menu_row`]'s label starts after its glyph: the 8pt inset, the 15pt
