@@ -451,28 +451,38 @@ pub(crate) fn published_said(
             many.join(", ")
         ),
     };
+    // Beside a component count: the variables and styles and the scripts,
+    // which a component count says nothing of.
+    let beside = changes.map_or(String::new(), |c| {
+        let on: Vec<&str> = [
+            (c.tokens, "its variables and styles"),
+            (c.scripts, "its scripts"),
+        ]
+        .iter()
+        .filter(|(b, _)| *b)
+        .map(|(_, s)| *s)
+        .collect();
+        on.iter().map(|s| format!(" and {s}")).collect()
+    });
     match count {
         0 => format!("Published {name} v{version} · {other}{drafts}"),
-        n if changes.is_some_and(|c| c.tokens) => format!(
-            "Published {name} v{version} · {} and its variables and styles{drafts}",
-            ui::count(n, "component")
-        ),
         n => format!(
-            "Published {name} v{version} · {}{drafts}",
+            "Published {name} v{version} · {}{beside}{drafts}",
             ui::count(n, "component")
         ),
     }
 }
 
 /// What changed that is not a component — the kit's name, the order of its
-/// components, the variables and styles they read (§15 D1064), or any of them
+/// components, the variables and styles they read, its scripts, or any of them
 /// together — as the subject of *"… changed since v4"*.
 fn not_a_component(c: &Changes) -> String {
     let mut s = joined(&[
         (c.renamed, "the kit's name"),
         (c.reordered, "the order of its components"),
-        // A variable or a style its components read (§15 D1064) — not a rename.
+        // A variable or a style its components read — not a rename.
         (c.tokens, "the variables and styles its components read"),
+        (c.scripts, "the kit's scripts"),
     ]);
     if let Some(first) = s.get(..1) {
         let up = first.to_uppercase();
@@ -934,5 +944,31 @@ mod tests {
         let _ = ctx.run_ui(click(outside), |_| app.publish_popover(&ctx));
         let _ = ctx.run_ui(Default::default(), |_| app.publish_popover(&ctx));
         assert!(app.publishing.is_none(), "a later click outside lets it go");
+    }
+
+    /// A kit whose only change is a script says so, and a publish of components
+    /// and scripts names both.
+    /// flip: `not_a_component` without its scripts part → fails at "the scripts".
+    #[test]
+    fn a_scripts_change_is_named_as_scripts() {
+        let scripts = mastik_core::kit::Changes {
+            scripts: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::not_a_component(&scripts),
+            "The kit's scripts",
+            "the scripts"
+        );
+        let both = mastik_core::kit::Changes {
+            added: vec![mastik_core::NodeId::from_wire("0000000000000001:1").unwrap()],
+            tokens: true,
+            scripts: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::published_said("Kit", 2, Some(&both), &[]),
+            "Published Kit v2 · 1 component and its variables and styles and its scripts"
+        );
     }
 }
