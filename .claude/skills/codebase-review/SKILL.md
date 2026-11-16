@@ -91,11 +91,11 @@ Before Pass 0, verify in order (these are the project's own gates, in CLAUDE.md'
    optional**: without it rustdoc checks no link on any private item, which here is most of them.
 6. `cargo check --release -p mastik-app` → the one gate not compiled with `debug_assertions`.
 7. **The two suites the workspace run does not reach**, on this machine, once, and recorded:
-   - `cargo test -p mastik-render --release -- --ignored` — ~21 tests behind
+   - `cargo test -p mastik-render --release -- --ignored` — the tests behind
      `#[ignore = "requires a GPU adapter"]` plus the zoom sweep. Slices S10/S11 lean on these; if
      they are not run, say in the ledger that the on-device path is **unverified** rather than
      quietly proceeding.
-   - `cargo test -p mastik-app fonts -- --ignored` — three network tests (Fontsource/jsDelivr).
+   - `cargo test -p mastik-app fonts -- --ignored` — the network tests (Fontsource/jsDelivr).
      Slice S21 leans on them.
 
    All 33 `#[ignore]`s in the tree are legitimately gated (GPU, network, one 23-second boolean
