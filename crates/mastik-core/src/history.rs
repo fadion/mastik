@@ -276,9 +276,9 @@ impl History {
     }
 
     /// Join the top `n` steps into one, which undoes them all at once, the latest
-    /// first, and keeps the oldest's note. For edits committed one by one, each
-    /// reading the last, that the person asked for as one. Answers whether there
-    /// were `n` steps to join.
+    /// first, and keeps the oldest's note with every step's subjects. For edits
+    /// committed one by one, each reading the last, that the person asked for as
+    /// one. Answers whether there were `n` steps to join.
     pub fn join_last(&mut self, n: usize) -> bool {
         if n == 0 || n > self.undo.len() {
             return false;
@@ -294,6 +294,11 @@ impl History {
             let mut tx = later.tx.0;
             tx.append(&mut first.tx.0);
             first.tx.0 = tx;
+            for id in later.note.subjects {
+                if !first.note.subjects.contains(&id) {
+                    first.note.subjects.push(id);
+                }
+            }
         }
         self.undo.push(first);
         self.run = None;

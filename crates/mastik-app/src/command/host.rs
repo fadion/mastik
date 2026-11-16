@@ -127,6 +127,8 @@ pub(crate) fn counts(inverse: &Transaction) -> Counts {
     let mut made = rustc_hash::FxHashSet::default();
     let mut deleted = rustc_hash::FxHashSet::default();
     let mut scripts = rustc_hash::FxHashSet::default();
+    let mut scripts_added = rustc_hash::FxHashSet::default();
+    let mut scripts_removed = rustc_hash::FxHashSet::default();
     for op in &inverse.0 {
         match op {
             Op::DeleteNode { id } => {
@@ -140,16 +142,27 @@ pub(crate) fn counts(inverse: &Transaction) -> Counts {
                     deleted.insert(root.id());
                 }
             }
+            // The inverse of a removal adds the script back, and of an add removes it.
             Op::AddScript { script, .. } => {
-                scripts.insert(script.id);
+                scripts_removed.insert(script.id);
             }
-            Op::RemoveScript { id }
-            | Op::SetScriptName { id, .. }
-            | Op::SetScriptSource { id, .. } => {
+            Op::RemoveScript { id } => {
+                scripts_added.insert(*id);
+            }
+            Op::SetScriptName { id, .. } | Op::SetScriptSource { id, .. } => {
                 scripts.insert(*id);
             }
             _ => {}
         }
+    }
+    // A script the run added and removed again left the document as it was.
+    let gone: Vec<_> = scripts_added
+        .intersection(&scripts_removed)
+        .copied()
+        .collect();
+    scripts.extend(scripts_added.union(&scripts_removed).copied());
+    for id in &gone {
+        scripts.remove(id);
     }
     let changed = inverse
         .subjects()
@@ -359,5 +372,139 @@ mod tests {
             app.session.resolved.world_bounds(inst).map(|b| b.x0),
             Some(10.0)
         );
+    }
+
+    /// A headless app holding `n` rects on its first page.
+    fn with_rects(n: usize) -> (MastikApp, Vec<NodeId>) {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let page = app.session.doc.first_page();
+        let ids: Vec<NodeId> = (0..n).map(|_| app.session.ids.mint()).collect();
+        let ops = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| Operation::CreateNode {
+                id: *id,
+                parent: page,
+                index: i,
+                kind: NodeKind::Rect {
+                    size: Size::new(10.0, 10.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            })
+            .collect();
+        assert!(app.session.commit(Transaction(ops)));
+        (app, ids)
+    }
+
+    /// Run `script` over `selection` as one step; what it counted.
+    fn counted(app: &mut MastikApp, selection: &[NodeId], script: &str) -> Counts {
+        let labels = Default::default();
+        let env = mastik_vm::Env {
+            selection,
+            labels: &labels,
+            params: Default::default(),
+        };
+        run_as_step(&mut app.session, "Edit", "", |h| {
+            mastik_vm::run_script(h, &env, script)
+        })
+        .map(|(_, counts, _)| counts)
+        .expect("the script runs")
+    }
+
+    /// A run that adds a script and removes it again changed no script.
+    /// flip: `counts` putting added and removed scripts in one set → fails at
+    /// "no script changed".
+    #[test]
+    fn a_script_added_and_removed_is_not_counted() {
+        let (mut app, _) = with_rects(0);
+        let added = counted(&mut app, &[], "add_script{name = \"Tmp\", source = \"\"}");
+        assert_eq!(added.scripts, 1, "the fixture adds one");
+        let both = counted(
+            &mut app,
+            &[],
+            "local s = add_script{name = \"Tmp\", source = \"\"}\nremove_script{script = s}",
+        );
+        assert_eq!(both.scripts, 0, "no script changed");
+    }
+
+    /// A run writing several layers, one step per write, names them all.
+    /// flip: `History::join_last` keeping the oldest note's subjects alone →
+    /// fails at "every layer".
+    #[test]
+    fn a_joined_run_names_every_layer_it_wrote() {
+        let (mut app, ids) = with_rects(3);
+        let counts = counted(&mut app, &ids, "for _, l in sel do l.name = \"Card\" end");
+        assert_eq!(counts.changed, 3, "the fixture writes three");
+        let top = app.session.history.done().next_back().unwrap();
+        let mut subjects = top.note.subjects.clone();
+        subjects.sort();
+        let mut want = ids.clone();
+        want.sort();
+        assert_eq!(subjects, want, "every layer");
+    }
+
+    /// A run's write to a styled layer leaves the style browser's *Edit* alone:
+    /// the style keeps its value, and *Edit* stays open.
+    /// flip: `SessionHost::commit` without taking `style_edit` aside → fails at
+    /// "the style keeps its value".
+    #[test]
+    fn a_script_leaves_the_open_style_edit_alone() {
+        use mastik_core::peniko::Color;
+        use mastik_core::style::{Style, StyleValue};
+        use mastik_core::{Fill, keyed_by_position};
+        let (mut app, ids) = with_rects(1);
+        let style: mastik_core::style::StyleId = app.session.ids.mint_style();
+        let red = keyed_by_position([Fill {
+            brush: Color::from_rgba8(255, 0, 0, 255).into(),
+            visible: true,
+        }]);
+        assert!(app.session.commit(Transaction(vec![
+            Operation::SetFills {
+                id: ids[0],
+                fills: red.clone(),
+            },
+            Operation::AddStyle {
+                style: Style {
+                    id: style,
+                    name: "Surface".into(),
+                    value: StyleValue::Fills(red.clone()),
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+            Operation::SetFillStyle {
+                id: ids[0],
+                style: Some(style),
+            },
+        ])));
+        app.session.style_edit = Some(style);
+        counted(&mut app, &ids, "sel.fill = \"#00ff00\"");
+        assert_eq!(
+            app.session.doc.styles().get(style).map(|s| &s.value),
+            Some(&StyleValue::Fills(red)),
+            "the style keeps its value"
+        );
+        assert_eq!(app.session.style_edit, Some(style), "Edit stays open");
+    }
+
+    /// A run that lands no step keeps the person's redo.
+    /// flip: `run_as_step` without restoring the redo stack when it made no
+    /// step → fails at "redo kept".
+    #[test]
+    fn a_run_that_lands_nothing_keeps_redo() {
+        let (mut app, ids) = with_rects(1);
+        assert!(app.session.undo());
+        assert_eq!(
+            app.session.history.redo_depth(),
+            1,
+            "the fixture has a redo"
+        );
+        counted(&mut app, &ids, "print(#sel)");
+        assert_eq!(app.session.history.redo_depth(), 1, "redo kept");
     }
 }
