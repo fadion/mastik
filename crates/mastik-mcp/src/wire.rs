@@ -140,12 +140,17 @@ pub enum Line {
     End,
     /// A line, its newline included when it had one, in the buffer.
     Read,
-    /// A line past [`MAX_LINE`], read through its newline and dropped.
+    /// A line past [`MAX_LINE`], read through its newline and dropped but for
+    /// its first [`LINE_HEAD`] bytes, which are in the buffer.
     TooLong,
 }
 
+/// How much of a line past the limit is kept: enough to hold a request's `id`,
+/// which comes before its `params`.
+pub const LINE_HEAD: usize = 4096;
+
 /// Read one line into `bytes` (cleared first), at most `max` bytes of it: a
-/// longer one is read on to its newline without being kept.
+/// longer one is read on to its newline, keeping only its head.
 pub fn read_line(
     read: &mut impl BufRead,
     bytes: &mut Vec<u8>,
@@ -170,7 +175,9 @@ pub fn read_line(
             bytes.extend_from_slice(&chunk[..take]);
         } else {
             over = true;
-            bytes.clear();
+            bytes.truncate(LINE_HEAD);
+            let room = LINE_HEAD - bytes.len();
+            bytes.extend_from_slice(&chunk[..take.min(room)]);
         }
         read.consume(take);
         if done {
@@ -195,9 +202,31 @@ fn uri_path(name: &str) -> String {
     out
 }
 
-/// The answer to a line past [`MAX_LINE`].
-pub fn too_long() -> Value {
-    failure(Value::Null, -32600, "line too long")
+/// The answer to a line past [`MAX_LINE`] whose first bytes are `head`: under
+/// the request's own id when the head holds it, so the client is not left
+/// waiting on its call.
+pub fn too_long(head: &[u8]) -> Value {
+    let message = format!("line too long: a request is at most {} MB", MAX_LINE >> 20);
+    failure(head_id(head), -32600, &message)
+}
+
+/// The `id` a request's head names before its `params`, else null.
+fn head_id(head: &[u8]) -> Value {
+    let text = String::from_utf8_lossy(head);
+    let before = text.find("\"params\"").map_or(&text[..], |at| &text[..at]);
+    let Some(at) = before.find("\"id\"") else {
+        return Value::Null;
+    };
+    let Some(rest) = before[at + 4..].trim_start().strip_prefix(':') else {
+        return Value::Null;
+    };
+    match serde_json::Deserializer::from_str(rest.trim_start())
+        .into_iter::<Value>()
+        .next()
+    {
+        Some(Ok(id @ (Value::Number(_) | Value::String(_)))) => id,
+        _ => Value::Null,
+    }
 }
 
 /// Answer requests read from `read` on `write` until the reader ends.
@@ -211,7 +240,7 @@ pub fn serve(
     loop {
         let reply = match read_line(&mut read, &mut bytes, MAX_LINE)? {
             Line::End => return Ok(()),
-            Line::TooLong => Some(too_long()),
+            Line::TooLong => Some(too_long(&bytes)),
             // A line that is not UTF-8 is a parse error, not the connection's end.
             Line::Read => match std::str::from_utf8(&bytes) {
                 Ok(line) if line.trim().is_empty() => continue,
@@ -530,14 +559,15 @@ mod tests {
         assert_eq!(handler.0, 0, "dropped unrun");
     }
 
-    /// A line past the cap is read through its newline, never kept, and
-    /// answered as too long; the next line reads whole, across the reader's
-    /// chunks.
+    /// A line past the cap is read through its newline, only its head kept,
+    /// and answered as too long; the next line reads whole, across the
+    /// reader's chunks.
     ///
     /// flip: `read_line` keeping a line past `max` → fails at "too long".
     #[test]
     fn a_line_past_the_cap_is_dropped_and_the_next_is_read() {
-        let input = format!("{}\nshort\nend", "x".repeat(50));
+        let long = "x".repeat(LINE_HEAD + 50);
+        let input = format!("{long}\nshort\nend");
         let mut read = std::io::BufReader::with_capacity(8, input.as_bytes());
         let mut bytes = Vec::new();
         assert_eq!(
@@ -545,12 +575,26 @@ mod tests {
             Line::TooLong,
             "too long"
         );
-        assert!(bytes.is_empty());
+        assert_eq!(bytes, long.as_bytes()[..LINE_HEAD], "its head");
         assert_eq!(read_line(&mut read, &mut bytes, 20).unwrap(), Line::Read);
         assert_eq!(bytes, b"short\n");
         assert_eq!(read_line(&mut read, &mut bytes, 20).unwrap(), Line::Read);
         assert_eq!(bytes, b"end", "a last line with no newline");
         assert_eq!(read_line(&mut read, &mut bytes, 20).unwrap(), Line::End);
+    }
+
+    /// A request too long to read is answered under its own id, so its call
+    /// fails rather than waits; an `id` inside `params` is not taken for it.
+    ///
+    /// flip: `too_long` answering a null id → fails at "its own id".
+    #[test]
+    fn a_too_long_request_is_answered_under_its_id() {
+        let head = br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"add_image","arguments":{"data":"AAAA"#;
+        assert_eq!(too_long(head)["id"], json!(7), "its own id");
+        let named = br#"{"id": "a-1", "params": {"#;
+        assert_eq!(too_long(named)["id"], json!("a-1"));
+        let inner = br#"{"jsonrpc":"2.0","method":"tools/call","params":{"id":9,"#;
+        assert_eq!(too_long(inner)["id"], Value::Null, "an id in params");
     }
 
     /// An image answer travels as base64 with its media type.

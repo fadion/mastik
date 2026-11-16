@@ -207,7 +207,7 @@ fn carry(
         match read_line(&mut input, &mut bytes, MAX_LINE).map_err(|e| e.to_string())? {
             Line::End => return Ok(()),
             Line::TooLong => {
-                writeln!(stdout, "{}", too_long()).map_err(|e| e.to_string())?;
+                writeln!(stdout, "{}", too_long(&bytes)).map_err(|e| e.to_string())?;
                 stdout.flush().map_err(|e| e.to_string())?;
                 continue;
             }
