@@ -427,11 +427,20 @@ pub(crate) fn backspace_pair(text: &mut String, sel: Sel) -> Option<Sel> {
     Some(Sel::caret(at - prev.len_utf8()))
 }
 
+/// A line [`dedent_closer`] stepped back: where it starts, the indent it had and
+/// the one it was given, so [`step_in_again`] can put it back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Stepped {
+    start: usize,
+    had: String,
+    given: String,
+}
+
 /// After a letter or a close is typed: when the caret's line now reads only
 /// `end`, `else`, `elseif`, `until`, `}`, `)` or `]`, step it back to the
 /// depth its block opened at — the line above's, or one shallower when that
 /// line is a body line. Only ever shallower, so it is safe to run again.
-pub(crate) fn dedent_closer(text: &mut String, caret: usize) -> Option<Sel> {
+pub(crate) fn dedent_closer(text: &mut String, caret: usize) -> Option<(Sel, Stepped)> {
     let start = line_start(text, caret);
     if line_end(text, caret) != caret {
         return None;
@@ -449,12 +458,36 @@ pub(crate) fn dedent_closer(text: &mut String, caret: usize) -> Option<Sel> {
         false => shallower(indent_of(above)),
     }
     .to_owned();
-    let have = indent_of(line).len();
-    if want.len() >= have {
+    let had = indent_of(line).to_owned();
+    if want.len() >= had.len() {
         return None;
     }
-    text.replace_range(start..start + have, &want);
-    Some(Sel::caret(caret - have + want.len()))
+    text.replace_range(start..start + had.len(), &want);
+    let sel = Sel::caret(caret - had.len() + want.len());
+    let given = want;
+    Some((sel, Stepped { start, had, given }))
+}
+
+/// The next letter typed on a line [`dedent_closer`] stepped back: when the
+/// closing word has grown into a longer name (`end` into `endpoint`), the line
+/// gets back the indent it had.
+pub(crate) fn step_in_again(text: &mut String, caret: usize, stepped: &Stepped) -> Option<Sel> {
+    let start = line_start(text, caret);
+    if start != stepped.start || line_end(text, caret) != caret {
+        return None;
+    }
+    let line = &text[start..caret];
+    let word = line.strip_prefix(stepped.given.as_str())?;
+    let grown = ["end", "else", "until"]
+        .iter()
+        .any(|w| word.len() > w.len() && word.starts_with(w))
+        && word.chars().all(word_char)
+        && word != "elseif";
+    if !grown || indent_of(line) != stepped.given {
+        return None;
+    }
+    text.replace_range(start..start + stepped.given.len(), &stepped.had);
+    Some(Sel::caret(caret - stepped.given.len() + stepped.had.len()))
 }
 
 #[cfg(test)]
@@ -562,7 +595,7 @@ mod tests {
     fn a_closing_word_steps_back_to_its_block() {
         let dedent = |marked: &str| {
             let (mut text, sel) = at(marked);
-            let sel = dedent_closer(&mut text, sel.caret).unwrap_or(sel);
+            let sel = dedent_closer(&mut text, sel.caret).map_or(sel, |(s, _)| s);
             mark(&text, sel)
         };
         assert_eq!(
@@ -596,6 +629,44 @@ mod tests {
             "if a then\n  x = 1\n  end| -- c",
             "caret at the line's end only"
         );
+    }
+
+    /// `text` with `word` typed at its end one key at a time, as the window runs
+    /// the closer's step back and its undoing after each key.
+    fn type_word(text: &str, word: &str) -> String {
+        let mut text = text.to_owned();
+        let mut stepped: Option<Stepped> = None;
+        for c in word.chars() {
+            text.push(c);
+            let caret = text.len();
+            let again = stepped
+                .take()
+                .and_then(|st| step_in_again(&mut text, caret, &st));
+            if again.is_none()
+                && let Some((_, st)) = dedent_closer(&mut text, caret)
+            {
+                stepped = Some(st);
+            }
+        }
+        text
+    }
+
+    /// A name that begins with a closing word keeps its line's indent when typed
+    /// key by key; the closing word alone still steps back.
+    /// flip: `step_in_again` answering `None` always → fails at "endpoint".
+    #[test]
+    fn a_longer_name_typed_key_by_key_keeps_its_indent() {
+        let body = "if a then\n  x = 1\n  ";
+        assert_eq!(
+            type_word(body, "endpoint = 2"),
+            "if a then\n  x = 1\n  endpoint = 2",
+            "endpoint"
+        );
+        assert_eq!(type_word(body, "elsewhere"), format!("{body}elsewhere"));
+        assert_eq!(type_word(body, "untilDone"), format!("{body}untilDone"));
+        assert_eq!(type_word(body, "end"), "if a then\n  x = 1\nend");
+        assert_eq!(type_word(body, "elseif"), "if a then\n  x = 1\nelseif");
+        assert_eq!(type_word(body, "end "), "if a then\n  x = 1\nend ");
     }
 
     /// `Tab` and `Shift+Tab` indent and outdent every line a selection touches,

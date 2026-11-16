@@ -174,6 +174,8 @@ pub(crate) struct Scripts {
     /// The last press on the code: when (`ctx` time) and where, to tell a
     /// double-click's second press as it lands.
     last_press: Option<(f64, egui::Pos2)>,
+    /// The line a closing word just stepped back, until the next letter typed.
+    stepped: Option<code_keys::Stepped>,
 }
 
 /// The completion list open over the code this frame: its rows (the word they
@@ -1121,14 +1123,25 @@ impl MastikApp {
                     let marks = super::script_help::Help::marks(&problems, caret, bad);
                     let out = ui::code_editor(ui, code_id, &mut s.buffer, &inks, &marks, editable);
                     edited |= out.response.changed();
-                    // A block's closing word steps back as its last letter is typed.
+                    // A block's closing word steps back as its last letter is
+                    // typed, and steps in again when it grows into a longer name.
                     if typed
                         && out.response.changed()
                         && let Some(caret) = caret_byte(ui.ctx(), code_id, &s.buffer)
-                        && let Some(sel) = code_keys::dedent_closer(&mut s.buffer, caret)
                     {
-                        put_selection(ui.ctx(), code_id, &s.buffer, sel);
-                        ui.ctx().request_repaint();
+                        let again = s
+                            .stepped
+                            .take()
+                            .and_then(|st| code_keys::step_in_again(&mut s.buffer, caret, &st));
+                        let sel = again.or_else(|| {
+                            let (sel, st) = code_keys::dedent_closer(&mut s.buffer, caret)?;
+                            s.stepped = Some(st);
+                            Some(sel)
+                        });
+                        if let Some(sel) = sel {
+                            put_selection(ui.ctx(), code_id, &s.buffer, sel);
+                            ui.ctx().request_repaint();
+                        }
                     }
                     if std::mem::take(&mut s.focus_code) {
                         out.response.request_focus();
