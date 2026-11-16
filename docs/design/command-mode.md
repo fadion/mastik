@@ -206,10 +206,24 @@ language covers.
 - It holds lines typed in the bar (with their result), script runs (`run "Card grid"`), and each
   step made anywhere else, watched once a frame and rendered from the step's stored inverse
   (`history::StepView::inverse`) against the document after it: a pure translation as
-  `.x += 5; .y -= 2`, opacity, name, visible and locked. Anything else reads *— no command yet —*
-  beside the step's name. A run that folds more into its step renders its line again.
+  `.x += 5; .y -= 2`, opacity, name, visible and locked. The person's step with anything else
+  reads *— no command yet —* beside its name, a hole in what the language covers; an agent's
+  (`Origin::Mcp`) is left out, since it teaches no one the language. A run that folds more into
+  its step renders its line again.
+- **An `/ai` request is one entry** (`Source::Ai`), so the assistant's steps read as the request
+  that made them. Sending it (`Log::asked`) logs `/ai ‹request›`, *Asked*, and holds the entry
+  open: while open, any agent's step (`Origin::Mcp`) folds into it, taking its serial and the
+  step's name as its result. A step names the agent, never the chat it came from (an applied
+  proposal's names its client), so any agent's counts. The person's own step closes it (and is its own row),
+  as does any other entry logged or a question the panel sends of its own (`Log::close_ai`). The
+  reply's end (`Log::ai_replied`) sets the result, while no step has folded in, to *Script
+  proposed*, *Edit proposed* / *Edits proposed* or *Answered*. Running the reply's script
+  (`Log::ai_ran`) gives the open entry the script as its Luau, the run's result and its step; with
+  no open entry for that line it logs a new `/ai` entry. The row wears `icon::SPARKLE` and reads
+  in the typed line's ink.
 - A right-click on picked rows: *Copy as script* (*Copy N lines as script*) and *Open in editor*
-  (a new unsaved script). A hole is written as a comment naming its step.
+  (a new unsaved script). A hole is written as a comment naming its step, an `/ai` entry that ran
+  no script as the comment `-- /ai ‹request›`.
 
 ## 10. Where scripts live
 
@@ -422,7 +436,8 @@ sugar), so a loop over many layers is one call and one undo step marked as the a
 `sel`, and `layers` binds names to layers as leap labels are bound. It answers what the run printed
 (the last 100 lines), the layers it made and what it changed, leaves the person's selection alone,
 and with `base_rev` is taken back whole when a layer it wrote changed since. `/ai` turns the
-other way: the assistant writes a script and the person runs it from the bar (*The command bar*).
+other way: the person asks the assistant from the bar, and applies what it proposes or runs the
+script it wrote from there (*The command bar*).
 
 ## 12. Non-goals
 
@@ -450,7 +465,7 @@ text edit took the keys. A text edit started under the bar (a double-click on te
 | `↓` / `↑` | the next / previous sibling in reading order on the canvas (`reading_order`: rows top to bottom, a layer joining a row when its centre falls within the row's first layer's height, each row left to right), not the Layers panel's z-order, which often runs against what the eye sees; `Shift` adds |
 | `*` (`Shift+8`) | the same layer in each repeat (`select_matching`) |
 | `Shift+1` / `Shift+2` | zoom to fit / to the selection |
-| `.` | run the last line in the log again on the selection (`Log::last_line`): typed, or written for an edit made elsewhere, such as a drag's `.x += 24`; a script's run is no line |
+| `.` | run the last line in the log again on the selection (`Log::last_line`): typed, or written for an edit made elsewhere, such as a drag's `.x += 24`; a script's run is no line, and neither is an `/ai` request, which would ask again |
 | `` ` `` `:` `Escape` | back to Type |
 
 Every other editor key rests; the history chords and the cheatsheet's stay, and opened from Pick
@@ -555,38 +570,58 @@ rules*): a row's name is never cut for its note.
 - **Keys**, in Type: `` ` `` picks, outside a string (*Pick*). While the list shows, `↑`/`↓` move
   through it, `Tab` takes the lit row and `Enter` takes it too unless the word already reads as the
   row, when `Enter` runs the line. Otherwise `↑`/`↓`
-  recall typed lines, `↓` past the newest giving back what was being typed; `Tab` takes an error's
+  recall typed lines and `/ai` requests, `↓` past the newest giving back what was being typed (a
+  click on a log row also puts its line in the field, a script run's excepted); `Tab` takes an error's
   fix; `Enter` runs (a read copies its value and makes no step; a write is one step named after its
   verb, else *Edit*, with `TERMINAL_WINDOW`). `Escape` closes the log's menu if it is open, else the
   list, else clears the text, then closes.
   A failed line stays in the field with its error.
-- **`/ai`**: a line reading `/ai` and a request (`ai_request`; `/aim` is not one) asks the
-  assistant for a script. It is not Luau: no completion, no live read, and the footer reads *Enter
-  asks ‹speaker› for a script*.
-  - `Enter` sends it into the panel's chat (`assistant_ask_script`, `assistant.md` §6), so the
-    harness, session, sign-in and access level are the panel's. The selection goes as chips, and
-    each leap label the request names is told to the model as the layer id it stands for, which the
-    script reads by that label. When the assistant cannot send, the error line says why
-    (`Why::sentence`); a bare `/ai` says *Type a request after /ai*.
-  - While the reply runs, `Enter` waits and the footer reads *Asking ‹speaker› · the reply shows in
-    the assistant panel*. When the turn ends, the reply's last `luau` or `lua` block, else its one
-    code block when that is unlabelled, is the proposed script (`assistant_script`); with neither,
-    the error line says *The reply held no script: it is in the assistant panel*. The reply is
-    found by its place in the thread, so it counts only while the message before it is still this
-    `/ai` request: after a new chat, or with another document's thread in front, the error line
-    says the reply is gone.
-  - The list shows the script under a *Script* label, a mono row a line, at most eight rows, the
-    last *N more lines · Tab opens them all* when it runs longer. The footer reads *Enter runs it as
-    one step · Tab opens it in the editor*.
-  - `Enter` runs it as a script runs (`run_ai_script`: `run_as_step`, no line sugar, `RUN_BUDGET`)
+- **`/ai`**: a line reading `/ai` and a request (`ai_request`; `/aim` is not one) is a request to
+  the assistant: an edit, a question, or a script. It is not Luau: no completion, no live read, and
+  the footer reads *Enter asks ‹speaker›*. Typing the line starts the assistant program's lookup
+  (`assistant_blocked`), so `Enter` seldom waits for it.
+  - `Enter` sends it into the panel's chat (`assistant_ask_bar`, `assistant.md` §6), so the
+    harness, session, sign-in and access level are the panel's: at *Propose* an edit comes back as
+    proposals. The model is told to act with its tools as in the panel, or, when asked for a
+    script, to answer with one `luau` block and change nothing; either way to close on one plain
+    sentence under 80 characters of what it did or what the script does (`prompt::bar_request`).
+    The selection goes as chips, and each leap label the request names is told to the model as the
+    layer id it stands for, which a script reads by that label. A bare `/ai` says *Type a request
+    after /ai*.
+  - While the program is still being looked for (`Asked::Looking`), the bar holds the request
+    (`Ai::Waiting`, footer *Looking for ‹program›…*, right *Esc clears*, led by the turning
+    loading spinner in the dim ink) and asks again each frame,
+    sending once it is found; the lookup starts only on the first ask, so refusing here would leave
+    the bar stuck. Any other refusal shows on the error line (`Why::sentence`).
+  - Once sent, the request is logged (§9). While the reply runs (`Ai::Asking`), `Enter` waits and
+    the footer, led by the same spinner, reads *Asking ‹speaker› · the reply shows in the assistant
+    panel*. The reply is found by its place in the thread, so it counts only while
+    the message before it is still this `/ai` request: after a new chat, or with another
+    document's thread in front, the error line says the reply is gone.
+  - When the turn ends, `bar_reply` sorts it (`BarReply`), each carrying the reply's last sentence
+    (for a script, the last one before its block), a trailing colon trimmed:
+
+    | Reply | When | List row (`reply_row`) | Footer · right | `Enter` |
+    | --- | --- | --- | --- | --- |
+    | *Proposed* | a tool row carries a proposal id; checked first | the sentence, else *N proposed edits* | *Enter applies it/them · Tab opens the assistant panel* · *Esc clears* | applies each proposal as its own step through `assistant_apply`, as from its card (a stale one says so on the status line), then clears the line |
+    | *Script* | the last `luau`/`lua` block, else a lone unlabelled one, from a reply that wrote nothing (no done call outside *Look*'s tools; `call` judged by the tool it ran) | one line shows its code in mono; a longer one its sentence, else *N lines* | *Enter runs it as one step · Tab opens it in the editor* · *N lines* | runs it (below) |
+    | *Reply* | anything else: edits it made itself, or an answer | the sentence, else *Done: the reply is in the assistant panel* | *Tab opens the assistant panel* · *Enter clears* | clears the line |
+
+    A script is only taken from a reply that changed nothing, since one that edited has done the
+    work and its code block shows how. The list shows the one row under its section label
+    (`reply_rows`), wearing `icon::SPARKLE` in the log's glyph ink; the editor and the panel are
+    where the whole reply reads. While proposals wait to be applied, the footer leads with
+    `icon::SPARKLE` in `color::warn()`; a script or a reply has no mark (`footer_marked`, `Mark`).
+  - A script runs as a script runs (`run_ai_script`: `run_as_step`, no line sugar, `RUN_BUDGET`)
     on the selection, the bar's labels bound: one step named by the request (cut at 40
     characters), wearing `icon::SPARKLE` and marked `Origin::Mcp { client: ‹speaker›, tool: "/ai" }`,
-    as a proposal's Apply is, since the person runs what the agent wrote. The log records it as the
-    line `/ai ‹request›` with the script as its Luau. A raise takes the run back (§7) and shows on
+    as a proposal's Apply is, since the person runs what the agent wrote. The log gives it to the
+    request's entry (`Log::ai_ran`, §9). A raise takes the run back (§7) and shows on
     the error line without a span, since the script's place is not the field's; the script stays
     proposed.
-  - `Tab` closes the bar and opens the script in the editor as a new unsaved script. Editing the
-    request drops the request and its script; its turn goes on in the panel.
+  - `Tab` closes the bar and opens a script in the editor as a new unsaved script, or any other
+    reply in the assistant panel. Editing the request drops the request and its reply; its turn
+    goes on in the panel.
 
 ## Traps
 

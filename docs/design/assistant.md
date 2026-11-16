@@ -396,9 +396,11 @@ layers being asked about, and is one more kind of surface.
   Enter sends, Shift+Enter breaks the line, and the send button becomes *Stop* (`icon::STOP`)
   while a turn runs. `Ctrl+↑`/`Ctrl+↓` step through earlier
   questions.
-- **The command bar's `/ai` asks in this thread** (`assistant_ask_script`, `command-mode.md` §11):
-  the thread shows `/ai <request>` as the person's turn with the selection as its chips, while the
-  model is sent `prompt::bar_request`, which asks for one ` ```luau ` block and no edit of its own.
+- **The command bar's `/ai` asks in this thread** (`assistant_ask_bar`, `command-mode.md` *The
+  command bar*): the thread shows `/ai <request>` as the person's turn with the selection as its
+  chips, while the model is sent `prompt::bar_request`: do what is asked with the tools as here,
+  or, when asked for a script, answer with one ` ```luau ` block and change nothing; either way end
+  on one plain sentence under 80 characters, which is all the bar shows.
   *Regenerate* and *Ask again* send the `/ai …` text again as an ordinary question.
 - **When it cannot send**, the composer is replaced by the reason, and off wins over every other:
   the assistant is off (*Open settings*); private mode; the document is unsaved (*Save the document

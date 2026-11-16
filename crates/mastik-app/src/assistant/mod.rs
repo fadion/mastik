@@ -399,6 +399,107 @@ fn proposal_in(text: &str) -> Option<u64> {
         .as_u64()
 }
 
+/// What the command bar's `/ai` request came to.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Asked {
+    /// Sent; the reply is the thread's message at this place.
+    Sent(usize),
+    /// The program is still being looked for: nothing was sent yet.
+    Looking,
+    /// Why nothing will be sent.
+    Refused(String),
+}
+
+/// What an ended `/ai` reply came to. `said` is its sentence of what it did or
+/// what the script does, which is all the bar shows of it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum BarReply {
+    /// A script the person runs, from a reply that changed nothing.
+    Script {
+        script: String,
+        said: Option<String>,
+    },
+    /// The edits it proposed, by proposal id, which the person applies.
+    Proposals { ids: Vec<u64>, said: Option<String> },
+    /// Edits it made itself, or an answer.
+    Said(Option<String>),
+}
+
+/// An ended `/ai` reply's [`BarReply`]. Proposals come first; a script counts
+/// only from a reply that wrote nothing, since one that edited has done the
+/// work and its code block shows how.
+fn bar_reply(parts: &[Part]) -> BarReply {
+    let tools = || {
+        parts.iter().filter_map(|p| match p {
+            Part::Tool(t) if t.state == ToolState::Done => Some(t),
+            _ => None,
+        })
+    };
+    let proposals: Vec<u64> = tools().filter_map(|t| t.proposal).collect();
+    // `call` is a door to the level's other tools; its row names the one it ran.
+    let wrote = tools().any(|t| {
+        let tool = match t.name.as_str() {
+            "call" => t.arg.as_str(),
+            name => name,
+        };
+        !crate::mcp::access::allowed(Level::Look, tool)
+    });
+    let prose: Vec<&str> = parts
+        .iter()
+        .filter_map(|p| match p {
+            Part::Text(t) => Some(t.as_str()),
+            Part::Tool(_) => None,
+        })
+        .collect();
+    let blocks = markdown::parse(&prose.join("\n\n"));
+    let sentence = |b: &markdown::Block| match b {
+        markdown::Block::Para(spans) => {
+            let text: String = spans
+                .iter()
+                .map(|s| match s {
+                    markdown::Span::Text(t)
+                    | markdown::Span::Strong(t)
+                    | markdown::Span::Em(t)
+                    | markdown::Span::Code(t) => t.as_str(),
+                })
+                .collect();
+            let text = text.trim().trim_end_matches(':').trim_end().to_owned();
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    };
+    let last_said = |upto: usize| blocks[..upto].iter().rev().find_map(sentence);
+    if !proposals.is_empty() {
+        return BarReply::Proposals {
+            ids: proposals,
+            said: last_said(blocks.len()),
+        };
+    }
+    let code: Vec<(usize, &str, &str)> = blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| match b {
+            markdown::Block::Code { lang, text } => Some((i, lang.as_str(), text.as_str())),
+            _ => None,
+        })
+        .collect();
+    let luau = code
+        .iter()
+        .rev()
+        .find(|(_, lang, _)| markdown::is_luau(lang));
+    let bare = match code.as_slice() {
+        [c @ (_, "", _)] => Some(c),
+        _ => None,
+    };
+    match luau.or(bare) {
+        Some((at, _, text)) if !wrote => BarReply::Script {
+            script: text.trim_end().to_owned(),
+            said: last_said(*at),
+        },
+        _ => BarReply::Said(last_said(blocks.len())),
+    }
+}
+
 impl MastikApp {
     /// The level the chat in front runs at.
     pub(crate) fn assistant_level(&self) -> Level {
@@ -427,6 +528,26 @@ impl MastikApp {
             Some(Ok(f)) if f.seal == ai::Seal::Unknown => Some(Why::Unsealed(h)),
             Some(Ok(_)) => None,
         }
+    }
+
+    /// Hold the panel's lookup for `h` as running (`None`) or as ended with
+    /// `found`, so a test never runs a real program.
+    #[cfg(test)]
+    pub(crate) fn hold_lookup(
+        &mut self,
+        h: ai::Harness,
+        found: Option<Result<ai::Found, ai::NotFound>>,
+    ) {
+        let over = self.prefs.assistant.program_path();
+        self.assistant.lookup = Some(match found {
+            Some(f) => Lookup::Done(h, over, f),
+            None => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                // A dropped sender reads as a probe that died, which looks again.
+                std::mem::forget(tx);
+                Lookup::Pending(h, over, rx)
+            }
+        });
     }
 
     /// The program for `h` as Settings asks for it, looked up off the UI
@@ -856,20 +977,20 @@ impl MastikApp {
         self.assistant_send_as(text, chips, None)
     }
 
-    /// The command bar's `/ai`: send `request` with the selection attached,
-    /// asking for one Luau script; `named` are the labels the request names,
-    /// which the script reads too. Answers the reply's place in the thread,
-    /// for [`Self::assistant_script`], or why nothing was sent.
-    pub(crate) fn assistant_ask_script(
-        &mut self,
-        request: &str,
-        named: &[(String, NodeId)],
-    ) -> Result<usize, String> {
+    /// The command bar's `/ai`: send `request` with the selection attached, for
+    /// an edit or, when it asks for one, a Luau script; `named` are the labels
+    /// the request names, which a script reads too. While the program is still
+    /// being looked for nothing is sent and the bar asks again.
+    pub(crate) fn assistant_ask_bar(&mut self, request: &str, named: &[(String, NodeId)]) -> Asked {
         if self.assistant.running.is_some() {
-            return Err("The assistant is answering: wait for it, or stop it in its panel".into());
+            return Asked::Refused(
+                "The assistant is answering: wait for it, or stop it in its panel".into(),
+            );
         }
-        if let Some(why) = self.assistant_blocked() {
-            return Err(why.sentence());
+        match self.assistant_blocked() {
+            None => {}
+            Some(Why::Looking(_)) => return Asked::Looking,
+            Some(why) => return Asked::Refused(why.sentence()),
         }
         let chips = self.selection_chips();
         let mut turn = prompt::bar_request(request);
@@ -882,30 +1003,29 @@ impl MastikApp {
         }
         self.assistant_send_as(format!("/ai {request}"), chips, Some(turn));
         match &self.assistant.running {
-            Some(r) => Ok(r.msg),
-            None => Err(self
-                .assistant
-                .msgs
-                .iter()
-                .rev()
-                .find_map(|m| match m {
-                    Msg::Note(Note::Failed { text, .. }) => Some(text.clone()),
-                    _ => None,
-                })
-                .unwrap_or_else(|| "The assistant could not start".into())),
+            Some(r) => Asked::Sent(r.msg),
+            None => Asked::Refused(
+                self.assistant
+                    .msgs
+                    .iter()
+                    .rev()
+                    .find_map(|m| match m {
+                        Msg::Note(Note::Failed { text, .. }) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "The assistant could not start".into()),
+            ),
         }
     }
 
-    /// The script the reply at `msg` to `/ai request` proposed, once its turn
-    /// has ended: the last Luau block in its prose, else its one unlabelled
-    /// block. `None` while the turn runs; `Some(Err)` when the reply holds
-    /// none, or the thread no longer holds that question there (a new chat, or
-    /// another document's thread in front).
-    pub(crate) fn assistant_script(
+    /// What the reply at `msg` to `/ai request` came to, once its turn has
+    /// ended (`None` while it runs). `Err` when the thread no longer holds that
+    /// question there: a new chat, or another document's thread in front.
+    pub(crate) fn assistant_bar_reply(
         &self,
         msg: usize,
         request: &str,
-    ) -> Option<Result<String, String>> {
+    ) -> Option<Result<BarReply, String>> {
         if self
             .assistant
             .running
@@ -923,32 +1043,7 @@ impl MastikApp {
         let (true, Some(Msg::Agent { parts, .. })) = (asked, self.assistant.msgs.get(msg)) else {
             return Some(Err("The reply is gone from the assistant's thread".into()));
         };
-        let prose: Vec<&str> = parts
-            .iter()
-            .filter_map(|p| match p {
-                Part::Text(t) => Some(t.as_str()),
-                Part::Tool(_) => None,
-            })
-            .collect();
-        let blocks = markdown::parse(&prose.join("\n\n"));
-        let code: Vec<(&str, &str)> = blocks
-            .iter()
-            .filter_map(|b| match b {
-                markdown::Block::Code { lang, text } => Some((lang.as_str(), text.as_str())),
-                _ => None,
-            })
-            .collect();
-        let luau = code.iter().rev().find(|(lang, _)| markdown::is_luau(lang));
-        let bare = match code.as_slice() {
-            [("", text)] => Some(text),
-            _ => None,
-        };
-        Some(
-            luau.map(|(_, text)| text)
-                .or(bare)
-                .map(|t| t.trim_end().to_owned())
-                .ok_or_else(|| "The reply held no script: it is in the assistant panel".into()),
-        )
+        Some(Ok(bar_reply(parts)))
     }
 
     /// [`Self::assistant_send`], the model given `turn` in place of `text` when
@@ -960,6 +1055,11 @@ impl MastikApp {
         }
         if self.assistant_blocked().is_some() {
             return false;
+        }
+        // A question of the panel's own: the bar's `/ai` request in the log
+        // takes no more of the assistant's steps.
+        if turn.is_none() {
+            self.session.command_log.close_ai();
         }
         let Some(h) = self.prefs.assistant.harness() else {
             return false;
@@ -1350,6 +1450,47 @@ mod tests {
     fn a_proposal_id_is_read_from_its_answer() {
         assert_eq!(proposal_in(r#"{"proposal": 7, "changes": []}"#), Some(7));
         assert_eq!(proposal_in("refused"), None);
+    }
+
+    /// An `/ai` reply that proposed edits is its proposals, a script beside
+    /// them notwithstanding; one that only read gives its script and the
+    /// sentence before the block; a plain answer gives its last sentence.
+    ///
+    /// flip: `bar_reply` checking for a script before proposals → fails at
+    /// "proposals first".
+    #[test]
+    fn a_bar_reply_is_proposals_then_script_then_sentence() {
+        let row = |name: &str, proposal: Option<u64>| {
+            Part::Tool(ToolRow {
+                id: name.into(),
+                name: name.into(),
+                arg: String::new(),
+                state: ToolState::Done,
+                result: String::new(),
+                proposal,
+            })
+        };
+        let script = "Turns blue fills green:\n\n```luau\nfor _, l in sel do\nend\n```";
+        assert_eq!(
+            bar_reply(&[row("propose_edit", Some(3)), Part::Text(script.into())]),
+            BarReply::Proposals {
+                ids: vec![3],
+                said: Some("Turns blue fills green".into())
+            },
+            "proposals first"
+        );
+        assert_eq!(
+            bar_reply(&[row("find_nodes", None), Part::Text(script.into())]),
+            BarReply::Script {
+                script: "for _, l in sel do\nend".into(),
+                said: Some("Turns blue fills green".into())
+            },
+            "a read leaves the script the person's to run"
+        );
+        assert_eq!(
+            bar_reply(&[Part::Text("No **blue** layers here.".into())]),
+            BarReply::Said(Some("No blue layers here.".into()))
+        );
     }
 
     /// A window with one rectangle, *Card*, selected.

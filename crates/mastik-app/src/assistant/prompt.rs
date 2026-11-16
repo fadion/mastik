@@ -17,18 +17,22 @@ pub(crate) const CHANGED_LISTED: usize = 40;
 /// How many of the person's earlier questions a preamble repeats.
 pub(crate) const EARLIER: usize = 3;
 
-/// The turn the command bar's `/ai` sends for `request`: one Luau script the
-/// person runs as one step, in the language's terms, and no edit of the agent's
-/// own.
+/// The turn the command bar's `/ai` sends for `request`: the edit done as in the
+/// panel, or, when the person asks for a script, one Luau script they run as one
+/// step and no edit of the agent's own. Either way one short sentence, which is
+/// all the bar shows.
 pub(crate) fn bar_request(request: &str) -> String {
     format!(
-        "From the command bar. Answer with one Luau script for Mastik's command bar, in a \
-         ```luau block, that does what the person asks; change nothing yourself, since the \
-         person runs the script as one undo step. `sel` is the selection, a list of layers; \
-         a layer's x, y, width, height and rotation (world space), opacity, fill, stroke, \
-         corner_radius, name, text and visible read and write, and children, parent, prev and \
-         next reach its neighbours; a write tool is a function taking the layers first \
-         (`align(sel, \"left\")`); print shows a line. A sentence before the block at most.\n\n\
+        "From the command bar, which shows one line of your reply. Do what the person asks \
+         with your tools, as you would here. When they ask for a script, instead answer with \
+         one Luau script for Mastik's command bar in a ```luau block and change nothing \
+         yourself, since the person runs the script as one undo step. `sel` is the selection, \
+         a list of layers; a layer's x, y, width, height and rotation (world space), opacity, \
+         fill, stroke, corner_radius, name, text and visible read and write, and children, \
+         parent, prev and next reach its neighbours; a write tool is a function taking the \
+         layers first (`align(sel, \"left\")`); print shows a line. Say one plain sentence \
+         under 80 characters of what you did or what the script does, naming layers by name, \
+         last in your reply or just before the script's block, and nothing else.\n\n\
          Request: {request}"
     )
 }

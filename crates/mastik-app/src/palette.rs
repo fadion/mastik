@@ -1508,7 +1508,7 @@ fn cmd_row(ui: &mut egui::Ui, c: &Cmd, lit: bool) -> egui::Response {
 }
 
 /// A list row's label face.
-fn row_font() -> egui::FontId {
+pub(crate) fn row_font() -> egui::FontId {
     egui::FontId::proportional(crate::ui::CONTROL_PT)
 }
 
@@ -1692,6 +1692,8 @@ pub(crate) fn caption_font() -> egui::FontId {
 pub(crate) struct FooterLine<'a> {
     /// A glyph before the left text, in its ink.
     pub(crate) glyph: Option<(&'a str, egui::Color32)>,
+    /// The glyph is the loading spinner, turning, in its ink: work is under way.
+    pub(crate) spinner: Option<egui::Color32>,
     /// The left text, its face and its ink: cut first when the two meet.
     pub(crate) left: (&'a str, egui::FontId, egui::Color32),
     /// The right text and its ink, in the caption face, kept whole.
@@ -1702,6 +1704,7 @@ impl Default for FooterLine<'_> {
     fn default() -> Self {
         Self {
             glyph: None,
+            spinner: None,
             left: ("", caption_font(), theme::text::muted()),
             right: None,
         }
@@ -1735,6 +1738,12 @@ pub(crate) fn footer_line(ui: &mut egui::Ui, line: FooterLine<'_>) {
             theme::icon_font(FOOTER_GLYPH_PT),
             ink,
         );
+        left += FOOTER_GLYPH_PT + 8.0;
+    } else if let Some(ink) = line.spinner {
+        let centre = egui::pos2(left + FOOTER_GLYPH_PT / 2.0, y);
+        let now = ui.input(|i| i.time);
+        crate::ui::paint_spinner(p, centre, FOOTER_GLYPH_PT, ink, now);
+        ui.ctx().request_repaint();
         left += FOOTER_GLYPH_PT + 8.0;
     }
     let (text, font, ink) = line.left;

@@ -882,7 +882,7 @@ impl MastikApp {
 
     /// Apply a proposal from its card, as one undo step marked as the
     /// assistant's.
-    fn assistant_apply(&mut self, id: u64) {
+    pub(crate) fn assistant_apply(&mut self, id: u64) {
         let Some(p) = self.held_proposal(id).cloned() else {
             return;
         };

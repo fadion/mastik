@@ -17,6 +17,8 @@ pub(crate) enum Source {
     Bar,
     /// A script run by hand, by its name.
     Script(String),
+    /// An `/ai` request typed in the bar, with the assistant's steps it led to.
+    Ai,
     /// An edit made anywhere else, as its undo step names it, with the glyph its
     /// step wears.
     Edit {
@@ -50,6 +52,10 @@ pub(crate) struct Log {
     /// run that folds more edits into its step keeps the serial and moves the
     /// revision, and its line is rendered again.
     seen: Option<(u64, u64)>,
+    /// The newest entry is an `/ai` request still taking the assistant's steps
+    /// as its own, until the person edits, the bar logs another line, or the
+    /// panel asks another question.
+    ai_open: bool,
 }
 
 impl Log {
@@ -60,6 +66,7 @@ impl Log {
 
     /// Log a line typed in the bar or a script run, with the step it made, if any.
     pub(crate) fn push(&mut self, entry: Entry) {
+        self.ai_open = false;
         if let Some(serial) = entry.serial {
             self.seen = Some((serial, u64::MAX));
         }
@@ -67,6 +74,71 @@ impl Log {
         while self.entries.len() > KEEP {
             self.entries.pop_front();
         }
+    }
+
+    /// Log `/ai request` as sent: the assistant's steps from here on are its
+    /// own, not rows of their own with no command.
+    pub(crate) fn asked(&mut self, request: &str) {
+        self.push(Entry {
+            line: Some(format!("/ai {request}")),
+            luau: None,
+            source: Source::Ai,
+            result: "Asked".into(),
+            failed: false,
+            serial: None,
+        });
+        self.ai_open = true;
+    }
+
+    /// The open `/ai` request, while it takes the assistant's steps.
+    fn open_ai(&mut self) -> Option<&mut Entry> {
+        match self.ai_open {
+            true => self.entries.back_mut().filter(|e| e.source == Source::Ai),
+            false => None,
+        }
+    }
+
+    /// What the open `/ai` request's reply came to, while no step of its says
+    /// more.
+    pub(crate) fn ai_replied(&mut self, result: &str) {
+        if let Some(e) = self.open_ai()
+            && e.serial.is_none()
+        {
+            e.result = result.to_owned();
+        }
+    }
+
+    /// The `/ai` request's script ran: its entry takes the script, what came
+    /// of it and its step, or a new entry does once the request is closed.
+    pub(crate) fn ai_ran(
+        &mut self,
+        request: &str,
+        script: String,
+        result: String,
+        serial: Option<u64>,
+    ) {
+        let line = format!("/ai {request}");
+        match self.open_ai() {
+            Some(e) if e.line.as_deref() == Some(line.as_str()) => {
+                e.luau = Some(script);
+                e.result = result;
+                e.serial = serial.or(e.serial);
+                if let Some(serial) = serial {
+                    self.seen = Some((serial, u64::MAX));
+                }
+            }
+            _ => {
+                let mut entry = Entry::typed(&line, script, result, false, serial);
+                entry.source = Source::Ai;
+                self.push(entry);
+            }
+        }
+    }
+
+    /// The panel asked another question: the open `/ai` request takes no more
+    /// steps.
+    pub(crate) fn close_ai(&mut self) {
+        self.ai_open = false;
     }
 
     /// Take the step on top of a history resumed from an earlier session as seen,
@@ -112,7 +184,28 @@ impl Log {
             _ => {}
         }
         self.seen = Some((top.serial, rev));
+        // An agent's step while an `/ai` request is open is that request's,
+        // named by the step; the person's own edit closes the request. A step
+        // carries the agent's name, never the chat it came from, so any agent's
+        // counts.
+        let agents = match &top.note.origin {
+            mastik_core::Origin::Mcp { .. } => true,
+            mastik_core::Origin::User => {
+                self.ai_open = false;
+                false
+            }
+        };
+        if agents && let Some(e) = self.open_ai() {
+            e.serial = Some(top.serial);
+            e.result = top.note.label.clone();
+            return;
+        }
         let line = render(&s.doc, &s.resolved, top.inverse);
+        // An agent's step with no command teaches no one the language: it is
+        // left out, where the person's own shows as a hole to fill.
+        if agents && line.is_none() {
+            return;
+        }
         self.entries.push_back(Entry {
             luau: line.as_deref().map(luau_of),
             line,
@@ -130,12 +223,13 @@ impl Log {
     }
 
     /// The newest line that ran, typed in the bar or written for an edit made
-    /// elsewhere, for `.` to repeat. A script's run is no line.
+    /// elsewhere, for `.` to repeat. A script's run is no line, and neither is an
+    /// `/ai` request, which would ask again.
     pub(crate) fn last_line(&self) -> Option<&str> {
         self.entries
             .iter()
             .rev()
-            .filter(|e| !e.failed && !matches!(e.source, Source::Script(_)))
+            .filter(|e| !e.failed && !matches!(e.source, Source::Script(_) | Source::Ai))
             .find_map(|e| e.line.as_deref())
     }
 }
