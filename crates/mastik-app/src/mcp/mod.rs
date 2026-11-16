@@ -550,7 +550,12 @@ impl Engine {
             return Output::json(fonts(docs, &call.args));
         }
         if call.tool == "describe_tools" {
-            return Output::json(describe_tools(&call.args));
+            // `handle` wrote a granted chat's key onto its call.
+            let level = self
+                .grants
+                .resolve(call.key.as_deref(), None)
+                .and_then(|(_, level)| level);
+            return Output::json(describe_tools(&call.args, level));
         }
         if kits::WITHOUT_DOCUMENT.contains(&call.tool.as_str()) {
             return match kits::without_document(docs, &call) {
@@ -2342,9 +2347,15 @@ const TEXTS_LISTED: usize = 8;
 /// `describe_tools`: the full definition of each tool named in `names`, then of
 /// those whose name holds `query`, then of those whose description alone does,
 /// at most [`DESCRIBED`]; with `brief`, every match's name and description only.
-/// A name that is no tool is answered in `not_found`.
-fn describe_tools(args: &Value) -> Value {
-    let all = every_definition();
+/// A name that is no tool is answered in `not_found`. A chat at `level` is
+/// offered only what that level runs, and a tool named above it is answered in
+/// `beyond_access`.
+fn describe_tools(args: &Value, level: Option<access::Level>) -> Value {
+    let within = |d: &Value| {
+        let name = d["name"].as_str().unwrap_or_default();
+        level.is_none_or(|l| access::allowed(l, name))
+    };
+    let (all, beyond): (Vec<Value>, Vec<Value>) = every_definition().into_iter().partition(within);
     let names: Vec<&str> = args
         .get("names")
         .and_then(Value::as_array)
@@ -2373,11 +2384,10 @@ fn describe_tools(args: &Value) -> Value {
     let mut matching: Vec<(u8, &Value)> =
         all.iter().filter_map(|d| rank(d).map(|r| (r, d))).collect();
     matching.sort_by_key(|(r, _)| *r);
-    let not_found: Vec<&str> = names
+    let (beyond_access, not_found): (Vec<&str>, Vec<&str>) = names
         .iter()
         .filter(|n| !all.iter().any(|d| d["name"] == **n))
-        .copied()
-        .collect();
+        .partition(|n| beyond.iter().any(|d| d["name"] == **n));
     let (tools, more): (Vec<Value>, usize) = if brief {
         let tools = matching
             .iter()
@@ -2400,17 +2410,21 @@ fn describe_tools(args: &Value) -> Value {
     if !not_found.is_empty() {
         answer["not_found"] = json!(not_found);
     }
+    if !beyond_access.is_empty() {
+        answer["beyond_access"] = json!(beyond_access);
+    }
     answer
 }
 
 /// Every tool's `tools/list` entry, listed or not.
 fn every_definition() -> Vec<Value> {
-    use mastik_mcp::tools::{PHASE_1, PHASE_2, PHASE_3, PHASE_4};
+    use mastik_mcp::tools::{ASSISTANT, PHASE_1, PHASE_2, PHASE_3, PHASE_4};
     PHASE_1
         .iter()
         .chain(&PHASE_2)
         .chain(&PHASE_3)
         .chain(&PHASE_4)
+        .chain(&ASSISTANT)
         .filter_map(|name| mastik_mcp::schema::definition(name))
         .collect()
 }

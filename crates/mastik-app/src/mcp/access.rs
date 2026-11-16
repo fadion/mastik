@@ -4,8 +4,11 @@
 //! The host enforces a level, not the harness: a call above it is refused
 //! whichever way it arrives, by name, through `call` or as a `batch` step. A
 //! connection from a process some chat owns gets that chat's level and key
-//! whatever key it sends, so an agent cannot shed its level by starting its own
-//! proxy.
+//! whatever key it sends, so a proxy the agent starts inside the harness's tree
+//! keeps its level. Ownership is what the platform can see (`mastik_ai`'s
+//! process tree or job): a process that leaves it, or one started outside it,
+//! connects as an ungranted client. The boundary there is the harness's own
+//! shell permission, which reaches the `.mastik` files directly anyway.
 
 use mastik_mcp::queue::Call;
 use mastik_mcp::tools::{ASSISTANT, CORE, PHASE_1, PHASE_2, PHASE_3};
@@ -63,6 +66,11 @@ pub(crate) fn allowed(level: Level, tool: &str) -> bool {
     }
 }
 
+/// Whether a host serves a tool called `name`: a registry verb or a table tool.
+pub(crate) fn is_tool(name: &str) -> bool {
+    mastik_core::verbs::find(name).is_some() || mastik_mcp::schema::tool(name).is_some()
+}
+
 /// The bare tool names `tools/list` shows a chat at `level`, which is also the
 /// harness's allow-list: the core set within the level, with `describe_tools`
 /// and `call` to reach the level's other tools.
@@ -116,10 +124,12 @@ fn reached(tool: &str, args: &Value) -> Vec<String> {
 }
 
 /// Why `call` is refused at `level`, `None` when every tool it reaches is
-/// within it.
+/// within it. A name that is no tool is left to `check_call` and `batch`,
+/// which refuse it with the nearest names, not as beyond the chat's access.
 pub(crate) fn refused(level: Level, call: &Call) -> Option<String> {
     let above = reached(&call.tool, &call.args)
         .into_iter()
+        .filter(|t| is_tool(t))
         .find(|t| !allowed(level, t))?;
     let instead = match level {
         Level::Propose => " Propose the change with `propose_edit`; the person applies it.",
@@ -213,13 +223,15 @@ impl Grants {
             .map(|(k, level, _)| (k, level))
     }
 
-    /// The `tools/list` hook for the endpoint: a granted caller's level's list.
+    /// The `tools/list` hook for the endpoint: a granted caller's level's list,
+    /// and nothing for a chat key no grant holds, whose every call is refused.
     pub(crate) fn lists(&self) -> mastik_mcp::queue::Lists {
         let grants = self.clone();
-        Arc::new(move |key, pid| {
-            grants
-                .resolve(key, pid)
-                .map(|(_, level)| level.map(definitions).unwrap_or_default())
+        Arc::new(move |key, pid| match grants.resolve(key, pid) {
+            Some((_, level)) => Some(level.map(definitions).unwrap_or_default()),
+            None => key
+                .is_some_and(crate::assistant::is_client_key)
+                .then(Vec::new),
         })
     }
 }
@@ -268,6 +280,66 @@ mod tests {
             assert_eq!(Level::from_key(level.key()), Some(level));
         }
         assert_eq!(Level::default(), Level::Propose);
+    }
+
+    /// A granted chat's mistyped tool, by name or as a `batch` step, is
+    /// refused as no tool with the nearest names, not as beyond its access;
+    /// `describe_tools` finds `propose_edit` and offers a chat only its level's
+    /// tools; and a chat key no grant holds is listed nothing.
+    ///
+    /// flip: `refused` without its `is_tool` filter → fails at "as no tool".
+    #[test]
+    fn a_chat_is_told_the_truth_about_tools_it_cannot_use() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        let grants = engine.grants();
+        grants.grant("assistant-1", Level::Edit, nobody());
+        let chat = Some("assistant-1");
+        ok(&keyed(
+            &mut engine,
+            &mut docs,
+            1,
+            chat,
+            "use_document",
+            json!({ "document": "a" }),
+        ));
+        let typo = keyed(&mut engine, &mut docs, 1, chat, "set_fill", json!({}));
+        let text = format!("{:?}", typo.content);
+        assert!(
+            text.contains("No tool is called `set_fill`"),
+            "as no tool: {text}"
+        );
+        let step = json!({ "steps": [{ "tool": "get_nodes", "args": {} }] });
+        let stepped = keyed(&mut engine, &mut docs, 1, chat, "batch", step);
+        let text = format!("{:?}", stepped.content);
+        assert!(stepped.is_error && !text.contains("beyond"), "{text}");
+
+        let names = json!({ "names": ["propose_edit"] });
+        let open = keyed(&mut engine, &mut docs, 2, None, "describe_tools", names);
+        assert_eq!(ok(&open)["tools"][0]["name"], "propose_edit");
+        grants.grant("assistant-2", Level::Look, nobody());
+        let look = Some("assistant-2");
+        let args = json!({ "query": "fill", "names": ["set_fills"], "brief": true });
+        let found = keyed(&mut engine, &mut docs, 3, look, "describe_tools", args);
+        let found = ok(&found);
+        let offered: Vec<&str> = found["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            offered.iter().all(|t| allowed(Level::Look, t)),
+            "{offered:?}"
+        );
+        assert_eq!(found["beyond_access"], json!(["set_fills"]), "{found}");
+
+        let lists = grants.lists();
+        assert_eq!(lists(Some("assistant-old"), None), Some(Vec::new()));
+        assert_eq!(
+            lists(Some("someone"), None),
+            None,
+            "an ungranted client's own list"
+        );
     }
 
     /// A key granted Look is refused a write by name, through `call` and as a
