@@ -24,8 +24,9 @@ trait Hosts {
     /// A connection to the best host, starting `serve` when none runs, and which
     /// kind of host it is.
     fn connect(&mut self) -> Result<(Host, endpoint::Stream), String>;
-    /// Whether a window lists its endpoint, without connecting.
-    fn window_listed(&mut self) -> bool;
+    /// Whether a window takes connections now, so a link to `serve` should
+    /// move to it.
+    fn window_answers(&mut self) -> bool;
 }
 
 /// The refusal an assistant's proxy answers when no window lists an endpoint.
@@ -47,6 +48,38 @@ fn pick_host(found: Vec<Found>, agent: bool) -> Result<Option<Found>, String> {
 /// The hosts this machine runs, for an assistant's agent or anyone else.
 struct Machine {
     agent: bool,
+    probe: WindowProbe,
+}
+
+/// How long a window's answer to [`WindowProbe`] stands.
+const PROBE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether a window answers, asked at most every [`PROBE_EVERY`]. A listed
+/// window is not enough: one at another privilege, or a reused pid, keeps its
+/// discovery file while refusing every connection, and dropping `serve` for it
+/// would reconnect on every request and lose the connection's revisions.
+#[derive(Default)]
+struct WindowProbe {
+    last: Option<(std::time::Instant, bool)>,
+}
+
+impl WindowProbe {
+    /// `listed` reads the discovery files; `reach` connects, only when listed.
+    fn answers(
+        &mut self,
+        now: std::time::Instant,
+        listed: impl FnOnce() -> bool,
+        reach: impl FnOnce() -> bool,
+    ) -> bool {
+        if let Some((at, said)) = self.last
+            && now.duration_since(at) < PROBE_EVERY
+        {
+            return said;
+        }
+        let said = listed() && reach();
+        self.last = Some((now, said));
+        said
+    }
 }
 
 impl Hosts for Machine {
@@ -60,8 +93,11 @@ impl Hosts for Machine {
         Ok((found.host, stream))
     }
 
-    fn window_listed(&mut self) -> bool {
-        window_listed()
+    fn window_answers(&mut self) -> bool {
+        self.probe
+            .answers(std::time::Instant::now(), window_listed, || {
+                endpoint::hosts().iter().any(|h| h.host == Host::Window)
+            })
     }
 }
 
@@ -134,7 +170,10 @@ pub(crate) fn run(
             short_ids: !agent,
         },
         document.map(|d| absolute(&d)),
-        &mut Machine { agent },
+        &mut Machine {
+            agent,
+            probe: WindowProbe::default(),
+        },
     )
 }
 
@@ -204,7 +243,7 @@ fn carry(
         }
         if link
             .as_ref()
-            .is_some_and(|l| l.host == Host::Serve && hosts.window_listed())
+            .is_some_and(|l| l.host == Host::Serve && hosts.window_answers())
         {
             link = None;
         }
@@ -260,7 +299,7 @@ fn carry(
                 _ => continue,
             },
         };
-        if is_tool_call(&message, "use_document")
+        if document_pointer(&message).is_some()
             && let Ok(v) = serde_json::from_str::<Value>(&answer)
             && v.pointer("/result/isError") == Some(&json!(false))
             && let Some(doc) = v
@@ -274,11 +313,23 @@ fn carry(
     }
 }
 
-fn is_tool_call(message: &Option<Value>, tool: &str) -> bool {
-    message.as_ref().is_some_and(|m| {
-        m.get("method").and_then(Value::as_str) == Some("tools/call")
-            && m.pointer("/params/name").and_then(Value::as_str) == Some(tool)
-    })
+/// Where a `use_document`'s `document` sits in `message`: named by the call,
+/// or through `call(tool, args)`, which switches the document as well.
+fn document_pointer(message: &Option<Value>) -> Option<&'static str> {
+    let m = message.as_ref()?;
+    if m.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return None;
+    }
+    match m.pointer("/params/name").and_then(Value::as_str)? {
+        "use_document" => Some("/params/arguments/document"),
+        "call"
+            if m.pointer("/params/arguments/tool").and_then(Value::as_str)
+                == Some("use_document") =>
+        {
+            Some("/params/arguments/args/document")
+        }
+        _ => None,
+    }
 }
 
 /// `asked` named absolutely when it is a relative path that exists from here,
@@ -303,8 +354,8 @@ fn rewrite(line: &str, ask: &Ask) -> (String, Option<Value>) {
         return (line.to_owned(), None);
     };
     let mut changed = false;
-    if is_tool_call(&Some(message.clone()), "use_document")
-        && let Some(arg) = message.pointer_mut("/params/arguments/document")
+    if let Some(at) = document_pointer(&Some(message.clone()))
+        && let Some(arg) = message.pointer_mut(at)
         && let Some(asked) = arg.as_str()
     {
         let full = absolute(asked);
@@ -605,7 +656,9 @@ mod tests {
                     let Some(id) = message.get("id") else {
                         continue;
                     };
-                    let document = message.pointer("/params/arguments/document");
+                    let document = message
+                        .pointer("/params/arguments/document")
+                        .or_else(|| message.pointer("/params/arguments/args/document"));
                     let result =
                         json!({ "isError": false, "structuredContent": { "document": document } });
                     if tool.is_some() && tool == script.window_on {
@@ -620,9 +673,41 @@ mod tests {
             Ok((script.host, (Box::new(from_host), Box::new(to_host))))
         }
 
-        fn window_listed(&mut self) -> bool {
+        fn window_answers(&mut self) -> bool {
             self.window.load(Ordering::SeqCst)
         }
+    }
+
+    /// A listed window that refuses connections keeps the link on `serve`, the
+    /// answer stands for its interval rather than probing every request, and
+    /// one that answers moves the link.
+    ///
+    /// flip: `WindowProbe::answers` without its `reach` → fails at "a listed
+    /// window that does not answer".
+    #[test]
+    fn only_a_window_that_answers_moves_the_link() {
+        let mut probe = WindowProbe::default();
+        let t0 = std::time::Instant::now();
+        let mut reached = 0;
+        let mut ask = |at, answers| {
+            probe.answers(
+                at,
+                || true,
+                || {
+                    reached += 1;
+                    answers
+                },
+            )
+        };
+        assert!(!ask(t0, false), "a listed window that does not answer");
+        assert!(
+            !ask(t0 + PROBE_EVERY / 2, true),
+            "the answer stands meanwhile"
+        );
+        assert!(ask(t0 + PROBE_EVERY, true), "asked again once it is old");
+        assert_eq!(reached, 2);
+        let mut quiet = WindowProbe::default();
+        assert!(!quiet.answers(t0, || false, || panic!("no window, no connection")));
     }
 
     /// The agent's lines, one request each, and what the proxy answered them.
@@ -708,6 +793,46 @@ mod tests {
                 ("get_document".to_owned(), json!({})),
             ],
             "the window's calls, the restore first"
+        );
+    }
+
+    /// A `use_document` made through `call` switches what the proxy restores
+    /// on the next host, as a direct one does.
+    ///
+    /// flip: `document_pointer` without its `call` arm → fails at "the
+    /// document named through `call`".
+    #[test]
+    fn a_document_switched_through_call_is_the_one_restored() {
+        let mut hosts = Fake::new(vec![
+            Scripted {
+                host: Host::Serve,
+                drop_on: None,
+                window_on: Some("get_selection"),
+            },
+            Scripted {
+                host: Host::Window,
+                drop_on: None,
+                window_on: None,
+            },
+        ]);
+        let [init, done] = handshake();
+        let through = json!({ "tool": "use_document", "args": { "document": "other" } });
+        let lines = [
+            init,
+            done,
+            tool_call(2, "use_document", json!({ "document": "site" })),
+            tool_call(3, "call", through),
+            tool_call(4, "get_selection", json!({})),
+            tool_call(5, "get_document", json!({})),
+        ];
+        drive(&lines, &mut hosts, None);
+        assert_eq!(
+            hosts.calls(1)[0],
+            (
+                "use_document".to_owned(),
+                json!({ "document": "other", "restore": true })
+            ),
+            "the document named through `call`"
         );
     }
 
