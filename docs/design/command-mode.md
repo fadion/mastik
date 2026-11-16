@@ -636,11 +636,15 @@ rules*): a row's name is never cut for its note.
     | Reply | When | List row (`reply_row`) | Footer · right | `Enter` |
     | --- | --- | --- | --- | --- |
     | *Proposed* | a tool row carries a proposal id; checked first | the sentence, else *N proposed edits* | *Enter applies it/them · Tab opens the assistant panel* · *Esc clears* | applies each proposal as its own step through `assistant_apply`, as from its card (a stale one says so on the status line), then clears the line |
-    | *Script* | the last `luau`/`lua` block, else a lone unlabelled one, from a reply that wrote nothing (no done call outside *Look*'s tools; `call` judged by the tool it ran) | one line shows its code in mono; a longer one its sentence, else *N lines* | *Enter runs it as one step · Tab opens it in the editor* · *N lines* | runs it (below) |
+    | *Script* | the last `luau`/`lua` block, else a lone unlabelled one, from a reply that wrote nothing (no done call outside *Look*'s tools; `call` judged by the tool it ran) | one line shows its code in mono; a longer one the names its code calls and sets (`mastik_vm::names_used`) in mono, its sentence (else *N lines*) as the faint note; with no such names, the sentence alone | *Enter runs it as one step · Tab opens it in the editor* · *N lines*; at *Look*, *Enter opens it in the editor · the chat can only look* | runs it (below); at *Look*, opens it in the editor as `Tab` does |
     | *Reply* | anything else: edits it made itself, or an answer | the sentence, else *Done: the reply is in the assistant panel* | *Tab opens the assistant panel* · *Enter clears* | clears the line |
 
     A script is only taken from a reply that changed nothing, since one that edited has done the
-    work and its code block shows how. The list shows the one row under its section label
+    work and its code block shows how. A script runs on one key with the person's write access, and
+    its sentence is the model's own account, which layer names or text it read could steer: so the
+    row leads with names read from the code, and a chat at *Look*, which was given no right to edit,
+    never has its script run from the bar; the person runs it from the editor, having read it.
+    The list shows the one row under its section label
     (`reply_rows`), wearing `icon::SPARKLE` in the log's glyph ink; the editor and the panel are
     where the whole reply reads. While proposals wait to be applied, the footer leads with
     `icon::SPARKLE` in `color::warn()`; a script or a reply has no mark (`footer_marked`, `Mark`).

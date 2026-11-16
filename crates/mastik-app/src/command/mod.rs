@@ -16,6 +16,7 @@ pub(crate) mod suggest;
 
 use crate::app::MastikApp;
 use crate::assistant::{Asked, BarReply};
+use crate::mcp::access::Level;
 use crate::palette::{
     self, FIELD_H, FOOTER_H, FOOTER_INSET, FooterLine, PAD, ROW_GAP, ROW_H, SECTION_H,
 };
@@ -433,26 +434,50 @@ enum List {
     None,
     Log,
     Complete(mastik_vm::Completion),
-    /// An `/ai` reply as one row under its section label: its sentence, or a
-    /// one-line script's code in the code face.
-    Reply {
-        label: &'static str,
-        line: String,
-        mono: bool,
-    },
+    /// An `/ai` reply as one row under its section label.
+    Reply(ReplyRow),
 }
 
-/// The one row the list shows for an `/ai` reply: its section label, the line,
-/// and whether the line is code. A script of one line shows itself; a longer
-/// one its sentence, else its line count, since the editor is where code reads.
-fn reply_row(reply: &BarReply) -> (&'static str, String, bool) {
+/// The one row the list shows for an `/ai` reply.
+#[derive(Default)]
+struct ReplyRow {
+    /// The section label: *Script*, *Proposed* or *Reply*.
+    label: &'static str,
+    line: String,
+    /// Whether the line is code, in the code face.
+    mono: bool,
+    /// A faint note at the row's right end.
+    note: Option<String>,
+}
+
+/// The row for `reply`. A script of one line shows itself. A longer one shows
+/// the names its code calls and sets (`mastik_vm::names_used`), read from the
+/// code, with the model's sentence beside them as a note: the sentence is the
+/// model's own account, so it never stands alone for code that runs on `Enter`.
+fn reply_row(reply: &BarReply) -> ReplyRow {
+    let row = |label, line: String| ReplyRow {
+        label,
+        line,
+        ..Default::default()
+    };
     match reply {
         BarReply::Script { script, said } => {
             let n = script.lines().count();
-            match (n, said) {
-                (1, _) => ("Script", script.trim().to_owned(), true),
-                (_, Some(s)) => ("Script", s.clone(), false),
-                (_, None) => ("Script", format!("{n} lines"), false),
+            if n == 1 {
+                return ReplyRow {
+                    mono: true,
+                    ..row("Script", script.trim().to_owned())
+                };
+            }
+            let names = mastik_vm::names_used(script);
+            let account = said.clone().unwrap_or_else(|| format!("{n} lines"));
+            match names.is_empty() {
+                true => row("Script", account),
+                false => ReplyRow {
+                    mono: true,
+                    note: Some(account),
+                    ..row("Script", names.join(", "))
+                },
             }
         }
         BarReply::Proposals { ids, said } => {
@@ -460,13 +485,12 @@ fn reply_row(reply: &BarReply) -> (&'static str, String, bool) {
                 1 => "1 proposed edit".to_owned(),
                 n => format!("{n} proposed edits"),
             });
-            ("Proposed", line, false)
+            row("Proposed", line)
         }
-        BarReply::Said(said) => (
+        BarReply::Said(said) => row(
             "Reply",
             said.clone()
                 .unwrap_or_else(|| "Done: the reply is in the assistant panel".to_owned()),
-            false,
         ),
     }
 }
@@ -1069,8 +1093,7 @@ impl MastikApp {
             // Picking keeps the canvas clear: the field sleeps and lists nothing.
             _ if picking => List::None,
             _ if replied.is_some() => {
-                let (label, line, mono) = replied.as_ref().map(reply_row).unwrap_or_default();
-                List::Reply { label, line, mono }
+                List::Reply(replied.as_ref().map(reply_row).unwrap_or_default())
             }
             _ if bar.text.trim().is_empty() || bar.recalled.is_some() => {
                 match self.session.command_log.entries().len() {
@@ -1101,8 +1124,12 @@ impl MastikApp {
         // error's fix and Enter runs.
         let mut accepted = false;
         // Tab takes a reply where it reads whole: a script to the editor, any
-        // other to the assistant panel.
-        if keys.tab
+        // other to the assistant panel. At *Look* the chat may not edit, so its
+        // script never runs from one key: Enter opens it in the editor too.
+        let to_editor = keys.enter
+            && self.assistant_level() == Level::Look
+            && matches!(replied, Some(BarReply::Script { .. }));
+        if (keys.tab || to_editor)
             && let Some(reply) = replied
         {
             self.end_bar_session();
@@ -1267,7 +1294,11 @@ impl MastikApp {
                 BarReply::Script { script, .. } => {
                     let n = script.lines().count();
                     (
-                        "Enter runs it as one step · Tab opens it in the editor".to_owned(),
+                        match self.assistant_level() {
+                            Level::Look => "Enter opens it in the editor · the chat can only look",
+                            _ => "Enter runs it as one step · Tab opens it in the editor",
+                        }
+                        .to_owned(),
                         format!("{n} {}", if n == 1 { "line" } else { "lines" }),
                         Mark::None,
                     )
@@ -1341,9 +1372,7 @@ impl MastikApp {
                                 completion_rows(ui, &c.rows, bar.suggest.highlight, layer_of);
                         });
                     }
-                    List::Reply { label, line, mono } => {
-                        list_frame(ui, list_h, |ui| reply_rows(ui, label, line, *mono))
-                    }
+                    List::Reply(row) => list_frame(ui, list_h, |ui| reply_rows(ui, row)),
                 }
                 let error = bar.error.as_ref().map(|(_, e)| e.clone());
                 let error = error.as_ref();
@@ -2060,21 +2089,23 @@ fn log_row(ui: &mut egui::Ui, e: &log::Entry, picked: bool) -> egui::Response {
 }
 
 /// An `/ai` reply's one row under its section label ([`reply_row`]): code in
-/// the monospace face, a sentence in the rows' own.
-fn reply_rows(ui: &mut egui::Ui, label: &str, line: &str, mono: bool) {
-    palette::section_label(ui, label);
+/// the monospace face, a sentence in the rows' own, its note faint as the
+/// log's results are.
+fn reply_rows(ui: &mut egui::Ui, row: &ReplyRow) {
+    palette::section_label(ui, row.label);
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), ROW_H),
         egui::Sense::hover(),
     );
     // The sparkle every `/ai` row wears, in the log's glyph ink.
     palette::row_glyph(ui.painter(), rect, icon::SPARKLE, theme::text::dim());
-    let font = match mono {
+    let font = match row.mono {
         true => row_mono(),
         false => palette::row_font(),
     };
-    let job = palette::lit_label(line, &[], font, color::text(), color::text());
-    palette::row_texts(ui.painter(), rect, rect.right() - 8.0, job, None);
+    let job = palette::lit_label(&row.line, &[], font, color::text(), color::text());
+    let note = row.note.as_deref().map(|n| (n, theme::text::faint()));
+    palette::row_texts(ui.painter(), rect, rect.right() - 8.0, job, note);
 }
 
 /// One completion row: its glyph, the insert with the matched letters lit, and
@@ -2931,6 +2962,32 @@ pub(crate) mod tests {
         let last = app.session.command_log.entries().last().unwrap();
         assert_eq!(last.line.as_deref(), Some("/ai move it right"));
         assert_eq!(app.command_bar.as_ref().map(|b| b.text.as_str()), Some(""));
+    }
+
+    /// A longer `/ai` script's row leads with the names its code calls and
+    /// sets, the model's sentence only beside them; at *Look*, `Enter` opens it
+    /// in the editor and runs nothing.
+    ///
+    /// flip: `command_bar_ui` running the script on Enter at *Look* → fails at
+    /// "nothing ran at Look".
+    #[test]
+    fn an_ai_script_shows_its_names_and_waits_at_look() {
+        let reply = BarReply::Script {
+            script: "for _, c in ipairs(sel) do\n  c.x += 4\nend\ndelete_node()".into(),
+            said: Some("Tidies the spacing.".into()),
+        };
+        let row = reply_row(&reply);
+        assert_eq!(row.line, "sel, x, delete_node", "the names lead");
+        assert_eq!(row.note.as_deref(), Some("Tidies the spacing."));
+
+        let (ctx, mut app, card) = asked("Moves it.\n\n```luau\nsel.x += 40\nprint(1)\n```");
+        app.assistant.level = Some(Level::Look);
+        let (x, depth) = (left(&app, card), app.session.history.undo_depth());
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        assert_eq!(left(&app, card), x, "nothing ran at Look");
+        assert_eq!(app.session.history.undo_depth(), depth);
+        assert!(app.command_bar.is_none(), "the bar closed");
+        assert!(app.scripts.open, "the editor opened on it");
     }
 
     /// A reply that edited the canvas itself shows only its sentence, and
