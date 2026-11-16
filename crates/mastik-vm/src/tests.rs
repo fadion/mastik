@@ -429,6 +429,29 @@ fn a_verb_returns_what_it_created() {
     assert_eq!(out.value, Some(h.doc.get(group).unwrap().name().to_owned()));
 }
 
+/// A verb's arguments hold a bounded count of values, so a table sharing one
+/// subtable at every level is refused rather than expanded as a tree, and a table
+/// inside itself is refused at its depth.
+/// flip: `to_json` never spending `budget` → fails at "more than 100000 values".
+#[test]
+fn a_verb_argument_is_bounded() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let shared = "local t = 0 for i = 1, 18 do t = {t, t} end\n";
+    for call in ["set_name { name = t }", "set_name(t)"] {
+        let err = run_script(&mut h, &e, &format!("{shared}{call}")).unwrap_err();
+        assert!(
+            err.message.contains("more than 100000 values"),
+            "{call}: {}",
+            err.message
+        );
+    }
+    let err = run_script(&mut h, &e, "local t = {} t[1] = t set_name(t)").unwrap_err();
+    assert!(err.message.contains("nests too deep"), "{}", err.message);
+    assert_eq!(h.commits, 3, "nothing past the fixture was committed");
+}
+
 /// The header reads the documented example, and a bad line is an error on it.
 #[test]
 fn the_header_reads_inputs() {

@@ -189,8 +189,11 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
   is read every 256th, and at once after a verb or commit, which may be slow) and
   `set_memory_limit` above what the fresh state holds. Printed output lives outside Lua's memory,
   so a run may print at most 10,000 lines (`PRINT_LINES`) and 1 MB (`PRINT_CAP`, each line counted
-  one byte more, so empty lines count too). The editor's output pane lays out only the rows in
-  view, and cuts a printed line past 2,000 characters:
+  one byte more, so empty lines count too). A verb's arguments are built as JSON there too, walked
+  in Rust where no interrupt fires, so one call's arguments hold at most 100,000 values
+  (`ARG_VALUES_MAX`): a table that shares a subtable at every level is refused, not expanded. The
+  editor's output pane lays out only the rows in view, and cuts a printed line past 2,000
+  characters:
 
   | Budget | Time | Steps | Memory |
   | --- | --- | --- | --- |

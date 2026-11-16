@@ -607,6 +607,11 @@ const PRINT_LINES: usize = 10_000;
 /// Why a run stopped printing.
 const PRINTED_TOO_MUCH: &str = "Stopped after printing more than 10,000 lines or 1 MB";
 
+/// The most values one verb call's arguments may hold. A table that shares a
+/// subtable at each level is small in Lua but a tree as JSON, built in the host's
+/// memory where no interrupt or memory limit reaches.
+const ARG_VALUES_MAX: usize = 100_000;
+
 /// What the host and the run accumulate.
 struct State<'h> {
     host: &'h mut dyn Host,
@@ -1697,6 +1702,7 @@ fn call_verb(
         _ => false,
     };
     let fail = |why: String| raise(lua, format!("`{name}`: {why}"));
+    let mut budget = ARG_VALUES_MAX;
     if named_form {
         let Some(Value::Table(t)) = args.first() else {
             unreachable!("the named form is one table");
@@ -1704,7 +1710,7 @@ fn call_verb(
         for pair in t.pairs::<String, Value>() {
             let (key, v) = pair?;
             let kind = verb.params.iter().find(|p| p.name == key).map(|p| p.kind);
-            let json = to_json(lua, &v, kind, env, 0).map_err(fail)?;
+            let json = to_json(lua, &v, kind, env, 0, &mut budget).map_err(fail)?;
             map.insert(key, json);
         }
     } else {
@@ -1740,7 +1746,7 @@ fn call_verb(
             }
             map.insert(
                 p.name.to_owned(),
-                to_json(lua, v, Some(p.kind), env, 0).map_err(fail)?,
+                to_json(lua, v, Some(p.kind), env, 0, &mut budget).map_err(fail)?,
             );
         }
     }
@@ -1801,16 +1807,24 @@ fn call_verb(
 
 /// A Lua value as a verb's JSON argument of `kind`: a collection as its wire
 /// forms, a leap label given for a layer as its layer, a table as a list or an object.
+/// Each value spends one of `budget`, shared across the call's arguments.
 fn to_json(
     lua: &Lua,
     v: &Value,
     kind: Option<ParamKind>,
     env: &crate::Env<'_>,
     depth: usize,
+    budget: &mut usize,
 ) -> Result<serde_json::Value, String> {
     if depth > 32 {
         return Err("a table nests too deep (is it inside itself?)".into());
     }
+    let Some(left) = budget.checked_sub(1) else {
+        return Err(format!(
+            "the arguments hold more than {ARG_VALUES_MAX} values (does a table repeat itself?)"
+        ));
+    };
+    *budget = left;
     let lua_err = |e: mlua::Error| e.to_string();
     Ok(match v {
         Value::Nil => serde_json::Value::Null,
@@ -1861,7 +1875,7 @@ fn to_json(
                 for item in t.clone().sequence_values::<Value>() {
                     let item = item.map_err(lua_err)?;
                     let inner = (kind == Some(ParamKind::Nodes)).then_some(ParamKind::Node);
-                    list.push(to_json(lua, &item, inner, env, depth + 1)?);
+                    list.push(to_json(lua, &item, inner, env, depth + 1, budget)?);
                 }
                 serde_json::Value::Array(list)
             } else {
@@ -1875,7 +1889,7 @@ fn to_json(
                         }
                         other => return Err(format!("a table key cannot be {}", type_name(other))),
                     };
-                    map.insert(key, to_json(lua, &item, None, env, depth + 1)?);
+                    map.insert(key, to_json(lua, &item, None, env, depth + 1, budget)?);
                 }
                 serde_json::Value::Object(map)
             }
