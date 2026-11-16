@@ -31,6 +31,8 @@ pub enum Sort {
     Size,
     /// When this machine last opened it, never-opened last.
     Opened,
+    /// By page count, once the content index has read the document; unread last.
+    Pages,
     /// The order a search ranked the matches in, on the results page only.
     Best,
 }
@@ -40,13 +42,14 @@ impl Sort {
     pub const ALL: [Sort; 4] = [Sort::Edited, Sort::Name, Sort::Created, Sort::Size];
 
     /// Every field, for reading a key back.
-    const EVERY: [Sort; 7] = [
+    const EVERY: [Sort; 8] = [
         Sort::Edited,
         Sort::Name,
         Sort::Project,
         Sort::Created,
         Sort::Size,
         Sort::Opened,
+        Sort::Pages,
         Sort::Best,
     ];
 
@@ -59,6 +62,7 @@ impl Sort {
             Sort::Created => "created",
             Sort::Size => "size",
             Sort::Opened => "opened",
+            Sort::Pages => "pages",
             Sort::Best => "best",
         }
     }
@@ -72,6 +76,7 @@ impl Sort {
             Sort::Created => "Date created",
             Sort::Size => "Size",
             Sort::Opened => "Last opened",
+            Sort::Pages => "Pages",
             Sort::Best => "Best match",
         }
     }
@@ -83,6 +88,7 @@ impl Sort {
             Sort::Name | Sort::Project => Some(["A to Z", "Z to A"]),
             Sort::Edited | Sort::Created | Sort::Opened => Some(["Newest first", "Oldest first"]),
             Sort::Size => Some(["Largest first", "Smallest first"]),
+            Sort::Pages => Some(["Most first", "Fewest first"]),
             Sort::Best => None,
         }
     }
@@ -397,6 +403,18 @@ impl Library {
     /// group stays in one run either way; an unfiled document sorts last under
     /// *Project* either way.
     pub fn sort_entries(&self, entries: &mut [Entry], by: SortBy) {
+        self.sort_entries_with(entries, by, |_| None);
+    }
+
+    /// [`Self::sort_entries`] with each document's page count, which the content
+    /// index holds and the library does not; a count still unknown sorts last
+    /// under [`Sort::Pages`] either way.
+    pub fn sort_entries_with(
+        &self,
+        entries: &mut [Entry],
+        by: SortBy,
+        pages: impl Fn(&Entry) -> Option<usize>,
+    ) {
         use std::cmp::Ordering;
         if by.field == Sort::Best {
             return;
@@ -424,6 +442,7 @@ impl Library {
                 Sort::Created => run(a.meta.created, b.meta.created, down),
                 Sort::Size => run(a.size, b.size, down),
                 Sort::Opened => run(opened(a), opened(b), down),
+                Sort::Pages => present(pages(a), pages(b), down),
                 Sort::Name => run(name(a), name(b), down),
                 // Within a project, the last edited first.
                 Sort::Project => {
@@ -635,6 +654,42 @@ mod tests {
         // Byte order would give "Alpha", "Gamma", "beta"; the stems run reverse so
         // the fall-through cannot produce this by accident.
         assert_eq!(names, vec!["Alpha", "beta", "Gamma"]);
+        let _ = std::fs::remove_dir_all(&lib.root);
+    }
+
+    /// The page sort runs most first or fewest first, and a document whose count
+    /// is not known yet comes last either way.
+    /// flip: `Sort::Pages` comparing with `run` → fails at "unknown last, reversed".
+    #[test]
+    fn the_page_sort_puts_an_unknown_count_last_both_ways() {
+        let lib = Library::open(temp_root("pages"));
+        let mut entries = vec![
+            entry("One", "a", 0, 0, 0),
+            entry("Unread", "b", 0, 0, 0),
+            entry("Three", "c", 0, 0, 0),
+        ];
+        let pages = |e: &Entry| match e.display_name().as_str() {
+            "One" => Some(1),
+            "Three" => Some(3),
+            _ => None,
+        };
+        let names = |es: &[Entry]| es.iter().map(|e| e.display_name()).collect::<Vec<_>>();
+        lib.sort_entries_with(&mut entries, SortBy::natural(Sort::Pages), pages);
+        assert_eq!(
+            names(&entries),
+            vec!["Three", "One", "Unread"],
+            "most first"
+        );
+        let fewest = SortBy {
+            field: Sort::Pages,
+            reversed: true,
+        };
+        lib.sort_entries_with(&mut entries, fewest, pages);
+        assert_eq!(
+            names(&entries),
+            vec!["One", "Three", "Unread"],
+            "unknown last, reversed"
+        );
         let _ = std::fs::remove_dir_all(&lib.root);
     }
 

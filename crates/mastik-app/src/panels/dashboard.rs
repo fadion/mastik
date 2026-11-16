@@ -138,17 +138,17 @@ impl ListCol {
         }
     }
 
-    /// The sort a click on its header asks for; *Pages* sorts nothing.
-    fn field(self) -> Option<Sort> {
-        Some(match self {
+    /// The sort a click on its header asks for.
+    fn field(self) -> Sort {
+        match self {
             Self::Name => Sort::Name,
             Self::Project => Sort::Project,
-            Self::Pages => return None,
+            Self::Pages => Sort::Pages,
             Self::Edited => Sort::Edited,
             Self::Opened => Sort::Opened,
             Self::Created => Sort::Created,
             Self::Size => Sort::Size,
-        })
+        }
     }
 
     /// A number's column sits against its right edge, this far in; `None` for
@@ -468,6 +468,9 @@ fn anchored_menu(
         .fixed_pos(pos);
     let inner = area.show(ui.ctx(), |ui| {
         let card = ui::menu_frame(ui::MENU_PAD).show(ui, |ui| {
+            // Held to the card's width: a rule takes the width it is offered, and
+            // an `Area` offers the screen's.
+            ui.set_width(ui::menu_inner_w(w, ui::MENU_PAD));
             ui.spacing_mut().item_spacing.y = 0.0;
             let mut clicked = None;
             for i in 0..rows {
@@ -1979,7 +1982,11 @@ impl MastikApp {
             out.retain(|e| e.meta.project.as_deref() == Some(filter.as_str()));
         }
         if self.sort_applies() {
-            self.library.sort_entries(&mut out, self.sort_by());
+            let index = &self.index;
+            self.library
+                .sort_entries_with(&mut out, self.sort_by(), |e| {
+                    index.get(e).map(|f| f.pages.len())
+                });
         }
         out
     }
@@ -2026,22 +2033,24 @@ impl MastikApp {
     }
 
     /// The fields the sort menu and the list headers offer on this page, in the
-    /// menu's order. *Best match* only on the results page, where it leads; *Last
-    /// opened* only on *Starred* and *Kits*, lists you return to, where it leads;
-    /// *Project* not inside a project, where it sorts nothing.
+    /// menu's order, so every list column sorts. *Best match* only on the results
+    /// page, where it leads; *Last opened* leads on *Starred* and *Kits*, lists
+    /// you return to; *Project* not inside a project, where it sorts nothing.
     fn sort_fields(&self) -> Vec<Sort> {
         let mut out = Vec::new();
         let page = self.dash.search_page.is_some();
         if page {
             out.push(Sort::Best);
-        } else if matches!(self.dash.nav, Nav::Starred | Nav::Kits) {
-            out.push(Sort::Opened);
         }
-        out.extend([Sort::Edited, Sort::Name]);
+        match !page && matches!(self.dash.nav, Nav::Starred | Nav::Kits) {
+            true => out.extend([Sort::Opened, Sort::Edited]),
+            false => out.extend([Sort::Edited, Sort::Opened]),
+        }
+        out.push(Sort::Name);
         if page || !matches!(self.dash.nav, Nav::Project(_)) {
             out.push(Sort::Project);
         }
-        out.extend([Sort::Created, Sort::Size]);
+        out.extend([Sort::Created, Sort::Size, Sort::Pages]);
         out
     }
 
@@ -2268,6 +2277,14 @@ impl MastikApp {
             && self.library.projects.active().next().is_some()
     }
 
+    /// Whether a click on the sort or the filter button toggles its menu: always
+    /// while either of the two is open, so a second click closes it and a click on
+    /// the other swaps them, and otherwise not on a click that dismissed another
+    /// library menu.
+    fn header_menu_may_toggle(&self) -> bool {
+        self.dash.sort_open || self.dash.filter_open || !self.dash.menu_was_up
+    }
+
     /// *All projects ⌄* — the body header's project filter: a button and an `Area`, not
     /// a `ComboBox`, because the closed state carries a colour dot. The ground is
     /// [`ui::button_face`]'s; [`FieldButton::Set`] lights while open or filtering.
@@ -2328,7 +2345,7 @@ impl MastikApp {
             theme::icon_font(ui::COMBO_CHEVRON_PT),
             ui::combo_chevron_ink(),
         );
-        if resp.clicked() {
+        if resp.clicked() && self.header_menu_may_toggle() {
             self.dash.filter_open = !self.dash.filter_open;
             self.dash.sort_open = false;
             self.dash.menu_keys = MenuKeys::default();
@@ -2383,7 +2400,7 @@ impl MastikApp {
             theme::icon_font(ui::COMBO_CHEVRON_PT),
             ui::combo_chevron_ink(),
         );
-        if resp.on_hover_text("Sort").clicked() && !self.dash.menu_was_up {
+        if resp.on_hover_text("Sort").clicked() && self.header_menu_may_toggle() {
             self.dash.sort_open = !self.dash.sort_open;
             self.dash.filter_open = false;
             self.dash.menu_keys = MenuKeys::default();
@@ -2425,7 +2442,7 @@ impl MastikApp {
                     egui::pos2(row.left() + 10.0, row.center().y),
                     egui::Align2::LEFT_CENTER,
                     label,
-                    egui::FontId::proportional(ui::SMALL_PT),
+                    egui::FontId::proportional(ui::CONTROL_PT),
                     if on || lit {
                         color::text()
                     } else {
@@ -2492,8 +2509,8 @@ impl MastikApp {
                 p.text(
                     egui::pos2(row.left() + 8.0 + DOT + 8.0, row.center().y),
                     egui::Align2::LEFT_CENTER,
-                    elide(p.ctx(), name, ui::SMALL_PT, w - 60.0),
-                    egui::FontId::proportional(ui::SMALL_PT),
+                    elide(p.ctx(), name, ui::CONTROL_PT, w - 60.0),
+                    egui::FontId::proportional(ui::CONTROL_PT),
                     if on || lit {
                         color::text()
                     } else {
@@ -3670,7 +3687,7 @@ impl MastikApp {
                 let cell = egui::Rect::from_x_y_ranges(x..=x + w, rect.y_range());
                 x += w;
                 let field = col.field();
-                let live = field.is_some_and(|f| offered.contains(&f));
+                let live = offered.contains(&field);
                 let resp = ui.interact(
                     cell,
                     egui::Id::new(("list-head", col.label())),
@@ -3680,21 +3697,32 @@ impl MastikApp {
                         egui::Sense::hover()
                     },
                 );
-                let on = live && field == Some(by.field);
+                let on = live && field == by.field;
                 // The arrow says the direction in force, or on hover the one a
                 // click would give.
-                let arrow = match (on, live && resp.hovered(), field) {
-                    (true, _, _) => Some((by.ascending(), color::accent())),
-                    (false, true, Some(f)) => {
-                        Some((SortBy::natural(f).ascending(), theme::text::faint()))
+                let arrow = match (on, live && resp.hovered()) {
+                    (true, _) => Some((by.ascending(), color::accent())),
+                    (false, true) => {
+                        Some((SortBy::natural(field).ascending(), theme::text::faint()))
                     }
                     _ => None,
                 };
                 list_head(ui, cell, col.label(), col.right_inset(), on, arrow);
-                if resp.clicked() && !self.dash.menu_was_up {
-                    picked = field;
+                if live && resp.clicked() && !self.dash.menu_was_up {
+                    picked = Some(field);
                 }
             }
+            // The hairline that closes the header off from the rows.
+            let ppp = ui.ctx().pixels_per_point();
+            let weight = (ppp.round().max(1.0)) / ppp;
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.left(), rect.bottom() - weight),
+                    rect.right_bottom(),
+                ),
+                0,
+                ui::sep_ink(),
+            );
         });
         if let Some(field) = picked {
             self.set_sort(by.clicked(field));
@@ -9657,6 +9685,63 @@ mod tests {
         app.open_path(&path);
         app.go_to_dashboard();
         assert!(app.continue_entry().is_none(), "not while a tab holds it");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every list column sorts, on every page that offers a sort.
+    /// flip: `sort_fields` leaving out `Sort::Pages` → fails at "Pages sorts".
+    #[test]
+    fn every_list_column_sorts() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "columns-sort");
+        for nav in [Nav::All, Nav::Starred, Nav::Kits, Nav::Trash] {
+            app.dash.nav = nav.clone();
+            let fields = app.sort_fields();
+            for (col, _) in list_columns(2000.0) {
+                assert!(
+                    fields.contains(&col.field()),
+                    "{} sorts on {nav:?}",
+                    col.label()
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The sort menu is as wide as it says, its rule included, and a second click
+    /// on its button closes it, as the project filter's does.
+    /// flip: `anchored_menu` not holding its card's width → fails at "as wide as
+    /// it says"; `sort_control` refusing a click while a menu is up → fails at "a
+    /// second click closes it".
+    #[test]
+    fn the_sort_menu_keeps_its_width_and_its_button_toggles_it() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "sort-toggle");
+        let mut doc = crate::library::index::tests::doc();
+        store::file_document(&root, None, "Wallet", &mut doc).unwrap();
+        app.library.refresh();
+        app.dash.nav = Nav::All;
+        let runs = galleys(&mut app, &ctx);
+        let (at, size, _) = runs
+            .iter()
+            .find(|(_, _, t)| t == "Last edited")
+            .cloned()
+            .expect("the sort button shows its field");
+        let button = at + size / 2.0;
+        click_at(&mut app, &ctx, button);
+        assert!(app.dash.sort_open, "a click opens it");
+        let rect = ctx
+            .memory(|m| m.area_rect(egui::Id::new("library-sort-menu")))
+            .expect("the menu is up");
+        assert!(
+            (rect.width() - SORT_MENU_W).abs() < 1.0,
+            "as wide as it says: {}",
+            rect.width()
+        );
+        click_at(&mut app, &ctx, button);
+        assert!(!app.dash.sort_open, "a second click closes it");
         let _ = std::fs::remove_dir_all(&root);
     }
 
