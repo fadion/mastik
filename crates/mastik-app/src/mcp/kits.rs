@@ -44,14 +44,21 @@ pub(super) fn by(client: &str) -> String {
 /// Answer a Phase 4 tool that needs no current document.
 pub(super) fn without_document(docs: &mut impl Documents, call: &Call) -> Result<Value, String> {
     match call.tool.as_str() {
-        "list_documents" => Ok(documents(docs.library().ok_or(NO_LIBRARY)?)),
+        "list_documents" => {
+            let all = documents(docs.library().ok_or(NO_LIBRARY)?);
+            Ok(super::reads::named(all, "documents", &call.args))
+        }
         "list_kits" => {
             let lib = docs.library().ok_or(NO_LIBRARY)?;
             let kits: Vec<Value> = kits_in(lib, None)
                 .iter()
                 .map(|k| kit_json(lib, k))
                 .collect();
-            Ok(json!({ "kits": kits }))
+            Ok(super::reads::named(
+                json!({ "kits": kits }),
+                "kits",
+                &call.args,
+            ))
         }
         "create_document" => create_document(docs, call),
         tool => Err(format!("no tool `{tool}`")),
@@ -749,6 +756,33 @@ mod tests {
                 .is_some_and(|k| !k.is_shared())
         );
         assert_eq!(ok(e, d, "list_kits", json!({}))["kits"], json!([]));
+    }
+
+    /// `list_documents` keeps the read budget though it needs no document, and
+    /// `query` narrows it to the names that hold it.
+    ///
+    /// flip: `answer_ids` answering `without_document` before `read_fits` →
+    /// fails at "refused".
+    #[test]
+    fn list_documents_keeps_the_budget_and_narrows() {
+        let root = crate::kits::picker::tests::temp_root("budget");
+        let mut engine = Engine::default();
+        let mut docs = Headless::new(Some(root.clone()));
+        let (e, d) = (&mut engine, &mut docs);
+        let pad = "x".repeat(120);
+        for i in 0..400 {
+            ok(
+                e,
+                d,
+                "create_document",
+                json!({ "name": format!("Doc {i} {pad}") }),
+            );
+        }
+        let why = refused(e, d, "list_documents", json!({}));
+        assert!(why.contains("`query`"), "refused: {why}");
+        let some = ok(e, d, "list_documents", json!({ "query": "doc 39" }));
+        assert_eq!(some["documents"].as_array().unwrap().len(), 11, "{some}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// `insert_from_kit`'s `x` and `y` put the instance box's left and top there,

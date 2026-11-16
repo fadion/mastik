@@ -464,7 +464,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "list_documents",
         doc: "Every document in the person's library: path, name, project and whether it is a kit. Needs no current document.",
-        params: &[],
+        params: &[QUERY_NAME],
     },
     Tool {
         name: "create_document",
@@ -482,7 +482,7 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "list_kits",
         doc: "Every kit in the library: id, name, path, the version it last published and that publish's note. Needs no current document.",
-        params: &[],
+        params: &[QUERY_NAME],
     },
     Tool {
         name: "get_kit",
@@ -992,8 +992,8 @@ mod tests {
     /// budget.
     #[test]
     fn the_tool_list_stays_within_its_budget() {
-        const CORE_BUDGET: usize = 25_800;
-        const ALL_BUDGET: usize = 101_500;
+        const CORE_BUDGET: usize = 25_900;
+        const ALL_BUDGET: usize = 101_700;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

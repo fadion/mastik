@@ -399,8 +399,11 @@ impl Engine {
             return Output::json(describe_tools(&call.args, level));
         }
         if kits::WITHOUT_DOCUMENT.contains(&call.tool.as_str()) {
-            return match kits::without_document(docs, &call) {
-                Ok(v) => Output::json(v),
+            let answer = kits::without_document(docs, &call)
+                .and_then(|v| read_fits(&call.tool, Answer::Json(v)));
+            return match answer {
+                Ok(Answer::Json(v)) => Output::json(v),
+                Ok(_) => Output::error("an answer that is not JSON"),
                 Err(why) => Output::error(why),
             };
         }
@@ -799,7 +802,7 @@ fn read_fits(tool: &str, answer: Answer) -> Result<Answer, String> {
     }
     let instead = match tool {
         "find_like" => "pass a smaller `limit`",
-        "list_components" | "list_variables" | "list_styles" => {
+        "list_components" | "list_variables" | "list_styles" | "list_documents" | "list_kits" => {
             "pass `query` to list the ones whose name holds it"
         }
         "export_tokens" => "read them in parts with `list_variables` and `list_styles`",
@@ -2478,6 +2481,44 @@ mod tests {
             read_fits("set_name", write).is_ok(),
             "a write is never refused after the fact"
         );
+    }
+
+    /// A read the document makes too long is refused through the call itself,
+    /// naming `query`.
+    ///
+    /// flip: `answer_ids` without its `read_fits` → fails at "refused".
+    #[test]
+    fn a_read_past_the_budget_is_refused_through_the_call() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let fills = mastik_core::keyed_by_position([mastik_core::Fill {
+            brush: mastik_core::peniko::Color::from_rgba8(1, 2, 3, 255).into(),
+            visible: true,
+        }]);
+        let pad = "x".repeat(200);
+        let ops = (0..600)
+            .map(|i| mastik_core::Operation::AddStyle {
+                style: mastik_core::style::Style {
+                    id: docs.session.ids.mint_style(),
+                    name: format!("Style {i} {pad}"),
+                    value: mastik_core::style::StyleValue::Fills(fills.clone()),
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            })
+            .collect();
+        assert!(docs.session.commit(mastik_core::Transaction(ops)));
+        let out = call(&mut engine, &mut docs, 1, "list_styles", json!({}));
+        let text = format!("{:?}", out.content);
+        assert!(out.is_error && text.contains("`query`"), "refused");
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            1,
+            "list_styles",
+            json!({ "query": "style 7 " }),
+        ));
     }
 
     /// A row whose raster would pass the per-file pixel ceiling is refused by
