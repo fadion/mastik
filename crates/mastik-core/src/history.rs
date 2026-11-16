@@ -73,6 +73,11 @@ pub struct StepNote {
     /// Not kept between sessions, whose serials are minted afresh.
     #[serde(skip)]
     pub reverts: Option<u64>,
+    /// Which MCP client made the step, as the host tells clients apart (its key,
+    /// or its connection); `None` for any other step. [`Origin::Mcp`]'s name is
+    /// only what the client called itself, which two clients can share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 /// Why [`History::revert`] took nothing back.

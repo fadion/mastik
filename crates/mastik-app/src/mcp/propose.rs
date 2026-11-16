@@ -248,6 +248,8 @@ fn finish_apply(session: &mut EditorSession, p: &Proposal, made: usize) -> Resul
             client: p.client.clone(),
             tool: "propose_edit".into(),
         };
+        // The chat's, as its own writes are, though the person applied it.
+        note.agent = p.key.as_deref().map(super::keyed_agent);
     }
     let serial = session
         .history

@@ -567,6 +567,10 @@ pub struct EditorSession {
     /// ([`Self::name_step`]). Taken by that commit whether or not it changes
     /// anything, and dropped each frame, so a door's name never lands on another's.
     naming: Option<(String, &'static str, mastik_core::Origin)>,
+    /// The MCP client a call is being answered for, set by the engine around
+    /// the call: every step committed meanwhile carries it as
+    /// [`mastik_core::StepNote::agent`], however the step was named.
+    pub(crate) mcp_agent: Option<String>,
     /// Which step's state is on disk: `Some(None)` for the document as it was
     /// opened, `Some(Some(serial))` for the state just after that step, `None`
     /// when no state in the history is (never saved, or restored from a crash).
@@ -861,6 +865,7 @@ impl EditorSession {
             saving: None,
             run: None,
             naming: None,
+            mcp_agent: None,
             saved_step,
             opened: saved_step.is_some(),
             resumed: false,
@@ -1613,6 +1618,7 @@ impl EditorSession {
             page: first.and_then(|id| self.doc.page_of(id)),
             subjects,
             reverts: None,
+            agent: self.mcp_agent.clone(),
         }
     }
 

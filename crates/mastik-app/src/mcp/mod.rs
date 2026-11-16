@@ -178,6 +178,22 @@ fn who(call: &Call) -> Who {
     }
 }
 
+/// The client `call` comes from as its steps record it
+/// ([`mastik_core::StepNote::agent`]): its key, or its connection in this
+/// process, so an unkeyed client's steps stop being its own when it reconnects,
+/// as its revisions do.
+fn agent(call: &Call) -> String {
+    match who(call) {
+        Who::Key(key) => keyed_agent(&key),
+        Who::Conn(conn) => format!("conn:{}:{conn}", std::process::id()),
+    }
+}
+
+/// [`agent`] for the client that gave `key`.
+fn keyed_agent(key: &str) -> String {
+    format!("key:{key}")
+}
+
 /// How many keyed clients a host remembers after their connections close. A
 /// harness that starts a process per turn comes back on a new connection each
 /// turn with the same key.
@@ -615,6 +631,7 @@ impl Engine {
         let before = session.revision();
         let changed = catch_up(conn, session);
         let mark = session.mark();
+        session.mcp_agent = Some(agent(&call));
         let mut proposed = None;
         let mut held_redo = None;
         let answer = if call.tool == "propose_edit" {
@@ -648,6 +665,7 @@ impl Engine {
         let Some(session) = docs.session(&path) else {
             return Output::error(format!("{} closed during the call", path.display()));
         };
+        session.mcp_agent = None;
         // A refused `batch` or `set` takes back the steps it made, and leaves the
         // revision where it was, so no client sees a change that is not there.
         // Only these two: they change the document through the history alone,
@@ -1384,9 +1402,9 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
             Ok(Answer::Image(png))
         }
         "undo" | "redo" if s.compare.is_some() => Err(READ_ONLY.to_owned()),
-        "undo" => undo(s, &call.client),
+        "undo" => undo(s, &agent(call)),
         "redo" => {
-            let step = own_step(s.history.undone().next(), &call.client, "redo")?;
+            let step = own_step(s.history.undone().next(), &agent(call), "redo")?;
             json(json!({ "redone": s.redo().then_some(step).flatten() }))
         }
         "run_exports" => reads::run_exports(s, nodes(args, "ids")?),
@@ -1407,8 +1425,8 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
 /// On top of the history it is undone; under later steps, the person's or
 /// another client's, it is taken back alone as a new step when those changed
 /// other things (`EditorSession::revert`), and refused, naming why, when not.
-fn undo(s: &mut EditorSession, client: &str) -> Result<Answer, String> {
-    let mine = |n: &mastik_core::StepNote| matches!(&n.origin, mastik_core::Origin::Mcp { client: c, .. } if c == client);
+fn undo(s: &mut EditorSession, agent: &str) -> Result<Answer, String> {
+    let mine = |n: &mastik_core::StepNote| n.agent.as_deref() == Some(agent);
     let latest = s
         .history
         .done()
@@ -1426,7 +1444,7 @@ fn undo(s: &mut EditorSession, client: &str) -> Result<Answer, String> {
             Err(why) => Err(format!("Your step `{label}`: {why}. Nothing was changed")),
         },
         None => {
-            let step = own_step(s.history.done().next_back(), client, "undo")?;
+            let step = own_step(s.history.done().next_back(), agent, "undo")?;
             json(json!({ "undone": s.undo().then_some(step).flatten() }))
         }
     }
@@ -1516,23 +1534,21 @@ fn run_script(
 
 /// Refuse an agent's `undo` or `redo` of a step it did not make: the history is
 /// the person's too, and one agent call must not take back their work or another
-/// client's. A step is this client's when it came over MCP under its name.
-/// Answers the step's name as the History panel lists it, `None` at the end of
-/// the history.
+/// client's. A step is this client's when it carries its [`agent`], not merely
+/// its name: two sessions of one harness share that. Answers the step's name as
+/// the History panel lists it, `None` at the end of the history.
 fn own_step(
     step: Option<mastik_core::StepView<'_>>,
-    client: &str,
+    agent: &str,
     verb: &str,
 ) -> Result<Option<String>, String> {
     let Some(step) = step else {
         return Ok(None);
     };
     match &step.note.origin {
-        mastik_core::Origin::Mcp { client: c, .. } if c == client => {
-            Ok(Some(step.note.label.clone()))
-        }
+        _ if step.note.agent.as_deref() == Some(agent) => Ok(Some(step.note.label.clone())),
         mastik_core::Origin::Mcp { client: c, .. } => Err(format!(
-            "The step to {verb} is `{}`, made by {c}, not by you: nothing was changed",
+            "The step to {verb} is `{}`, made by another client ({c}), not by you: nothing was changed",
             step.note.label
         )),
         mastik_core::Origin::User => Err(format!(
@@ -3959,14 +3975,17 @@ mod tests {
     }
 
     /// An agent's `undo` takes back its own step, and is refused over the person's
-    /// step or another client's, changing nothing.
+    /// step or another client's, changing nothing, though that client gave the
+    /// same name at `initialize`.
     ///
     /// flip: `own_step` answering `Ok(())` always → fails at "the person's step is
-    /// refused".
+    /// refused"; `own_step` judging by `Origin::Mcp`'s name → fails at "another
+    /// client of the same name".
     #[test]
     fn undo_takes_back_only_the_callers_own_step() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
         open(&mut engine, &mut docs, 1);
+        open(&mut engine, &mut docs, 2);
         let id = NodeId::from_wire(&rect(&mut engine, &mut docs, 1, "Mine")).unwrap();
         let rename = mastik_core::Transaction(vec![mastik_core::Operation::SetName {
             id,
@@ -3977,10 +3996,9 @@ mod tests {
         assert!(out.is_error, "the person's step is refused");
         assert_eq!(docs.session.history.undo_depth(), 2, "nothing changed");
         docs.session.undo();
-        let (reply, _answer) = sync_channel(1);
-        let mut other = Call::new(1, None, "undo", json!({}), reply);
-        other.client = "other".into();
-        assert!(engine.handle(&mut docs, other).is_error, "another client's");
+        let other = call(&mut engine, &mut docs, 2, "undo", json!({}));
+        assert!(other.is_error, "another client of the same name");
+        assert_eq!(docs.session.history.undo_depth(), 1);
         ok(&call(&mut engine, &mut docs, 1, "undo", json!({})));
         assert_eq!(docs.session.history.undo_depth(), 0, "its own is undone");
     }
