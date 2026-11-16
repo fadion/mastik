@@ -2824,18 +2824,16 @@ impl MastikApp {
             egui::pos2(x, plate.bottom() - ui::CONTROL_H),
             egui::vec2(ui::action_button_w(ui.ctx(), "Continue"), ui::CONTROL_H),
         );
-        let pressed = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(button), |ui| {
-                ui::action_button(
-                    ui,
-                    icon::ARROW_RIGHT,
-                    "Continue",
-                    FieldButton::Primary,
-                    button.size(),
-                )
-            })
-            .inner
-            .clicked();
+        // A child, not a scope: a scope would move the row's cursor to the button's
+        // end, and the cards beside the continue card would start there.
+        let pressed = ui::action_button(
+            &mut ui.new_child(egui::UiBuilder::new().max_rect(button)),
+            icon::ARROW_RIGHT,
+            "Continue",
+            FieldButton::Primary,
+            button.size(),
+        )
+        .clicked();
         if (pressed || resp.clicked()) && !self.dash.menu_was_up && self.can_open() {
             *act = Some(Act::Open(entry.path.clone()));
         }
@@ -9782,9 +9780,11 @@ mod tests {
     }
 
     /// The document the continue card offers is not a grid card as well, and the
-    /// list view offers no continue card and lists it as a row.
+    /// list view offers no continue card and lists it as a row; the card beside
+    /// it starts past its right edge.
     /// flip: `dashboard_body` keeping the continue card's document in the grid →
-    /// fails at "named once".
+    /// fails at "named once"; `continue_card` placing its button in a scope →
+    /// fails at "starts past its right edge".
     #[test]
     fn the_continued_document_is_not_a_card_twice_and_the_list_has_no_continue() {
         let ctx = egui::Context::default();
@@ -9822,6 +9822,20 @@ mod tests {
             "named once, on the continue card"
         );
         assert_eq!(named(&runs, "Ledger"), 1, "and the other is a card");
+        // The card's left from its eyebrow, its width from where its name starts.
+        let x = |t: &str| runs.iter().find(|(_, _, s)| s == t).unwrap().0.x;
+        let card_left = x("CONTINUE") - 12.0;
+        let card_w = (x("Wallet") - card_left - PROJECT_PAD - 20.0) / CONTINUE_COVER_SHARE;
+        assert!(
+            card_w < CONTINUE_MAX_W,
+            "the fixture is wide enough for cards beside it"
+        );
+        assert!(
+            x("Ledger") >= card_left + card_w + GRID_GAP + 12.0 - 0.5,
+            "the card beside it starts past its right edge: {} against {}",
+            x("Ledger"),
+            card_left + card_w
+        );
 
         app.dash.list_view = true;
         let runs = galleys(&mut app, &ctx);
