@@ -1326,6 +1326,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
         "list_styles" => json(reads::styles(&s.doc)),
         tool if inspect::TOOLS.contains(&tool) => inspect::run(s, tool, args),
         tool if context::TOOLS.contains(&tool) => context::run(s, tool, args),
+        "run_script" => run_script(conn, s, &call.client, args),
         "batch" => batch(conn, s, &call.client, args),
         "set" => set(conn, s, &call.client, args),
         tool => write(conn, s, &call.client, tool, args),
@@ -1359,6 +1360,88 @@ fn undo(s: &mut EditorSession, client: &str) -> Result<Answer, String> {
             json(json!({ "undone": s.undo().then_some(step).flatten() }))
         }
     }
+}
+
+/// The most printed lines `run_script` answers; the earlier ones are counted.
+const PRINTED_LISTED: usize = 100;
+
+/// `run_script`: Command Mode's Luau run as the script editor runs it
+/// (`command::host::run_as_step`), one undo step named by the tool and marked
+/// as the client's. A raise, a spent budget or a stale `base_rev` takes every
+/// write back and keeps the person's redo. The selection is left alone.
+fn run_script(
+    conn: &Connection,
+    s: &mut EditorSession,
+    client: &str,
+    args: &Value,
+) -> Result<Answer, String> {
+    let source = args["source"].as_str().unwrap_or_default();
+    let selection = nodes(args, "nodes")?.unwrap_or_default();
+    let mut labels = rustc_hash::FxHashMap::default();
+    for (name, id) in args
+        .get("layers")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let id = id
+            .as_str()
+            .and_then(NodeId::from_wire)
+            .ok_or_else(|| format!("`layers.{name}`: `{id}` is not a layer id"))?;
+        labels.insert(name.clone(), id);
+    }
+    let env = mastik_vm::Env {
+        selection: &selection,
+        labels: &labels,
+        params: Map::new(),
+    };
+    let base = index(args, "base_rev");
+    let depth = s.history.undo_depth();
+    let ran = crate::command::host::run_as_step(s, "run_script", "", |h| {
+        let outcome = mastik_vm::run_script(h, &env, source)?;
+        if let Some(base) = base {
+            let made: Vec<mastik_core::Operation> =
+                h.s.history
+                    .done()
+                    .skip(depth)
+                    .flat_map(|v| v.inverse.0.clone())
+                    .collect();
+            stale(conn, h.s, base, &mastik_core::Transaction(made)).map_err(|why| {
+                mastik_vm::VmError {
+                    kind: mastik_vm::ErrorKind::Error,
+                    message: why,
+                    line: None,
+                    span: None,
+                    fix: None,
+                }
+            })?;
+        }
+        Ok(outcome)
+    });
+    let (outcome, counts, serial) = ran.map_err(|e| format!("{e}. Nothing was changed."))?;
+    if serial.is_some()
+        && let Some(note) = s.history.current_note_mut()
+    {
+        note.origin = mastik_core::Origin::Mcp {
+            client: client.to_owned(),
+            tool: "run_script".into(),
+        };
+        note.glyph = "".into();
+    }
+    let printed = &outcome.printed;
+    let cut = printed.len().saturating_sub(PRINTED_LISTED);
+    let mut answer = json!({
+        "printed": printed[cut..],
+        "created": outcome.created.iter().map(|id| id.to_wire()).collect::<Vec<_>>(),
+        "said": counts.said().unwrap_or_else(|| "Nothing changed".into()),
+    });
+    if let Some(value) = outcome.value {
+        answer["value"] = json!(value);
+    }
+    if cut > 0 {
+        answer["printed_before"] = json!(cut);
+    }
+    Ok(Answer::Json(answer))
 }
 
 /// Refuse an agent's `undo` or `redo` of a step it did not make: the history is
@@ -3766,6 +3849,55 @@ mod tests {
         assert!(engine.handle(&mut docs, other).is_error, "another client's");
         ok(&call(&mut engine, &mut docs, 1, "undo", json!({})));
         assert_eq!(docs.session.history.undo_depth(), 0, "its own is undone");
+    }
+
+    /// `run_script` runs a loop over `nodes` and a layer named in `layers` as one
+    /// undo step marked as the client's; a raise after a write, or a `base_rev`
+    /// a layer it wrote moved past, changes nothing.
+    ///
+    /// flip: `run_script` dropping its `base_rev` check → fails at "stale".
+    #[test]
+    fn run_script_is_one_step_and_a_failure_changes_nothing() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let a = rect(&mut engine, &mut docs, 1, "A");
+        let b = rect(&mut engine, &mut docs, 1, "B");
+        let depth = docs.session.history.undo_depth();
+        let source =
+            "for i, l in ipairs(sel) do l.x = i * 100 end\ncard.name = \"Hero\"\nprint(#sel)";
+        let args = json!({ "source": source, "nodes": [a, b], "layers": { "card": a } });
+        let out = call(&mut engine, &mut docs, 1, "run_script", args);
+        assert_eq!(ok(&out)["printed"], json!(["2"]));
+        let id = |w: &str| NodeId::from_wire(w).unwrap();
+        let left = |docs: &One, w: &str| {
+            let r = docs.session.resolved.world_bounds(id(w)).unwrap();
+            r.x0.round()
+        };
+        assert_eq!((left(&docs, &a), left(&docs, &b)), (100.0, 200.0));
+        assert_eq!(docs.session.doc.get(id(&a)).unwrap().name(), "Hero");
+        assert_eq!(docs.session.history.undo_depth(), depth + 1, "one step");
+        let step = docs.session.history.done().next_back().unwrap();
+        assert!(matches!(
+            &step.note.origin,
+            mastik_core::Origin::Mcp { tool, .. } if tool == "run_script"
+        ));
+
+        let args = json!({ "source": "sel.x = 5\nerror(\"boom\")", "nodes": [b] });
+        let out = call(&mut engine, &mut docs, 1, "run_script", args);
+        assert!(out.is_error);
+        assert_eq!(left(&docs, &b), 200.0, "a raise takes the write back");
+        assert_eq!(docs.session.history.undo_depth(), depth + 1);
+
+        let rev = ok(&call(&mut engine, &mut docs, 1, "get_selection", json!({})))["rev"].clone();
+        let rename = mastik_core::Transaction(vec![mastik_core::Operation::SetName {
+            id: id(&b),
+            name: "Theirs".into(),
+        }]);
+        docs.session.try_commit(rename).unwrap();
+        let args = json!({ "source": "sel.opacity = 0.5", "nodes": [b], "base_rev": rev });
+        let out = call(&mut engine, &mut docs, 1, "run_script", args);
+        assert!(out.is_error, "stale");
+        assert_eq!(docs.session.doc.get(id(&b)).unwrap().opacity(), 1.0);
     }
 
     /// Under the person's later step on another layer, an agent's `undo` takes

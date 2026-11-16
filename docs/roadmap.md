@@ -6,16 +6,6 @@ work is described in `architecture.md`. Refs are file + function name, never lin
 the code before picking an item up — an item's premise can go stale while its ask still reads
 true.
 
-## Now · MCP
-
-Fewer tokens and fewer round trips for an agent driving `mastik-mcp`. `tools/list` names the core
-set (`mastik_mcp::tools::CORE`), and `schema`'s `the_tool_list_stays_within_its_budget` holds it
-and the whole list to byte budgets. Each item lands with a size budget test, and the set is checked
-by re-running the same agent task on the old and new build.
-
-- **A script tool** — Command Mode's language (`mastik-vm`, `design/command-mode.md`) exposed to
-  agents as one tool, so a loop runs in one call.
-
 ## Now · Library
 
 Documents are found by name alone: search is a lowercase substring of the display name or a

@@ -1,6 +1,6 @@
-//! Short ids per client (§8.1a): a client other than a chat is shown `n36` for
-//! `48c991654e6b8e81:36`, a fifth of the tokens, by a table of actors kept per
-//! client in the order the client first saw them. Ids read back through
+//! Short ids per client (§8.1a): a client that asked for them, never a chat, is
+//! shown `n36` for `48c991654e6b8e81:36`, by a table of actors kept per client
+//! in the order the client first saw them. Ids read back through
 //! `NodeId::from_wire` inside `mastik_core::with_short_ids`, so only a place
 //! read as an id takes the short form; the answer is rewritten on its way out.
 //!

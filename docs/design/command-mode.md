@@ -416,8 +416,13 @@ sized from their laid-out text each frame.
 
 Reads stay typed tools, and so do single edits, for validated arguments and an error per call. A
 document's stored scripts are written through `add_script`, `set_script` and `remove_script`
-(`mcp.md` §8.4); MCP runs none. A tool that runs the language for bulk work is open work
-(`roadmap.md`). `/ai` is unbuilt (`ai.md`).
+(`mcp.md` §8.4); MCP runs none of them. Bulk work goes through `run_script(source, nodes?,
+layers?)`, which runs Luau as the script editor does (`run_as_step`, under `RUN_BUDGET`, no line
+sugar), so a loop over many layers is one call and one undo step marked as the agent's: `nodes` is
+`sel`, and `layers` binds names to layers as leap labels are bound. It answers what the run printed
+(the last 100 lines), the layers it made and what it changed, leaves the person's selection alone,
+and with `base_rev` is taken back whole when a layer it wrote changed since. `/ai` is unbuilt
+(`ai.md`).
 
 ## 12. Non-goals
 
