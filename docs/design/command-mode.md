@@ -421,8 +421,8 @@ layers?)`, which runs Luau as the script editor does (`run_as_step`, under `RUN_
 sugar), so a loop over many layers is one call and one undo step marked as the agent's: `nodes` is
 `sel`, and `layers` binds names to layers as leap labels are bound. It answers what the run printed
 (the last 100 lines), the layers it made and what it changed, leaves the person's selection alone,
-and with `base_rev` is taken back whole when a layer it wrote changed since. `/ai` is unbuilt
-(`ai.md`).
+and with `base_rev` is taken back whole when a layer it wrote changed since. `/ai` turns the
+other way: the assistant writes a script and the person runs it from the bar (*The command bar*).
 
 ## 12. Non-goals
 
@@ -560,6 +560,33 @@ rules*): a row's name is never cut for its note.
   verb, else *Edit*, with `TERMINAL_WINDOW`). `Escape` closes the log's menu if it is open, else the
   list, else clears the text, then closes.
   A failed line stays in the field with its error.
+- **`/ai`**: a line reading `/ai` and a request (`ai_request`; `/aim` is not one) asks the
+  assistant for a script. It is not Luau: no completion, no live read, and the footer reads *Enter
+  asks ‹speaker› for a script*.
+  - `Enter` sends it into the panel's chat (`assistant_ask_script`, `assistant.md` §6), so the
+    harness, session, sign-in and access level are the panel's. The selection goes as chips, and
+    each leap label the request names is told to the model as the layer id it stands for, which the
+    script reads by that label. When the assistant cannot send, the error line says why
+    (`Why::sentence`); a bare `/ai` says *Type a request after /ai*.
+  - While the reply runs, `Enter` waits and the footer reads *Asking ‹speaker› · the reply shows in
+    the assistant panel*. When the turn ends, the reply's last `luau` or `lua` block, else its one
+    code block when that is unlabelled, is the proposed script (`assistant_script`); with neither,
+    the error line says *The reply held no script: it is in the assistant panel*. The reply is
+    found by its place in the thread, so it counts only while the message before it is still this
+    `/ai` request: after a new chat, or with another document's thread in front, the error line
+    says the reply is gone.
+  - The list shows the script under a *Script* label, a mono row a line, at most eight rows, the
+    last *N more lines · Tab opens them all* when it runs longer. The footer reads *Enter runs it as
+    one step · Tab opens it in the editor*.
+  - `Enter` runs it as a script runs (`run_ai_script`: `run_as_step`, no line sugar, `RUN_BUDGET`)
+    on the selection, the bar's labels bound: one step named by the request (cut at 40
+    characters), wearing `icon::SPARKLE` and marked `Origin::Mcp { client: ‹speaker›, tool: "/ai" }`,
+    as a proposal's Apply is, since the person runs what the agent wrote. The log records it as the
+    line `/ai ‹request›` with the script as its Luau. A raise takes the run back (§7) and shows on
+    the error line without a span, since the script's place is not the field's; the script stays
+    proposed.
+  - `Tab` closes the bar and opens the script in the editor as a new unsaved script. Editing the
+    request drops the request and its script; its turn goes on in the panel.
 
 ## Traps
 

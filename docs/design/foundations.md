@@ -157,7 +157,7 @@ Not designed: conflict resolution, causality/ordering metadata, presence, networ
 
 ## 13. Command Mode
 
-A keyboard-driven way to walk the node tree and edit at typing speed, through the same verbs agents use over MCP. Built: the **command bar** with two focuses, **Type** (`:`, one line of Luau over the selection, one undo step) and **Pick** (`` ` ``, the canvas has the keys: leap labels select, the arrows walk the tree), and **scripts** (the editor, the library folder, scripts stored in documents and kits). The design is in `command-mode.md`; the keys in `shortcuts.md` §15. `/ai` in the bar, a door into the assistant, is unbuilt (`docs/ai.md`).
+A keyboard-driven way to walk the node tree and edit at typing speed, through the same verbs agents use over MCP. Built: the **command bar** with two focuses, **Type** (`:`, one line of Luau over the selection, one undo step) and **Pick** (`` ` ``, the canvas has the keys: leap labels select, the arrows walk the tree), and **scripts** (the editor, the library folder, scripts stored in documents and kits). The design is in `command-mode.md`; the keys in `shortcuts.md` §15. `/ai` in the bar is a door into the assistant: a request answered with a script the person runs as one step.
 
 ### Decisions made
 

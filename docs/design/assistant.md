@@ -5,7 +5,8 @@ doing, why a layout breaks at a width, how to name a set of variants, what to ch
 contrast failure. They ask in a panel at the tool rail's foot, attach layers from the canvas, and
 read short answers that can point back at layers and propose edits. The harness layer is
 `crates/mastik-ai`; the window's side is `mastik-app`'s `assistant` module and `mcp::{access,
-propose, agent_log}`. What is still unbuilt (Command Mode's `/ai`) is in `docs/ai.md`.
+propose, agent_log}`. Headings keep the numbers they had in `ai.md`, so an `ai.md §4` cited from
+code is found here.
 
 ## 1. The thesis
 
@@ -379,7 +380,9 @@ layers being asked about, and is one more kind of surface.
   diagnostics); a turn the harness ends as failed leaves *Claude Code ended the turn with an
   error.* the same way, whether or not it wrote a reason.
 - **Replies render markdown**: paragraphs, lists, tables, code blocks with a language bar and
-  *Copy*. A loose list, its items parted by blank lines, is one list, and an ordered one is
+  *Copy*. A block in `luau` or `lua` (`markdown::is_luau`) also wears `icon::FILE_CODE`, the log's
+  *Open in editor* glyph, left of *Copy*: *Open in script editor* opens it as a new unsaved script
+  (`open_script_editor_with`). A loose list, its items parted by blank lines, is one list, and an ordered one is
   numbered from its first number. A reply's text is parsed once, not every frame (an egui
   `FrameCache` keyed by the text). A proposal renders as its card (§4).
 - **An ` ```options ` block renders as a stack of `ui::field_button`s**; a click sends its line as
@@ -393,6 +396,10 @@ layers being asked about, and is one more kind of surface.
   Enter sends, Shift+Enter breaks the line, and the send button becomes *Stop* (`icon::STOP`)
   while a turn runs. `Ctrl+↑`/`Ctrl+↓` step through earlier
   questions.
+- **The command bar's `/ai` asks in this thread** (`assistant_ask_script`, `command-mode.md` §11):
+  the thread shows `/ai <request>` as the person's turn with the selection as its chips, while the
+  model is sent `prompt::bar_request`, which asks for one ` ```luau ` block and no edit of its own.
+  *Regenerate* and *Ask again* send the `/ai …` text again as an ordinary question.
 - **When it cannot send**, the composer is replaced by the reason, and off wins over every other:
   the assistant is off (*Open settings*); private mode; the document is unsaved (*Save the document
   to ask about it.*); not signed in, saying to run the program once in a terminal; the program not

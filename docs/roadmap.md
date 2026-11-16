@@ -44,12 +44,6 @@ library knows nothing of what a document holds. A card shows its cover, name and
   searches it, with a chip to widen to the library; *Starred* and *Kits* offer *Last opened* as a
   sort.
 
-## Now
-
-- **`/ai`** — a request typed in the command bar goes to the assistant's configured harness, and
-  what it proposes lands as one undoable step (`ai.md`). With it, a Luau block in an assistant reply
-  gains *Open in script editor*. Open: how the request and its proposed script look in the bar.
-
 ## Now · Prototyping
 
 A release of its own, after the work above: the document played, with interactions, flows,

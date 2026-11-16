@@ -853,6 +853,107 @@ impl MastikApp {
     /// Answers whether the question was taken: `false` leaves the draft for the
     /// person, as while the program is still being looked for.
     pub(crate) fn assistant_send(&mut self, text: String, chips: Vec<Chip>) -> bool {
+        self.assistant_send_as(text, chips, None)
+    }
+
+    /// The command bar's `/ai`: send `request` with the selection attached,
+    /// asking for one Luau script; `named` are the labels the request names,
+    /// which the script reads too. Answers the reply's place in the thread,
+    /// for [`Self::assistant_script`], or why nothing was sent.
+    pub(crate) fn assistant_ask_script(
+        &mut self,
+        request: &str,
+        named: &[(String, NodeId)],
+    ) -> Result<usize, String> {
+        if self.assistant.running.is_some() {
+            return Err("The assistant is answering: wait for it, or stop it in its panel".into());
+        }
+        if let Some(why) = self.assistant_blocked() {
+            return Err(why.sentence());
+        }
+        let chips = self.selection_chips();
+        let mut turn = prompt::bar_request(request);
+        for (label, id) in named {
+            let name = self.layer_name(&id.to_wire()).unwrap_or_default();
+            turn.push_str(&format!(
+                "\n`{label}` is the layer {} (“{name}”); the script reads it as `{label}` too.",
+                id.to_wire()
+            ));
+        }
+        self.assistant_send_as(format!("/ai {request}"), chips, Some(turn));
+        match &self.assistant.running {
+            Some(r) => Ok(r.msg),
+            None => Err(self
+                .assistant
+                .msgs
+                .iter()
+                .rev()
+                .find_map(|m| match m {
+                    Msg::Note(Note::Failed { text, .. }) => Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "The assistant could not start".into())),
+        }
+    }
+
+    /// The script the reply at `msg` to `/ai request` proposed, once its turn
+    /// has ended: the last Luau block in its prose, else its one unlabelled
+    /// block. `None` while the turn runs; `Some(Err)` when the reply holds
+    /// none, or the thread no longer holds that question there (a new chat, or
+    /// another document's thread in front).
+    pub(crate) fn assistant_script(
+        &self,
+        msg: usize,
+        request: &str,
+    ) -> Option<Result<String, String>> {
+        if self
+            .assistant
+            .running
+            .as_ref()
+            .is_some_and(|r| r.msg == msg)
+        {
+            return None;
+        }
+        let asked = msg
+            .checked_sub(1)
+            .and_then(|q| self.assistant.msgs.get(q))
+            .is_some_and(
+                |m| matches!(m, Msg::Person { text, .. } if *text == format!("/ai {request}")),
+            );
+        let (true, Some(Msg::Agent { parts, .. })) = (asked, self.assistant.msgs.get(msg)) else {
+            return Some(Err("The reply is gone from the assistant's thread".into()));
+        };
+        let prose: Vec<&str> = parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::Text(t) => Some(t.as_str()),
+                Part::Tool(_) => None,
+            })
+            .collect();
+        let blocks = markdown::parse(&prose.join("\n\n"));
+        let code: Vec<(&str, &str)> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                markdown::Block::Code { lang, text } => Some((lang.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect();
+        let luau = code.iter().rev().find(|(lang, _)| markdown::is_luau(lang));
+        let bare = match code.as_slice() {
+            [("", text)] => Some(text),
+            _ => None,
+        };
+        Some(
+            luau.map(|(_, text)| text)
+                .or(bare)
+                .map(|t| t.trim_end().to_owned())
+                .ok_or_else(|| "The reply held no script: it is in the assistant panel".into()),
+        )
+    }
+
+    /// [`Self::assistant_send`], the model given `turn` in place of `text` when
+    /// there is one, while the thread shows `text`.
+    fn assistant_send_as(&mut self, text: String, chips: Vec<Chip>, turn: Option<String>) -> bool {
         let text = text.trim().to_owned();
         if text.is_empty() || self.assistant.running.is_some() {
             return false;
@@ -930,7 +1031,7 @@ impl MastikApp {
             false => Vec::new(),
         };
         let turn = ai::Turn {
-            text: format!("{pre}{text}"),
+            text: format!("{pre}{}", turn.as_deref().unwrap_or(&text)),
             images,
         };
         let sent = match self.assistant.live.as_mut() {

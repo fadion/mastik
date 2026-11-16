@@ -47,6 +47,7 @@ enum Act {
     Apply(u64),
     Undo(u64),
     Retry(u64, String),
+    OpenScript(String),
 }
 
 impl MastikApp {
@@ -242,6 +243,7 @@ impl MastikApp {
             Act::WidthDone => self.prefs.save(),
             Act::Apply(id) => self.assistant_apply(id),
             Act::Undo(id) => self.assistant_undo(id),
+            Act::OpenScript(source) => self.open_script_editor_with(source),
             Act::Retry(id, name) => {
                 // The layers it writes that are still there go with the question.
                 let writes: Vec<String> = self
@@ -495,6 +497,7 @@ impl MastikApp {
                             MdAct::Select(id) => Act::Select(id),
                             MdAct::Hover(id) => Act::Hover(id),
                             MdAct::Choose(line) => Act::Choose(line),
+                            MdAct::OpenScript(source) => Act::OpenScript(source),
                         });
                     }
                 }

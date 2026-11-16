@@ -227,7 +227,55 @@ pub(crate) struct Bar {
     references: Vec<(NodeId, egui::Color32)>,
     /// The pick in progress, writing its current layer into the line.
     live: Option<Live>,
+    /// `/ai`: the request sent and, once its reply ends, the script it holds.
+    ai: Option<Ai>,
 }
+
+/// The command bar's `/ai` request, from sending to the script it proposed.
+#[derive(Clone, Debug)]
+enum Ai {
+    /// Sent; its reply is the assistant thread's message at `msg`.
+    Asking { request: String, msg: usize },
+    /// The reply's script, which `Enter` runs as one step.
+    Proposed { request: String, script: String },
+}
+
+impl Ai {
+    fn request(&self) -> &str {
+        match self {
+            Ai::Asking { request, .. } | Ai::Proposed { request, .. } => request,
+        }
+    }
+}
+
+/// The request of a line reading `/ai` and a request, `None` for any other
+/// line. A bare `/ai` is one with an empty request.
+fn ai_request(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix("/ai")?;
+    match rest.chars().next() {
+        None => Some(""),
+        Some(c) if c.is_whitespace() => Some(rest.trim()),
+        Some(_) => None,
+    }
+}
+
+/// An error the bar shows that no run raised: a refusal in words.
+fn said(message: String) -> mastik_vm::VmError {
+    mastik_vm::VmError {
+        kind: mastik_vm::ErrorKind::Error,
+        message,
+        line: None,
+        span: None,
+        fix: None,
+    }
+}
+
+/// How many lines of a proposed script the list shows; a last row counts the
+/// rest.
+const SCRIPT_ROWS: usize = LIST_ROWS;
+
+/// How long an `/ai` step's name runs before it is cut.
+const AI_LABEL_CHARS: usize = 40;
 
 /// A pick writing into the line as it goes ([`MastikApp::pick_into_line`]).
 struct Live {
@@ -369,6 +417,8 @@ enum List {
     None,
     Log,
     Complete(mastik_vm::Completion),
+    /// The script an `/ai` reply proposed.
+    Script(String),
 }
 
 impl MastikApp {
@@ -629,6 +679,112 @@ impl MastikApp {
         }
     }
 
+    /// An `/ai` request waiting on its reply: once the turn ends, the script it
+    /// holds, or the reason there is none on the error line.
+    fn bar_ai_poll(&mut self, ctx: &egui::Context, bar: &mut Bar) {
+        let Some(Ai::Asking { request, msg }) = bar.ai.clone() else {
+            return;
+        };
+        match self.assistant_script(msg, &request) {
+            None => ctx.request_repaint_after(std::time::Duration::from_millis(250)),
+            Some(Ok(script)) => bar.ai = Some(Ai::Proposed { request, script }),
+            Some(Err(why)) => {
+                bar.error = Some((bar.text.clone(), said(why)));
+                bar.ai = None;
+            }
+        }
+    }
+
+    /// `Enter` on an `/ai` line: run the script its reply proposed, else send
+    /// the request, with the layers its labels name; nothing while the reply
+    /// is on its way.
+    fn bar_ai_enter(&mut self, bar: &mut Bar, named: &[(String, NodeId)]) {
+        let Some(request) = ai_request(&bar.text).map(str::to_owned) else {
+            return;
+        };
+        match bar.ai.take() {
+            Some(Ai::Proposed { request, script }) => match self.run_ai_script(&request, &script) {
+                None => *bar = Bar::default(),
+                Some(e) => {
+                    bar.error = Some((bar.text.clone(), e));
+                    bar.ai = Some(Ai::Proposed { request, script });
+                }
+            },
+            Some(asking @ Ai::Asking { .. }) => bar.ai = Some(asking),
+            None if request.is_empty() => {
+                bar.error = Some((bar.text.clone(), said("Type a request after /ai".into())));
+            }
+            None => match self.assistant_ask_script(&request, named) {
+                Ok(msg) => bar.ai = Some(Ai::Asking { request, msg }),
+                Err(why) => bar.error = Some((bar.text.clone(), said(why))),
+            },
+        }
+    }
+
+    /// Run an `/ai` reply's script on the selection as one undo step named by
+    /// the request, marked as the assistant's: the person runs it, the agent
+    /// wrote it. The bar's labels read in it as in a line. `None` when it ran.
+    fn run_ai_script(&mut self, request: &str, script: &str) -> Option<mastik_vm::VmError> {
+        let selection = self.session.selection.ids().to_vec();
+        let labels = self.bar_labels();
+        let env = mastik_vm::Env {
+            selection: &selection,
+            labels: &labels,
+            params: Default::default(),
+        };
+        let label: String = match request.chars().count() > AI_LABEL_CHARS {
+            true => format!(
+                "{}…",
+                request.chars().take(AI_LABEL_CHARS - 1).collect::<String>()
+            ),
+            false => request.to_owned(),
+        };
+        let speaker = self
+            .prefs
+            .assistant
+            .harness()
+            .map_or_else(|| "the assistant".to_owned(), |h| h.speaker().to_owned());
+        let ran = host::run_as_step(&mut self.session, &label, icon::SPARKLE, |h| {
+            mastik_vm::run_script(h, &env, script)
+        });
+        match ran {
+            Ok((outcome, counts, serial)) => {
+                if serial.is_some()
+                    && let Some(note) = self.session.history.current_note_mut()
+                {
+                    note.origin = mastik_core::Origin::Mcp {
+                        client: speaker,
+                        tool: "/ai".into(),
+                    };
+                }
+                if let Some(ids) = outcome.selection {
+                    self.session.selection.set(ids);
+                }
+                let result = outcome
+                    .printed
+                    .last()
+                    .cloned()
+                    .or_else(|| counts.said())
+                    .unwrap_or_else(|| "Nothing changed".into());
+                self.session.command_log.push(log::Entry::typed(
+                    &format!("/ai {request}"),
+                    script.to_owned(),
+                    result,
+                    false,
+                    serial,
+                ));
+                None
+            }
+            // The script's place is not the field's: its span would squiggle
+            // the request.
+            Err(mut e) => {
+                e.span = None;
+                e.fix = None;
+                Some(e)
+            }
+        }
+    }
+
     /// The live read for the bar's text: taken again when the text or the
     /// document moved, never for a write.
     fn bar_read(&mut self, bar: &mut Bar) {
@@ -642,6 +798,7 @@ impl MastikApp {
             return;
         }
         let value = (!text.is_empty()
+            && ai_request(&text).is_none()
             && mastik_vm::desugar(&text).kind == mastik_vm::LineKind::Read)
             .then(|| {
                 let selection = self.line_subject(&text);
@@ -690,6 +847,17 @@ impl MastikApp {
             bar.recall = None;
             bar.draft = None;
         }
+        // An edited `/ai` line is another request: the one sent goes on in the
+        // assistant panel, and its script is not this line's.
+        if bar
+            .ai
+            .as_ref()
+            .is_some_and(|a| ai_request(&bar.text) != Some(a.request()))
+        {
+            bar.ai = None;
+        }
+        self.bar_ai_poll(ctx, &mut bar);
+        let ai_line = ai_request(&bar.text).is_some();
         self.bar_read(&mut bar);
 
         let mut caret = caret_of(ctx, &bar.text);
@@ -746,8 +914,9 @@ impl MastikApp {
             caret = r.start;
             bar.caret_to = Some(caret);
         }
-        let completion = (!picking && !bar.text.trim().is_empty() && bar.recalled.is_none())
-            .then(|| self.bar_completion(&mut bar, caret));
+        let completion =
+            (!picking && !ai_line && !bar.text.trim().is_empty() && bar.recalled.is_none())
+                .then(|| self.bar_completion(&mut bar, caret));
         bar.suggest
             .follow(&bar.text, completion.as_ref(), caret, keys.suggest);
         let suggesting = bar.suggest.on()
@@ -768,9 +937,14 @@ impl MastikApp {
                 bar = Bar::default();
             }
         }
+        let proposed = match &bar.ai {
+            Some(Ai::Proposed { script, .. }) => Some(script.clone()),
+            _ => None,
+        };
         let list = match completion {
             // Picking keeps the canvas clear: the field sleeps and lists nothing.
             _ if picking => List::None,
+            _ if proposed.is_some() => List::Script(proposed.clone().unwrap_or_default()),
             _ if bar.text.trim().is_empty() || bar.recalled.is_some() => {
                 match self.session.command_log.entries().len() {
                     0 => List::None,
@@ -799,6 +973,13 @@ impl MastikApp {
         // editor's does; otherwise the arrows walk the typed lines, Tab takes an
         // error's fix and Enter runs.
         let mut accepted = false;
+        if keys.tab
+            && let Some(script) = proposed
+        {
+            self.end_bar_session();
+            self.open_script_editor_with(script);
+            return;
+        }
         if let List::Complete(c) = &list {
             if keys.down {
                 bar.suggest.step(rows, false);
@@ -859,7 +1040,15 @@ impl MastikApp {
                 bar.error = None;
             }
         }
-        if keys.enter && !accepted {
+        if keys.enter && !accepted && ai_line {
+            let named: Vec<(String, NodeId)> = pills
+                .named(&bar.text)
+                .into_iter()
+                .map(|(r, id)| (bar.text[r].to_owned(), id))
+                .collect();
+            self.bar_ai_enter(&mut bar, &named);
+            ctx.request_repaint();
+        } else if keys.enter && !accepted {
             bar.suggest.state = Suggest::Off;
             let line = bar.text.trim().to_owned();
             // The error's spans count from the trimmed line; the field holds the
@@ -920,6 +1109,29 @@ impl MastikApp {
         let typed = self.pick_typed().to_owned();
         let mut focus_click: Option<bool> = None;
         let parsed = mastik_vm::desugar(bar.text.trim());
+        // An `/ai` line's footer says where its request stands.
+        let who = self
+            .prefs
+            .assistant
+            .harness()
+            .map_or_else(|| "the assistant".to_owned(), |h| h.speaker().to_owned());
+        let ai_footer: Option<(String, String)> = ai_line.then(|| match &bar.ai {
+            Some(Ai::Asking { .. }) => (
+                format!("Asking {who} · the reply shows in the assistant panel"),
+                "Esc clears".to_owned(),
+            ),
+            Some(Ai::Proposed { script, .. }) => {
+                let n = script.lines().count();
+                (
+                    "Enter runs it as one step · Tab opens it in the editor".to_owned(),
+                    format!("{n} {}", if n == 1 { "line" } else { "lines" }),
+                )
+            }
+            None => (
+                format!("Enter asks {who} for a script"),
+                "` picks".to_owned(),
+            ),
+        });
         let mut clicked_row: Option<usize> = None;
         let mut hovered_row: Option<usize> = None;
         let row_layers = bar
@@ -971,6 +1183,7 @@ impl MastikApp {
                                 completion_rows(ui, &c.rows, bar.suggest.highlight, layer_of);
                         });
                     }
+                    List::Script(script) => list_frame(ui, list_h, |ui| script_rows(ui, script)),
                 }
                 let error = bar.error.as_ref().map(|(_, e)| e.clone());
                 let error = error.as_ref();
@@ -993,6 +1206,10 @@ impl MastikApp {
                         footer(ui, &left, false, "` types");
                     }
                     Some(e) => error_line(ui, e),
+                    None if ai_footer.is_some() => {
+                        let (left, right) = ai_footer.clone().unwrap_or_default();
+                        footer(ui, &hint(&left).0, false, &right);
+                    }
                     None => {
                         // The Luau in the code face; a hint about keys in the
                         // caption face, spelled by `input::keys` as the palette's.
@@ -1206,6 +1423,7 @@ fn list_height(list: &List, log_len: usize) -> f32 {
         List::None => return 0.0,
         List::Log => stack_height(1, log_len.min(LOG_ROWS)),
         List::Complete(c) => completion_height(&c.rows),
+        List::Script(s) => stack_height(1, s.lines().count().clamp(1, SCRIPT_ROWS)),
     };
     let rule = 1.0;
     2.0 * PAD + inner + rule
@@ -1623,6 +1841,41 @@ fn log_row(ui: &mut egui::Ui, e: &log::Entry, picked: bool) -> egui::Response {
     let job = palette::lit_label(text, &[], row_mono(), ink, ink);
     palette::row_texts(&p, rect, rect.right() - 8.0, job, Some((&side, side_ink)));
     resp
+}
+
+/// An `/ai` reply's script under its section label, one row a line in the
+/// monospace face, the first [`SCRIPT_ROWS`] and a last row counting the rest.
+fn script_rows(ui: &mut egui::Ui, script: &str) {
+    palette::section_label(ui, "Script");
+    let lines: Vec<&str> = script.lines().collect();
+    let more = lines.len().saturating_sub(SCRIPT_ROWS);
+    let shown = match more {
+        0 => lines.len(),
+        _ => SCRIPT_ROWS - 1,
+    };
+    for line in &lines[..shown] {
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), ROW_H),
+            egui::Sense::hover(),
+        );
+        let job = palette::lit_label(line, &[], row_mono(), color::text(), color::text());
+        palette::row_texts(ui.painter(), rect, rect.right() - 8.0, job, None);
+    }
+    if more > 0 {
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), ROW_H),
+            egui::Sense::hover(),
+        );
+        let rest = format!("{} more lines · Tab opens them all", more + 1);
+        let job = palette::lit_label(
+            &rest,
+            &[],
+            row_mono(),
+            theme::text::faint(),
+            theme::text::faint(),
+        );
+        palette::row_texts(ui.painter(), rect, rect.right() - 8.0, job, None);
+    }
 }
 
 /// One completion row: its glyph, the insert with the matched letters lit, and
@@ -2299,5 +2552,104 @@ pub(crate) mod tests {
             ..Default::default()
         };
         assert_eq!(scripts.said().as_deref(), Some("1 script changed"));
+    }
+
+    /// `/ai` and a request is an `/ai` line; `/aim` or a request elsewhere is not.
+    #[test]
+    fn an_ai_line_is_read_off_its_prefix() {
+        assert_eq!(ai_request("/ai move it right"), Some("move it right"));
+        assert_eq!(ai_request("  /ai  "), Some(""));
+        assert_eq!(ai_request("/ai"), Some(""));
+        assert_eq!(ai_request("/aim at it"), None);
+        assert_eq!(ai_request(".x += 5 /ai"), None);
+    }
+
+    /// An `/ai` line waiting on a reply holding `text`, as a turn that ended,
+    /// after the question `question` in the thread.
+    fn asked_after(question: &str, text: &str) -> (egui::Context, MastikApp, NodeId) {
+        use crate::assistant::thread::{Msg, Part};
+        let (ctx, mut app, card) = typed("/ai move it right");
+        app.assistant.msgs.push(Msg::Person {
+            text: question.into(),
+            chips: Vec::new(),
+        });
+        let msg = app.assistant.msgs.len();
+        app.assistant.msgs.push(Msg::Agent {
+            speaker: "Claude".into(),
+            harness: "claude".into(),
+            parts: vec![Part::Text(text.into())],
+            stats: None,
+        });
+        app.command_bar.as_mut().unwrap().ai = Some(Ai::Asking {
+            request: "move it right".into(),
+            msg,
+        });
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        (ctx, app, card)
+    }
+
+    /// [`asked_after`] the bar's own question.
+    fn asked(text: &str) -> (egui::Context, MastikApp, NodeId) {
+        asked_after("/ai move it right", text)
+    }
+
+    /// A reply whose question is no longer this request (a new chat, another
+    /// document's thread) proposes nothing, however much script it holds.
+    ///
+    /// flip: `assistant_script` not checking the question → fails at "not this
+    /// request's".
+    #[test]
+    fn a_reply_to_another_question_proposes_nothing() {
+        let (_ctx, app, _) = asked_after("what is this?", "```luau\nsel.x += 40\n```");
+        let bar = app.command_bar.as_ref().unwrap();
+        assert!(bar.ai.is_none(), "not this request's");
+        assert!(bar.error.is_some());
+    }
+
+    /// An `/ai` reply's script shows in the bar, and `Enter` runs it on the
+    /// selection as one step named by the request and marked as the
+    /// assistant's, logged as the `/ai` line.
+    ///
+    /// flip: `run_ai_script` leaving the step's origin as the person's → fails
+    /// at "marked as the assistant's".
+    #[test]
+    fn an_ai_reply_runs_as_one_step() {
+        let (ctx, mut app, card) = asked("Moves it.\n\n```luau\nsel.x += 40\n```");
+        assert!(
+            matches!(
+                &app.command_bar.as_ref().unwrap().ai,
+                Some(Ai::Proposed { script, .. }) if script == "sel.x += 40"
+            ),
+            "the script is proposed"
+        );
+        let (x, depth) = (left(&app, card), app.session.history.undo_depth());
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        assert_eq!(left(&app, card), x + 40.0);
+        assert_eq!(app.session.history.undo_depth(), depth + 1);
+        let top = app.session.history.done().next_back().unwrap();
+        assert_eq!(top.note.label, "move it right");
+        assert!(
+            matches!(&top.note.origin, mastik_core::Origin::Mcp { tool, .. } if tool == "/ai"),
+            "marked as the assistant's"
+        );
+        let last = app.session.command_log.entries().last().unwrap();
+        assert_eq!(last.line.as_deref(), Some("/ai move it right"));
+        assert_eq!(app.command_bar.as_ref().map(|b| b.text.as_str()), Some(""));
+    }
+
+    /// A reply with no script says so on the error line and runs nothing.
+    #[test]
+    fn an_ai_reply_without_a_script_says_so() {
+        let (ctx, mut app, card) = asked("I can't do that here.");
+        let bar = app.command_bar.as_ref().unwrap();
+        assert!(bar.ai.is_none());
+        assert!(
+            bar.error
+                .as_ref()
+                .is_some_and(|(_, e)| e.message.contains("no script"))
+        );
+        let x = left(&app, card);
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        assert_eq!(left(&app, card), x);
     }
 }

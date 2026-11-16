@@ -18,7 +18,6 @@ git.
 | `docs/shortcuts.md` | The keymap. |
 | `docs/context-menus.md` | The context-menu spec. |
 | `docs/vm.md` | Command Mode's one open question, scripts reaching outside the document. The built design is `docs/design/command-mode.md`. |
-| `docs/ai.md` | The assistant's unbuilt parts (`/ai`, script blocks in replies). The built assistant is `docs/design/assistant.md`. |
 | `docs/prototyping.md` | Prototyping, decided and not yet built: what is saved, the player that plays a copy, where it shows, the export. |
 | `todo.md` | The maintainer's private scratchpad, untracked. Never record anything there. |
 

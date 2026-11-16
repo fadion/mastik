@@ -301,6 +301,14 @@ pub(crate) enum Act {
     Hover(String),
     /// An option was clicked: send its line as the next question.
     Choose(String),
+    /// A Luau block's *Open in script editor*: a new unsaved script holding it.
+    OpenScript(String),
+}
+
+/// Whether a code block's language is Command Mode's, so it can open in the
+/// script editor.
+pub(crate) fn is_luau(lang: &str) -> bool {
+    matches!(lang, "luau" | "lua")
 }
 
 /// What drawing a reply needs to know.
@@ -353,7 +361,7 @@ pub(crate) fn show(ui: &mut egui::Ui, blocks: &[Block], look: &Look<'_>, acts: &
                     }
                 });
             }
-            Block::Code { lang, text } => code_block(ui, salt, lang, text),
+            Block::Code { lang, text } => code_block(ui, salt, lang, text, acts),
             Block::Options(opts) => {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
@@ -421,8 +429,9 @@ fn spans_row(
     });
 }
 
-/// A code block: a language bar with *Copy*, then the text in mono.
-fn code_block(ui: &mut egui::Ui, salt: egui::Id, lang: &str, text: &str) {
+/// A code block: a language bar with *Copy*, and *Open in script editor* on a
+/// Luau block, then the text in mono.
+fn code_block(ui: &mut egui::Ui, salt: egui::Id, lang: &str, text: &str, acts: &mut Vec<Act>) {
     egui::Frame::NONE
         .fill(color::field())
         .stroke(egui::Stroke::new(1.0, color::field_border()))
@@ -455,6 +464,20 @@ fn code_block(ui: &mut egui::Ui, salt: egui::Id, lang: &str, text: &str) {
                 .clicked()
             {
                 ui.ctx().copy_text(text.to_owned());
+            }
+            if is_luau(lang) {
+                let open = copy.translate(egui::vec2(-(18.0 + 4.0), 0.0));
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(open)
+                        .id_salt(salt.with("open")),
+                );
+                if ui::icon_button(&mut child, icon::FILE_CODE, 18.0, 13.0, false, true)
+                    .on_hover_text("Open in script editor")
+                    .clicked()
+                {
+                    acts.push(Act::OpenScript(text.to_owned()));
+                }
             }
             egui::Frame::NONE
                 .inner_margin(egui::Margin::symmetric(10, 8))
@@ -510,6 +533,77 @@ fn table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The acts a click at the language bar's second icon from the right
+    /// gives, for a block of `lang`.
+    fn click_open(lang: &str) -> Vec<Act> {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        const W: f32 = 400.0;
+        let blocks = vec![Block::Code {
+            lang: lang.into(),
+            text: "sel.x += 10".into(),
+        }];
+        let look = Look {
+            layer: &|_| None,
+            options_live: true,
+            ink: egui::Color32::WHITE,
+        };
+        // The frame's stroke is a point in; *Copy* sits 17 in from the bar's
+        // right, and the next icon 22 left of it.
+        let at = egui::pos2(W - 1.0 - 17.0 - 22.0, 1.0 + CODE_BAR_H / 2.0);
+        let mut acts = Vec::new();
+        for (i, events) in [
+            vec![egui::Event::PointerMoved(at)],
+            vec![egui::Event::PointerMoved(at)],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            vec![],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(W, 300.0),
+                )),
+                events,
+                time: Some(i as f64 * 0.1),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| show(ui, &blocks, &look, &mut acts));
+            });
+        }
+        acts
+    }
+
+    /// A Luau block's bar opens it in the script editor; another language's
+    /// has no such icon.
+    ///
+    /// flip: `is_luau` answering false → fails at "a Luau block opens".
+    #[test]
+    fn a_luau_block_opens_in_the_script_editor() {
+        assert_eq!(
+            click_open("luau"),
+            [Act::OpenScript("sel.x += 10".into())],
+            "a Luau block opens"
+        );
+        assert!(click_open("css").is_empty());
+    }
 
     /// Blocks come apart at blank lines, fences, tables and lists.
     /// flip: `parse` not flushing at a fence → fails at the block count.

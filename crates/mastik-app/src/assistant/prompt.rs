@@ -17,6 +17,22 @@ pub(crate) const CHANGED_LISTED: usize = 40;
 /// How many of the person's earlier questions a preamble repeats.
 pub(crate) const EARLIER: usize = 3;
 
+/// The turn the command bar's `/ai` sends for `request`: one Luau script the
+/// person runs as one step, in the language's terms, and no edit of the agent's
+/// own.
+pub(crate) fn bar_request(request: &str) -> String {
+    format!(
+        "From the command bar. Answer with one Luau script for Mastik's command bar, in a \
+         ```luau block, that does what the person asks; change nothing yourself, since the \
+         person runs the script as one undo step. `sel` is the selection, a list of layers; \
+         a layer's x, y, width, height and rotation (world space), opacity, fill, stroke, \
+         corner_radius, name, text and visible read and write, and children, parent, prev and \
+         next reach its neighbours; a write tool is a function taking the layers first \
+         (`align(sel, \"left\")`); print shows a line. A sentence before the block at most.\n\n\
+         Request: {request}"
+    )
+}
+
 /// How long a repeated earlier question may run.
 const EARLIER_CHARS: usize = 60;
 
