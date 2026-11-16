@@ -487,7 +487,7 @@ pub(crate) fn seal_sentence(h: Harness, seal: Seal) -> String {
              they can still read files on this machine."
         ),
         (Harness::OpenCode, Seal::Sealed) => format!(
-            "{label} runs as an agent with every one of its own tools switched off, in a \
+            "{label} runs as an agent whose permissions deny every tool but Mastik's, in a \
              configuration of Mastik's own, so it can use Mastik's tools and nothing else."
         ),
         (Harness::Copilot, Seal::Sealed) => format!(
@@ -876,26 +876,22 @@ pub(crate) fn dsh_dump_args(overlay: &str) -> Vec<String> {
 /// leaves the run on `build`, which has every tool.
 pub(crate) const OPENCODE_AGENT: &str = "mastik";
 
-/// Every tool `opencode agent create --permissions` lists, all off. The map is
-/// a denylist by omission, so a name here the CLI dropped costs nothing and a
-/// name it adds is live: hence over-inclusive.
-fn opencode_sealed_tools() -> serde_json::Map<String, serde_json::Value> {
+/// The OpenCode permission pattern that names Mastik's tools: an MCP tool is
+/// `<server>_<tool>`.
+fn opencode_mastik_tools() -> String {
+    format!("{MCP_SERVER}_*")
+}
+
+/// The sealed agent's permissions: every tool denied, a built-in a later
+/// build adds included, then Mastik's allowed. OpenCode applies the last rule
+/// that matches, so the deny comes first.
+fn opencode_sealed_permission() -> serde_json::Map<String, serde_json::Value> {
     [
-        "bash",
-        "read",
-        "edit",
-        "write",
-        "glob",
-        "grep",
-        "webfetch",
-        "websearch",
-        "task",
-        "todowrite",
-        "lsp",
-        "skill",
+        ("*".to_string(), "deny"),
+        (opencode_mastik_tools(), "allow"),
     ]
-    .iter()
-    .map(|t| ((*t).to_string(), serde_json::Value::Bool(false)))
+    .into_iter()
+    .map(|(k, v)| (k, serde_json::Value::from(v)))
     .collect()
 }
 
@@ -918,7 +914,7 @@ pub(crate) fn opencode_config_json(exe: &str, args: &[String], allowed: &[String
                     "Mastik's design assistant. Tools available: {}.",
                     allowed.join(", ")
                 ),
-                "tools": opencode_sealed_tools(),
+                "permission": opencode_sealed_permission(),
             }
         }
     })
@@ -926,8 +922,10 @@ pub(crate) fn opencode_config_json(exe: &str, args: &[String], allowed: &[String
 }
 
 /// What in `opencode debug config`'s output reaches past Mastik's tools: an MCP
-/// server other than Mastik's, or a tool or permission the sealed agent allows.
-/// `None` when the output is not a configuration at all.
+/// server other than Mastik's, a sealed agent whose permissions do not deny
+/// every tool, or a tool or permission it allows beyond Mastik's. The deny is
+/// required rather than known tools audited, since a built-in no rule names
+/// is live. `None` when the output is not a configuration at all.
 pub(crate) fn opencode_config_leaks(output: &str) -> Option<Vec<String>> {
     let json = &output[output.find('{')?..];
     let v: serde_json::Value = serde_json::Deserializer::from_str(json)
@@ -947,28 +945,33 @@ pub(crate) fn opencode_config_leaks(output: &str) -> Option<Vec<String>> {
             leaks.push(format!("the MCP server {name}"));
         }
     }
+    // Anything but Mastik's own tools and the pattern that allows them.
+    let theirs = |name: &str| !name.starts_with(&format!("{MCP_SERVER}_"));
+    let allows = |v: &serde_json::Value| match v {
+        serde_json::Value::String(s) => s != "deny",
+        serde_json::Value::Object(m) => m.values().any(|x| x.as_str() != Some("deny")),
+        _ => true,
+    };
+    let permission = agent.get("permission").and_then(|p| p.as_object());
+    if permission.and_then(|p| p.get("*")).is_none_or(allows) {
+        leaks.push("its own tools, which no rule denies".into());
+    }
     for (tool, on) in agent
         .get("tools")
         .and_then(|t| t.as_object())
         .into_iter()
         .flatten()
     {
-        if on.as_bool() != Some(false) {
+        if on.as_bool() != Some(false) && theirs(tool) {
             leaks.push(format!("its {tool} tool"));
         }
     }
-    let allows = |v: &serde_json::Value| match v {
-        serde_json::Value::String(s) => s != "deny",
-        serde_json::Value::Object(m) => m.values().any(|x| x.as_str() != Some("deny")),
-        _ => true,
-    };
-    for (what, rule) in agent
-        .get("permission")
-        .and_then(|p| p.as_object())
-        .into_iter()
-        .flatten()
-    {
-        if allows(rule) && !leaks.iter().any(|l| l == &format!("its {what} tool")) {
+    for (what, rule) in permission.into_iter().flatten() {
+        if what != "*"
+            && theirs(what)
+            && allows(rule)
+            && !leaks.iter().any(|l| l == &format!("its {what} tool"))
+        {
             leaks.push(format!("its {what} permission"));
         }
     }
@@ -1566,27 +1569,41 @@ mod tests {
     }
 
     /// OpenCode's resolved configuration is read for what it adds: another
-    /// server, a tool switched back on, a permission allowed. Fixture shapes are
-    /// `opencode debug config` output from 1.19.5.
-    /// flip: `opencode_config_leaks` skipping the `mcp` loop → fails at the first `assert_eq`.
+    /// server, a tool switched back on, a permission allowed, or no rule that
+    /// denies every tool. Fixture shapes are `opencode debug config` output
+    /// from 1.19.5.
+    /// flip: `opencode_config_leaks` without its wildcard check → fails at
+    /// "a denylist of every known tool is not a seal".
     #[test]
     fn opencode_leaks_are_read_off_its_resolved_config() {
         let leaky = r#"{"mcp":{"mastik":{"type":"local","enabled":true,"command":["mastik"]},
             "fs":{"type":"local","enabled":true,"command":["npx"]}},
             "agent":{"mastik":{"mode":"primary","tools":{"bash":true,"read":false},
-            "permission":{"bash":"allow","read":"deny"}}}}"#;
+            "permission":{"*":"deny","bash":"allow","read":"deny"}}}}"#;
         assert_eq!(
             opencode_config_leaks(leaky),
             Some(vec!["the MCP server fs".into(), "its bash tool".into()])
         );
         let sealed = r#"{"mcp":{"mastik":{"enabled":true},"off":{"enabled":false}},
-            "agent":{"mastik":{"tools":{"bash":false},
-            "permission":{"bash":"deny","edit":{"*":"deny"}}}}}"#;
+            "agent":{"mastik":{"mode":"primary","description":"x",
+            "permission":{"*":"deny","mastik_*":"allow","edit":{"*":"deny"}},"options":{}}}}"#;
         assert_eq!(opencode_config_leaks(sealed), Some(Vec::new()));
-        let opened = r#"{"agent":{"mastik":{"permission":{"webfetch":"ask"}}}}"#;
+        let opened = r#"{"agent":{"mastik":{"permission":{"*":"deny","webfetch":"ask"}}}}"#;
         assert_eq!(
             opencode_config_leaks(opened),
             Some(vec!["its webfetch permission".into()])
+        );
+        let listed = r#"{"agent":{"mastik":{"tools":{"bash":false,"read":false},
+            "permission":{"bash":"deny"}}}}"#;
+        assert_eq!(
+            opencode_config_leaks(listed),
+            Some(vec!["its own tools, which no rule denies".into()]),
+            "a denylist of every known tool is not a seal"
+        );
+        let reopened = r#"{"agent":{"mastik":{"permission":{"*":"allow"}}}}"#;
+        assert_eq!(
+            opencode_config_leaks(reopened),
+            Some(vec!["its own tools, which no rule denies".into()])
         );
         assert_eq!(opencode_config_leaks("Error: unknown command"), None);
         assert_eq!(opencode_config_leaks(r#"{"agent":{}}"#), None);
@@ -1722,21 +1739,23 @@ mod tests {
         );
     }
 
-    /// The OpenCode agent switches every listed built-in off and is the one the
-    /// argv selects.
+    /// The OpenCode agent the argv selects denies every tool before it allows
+    /// Mastik's, and its own check reads it as sealed.
     #[test]
     fn opencode_config_seals_the_agent_it_names() {
-        let v: serde_json::Value =
-            serde_json::from_str(&opencode_config_json("mastik", &[], &["get_node".into()]))
-                .unwrap();
-        let tools = v
-            .pointer("/agent/mastik/tools")
-            .unwrap()
-            .as_object()
-            .unwrap();
-        assert!(tools.contains_key("bash"));
-        assert!(tools.values().all(|t| t == false));
+        let text = opencode_config_json("mastik", &[], &["get_node".into()]);
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v.pointer("/agent/mastik/permission/*").unwrap(), "deny");
+        assert_eq!(
+            v.pointer("/agent/mastik/permission/mastik_*").unwrap(),
+            "allow"
+        );
+        assert!(
+            text.find(r#""*":"deny""#) < text.find(r#""mastik_*":"allow""#),
+            "the last matching rule wins, so the deny comes first: {text}"
+        );
         assert_eq!(v.pointer("/mcp/mastik/command/0").unwrap(), "mastik");
+        assert_eq!(opencode_config_leaks(&text), Some(Vec::new()));
     }
 
     /// The overlay disables every tool row, quotes what the person typed, and

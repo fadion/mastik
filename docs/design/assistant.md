@@ -69,6 +69,10 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
   `~/.opencode/opencode.json` is merged over everything and no option turns it off. Because it
   merges from places Mastik cannot list, `opencode debug config` is read back before the first turn,
   and another enabled server, or a tool or permission the sealed agent allows, refuses the session.
+- **OpenCode's agent is sealed by a wildcard**: its permissions deny `*` and then allow `mastik_*`
+  (OpenCode applies the last rule that matches), so a built-in a later build adds is denied too. The
+  read-back requires that deny rather than auditing the tools it knows, since a denylist by name
+  leaves a new tool live.
 - **Antigravity is configured globally**: its server is registered in the person's own registry and
   its allow rules written into its `settings.json`, both installed with the session and withdrawn
   when it ends. Each session registers under a name of its own, `mastik` and eight hex digits
