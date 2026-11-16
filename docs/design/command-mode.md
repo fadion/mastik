@@ -365,8 +365,9 @@ sized from their laid-out text each frame.
   given.* with nothing lit; the doc, dim; for the script's own function, names only and *This
   script's function · line N*. None inside a comment. It hangs `ui::MENU_GAP` over the line the
   call opens on, its left edge at the bracket; with no room above, under the completion list or the
-  caret's line. It shows only while the code has the focus, and `Escape` with no list up hides it
-  for that call until the text changes.
+  caret's line. As in other code editors it opens on typing, never on a click or a caret moved
+  into a call: typing the call's `(`, a `,` or a `{` opens it, and it stays while the caret is in
+  that call and the code has the focus. Leaving the call or `Escape` with no list up shuts it.
 - **Hover** (`hover_at`): once the pointer rests on a name (`ui::Resting`), a card under it
   (`ui::dropdown_place`, taking no pointer) says what it is, the word washed in the accent: a
   property (`card.opacity: number`, its doc, *Property · reads raise when the layers disagree*), a
@@ -378,7 +379,7 @@ sized from their laid-out text each frame.
   shadows a layer, and no card while the completion list is up or `Ctrl` is held.
 - **Problems** (`check`), found without running. If Luau's parser refuses the text, the syntax
   error alone, on the token after *got '…'* or else the line's text (`<eof>` on the last line with
-  text), with *Show line N* when the message names another line. Otherwise:
+  text). Otherwise:
 
   | Ink | Problem |
   | --- | --- |
@@ -392,15 +393,16 @@ sized from their laid-out text each frame.
   caret (a syntax error is). `ui::code_editor` takes `ui::CodeMark`s: each inks its line's number and
   squiggles its span (`canvas::paint_squiggle_in`); a failed run's line is one more mark in the error
   ink. Resting on a squiggle or its line number shows the problem's card (the warning glyph in its
-  ink, the message, a *Change to y* `ui::label_button` that edits the text, *Show line N*, the
-  note); it takes the pointer, stays while the pointer is on it and hides the hint. The head's
-  counts (the warning glyph in each ink with its count, each only when not zero) say *1 error,
-  1 warning · click goes to the next*, and a click selects the next problem after the caret,
-  wrapping. While a syntax error holds the run, the head's *Run* is disabled (*Fix the syntax error
+  ink, the message, a *Change to y* `ui::label_button` that edits the text, the note); it takes
+  the pointer, stays while the pointer is on it and hides the hint. The head's counts (the warning
+  glyph, in the icon font, in each ink with its count, each only when not zero, on an icon
+  button's hover ground) say *1 error, 1 warning · click goes to the next*, and a click selects
+  the next problem after the caret, wrapping. While a syntax error holds the run, the head's *Run* is disabled (*Fix the syntax error
   on line N to run · Ctrl+Enter puts the caret on it*), as are the palette's *Run ‹name›* rows.
 - **Go to declaration** (`declaration_at`): the nearest declaration above the use, else the first
   (a function called above it); `param.x` goes to its `---@input` line. With `Ctrl` held over such
-  a name it takes a dotted `accent_300()` underline and the pointing hand; `Ctrl`+click, or `F12` at
+  a name it takes a dotted `accent_300()` underline, the pointer staying the arrow as everywhere in
+  the chrome; `Ctrl`+click, or `F12` at
   the caret, selects the declaration and washes its line in the accent, fading over 600 ms,
   scrolling only when the line is out of view, to a third of the way down. Mastik's names, the
   library and keywords never underline, and neither does a declaration itself, which leads nowhere.

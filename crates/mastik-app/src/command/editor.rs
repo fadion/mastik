@@ -3707,17 +3707,29 @@ mod tests {
         assert_eq!(marks.len(), 1, "the name under the caret is not marked");
     }
 
-    /// Typing a verb's `(` hangs its hint over the line; `Escape` hides it for
-    /// that call.
-    /// flip: `Help::pane` never drawing the hint → fails at "the hint is up".
+    /// Typing a verb's `(` hangs its hint over the line; `Escape` hides it. A
+    /// caret moved into a call without typing shows none.
+    /// flip: `Help::pane` showing the hint for any call the caret is in →
+    /// fails at "moved in, not typed".
     #[test]
-    fn a_verbs_open_bracket_shows_its_hint() {
-        let (ctx, mut app) = typing_at_end("");
+    fn typing_a_verbs_open_bracket_shows_its_hint() {
+        let (ctx, mut app) = typing_at_end("align(\"left\")\n");
         let hint = egui::LayerId::new(
             egui::Order::Foreground,
             egui::Id::new("script-editor").with("hint"),
         );
         let up = |ctx: &egui::Context| ctx.memory(|m| m.areas().is_visible(&hint));
+        press(&ctx, &mut app, egui::Key::ArrowUp);
+        press(&ctx, &mut app, egui::Key::ArrowRight);
+        press(&ctx, &mut app, egui::Key::ArrowRight);
+        press(&ctx, &mut app, egui::Key::ArrowRight);
+        press(&ctx, &mut app, egui::Key::ArrowRight);
+        press(&ctx, &mut app, egui::Key::ArrowRight);
+        press(&ctx, &mut app, egui::Key::ArrowRight);
+        press(&ctx, &mut app, egui::Key::ArrowRight);
+        assert_eq!(caret(&ctx, &app), Some(7), "fixture: in the call");
+        assert!(!up(&ctx), "moved in, not typed");
+        let (ctx, mut app) = typing_at_end("");
         type_code(&ctx, &mut app, "align(");
         assert!(up(&ctx), "the hint is up");
         press(&ctx, &mut app, egui::Key::Escape);

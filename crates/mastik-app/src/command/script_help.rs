@@ -49,8 +49,11 @@ pub(crate) struct Help {
     /// When the text last changed (`ctx` time); `None` before any typing, so a
     /// script opened is checked at once.
     edited_at: Option<f64>,
-    /// The call whose hint `Escape` hid, by the byte it opens at.
-    hint_hidden: Option<usize>,
+    /// The call whose hint is up, by the byte it opens at: opened by typing its
+    /// `(`, a `,` or a `{`, shut when the caret leaves the call or by `Escape`.
+    hint_call: Option<usize>,
+    /// The text changed last frame: this frame reads what was typed.
+    typed: bool,
     /// What the pointer rests on: a problem (`true`) or a name, by its first byte.
     resting: ui::Resting<(bool, usize)>,
     /// A problem's card left up while the pointer crosses into it: its index
@@ -147,7 +150,7 @@ impl Help {
     /// Note that the text changed this frame: problems wait for the next rest.
     pub(crate) fn edited(&mut self, ctx: &egui::Context) {
         self.edited_at = Some(ctx.input(|i| i.time));
-        self.hint_hidden = None;
+        self.typed = true;
     }
 
     /// The syntax error in `text` that holds *Run*, compiled again only when the
@@ -326,8 +329,9 @@ impl Help {
         });
         let ctrl = ctx.input(|i| i.modifiers.command);
 
-        // Ctrl over a use of one of the script's own names: a dotted underline
-        // and the hand. A declaration itself leads nowhere, so it stays plain.
+        // Ctrl over a use of one of the script's own names: a dotted underline,
+        // the arrow kept as everywhere in the chrome. A declaration itself leads
+        // nowhere, so it stays plain.
         if ctrl
             && let Some(b) = under
             && let Some((name, decl)) = mastik_vm::declaration_at(text, b)
@@ -341,7 +345,6 @@ impl Help {
                 2.0,
                 2.0,
             ));
-            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
             if ctx.input(|i| i.pointer.primary_clicked()) {
                 act = Some(self.jump(&ctx, decl));
             }
@@ -362,19 +365,9 @@ impl Help {
             let (card, chosen) = problem_card(&ctx, window.with("problem"), p, anchor);
             self.problem_card = Some((i, card));
             problem_up = true;
-            match chosen {
-                Some(CardAct::Fix) => {
-                    if let Some((range, with)) = p.fix.clone() {
-                        act = Some(HelpAct::Replace(range, with));
-                        self.problem_card = None;
-                    }
-                }
-                Some(CardAct::Show(line)) => {
-                    let b = nth_line_start(text, line);
-                    act = Some(self.jump(&ctx, b..b));
-                    self.problem_card = None;
-                }
-                None => {}
+            if chosen && let Some((range, with)) = p.fix.clone() {
+                act = Some(HelpAct::Replace(range, with));
+                self.problem_card = None;
             }
         } else {
             self.problem_card = None;
@@ -412,15 +405,26 @@ impl Help {
             hover_card(&ctx, window.with("hover"), &h, layer_doc, word);
         }
 
-        // The hint, over the call's line, while the code has the focus.
-        if focused
-            && !problem_up
+        // The hint, over the call's line, while the code has the focus. As in
+        // other code editors it opens on typing, never on a click into a call:
+        // typing the call's `(`, a `,` or a `{` opens it, and it stays while
+        // the caret is in that call.
+        let sig = caret.and_then(|c| mastik_vm::signature_at(text, c));
+        if std::mem::take(&mut self.typed)
+            && let (Some(c), Some(s)) = (caret, &sig)
+            && text[..c].trim_end().ends_with(['(', ',', '{'])
+        {
+            self.hint_call = Some(s.open);
+        }
+        if sig.as_ref().map(|s| s.open) != self.hint_call || !focused {
+            self.hint_call = None;
+        }
+        if !problem_up
             && let Some(c) = caret
-            && let Some(sig) = mastik_vm::signature_at(text, c)
-            && self.hint_hidden != Some(sig.open)
+            && let Some(sig) = sig.filter(|s| Some(s.open) == self.hint_call)
         {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && list.is_none() {
-                self.hint_hidden = Some(sig.open);
+                self.hint_call = None;
             } else {
                 let open = span_rect(out, text, &(sig.open..sig.open + 1));
                 let caret_line = span_rect(out, text, &(c..c));
@@ -466,16 +470,6 @@ fn word_start(text: &str, b: usize) -> usize {
         s -= 1;
     }
     s
-}
-
-/// The byte line `n` (from 1) starts at.
-fn nth_line_start(text: &str, n: u32) -> usize {
-    if n <= 1 {
-        return 0;
-    }
-    text.match_indices('\n')
-        .nth(n as usize - 2)
-        .map_or(text.len(), |(i, _)| i + 1)
 }
 
 /// A problem's ink: certain in the error ink, likely in amber.
@@ -636,10 +630,7 @@ fn hover_card(
         first.append(
             &format!("{glyph} "),
             0.0,
-            egui::TextFormat::simple(
-                egui::FontId::proportional(ui::CODE_PT),
-                theme::text::muted(),
-            ),
+            egui::TextFormat::simple(theme::icon_font(ui::CODE_PT), theme::text::muted()),
         );
     }
     first.append(
@@ -670,38 +661,30 @@ fn hover_card(
     show_card(ctx, id, at, w, galleys);
 }
 
-/// What a problem's card was asked for.
-enum CardAct {
-    Fix,
-    Show(u32),
-}
-
 /// A problem's card under its token (`anchor`): the message in its ink after
-/// the warning glyph, then the run's fix as a button and the note, and *Show
-/// line N* when the message names another line. It takes the pointer, so its
-/// buttons can be clicked; answers its rect and what was clicked.
+/// the warning glyph, then the run's fix as a button and the note. It takes the
+/// pointer, so the fix can be clicked; answers its rect and whether it was.
 fn problem_card(
     ctx: &egui::Context,
     id: egui::Id,
     p: &Problem,
     anchor: egui::Rect,
-) -> (egui::Rect, Option<CardAct>) {
+) -> (egui::Rect, bool) {
     let ink = ink(p.severity);
     let mut first = egui::text::LayoutJob::default();
     first.append(
-        &format!("{} ", icon::WARNING),
+        icon::WARNING,
         0.0,
-        egui::TextFormat::simple(egui::FontId::proportional(ui::SMALL_PT), ink),
+        egui::TextFormat::simple(theme::icon_font(ui::SMALL_PT + 1.0), ink),
     );
     first.append(
-        &p.message,
+        &format!(" {}", p.message),
         0.0,
         egui::TextFormat::simple(egui::FontId::proportional(ui::SMALL_PT), color::text()),
     );
     first.wrap.max_width = CARD_MAX_W;
     let head = ctx.fonts_mut(|f| f.layout_job(first));
     let fix = p.fix.as_ref().map(|(_, w)| format!("Change to {w}"));
-    let show = p.related.map(|n| format!("Show line {n}"));
     let button_w = |t: &str| {
         ctx.fonts_mut(|f| {
             f.layout_no_wrap(
@@ -714,7 +697,7 @@ fn problem_card(
         .x + 2.0 * ui::FIELD_PAD_X
     };
     let note = p.note.clone();
-    let has_row = fix.is_some() || show.is_some() || note.is_some();
+    let has_row = fix.is_some() || note.is_some();
     let w = head.size().x.clamp(CARD_MIN_W, CARD_MAX_W);
     let row_h = if has_row {
         ui::CONTROL_H + LINE_GAP
@@ -736,7 +719,7 @@ fn problem_card(
     let size = egui::vec2(w, head.size().y + row_h)
         + egui::Vec2::splat(2.0 * (ui::POPOVER_PAD + ui::MENU_BORDER));
     let at = ui::dropdown_place(ctx, anchor, size, ui::MENU_GAP);
-    let mut chosen = None;
+    let mut chosen = false;
     let shown = egui::Area::new(id)
         .order(egui::Order::Foreground)
         .constrain(false)
@@ -758,18 +741,7 @@ fn problem_card(
                             )
                             .clicked()
                         {
-                            chosen = Some(CardAct::Fix);
-                        }
-                        if let (Some(s), Some(n)) = (&show, p.related)
-                            && ui::label_button(
-                                ui,
-                                s,
-                                egui::vec2(button_w(s), ui::CONTROL_H),
-                                ui::FieldButton::Off,
-                            )
-                            .clicked()
-                        {
-                            chosen = Some(CardAct::Show(n));
+                            chosen = true;
                         }
                         if let Some(g) = note_g {
                             let (rect, _) = ui.allocate_exact_size(
@@ -790,8 +762,9 @@ fn problem_card(
 }
 
 /// The head's problem counts: errors then warnings, each only when not zero,
-/// the warning glyph in its ink and the count in the caption size. Answers its
-/// response, clicked to walk to the next problem, or `None` when there are none.
+/// the warning glyph in its ink and the count in the caption size, on an icon
+/// button's hover ground. Answers its response, clicked to walk to the next
+/// problem, or `None` when there are none.
 pub(crate) fn counts(ui: &mut egui::Ui, problems: &[Problem]) -> Option<egui::Response> {
     let errors = problems
         .iter()
@@ -802,7 +775,7 @@ pub(crate) fn counts(ui: &mut egui::Ui, problems: &[Problem]) -> Option<egui::Re
         return None;
     }
     let mut job = egui::text::LayoutJob::default();
-    let glyph = egui::FontId::proportional(ui::CAPTION_PT + 1.0);
+    let glyph = theme::icon_font(ui::CAPTION_PT + 2.0);
     let num = egui::FontId::proportional(ui::CAPTION_PT);
     for (n, sev) in [(errors, Severity::Error), (warnings, Severity::Warning)] {
         if n == 0 {
@@ -827,10 +800,17 @@ pub(crate) fn counts(ui: &mut egui::Ui, problems: &[Problem]) -> Option<egui::Re
         );
     }
     let g = ui.fonts_mut(|f| f.layout_job(job));
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(g.size().x, ui::CONTROL_H), egui::Sense::click());
+    const PAD: f32 = 6.0;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(g.size().x + 2.0 * PAD, ui::CONTROL_H),
+        egui::Sense::click(),
+    );
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(5), theme::color::hover());
+    }
     ui.painter().galley(
-        egui::pos2(rect.left(), rect.center().y - g.size().y / 2.0),
+        egui::pos2(rect.left() + PAD, rect.center().y - g.size().y / 2.0),
         g,
         theme::text::muted(),
     );
@@ -846,10 +826,7 @@ pub(crate) fn counts(ui: &mut egui::Ui, problems: &[Problem]) -> Option<egui::Re
         (e, 0) => plural(e, "error"),
         (e, w) => format!("{}, {}", plural(e, "error"), plural(w, "warning")),
     };
-    Some(
-        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(format!("{said} · click goes to the next")),
-    )
+    Some(resp.on_hover_text(format!("{said} · click goes to the next")))
 }
 
 /// The next problem's span after byte `caret`, wrapping to the first.
@@ -869,4 +846,42 @@ pub(crate) fn held_reason(p: &Problem) -> String {
 /// *Run*'s reason when a syntax error on `line` holds it.
 pub(crate) fn held_reason_at(line: u32) -> String {
     format!("Fix the syntax error on line {line} to run")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The head's counts draw the warning glyph in the icon font, where the
+    /// text font has no such character and shows a box.
+    /// flip: `counts` laying the glyph out in `FontId::proportional` → fails at
+    /// "in the icon font".
+    #[test]
+    fn the_counts_glyph_is_drawn_in_the_icon_font() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let page = mastik_core::IdSource::new(1).mint();
+        let doc = mastik_core::Document::new(page);
+        let problems = mastik_vm::check(&doc, page, "print(nme)");
+        assert_eq!(problems.len(), 1, "fixture: one warning");
+        let out = ctx.run_ui(Default::default(), |ui| {
+            counts(ui, &problems);
+        });
+        let family = theme::icon_font(1.0).family;
+        let glyph_family = out.shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Text(t) => t
+                .galley
+                .job
+                .sections
+                .iter()
+                .find(|s| {
+                    let r = s.byte_range.start.0..s.byte_range.end.0;
+                    t.galley.job.text.get(r) == Some(icon::WARNING)
+                })
+                .map(|s| s.format.font_id.family.clone()),
+            _ => None,
+        });
+        assert_eq!(glyph_family, Some(family), "in the icon font");
+    }
 }
