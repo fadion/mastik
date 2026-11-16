@@ -1024,7 +1024,6 @@ fn a_syntax_error_is_found_without_running() {
     let p = syntax_error(src).unwrap();
     assert_eq!(p.severity, Severity::Error);
     assert_eq!(p.line, 2, "the last line with text");
-    assert_eq!(p.related, Some(1));
     assert!(p.message.starts_with("Expected 'end'"), "{}", p.message);
     let (h, _) = three();
     assert_eq!(check(&h.doc, h.page, src), [p]);

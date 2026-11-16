@@ -619,8 +619,6 @@ pub struct Problem {
     pub fix: Option<(Range<usize>, String)>,
     /// A faint second line.
     pub note: Option<String>,
-    /// Another line the message names (`to close 'for' at line 4`).
-    pub related: Option<u32>,
     /// Luau's parser refused the text: *Run* is held, and the mark stands even
     /// under the caret.
     pub syntax: bool,
@@ -675,15 +673,6 @@ pub fn syntax_error(source: &str) -> Option<Problem> {
                 .map(|p| whole.start + p..whole.start + p + t.len())
         })
         .unwrap_or(whole);
-    let related = message
-        .split_once("at line ")
-        .and_then(|(_, rest)| {
-            rest.split(|c: char| !c.is_ascii_digit())
-                .next()?
-                .parse()
-                .ok()
-        })
-        .filter(|n| *n != line);
     Some(Problem {
         severity: Severity::Error,
         message,
@@ -691,7 +680,6 @@ pub fn syntax_error(source: &str) -> Option<Problem> {
         span,
         fix: None,
         note: None,
-        related,
         syntax: true,
     })
 }
@@ -822,7 +810,6 @@ pub fn check(doc: &Document, page: NodeId, source: &str) -> Vec<Problem> {
                 span: span.clone(),
                 fix: fix.map(|f| (span.clone(), f)),
                 note: note.map(str::to_owned),
-                related: None,
                 syntax: false,
             };
         match before {
