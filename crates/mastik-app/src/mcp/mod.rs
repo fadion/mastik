@@ -157,9 +157,6 @@ struct Connection {
     /// When it last called, in [`Engine::tick`]s: the least recent keyed client
     /// is forgotten first.
     used: u64,
-    /// The actors its short ids are written against, in the order it first
-    /// saw them (`short`); empty for a chat, which is shown full ids.
-    actors: Vec<u64>,
 }
 
 /// Whose state a call reads: a keyed client's, which outlives its connections,
@@ -441,7 +438,7 @@ impl Engine {
     /// Answer one call that its level allows, in short ids when the client
     /// asked for them and is no chat: the panel links, keeps and replays a
     /// chat's ids in full.
-    fn answer(&mut self, docs: &mut impl Documents, mut call: Call) -> Output {
+    fn answer<D: Documents>(&mut self, docs: &mut D, call: Call) -> Output {
         if !call.short_ids
             || call
                 .key
@@ -450,43 +447,21 @@ impl Engine {
         {
             return self.answer_ids(docs, call);
         }
-        // The proxy's restore on another host hands back the table it kept,
-        // so the ids the agent holds name the same layers here.
-        let handed: Option<Vec<u64>> = (call.tool == "use_document")
-            .then(|| call.args.as_object_mut()?.remove("actors"))
-            .flatten()
-            .and_then(|v| {
-                v.as_array()?
-                    .iter()
-                    .map(|a| u64::from_str_radix(a.as_str()?, 16).ok())
-                    .collect()
-            });
-        let conn = self.client(&call);
-        if let Some(handed) = handed
-            && handed.len() > conn.actors.len()
-        {
-            conn.actors = handed;
-        }
-        let actors = conn.actors.clone();
+        // Read against the document the call starts in, written against the
+        // one it ends in: `use_document` may change it.
         let whose = who(&call);
-        let mut out = mastik_core::with_short_ids(&actors, || self.answer_ids(docs, call));
-        let Some(conn) = self.clients.get_mut(&whose) else {
-            return out;
+        let known = |engine: &mut Self, docs: &mut D| {
+            engine
+                .clients
+                .get(&whose)
+                .and_then(|c| c.document.clone())
+                .and_then(|path| docs.session(&path))
+                .map(|s| short::known_actors(&s.doc, s.ids.actor()))
+                .unwrap_or_default()
         };
-        let known = conn
-            .document
-            .clone()
-            .and_then(|path| {
-                docs.session(&path)
-                    .map(|s| short::known_actors(&s.doc, s.ids.actor()))
-            })
-            .unwrap_or_default();
-        let before = conn.actors.len();
-        short::shorten(&mut out, &known, &mut conn.actors);
-        if conn.actors.len() > before {
-            let hex: Vec<String> = conn.actors.iter().map(|a| format!("{a:x}")).collect();
-            out.meta = Some(json!({ mastik_mcp::wire::ACTORS_META: hex }));
-        }
+        let before = known(self, docs);
+        let mut out = mastik_core::with_short_ids(&before, || self.answer_ids(docs, call));
+        short::shorten(&mut out, &known(self, docs));
         out
     }
 
@@ -769,7 +744,8 @@ fn check_call(call: &Call) -> Result<(), String> {
     if tool.name == "set_selection" && call.args.get("ids") == Some(&json!([])) {
         return Ok(());
     }
-    // The proxy's restore after a reconnect, never listed to the agent.
+    // The proxy's restore after a reconnect, never listed to the agent. A
+    // proxy started from an older install still sends `actors`, now unread.
     if tool.name == "use_document"
         && let Some(map) = args.as_object_mut()
     {
@@ -2775,13 +2751,15 @@ mod tests {
     }
 
     /// A client that asked for short ids is answered in them and writes with
-    /// them, a name that reads like one is kept as written, and another host
-    /// handed the table by the proxy's restore reads the same ids.
+    /// them, a name that reads like one is kept as written, and a fresh host
+    /// with no memory of the client, having shown another actor first, reads
+    /// an id the agent held as the same layer.
     ///
-    /// flip: `Engine::answer` ignoring the restore's `actors` → fails at "the
-    /// next host reads the id".
+    /// flip: `Engine::answer` reading arguments against no actors → fails at
+    /// the first `create_node`. The spelling's independence of order is
+    /// pinned in `mastik_core`'s `the_short_form_spells_a_unique_start_of_the_actor`.
     #[test]
-    fn short_ids_are_read_back_and_travel_with_the_restore() {
+    fn short_ids_name_the_same_layer_on_any_connection() {
         fn short(engine: &mut Engine, docs: &mut One, tool: &str, args: Value) -> Output {
             let (reply, _answer) = sync_channel(1);
             let mut call = Call::new(1, Some("k".into()), tool, args, reply);
@@ -2797,26 +2775,14 @@ mod tests {
         );
         let page = ok(&out)["pages"][0]["id"].as_str().unwrap().to_owned();
         assert!(page.starts_with('n') && !page.contains(':'), "{page}");
-        let actors = out
-            .meta
-            .as_ref()
-            .map(|m| m[mastik_mcp::wire::ACTORS_META].clone());
-        let actors = actors.expect("a new actor is handed to the proxy");
         let kind = mastik_core::verbs::example("NodeKind").unwrap();
         let args = json!({ "parent": page, "kind": kind, "name": "Card" });
         let out = short(&mut engine, &mut docs, "create_node", args);
         let card = ok(&out)["created"][0].as_str().unwrap().to_owned();
-        assert!(
-            out.meta.is_none(),
-            "a table that did not grow is not sent again"
-        );
-        let table: Vec<u64> = actors
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|a| u64::from_str_radix(a.as_str().unwrap(), 16).unwrap())
-            .collect();
-        let id = NodeId::from_short(&card, &table).expect("a short id");
+        assert!(out.meta.is_none(), "no table travels");
+        let s = &docs.session;
+        let known = short::known_actors(&s.doc, s.ids.actor());
+        let id = NodeId::from_short(&card, &known).expect("a short id");
         let args = json!({ "node": card, "name": "n1" });
         ok(&short(&mut engine, &mut docs, "set_name", args));
         assert_eq!(
@@ -2837,18 +2803,35 @@ mod tests {
         open(&mut engine, &mut docs, 2);
         let full = text(&call(&mut engine, &mut docs, 2, "get_outline", json!({})));
         assert!(
-            shown * 10 < full * 8,
+            shown * 10 < full * 9,
             "short ids cut the outline: {shown} of {full}"
         );
 
-        // A first host that had seen another actor first: an order the next
-        // host's own answers would not rebuild.
-        let mut handed = vec![json!("abc")];
-        handed.extend(actors.as_array().unwrap().iter().cloned());
-        let card = format!("n1_{}", id.seq);
+        // Another actor's layer, shown first by a fresh host that never saw
+        // this client: a table built in order would number the actors anew.
+        let other = NodeId {
+            actor: 0xabc,
+            seq: 1,
+        };
+        let parent = NodeId::from_short(&page, &known).unwrap();
+        let make = mastik_core::Transaction(vec![mastik_core::Operation::CreateNode {
+            id: other,
+            parent,
+            index: 0,
+            kind: mastik_core::NodeKind::Rect {
+                size: mastik_core::kurbo::Size::new(10.0, 10.0),
+                corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: Some("Theirs".into()),
+        }]);
+        docs.session.try_commit(make).unwrap();
         let mut next = Engine::default();
-        let restore = json!({ "document": "a", "restore": true, "actors": handed });
+        let restore = json!({ "document": "a", "restore": true });
         ok(&short(&mut next, &mut docs, "use_document", restore));
+        let theirs = short(&mut next, &mut docs, "get_node", json!({ "id": "abc:1" }));
+        assert_eq!(ok(&theirs)["nodes"][0]["name"], "Theirs");
         let out = short(&mut next, &mut docs, "get_node", json!({ "id": card }));
         assert!(
             !out.is_error,

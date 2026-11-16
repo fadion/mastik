@@ -110,9 +110,6 @@ struct Remembered {
     initialize: Option<String>,
     initialized: Option<String>,
     document: Option<String>,
-    /// The host's short-id actor table for this client, from the last answer
-    /// that grew it, handed to the next host with the restore.
-    actors: Option<Value>,
 }
 
 /// Run the proxy until the agent closes its stdin, keying the host's state by
@@ -272,16 +269,6 @@ fn carry(
         {
             kept.document = Some(doc.to_owned());
         }
-        // Looked for before parsing: an answer may be a large image.
-        if call
-            && answer.contains(mastik_mcp::wire::ACTORS_META)
-            && let Ok(v) = serde_json::from_str::<Value>(&answer)
-            && let Some(actors) = v
-                .pointer("/result/_meta")
-                .and_then(|m| m.get(mastik_mcp::wire::ACTORS_META))
-        {
-            kept.actors = Some(actors.clone());
-        }
         writeln!(stdout, "{answer}").map_err(|e| e.to_string())?;
         stdout.flush().map_err(|e| e.to_string())?;
     }
@@ -358,10 +345,7 @@ fn restore(link: &mut Link, kept: &Remembered) -> std::io::Result<()> {
         return Ok(());
     }
     if let Some(doc) = &kept.document {
-        let mut arguments = json!({ "document": doc, "restore": true });
-        if let Some(actors) = &kept.actors {
-            arguments["actors"] = actors.clone();
-        }
+        let arguments = json!({ "document": doc, "restore": true });
         let call = json!({
             "jsonrpc": "2.0",
             "id": "mastik-proxy-restore",
@@ -622,12 +606,8 @@ mod tests {
                         continue;
                     };
                     let document = message.pointer("/params/arguments/document");
-                    let mut result =
+                    let result =
                         json!({ "isError": false, "structuredContent": { "document": document } });
-                    // Serve answers `get_selection` as a host whose table grew.
-                    if tool == Some("get_selection") && script.host == Host::Serve {
-                        result["_meta"] = json!({ mastik_mcp::wire::ACTORS_META: ["aa", "bb"] });
-                    }
                     if tool.is_some() && tool == script.window_on {
                         window.store(true, Ordering::SeqCst);
                     }
@@ -723,11 +703,11 @@ mod tests {
             [
                 (
                     "use_document".to_owned(),
-                    json!({ "document": "site", "restore": true, "actors": ["aa", "bb"] })
+                    json!({ "document": "site", "restore": true })
                 ),
                 ("get_document".to_owned(), json!({})),
             ],
-            "the window's calls, the restore handing on serve's actor table"
+            "the window's calls, the restore first"
         );
     }
 

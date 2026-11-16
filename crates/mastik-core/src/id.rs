@@ -33,7 +33,7 @@ impl NodeId {
     }
 
     /// Parse the wire form. Returns `None` on malformed input. Inside
-    /// [`with_short_ids`] it also reads the short form against that table.
+    /// [`with_short_ids`] it also reads the short form against those actors.
     pub fn from_wire(s: &str) -> Option<NodeId> {
         let Some((actor, seq)) = s.split_once(':') else {
             return SHORT_ACTORS.with(|t| NodeId::from_short(s, t.borrow().as_deref()?));
@@ -44,49 +44,69 @@ impl NodeId {
         })
     }
 
-    /// The short form an MCP client is shown: `n<seq>` for an id of
-    /// `actors[0]`, `n<k>_<seq>` for one of `actors[k]`; `None` for an actor the
-    /// table lacks.
+    /// The short form an MCP client is shown, `n<prefix>_<seq>`: the shortest
+    /// start of the actor's hex, at least [`SHORT_PREFIX`] digits, that no
+    /// other of `actors` begins with. It depends only on the actors, never on
+    /// what a client saw first, so an id an agent holds names the same layer on
+    /// any connection. `None` for an actor `actors` lacks, or whose whole hex
+    /// another begins with.
     pub fn to_short(self, actors: &[u64]) -> Option<String> {
-        match actors.iter().position(|a| *a == self.actor)? {
-            0 => Some(format!("n{}", self.seq)),
-            k => Some(format!("n{k}_{}", self.seq)),
+        if !actors.contains(&self.actor) {
+            return None;
         }
+        let hex = format!("{:x}", self.actor);
+        let others: Vec<String> = actors
+            .iter()
+            .filter(|a| **a != self.actor)
+            .map(|a| format!("{a:x}"))
+            .collect();
+        (SHORT_PREFIX.min(hex.len())..=hex.len())
+            .map(|n| &hex[..n])
+            .find(|p| !others.iter().any(|o| o.starts_with(p)))
+            .map(|p| format!("n{p}_{}", self.seq))
     }
 
-    /// Read [`Self::to_short`]'s form against `actors`: digits only, no sign or
-    /// leading zero, so one id has one spelling.
+    /// Read [`Self::to_short`]'s form against `actors`: a prefix exactly one of
+    /// them begins with, and the seq in digits with no sign or leading zero, so
+    /// one id has one spelling. A prefix two actors share is `None`, never a
+    /// guess: a new actor can make an earlier spelling ambiguous.
     pub fn from_short(s: &str, actors: &[u64]) -> Option<NodeId> {
-        let digits = |d: &str| {
-            (!d.is_empty()
-                && d.bytes().all(|b| b.is_ascii_digit())
-                && (d == "0" || !d.starts_with('0')))
-            .then(|| d.parse::<u64>().ok())
-            .flatten()
-        };
-        let rest = s.strip_prefix('n')?;
-        let (k, seq) = match rest.split_once('_') {
-            Some((k, seq)) => (digits(k).filter(|k| *k > 0)?, digits(seq)?),
-            None => (0, digits(rest)?),
-        };
-        Some(NodeId {
-            actor: *actors.get(usize::try_from(k).ok()?)?,
-            seq,
-        })
+        let (prefix, seq) = s.strip_prefix('n')?.split_once('_')?;
+        let seq = (!seq.is_empty()
+            && seq.bytes().all(|b| b.is_ascii_digit())
+            && (seq == "0" || !seq.starts_with('0')))
+        .then(|| seq.parse::<u64>().ok())
+        .flatten()?;
+        if prefix.len() < SHORT_PREFIX && !actors.iter().any(|a| format!("{a:x}") == prefix) {
+            return None;
+        }
+        let mut matching = actors
+            .iter()
+            .filter(|a| format!("{a:x}").starts_with(prefix));
+        let actor = *matching.next()?;
+        if matching.next().is_some() {
+            return None;
+        }
+        Some(NodeId { actor, seq })
     }
 }
 
+/// The fewest hex digits of its actor a short id spells: with the handful of
+/// actors a document has, two random ones rarely share three, and when they
+/// do the spelling lengthens rather than names the wrong one.
+pub const SHORT_PREFIX: usize = 3;
+
 thread_local! {
-    /// The actor table [`NodeId::from_wire`] reads the short form against, set
-    /// by [`with_short_ids`] while a call from an MCP client runs.
+    /// The actors [`NodeId::from_wire`] reads the short form against, set by
+    /// [`with_short_ids`] while a call from an MCP client runs.
     static SHORT_ACTORS: std::cell::RefCell<Option<Vec<u64>>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Run `f` with [`NodeId::from_wire`] also reading the short form against
 /// `actors`, so every place an argument is read as an id takes it, and a text
-/// that happens to read `n1` is never touched. The table before is put back
-/// after, a panic included.
+/// that happens to read `n1a2b_1` is never touched. The actors before are put
+/// back after, a panic included.
 pub fn with_short_ids<R>(actors: &[u64], f: impl FnOnce() -> R) -> R {
     struct Restore(Option<Vec<u64>>);
     impl Drop for Restore {
@@ -250,49 +270,74 @@ mod tests {
         }
     }
 
-    /// The short form round-trips against its table, is read only inside
-    /// `with_short_ids`, and has one spelling per id.
+    /// The short form spells the shortest unique start of the actor's hex,
+    /// whatever order the actors come in; it round-trips, is read only inside
+    /// `with_short_ids`, reads a longer unique start too (what it was written
+    /// as before another actor joined), and a prefix two actors share is read
+    /// as no id.
     ///
-    /// flip: `from_wire` reading the short form with no table set → fails at
-    /// "no table, no short form".
+    /// flip: `to_short` with a fixed three-digit prefix → fails at "lengthened
+    /// past a shared start"; `from_short` taking the first match → fails at
+    /// "ambiguous".
     #[test]
-    fn the_short_form_reads_only_against_a_table() {
-        let actors = [0xaa, 0xbb];
-        let first = NodeId {
-            actor: 0xaa,
-            seq: 36,
-        };
-        let second = NodeId {
-            actor: 0xbb,
-            seq: 7,
-        };
-        assert_eq!(first.to_short(&actors).as_deref(), Some("n36"));
-        assert_eq!(second.to_short(&actors).as_deref(), Some("n1_7"));
-        assert_eq!(
-            NodeId {
-                actor: 0xcc,
-                seq: 1
-            }
-            .to_short(&actors),
-            None
+    fn the_short_form_spells_a_unique_start_of_the_actor() {
+        let (a, b, c) = (
+            0x48c9_9165_4e6b_8e81,
+            0x7c3a_0000_0000_0001,
+            0x48c9_7777_0000_0002,
         );
-        assert_eq!(NodeId::from_wire("n36"), None, "no table, no short form");
-        with_short_ids(&actors, || {
-            assert_eq!(NodeId::from_wire("n36"), Some(first));
-            assert_eq!(NodeId::from_wire("n1_7"), Some(second));
+        let id = |actor, seq| NodeId { actor, seq };
+        let two = [a, b];
+        assert_eq!(id(a, 36).to_short(&two).as_deref(), Some("n48c_36"));
+        assert_eq!(
+            id(b, 7).to_short(&[b, a]).as_deref(),
+            Some("n7c3_7"),
+            "order is no part of it"
+        );
+        let three = [a, b, c];
+        assert_eq!(
+            id(a, 36).to_short(&three).as_deref(),
+            Some("n48c99_36"),
+            "lengthened past a shared start"
+        );
+        assert_eq!(id(0xcc, 1).to_short(&two), None, "an actor the list lacks");
+        assert_eq!(
+            id(0xcc, 1).to_short(&[0xcc]).as_deref(),
+            Some("ncc_1"),
+            "a short actor whole"
+        );
+        assert_eq!(
+            NodeId::from_wire("n48c9_36"),
+            None,
+            "no actors, no short form"
+        );
+        with_short_ids(&two, || {
+            assert_eq!(NodeId::from_wire("n48c_36"), Some(id(a, 36)));
+            assert_eq!(NodeId::from_wire("n7c3_7"), Some(id(b, 7)));
             assert_eq!(
-                NodeId::from_wire("aa:36"),
-                Some(first),
+                NodeId::from_wire("n48c99_36"),
+                Some(id(a, 36)),
+                "a longer start"
+            );
+            assert_eq!(
+                NodeId::from_wire("48c991654e6b8e81:36"),
+                Some(id(a, 36)),
                 "the full form still reads"
             );
-            for s in ["n", "n036", "n0_36", "n2_1", "n+3", "n1_", "N36", "n36 "] {
+            for s in [
+                "n", "n36", "n48c_036", "n48_1", "n48c_", "n48c_+3", "N48c_1", "n48c_1 ", "n48cz_1",
+            ] {
                 assert_eq!(NodeId::from_wire(s), None, "{s:?} must not parse");
             }
         });
+        with_short_ids(&three, || {
+            assert_eq!(NodeId::from_wire("n48c_36"), None, "ambiguous");
+            assert_eq!(NodeId::from_wire("n48c99_36"), Some(id(a, 36)));
+        });
         assert_eq!(
-            NodeId::from_wire("n36"),
+            NodeId::from_wire("n48c9_36"),
             None,
-            "the table is put back after"
+            "the actors are put back after"
         );
     }
 
