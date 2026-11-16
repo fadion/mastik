@@ -85,10 +85,7 @@ fn hm(secs: u64) -> String {
     format!("{h:02}:{m:02}")
 }
 
-/// The local day `secs` falls on, counted from the epoch.
-fn local_day(secs: u64) -> i64 {
-    (secs as i64 + clock::local_offset(secs)).div_euclid(86_400)
-}
+use clock::local_day;
 
 /// A day's heading and the date beside it: *Today* and *Yesterday* by name, an
 /// older day by its date, with the year only when it is not this one.
@@ -97,8 +94,8 @@ fn day_heading(secs: u64, today: i64) -> (String, String) {
     let year = clock::date_label(clock::now());
     let short = |d: &str| d.rsplit_once(' ').map_or(d.to_string(), |(s, _)| s.into());
     match today - local_day(secs) {
-        0 => ("Today".into(), short(&date)),
-        1 => ("Yesterday".into(), short(&date)),
+        0 => ("Today".into(), clock::short_date(secs)),
+        1 => ("Yesterday".into(), clock::short_date(secs)),
         _ if year.rsplit_once(' ').map(|y| y.1) == date.rsplit_once(' ').map(|d| d.1) => {
             (short(&date), String::new())
         }

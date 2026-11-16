@@ -434,6 +434,9 @@ pub(crate) struct DashboardState {
     /// How many columns the file grid was last laid in, for the arrow keys; `0`
     /// before the first frame, which `arrow_target` reads as one.
     pub(crate) grid_cols: usize,
+    /// The first index of each row the file grid last laid, which a day heading
+    /// can start short of [`Self::grid_cols`]; empty before the first grid frame.
+    pub(crate) grid_rows: Vec<usize>,
     /// Where the keyboard's cursor is, by path; only `MastikApp::dashboard_keys`
     /// writes it. A click opens the document instead, so empty is the ordinary state.
     ///
@@ -2222,25 +2225,68 @@ impl MastikApp {
         let cols = grid_cols(ui.available_width());
         let card_w = card_width(ui.available_width());
         self.dash.grid_cols = cols;
-        let slots = entries.len() + usize::from(new_file.is_some());
-        for start in (0..slots).step_by(cols) {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for i in start..(start + cols).min(slots) {
-                    match entries.get(i) {
-                        Some(entry) => self.file_card(ui, entry, card_w, act),
-                        None => {
-                            if self.new_file_card(ui, card_w, new_file.unwrap_or_default())
-                                && !self.dash.menu_was_up
-                            {
-                                *act = Some(Act::NewFile);
+        let groups = self.day_groups(entries);
+        let last = groups.len().saturating_sub(1);
+        let mut rows = Vec::new();
+        for (g, (bucket, range)) in groups.into_iter().enumerate() {
+            if let Some(b) = bucket {
+                day_label(ui, b);
+                ui.add_space(6.0);
+            }
+            // Each group starts a row of its own; the *New file* card ends the last.
+            let slots = range.len() + usize::from(new_file.is_some() && g == last);
+            for start in (0..slots).step_by(cols) {
+                if range.start + start < entries.len() {
+                    rows.push(range.start + start);
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for i in start..(start + cols).min(slots) {
+                        match entries.get(range.start + i).filter(|_| i < range.len()) {
+                            Some(entry) => self.file_card(ui, entry, card_w, act),
+                            None => {
+                                if self.new_file_card(ui, card_w, new_file.unwrap_or_default())
+                                    && !self.dash.menu_was_up
+                                {
+                                    *act = Some(Act::NewFile);
+                                }
                             }
                         }
                     }
-                }
-            });
-            ui.add_space(gap);
+                });
+                ui.add_space(gap);
+            }
         }
+        self.dash.grid_rows = rows;
+    }
+
+    /// The list on screen cut into its day headings' groups, in order: one group
+    /// with no heading unless the sort in force is by a date ([`Sort::by_day`]).
+    /// `entries` is sorted by that date, so a bucket is one run and an empty one
+    /// is never drawn; reversed, the buckets come oldest first.
+    fn day_groups(
+        &self,
+        entries: &[Entry],
+    ) -> Vec<(Option<clock::DayBucket>, std::ops::Range<usize>)> {
+        let by = self.sort_by();
+        if !self.sort_applies() || !by.field.by_day() || entries.is_empty() {
+            return vec![(None, 0..entries.len())];
+        }
+        let today = clock::local_day(clock::now());
+        let mut out: Vec<(Option<clock::DayBucket>, std::ops::Range<usize>)> = Vec::new();
+        for (i, e) in entries.iter().enumerate() {
+            let date = match by.field {
+                Sort::Created => e.meta.created,
+                Sort::Opened => self.library.local.opened_at(e.meta.id.as_deref()),
+                _ => Some(e.modified),
+            };
+            let bucket = Some(clock::DayBucket::of(date, today));
+            match out.last_mut() {
+                Some((b, range)) if *b == bucket => range.end = i + 1,
+                _ => out.push((bucket, i..i + 1)),
+            }
+        }
+        out
     }
 
     /// The dashed *New file in {project}* card at the end of a project's grid
@@ -2677,6 +2723,7 @@ impl MastikApp {
                 key,
                 self.dash.list_view,
                 self.dash.grid_cols,
+                &self.dash.grid_rows,
                 entries.len(),
             ) {
                 self.dash.selected = Some(entries[to].path.clone());
@@ -2782,8 +2829,14 @@ impl MastikApp {
         if let Some(field) = picked {
             self.set_sort(by.clicked(field));
         }
-        for entry in entries {
-            self.file_row(ui, entry, &cols, act);
+        for (bucket, range) in self.day_groups(entries) {
+            if let Some(b) = bucket {
+                ui.add_space(6.0);
+                day_label(ui, b);
+            }
+            for entry in &entries[range] {
+                self.file_row(ui, entry, &cols, act);
+            }
         }
         // The row says only *New file*, where the card says *New file in X*.
         if new_file.is_some() && self.new_file_row(ui) && !self.dash.menu_was_up {
@@ -4633,35 +4686,62 @@ impl MastikApp {
 /// Where an arrow key moves the selection: the new index, or `None` for a key
 /// this view does not move on.
 ///
-/// Linear order: the grid wraps at the ends of its rows. Out of range clamps, as
-/// Explorer does, so `Down` toward a short last row lands on its last card; `Down`
-/// on the last row and `Up` on the first still return `Some`, which is why the
-/// caller sets rather than toggles. `Left`/`Right` are dead in the list view.
+/// Linear order: the grid wraps at the ends of its rows. `Up` and `Down` step by
+/// the rows as laid: `rows` holds each laid row's first index, which a day
+/// heading can start short of `grid_cols`; empty is one flat run of `grid_cols`.
+/// A column past a short row's end lands on its last card, as Explorer does;
+/// `Down` on the last row and `Up` on the first clamp to the ends and still return
+/// `Some`, which is why the caller sets rather than toggles. `Left`/`Right` are
+/// dead in the list view.
 fn arrow_target(
     current: Option<usize>,
     key: egui::Key,
     list_view: bool,
     grid_cols: usize,
+    rows: &[usize],
     len: usize,
 ) -> Option<usize> {
     if len == 0 {
         return None;
     }
-    // The caller passes the grid's column count; `0` is one.
-    let cols = if list_view { 1 } else { grid_cols.max(1) } as isize;
-    let step = match key {
-        egui::Key::ArrowLeft if !list_view => -1,
-        egui::Key::ArrowRight if !list_view => 1,
-        egui::Key::ArrowUp => -cols,
-        egui::Key::ArrowDown => cols,
+    let down = match key {
+        egui::Key::ArrowLeft | egui::Key::ArrowRight if list_view => return None,
+        egui::Key::ArrowLeft | egui::Key::ArrowUp => false,
+        egui::Key::ArrowRight | egui::Key::ArrowDown => true,
         _ => return None,
     };
     let Some(at) = current else {
         // Nothing selected: a downward or rightward key takes the first item, an
         // upward or leftward one the last.
-        return Some(if step < 0 { len - 1 } else { 0 });
+        return Some(if down { 0 } else { len - 1 });
     };
-    Some((at as isize + step).clamp(0, len as isize - 1) as usize)
+    if matches!(key, egui::Key::ArrowLeft | egui::Key::ArrowRight) {
+        return Some(if down {
+            (at + 1).min(len - 1)
+        } else {
+            at.saturating_sub(1)
+        });
+    }
+    // The caller passes the grid's column count; `0` is one.
+    let cols = if list_view { 1 } else { grid_cols.max(1) };
+    let flat: Vec<usize>;
+    let rows = match rows.is_empty() || list_view {
+        true => {
+            flat = (0..len).step_by(cols).collect();
+            &flat[..]
+        }
+        false => rows,
+    };
+    let r = rows.iter().rposition(|&s| s <= at).unwrap_or(0);
+    let col = at - rows[r];
+    let to = match down {
+        true if r + 1 >= rows.len() => return Some(len - 1),
+        false if r == 0 => return Some(0),
+        true => r + 1,
+        false => r - 1,
+    };
+    let end = rows.get(to + 1).copied().unwrap_or(len);
+    Some((rows[to] + col).min(end - 1))
 }
 
 /// The small grey word above a field — *Project name*, *Base folder*, *Autosave*.
@@ -4711,6 +4791,35 @@ fn section_label(ui: &mut egui::Ui, text: &str) {
         egui::Align2::LEFT_CENTER,
         text,
     );
+}
+
+/// A day heading over a date sort's group: a [`section_label`]'s eyebrow, and
+/// beside *Today* and *Yesterday* their date, dim, as the version history's day
+/// headings carry it.
+fn day_label(ui: &mut egui::Ui, bucket: clock::DayBucket) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::empty());
+    let p = ui.painter();
+    let head = ui::paint_eyebrow(
+        p,
+        egui::pos2(rect.left() + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        bucket.label(),
+    );
+    let date = match bucket {
+        clock::DayBucket::Today => Some(clock::now()),
+        clock::DayBucket::Yesterday => Some(clock::now().saturating_sub(86_400)),
+        _ => None,
+    };
+    if let Some(at) = date {
+        p.text(
+            egui::pos2(head.right() + 7.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            clock::short_date(at),
+            egui::FontId::proportional(ui::CAPTION_PT),
+            theme::text::faint(),
+        );
+    }
 }
 
 /// The sidebar's *Archived projects* heading: a caret, the words, and how many.
@@ -6680,7 +6789,7 @@ mod tests {
     fn the_arrows_step_in_reading_order_and_clamp_at_the_ends() {
         use egui::Key::{ArrowDown, ArrowLeft, ArrowRight, ArrowUp};
         // Six items in a four-wide grid: one full row and a short one.
-        let g = |cur, key| arrow_target(cur, key, false, 4, 6);
+        let g = |cur, key| arrow_target(cur, key, false, 4, &[], 6);
         assert_eq!(
             g(None, ArrowDown),
             Some(0),
@@ -6708,7 +6817,7 @@ mod tests {
             "and down on the last card stays put"
         );
         // The list is one column wide: single vertical steps, no horizontals.
-        let l = |cur, key| arrow_target(cur, key, true, 4, 6);
+        let l = |cur, key| arrow_target(cur, key, true, 4, &[], 6);
         assert_eq!(l(Some(2), ArrowDown), Some(3));
         assert_eq!(l(Some(2), ArrowUp), Some(1));
         assert_eq!(
@@ -6718,8 +6827,27 @@ mod tests {
         );
         assert_eq!(l(Some(2), ArrowRight), None);
         // The caller indexes `entries`: `None` on an empty list prevents a panic.
-        assert_eq!(arrow_target(None, ArrowDown, false, 4, 0), None);
-        assert_eq!(arrow_target(Some(0), ArrowUp, true, 4, 0), None);
+        assert_eq!(arrow_target(None, ArrowDown, false, 4, &[], 0), None);
+        assert_eq!(arrow_target(Some(0), ArrowUp, true, 4, &[], 0), None);
+    }
+
+    /// Under day headings a row can end short; `Down` and `Up` step by the rows
+    /// as laid, keeping the column where the next row reaches it.
+    /// flip: `arrow_target` ignoring `rows` → fails at "into the next bucket".
+    #[test]
+    fn the_arrows_cross_a_day_heading_by_visual_row() {
+        use egui::Key::{ArrowDown, ArrowUp};
+        // Four wide: a bucket of one, then one of five laid as four and one.
+        let rows = [0, 1, 5];
+        let g = |cur, key| arrow_target(cur, key, false, 4, &rows, 6);
+        assert_eq!(g(Some(0), ArrowDown), Some(1), "into the next bucket");
+        assert_eq!(
+            g(Some(3), ArrowUp),
+            Some(0),
+            "up to the short row's last card"
+        );
+        assert_eq!(g(Some(2), ArrowDown), Some(5));
+        assert_eq!(g(Some(5), ArrowUp), Some(1), "back up keeps the column");
     }
 
     /// `Down` is a row of whatever width the window made; a count of `0` steps one.
@@ -6729,12 +6857,12 @@ mod tests {
     fn the_arrows_step_a_row_of_the_grid_as_laid() {
         use egui::Key::ArrowDown;
         assert_eq!(
-            arrow_target(Some(1), ArrowDown, false, 6, 20),
+            arrow_target(Some(1), ArrowDown, false, 6, &[], 20),
             Some(7),
             "down is a row of six"
         );
         assert_eq!(
-            arrow_target(Some(1), ArrowDown, false, 0, 20),
+            arrow_target(Some(1), ArrowDown, false, 0, &[], 20),
             Some(2),
             "before any grid is drawn, a row of one"
         );
@@ -8332,6 +8460,53 @@ mod tests {
         app.dash.sort = SortBy::natural(Sort::Project);
         app.dash.nav = Nav::Project("p".into());
         assert_eq!(app.sort_by(), SortBy::natural(Sort::Edited));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A date sort heads its groups *Today*, *This week*, *Earlier*, skipping an
+    /// empty *Yesterday*; reversed, the buckets come oldest first; a name sort has
+    /// none, and the heading is painted.
+    /// flip: `day_groups` grouping under every sort → fails at "no headings".
+    #[test]
+    fn a_date_sort_is_grouped_by_day_and_a_name_sort_is_not() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "day-groups");
+        let now = clock::now();
+        for (name, ago) in [("Fresh", 60), ("Midweek", 3 * 86_400), ("Old", 40 * 86_400)] {
+            let mut doc = mastik_core::Document::new(app.session.ids.mint());
+            let path = store::file_document(&root, None, name, &mut doc).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(now - ago))
+                .unwrap();
+        }
+        app.library.refresh();
+        app.dash.nav = Nav::All;
+        app.dash.sort = SortBy::natural(Sort::Edited);
+        let heads = |app: &MastikApp| {
+            app.day_groups(&app.visible_entries())
+                .into_iter()
+                .map(|(b, _)| b.map(clock::DayBucket::label))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            heads(&app),
+            [Some("Today"), Some("This week"), Some("Earlier")]
+        );
+        assert!(
+            in_body(&galleys(&mut app, &ctx), "THIS WEEK"),
+            "the heading is painted, as an eyebrow"
+        );
+        app.dash.sort.reversed = true;
+        assert_eq!(
+            heads(&app),
+            [Some("Earlier"), Some("This week"), Some("Today")]
+        );
+        app.dash.sort = SortBy::natural(Sort::Name);
+        assert_eq!(heads(&app), [None], "no headings under a name sort");
         let _ = std::fs::remove_dir_all(&root);
     }
 

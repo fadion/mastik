@@ -172,6 +172,55 @@ pub fn date_label(secs: u64) -> String {
     format!("{d} {month} {y}")
 }
 
+/// `"12 Mar"`: [`date_label`] without its year, for a date beside *Today*.
+pub fn short_date(secs: u64) -> String {
+    let date = date_label(secs);
+    date.rsplit_once(' ')
+        .map_or(date.clone(), |(s, _)| s.to_string())
+}
+
+/// The local day `secs` falls on, counted from the epoch.
+pub fn local_day(secs: u64) -> i64 {
+    (secs as i64 + local_offset(secs)).div_euclid(86_400)
+}
+
+/// The four groups a date sort heads its documents with, newest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DayBucket {
+    Today,
+    Yesterday,
+    /// The five days before yesterday.
+    ThisWeek,
+    /// Everything older, and a document with no date.
+    Earlier,
+}
+
+impl DayBucket {
+    /// The bucket `secs` falls in, `today` being [`local_day`] of now. A stamp
+    /// from the future (another machine's clock) counts as today.
+    pub fn of(secs: Option<u64>, today: i64) -> Self {
+        let Some(secs) = secs else {
+            return Self::Earlier;
+        };
+        match today - local_day(secs) {
+            ..=0 => Self::Today,
+            1 => Self::Yesterday,
+            2..=6 => Self::ThisWeek,
+            _ => Self::Earlier,
+        }
+    }
+
+    /// The heading's words, as the version history names its days.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Today => "Today",
+            Self::Yesterday => "Yesterday",
+            Self::ThisWeek => "This week",
+            Self::Earlier => "Earlier",
+        }
+    }
+}
+
 /// How long ago, in the dashboard's voice: `"2h ago"`, `"Yesterday"`,
 /// `"Last week"`.
 ///

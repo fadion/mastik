@@ -93,6 +93,11 @@ impl Sort {
         matches!(self, Sort::Name | Sort::Project | Sort::Best)
     }
 
+    /// Whether the list groups this sort under day headings.
+    pub fn by_day(self) -> bool {
+        matches!(self, Sort::Edited | Sort::Created | Sort::Opened)
+    }
+
     /// Read a preference back, degrading to the default rather than failing.
     pub fn from_id(id: &str) -> Sort {
         Sort::EVERY
@@ -387,8 +392,10 @@ impl Library {
     /// The field's own order runs in its natural direction, flipped when
     /// `by.reversed`; every sort is then broken by name and by stem, so the order is
     /// total: ties (a bulk import shares a created second) would otherwise follow
-    /// directory order and shuffle between visits. A document with no value for the
-    /// field (unfiled, never opened) sorts last either way.
+    /// directory order and shuffle between visits. A missing date (never opened,
+    /// a document older than the library) is the oldest, so each day heading's
+    /// group stays in one run either way; an unfiled document sorts last under
+    /// *Project* either way.
     pub fn sort_entries(&self, entries: &mut [Entry], by: SortBy) {
         use std::cmp::Ordering;
         if by.field == Sort::Best {
@@ -397,22 +404,27 @@ impl Library {
         let name = |e: &Entry| e.display_name().to_lowercase();
         let project = |e: &Entry| self.project_of(e).map(|p| p.name.to_lowercase());
         let opened = |e: &Entry| self.local.opened_at(e.meta.id.as_deref());
+        fn run<T: Ord>(a: T, b: T, flip: bool) -> Ordering {
+            match flip {
+                true => b.cmp(&a),
+                false => a.cmp(&b),
+            }
+        }
         // Values missing sort last, whichever way the present ones run.
         fn present<T: Ord>(a: Option<T>, b: Option<T>, flip: bool) -> Ordering {
             match (a, b) {
-                (Some(a), Some(b)) if flip => b.cmp(&a),
-                (Some(a), Some(b)) => a.cmp(&b),
+                (Some(a), Some(b)) => run(a, b, flip),
                 (a, b) => b.is_some().cmp(&a.is_some()),
             }
         }
         entries.sort_by(|a, b| {
             let down = !by.ascending();
             let primary = match by.field {
-                Sort::Edited => present(Some(a.modified), Some(b.modified), down),
-                Sort::Created => present(a.meta.created, b.meta.created, down),
-                Sort::Size => present(Some(a.size), Some(b.size), down),
-                Sort::Opened => present(opened(a), opened(b), down),
-                Sort::Name => present(Some(name(a)), Some(name(b)), down),
+                Sort::Edited => run(a.modified, b.modified, down),
+                Sort::Created => run(a.meta.created, b.meta.created, down),
+                Sort::Size => run(a.size, b.size, down),
+                Sort::Opened => run(opened(a), opened(b), down),
+                Sort::Name => run(name(a), name(b), down),
                 // Within a project, the last edited first.
                 Sort::Project => {
                     present(project(a), project(b), down).then_with(|| b.modified.cmp(&a.modified))
@@ -499,11 +511,12 @@ mod tests {
         );
     }
 
-    /// Reversed, the field runs the other way and a missing value stays last.
-    /// flip: `present`'s missing-value arm ordered by `flip` → fails at "never
-    /// opened stays last".
+    /// Reversed, the field runs the other way; a missing date is the oldest, and
+    /// an unfiled document stays last under *Project*.
+    /// flip: `present`'s missing-value arm ordered by `flip` → fails at "unfiled
+    /// stays last".
     #[test]
-    fn a_reversed_sort_flips_the_field_and_keeps_missing_values_last() {
+    fn a_reversed_sort_flips_the_field_and_places_missing_values() {
         let mut lib = Library::open(temp_root("reverse"));
         let mut entries = vec![
             entry("Small old", "a", 100, 100, 10),
@@ -529,7 +542,35 @@ mod tests {
                 },
             );
             let names: Vec<String> = entries.iter().map(|e| e.display_name()).collect();
-            assert_eq!(names[2], "Big new", "never opened stays last ({reversed})");
+            let at = if reversed { 0 } else { 2 };
+            assert_eq!(
+                names[at], "Big new",
+                "never opened is the oldest ({reversed})"
+            );
+        }
+
+        lib.projects.projects.push(Project {
+            id: "p".into(),
+            name: "Atlas".into(),
+            color: PROJECT_COLORS[0].into(),
+            folder: None,
+            created: 0,
+            archived: false,
+        });
+        entries[0].meta.project = Some("p".into());
+        entries[1].meta.project = Some("p".into());
+        for reversed in [false, true] {
+            lib.sort_entries(
+                &mut entries,
+                SortBy {
+                    field: Sort::Project,
+                    reversed,
+                },
+            );
+            assert_eq!(
+                entries[2].meta.project, None,
+                "unfiled stays last ({reversed})"
+            );
         }
         let _ = std::fs::remove_dir_all(&lib.root);
     }
