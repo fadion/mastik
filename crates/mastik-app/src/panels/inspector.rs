@@ -342,9 +342,6 @@ impl AngleScrub {
 /// bring the paint back. 0.6: at 0.7 it read too close to a live row.
 const HIDDEN_OPACITY: f32 = 0.6;
 
-/// The blend-mode menu's width.
-const BLEND_MENU_W: f32 = 210.0;
-
 /// The blend-mode menu's popup id, one for the app: a preview is taken back
 /// whenever no menu under it is open ([`MastikApp::end_blend_preview`]).
 fn blend_menu_id() -> egui::Id {
@@ -5119,6 +5116,18 @@ impl MastikApp {
         let mut hovered = None;
         let mut pick = None;
         if let Some(anchor) = clicks.drop_rect {
+            // Measured over every row's widest dress, so the width is the same
+            // whatever the targets are: a popup never grows back.
+            let chords: Vec<(&str, Option<String>)> = BlendMode::ALL
+                .iter()
+                .map(|m| match m {
+                    BlendMode::PassThrough => (m.label(), Some("groups".to_owned())),
+                    _ => (m.label(), m.chord_digit().map(|d| format!("Shift+{d}"))),
+                })
+                .collect();
+            let rows: Vec<(&str, Option<&str>)> =
+                chords.iter().map(|(l, c)| (*l, c.as_deref())).collect();
+            let w = ui::menu_check_accel_width(ui.ctx(), &rows, false, ui::MENU_PAD, 0.0);
             egui::Popup::new(blend_menu_id(), ui.ctx().clone(), anchor, ui.layer_id())
                 .kind(egui::PopupKind::Menu)
                 .layout(egui::Layout::top_down_justified(egui::Align::Min))
@@ -5129,7 +5138,7 @@ impl MastikApp {
                 .gap(ui::MENU_GAP)
                 .show(|ui| {
                     ui::popup_rows(ui);
-                    ui.set_width(BLEND_MENU_W);
+                    ui.set_width(ui::menu_inner_w(w, ui::MENU_PAD));
                     for mode in BlendMode::ALL {
                         let offered = mode != BlendMode::PassThrough || containers;
                         let chord = match mode {
@@ -5137,10 +5146,10 @@ impl MastikApp {
                             BlendMode::Normal if containers => None,
                             _ => mode.chord_digit().map(|d| format!("Shift+{d}")),
                         };
-                        let on = shared == Some(mode);
-                        let row = ui::MenuRow::new(if on { icon::CHECK } else { "" }, mode.label())
+                        // The mode in use is lit, as a one-value dropdown's is.
+                        let row = ui::MenuRow::new("", mode.label())
                             .accel(chord.as_deref())
-                            .checked(on)
+                            .selected(shared == Some(mode))
                             .enabled(offered);
                         let resp = ui::menu_row(ui, row, ui::MENU_ROW_H);
                         if !offered {
@@ -25553,6 +25562,13 @@ mod blend_menu_tests {
         frame(&mut app, &ctx, Vec::new());
         let out = frame(&mut app, &ctx, Vec::new());
         let out = click(&mut app, &ctx, find(&out, "Normal"));
+        // The mode in use is lit, not ticked.
+        let ticks = out
+            .shapes
+            .iter()
+            .filter(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == icon::CHECK))
+            .count();
+        assert_eq!(ticks, 0, "a one-value menu wears no tick");
         let pass = find(&out, "Pass through");
         click(&mut app, &ctx, pass);
         assert_eq!(

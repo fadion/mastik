@@ -879,11 +879,18 @@ impl MastikApp {
         let kind = paint::kind_of(brush);
         let resp = resp.on_hover_text("Gradient kind");
         let mut picked = None;
+        // A one-value dropdown: the kind in use lit, no tick column, as wide as
+        // its words with a menu's 120 floor.
+        let labels: Vec<(&str, Option<&str>)> = PaintKind::GRADIENTS
+            .iter()
+            .map(|k| (k.label(), None))
+            .collect();
+        let w = ui::menu_check_accel_width(ui.ctx(), &labels, false, ui::MENU_PAD, 120.0);
         egui::Popup::menu(&resp).gap(ui::MENU_GAP).show(|ui| {
             ui::popup_rows(ui);
-            ui.set_width(MENU_W);
+            ui.set_width(ui::menu_inner_w(w, ui::MENU_PAD));
             for k in PaintKind::GRADIENTS {
-                let row = ui::MenuRow::new("", k.label()).checked(k == kind);
+                let row = ui::MenuRow::new("", k.label()).selected(k == kind);
                 if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
                     picked = Some(k);
                 }
