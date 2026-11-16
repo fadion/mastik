@@ -438,6 +438,9 @@ pub(crate) struct DashboardState {
     pub(crate) page_sort: Option<SortBy>,
     /// Set when the results page opens, so its field takes the caret once.
     pub(crate) page_focus: bool,
+    /// The project the open search is narrowed to (`Ctrl+K` inside a project),
+    /// shown as a chip; set by each door that opens the search.
+    pub(crate) search_scope: Option<String>,
     pub(crate) list_view: bool,
     /// How many columns the file grid was last laid in, for the arrow keys; `0`
     /// before the first frame, which `arrow_target` reads as one.
@@ -876,14 +879,39 @@ impl MastikApp {
         if chord && self.dash.search.is_none() {
             self.dash.search = Some(String::new());
             self.dash.search_row = None;
+            // Inside a project the chord searches it, with a chip to widen.
+            self.dash.search_scope = match (&self.dash.nav, &self.dash.search_page) {
+                (Nav::Project(id), None) => Some(id.clone()),
+                _ => None,
+            };
         }
 
         let id = egui::Id::new("library-search-edit");
-        let hint = "Search files and projects";
-        // One field in both states, so the placeholder cannot move when it opens.
+        // The project the open search is narrowed to, as its chip names it.
+        let scope = self
+            .dash
+            .search_scope
+            .as_ref()
+            .filter(|_| self.dash.search.is_some())
+            .and_then(|s| self.library.projects.get(s))
+            .map(|p| self.library.shown_project(p));
+        let hint = match scope {
+            Some(_) => "Search this project",
+            None => "Search files and projects",
+        };
+        // One field in every state, so the placeholder cannot move when it opens.
         let field = |ui: &mut egui::Ui, text: &mut String| {
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                ui::search_box(ui, rect.size(), text, hint, id)
+                ui::search_box_scoped(
+                    ui,
+                    rect.size(),
+                    text,
+                    hint,
+                    id,
+                    scope
+                        .as_deref()
+                        .map(|name| (icon::FOLDER_SIMPLE, name, "Search the whole library")),
+                )
             })
             .inner
         };
@@ -900,7 +928,7 @@ impl MastikApp {
                 ctx.memory_mut(|m| m.surrender_focus(id));
                 return;
             }
-            let edit = field(ui, &mut query);
+            let (edit, _) = field(ui, &mut query);
             if std::mem::take(&mut self.dash.page_focus) {
                 edit.request_focus();
             }
@@ -912,7 +940,7 @@ impl MastikApp {
         }
         if self.dash.search.is_none() {
             let mut idle = String::new();
-            let edit = field(ui, &mut idle);
+            let (edit, _) = field(ui, &mut idle);
             ui.painter().text(
                 egui::pos2(rect.right() - ui::FIELD_PAD_X, rect.center().y),
                 egui::Align2::RIGHT_CENTER,
@@ -925,6 +953,7 @@ impl MastikApp {
             if (edit.gained_focus() || edit.clicked()) && !self.dash.menu_was_up {
                 self.dash.search = Some(idle);
                 self.dash.search_row = None;
+                self.dash.search_scope = None;
             } else if edit.has_focus() {
                 ctx.memory_mut(|m| m.surrender_focus(id));
             }
@@ -942,15 +971,24 @@ impl MastikApp {
             i32::from(i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown))
                 - i32::from(i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp))
         });
+        // Backspace on the empty query widens a project's search to the library;
+        // read before the field, which would see nothing to delete.
+        let widen_key = self.dash.search_scope.is_some()
+            && self.dash.search.as_deref() == Some("")
+            && ctx.input(|i| i.key_pressed(egui::Key::Backspace));
         let Some(query) = self.dash.search.as_mut() else {
             return;
         };
-        let edit = field(ui, query);
+        let (edit, widened) = field(ui, query);
         // Requested every frame, for `rename_field`'s reason; the dismissal below makes that safe.
         if !edit.has_focus() {
             edit.request_focus();
         }
         if edit.changed() {
+            self.dash.search_row = None;
+        }
+        if widened || widen_key {
+            self.dash.search_scope = None;
             self.dash.search_row = None;
         }
         let panel = self.search_results(ui, rect, step, act);
@@ -998,12 +1036,26 @@ impl MastikApp {
         };
         let mut projects = self.ranked_projects(&words);
         let mut files = self.ranked_files(&words);
-        // Past the cap, a last row opens every match on the results page.
+        // A project's own search lists its files and, last, the way out to the library.
+        let scope = self
+            .dash
+            .search_scope
+            .clone()
+            .filter(|s| self.library.projects.get(s).is_some());
+        if let Some(s) = &scope {
+            projects.clear();
+            files.retain(|(e, _)| e.meta.project.as_deref() == Some(s.as_str()));
+        }
+        // Past the cap, a row opens every match on the results page.
         let show_all =
             (files.len() > SEARCH_MAX || projects.len() > SEARCH_MAX).then_some(files.len());
         projects.truncate(SEARCH_MAX);
         files.truncate(SEARCH_MAX);
-        let rows = recents.len() + projects.len() + files.len() + usize::from(show_all.is_some());
+        let rows = recents.len()
+            + projects.len()
+            + files.len()
+            + usize::from(show_all.is_some())
+            + usize::from(scope.is_some());
         if rows == 0 && (!needle.is_empty() || (private && typed)) {
             return Some(Self::search_panel(ui, anchor, 36.0, |ui, rect| {
                 ui.painter().text(
@@ -1027,7 +1079,7 @@ impl MastikApp {
         // *Show all* when there is one, else the first document match, recomputed
         // as the groups above change length.
         let default = if show_all.is_some() {
-            rows - 1
+            rows - 1 - usize::from(scope.is_some())
         } else if files.is_empty() {
             0
         } else {
@@ -1044,6 +1096,7 @@ impl MastikApp {
         let mut nav_to: Option<Nav> = None;
         let mut refill: Option<String> = None;
         let mut open_page = false;
+        let mut widen = false;
         let h = rows as f32 * ui::MENU_ROW_H;
         let panel = Self::search_panel(ui, anchor, h, |ui, rect| {
             let mut y = rect.top();
@@ -1130,9 +1183,30 @@ impl MastikApp {
                 }
                 let y = rect.top() + i as f32 * ui::MENU_ROW_H + ui::MENU_ROW_H / 2.0;
                 crate::palette::chip(ui, rect.right() - 8.0, y, "Enter", true);
+                i += 1;
+            }
+            if scope.is_some() {
+                if row(
+                    ui,
+                    i,
+                    icon::FILES,
+                    theme::text::faint(),
+                    "Search the whole library",
+                    &[],
+                    "",
+                ) {
+                    widen = true;
+                }
+                let y = rect.top() + i as f32 * ui::MENU_ROW_H + ui::MENU_ROW_H / 2.0;
+                crate::palette::chip(ui, rect.right() - 8.0, y, "Backspace", true);
             }
         });
 
+        if widen {
+            self.dash.search_scope = None;
+            self.dash.search_row = None;
+            return Some(panel);
+        }
         if open_page {
             self.open_results(&query);
             return Some(panel);
@@ -1192,6 +1266,10 @@ impl MastikApp {
     /// started on, in *Best match* order.
     fn open_results(&mut self, query: &str) {
         self.remember_search(query);
+        // A project's own search opens filtered to it.
+        if let Some(scope) = self.dash.search_scope.take() {
+            self.dash.filter = Some(scope);
+        }
         self.dash.search_page = Some(query.trim().to_string());
         self.dash.page_sort = None;
         self.dash.page_focus = true;
@@ -2852,6 +2930,22 @@ impl MastikApp {
             {
                 *act = Some(Act::Duplicate(path));
             }
+            return;
+        }
+        // A printable key opens search with that letter typed. Text events only,
+        // never key events, so `Delete` and `Backspace` stay the delete card's and
+        // `Space` and the arrows keep their jobs; Shift still types a capital.
+        let typed = ctx.input(|i| {
+            let free = !i.modifiers.command && !i.modifiers.ctrl && !i.modifiers.alt;
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Text(t) if free && !t.trim().is_empty() => Some(t.clone()),
+                _ => None,
+            })
+        });
+        if let Some(text) = typed {
+            self.dash.search = Some(text);
+            self.dash.search_row = None;
+            self.dash.search_scope = None;
             return;
         }
         if !plain {
@@ -8609,6 +8703,79 @@ mod tests {
         );
         assert_eq!(app.dash.nav, Nav::All);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A letter typed over the grid opens search holding it, and a further letter
+    /// joins it after; `Backspace` there is still the delete card's. `Ctrl+K`
+    /// inside a project narrows the search to it, and `Backspace` on the empty
+    /// query widens it again.
+    /// flip: the chord leaving `search_scope` unset → fails at "scoped to the
+    /// project".
+    #[test]
+    fn typing_over_the_grid_searches_and_ctrl_k_in_a_project_scopes_it() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "small-keys");
+        seed(&mut app, "p-1", "Web shop", None);
+        seed_file(&mut app, &root, "p-1", "Wallet");
+        let typed = |app: &mut MastikApp, text: &str| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events: vec![egui::Event::Text(text.into())],
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| app.dashboard_ui(ui));
+        };
+        app.dash.nav = Nav::All;
+        let _ = galleys(&mut app, &ctx);
+        typed(&mut app, "w");
+        assert_eq!(
+            app.dash.search.as_deref(),
+            Some("w"),
+            "the letter opens search"
+        );
+        let _ = galleys(&mut app, &ctx);
+        typed(&mut app, "a");
+        assert_eq!(
+            app.dash.search.as_deref(),
+            Some("wa"),
+            "and the next one follows it"
+        );
+
+        app.dash.search = None;
+        let path = app.library.entries[0].path.clone();
+        app.dash.selected = Some(path.clone());
+        press(&mut app, &ctx, egui::Key::Backspace);
+        assert_eq!(app.dash.search, None, "Backspace opens no search");
+        assert_eq!(
+            app.dash.deleting,
+            Some(path),
+            "Backspace still asks to delete"
+        );
+        app.dash.deleting = None;
+
+        app.dash.nav = Nav::Project("p-1".into());
+        let _ = galleys(&mut app, &ctx);
+        press_with(&mut app, &ctx, egui::Key::K, egui::Modifiers::COMMAND);
+        assert_eq!(
+            app.dash.search_scope.as_deref(),
+            Some("p-1"),
+            "scoped to the project"
+        );
+        assert!(in_body_or_bar(&galleys(&mut app, &ctx), "Web shop"));
+        press(&mut app, &ctx, egui::Key::Backspace);
+        assert_eq!(app.dash.search_scope, None, "Backspace widens it");
+        assert_eq!(
+            app.dash.search.as_deref(),
+            Some(""),
+            "and keeps the search open"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Whether `text` was painted anywhere on screen.
+    fn in_body_or_bar(runs: &[(egui::Pos2, egui::Vec2, String)], text: &str) -> bool {
+        runs.iter().any(|(_, _, t)| t == text)
     }
 
     /// A list header click sorts by its column and a second reverses it; the

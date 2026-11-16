@@ -3517,6 +3517,21 @@ pub fn search_box(
     hint: &str,
     id: egui::Id,
 ) -> egui::Response {
+    search_box_scoped(ui, size, text, hint, id, None).0
+}
+
+/// A [`search_box`] narrowed to a scope: `chip` (a glyph, a word and its ✕'s
+/// tooltip) sits after the magnifier as a [`scope_chip`]. Answers the edit and
+/// whether the ✕ was pressed, which widens the search; `None` is the plain box.
+pub fn search_box_scoped(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    text: &mut String,
+    hint: &str,
+    id: egui::Id,
+    chip: Option<(&str, &str, &str)>,
+) -> (egui::Response, bool) {
+    let mut widened = false;
     let scale = Scale::of(size.y);
     let pt = scale.text_pt();
     let font = egui::FontId::proportional(pt);
@@ -3534,6 +3549,9 @@ pub fn search_box(
             scale.glyph_pt(),
             theme::text::faint(),
         ));
+        if let Some((glyph, label, tip)) = chip {
+            widened = scope_chip(ui, glyph, label, Some(tip)).is_some_and(|x| x.clicked());
+        }
         // The edit stops short of the clear button rather than lying under it, so
         // the text never runs beneath the ✕ and the pointer there is an arrow.
         // Laid out from the right, the ✕ first, so the edit fills what is left
@@ -3567,8 +3585,73 @@ pub fn search_box(
             // The edit was drawn holding the old text.
             ui.ctx().request_repaint();
         }
-        edit
+        if widened {
+            edit.request_focus();
+        }
+        (edit, widened)
     })
+}
+
+/// The chip that names a search's scope inside its field: the accent-washed
+/// glyph and word of the command palette's *Layers* and *Documents*, and a
+/// project in the library's search. `close` adds a ✕ with that tooltip, whose
+/// response is returned; without one the answer is `None`.
+pub fn scope_chip(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    label: &str,
+    close: Option<&str>,
+) -> Option<egui::Response> {
+    let closable = close.is_some();
+    const PAD: f32 = 7.0;
+    const GLYPH: f32 = 12.0;
+    const GAP: f32 = 5.0;
+    let font = egui::FontId::proportional(SMALL_PT);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.into(), font, color::accent_100());
+    let close_w = if closable { GLYPH + GAP } else { 0.0 };
+    let size = egui::vec2(PAD + GLYPH + GAP + galley.size().x + close_w + PAD, 20.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::empty());
+    let p = ui.painter();
+    p.rect(
+        rect,
+        egui::CornerRadius::same(5),
+        color::accent_a(56),
+        egui::Stroke::new(1.0, color::accent_a(128)),
+        egui::StrokeKind::Inside,
+    );
+    p.text(
+        egui::pos2(rect.left() + PAD + GLYPH / 2.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        theme::icon_font(GLYPH),
+        color::accent_100(),
+    );
+    let text_x = rect.left() + PAD + GLYPH + GAP;
+    let text_w = galley.size().x;
+    p.galley(
+        egui::pos2(text_x, rect.center().y - galley.size().y / 2.0),
+        galley,
+        color::accent_100(),
+    );
+    let tip = close?;
+    let x = egui::Rect::from_center_size(
+        egui::pos2(text_x + text_w + GAP + GLYPH / 2.0, rect.center().y),
+        egui::Vec2::splat(GLYPH + 2.0),
+    );
+    let resp = ui.interact(x, ui.id().with(("scope-chip-x", label)), egui::Sense::CLICK);
+    ui.painter().text(
+        x.center(),
+        egui::Align2::CENTER_CENTER,
+        icon::X,
+        theme::icon_font(GLYPH - 2.0),
+        match resp.hovered() {
+            true => color::text(),
+            false => color::accent_200(),
+        },
+    );
+    Some(resp.on_hover_text(tip))
 }
 
 /// A [`search_box`]'s ✕: a hover ground and an arrow pointer, no tab stop.

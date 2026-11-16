@@ -1338,11 +1338,11 @@ fn palette_field(ui: &mut egui::Ui, pal: &mut Palette) {
                     .font(theme::icon_font(16.0))
                     .color(theme::text::faint()),
             );
-            match pal.scope {
-                Scope::Layers => scope_chip(ui, icon::STACK, "Layers"),
-                Scope::Documents => scope_chip(ui, icon::FILES, "Documents"),
-                Scope::All => {}
-            }
+            let _ = match pal.scope {
+                Scope::Layers => crate::ui::scope_chip(ui, icon::STACK, "Layers", None),
+                Scope::Documents => crate::ui::scope_chip(ui, icon::FILES, "Documents", None),
+                Scope::All => None,
+            };
             #[expect(
                 clippy::disallowed_methods,
                 reason = "the command palette's field, its own scale by design"
@@ -1788,40 +1788,6 @@ fn no_match(ui: &mut egui::Ui, pal: &Palette) {
             .max_rect(rect.with_min_x(rect.left() + 8.0))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| crate::ui::empty_note(ui, text),
-    );
-}
-
-/// A scope's chip in a search field, its glyph before its word: the palette's
-/// *Layers* and *Documents*.
-fn scope_chip(ui: &mut egui::Ui, glyph: &str, label: &str) {
-    let font = egui::FontId::proportional(crate::ui::SMALL_PT);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.into(), font, color::accent_100());
-    let size = egui::vec2(galley.size().x + 7.0 + 12.0 + 5.0 + 7.0, 20.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::empty());
-    let p = ui.painter();
-    p.rect(
-        rect,
-        egui::CornerRadius::same(5),
-        color::accent_a(56),
-        egui::Stroke::new(1.0, color::accent_a(128)),
-        egui::StrokeKind::Inside,
-    );
-    p.text(
-        egui::pos2(rect.left() + 7.0 + 6.0, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        theme::icon_font(12.0),
-        color::accent_100(),
-    );
-    p.galley(
-        egui::pos2(
-            rect.left() + 7.0 + 12.0 + 5.0,
-            rect.center().y - galley.size().y / 2.0,
-        ),
-        galley,
-        color::accent_100(),
     );
 }
 
