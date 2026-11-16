@@ -323,7 +323,9 @@ them, otherwise it pads to the next step; `Shift+Tab` outdents the lines a selec
 comments. `Alt+↑`/`↓` move the lines, `Shift+Alt+↑`/`↓` copy them. Brackets and quotes type their
 close where one can stand (a quote not after a name, nor in a string or comment), a close typed
 before the same character steps over it, a bracket or quote typed over a selection wraps it, and
-`Backspace` between an empty pair takes both.
+`Backspace` between an empty pair takes both. `Ctrl+X` with nothing selected cuts the caret's line
+with its newline (the last line takes the newline before it). A double-click held and dragged
+selects whole words from the clicked one (`drag_words`).
 
 **Types.** `mastik_vm::definitions` writes a `.d.luau` from the same tables as the bindings (the
 `Layers` class, `sel` and the relative names, each verb with typed parameters, `param`), saved as
@@ -366,8 +368,11 @@ sized from their laid-out text each frame.
   script's function · line N*. None inside a comment. It hangs `ui::MENU_GAP` over the line the
   call opens on, its left edge at the bracket; with no room above, under the completion list or the
   caret's line. As in other code editors it opens on typing, never on a click or a caret moved
-  into a call: typing the call's `(`, a `,` or a `{` opens it, and it stays while the caret is in
-  that call and the code has the focus. Leaving the call or `Escape` with no list up shuts it.
+  into a call: typing the call's `(`, a `,` or a `{` opens it, as does `Ctrl+Shift+Space` in any
+  call, and it stays while the caret is in that call and the code has the focus. Leaving the call
+  or `Escape` with no list up shuts it. egui lets go of a focused field on `Escape` before any
+  widget reads it, so when the list or the hint takes the key the editor hands the code its
+  keyboard back.
 - **Hover** (`hover_at`): once the pointer rests on a name (`ui::Resting`), a card under it
   (`ui::dropdown_place`, taking no pointer) says what it is, the word washed in the accent: a
   property (`card.opacity: number`, its doc, *Property · reads raise when the layers disagree*), a
@@ -401,8 +406,8 @@ sized from their laid-out text each frame.
   on line N to run · Ctrl+Enter puts the caret on it*), as are the palette's *Run ‹name›* rows.
 - **Go to declaration** (`declaration_at`): the nearest declaration above the use, else the first
   (a function called above it); `param.x` goes to its `---@input` line. With `Ctrl` held over such
-  a name it takes a dotted `accent_300()` underline, the pointer staying the arrow as everywhere in
-  the chrome; `Ctrl`+click, or `F12` at
+  a name it takes a dotted `accent_300()` underline and the arrow in place of the text's I-beam
+  (never the hand, as nowhere in the chrome); `Ctrl`+click, or `F12` at
   the caret, selects the declaration and washes its line in the accent, fading over 600 ms,
   scrolling only when the line is out of view, to a third of the way down. Mastik's names, the
   library and keywords never underline, and neither does a declaration itself, which leads nowhere.

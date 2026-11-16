@@ -166,6 +166,14 @@ pub(crate) struct Scripts {
     )>,
     /// The language help over the code pane: hints, hover cards, problems.
     pub(crate) help: super::script_help::Help,
+    /// The code had the keyboard at the end of last frame.
+    code_focused: bool,
+    /// A double-click's word, held while the button stays down: dragging then
+    /// selects whole words from it, in bytes.
+    word_drag: Option<std::ops::Range<usize>>,
+    /// The last press on the code: when (`ctx` time) and where, to tell a
+    /// double-click's second press as it lands.
+    last_press: Option<(f64, egui::Pos2)>,
 }
 
 /// The completion list open over the code this frame: its rows (the word they
@@ -687,12 +695,19 @@ impl MastikApp {
         };
         let mut text = self.scripts.buffer.clone();
         let (mut changed, mut typed) = (false, false);
+        let mut clipboard: Option<String> = None;
         ctx.input_mut(|i| {
             let mut kept = Vec::new();
             let mut ours = true;
             for e in std::mem::take(&mut i.events) {
                 let next = match &e {
                     _ if !ours => None,
+                    // `Ctrl+X` with nothing selected cuts the caret's line.
+                    egui::Event::Cut if sel.anchor == sel.caret => {
+                        let (s, line) = code_keys::cut_line(&mut text, sel);
+                        clipboard = Some(line);
+                        Some(s)
+                    }
                     egui::Event::Key {
                         key,
                         pressed: true,
@@ -721,6 +736,10 @@ impl MastikApp {
             }
             i.events = kept;
         });
+        // Out of `input_mut`: two context accessors nested deadlock.
+        if let Some(line) = clipboard {
+            ctx.copy_text(line);
+        }
         if changed {
             let s = &mut self.scripts;
             s.buffer = text;
@@ -952,6 +971,27 @@ impl MastikApp {
         };
         let edited_note = self.scripts.pending.is_some();
         let doc_scripts: Vec<Script> = self.session.doc.scripts().to_vec();
+        let code_id = self.scripts.code_id();
+        // egui lets go of a focused field on `Escape` before anything reads the
+        // key; when the list or the hint takes it, the code keeps the keyboard.
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if escape
+            && self.scripts.code_focused
+            && (self.scripts.suggest.on() || self.scripts.help.hint_up())
+        {
+            ctx.memory_mut(|m| m.request_focus(code_id));
+        }
+        // Before the list's `Ctrl+Space`, which a held Shift would also match.
+        if ctx.memory(|m| m.has_focus(code_id))
+            && ctx.input_mut(|i| {
+                i.consume_key(
+                    egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                    egui::Key::Space,
+                )
+            })
+        {
+            self.scripts.help.ask_hint();
+        }
         let offer = self.script_suggest(ctx, self.scripts.code_id());
         // After the list, which takes its own keys first.
         let typed = self.script_keys(ctx, self.scripts.code_id());
@@ -1114,6 +1154,7 @@ impl MastikApp {
                     {
                         act = Some(Act::Run);
                     }
+                    drag_words(ui, s, &out);
                     paint_find_marks(ui, s, &out);
                     let list = offer
                         .as_ref()
@@ -1222,6 +1263,8 @@ impl MastikApp {
             self.take_script_row(ctx, self.scripts.code_id(), &offer.completion, i);
         }
         self.scripts_act(act);
+        let code_id = self.scripts.code_id();
+        self.scripts.code_focused = ctx.memory(|m| m.has_focus(code_id));
     }
 
     /// Act on what the window asked for.
@@ -2366,6 +2409,87 @@ fn find_row(ui: &mut egui::Ui, s: &mut Scripts, head: egui::Rect) {
     }
 }
 
+/// The longest egui waits between the two presses of a double-click.
+const DOUBLE_CLICK_S: f64 = 0.3;
+
+/// The name at byte `b` of `text` (the character after `b`, else the one
+/// before), or that one character when it is not part of a name.
+fn word_at(text: &str, b: usize) -> std::ops::Range<usize> {
+    let name = |c: char| c.is_alphanumeric() || c == '_';
+    let after = text[b..].chars().next();
+    let before = text[..b].chars().next_back();
+    let at = match (after, before) {
+        (Some(c), _) if name(c) => b,
+        (_, Some(c)) if name(c) => b - c.len_utf8(),
+        (Some(c), _) => return b..b + c.len_utf8(),
+        _ => return b..b,
+    };
+    let start = text[..at]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| name(*c))
+        .last()
+        .map_or(at, |(i, _)| i);
+    let end = text[at..]
+        .char_indices()
+        .find(|(_, c)| !name(*c))
+        .map_or(text.len(), |(i, _)| at + i);
+    start..end
+}
+
+/// A double-click held and dragged selects whole words: from the second
+/// press, while the button stays down, the selection runs from the clicked
+/// word to the word under the pointer, either way.
+fn drag_words(ui: &egui::Ui, s: &mut Scripts, out: &egui::text_edit::TextEditOutput) {
+    let (pressed, down, pos, now) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.primary_down(),
+            i.pointer.interact_pos(),
+            i.time,
+        )
+    });
+    let byte_at = |p: egui::Pos2| {
+        let c = out.galley.cursor_from_pos(p - out.galley_pos).index.0;
+        super::char_to_byte(&s.buffer, c)
+    };
+    if pressed
+        && let Some(p) = pos
+        && out.response.rect.contains(p)
+    {
+        let second = s
+            .last_press
+            .is_some_and(|(t, q)| now - t <= DOUBLE_CLICK_S && q.distance(p) < 6.0);
+        s.last_press = Some((now, p));
+        s.word_drag = second.then(|| word_at(&s.buffer, byte_at(p)));
+    }
+    if !down {
+        s.word_drag = None;
+        return;
+    }
+    let (Some(first), Some(p)) = (s.word_drag.clone(), pos) else {
+        return;
+    };
+    if first.end > s.buffer.len() {
+        s.word_drag = None;
+        return;
+    }
+    let here = word_at(&s.buffer, byte_at(p));
+    let (anchor, caret) = match here.start < first.start {
+        true => (first.end, here.start),
+        false => (first.start, here.end.max(first.end)),
+    };
+    let chars = |b: usize| egui::text::CCursor::new(s.buffer[..b].chars().count());
+    let mut state = out.state.clone();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            chars(anchor),
+            chars(caret),
+        )));
+    state.store(ui.ctx(), out.response.id);
+}
+
 /// Every place `needle` stands in `text`, ignoring ASCII case, not overlapping.
 fn find_matches(text: &str, needle: &str) -> Vec<std::ops::Range<usize>> {
     if needle.is_empty() {
@@ -3162,6 +3286,89 @@ mod tests {
         assert!(app.scripts.open, "the editor stays open");
     }
 
+    /// `Escape` that shuts the list opened by `Ctrl+Space` leaves the code the
+    /// keyboard, as it does the hint.
+    /// flip: `scripts_ui` not handing the focus back → fails at "the code keeps
+    /// the keyboard".
+    #[test]
+    fn escape_on_the_list_keeps_the_codes_keyboard() {
+        use crate::command::tests::{key, pass};
+        let (ctx, mut app) = typing_at_end("local gap = 1\n");
+        let ctrl = egui::Modifiers::CTRL;
+        pass(&ctx, &mut app, vec![key(egui::Key::Space, ctrl)], ctrl);
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        assert!(app.scripts.suggest.on(), "fixture: Ctrl+Space opened it");
+        press(&ctx, &mut app, egui::Key::Escape);
+        assert!(!app.scripts.suggest.on(), "Escape shut it");
+        let code = app.scripts.code_id();
+        assert!(
+            ctx.memory(|m| m.has_focus(code)),
+            "the code keeps the keyboard"
+        );
+    }
+
+    /// `Ctrl+X` with nothing selected cuts the caret's line.
+    /// flip: `script_keys` leaving `Event::Cut` to the text edit → fails at
+    /// "the line is gone".
+    #[test]
+    fn cut_with_no_selection_takes_the_line() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = typing_at_end("local a = 1\nprint(a)");
+        pass(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Cut],
+            egui::Modifiers::CTRL,
+        );
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(app.scripts.buffer, "local a = 1", "the line is gone");
+    }
+
+    /// A double-click held and dragged selects whole words.
+    /// flip: `drag_words` never taking the second press → fails at "whole words".
+    #[test]
+    fn a_double_click_dragged_selects_words() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = open_on("alpha beta gamma");
+        let code = ctx
+            .read_response(app.scripts.code_id())
+            .expect("fixture: the code is drawn")
+            .rect;
+        let w = ctx.fonts_mut(|f| {
+            f.layout_no_wrap(
+                "m".into(),
+                egui::FontId::monospace(ui::CODE_PT),
+                color::text(),
+            )
+            .size()
+            .x
+        });
+        // The edit's 10-point inset, then the middle of a character.
+        let at = |c: f32| egui::pos2(code.left() + 10.0 + w * (c + 0.5), code.top() + 10.0);
+        let none = egui::Modifiers::NONE;
+        let button = |p, pressed| egui::Event::PointerButton {
+            pos: p,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: none,
+        };
+        let (a, b) = (at(7.0), at(13.0));
+        pass(&ctx, &mut app, vec![egui::Event::PointerMoved(a)], none);
+        pass(&ctx, &mut app, vec![button(a, true)], none);
+        pass(&ctx, &mut app, vec![button(a, false)], none);
+        pass(&ctx, &mut app, vec![button(a, true)], none);
+        pass(&ctx, &mut app, vec![egui::Event::PointerMoved(b)], none);
+        pass(&ctx, &mut app, vec![egui::Event::PointerMoved(b)], none);
+        let range = egui::TextEdit::load_state(&ctx, app.scripts.code_id())
+            .and_then(|s| s.cursor.char_range())
+            .map(|r| {
+                let (x, y) = (r.primary.index.0, r.secondary.index.0);
+                x.min(y)..x.max(y)
+            });
+        assert_eq!(range, Some(6..16), "whole words: beta to gamma");
+        pass(&ctx, &mut app, vec![button(b, false)], none);
+    }
+
     /// The code pane takes its editing keys before the text edit: `Enter`
     /// after `then` indents, `end` typed a letter a frame steps back, `(` types
     /// its close, and `Ctrl+/` comments the line.
@@ -3729,6 +3936,16 @@ mod tests {
         press(&ctx, &mut app, egui::Key::ArrowRight);
         assert_eq!(caret(&ctx, &app), Some(7), "fixture: in the call");
         assert!(!up(&ctx), "moved in, not typed");
+        let chord = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
+        crate::command::tests::pass(
+            &ctx,
+            &mut app,
+            vec![crate::command::tests::key(egui::Key::Space, chord)],
+            chord,
+        );
+        crate::command::tests::pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        assert!(up(&ctx), "Ctrl+Shift+Space asks for it");
+        assert!(!app.scripts.suggest.on(), "and opens no list");
         let (ctx, mut app) = typing_at_end("");
         type_code(&ctx, &mut app, "align(");
         assert!(up(&ctx), "the hint is up");

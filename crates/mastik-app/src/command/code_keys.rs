@@ -299,6 +299,25 @@ pub(crate) fn duplicate_lines(text: &mut String, sel: Sel, up: bool) -> Sel {
     }
 }
 
+/// `Ctrl+X` with nothing selected: the caret's whole line taken out, its
+/// newline with it, the caret at the start of the line that took its place.
+/// Answers the caret and the text taken, ending in a newline, for the clipboard.
+pub(crate) fn cut_line(text: &mut String, sel: Sel) -> (Sel, String) {
+    let start = line_start(text, sel.caret);
+    let end = line_end(text, sel.caret);
+    let line = format!("{}\n", &text[start..end]);
+    let cut = match (end < text.len(), start > 0) {
+        // Its own newline goes with it.
+        (true, _) => start..end + 1,
+        // The last line takes the newline before it instead.
+        (false, true) => start - 1..end,
+        (false, false) => start..end,
+    };
+    let at = cut.start.min(start);
+    text.replace_range(cut, "");
+    (Sel::caret(line_start(text, at.min(text.len()))), line)
+}
+
 /// The close of an open bracket or quote.
 fn close_of(c: char) -> Option<char> {
     match c {
@@ -415,6 +434,31 @@ pub(crate) fn dedent_closer(text: &mut String, caret: usize) -> Option<Sel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Ctrl+X` on no selection takes the caret's line and its newline; the
+    /// last line takes the newline before it.
+    /// flip: `cut_line` keeping the newline → fails at "a middle line".
+    #[test]
+    fn cut_takes_the_caret_line_whole() {
+        let mut t = "a = 1\nb = 2\nc = 3".to_owned();
+        let (sel, cut) = cut_line(&mut t, Sel::caret(8));
+        assert_eq!(
+            (t.as_str(), cut.as_str()),
+            ("a = 1\nc = 3", "b = 2\n"),
+            "a middle line"
+        );
+        assert_eq!(sel, Sel::caret(6));
+        let end = t.len();
+        let (sel, cut) = cut_line(&mut t, Sel::caret(end));
+        assert_eq!(
+            (t.as_str(), cut.as_str()),
+            ("a = 1", "c = 3\n"),
+            "the last line"
+        );
+        assert_eq!(sel, Sel::caret(0));
+        let (_, cut) = cut_line(&mut t, Sel::caret(2));
+        assert_eq!((t.as_str(), cut.as_str()), ("", "a = 1\n"), "the only line");
+    }
 
     /// `text` with `|` marking the caret, or `[` and `]` a selection whose
     /// caret is at `]`, as the text and the selection.

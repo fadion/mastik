@@ -54,6 +54,8 @@ pub(crate) struct Help {
     hint_call: Option<usize>,
     /// The text changed last frame: this frame reads what was typed.
     typed: bool,
+    /// `Ctrl+Shift+Space` asked for the hint of the call the caret is in.
+    asked: bool,
     /// What the pointer rests on: a problem (`true`) or a name, by its first byte.
     resting: ui::Resting<(bool, usize)>,
     /// A problem's card left up while the pointer crosses into it: its index
@@ -151,6 +153,16 @@ impl Help {
     pub(crate) fn edited(&mut self, ctx: &egui::Context) {
         self.edited_at = Some(ctx.input(|i| i.time));
         self.typed = true;
+    }
+
+    /// Whether the parameter hint is up.
+    pub(crate) fn hint_up(&self) -> bool {
+        self.hint_call.is_some()
+    }
+
+    /// `Ctrl+Shift+Space`: show the hint of the call the caret is in, typed or not.
+    pub(crate) fn ask_hint(&mut self) {
+        self.asked = true;
     }
 
     /// The syntax error in `text` that holds *Run*, compiled again only when the
@@ -329,9 +341,10 @@ impl Help {
         });
         let ctrl = ctx.input(|i| i.modifiers.command);
 
-        // Ctrl over a use of one of the script's own names: a dotted underline,
-        // the arrow kept as everywhere in the chrome. A declaration itself leads
-        // nowhere, so it stays plain.
+        // Ctrl over a use of one of the script's own names: a dotted underline
+        // and the arrow in place of the text's I-beam, so it reads as a thing
+        // to click (the chrome never shows the hand). A declaration itself
+        // leads nowhere, so it stays plain.
         if ctrl
             && let Some(b) = under
             && let Some((name, decl)) = mastik_vm::declaration_at(text, b)
@@ -345,6 +358,7 @@ impl Help {
                 2.0,
                 2.0,
             ));
+            ctx.set_cursor_icon(egui::CursorIcon::Default);
             if ctx.input(|i| i.pointer.primary_clicked()) {
                 act = Some(self.jump(&ctx, decl));
             }
@@ -410,9 +424,10 @@ impl Help {
         // typing the call's `(`, a `,` or a `{` opens it, and it stays while
         // the caret is in that call.
         let sig = caret.and_then(|c| mastik_vm::signature_at(text, c));
-        if std::mem::take(&mut self.typed)
-            && let (Some(c), Some(s)) = (caret, &sig)
-            && text[..c].trim_end().ends_with(['(', ',', '{'])
+        let typed = std::mem::take(&mut self.typed)
+            && caret.is_some_and(|c| text[..c].trim_end().ends_with(['(', ',', '{']));
+        if (typed || std::mem::take(&mut self.asked))
+            && let Some(s) = &sig
         {
             self.hint_call = Some(s.open);
         }
