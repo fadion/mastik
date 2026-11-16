@@ -203,13 +203,15 @@ fn carry(
     let mut link: Option<Link> = None;
     let mut bytes = Vec::new();
     loop {
-        bytes.clear();
-        if input
-            .read_until(b'\n', &mut bytes)
-            .map_err(|e| e.to_string())?
-            == 0
-        {
-            return Ok(());
+        use mastik_mcp::wire::{Line, MAX_LINE, read_line, too_long};
+        match read_line(&mut input, &mut bytes, MAX_LINE).map_err(|e| e.to_string())? {
+            Line::End => return Ok(()),
+            Line::TooLong => {
+                writeln!(stdout, "{}", too_long()).map_err(|e| e.to_string())?;
+                stdout.flush().map_err(|e| e.to_string())?;
+                continue;
+            }
+            Line::Read => {}
         }
         // A line that is not UTF-8 is answered here, as the host would, rather
         // than ending the agent's MCP server.

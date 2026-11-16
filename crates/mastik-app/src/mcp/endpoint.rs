@@ -6,7 +6,7 @@ use mastik_mcp::wire;
 use serde::{Deserialize, Serialize};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 
 /// Which kind of process hosts an endpoint; the proxy prefers the window.
@@ -153,6 +153,14 @@ struct Accepted {
     lists: Option<Lists>,
 }
 
+/// The most connections answered at once, each on a thread of its own: past
+/// it a new one is closed unread, so a client looping on connects cannot take
+/// the window's threads.
+const MAX_CONNECTIONS: usize = 64;
+
+/// The connections being answered now.
+static OPEN: AtomicUsize = AtomicUsize::new(0);
+
 /// Answer one accepted connection from process `pid` on its own thread.
 fn spawn_connection(
     read: Box<dyn Read + Send>,
@@ -160,10 +168,22 @@ fn spawn_connection(
     pid: Option<u32>,
     with: Accepted,
 ) {
+    if OPEN.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+        OPEN.fetch_sub(1, Ordering::AcqRel);
+        log::warn!(target: "mastik", "mcp: {MAX_CONNECTIONS} connections open; one refused");
+        return;
+    }
+    struct Closed;
+    impl Drop for Closed {
+        fn drop(&mut self) {
+            OPEN.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
     let conn: Conn = NEXT.fetch_add(1, Ordering::Relaxed);
-    let _ = std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name(format!("mcp-{conn}"))
         .spawn(move || {
+            let _closed = Closed;
             let mut handler = Forward {
                 conn,
                 to: with.to,
@@ -175,6 +195,10 @@ fn spawn_connection(
             };
             let _ = wire::serve(BufReader::new(read), write, &mut handler);
         });
+    // A thread that never started never drops its `Closed`.
+    if spawned.is_err() {
+        OPEN.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[cfg(windows)]
@@ -252,7 +276,17 @@ fn serve_at(addr: &Path, with: Accepted) -> std::io::Result<()> {
     std::thread::Builder::new()
         .name("mcp-listen".into())
         .spawn(move || {
-            for stream in listener.incoming().flatten() {
+            for stream in listener.incoming() {
+                // An accept that keeps failing (out of descriptors) would
+                // otherwise spin this thread.
+                let stream = match stream {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!(target: "mastik", "mcp: accept failed: {e}");
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        continue;
+                    }
+                };
                 if !peer_is_this_user(&stream) {
                     continue;
                 }

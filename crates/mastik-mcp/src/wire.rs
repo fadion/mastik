@@ -128,6 +128,62 @@ pub trait Handler {
     fn call(&mut self, peer: &Peer, name: &str, args: Value) -> Output;
 }
 
+/// The longest line a server or the proxy reads: well past the largest
+/// `import_svg` or `add_image` payload, and short of what a same-user client
+/// could make the window hold by never sending a newline.
+pub const MAX_LINE: usize = 64 * 1024 * 1024;
+
+/// What [`read_line`] read.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Line {
+    /// The reader ended.
+    End,
+    /// A line, its newline included when it had one, in the buffer.
+    Read,
+    /// A line past [`MAX_LINE`], read through its newline and dropped.
+    TooLong,
+}
+
+/// Read one line into `bytes` (cleared first), at most `max` bytes of it: a
+/// longer one is read on to its newline without being kept.
+pub fn read_line(
+    read: &mut impl BufRead,
+    bytes: &mut Vec<u8>,
+    max: usize,
+) -> std::io::Result<Line> {
+    bytes.clear();
+    let mut over = false;
+    loop {
+        let chunk = read.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok(match (over, bytes.is_empty()) {
+                (true, _) => Line::TooLong,
+                (false, true) => Line::End,
+                (false, false) => Line::Read,
+            });
+        }
+        let (take, done) = match chunk.iter().position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (chunk.len(), false),
+        };
+        if !over && bytes.len() + take <= max {
+            bytes.extend_from_slice(&chunk[..take]);
+        } else {
+            over = true;
+            bytes.clear();
+        }
+        read.consume(take);
+        if done {
+            return Ok(if over { Line::TooLong } else { Line::Read });
+        }
+    }
+}
+
+/// The answer to a line past [`MAX_LINE`].
+pub fn too_long() -> Value {
+    failure(Value::Null, -32600, "line too long")
+}
+
 /// Answer requests read from `read` on `write` until the reader ends.
 pub fn serve(
     mut read: impl BufRead,
@@ -137,15 +193,15 @@ pub fn serve(
     let mut client = Peer::default();
     let mut bytes = Vec::new();
     loop {
-        bytes.clear();
-        if read.read_until(b'\n', &mut bytes)? == 0 {
-            return Ok(());
-        }
-        // A line that is not UTF-8 is a parse error, not the connection's end.
-        let reply = match std::str::from_utf8(&bytes) {
-            Ok(line) if line.trim().is_empty() => continue,
-            Ok(line) => answer(line, &mut client, handler),
-            Err(_) => Some(failure(Value::Null, -32700, "not UTF-8")),
+        let reply = match read_line(&mut read, &mut bytes, MAX_LINE)? {
+            Line::End => return Ok(()),
+            Line::TooLong => Some(too_long()),
+            // A line that is not UTF-8 is a parse error, not the connection's end.
+            Line::Read => match std::str::from_utf8(&bytes) {
+                Ok(line) if line.trim().is_empty() => continue,
+                Ok(line) => answer(line, &mut client, handler),
+                Err(_) => Some(failure(Value::Null, -32700, "not UTF-8")),
+            },
         };
         if let Some(reply) = reply {
             writeln!(write, "{reply}")?;
@@ -420,6 +476,65 @@ mod tests {
             assert_eq!(r["error"]["code"], -32600);
             assert_eq!(r["id"], Value::Null);
         }
+    }
+
+    /// A response sent to the server, which asks nothing, gets Invalid Request
+    /// under its id; a `tools/call` with no `id` is a notification, dropped
+    /// unrun, since nobody waits for its answer.
+    ///
+    /// flip: `answer` running a call with no `id` → fails at the reply count.
+    #[test]
+    fn a_response_is_refused_and_a_call_without_an_id_never_runs() {
+        struct Counting(usize);
+        impl Handler for Counting {
+            fn tools(&self, _: &Peer) -> Vec<Value> {
+                Vec::new()
+            }
+            fn call(&mut self, _: &Peer, _: &str, _: Value) -> Output {
+                self.0 += 1;
+                Output::json(json!({}))
+            }
+        }
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo"}}"#,
+            "\n",
+        );
+        let (mut out, mut handler) = (Vec::new(), Counting(0));
+        serve(input.as_bytes(), &mut out, &mut handler).unwrap();
+        let replies: Vec<Value> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        assert_eq!(replies[0]["error"]["code"], -32600);
+        assert_eq!(replies[0]["id"], 1);
+        assert_eq!(handler.0, 0, "dropped unrun");
+    }
+
+    /// A line past the cap is read through its newline, never kept, and
+    /// answered as too long; the next line reads whole, across the reader's
+    /// chunks.
+    ///
+    /// flip: `read_line` keeping a line past `max` → fails at "too long".
+    #[test]
+    fn a_line_past_the_cap_is_dropped_and_the_next_is_read() {
+        let input = format!("{}\nshort\nend", "x".repeat(50));
+        let mut read = std::io::BufReader::with_capacity(8, input.as_bytes());
+        let mut bytes = Vec::new();
+        assert_eq!(
+            read_line(&mut read, &mut bytes, 20).unwrap(),
+            Line::TooLong,
+            "too long"
+        );
+        assert!(bytes.is_empty());
+        assert_eq!(read_line(&mut read, &mut bytes, 20).unwrap(), Line::Read);
+        assert_eq!(bytes, b"short\n");
+        assert_eq!(read_line(&mut read, &mut bytes, 20).unwrap(), Line::Read);
+        assert_eq!(bytes, b"end", "a last line with no newline");
+        assert_eq!(read_line(&mut read, &mut bytes, 20).unwrap(), Line::End);
     }
 
     /// An image answer travels as base64 with its media type.
