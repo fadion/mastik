@@ -19,6 +19,10 @@ struct TestHost {
     ids: IdSource,
     page: NodeId,
     commits: usize,
+    /// How long each verb takes, as a slow host's might.
+    slow: std::time::Duration,
+    /// How many verbs were called.
+    verbs: usize,
 }
 
 impl Host for TestHost {
@@ -35,6 +39,8 @@ impl Host for TestHost {
     }
 
     fn verb(&mut self, name: &str, args: &Value) -> Result<Done, String> {
+        std::thread::sleep(self.slow);
+        self.verbs += 1;
         verbs::call(
             &mut Ctx {
                 doc: &self.doc,
@@ -71,6 +77,8 @@ impl TestHost {
             ids,
             page,
             commits: 0,
+            slow: std::time::Duration::ZERO,
+            verbs: 0,
         }
     }
 
@@ -472,6 +480,12 @@ fn a_verb_returns_what_it_created() {
     let group = out.created[0];
     assert_eq!(h.doc.get(group).unwrap().children(), ids.as_slice());
     assert_eq!(out.value, Some(h.doc.get(group).unwrap().name().to_owned()));
+    // A verb of one layer runs once for each, and what every run made is selected.
+    // flip: `call_verb` keeping only the last run's creations → fails here.
+    let frames = [h.frame("F", 100.0, 100.0), h.frame("G", 100.0, 100.0)];
+    let out = run_line(&mut h, &env(&frames, &labels), "create_text(\"hi\")").unwrap();
+    assert_eq!(out.created.len(), 2, "a text in each frame");
+    assert_eq!(out.selection, Some(out.created.clone()), "both selected");
 }
 
 /// A verb's arguments hold a bounded count of values, so a table sharing one
@@ -636,6 +650,23 @@ fn a_runaway_loop_stops_at_the_budget() {
         err.message, "Stopped after 500000 steps",
         "a read's step budget"
     );
+}
+
+/// The clock is read at once after a verb, so a loop of slow verbs stops near
+/// the time budget rather than at the next 256th step.
+/// flip: the interrupt not reading the clock after a host call → fails at the
+/// count of verbs called.
+#[test]
+fn a_slow_verb_is_timed_at_once() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids[..1], &labels);
+    h.slow = std::time::Duration::from_millis(30);
+    let before = h.verbs;
+    let err = run_script(&mut h, &e, "for i = 1, 200 do set_name(\"x\") end").unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Budget);
+    let called = h.verbs - before;
+    assert!(called < 45, "{called} verbs ran past the 1 s budget");
 }
 
 /// The sandbox's walls: no name off the allowlist resolves, the memory budget
