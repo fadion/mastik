@@ -286,6 +286,21 @@ impl Assistant {
             .map(|r| (r.msg, r.sent, r.alive, r.harness))
     }
 
+    /// The thread before the question just asked and its empty answer, replayed
+    /// for a new session of `harness`. A thread another harness wrote is not
+    /// replayed; a note saying so goes above the question, once per thread.
+    fn replay_for(&mut self, harness: &str) -> String {
+        let earlier = &self.msgs[..self.msgs.len().saturating_sub(2)];
+        if let Some(r) = prompt::replay(earlier, harness) {
+            return r;
+        }
+        let note = Msg::Note(Note::Said(WITHHELD.into()));
+        if !earlier.contains(&note) {
+            self.msgs.insert(self.msgs.len().saturating_sub(2), note);
+        }
+        String::new()
+    }
+
     /// The seal of the program found, for the head.
     pub(crate) fn found(&self) -> Option<&ai::Found> {
         match &self.lookup {
@@ -1106,13 +1121,11 @@ impl MastikApp {
         }
         let chips = self.selection_chips();
         let mut turn = prompt::bar_request(request);
-        for (label, id) in named {
-            let name = self.layer_name(&id.to_wire()).unwrap_or_default();
-            turn.push_str(&format!(
-                "\n`{label}` is the layer {} (“{name}”); the script reads it as `{label}` too.",
-                id.to_wire()
-            ));
-        }
+        let labels: Vec<(&str, String)> = named
+            .iter()
+            .map(|(label, id)| (label.as_str(), id.to_wire()))
+            .collect();
+        turn.push_str(&prompt::bar_labels(&labels));
         let scope = self.scope_now();
         self.assistant_send_as(format!("/ai {request}"), chips, scope, Some(turn));
         match &self.assistant.running {
@@ -1199,17 +1212,19 @@ impl MastikApp {
             chips: chips.clone(),
             scope: scope.clone(),
         });
-        let question = self.assistant.msgs.len() - 1;
         self.assistant.msgs.push(Msg::Agent {
             speaker: h.speaker().into(),
             harness: h.key().into(),
             parts: Vec::new(),
             stats: None,
         });
-        let msg = self.assistant.msgs.len() - 1;
         self.assistant.recall = None;
         let now = self.egui_ctx.input(|i| i.time);
-        if let Err(why) = self.assistant_ensure_session(h) {
+        let ensured = self.assistant_ensure_session(h);
+        // Taken after the session starts: a new one may insert a note above the question.
+        let msg = self.assistant.msgs.len() - 1;
+        let question = msg - 1;
+        if let Err(why) = ensured {
             self.assistant.msgs.push(Msg::Note(Note::Failed {
                 text: why,
                 question,
@@ -1353,21 +1368,7 @@ impl MastikApp {
             Some(Err(nf)) => return Err(Why::NotFound(h, nf).sentence()),
             None => return Err(Why::Looking(h).sentence()),
         };
-        // The thread so far, minus the question just asked and its empty answer.
-        let earlier = &self.assistant.msgs[..self.assistant.msgs.len().saturating_sub(2)];
-        let replay = match prompt::replay(earlier, h.key()) {
-            Some(r) => r,
-            None => {
-                // Said once per thread, not at every session that cannot replay it.
-                let note = Msg::Note(Note::Said(WITHHELD.into()));
-                if !earlier.contains(&note) {
-                    self.assistant
-                        .msgs
-                        .insert(self.assistant.msgs.len() - 2, note);
-                }
-                String::new()
-            }
-        };
+        let replay = self.assistant.replay_for(h.key());
         self.assistant.sessions += 1;
         let key = client_key(self.assistant.sessions);
         let Ok(exe) = std::env::current_exe() else {
@@ -1825,6 +1826,36 @@ mod tests {
             look_before: None,
         });
         app
+    }
+
+    /// A thread another harness wrote gets its note above the question, so the
+    /// question and its answer stay the last two messages a send indexes.
+    /// flip: push the note at the end → fails at the note's place.
+    #[test]
+    fn the_not_replayed_note_goes_above_the_question() {
+        let ctx = egui::Context::default();
+        let mut app = app_asking(&ctx);
+        app.assistant.running = None;
+        app.assistant.msgs.insert(
+            0,
+            Msg::Agent {
+                speaker: "Codex".into(),
+                harness: "codex".into(),
+                parts: Vec::new(),
+                stats: None,
+            },
+        );
+        assert_eq!(app.assistant.replay_for("claude"), "");
+        let n = app.assistant.msgs.len();
+        assert_eq!(n, 4, "the note was added");
+        assert!(matches!(&app.assistant.msgs[1], Msg::Note(Note::Said(s)) if s == WITHHELD));
+        assert!(
+            matches!(app.assistant.msgs[n - 2], Msg::Person { .. }),
+            "the question's place"
+        );
+        assert!(matches!(app.assistant.msgs[n - 1], Msg::Agent { .. }));
+        app.assistant.replay_for("claude");
+        assert_eq!(app.assistant.msgs.len(), 4, "said once per thread");
     }
 
     /// A harness that exits signed out leaves a note saying how to sign in,

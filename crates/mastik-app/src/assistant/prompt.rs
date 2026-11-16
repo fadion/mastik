@@ -37,6 +37,18 @@ pub(crate) fn bar_request(request: &str) -> String {
     )
 }
 
+/// The labels a `/ai` request names, each with the id of the layer it opens.
+/// The layer's name stays out: these lines follow the `<mastik-turn>` block,
+/// where the model reads text as the person's, and a name is document data.
+pub(crate) fn bar_labels(labels: &[(&str, String)]) -> String {
+    labels
+        .iter()
+        .map(|(label, id)| {
+            format!("\n`{label}` is the layer {id}; the script reads it as `{label}` too.")
+        })
+        .collect()
+}
+
 /// How long a repeated earlier question may run.
 const EARLIER_CHARS: usize = 60;
 
