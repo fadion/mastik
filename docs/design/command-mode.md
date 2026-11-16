@@ -404,8 +404,9 @@ sized from their laid-out text each frame.
   they raise at the run). Nothing for keywords, numbers, strings, plain locals or a local that
   shadows a layer, and no card while the completion list is up or `Ctrl` is held.
 - **Problems** (`check`), found without running. If Luau's parser refuses the text, the syntax
-  error alone, on the token after *got '…'* or else the line's text (`<eof>` on the last line with
-  text). Otherwise:
+  error alone, on the token after *got '…'* outside strings and comments or else the line's text
+  (`<eof>` on the last line with text), a text that stops short in plain words (*Missing `end` to
+  close the `do` on line 1*). Otherwise:
 
   | Ink | Problem |
   | --- | --- |
@@ -566,7 +567,11 @@ rules*): a row's name is never cut for its note.
   count, `M` or `'` waiting for a mark's letter, `/` and the name filter, or a label's first letter.
 - **The footer**: in Type, the desugared Luau, *each by itself* after a rule-3 line, and on the
   right *` picks*, or *Enter copies ‹value›* while a read shows one. An error replaces it with a
-  red caption, the token it names squiggled, and *Tab fixes it* when it carries a fix. In Pick it
+  red caption, the token it names squiggled, and *Tab fixes it* when it carries a fix. The token is
+  found by the lexer, so a name or a syntax error's *got '…'* token in a string or a comment is
+  never the one marked; a syntax error the token cannot place marks the line's text, and a line
+  that stops short reads plainly (*Missing `)` to close `(`*, *Something is missing at the end*),
+  as the editor's syntax error does. In Pick it
   lists the keys that mean something now (`pick_hint`: the filter's while it is open, a mark's
   while its letter is awaited), with *` types* on the right.
 - **`Alt`-click** on a layer, in Type, writes its label into the line at the caret (a space first

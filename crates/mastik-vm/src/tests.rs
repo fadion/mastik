@@ -1104,10 +1104,33 @@ fn a_syntax_error_is_found_without_running() {
     let p = syntax_error(src).unwrap();
     assert_eq!(p.severity, Severity::Error);
     assert_eq!(p.line, 2, "the last line with text");
-    assert!(p.message.starts_with("Expected 'end'"), "{}", p.message);
+    assert_eq!(p.message, "Missing `end` to close the `do` on line 1");
     let (h, _) = three();
     assert_eq!(check(&h.doc, h.page, src), [p]);
     assert_eq!(syntax_error("local a = 1"), None);
+}
+
+/// A syntax error in the bar is placed on the token it names in the line as
+/// typed, never the same letters in a string, and the commonest ones read
+/// plainly; a run's unknown name is placed by the lexer the same way.
+/// flip: `syntax_place` searching the line's text, strings included → fails at
+/// "the `*` squiggled".
+#[test]
+fn a_bar_error_lands_on_the_code() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let line = "print(\"*\") .x = * 2";
+    let err = run_line(&mut h, &e, line).unwrap_err();
+    assert_eq!(err.span, Some(16..17), "the `*` squiggled: {}", err.message);
+    let err = run_line(&mut h, &e, ".x = ").unwrap_err();
+    assert_eq!(err.message, "Something is missing at the end");
+    assert_eq!(err.span, Some(0..4), "the line's text");
+    let err = run_line(&mut h, &e, "print(1").unwrap_err();
+    assert_eq!(err.message, "Missing `)` to close `(`");
+    let err = run_line(&mut h, &e, "print(\"selectoin\", selectoin.x)").unwrap_err();
+    assert_eq!(err.span, Some(19..28), "the name, not the string");
+    assert_eq!(err.fix.map(|f| f.0), Some(19..28));
 }
 
 /// Names the check cannot find are warnings with the run's fix; a wrong

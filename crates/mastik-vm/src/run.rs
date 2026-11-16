@@ -1982,36 +1982,26 @@ pub(crate) fn split_line(message: &str) -> (Option<u32>, String) {
     (None, message.to_owned())
 }
 
-/// The byte range of the first whole-word `ident` on line `line` of `text`
-/// (anywhere when the line is not known).
+/// The byte range of the first name `ident` on line `line` of `text` (anywhere
+/// when the line is not known): a name the lexer reads, never the same letters
+/// in a string or a comment, so a fix lands on the code that raised.
 fn locate(text: &str, line: Option<u32>, ident: &str) -> Option<std::ops::Range<usize>> {
-    let mut offset = 0;
-    let mut scope = text;
+    let mut scope = 0..text.len();
     if let Some(n) = line {
         let mut start = 0;
         for (i, l) in text.split_inclusive('\n').enumerate() {
             if i + 1 == n as usize {
-                offset = start;
-                scope = l;
+                scope = start..start + l.len();
                 break;
             }
             start += l.len();
         }
     }
-    let bytes = scope.as_bytes();
-    let mut from = 0;
-    while let Some(p) = scope[from..].find(ident) {
-        let at = from + p;
-        let end = at + ident.len();
-        let before = at.checked_sub(1).map(|i| bytes[i] as char);
-        let after = bytes.get(end).map(|b| *b as char);
-        if !before.is_some_and(crate::lex::ident_char) && !after.is_some_and(crate::lex::ident_char)
-        {
-            return Some(offset + at..offset + end);
-        }
-        from = end;
-    }
-    None
+    crate::lex::lex(text)
+        .into_iter()
+        .filter(|l| l.kind == crate::lex::Lx::Ident)
+        .map(|l| l.range)
+        .find(|r| scope.contains(&r.start) && &text[r.clone()] == ident)
 }
 
 /// An `mlua` error as the caller's [`VmError`], placed in `text`.
@@ -2027,7 +2017,18 @@ fn convert(e: mlua::Error, text: &str, budget: Budget) -> VmError {
         };
     }
     let (kind, (line, message)) = match &e {
-        mlua::Error::SyntaxError { message, .. } => (ErrorKind::Error, split_line(message)),
+        mlua::Error::SyntaxError { message, .. } => {
+            // Placed in the text as typed, the token it names squiggled.
+            let (line, message) = split_line(message);
+            let (line, span) = crate::help::syntax_place(text, line, &message);
+            return VmError {
+                kind: ErrorKind::Error,
+                message: crate::help::plain_syntax(&message),
+                line: Some(line),
+                span: Some(span),
+                fix: None,
+            };
+        }
         mlua::Error::RuntimeError(message) => (ErrorKind::Error, split_line(message)),
         mlua::Error::MemoryError(_) => (
             ErrorKind::Budget,

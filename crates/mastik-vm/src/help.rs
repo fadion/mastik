@@ -652,11 +652,26 @@ pub fn syntax_error(source: &str) -> Option<Problem> {
         other => other.to_string(),
     };
     let (line, message) = run::split_line(&raw);
+    let (line, span) = syntax_place(source, line, &message);
+    Some(Problem {
+        severity: Severity::Error,
+        message: plain_syntax(&message),
+        line,
+        span,
+        fix: None,
+        note: None,
+        syntax: true,
+    })
+}
+
+/// Where Luau's syntax error `message` on `line` of `source` belongs: the token
+/// after its *got '…'*, read by the lexer on that line, or else the line's text;
+/// `<eof>` lands past the text, so it marks the last line that has any.
+pub(crate) fn syntax_place(source: &str, line: Option<u32>, message: &str) -> (u32, Range<usize>) {
     let lines = source.split_inclusive('\n').count().max(1);
     let mut line = line
         .unwrap_or(1)
         .clamp(1, u32::try_from(lines).unwrap_or(u32::MAX));
-    // `<eof>` lands past the text: mark the last line that has any.
     while line > 1 && line_range(source, line).is_empty() {
         line -= 1;
     }
@@ -668,20 +683,51 @@ pub fn syntax_error(source: &str) -> Option<Problem> {
         .filter(|t| !t.is_empty());
     let span = token
         .and_then(|t| {
-            source[whole.clone()]
-                .find(t)
-                .map(|p| whole.start + p..whole.start + p + t.len())
+            lex::lex(source)
+                .into_iter()
+                .filter(|l| !matches!(l.kind, Lx::String | Lx::Comment))
+                .map(|l| l.range)
+                .find(|r| whole.contains(&r.start) && &source[r.clone()] == t)
         })
         .unwrap_or(whole);
-    Some(Problem {
-        severity: Severity::Error,
-        message,
-        line,
-        span,
-        fix: None,
-        note: None,
-        syntax: true,
-    })
+    (line, span)
+}
+
+/// Luau's syntax error `message` in plain words for the commonest cases, a
+/// text that stops short: *Missing `end` to close the `for` on line 1*,
+/// *Missing `)`*, *Something is missing at the end*. Any other message as Luau
+/// words it.
+pub(crate) fn plain_syntax(message: &str) -> String {
+    if !message.ends_with("got <eof>") {
+        return message.to_owned();
+    }
+    let quoted = |s: &str| {
+        s.split_once('\'')
+            .and_then(|(_, rest)| rest.split_once('\''))
+            .map(|(q, rest)| (q.to_owned(), rest.to_owned()))
+    };
+    if let Some(rest) = message.strip_prefix("Expected ")
+        && let Some((wanted, rest)) = quoted(rest)
+    {
+        // `(to close 'for' at line 1)` or `(to close '(' at column 6)`.
+        let closes = rest
+            .split_once("(to close ")
+            .and_then(|(_, r)| quoted(r))
+            .map(|(opened, r)| {
+                let at = r
+                    .trim_start()
+                    .strip_prefix("at line ")
+                    .and_then(|n| n.split(')').next())
+                    .filter(|n| n.parse::<u32>().is_ok());
+                match at {
+                    Some(n) => format!(" to close the `{opened}` on line {n}"),
+                    None => format!(" to close `{opened}`"),
+                }
+            })
+            .unwrap_or_default();
+        return format!("Missing `{wanted}`{closes}");
+    }
+    "Something is missing at the end".to_owned()
 }
 
 /// The names a bare word may be besides the script's own.
