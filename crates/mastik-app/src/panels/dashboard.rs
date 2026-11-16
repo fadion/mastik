@@ -43,8 +43,12 @@ const CARD_CAPTION_H: f32 = 46.0;
 /// project's files in it.
 const MOSAIC_H: f32 = 118.0;
 const MOSAIC_GAP: f32 = 7.0;
-/// The continue card's height: a grid card's and a third, short of two cards.
-const CONTINUE_H: f32 = (CARD_THUMB_H + CARD_CAPTION_H) * 4.0 / 3.0;
+/// The continue card's height: two grid cards and the gap between, so two rows
+/// of cards stand beside it.
+const CONTINUE_H: f32 = (CARD_THUMB_H + CARD_CAPTION_H) * 2.0 + GRID_GAP;
+/// The widest the continue card stretches across the body; past it, it spans the
+/// grid columns that keep it this wide or narrower and cards fill the rest.
+const CONTINUE_MAX_W: f32 = 800.0;
 /// How much of the continue card's width its cover takes.
 const CONTINUE_COVER_SHARE: f32 = 0.55;
 /// A project page header's mosaic: [`MOSAIC_H`] tall and as wide as a project
@@ -83,6 +87,19 @@ fn grid_cols(width: f32) -> usize {
 fn card_width(width: f32) -> f32 {
     let cols = grid_cols(width) as f32;
     ((width - GRID_GAP * (cols - 1.0)) / cols).max(1.0)
+}
+
+/// How many of the grid's columns the continue card spans in a body `width`
+/// wide: every one up to [`CONTINUE_MAX_W`], then the most that keep it that
+/// wide or narrower, never fewer than one, so the cards beside it keep the
+/// grid's columns.
+fn continue_span(width: f32) -> usize {
+    let cols = grid_cols(width);
+    if width <= CONTINUE_MAX_W {
+        return cols;
+    }
+    let card = card_width(width);
+    (((CONTINUE_MAX_W + GRID_GAP) / (card + GRID_GAP)).floor() as usize).clamp(1, cols)
 }
 /// The search field's width.
 const SEARCH_W: f32 = 340.0;
@@ -1868,7 +1885,12 @@ impl MastikApp {
 
     /// The heading, the controls beside it, and the documents.
     fn dashboard_body(&mut self, ui: &mut egui::Ui, act: &mut Option<Act>) {
-        let entries = self.visible_entries();
+        let mut entries = self.visible_entries();
+        // The document the continue card offers is not a card a second time.
+        let continuing = self.continue_entry();
+        if let Some(c) = &continuing {
+            entries.retain(|e| e.path != c.path);
+        }
         // A selection that names nothing is cleared here, against the list on screen: the
         // keys act on it and a filtered-off one cannot be dismissed.
         if self
@@ -1900,28 +1922,38 @@ impl MastikApp {
         // while the library's folder is missing (`new_file_into`).
         let new_file = self.new_file_into();
 
-        if entries.is_empty() && !show_projects && new_file.is_none() {
+        if entries.is_empty() && !show_projects && new_file.is_none() && continuing.is_none() {
             self.empty_state(ui);
         } else {
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
-                    if let Some(entry) = self.continue_entry() {
-                        self.continue_card(ui, &entry, act);
-                        ui.add_space(20.0);
-                    }
+                    let lead = match &continuing {
+                        Some(entry) => {
+                            let lead = self.continue_row(ui, entry, &entries, act);
+                            ui.add_space(20.0);
+                            lead
+                        }
+                        None => (0, Vec::new()),
+                    };
+                    // Files left over once the continue row has laid its own.
+                    let rest = entries.len() > lead.0 || new_file.is_some();
                     if show_projects {
                         self.project_cards(ui);
-                        ui.add_space(20.0);
-                        section_label(ui, "Files");
-                        ui.add_space(6.0);
+                        if rest || continuing.is_none() {
+                            ui.add_space(20.0);
+                            section_label(ui, "Files");
+                            ui.add_space(6.0);
+                        }
                     }
                     if entries.is_empty() && new_file.is_none() {
-                        self.empty_state(ui);
+                        if continuing.is_none() {
+                            self.empty_state(ui);
+                        }
                     } else if self.dash.list_view {
                         self.file_list(ui, &entries, new_file.as_deref(), act);
                     } else {
-                        self.file_grid(ui, &entries, new_file.as_deref(), act);
+                        self.file_grid(ui, &entries, lead, new_file.as_deref(), act);
                     }
                 });
         }
@@ -2652,9 +2684,10 @@ impl MastikApp {
 
     /// The document *Recent*'s continue card offers: the one last opened here,
     /// only while no tab holds it (its tab is a click away) and it is still in
-    /// the library. Never on the results page.
+    /// the library. Never on the results page, and never in the list view, which
+    /// has no room for a card.
     pub(crate) fn continue_entry(&self) -> Option<Entry> {
-        if self.dash.nav != Nav::Recent || self.dash.search_page.is_some() {
+        if self.dash.nav != Nav::Recent || self.dash.search_page.is_some() || self.dash.list_view {
             return None;
         }
         let entry = self.library.recent().into_iter().next()?;
@@ -2695,11 +2728,8 @@ impl MastikApp {
     /// the camera it was left on, cropped to the card rather than framed on the
     /// page, so it shows what you were looking at; then its name, where it was
     /// left, its project and age, and a *Continue* button. A click anywhere on it
-    /// opens the document, as every card does.
-    fn continue_card(&mut self, ui: &mut egui::Ui, entry: &Entry, act: &mut Option<Act>) {
-        section_label(ui, "Continue");
-        ui.add_space(6.0);
-        let w = ui.available_width();
+    /// opens the document, as every card does. `w` wide.
+    fn continue_card(&mut self, ui: &mut egui::Ui, entry: &Entry, w: f32, act: &mut Option<Act>) {
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, CONTINUE_H), egui::Sense::click());
         let opacity = ui.opacity();
         ui.multiply_opacity(self.opening_alpha(entry));
@@ -2715,7 +2745,8 @@ impl MastikApp {
             egui::CornerRadius::same(9),
             egui::Stroke::new(
                 1.0,
-                if resp.hovered() {
+                // Over the *Continue* button too, which `resp.hovered()` is not.
+                if ui.rect_contains_pointer(rect) {
                     color::accent_700()
                 } else {
                     color::card_border()
@@ -2809,6 +2840,54 @@ impl MastikApp {
             *act = Some(Act::Open(entry.path.clone()));
         }
         ui.set_opacity(opacity);
+    }
+
+    /// The *Continue* row: the continue card across the grid's columns up to
+    /// [`continue_span`], and the first of `entries` in two rows of cards beside
+    /// it in the columns left. Returns how many of `entries` it laid and the first
+    /// index of each row it laid them in, for [`Self::file_grid`] to go on from.
+    fn continue_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        entry: &Entry,
+        entries: &[Entry],
+        act: &mut Option<Act>,
+    ) -> (usize, Vec<usize>) {
+        section_label(ui, "Continue");
+        ui.add_space(6.0);
+        let width = ui.available_width();
+        let cols = grid_cols(width);
+        let span = continue_span(width);
+        let card_w = card_width(width);
+        let beside = cols - span;
+        let w = match beside {
+            0 => width,
+            _ => span as f32 * card_w + (span - 1) as f32 * GRID_GAP,
+        };
+        let laid = entries.len().min(beside * 2);
+        let rows: Vec<usize> = (0..laid).step_by(beside.max(1)).collect();
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = GRID_GAP;
+            self.continue_card(ui, entry, w, act);
+            if laid == 0 {
+                return;
+            }
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (r, &start) in rows.iter().enumerate() {
+                    if r > 0 {
+                        ui.add_space(GRID_GAP);
+                    }
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = GRID_GAP;
+                        for e in &entries[start..(start + beside).min(laid)] {
+                            self.file_card(ui, e, card_w, act);
+                        }
+                    });
+                }
+            });
+        });
+        (laid, rows)
     }
 
     /// The row of project cards at the top of *Recent*.
@@ -2977,11 +3056,13 @@ impl MastikApp {
     /// when there is a project to put it in.
     ///
     /// Slots are counted by index, not `chunks`, so the *New file* card can finish a
-    /// short last row.
+    /// short last row. The first `lead` of `entries` were laid already, in the
+    /// rows `lead_rows` starts ([`Self::continue_row`]); the grid goes on after them.
     fn file_grid(
         &mut self,
         ui: &mut egui::Ui,
         entries: &[Entry],
+        (lead, lead_rows): (usize, Vec<usize>),
         new_file: Option<&str>,
         act: &mut Option<Act>,
     ) {
@@ -2989,9 +3070,15 @@ impl MastikApp {
         let cols = grid_cols(ui.available_width());
         let card_w = card_width(ui.available_width());
         self.dash.grid_cols = cols;
-        let groups = self.day_groups(entries);
+        let groups: Vec<_> = self
+            .day_groups(entries)
+            .into_iter()
+            .map(|(b, r)| (b, r.start.max(lead)..r.end))
+            // A group the lead used up is gone, heading and all.
+            .filter(|(_, r)| lead == 0 || r.end > r.start)
+            .collect();
         let last = groups.len().saturating_sub(1);
-        let mut rows = Vec::new();
+        let mut rows = lead_rows;
         for (g, (bucket, range)) in groups.into_iter().enumerate() {
             if let Some(b) = bucket {
                 day_label(ui, b);
@@ -9686,6 +9773,76 @@ mod tests {
         app.go_to_dashboard();
         assert!(app.continue_entry().is_none(), "not while a tab holds it");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The document the continue card offers is not a grid card as well, and the
+    /// list view offers no continue card and lists it as a row.
+    /// flip: `dashboard_body` keeping the continue card's document in the grid →
+    /// fails at "named once".
+    #[test]
+    fn the_continued_document_is_not_a_card_twice_and_the_list_has_no_continue() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "continue-once");
+        for name in ["Wallet", "Ledger"] {
+            let mut doc = crate::library::index::tests::doc();
+            store::file_document(&root, None, name, &mut doc).unwrap();
+        }
+        app.library.refresh();
+        // Ledger first, so Wallet is the last opened.
+        for name in ["Ledger", "Wallet"] {
+            let e = app
+                .library
+                .entries
+                .iter()
+                .find(|e| e.display_name() == name);
+            let id = e.unwrap().meta.id.clone().unwrap();
+            app.library.local.mark_opened(&id);
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+        }
+        app.dash.nav = Nav::Recent;
+        let runs = galleys(&mut app, &ctx);
+        let named = |runs: &[(egui::Pos2, egui::Vec2, String)], t: &str| {
+            runs.iter().filter(|(_, _, s)| s == t).count()
+        };
+        assert_eq!(
+            app.continue_entry().map(|e| e.display_name()),
+            Some("Wallet".into()),
+            "the fixture offers Wallet"
+        );
+        assert_eq!(
+            named(&runs, "Wallet"),
+            1,
+            "named once, on the continue card"
+        );
+        assert_eq!(named(&runs, "Ledger"), 1, "and the other is a card");
+
+        app.dash.list_view = true;
+        let runs = galleys(&mut app, &ctx);
+        assert!(
+            app.continue_entry().is_none(),
+            "no continue card in the list"
+        );
+        assert!(!in_body(&runs, "CONTINUE"));
+        assert_eq!(named(&runs, "Wallet"), 1, "and it is a row of the list");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The continue card spans the whole body up to its widest, then only the grid
+    /// columns that keep it that wide, leaving at least one for cards.
+    /// flip: `continue_span` returning every column → fails at "no wider than the
+    /// cap".
+    #[test]
+    fn the_continue_card_stops_growing_and_makes_room_for_cards() {
+        assert_eq!(continue_span(700.0), grid_cols(700.0), "narrow: full width");
+        for width in [801.0, 1054.0, 1300.0, 1800.0] {
+            let span = continue_span(width);
+            let card = card_width(width);
+            let w = span as f32 * card + (span - 1) as f32 * GRID_GAP;
+            assert!(w <= CONTINUE_MAX_W + 0.01, "{width}: no wider than the cap");
+            assert!(span < grid_cols(width), "{width}: cards beside it");
+            assert!(span >= 1);
+        }
     }
 
     /// Every list column sorts, on every page that offers a sort.
