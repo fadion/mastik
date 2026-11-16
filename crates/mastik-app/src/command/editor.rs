@@ -2683,16 +2683,57 @@ fn find_matches(text: &str, needle: &str) -> Vec<std::ops::Range<usize>> {
 
 /// Find's matches over the laid-out code, as the canvas Find marks them: each
 /// in the accent wash, the current one ringed; the current one scrolled into
-/// view when find moved to it.
+/// view when find moved to it. Only the matches on the rows in view are laid
+/// out, walked in order with one running character count, so a long script's
+/// thousands of matches cost the screen's few each frame.
 fn paint_find_marks(ui: &mut egui::Ui, s: &mut Scripts, out: &egui::text_edit::TextEditOutput) {
     if s.find.is_none() {
         return;
     }
-    for (i, r) in s.find_hits.iter().enumerate() {
-        if r.end > s.buffer.len() {
+    let text = s.buffer.as_str();
+    let fits = |r: &std::ops::Range<usize>| {
+        r.end <= text.len() && text.is_char_boundary(r.start) && text.is_char_boundary(r.end)
+    };
+    if std::mem::take(&mut s.find_reveal)
+        && let Some(r) = s.find_hits.get(s.find_current).filter(|r| fits(r))
+    {
+        let rect = super::script_help::span_rect(out, text, r);
+        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+    }
+    // The characters the rows in view hold, a line's slack each way.
+    let clip = ui.clip_rect();
+    let char_at = |x: f32, y: f32| {
+        out.galley
+            .cursor_from_pos(egui::vec2(x, y - out.galley_pos.y))
+            .index
+            .0
+    };
+    let first = char_at(0.0, clip.top() - ui::CODE_LINE_H);
+    let last = char_at(f32::INFINITY, clip.bottom() + ui::CODE_LINE_H);
+    let (from, to) = (
+        super::char_to_byte(text, first),
+        super::char_to_byte(text, last),
+    );
+    let lo = s.find_hits.partition_point(|r| r.end < from);
+    let hi = s.find_hits.partition_point(|r| r.start <= to);
+    let at = |c: usize| {
+        out.galley
+            .pos_from_cursor(egui::text::CCursor::new(c))
+            .translate(out.galley_pos.to_vec2())
+    };
+    let (mut chars, mut byte) = (first, from);
+    for (i, r) in s.find_hits.iter().enumerate().take(hi).skip(lo) {
+        if r.start < byte || !fits(r) {
             continue;
         }
-        let rect = super::script_help::span_rect(out, &s.buffer, r);
+        chars += text[byte..r.start].chars().count();
+        byte = r.start;
+        let (a, b) = (at(chars), at(chars + text[r.clone()].chars().count()));
+        // A match that wraps onto the next row is marked on its first.
+        let rect = match (a.center().y - b.center().y).abs() < 1.0 {
+            true => a.union(b),
+            false => a,
+        };
         let current = i == s.find_current;
         let stroke = match current {
             true => egui::Stroke::new(1.5, color::accent()),
@@ -2705,9 +2746,6 @@ fn paint_find_marks(ui: &mut egui::Ui, s: &mut Scripts, out: &egui::text_edit::T
             stroke,
             egui::StrokeKind::Outside,
         );
-        if current && std::mem::take(&mut s.find_reveal) {
-            ui.scroll_to_rect(rect, Some(egui::Align::Center));
-        }
     }
 }
 
@@ -3901,6 +3939,64 @@ mod tests {
                 a.min(b)..a.max(b)
             });
         assert_eq!(sel, Some(18..21), "the current match selected in the code");
+    }
+
+    /// Find over a long script marks only the matches on the rows in view, each
+    /// where its text is, and still scrolls to a current match out of view.
+    /// flip: `paint_find_marks` walking every match, not the range in view →
+    /// fails at "only the rows in view".
+    #[test]
+    fn find_marks_only_the_matches_in_view() {
+        use crate::command::tests::pass;
+        let source = "sel.x = 1\n".repeat(1500);
+        let (ctx, mut app) = open_on(&source);
+        let loupe = head_glyph(&ctx, &mut app, icon::MAGNIFYING_GLASS);
+        click_at(&ctx, &mut app, loupe);
+        let none = egui::Modifiers::NONE;
+        pass(&ctx, &mut app, vec![egui::Event::Text("sel".into())], none);
+        pass(&ctx, &mut app, Vec::new(), none);
+        assert_eq!(app.scripts.find_hits.len(), 1500, "fixture: every line");
+        // The wash, give or take the window's fade a step.
+        let wash = color::accent().gamma_multiply_u8(77);
+        let is_wash = |c: egui::Color32| {
+            c.to_array()
+                .iter()
+                .zip(wash.to_array())
+                .all(|(a, b)| a.abs_diff(b) <= 2)
+        };
+        let marks = |shapes: &[egui::epaint::ClippedShape]| -> Vec<egui::Rect> {
+            flat(shapes)
+                .iter()
+                .filter_map(|s| match s {
+                    egui::Shape::Rect(r) if is_wash(r.fill) => Some(r.rect),
+                    _ => None,
+                })
+                .collect()
+        };
+        let shown = marks(&painted(&ctx, &mut app, Vec::new()));
+        assert!(
+            !shown.is_empty() && shown.len() < 100,
+            "only the rows in view: {}",
+            shown.len()
+        );
+        let code = ctx.read_response(app.scripts.code_id()).unwrap().rect;
+        let first = shown.iter().map(|r| r.top()).fold(f32::INFINITY, f32::min);
+        assert!(
+            (first - (code.top() + (ui::CODE_LINE_H - ui::CODE_ROW_H) / 2.0)).abs() < 2.0,
+            "the first on the first line: {first} vs {code:?}"
+        );
+        app.scripts.find_current = 1200;
+        app.scripts.find_reveal = true;
+        // The scroll animates.
+        for _ in 0..60 {
+            pass(&ctx, &mut app, Vec::new(), none);
+        }
+        let shown = marks(&painted(&ctx, &mut app, Vec::new()));
+        assert!(shown.len() < 100, "still only the rows in view");
+        let ringed = flat(&painted(&ctx, &mut app, Vec::new()))
+            .iter()
+            .any(|s| matches!(s, egui::Shape::Rect(r) if is_wash(r.fill) && r.stroke.width > 0.0));
+        assert!(ringed, "the current one, scrolled to, is ringed in view");
     }
 
     /// The ⋯ menu wears the accent while open, and `Escape` closes it without
