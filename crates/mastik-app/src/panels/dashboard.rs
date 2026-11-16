@@ -2105,8 +2105,13 @@ impl MastikApp {
     }
 
     /// Put `by` in force on this page, into the slot [`Self::sort_by`] reads.
-    /// Session state: the default lives in Settings.
-    fn set_sort(&mut self, by: SortBy) {
+    /// Session state: the default lives in Settings. A change redoes the frame:
+    /// the entries were sorted before the control was drawn, and the day headings
+    /// read the new sort, so this frame would show the old order grouped by the new.
+    fn set_sort(&mut self, ctx: &egui::Context, by: SortBy) {
+        if by != self.sort_by() {
+            ctx.request_discard("library sort changed");
+        }
         match (&self.dash.search_page, &self.dash.nav) {
             (Some(_), _) => self.dash.page_sort = Some(by),
             (None, Nav::Starred | Nav::Kits) => self.dash.list_sort = Some(by),
@@ -2288,8 +2293,13 @@ impl MastikApp {
             },
         );
         // Writes no preference: the `dashboard_*` defaults are set only in Settings.
-        if let Some(i) = picked {
+        // A change redoes the frame: the continue card and the entries beside it
+        // were settled for the old view before this control was drawn.
+        if let Some(i) = picked
+            && self.dash.list_view != (i == 1)
+        {
             self.dash.list_view = i == 1;
+            ui.ctx().request_discard("library view changed");
         }
         self.sort_control(ui);
         self.project_filter(ui);
@@ -2501,7 +2511,7 @@ impl MastikApp {
                     reversed: i - fields.len() == 1,
                 },
             };
-            self.set_sort(next);
+            self.set_sort(ui.ctx(), next);
             self.dash.sort_open = false;
         } else if out.dismissed {
             self.dash.sort_open = false;
@@ -3812,7 +3822,7 @@ impl MastikApp {
             );
         });
         if let Some(field) = picked {
-            self.set_sort(by.clicked(field));
+            self.set_sort(ui.ctx(), by.clicked(field));
         }
         for (bucket, range) in self.day_groups(entries) {
             if let Some(b) = bucket {
@@ -10227,6 +10237,101 @@ mod tests {
         app.dash.sort = SortBy::natural(Sort::Project);
         app.dash.nav = Nav::Project("p".into());
         assert_eq!(app.sort_by(), SortBy::natural(Sort::Edited));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A click at `at`, returning the text runs of the frame its release lands
+    /// on, the frame that changed the state: what it shows is what is on screen.
+    fn click_frame(
+        app: &mut MastikApp,
+        ctx: &egui::Context,
+        at: egui::Pos2,
+    ) -> Vec<(egui::Pos2, egui::Vec2, String)> {
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events,
+                ..Default::default()
+            };
+            let full = ctx.run_ui(input, |ui| app.dashboard_ui(ui));
+            full.shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.pos, t.galley.size(), t.galley.text().to_owned()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(app, vec![egui::Event::PointerMoved(at)]);
+        frame(app, vec![button(true)]);
+        frame(app, vec![button(false)])
+    }
+
+    /// The frame a sort or view change is made on already shows it: the rows in
+    /// the new order, and on *Recent* the continue card the grid brings.
+    /// flip: `set_sort` without its `request_discard` → fails at "the new order
+    /// on the click's frame"; the view switch without its `request_discard` →
+    /// fails at "the continue card on the click's frame".
+    #[test]
+    fn a_sort_or_view_change_shows_on_the_frame_it_is_made() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "change-frame");
+        for name in ["Beta", "Alpha", "Gamma"] {
+            let mut doc = mastik_core::Document::new(app.session.ids.mint());
+            store::file_document(&root, None, name, &mut doc).unwrap();
+        }
+        app.library.refresh();
+        app.dash.nav = Nav::All;
+        app.dash.list_view = true;
+        app.dash.sort = SortBy {
+            field: Sort::Name,
+            reversed: true,
+        };
+        let runs = galleys(&mut app, &ctx);
+        let (pos, size, _) = runs
+            .iter()
+            .filter(|(_, _, t)| t == "Name")
+            .min_by(|a, b| a.0.x.total_cmp(&b.0.x))
+            .cloned()
+            .expect("the Name header");
+        let runs = click_frame(&mut app, &ctx, pos + egui::vec2(4.0, size.y / 2.0));
+        assert_eq!(app.dash.sort, SortBy::natural(Sort::Name), "the click took");
+        let y = |t: &str| runs.iter().find(|(_, _, s)| s == t).expect(t).0.y;
+        assert!(
+            y("Alpha") < y("Beta") && y("Beta") < y("Gamma"),
+            "the new order on the click's frame"
+        );
+
+        // On *Recent*, from the list to the grid.
+        for e in app.library.entries.clone() {
+            app.library.local.mark_opened(e.meta.id.as_deref().unwrap());
+        }
+        app.dash.nav = Nav::Recent;
+        let runs = galleys(&mut app, &ctx);
+        assert!(
+            !in_body(&runs, "CONTINUE"),
+            "the fixture starts in the list"
+        );
+        let (pos, size, _) = runs
+            .iter()
+            .find(|(_, _, t)| t == icon::SQUARES_FOUR)
+            .cloned()
+            .expect("the grid cell of the view switch");
+        let runs = click_frame(&mut app, &ctx, pos + size / 2.0);
+        assert!(!app.dash.list_view, "the click took");
+        assert!(
+            in_body(&runs, "CONTINUE"),
+            "the continue card on the click's frame"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
