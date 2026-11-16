@@ -54,10 +54,15 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
   before every turn, and a row left live refuses the turn. The sign-in is the person's: their dsh
   account, read from their own credentials file by path and never copied, or a `DEEPSEEK_API_KEY`
   already in their environment, passed through and never stored.
-- **Copilot, Cursor and DeepSeek Harness run with a home in the session's run folder**, so their
-  own configuration stays out; it goes with the session, so a resume holds within a session and
-  never across one. Copilot's login file is copied in, since a home without a credential store
-  would be signed out.
+- **Copilot and DeepSeek Harness run with a home in the session's run folder**, so their own
+  configuration stays out; it goes with the session, so a resume holds within a session and never
+  across one. Copilot's login file is copied in, since a home without a credential store would be
+  signed out.
+- **Cursor runs with the person's own Cursor folder** and no home of its own: its restriction and
+  Mastik's server are project files (`.cursor/cli.json`, `.cursor/mcp.json`) in a workspace inside
+  the run folder, its working folder. So the person's MCP servers reach it (its seal sentence says
+  so), and it records the server's approval and its chats in their folder, keyed by that workspace;
+  when the session ends `cursor::forget` removes the entries that name the workspace exactly.
 - **Cursor needs its server approved** (`cursor-agent mcp enable`) before the first turn; a failed
   approval refuses the turn.
 - **One-time setup holds once it succeeds** (Antigravity's registration, Cursor's approval,
