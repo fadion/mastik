@@ -157,6 +157,11 @@ impl Document {
     pub fn get(&self, id: NodeId) -> Option<&Node> {
         self.nodes.get(&id)
     }
+
+    /// Every node's id, in no order.
+    pub fn node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.nodes.keys().copied()
+    }
 }
 
 /// An empty, parentless `Root` — a page's or the vault's.

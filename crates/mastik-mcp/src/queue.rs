@@ -35,6 +35,8 @@ pub struct Call {
     /// The connecting process, as the endpoint read it at accept; `None` where
     /// the platform does not say.
     pub pid: Option<u32>,
+    /// Whether it asked at `initialize` to be shown short ids.
+    pub short_ids: bool,
     pub tool: String,
     pub args: Value,
     pub reply: SyncSender<Output>,
@@ -57,6 +59,7 @@ impl Call {
             client: "test".to_owned(),
             key,
             pid: None,
+            short_ids: false,
             tool: tool.to_owned(),
             args,
             reply,
@@ -129,6 +132,7 @@ impl Handler for Forward {
             client: peer.name.clone(),
             key: peer.key.clone(),
             pid: self.pid,
+            short_ids: peer.short_ids,
             tool: name.to_owned(),
             args,
             reply,

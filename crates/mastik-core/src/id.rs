@@ -32,14 +32,71 @@ impl NodeId {
         format!("{:x}:{}", self.actor, self.seq)
     }
 
-    /// Parse the wire form. Returns `None` on malformed input.
+    /// Parse the wire form. Returns `None` on malformed input. Inside
+    /// [`with_short_ids`] it also reads the short form against that table.
     pub fn from_wire(s: &str) -> Option<NodeId> {
-        let (actor, seq) = s.split_once(':')?;
+        let Some((actor, seq)) = s.split_once(':') else {
+            return SHORT_ACTORS.with(|t| NodeId::from_short(s, t.borrow().as_deref()?));
+        };
         Some(NodeId {
             actor: u64::from_str_radix(actor, 16).ok()?,
             seq: seq.parse().ok()?,
         })
     }
+
+    /// The short form an MCP client is shown: `n<seq>` for an id of
+    /// `actors[0]`, `n<k>_<seq>` for one of `actors[k]`; `None` for an actor the
+    /// table lacks.
+    pub fn to_short(self, actors: &[u64]) -> Option<String> {
+        match actors.iter().position(|a| *a == self.actor)? {
+            0 => Some(format!("n{}", self.seq)),
+            k => Some(format!("n{k}_{}", self.seq)),
+        }
+    }
+
+    /// Read [`Self::to_short`]'s form against `actors`: digits only, no sign or
+    /// leading zero, so one id has one spelling.
+    pub fn from_short(s: &str, actors: &[u64]) -> Option<NodeId> {
+        let digits = |d: &str| {
+            (!d.is_empty()
+                && d.bytes().all(|b| b.is_ascii_digit())
+                && (d == "0" || !d.starts_with('0')))
+            .then(|| d.parse::<u64>().ok())
+            .flatten()
+        };
+        let rest = s.strip_prefix('n')?;
+        let (k, seq) = match rest.split_once('_') {
+            Some((k, seq)) => (digits(k).filter(|k| *k > 0)?, digits(seq)?),
+            None => (0, digits(rest)?),
+        };
+        Some(NodeId {
+            actor: *actors.get(usize::try_from(k).ok()?)?,
+            seq,
+        })
+    }
+}
+
+thread_local! {
+    /// The actor table [`NodeId::from_wire`] reads the short form against, set
+    /// by [`with_short_ids`] while a call from an MCP client runs.
+    static SHORT_ACTORS: std::cell::RefCell<Option<Vec<u64>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with [`NodeId::from_wire`] also reading the short form against
+/// `actors`, so every place an argument is read as an id takes it, and a text
+/// that happens to read `n1` is never touched. The table before is put back
+/// after, a panic included.
+pub fn with_short_ids<R>(actors: &[u64], f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Vec<u64>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let was = self.0.take();
+            SHORT_ACTORS.with(|t| *t.borrow_mut() = was);
+        }
+    }
+    let _restore = Restore(SHORT_ACTORS.with(|t| t.replace(Some(actors.to_vec()))));
+    f()
 }
 
 /// Per-session id minter. One is shared by every writer in a session (GUI,
@@ -191,6 +248,52 @@ mod tests {
                 "and re-spells identically, which is what makes a diff readable"
             );
         }
+    }
+
+    /// The short form round-trips against its table, is read only inside
+    /// `with_short_ids`, and has one spelling per id.
+    ///
+    /// flip: `from_wire` reading the short form with no table set → fails at
+    /// "no table, no short form".
+    #[test]
+    fn the_short_form_reads_only_against_a_table() {
+        let actors = [0xaa, 0xbb];
+        let first = NodeId {
+            actor: 0xaa,
+            seq: 36,
+        };
+        let second = NodeId {
+            actor: 0xbb,
+            seq: 7,
+        };
+        assert_eq!(first.to_short(&actors).as_deref(), Some("n36"));
+        assert_eq!(second.to_short(&actors).as_deref(), Some("n1_7"));
+        assert_eq!(
+            NodeId {
+                actor: 0xcc,
+                seq: 1
+            }
+            .to_short(&actors),
+            None
+        );
+        assert_eq!(NodeId::from_wire("n36"), None, "no table, no short form");
+        with_short_ids(&actors, || {
+            assert_eq!(NodeId::from_wire("n36"), Some(first));
+            assert_eq!(NodeId::from_wire("n1_7"), Some(second));
+            assert_eq!(
+                NodeId::from_wire("aa:36"),
+                Some(first),
+                "the full form still reads"
+            );
+            for s in ["n", "n036", "n0_36", "n2_1", "n+3", "n1_", "N36", "n36 "] {
+                assert_eq!(NodeId::from_wire(s), None, "{s:?} must not parse");
+            }
+        });
+        assert_eq!(
+            NodeId::from_wire("n36"),
+            None,
+            "the table is put back after"
+        );
     }
 
     /// `skip_to` never moves the counter backwards, which keeps a deleted node's id

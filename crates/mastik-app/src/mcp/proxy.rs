@@ -110,6 +110,9 @@ struct Remembered {
     initialize: Option<String>,
     initialized: Option<String>,
     document: Option<String>,
+    /// The host's short-id actor table for this client, from the last answer
+    /// that grew it, handed to the next host with the restore.
+    actors: Option<Value>,
 }
 
 /// Run the proxy until the agent closes its stdin, keying the host's state by
@@ -128,18 +131,24 @@ pub(crate) fn run(
     carry(
         std::io::stdin().lock(),
         std::io::stdout(),
-        Ask { client, all_tools },
+        Ask {
+            client,
+            all_tools,
+            short_ids: !agent,
+        },
         document.map(|d| absolute(&d)),
         &mut Machine { agent },
     )
 }
 
-/// What the proxy adds to `initialize` for the host: the client key, and a
-/// request for every tool rather than the core set.
+/// What the proxy adds to `initialize` for the host: the client key, a request
+/// for every tool rather than the core set, and one for short ids, which a
+/// chat's proxy never makes.
 #[derive(Default)]
 struct Ask {
     client: Option<String>,
     all_tools: bool,
+    short_ids: bool,
 }
 
 /// The proxy's loop: each line of `input` carried to a host from `hosts` and its
@@ -263,6 +272,16 @@ fn carry(
         {
             kept.document = Some(doc.to_owned());
         }
+        // Looked for before parsing: an answer may be a large image.
+        if call
+            && answer.contains(mastik_mcp::wire::ACTORS_META)
+            && let Ok(v) = serde_json::from_str::<Value>(&answer)
+            && let Some(actors) = v
+                .pointer("/result/_meta")
+                .and_then(|m| m.get(mastik_mcp::wire::ACTORS_META))
+        {
+            kept.actors = Some(actors.clone());
+        }
         writeln!(stdout, "{answer}").map_err(|e| e.to_string())?;
         stdout.flush().map_err(|e| e.to_string())?;
     }
@@ -307,7 +326,7 @@ fn rewrite(line: &str, ask: &Ask) -> (String, Option<Value>) {
             changed = true;
         }
     }
-    if (ask.client.is_some() || ask.all_tools)
+    if (ask.client.is_some() || ask.all_tools || ask.short_ids)
         && message.get("method").and_then(Value::as_str) == Some("initialize")
         && let Some(params) = message.get_mut("params").and_then(Value::as_object_mut)
     {
@@ -318,6 +337,9 @@ fn rewrite(line: &str, ask: &Ask) -> (String, Option<Value>) {
             }
             if ask.all_tools {
                 meta.insert(mastik_mcp::wire::TOOLS_META.into(), json!("all"));
+            }
+            if ask.short_ids {
+                meta.insert(mastik_mcp::wire::IDS_META.into(), json!("short"));
             }
             changed = true;
         }
@@ -336,14 +358,15 @@ fn restore(link: &mut Link, kept: &Remembered) -> std::io::Result<()> {
         return Ok(());
     }
     if let Some(doc) = &kept.document {
+        let mut arguments = json!({ "document": doc, "restore": true });
+        if let Some(actors) = &kept.actors {
+            arguments["actors"] = actors.clone();
+        }
         let call = json!({
             "jsonrpc": "2.0",
             "id": "mastik-proxy-restore",
             "method": "tools/call",
-            "params": {
-                "name": "use_document",
-                "arguments": { "document": doc, "restore": true },
-            },
+            "params": { "name": "use_document", "arguments": arguments },
         });
         link.exchange(&call.to_string(), true)
             .map_err(Broke::error)?;
@@ -486,6 +509,7 @@ mod tests {
         let keyed = Ask {
             client: Some("chat-1".into()),
             all_tools: false,
+            short_ids: false,
         };
         let line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"x":1}}}"#;
         let (out, _) = rewrite(line, &keyed);
@@ -504,10 +528,18 @@ mod tests {
         let all = Ask {
             client: None,
             all_tools: true,
+            short_ids: true,
         };
         let (out, _) = rewrite(line, &all);
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["params"]["_meta"][mastik_mcp::wire::TOOLS_META], "all");
+        assert_eq!(v["params"]["_meta"][mastik_mcp::wire::IDS_META], "short");
+        assert!(
+            serde_json::from_str::<Value>(&rewrite(line, &keyed).0).unwrap()["params"]["_meta"]
+                .get(mastik_mcp::wire::IDS_META)
+                .is_none(),
+            "a chat's proxy asks for full ids"
+        );
         let call =
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_selection"}}"#;
         assert_eq!(rewrite(call, &keyed).0, call, "only initialize");
@@ -590,8 +622,12 @@ mod tests {
                         continue;
                     };
                     let document = message.pointer("/params/arguments/document");
-                    let result =
+                    let mut result =
                         json!({ "isError": false, "structuredContent": { "document": document } });
+                    // Serve answers `get_selection` as a host whose table grew.
+                    if tool == Some("get_selection") && script.host == Host::Serve {
+                        result["_meta"] = json!({ mastik_mcp::wire::ACTORS_META: ["aa", "bb"] });
+                    }
                     if tool.is_some() && tool == script.window_on {
                         window.store(true, Ordering::SeqCst);
                     }
@@ -687,11 +723,11 @@ mod tests {
             [
                 (
                     "use_document".to_owned(),
-                    json!({ "document": "site", "restore": true })
+                    json!({ "document": "site", "restore": true, "actors": ["aa", "bb"] })
                 ),
                 ("get_document".to_owned(), json!({})),
             ],
-            "the window's calls"
+            "the window's calls, the restore handing on serve's actor table"
         );
     }
 

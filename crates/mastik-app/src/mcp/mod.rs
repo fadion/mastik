@@ -17,6 +17,7 @@ pub(crate) mod propose;
 pub(crate) mod proxy;
 mod reads;
 pub(crate) mod serve;
+mod short;
 pub(crate) mod system_fonts;
 pub(crate) mod window;
 
@@ -156,6 +157,9 @@ struct Connection {
     /// When it last called, in [`Engine::tick`]s: the least recent keyed client
     /// is forgotten first.
     used: u64,
+    /// The actors its short ids are written against, in the order it first
+    /// saw them (`short`); empty for a chat, which is shown full ids.
+    actors: Vec<u64>,
 }
 
 /// Whose state a call reads: a keyed client's, which outlives its connections,
@@ -164,6 +168,14 @@ struct Connection {
 enum Who {
     Key(String),
     Conn(Conn),
+}
+
+/// Whose state `call` reads.
+fn who(call: &Call) -> Who {
+    match &call.key {
+        Some(key) => Who::Key(key.clone()),
+        None => Who::Conn(call.conn),
+    }
 }
 
 /// How many keyed clients a host remembers after their connections close. A
@@ -344,10 +356,7 @@ impl Engine {
     fn client(&mut self, call: &Call) -> &mut Connection {
         self.live.insert(call.conn);
         self.tick += 1;
-        let who = match &call.key {
-            Some(key) => Who::Key(key.clone()),
-            None => Who::Conn(call.conn),
-        };
+        let who = who(call);
         if !self.clients.contains_key(&who) && matches!(who, Who::Key(_)) {
             let keyed = self
                 .clients
@@ -413,8 +422,60 @@ impl Engine {
         out
     }
 
-    /// Answer one call that its level allows.
-    fn answer(&mut self, docs: &mut impl Documents, call: Call) -> Output {
+    /// Answer one call that its level allows, in short ids when the client
+    /// asked for them and is no chat: the panel links, keeps and replays a
+    /// chat's ids in full.
+    fn answer(&mut self, docs: &mut impl Documents, mut call: Call) -> Output {
+        if !call.short_ids
+            || call
+                .key
+                .as_deref()
+                .is_some_and(crate::assistant::is_client_key)
+        {
+            return self.answer_ids(docs, call);
+        }
+        // The proxy's restore on another host hands back the table it kept,
+        // so the ids the agent holds name the same layers here.
+        let handed: Option<Vec<u64>> = (call.tool == "use_document")
+            .then(|| call.args.as_object_mut()?.remove("actors"))
+            .flatten()
+            .and_then(|v| {
+                v.as_array()?
+                    .iter()
+                    .map(|a| u64::from_str_radix(a.as_str()?, 16).ok())
+                    .collect()
+            });
+        let conn = self.client(&call);
+        if let Some(handed) = handed
+            && handed.len() > conn.actors.len()
+        {
+            conn.actors = handed;
+        }
+        let actors = conn.actors.clone();
+        let whose = who(&call);
+        let mut out = mastik_core::with_short_ids(&actors, || self.answer_ids(docs, call));
+        let Some(conn) = self.clients.get_mut(&whose) else {
+            return out;
+        };
+        let known = conn
+            .document
+            .clone()
+            .and_then(|path| {
+                docs.session(&path)
+                    .map(|s| short::known_actors(&s.doc, s.ids.actor()))
+            })
+            .unwrap_or_default();
+        let before = conn.actors.len();
+        short::shorten(&mut out, &known, &mut conn.actors);
+        if conn.actors.len() > before {
+            let hex: Vec<String> = conn.actors.iter().map(|a| format!("{a:x}")).collect();
+            out.meta = Some(json!({ mastik_mcp::wire::ACTORS_META: hex }));
+        }
+        out
+    }
+
+    /// [`Self::answer`], with ids as the client wrote them read already.
+    fn answer_ids(&mut self, docs: &mut impl Documents, call: Call) -> Output {
         // `call` is the named tool's call itself, so it is checked and answered
         // as that tool, listed or not.
         let mut call = call;
@@ -603,6 +664,7 @@ impl Engine {
                 }],
                 structured: None,
                 is_error: false,
+                meta: None,
             },
             Ok(Answer::Files(report, files)) => {
                 let mut output = Output::json(report);
@@ -688,6 +750,7 @@ fn check_call(call: &Call) -> Result<(), String> {
         && let Some(map) = args.as_object_mut()
     {
         map.remove("restore");
+        map.remove("actors");
     }
     mastik_core::verbs::check_args(tool.name, tool.params, &args)
         .map(|_| ())
@@ -2450,6 +2513,95 @@ mod tests {
         let args = json!({ "parent": page, "kind": kind, "name": name });
         let out = call(engine, docs, conn, "create_node", args);
         ok(&out)["created"][0].as_str().unwrap().to_owned()
+    }
+
+    /// A client that asked for short ids is answered in them and writes with
+    /// them, a name that reads like one is kept as written, and another host
+    /// handed the table by the proxy's restore reads the same ids.
+    ///
+    /// flip: `Engine::answer` ignoring the restore's `actors` → fails at "the
+    /// next host reads the id".
+    #[test]
+    fn short_ids_are_read_back_and_travel_with_the_restore() {
+        fn short(engine: &mut Engine, docs: &mut One, tool: &str, args: Value) -> Output {
+            let (reply, _answer) = sync_channel(1);
+            let mut call = Call::new(1, Some("k".into()), tool, args, reply);
+            call.short_ids = true;
+            engine.handle(docs, call)
+        }
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        let out = short(
+            &mut engine,
+            &mut docs,
+            "use_document",
+            json!({ "document": "a" }),
+        );
+        let page = ok(&out)["pages"][0]["id"].as_str().unwrap().to_owned();
+        assert!(page.starts_with('n') && !page.contains(':'), "{page}");
+        let actors = out
+            .meta
+            .as_ref()
+            .map(|m| m[mastik_mcp::wire::ACTORS_META].clone());
+        let actors = actors.expect("a new actor is handed to the proxy");
+        let kind = mastik_core::verbs::example("NodeKind").unwrap();
+        let args = json!({ "parent": page, "kind": kind, "name": "Card" });
+        let out = short(&mut engine, &mut docs, "create_node", args);
+        let card = ok(&out)["created"][0].as_str().unwrap().to_owned();
+        assert!(
+            out.meta.is_none(),
+            "a table that did not grow is not sent again"
+        );
+        let table: Vec<u64> = actors
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| u64::from_str_radix(a.as_str().unwrap(), 16).unwrap())
+            .collect();
+        let id = NodeId::from_short(&card, &table).expect("a short id");
+        let args = json!({ "node": card, "name": "n1" });
+        ok(&short(&mut engine, &mut docs, "set_name", args));
+        assert_eq!(
+            docs.session.doc.get(id).unwrap().name(),
+            "n1",
+            "a name stays as written"
+        );
+        // What it buys: an outline of ten layers in a fraction of the text.
+        for i in 0..10 {
+            let args = json!({ "parent": page, "kind": kind, "name": format!("R{i}") });
+            ok(&short(&mut engine, &mut docs, "create_node", args));
+        }
+        let text = |out: &Output| match &out.content[0] {
+            Content::Text(t) => t.len(),
+            _ => 0,
+        };
+        let shown = text(&short(&mut engine, &mut docs, "get_outline", json!({})));
+        open(&mut engine, &mut docs, 2);
+        let full = text(&call(&mut engine, &mut docs, 2, "get_outline", json!({})));
+        assert!(
+            shown * 10 < full * 8,
+            "short ids cut the outline: {shown} of {full}"
+        );
+
+        // A first host that had seen another actor first: an order the next
+        // host's own answers would not rebuild.
+        let mut handed = vec![json!("abc")];
+        handed.extend(actors.as_array().unwrap().iter().cloned());
+        let card = format!("n1_{}", id.seq);
+        let mut next = Engine::default();
+        let restore = json!({ "document": "a", "restore": true, "actors": handed });
+        ok(&short(&mut next, &mut docs, "use_document", restore));
+        let out = short(&mut next, &mut docs, "get_node", json!({ "id": card }));
+        assert!(
+            !out.is_error,
+            "the next host reads the id: {:?}",
+            out.content
+        );
+        assert_eq!(
+            ok(&out)["nodes"][0]["id"],
+            json!(card),
+            "and writes it the same way"
+        );
+        assert_eq!(ok(&out)["nodes"][0]["name"], "n1");
     }
 
     /// A tool before `use_document` is refused; after, a write lands through the
