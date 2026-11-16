@@ -1,10 +1,13 @@
 //! The library scripts: plain `.luau` files in a `scripts` folder beside the
 //! preferences, so they can be kept in git and shared as files.
 //!
-//! A script's name is its file name less `.luau`. Names are compared without
-//! case, as Windows and macOS compare file names, so `Grid` and `grid` are one
-//! name. Every write is atomic (`crate::atomic`); a delete removes the file
-//! outright, since the app has no helper for the OS trash.
+//! A script's name is its file name less `.luau`. A name finds its own file
+//! first, then the one file whose name differs only in case, as Windows and
+//! macOS compare file names; where a case-sensitive folder holds several, the
+//! name is refused rather than guessed. A file that is not UTF-8 text is never
+//! listed, but its name stays taken, so nothing is written over it. Every write
+//! is atomic (`crate::atomic`); a delete removes the file outright, since the
+//! app has no helper for the OS trash.
 
 use std::path::{Path, PathBuf};
 
@@ -28,6 +31,10 @@ pub enum ScriptError {
     BadName(&'static str),
     Taken(String),
     Missing(String),
+    /// Several files carry the name in other cases, and none in this one.
+    Ambiguous(String),
+    /// The file is there but is not UTF-8 text, so it is left as it is.
+    NotText(String),
     Io(String),
 }
 
@@ -37,6 +44,12 @@ impl std::fmt::Display for ScriptError {
             ScriptError::BadName(why) => f.write_str(why),
             ScriptError::Taken(name) => write!(f, "a script called “{name}” already exists"),
             ScriptError::Missing(name) => write!(f, "no script is called “{name}”"),
+            ScriptError::Ambiguous(name) => {
+                write!(f, "more than one script is called “{name}” in another case")
+            }
+            ScriptError::NotText(name) => {
+                write!(f, "“{name}” is not UTF-8 text, so it is left as it is")
+            }
             ScriptError::Io(why) => f.write_str(why),
         }
     }
@@ -93,15 +106,10 @@ impl Library {
     /// Every script in the folder, sorted by name without case. A missing folder
     /// is an empty library; a file that cannot be read as text is left out.
     pub fn list(&self) -> Vec<LibraryScript> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return Vec::new();
-        };
-        let mut out: Vec<LibraryScript> = entries
-            .flatten()
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-            .filter_map(|e| {
-                let path = e.path();
-                let name = script_name(&path)?;
+        let mut out: Vec<LibraryScript> = self
+            .files()
+            .into_iter()
+            .filter_map(|(name, path)| {
                 let source = std::fs::read_to_string(&path).ok()?;
                 Some(LibraryScript { name, path, source })
             })
@@ -133,21 +141,30 @@ impl Library {
     }
 
     /// Write `source` as the script called `name`, creating it or replacing its
-    /// source. A script whose name differs only in case is the same script.
+    /// source. A script whose name differs only in case is the same script; a
+    /// file that is not UTF-8 text is refused, never replaced.
     pub fn write(&self, name: &str, source: &str) -> Result<PathBuf, ScriptError> {
         check_name(name)?;
-        let path = self.find(name).unwrap_or_else(|| self.path_of(name));
+        let path = self.find(name)?.unwrap_or_else(|| self.path_of(name));
+        if let Ok(bytes) = std::fs::read(&path)
+            && std::str::from_utf8(&bytes).is_err()
+        {
+            return Err(ScriptError::NotText(name.to_owned()));
+        }
         crate::atomic::write(&path, source.as_bytes())?;
         Ok(path)
     }
 
-    /// Rename the script `from` to `to`, refusing a name another script has.
-    /// A change of case alone renames the file.
+    /// Rename the script `from` to `to`, refusing a name another script file
+    /// has in any case. A change of case alone renames the file.
     pub fn rename(&self, from: &str, to: &str) -> Result<PathBuf, ScriptError> {
         check_name(to)?;
         let old = self.existing(from)?;
-        if let Some(other) = self.find(to)
-            && other != old
+        let want = to.to_lowercase();
+        if self
+            .files()
+            .iter()
+            .any(|(n, p)| n.to_lowercase() == want && *p != old)
         {
             return Err(ScriptError::Taken(to.to_owned()));
         }
@@ -173,11 +190,14 @@ impl Library {
         Ok(())
     }
 
-    /// `wanted` if no script has that name, else its stem numbered past the ones
-    /// that do: `Card grid` → `Card grid 2`, `Untitled 1` → `Untitled 2`.
+    /// `wanted` if no script file has that name, else its stem numbered past the
+    /// ones that do: `Card grid` → `Card grid 2`, `Untitled 1` → `Untitled 2`.
     pub fn unique_name(&self, wanted: &str) -> String {
-        let taken: std::collections::HashSet<String> =
-            self.list().iter().map(|s| s.name.to_lowercase()).collect();
+        let taken: std::collections::HashSet<String> = self
+            .files()
+            .into_iter()
+            .map(|(name, _)| name.to_lowercase())
+            .collect();
         if !taken.contains(&wanted.to_lowercase()) {
             return wanted.to_owned();
         }
@@ -196,19 +216,47 @@ impl Library {
         self.dir.join(format!("{name}.{EXT}"))
     }
 
-    /// The file of the script called `name`, compared without case.
-    fn find(&self, name: &str) -> Option<PathBuf> {
-        let want = name.to_lowercase();
-        self.list()
-            .into_iter()
-            .find(|s| s.name.to_lowercase() == want)
-            .map(|s| s.path)
+    /// Every script file in the folder by its script name, whether or not its
+    /// text reads as UTF-8, unsorted.
+    fn files(&self) -> Vec<(String, PathBuf)> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .filter_map(|e| {
+                let path = e.path();
+                Some((script_name(&path)?, path))
+            })
+            .collect()
+    }
+
+    /// The file of the script called `name` ([`lookup`]).
+    fn find(&self, name: &str) -> Result<Option<PathBuf>, ScriptError> {
+        lookup(&self.files(), name)
     }
 
     fn existing(&self, name: &str) -> Result<PathBuf, ScriptError> {
         check_name(name)?;
-        self.find(name)
+        self.find(name)?
             .ok_or_else(|| ScriptError::Missing(name.to_owned()))
+    }
+}
+
+/// The file among `files` the script `name` is: the one with exactly that name,
+/// else the only one whose name differs in case alone. Several of those and
+/// none exact is refused, so a write never lands on a file nobody named.
+fn lookup(files: &[(String, PathBuf)], name: &str) -> Result<Option<PathBuf>, ScriptError> {
+    if let Some((_, path)) = files.iter().find(|(n, _)| n == name) {
+        return Ok(Some(path.clone()));
+    }
+    let want = name.to_lowercase();
+    let mut folded = files.iter().filter(|(n, _)| n.to_lowercase() == want);
+    match (folded.next(), folded.next()) {
+        (None, _) => Ok(None),
+        (Some((_, path)), None) => Ok(Some(path.clone())),
+        (Some(_), Some(_)) => Err(ScriptError::Ambiguous(name.to_owned())),
     }
 }
 
@@ -419,6 +467,80 @@ mod tests {
         lib.write("UNTITLED 2", "").unwrap();
         assert_eq!(lib.unique_name("Untitled 1"), "Untitled 3");
         assert_eq!(lib.unique_name("Fresh"), "Fresh");
+        let _ = std::fs::remove_dir_all(lib.dir());
+    }
+
+    /// A name finds its own file before one in another case, the only one in
+    /// another case otherwise, and refuses to choose among several.
+    /// flip: `lookup` taking the first match without case → fails at "its own".
+    #[test]
+    fn a_name_finds_its_own_file_first() {
+        let files: Vec<(String, PathBuf)> = ["Grid", "grid", "Tidy"]
+            .iter()
+            .map(|n| (n.to_string(), PathBuf::from(format!("{n}.luau"))))
+            .collect();
+        let found = |name| match lookup(&files, name) {
+            Ok(p) => Ok(p.map(|p| p.display().to_string())),
+            Err(e) => Err(e.to_string()),
+        };
+        assert_eq!(found("grid"), Ok(Some("grid.luau".into())), "its own");
+        assert_eq!(found("Grid"), Ok(Some("Grid.luau".into())));
+        assert_eq!(found("TIDY"), Ok(Some("Tidy.luau".into())), "one in a case");
+        assert_eq!(found("Nope"), Ok(None));
+        assert!(found("GRID").is_err(), "two in other cases");
+    }
+
+    /// A script file that is not UTF-8 text is not listed, but its name stays
+    /// taken: a write to it is refused, a rename onto it too, and a new name
+    /// is numbered past it.
+    /// flip: `unique_name` reading taken names from `list` → fails at "numbered
+    /// past it".
+    #[test]
+    fn a_file_that_is_not_text_is_never_written_over() {
+        let lib = scratch("latin1");
+        std::fs::create_dir_all(lib.dir()).unwrap();
+        let path = lib.dir().join("Café.luau");
+        let bytes = b"-- caf\xe9\n".to_vec();
+        std::fs::write(&path, &bytes).unwrap();
+        lib.write("Tidy", "t").unwrap();
+        assert_eq!(names(&lib), ["Tidy"], "fixture: it is not listed");
+        assert_eq!(lib.unique_name("Café"), "Café 2", "numbered past it");
+        assert!(matches!(
+            lib.write("Café", "x"),
+            Err(ScriptError::NotText(_))
+        ));
+        assert!(matches!(
+            lib.rename("Tidy", "café"),
+            Err(ScriptError::Taken(_))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "its bytes are intact");
+        let _ = std::fs::remove_dir_all(lib.dir());
+    }
+
+    /// In a case-sensitive folder, `grid` and `Grid` are two files and each
+    /// name writes, renames and deletes its own.
+    /// flip: `lookup` taking the first match without case → fails at "Grid
+    /// keeps its text".
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn two_names_in_two_cases_keep_their_own_files() {
+        let lib = scratch("cases");
+        lib.write("Grid", "a").unwrap();
+        std::fs::write(lib.dir().join("grid.luau"), "b").unwrap();
+        assert_eq!(names(&lib), ["Grid", "grid"], "fixture: both are listed");
+        lib.write("grid", "c").unwrap();
+        assert_eq!(lib.read("Grid").unwrap(), "a", "Grid keeps its text");
+        assert_eq!(lib.read("grid").unwrap(), "c");
+        assert!(matches!(
+            lib.write("GRID", "d"),
+            Err(ScriptError::Ambiguous(_))
+        ));
+        assert!(matches!(
+            lib.rename("grid", "GRID"),
+            Err(ScriptError::Taken(_))
+        ));
+        lib.delete("grid").unwrap();
+        assert_eq!(names(&lib), ["Grid"], "the delete took its own file");
         let _ = std::fs::remove_dir_all(lib.dir());
     }
 }
