@@ -5561,7 +5561,6 @@ fn icon_button_face(
     }
     let hovered = enabled && resp.hovered();
     let resting = resting_ink(ui, enabled);
-    let r5 = egui::CornerRadius::same(5);
     let p = ui.painter();
     let fg = if active {
         color::accent_100()
@@ -5575,6 +5574,21 @@ fn icon_button_face(
     } else {
         resting
     };
+    icon_button_ground(p, rect, active, hovered);
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        theme::icon_font(glyph_size),
+        fg,
+    );
+    resp
+}
+
+/// The icon buttons' ground: the accent fill and ring while `active`, the
+/// hover ground while hovered, nothing at rest.
+fn icon_button_ground(p: &egui::Painter, rect: egui::Rect, active: bool, hovered: bool) {
+    let r5 = egui::CornerRadius::same(5);
     if active {
         p.rect_filled(rect, r5, color::accent_800());
         p.rect_stroke(
@@ -5586,13 +5600,58 @@ fn icon_button_face(
     } else if hovered {
         p.rect_filled(rect, r5, theme::color::hover());
     }
-    p.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        theme::icon_font(glyph_size),
-        fg,
+}
+
+/// The air either side of an [`icon_count_button`]'s run. An icon button
+/// centres one glyph in its square; a run of glyphs and counts has no square,
+/// so it takes this much on each side.
+pub const COUNT_BUTTON_PAD_X: f32 = 6.0;
+
+/// An icon button that shows each of `items`' glyphs with its count after it
+/// (`⚠ 2  ⚠ 1`), [`CONTROL_H`] tall: the glyphs at `glyph_pt` in their own
+/// inks, the counts in the caption size, on [`icon_button`]'s hover ground, the
+/// counts brightening on hover as an icon button's glyph does. `enabled: false`
+/// dims the counts and drops the hover.
+pub fn icon_count_button(
+    ui: &mut egui::Ui,
+    items: &[(&str, egui::Color32, usize)],
+    glyph_pt: f32,
+    enabled: bool,
+) -> egui::Response {
+    let glyph = theme::icon_font(glyph_pt);
+    let num = egui::FontId::proportional(CAPTION_PT);
+    let job = |count_ink: egui::Color32| {
+        let mut job = egui::text::LayoutJob::default();
+        for (i, (g, ink, n)) in items.iter().enumerate() {
+            if i > 0 {
+                job.append("  ", 0.0, egui::TextFormat::simple(num.clone(), count_ink));
+            }
+            job.append(g, 0.0, egui::TextFormat::simple(glyph.clone(), *ink));
+            let count = format!(" {n}");
+            job.append(
+                &count,
+                0.0,
+                egui::TextFormat::simple(num.clone(), count_ink),
+            );
+        }
+        job
+    };
+    let resting = resting_ink(ui, enabled);
+    let width = ui.fonts_mut(|f| f.layout_job(job(resting))).size().x;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(width + 2.0 * COUNT_BUTTON_PAD_X, CONTROL_H),
+        egui::Sense::click(),
     );
+    let hovered = enabled && resp.hovered();
+    let ink = if hovered { color::text() } else { resting };
+    let g = ui.fonts_mut(|f| f.layout_job(job(ink)));
+    let p = ui.painter();
+    icon_button_ground(p, rect, false, hovered);
+    let at = egui::pos2(
+        rect.left() + COUNT_BUTTON_PAD_X,
+        rect.center().y - g.size().y / 2.0,
+    );
+    p.galley(at, g, ink);
     resp
 }
 
@@ -9176,6 +9235,68 @@ mod tests {
     fn hex_of_writes_six_digits() {
         let c = mastik_core::peniko::Color::from_rgba8(0x6D, 0x8C, 0xD9, 0x80);
         assert_eq!(hex_of(c), "6D8CD9");
+    }
+
+    /// A count button has no ground at rest; hovered, it takes the hover ground
+    /// and its counts brighten, its glyph keeping its own ink.
+    /// flip: `icon_count_button` inking its counts the resting ink when hovered
+    /// → fails at "the count brightens".
+    #[test]
+    fn a_count_buttons_counts_brighten_on_hover() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let warn = theme::color::warn();
+        let rect = std::cell::Cell::new(egui::Rect::NOTHING);
+        let frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                let items = [(icon::WARNING, warn, 2)];
+                rect.set(icon_count_button(ui, &items, CAPTION_PT + 2.0, true).rect);
+            })
+            .shapes
+        };
+        let ink_of = |shapes: &[egui::epaint::ClippedShape], text: &str| {
+            shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(t) => t.galley.job.sections.iter().find_map(|s| {
+                    let r = s.byte_range.start.0..s.byte_range.end.0;
+                    (t.galley.job.text.get(r) == Some(text)).then_some(s.format.color)
+                }),
+                _ => None,
+            })
+        };
+        let grounds = |shapes: &[egui::epaint::ClippedShape]| {
+            shapes
+                .iter()
+                .filter(
+                    |c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == theme::color::hover()),
+                )
+                .count()
+        };
+        let rest = frame(Vec::new());
+        assert_eq!(grounds(&rest), 0, "no ground at rest");
+        assert_eq!(
+            ink_of(&rest, " 2"),
+            Some(theme::text::muted()),
+            "fixture: at rest"
+        );
+        let mut lit = Vec::new();
+        for _ in 0..3 {
+            lit = frame(vec![egui::Event::PointerMoved(rect.get().center())]);
+        }
+        assert_eq!(grounds(&lit), 1, "the hover ground");
+        assert_eq!(
+            ink_of(&lit, " 2"),
+            Some(color::text()),
+            "the count brightens"
+        );
+        assert_eq!(
+            ink_of(&lit, icon::WARNING),
+            Some(warn),
+            "the glyph keeps its ink"
+        );
     }
 
     /// `Color -> Hsv -> Color` is the identity at 8-bit precision, low alpha included.

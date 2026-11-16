@@ -1994,6 +1994,16 @@ pub(crate) fn caption(ui: &mut egui::Ui, text: &str) {
     caption_in(ui, text, theme::text::faint());
 }
 
+/// A [`caption`] in a card that spaces its items itself (the script form, the
+/// disclosure), so it takes no lead of its own.
+pub(crate) fn caption_unled(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(CAPTION_PT)
+            .color(theme::text::faint()),
+    );
+}
+
 /// A [`caption`] in `ink`: the lit ink for an answer found, the error's for
 /// one that was not.
 fn caption_in(ui: &mut egui::Ui, text: &str, ink: egui::Color32) {

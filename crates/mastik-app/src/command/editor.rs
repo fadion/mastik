@@ -1678,7 +1678,7 @@ impl MastikApp {
                         ui.spacing_mut().item_spacing.y = 8.0;
                         let w = FORM_W - 2.0 * settings::CANVAS_CARD_PAD;
                         if !form.header.description.is_empty() {
-                            caption(ui, &form.header.description);
+                            settings::caption_unled(ui, &form.header.description);
                         }
                         for input in &form.header.inputs {
                             let label = input.label.clone().unwrap_or_else(|| input.name.clone());
@@ -1792,7 +1792,7 @@ impl MastikApp {
                             1 => "1 line".to_owned(),
                             n => format!("{n} lines"),
                         };
-                        caption(
+                        settings::caption_unled(
                             ui,
                             &match listed.is_empty() {
                                 true => lines,
@@ -1921,15 +1921,6 @@ const DISCLOSURE: &str = "Whoever made this file wrote it, not you. Read it befo
 /// name, which a library and a document script may share.
 fn values_key(which: &Which) -> String {
     format!("{which:?}")
-}
-
-/// A faint caption line in the card's caption size.
-fn caption(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .size(ui::CAPTION_PT)
-            .color(theme::text::faint()),
-    );
 }
 
 /// `s` with its first letter lowered, to run on after a name.

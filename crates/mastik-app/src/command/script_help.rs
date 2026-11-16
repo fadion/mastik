@@ -781,10 +781,10 @@ fn problem_card(
     (shown.response.rect, chosen)
 }
 
-/// The head's problem counts: errors then warnings, each only when not zero,
-/// the warning glyph in its ink and the count in the caption size, on an icon
-/// button's hover ground. Answers its response, clicked to walk to the next
-/// problem, or `None` when there are none.
+/// The head's problem counts (`ui::icon_count_button`): errors then warnings,
+/// each only when not zero, the warning glyph in its severity's ink. Answers
+/// its response, clicked to walk to the next problem, or `None` when there are
+/// none.
 pub(crate) fn counts(ui: &mut egui::Ui, problems: &[Problem]) -> Option<egui::Response> {
     let errors = problems
         .iter()
@@ -794,57 +794,17 @@ pub(crate) fn counts(ui: &mut egui::Ui, problems: &[Problem]) -> Option<egui::Re
     if problems.is_empty() {
         return None;
     }
-    let mut job = egui::text::LayoutJob::default();
-    let glyph = theme::icon_font(ui::CAPTION_PT + 2.0);
-    let num = egui::FontId::proportional(ui::CAPTION_PT);
-    for (n, sev) in [(errors, Severity::Error), (warnings, Severity::Warning)] {
-        if n == 0 {
-            continue;
-        }
-        if !job.text.is_empty() {
-            job.append(
-                "  ",
-                0.0,
-                egui::TextFormat::simple(num.clone(), theme::text::faint()),
-            );
-        }
-        job.append(
-            icon::WARNING,
-            0.0,
-            egui::TextFormat::simple(glyph.clone(), ink(sev)),
-        );
-        job.append(
-            &format!(" {n}"),
-            0.0,
-            egui::TextFormat::simple(num.clone(), theme::text::muted()),
-        );
-    }
-    let g = ui.fonts_mut(|f| f.layout_job(job));
-    const PAD: f32 = 6.0;
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(g.size().x + 2.0 * PAD, ui::CONTROL_H),
-        egui::Sense::click(),
-    );
-    if resp.hovered() {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(5), theme::color::hover());
-    }
-    ui.painter().galley(
-        egui::pos2(rect.left() + PAD, rect.center().y - g.size().y / 2.0),
-        g,
-        theme::text::muted(),
-    );
-    let plural = |n: usize, one: &str| {
-        if n == 1 {
-            format!("1 {one}")
-        } else {
-            format!("{n} {one}s")
-        }
-    };
+    let items: Vec<(&str, egui::Color32, usize)> =
+        [(errors, Severity::Error), (warnings, Severity::Warning)]
+            .into_iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, sev)| (icon::WARNING, ink(sev), n))
+            .collect();
+    let resp = ui::icon_count_button(ui, &items, ui::CAPTION_PT + 2.0, true);
     let said = match (errors, warnings) {
-        (0, w) => plural(w, "warning"),
-        (e, 0) => plural(e, "error"),
-        (e, w) => format!("{}, {}", plural(e, "error"), plural(w, "warning")),
+        (0, w) => ui::count(w, "warning"),
+        (e, 0) => ui::count(e, "error"),
+        (e, w) => format!("{}, {}", ui::count(e, "error"), ui::count(w, "warning")),
     };
     Some(resp.on_hover_text(format!("{said} · click goes to the next")))
 }
