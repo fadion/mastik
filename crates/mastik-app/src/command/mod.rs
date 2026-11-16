@@ -2172,7 +2172,7 @@ pub(crate) mod tests {
         let _ = pass_out(ctx, app, events, modifiers);
     }
 
-    /// [`pass`], answering the frame's output.
+    /// `pass`, answering the frame's output.
     fn pass_out(
         ctx: &egui::Context,
         app: &mut MastikApp,
