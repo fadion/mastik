@@ -96,18 +96,111 @@ fn search_rect(centre_x: f32, centre_y: f32, left: f32, right: f32) -> egui::Rec
 }
 /// Where a right-aligned list column (*Size*) ends: clear of the ⋮ at the row's end.
 const LIST_RIGHT_PAD: f32 = 34.0;
+/// Where a right-aligned column inside the row (*Pages*) ends.
+const LIST_INNER_PAD: f32 = 18.0;
+/// The narrowest the list's *Name* column is left before a column goes: first
+/// *Created*, then *Opened*, rather than every column eliding.
+const LIST_NAME_MIN_W: f32 = 180.0;
+
+/// A column of the list view, in its order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListCol {
+    Name,
+    Project,
+    Pages,
+    Edited,
+    Opened,
+    Created,
+    Size,
+}
+
+impl ListCol {
+    /// The header's word.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::Project => "Project",
+            Self::Pages => "Pages",
+            Self::Edited => "Edited",
+            Self::Opened => "Opened",
+            Self::Created => "Created",
+            Self::Size => "Size",
+        }
+    }
+
+    /// The sort a click on its header asks for; *Pages* sorts nothing.
+    fn field(self) -> Option<Sort> {
+        Some(match self {
+            Self::Name => Sort::Name,
+            Self::Project => Sort::Project,
+            Self::Pages => return None,
+            Self::Edited => Sort::Edited,
+            Self::Opened => Sort::Opened,
+            Self::Created => Sort::Created,
+            Self::Size => Sort::Size,
+        })
+    }
+
+    /// A number's column sits against its right edge, this far in; `None` for
+    /// words, which start at its left.
+    fn right_inset(self) -> Option<f32> {
+        match self {
+            Self::Pages => Some(LIST_INNER_PAD),
+            Self::Size => Some(LIST_RIGHT_PAD),
+            _ => None,
+        }
+    }
+
+    /// Its fixed width; *Name* takes what the others leave.
+    fn width(self) -> f32 {
+        match self {
+            Self::Name => 0.0,
+            Self::Project => 150.0,
+            Self::Pages => 64.0,
+            Self::Edited | Self::Opened | Self::Created => 106.0,
+            Self::Size => 90.0,
+        }
+    }
+}
+
+/// The list's columns and their widths in a list `full` wide: every column while
+/// *Name* keeps [`LIST_NAME_MIN_W`], dropping *Created* and then *Opened* below.
+fn list_columns(full: f32) -> Vec<(ListCol, f32)> {
+    use ListCol::*;
+    let mut cols = vec![Name, Project, Pages, Edited, Opened, Created, Size];
+    for drop in [Created, Opened] {
+        let fixed: f32 = cols.iter().map(|c| c.width()).sum();
+        if full - fixed >= LIST_NAME_MIN_W {
+            break;
+        }
+        cols.retain(|c| *c != drop);
+    }
+    let fixed: f32 = cols.iter().map(|c| c.width()).sum();
+    cols.into_iter()
+        .map(|c| {
+            (
+                c,
+                if c == Name {
+                    (full - fixed).max(0.0)
+                } else {
+                    c.width()
+                },
+            )
+        })
+        .collect()
+}
 /// A list header's direction arrow.
 const LIST_ARROW_PT: f32 = 10.0;
 
 /// One list header in `cell`: its word, full ink when it is the sort in force and
 /// faint otherwise, with the direction arrow after it (`Some((ascending, ink))`).
-/// A numeric column (`right`) sits against the column's right edge, as its
-/// values do.
+/// A numeric column (`right`, its right inset) sits against the column's right
+/// edge, as its values do.
 fn list_head(
     ui: &egui::Ui,
     cell: egui::Rect,
     label: &str,
-    right: bool,
+    right: Option<f32>,
     on: bool,
     arrow: Option<(bool, egui::Color32)>,
 ) {
@@ -124,8 +217,8 @@ fn list_head(
     );
     let arrow_w = LIST_ARROW_PT + 3.0;
     let left = match right {
-        true => cell.right() - LIST_RIGHT_PAD - g.size().x,
-        false => cell.left() + 10.0,
+        Some(inset) => cell.right() - inset - g.size().x,
+        None => cell.left() + 10.0,
     };
     let y = cell.center().y;
     let text_w = g.size().x;
@@ -134,8 +227,8 @@ fn list_head(
         // Right of the word, or left of it in a right-aligned column, so the word
         // stays over its values.
         let x = match right {
-            true => left - arrow_w,
-            false => left + text_w + 3.0,
+            Some(_) => left - arrow_w,
+            None => left + text_w + 3.0,
         };
         p.text(
             egui::pos2(x, y),
@@ -2852,7 +2945,7 @@ impl MastikApp {
                 p.text(
                     line_at,
                     egui::Align2::LEFT_CENTER,
-                    clock::relative_label(clock::since(entry.modified)),
+                    elide(ui, &self.card_line(entry), ui::SMALL_PT, w - 46.0),
                     egui::FontId::proportional(ui::SMALL_PT),
                     theme::text::faint(),
                 );
@@ -3152,15 +3245,7 @@ impl MastikApp {
         act: &mut Option<Act>,
     ) {
         let full = ui.available_width();
-        // The name takes what the four fixed columns leave.
-        let cols = [full - 500.0, 170.0, 120.0, 120.0, 90.0];
-        let fields = [
-            Sort::Name,
-            Sort::Project,
-            Sort::Edited,
-            Sort::Created,
-            Sort::Size,
-        ];
+        let cols = list_columns(full);
         let offered = match self.sort_applies() {
             true => self.sort_fields(),
             false => Vec::new(),
@@ -3170,37 +3255,33 @@ impl MastikApp {
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(full, 26.0), egui::Sense::empty());
             let mut x = rect.left();
-            for (field, w) in fields.into_iter().zip(cols) {
+            for &(col, w) in &cols {
                 let cell = egui::Rect::from_x_y_ranges(x..=x + w, rect.y_range());
                 x += w;
-                let live = offered.contains(&field);
+                let field = col.field();
+                let live = field.is_some_and(|f| offered.contains(&f));
                 let resp = ui.interact(
                     cell,
-                    egui::Id::new(("list-head", field.id())),
+                    egui::Id::new(("list-head", col.label())),
                     if live {
                         egui::Sense::click()
                     } else {
                         egui::Sense::hover()
                     },
                 );
-                let on = live && by.field == field;
-                let label = match field {
-                    Sort::Edited => "Edited",
-                    Sort::Created => "Created",
-                    f => f.label(),
-                };
+                let on = live && field == Some(by.field);
                 // The arrow says the direction in force, or on hover the one a
                 // click would give.
-                let arrow = match (on, live && resp.hovered()) {
-                    (true, _) => Some((by.ascending(), color::accent())),
-                    (false, true) => {
-                        Some((SortBy::natural(field).ascending(), theme::text::faint()))
+                let arrow = match (on, live && resp.hovered(), field) {
+                    (true, _, _) => Some((by.ascending(), color::accent())),
+                    (false, true, Some(f)) => {
+                        Some((SortBy::natural(f).ascending(), theme::text::faint()))
                     }
                     _ => None,
                 };
-                list_head(ui, cell, label, field == Sort::Size, on, arrow);
+                list_head(ui, cell, col.label(), col.right_inset(), on, arrow);
                 if resp.clicked() && !self.dash.menu_was_up {
-                    picked = Some(field);
+                    picked = field;
                 }
             }
         });
@@ -3266,7 +3347,7 @@ impl MastikApp {
         &mut self,
         ui: &mut egui::Ui,
         entry: &Entry,
-        cols: &[f32; 5],
+        cols: &[(ListCol, f32)],
         act: &mut Option<Act>,
     ) {
         let (rect, resp) = ui.allocate_exact_size(
@@ -3290,29 +3371,17 @@ impl MastikApp {
                 },
             );
         }
-        let project = self
-            .library
-            .project_of(entry)
-            .map(|p| self.library.shown_project(p))
-            .unwrap_or_else(|| "—".into());
-        let cells = [
-            self.library.shown_entry(entry),
-            project,
-            clock::relative_label(clock::since(entry.modified)),
-            entry
-                .meta
-                .created
-                .map(clock::date_label)
-                .unwrap_or_else(|| "—".into()),
-            crate::settings::human_bytes(entry.size),
-        ];
+        let cells: Vec<String> = cols
+            .iter()
+            .map(|(c, _)| self.list_cell(entry, *c))
+            .collect();
         // The field's text lands where the painted name starts.
         let name_box = egui::Rect::from_min_size(
             egui::pos2(
                 rect.left() + 10.0 - ui::INLINE_EDIT_PAD_X,
                 rect.center().y - 11.0,
             ),
-            egui::vec2(cols[0] - 20.0, 22.0),
+            egui::vec2(cols[0].1 - 20.0, 22.0),
         );
         let renaming = self.rename_field(ui, entry, name_box, act);
         // The chips take their width out of the *Name* column before the name is elided.
@@ -3321,17 +3390,17 @@ impl MastikApp {
         let chip_room = chip.map_or(0.0, |m| mark_chip_size(ui, m).x + 8.0)
             + open.map_or(0.0, |s| open_chip_size(ui, s).x + 8.0);
         let mut x = rect.left();
-        for (i, (text, w)) in cells.iter().zip(cols).enumerate() {
+        for (i, (text, &(col, w))) in cells.iter().zip(cols).enumerate() {
             if i == 0 && renaming {
                 x += w;
                 continue;
             }
             let room = w - LIST_RIGHT_PAD - if i == 0 { chip_room } else { 0.0 };
             let shown = elide(ui, text, ui::CONTROL_PT, room);
-            // The size, a number, sits against its column's right edge.
-            let (at, align) = match i == cells.len() - 1 {
-                true => (x + w - LIST_RIGHT_PAD, egui::Align2::RIGHT_CENTER),
-                false => (x + 10.0, egui::Align2::LEFT_CENTER),
+            // A number sits against its column's right edge.
+            let (at, align) = match col.right_inset() {
+                Some(inset) => (x + w - inset, egui::Align2::RIGHT_CENTER),
+                None => (x + 10.0, egui::Align2::LEFT_CENTER),
             };
             ui.painter().text(
                 egui::pos2(at, rect.center().y),
@@ -3374,6 +3443,61 @@ impl MastikApp {
             act,
         );
         ui.set_opacity(opacity);
+    }
+
+    /// What `entry`'s row says in `col`. *Pages* is a dash until the index has
+    /// read the document, so nothing shows a wrong number; *Opened* is this
+    /// machine's last open, *Never* for one not opened here.
+    fn list_cell(&self, entry: &Entry, col: ListCol) -> String {
+        let dash = || "—".to_string();
+        match col {
+            ListCol::Name => self.library.shown_entry(entry),
+            ListCol::Project => self
+                .library
+                .project_of(entry)
+                .map(|p| self.library.shown_project(p))
+                .unwrap_or_else(dash),
+            ListCol::Pages => self
+                .index
+                .get(entry)
+                .map(|f| f.pages.len().to_string())
+                .unwrap_or_else(dash),
+            ListCol::Edited => clock::relative_label(clock::since(entry.modified)),
+            ListCol::Opened => self
+                .library
+                .local
+                .opened_at(entry.meta.id.as_deref())
+                .map(|t| clock::relative_label(clock::since(t)))
+                .unwrap_or_else(|| "Never".into()),
+            ListCol::Created => entry
+                .meta
+                .created
+                .map(clock::date_label)
+                .unwrap_or_else(dash),
+            ListCol::Size => crate::settings::human_bytes(entry.size),
+        }
+    }
+
+    /// A card's second line: a kit's published version, the page count once the
+    /// index has read the document (drafts counted), then the age —
+    /// *v3 · 2 pages · 6d ago*. Until it is read, the version and the age alone.
+    fn card_line(&self, entry: &Entry) -> String {
+        let mut parts = Vec::new();
+        if is_kit(&self.library, entry)
+            && let Some(v) = entry
+                .meta
+                .kit
+                .as_ref()
+                .map(|k| k.version)
+                .filter(|v| *v > 0)
+        {
+            parts.push(format!("v{v}"));
+        }
+        if let Some(facts) = self.index.get(entry) {
+            parts.push(ui::count(facts.pages.len(), "page"));
+        }
+        parts.push(clock::relative_label(clock::since(entry.modified)));
+        parts.join(" · ")
     }
 
     /// Draw the inline rename field, if this is the document being renamed.
@@ -8787,6 +8911,62 @@ mod tests {
             Some(paths[0].as_path()),
             "and a tie goes to the name, whatever order the folder lists them in"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A narrow list drops *Created*, then *Opened*, rather than eliding every
+    /// column, and *Name* keeps at least its floor while it can.
+    /// flip: `list_columns` dropping *Opened* first → fails at "Created goes first".
+    #[test]
+    fn a_narrow_list_drops_created_then_opened() {
+        let cols = |w: f32| {
+            list_columns(w)
+                .into_iter()
+                .map(|(c, _)| c)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(cols(1200.0).len(), 7, "every column with room");
+        let mid = cols(760.0);
+        assert!(
+            !mid.contains(&ListCol::Created) && mid.contains(&ListCol::Opened),
+            "Created goes first"
+        );
+        let narrow = cols(600.0);
+        assert!(!narrow.contains(&ListCol::Opened) && narrow.contains(&ListCol::Pages));
+        for w in [600.0, 760.0, 1200.0] {
+            let name = list_columns(w)[0].1;
+            assert!(name >= LIST_NAME_MIN_W, "{w}: {name}");
+        }
+    }
+
+    /// A card's second line counts its pages once the index has read it, a dash
+    /// in the list's *Pages* until then, and *Opened* says *Never* for a document
+    /// not opened here.
+    /// flip: `card_line` leaving out the page count → fails at "1 page".
+    #[test]
+    fn a_card_counts_its_pages_once_the_index_has_read_it() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "card-line");
+        let mut doc = crate::library::index::tests::doc();
+        store::file_document(&root, None, "Wallet", &mut doc).unwrap();
+        app.library.refresh();
+        let entry = app.library.entries[0].clone();
+        assert_eq!(
+            app.list_cell(&entry, ListCol::Pages),
+            "—",
+            "a dash until read"
+        );
+        assert_eq!(app.list_cell(&entry, ListCol::Opened), "Never");
+        app.dash.nav = Nav::All;
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        assert!(
+            app.card_line(&entry).starts_with("1 page · "),
+            "1 page: {}",
+            app.card_line(&entry)
+        );
+        assert_eq!(app.list_cell(&entry, ListCol::Pages), "1");
         let _ = std::fs::remove_dir_all(&root);
     }
 
