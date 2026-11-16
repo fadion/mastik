@@ -846,6 +846,9 @@ impl MastikApp {
             // Written, not typed: the completion list does not open on it.
             s.suggest.seen = s.buffer.clone();
             put_selection(ctx, code_id, &s.buffer, sel);
+            // Typed for the help, though: an auto-paired `(` or `{` opens the
+            // call's hint, and the check waits for the rest.
+            s.help.edited(ctx);
             self.store_buffer();
         }
         typed
@@ -4333,6 +4336,34 @@ mod tests {
         press(&ctx, &mut app, egui::Key::Escape);
         press(&ctx, &mut app, egui::Key::Escape);
         assert!(!up(&ctx), "Escape hid it");
+    }
+
+    /// A lone `(` typed after a pause, which the editing keys pair with its
+    /// close, opens the call's hint as a typed one does.
+    /// flip: `script_keys` not telling the help it edited → fails at "the
+    /// paired bracket opens it".
+    #[test]
+    fn an_auto_paired_bracket_opens_the_hint() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = typing_at_end("");
+        let hint = egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("script-editor").with("hint"),
+        );
+        type_code(&ctx, &mut app, "align");
+        press(&ctx, &mut app, egui::Key::Escape);
+        for _ in 0..5 {
+            pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        type_code(&ctx, &mut app, "(");
+        assert_eq!(
+            app.scripts.buffer, "align()",
+            "fixture: the close was paired"
+        );
+        assert!(
+            ctx.memory(|m| m.areas().is_visible(&hint)),
+            "the paired bracket opens it"
+        );
     }
 
     /// `F12` selects the declaration of the name at the caret.
