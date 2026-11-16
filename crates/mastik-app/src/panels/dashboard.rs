@@ -102,7 +102,7 @@ fn continue_span(width: f32) -> usize {
     (((CONTINUE_MAX_W + GRID_GAP) / (card + GRID_GAP)).floor() as usize).clamp(1, cols)
 }
 /// The search field's width.
-const SEARCH_W: f32 = 340.0;
+const SEARCH_W: f32 = 440.0;
 
 /// The narrowest the search field is squeezed to before it is allowed to
 /// overlap — wide enough for its glyph and a few letters of a query.
@@ -5968,10 +5968,16 @@ fn page_bar(p: &egui::Painter, thumb: egui::Rect, pages: usize, on: usize) {
     }
 }
 
+/// The air a [`day_label`] adds above itself, past the gap the rows before it
+/// end in, so a heading reads as starting a group rather than ending the last.
+const DAY_LABEL_TOP: f32 = 5.0;
+
 /// A day heading over a date sort's group: a [`section_label`]'s eyebrow, and
 /// beside *Today* and *Yesterday* their date, dim, as the version history's day
-/// headings carry it.
+/// headings carry it. It keeps [`DAY_LABEL_TOP`] clear above itself, in the grid
+/// and the list alike.
 fn day_label(ui: &mut egui::Ui, bucket: clock::DayBucket) {
+    ui.add_space(DAY_LABEL_TOP);
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::empty());
     let p = ui.painter();
