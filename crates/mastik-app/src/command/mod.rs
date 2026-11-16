@@ -213,8 +213,9 @@ pub(crate) struct Bar {
     draft: Option<String>,
     /// The last error, with the text it was for: an edit clears it.
     error: Option<(String, mastik_vm::VmError)>,
-    /// The live read: the text and revision it was taken for, and its value.
-    read: Option<(String, u64, Option<ReadValue>)>,
+    /// The live read: the text, revision and subject it was taken for, and its
+    /// value.
+    read: Option<(String, u64, Vec<NodeId>, Option<ReadValue>)>,
     /// The log rows picked for *Copy as script*: first and last, by their place
     /// in the log (`log::Entry::seq`), which an edit logged meanwhile leaves alone.
     picked: Option<(u64, u64)>,
@@ -684,8 +685,13 @@ impl MastikApp {
                     if let Some(v) = outcome.copied {
                         ctx.copy_text(v);
                     }
-                    let value = outcome.value;
-                    let result = value.map(|v| format!("= {v}")).unwrap_or_default();
+                    // A read that prints (`print(.x)`) has no value: its last
+                    // printed line is the result, as a write's is.
+                    let result = outcome
+                        .value
+                        .map(|v| format!("= {v}"))
+                        .or_else(|| outcome.printed.last().cloned())
+                        .unwrap_or_default();
                     self.session.command_log.push(log::Entry::typed(
                         line,
                         parsed.luau,
@@ -948,15 +954,17 @@ impl MastikApp {
         }
     }
 
-    /// The live read for the bar's text: taken again when the text or the
-    /// document moved, never for a write.
+    /// The live read for the bar's text: taken again when the text, the
+    /// document or the line's subject (a selection change) moved, never for a
+    /// write.
     fn bar_read(&mut self, bar: &mut Bar) {
         let text = bar.text.trim().to_owned();
         let rev = self.session.revision();
+        let selection = self.line_subject(&text);
         if bar
             .read
             .as_ref()
-            .is_some_and(|(t, r, _)| *t == text && *r == rev)
+            .is_some_and(|(t, r, s, _)| *t == text && *r == rev && *s == selection)
         {
             return;
         }
@@ -964,7 +972,6 @@ impl MastikApp {
             && ai_request(&text).is_none()
             && mastik_vm::desugar(&text).kind == mastik_vm::LineKind::Read)
             .then(|| {
-                let selection = self.line_subject(&text);
                 let labels = self.bar_labels();
                 let env = mastik_vm::Env {
                     selection: &selection,
@@ -982,7 +989,7 @@ impl MastikApp {
                     .map(|(shown, copied)| ReadValue { shown, copied })
             })
             .flatten();
-        bar.read = Some((text, rev, value));
+        bar.read = Some((text, rev, selection, value));
     }
 
     /// Draw the open bar and act on this frame's keys.
@@ -1111,6 +1118,11 @@ impl MastikApp {
             } else {
                 bar = Bar::default();
             }
+        }
+        // The menu belongs to the log's rows, which a typed line replaces: typing
+        // closes it, so Enter runs the line.
+        if bar.log_menu.is_some() && !bar.text.trim().is_empty() && bar.recalled.is_none() {
+            bar.log_menu = None;
         }
         // While the log's menu is open, the arrows and Enter are its own, as a
         // context menu's: nothing is recalled or run behind it.
@@ -1367,7 +1379,7 @@ impl MastikApp {
                 let (value, copied) = bar
                     .read
                     .as_ref()
-                    .and_then(|(_, _, v)| v.clone())
+                    .and_then(|(_, _, _, v)| v.clone())
                     .map(|v| (v.shown, v.copied))
                     .unzip();
                 if let Some(pick) = head(ui, picking, &path, subject_glyph, &subject) {
@@ -2157,6 +2169,16 @@ pub(crate) mod tests {
         events: Vec<egui::Event>,
         modifiers: egui::Modifiers,
     ) {
+        let _ = pass_out(ctx, app, events, modifiers);
+    }
+
+    /// [`pass`], answering the frame's output.
+    fn pass_out(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> egui::FullOutput {
         let mut frame = eframe::Frame::_new_kittest();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -2167,7 +2189,7 @@ pub(crate) mod tests {
             events,
             ..Default::default()
         };
-        let _ = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+        ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame))
     }
 
     pub(crate) fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
@@ -2364,7 +2386,7 @@ pub(crate) mod tests {
         let (ctx, mut app, _) = typed(".width * 2");
         let value = app.command_bar.as_ref().and_then(|b| b.read.clone());
         assert_eq!(
-            value.and_then(|r| r.2).map(|v| v.shown).as_deref(),
+            value.and_then(|r| r.3).map(|v| v.shown).as_deref(),
             Some("20"),
             "the live value"
         );
@@ -2373,6 +2395,65 @@ pub(crate) mod tests {
         assert_eq!(app.session.history.undo_depth(), depth);
         let last = app.session.command_log.entries().last().unwrap();
         assert_eq!(last.result, "= 20");
+    }
+
+    /// The live read follows the selection: another layer selected under the
+    /// bar shows that layer's value, which Enter then copies.
+    /// flip: `bar_read`'s cache keyed without the subject → fails at "the
+    /// second layer's".
+    #[test]
+    fn the_live_read_follows_the_selection() {
+        let (ctx, mut app, card) = typed(".width");
+        let other = add_rect(&mut app);
+        app.session.selection.set_one(other);
+        assert!(app.run_bar_line(&ctx, ".width = 50").is_none());
+        app.session.selection.set_one(card);
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        let shown = |app: &MastikApp| {
+            let read = app.command_bar.as_ref().and_then(|b| b.read.clone());
+            read.and_then(|r| r.3).map(|v| v.shown)
+        };
+        assert_eq!(shown(&app).as_deref(), Some("10"), "fixture: the first's");
+        app.session.selection.set_one(other);
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        assert_eq!(shown(&app).as_deref(), Some("50"), "the second layer's");
+    }
+
+    /// Enter on a read that prints logs what it printed.
+    /// flip: the read arm building its result from the value alone → fails at
+    /// "what it printed".
+    #[test]
+    fn enter_on_a_read_that_prints_logs_the_print() {
+        let (ctx, mut app, _) = typed("print(.width)");
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        let last = app.session.command_log.entries().last().unwrap();
+        assert_eq!(last.result, "10", "what it printed");
+    }
+
+    /// Enter on a read of a string copies it without Luau's quotes, as the
+    /// footer says it will.
+    /// flip: `run_bar_line` copying the shown value → fails at "no quotes".
+    #[test]
+    fn enter_copies_a_strings_text_without_its_quotes() {
+        let (ctx, mut app, _) = typed(".name");
+        let read = app.command_bar.as_ref().and_then(|b| b.read.clone());
+        let value = read
+            .and_then(|r| r.3)
+            .expect("fixture: the read shows a value");
+        assert_eq!(value.shown, "\"Card\"", "fixture: shown as Luau writes it");
+        assert_eq!(value.copied, "Card", "the footer's Enter copies Card");
+        let out = pass_out(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        let copied: Vec<&egui::OutputCommand> = out
+            .platform_output
+            .commands
+            .iter()
+            .filter(|c| matches!(c, egui::OutputCommand::CopyText(_)))
+            .collect();
+        assert_eq!(
+            copied,
+            [&egui::OutputCommand::CopyText("Card".into())],
+            "no quotes"
+        );
     }
 
     /// A misspelt property is an error with a fix, and Tab writes the fix.
@@ -2454,11 +2535,49 @@ pub(crate) mod tests {
     #[test]
     fn escape_closes_the_log_menu_first() {
         let (ctx, mut app, _) = typed(".x");
-        app.command_bar.as_mut().unwrap().log_menu = Some(egui::pos2(400.0, 400.0));
+        let bar = app.command_bar.as_mut().unwrap();
+        // A recalled line keeps the log's rows, and so their menu.
+        bar.recalled = Some(".x".into());
+        bar.log_menu = Some(egui::pos2(400.0, 400.0));
         pass(&ctx, &mut app, vec![key(egui::Key::Escape, NONE)], NONE);
         let bar = app.command_bar.as_ref().expect("the bar stays open");
         assert_eq!(bar.text, ".x", "the line stays");
         assert!(bar.log_menu.is_none(), "the menu closed");
+    }
+
+    /// A line typed while the log's menu is open closes the menu, so Enter
+    /// runs it.
+    /// flip: `command_bar_ui` keeping the menu over a typed line → fails at
+    /// "the line ran".
+    #[test]
+    fn typing_over_the_log_menu_closes_it() {
+        let (ctx, mut app, card) = typed("");
+        app.session.command_log.push(log::Entry::typed(
+            ".y = 1",
+            "sel.y = 1".into(),
+            String::new(),
+            false,
+            None,
+        ));
+        let newest = app.session.command_log.entries().last().unwrap().seq();
+        let bar = app.command_bar.as_mut().unwrap();
+        bar.picked = Some((newest, newest));
+        bar.log_menu = Some(egui::pos2(400.0, 400.0));
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        assert!(
+            app.command_bar.as_ref().unwrap().log_menu.is_some(),
+            "fixture: the menu is open"
+        );
+        pass(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text(".x = 5".into())],
+            NONE,
+        );
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        assert_eq!(left(&app, card), 5.0, "the line ran");
+        assert!(app.command_bar.as_ref().unwrap().log_menu.is_none());
     }
 
     /// `` ` `` picks unless the caret is in a string, where it is Luau's quote:
@@ -3033,6 +3152,77 @@ pub(crate) mod tests {
         pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
         assert_eq!(left(&app, card), x, "nothing ran");
         assert_eq!(app.command_bar.as_ref().map(|b| b.text.as_str()), Some(""));
+    }
+
+    /// `Enter` on a reply that proposed an edit applies it as a step and clears
+    /// the line.
+    /// flip: `bar_ai_enter`'s proposals arm applying nothing → fails at "applied".
+    #[test]
+    fn enter_applies_an_ai_replys_proposal() {
+        use crate::assistant::thread::{Part, ToolRow, ToolState};
+        let proposed = ToolRow {
+            id: "1".into(),
+            name: "propose_edit".into(),
+            arg: String::new(),
+            state: ToolState::Done,
+            result: String::new(),
+            proposal: Some(1),
+        };
+        let (ctx, mut app, card) = asked_with(
+            "/ai move it right",
+            vec![Part::Tool(proposed), Part::Text("Renames it.".into())],
+        );
+        assert!(
+            matches!(
+                &app.command_bar.as_ref().unwrap().ai,
+                Some(Ai::Replied { reply: BarReply::Proposals { ids, .. }, .. }) if ids == &[1]
+            ),
+            "fixture: the edit is proposed"
+        );
+        app.assistant.held.push(crate::mcp::propose::Proposal {
+            id: 1,
+            key: None,
+            document: std::path::PathBuf::new(),
+            title: "Rename the card".into(),
+            changes: vec!["Renamed Card to Hero".into()],
+            calls: vec![(
+                "set_name".into(),
+                serde_json::json!({ "node": card.to_wire(), "name": "Hero" }),
+            )],
+            rev: app.session.revision(),
+            writes: vec![card],
+            before: vec![app.session.doc.get(card).unwrap().clone()],
+            client: "Claude".into(),
+        });
+        let depth = app.session.history.undo_depth();
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        assert_eq!(app.session.doc.get(card).unwrap().name(), "Hero", "applied");
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "as one step");
+        assert_eq!(app.command_bar.as_ref().map(|b| b.text.as_str()), Some(""));
+    }
+
+    /// `Enter` again while an `/ai` request is on its way neither drops it nor
+    /// asks twice.
+    /// flip: `bar_ai_enter` dropping a request on its way (`Some(_) => {}`) →
+    /// fails at "still on its way".
+    #[test]
+    fn enter_while_a_request_is_on_its_way_keeps_it() {
+        let h = mastik_ai::Harness::Claude;
+        let (ctx, mut app, _) = typed("/ai move it right");
+        app.prefs.assistant.agent = h.key().into();
+        app.session.path = Some(std::env::temp_dir().join("ai-twice.mastik"));
+        app.hold_lookup(h, None);
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        let rows = app.session.command_log.entries().len();
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);
+        pass(&ctx, &mut app, Vec::new(), NONE);
+        let bar = app.command_bar.as_ref().unwrap();
+        assert!(
+            matches!(&bar.ai, Some(Ai::Waiting { request, .. }) if request == "move it right"),
+            "still on its way"
+        );
+        assert_eq!(bar.text, "/ai move it right", "the line stays");
+        assert_eq!(app.session.command_log.entries().len(), rows, "asked once");
     }
 
     /// One step on the selection running `script`, named `label`, its origin
