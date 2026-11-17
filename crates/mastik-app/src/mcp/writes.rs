@@ -325,6 +325,10 @@ pub(super) fn commit(
     applied.map_err(|e| match e {
         crate::session::CommitError::Op(e) => format!("Refused: {e}"),
         crate::session::CommitError::ReadOnly => READ_ONLY.to_owned(),
+        crate::session::CommitError::Held => {
+            "The document is held while a script the person started runs; try again once it ends."
+                .to_owned()
+        }
     })
 }
 

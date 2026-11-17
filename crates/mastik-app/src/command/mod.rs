@@ -11,6 +11,7 @@ pub(crate) mod code_keys;
 pub(crate) mod editor;
 pub(crate) mod host;
 pub(crate) mod log;
+pub(crate) mod running;
 pub(crate) mod script_help;
 pub(crate) mod suggest;
 
@@ -656,92 +657,124 @@ impl MastikApp {
         completion
     }
 
-    /// Run `line`: a read copies its value, a write commits one undo step named
-    /// after its verb or *Edit*. Answers the error that leaves the line in the
-    /// field, or `None` when it ran.
-    pub(crate) fn run_bar_line(
-        &mut self,
-        ctx: &egui::Context,
-        line: &str,
-    ) -> Option<mastik_vm::VmError> {
+    /// Run `line` on a worker (`running`): a read copies its value, a write
+    /// commits one undo step named after its verb or *Edit*. Enter runs a read
+    /// under the run budget through a read-only host: the live read's budget is
+    /// for every keystroke, not for Enter. It lands at once when it ends quickly
+    /// ([`Self::bar_line_landed`], [`Self::bar_line_failed`]).
+    pub(crate) fn run_bar_line(&mut self, line: &str) {
         let parsed = mastik_vm::desugar(line);
         let selection = self.line_subject(line);
         let labels = self.bar_labels();
-        let env = mastik_vm::Env {
-            selection: &selection,
-            labels: &labels,
-            params: Default::default(),
+        let read = parsed.kind == mastik_vm::LineKind::Read;
+        let after = match read {
+            true => running::After::Read {
+                line: line.to_owned(),
+                luau: parsed.luau,
+            },
+            false => running::After::Bar {
+                line: line.to_owned(),
+                luau: parsed.luau,
+            },
         };
-        if parsed.kind == mastik_vm::LineKind::Read {
-            let mut h = host::SessionHost {
-                s: &mut self.session,
-                read_only: true,
-            };
-            // Enter runs a read under the run budget, through the read-only host:
-            // the live read's budget is for every keystroke, not for Enter.
-            return match mastik_vm::run_line(&mut h, &env, line) {
-                Ok(outcome) => {
-                    // Copied as a field takes it: a string without its quotes.
-                    if let Some(v) = outcome.copied {
-                        ctx.copy_text(v);
-                    }
-                    // A read that prints (`print(.x)`) has no value: its last
-                    // printed line is the result, as a write's is.
-                    let result = outcome
-                        .value
-                        .map(|v| format!("= {v}"))
-                        .or_else(|| outcome.printed.last().cloned())
-                        .unwrap_or_default();
-                    self.session.command_log.push(log::Entry::typed(
-                        line,
-                        parsed.luau,
-                        result,
-                        false,
-                        None,
-                    ));
-                    None
-                }
-                Err(e) => Some(e),
-            };
-        }
         let label = verb_named(line).unwrap_or("Edit");
-        let ran = host::run_as_step(&mut self.session, label, icon::TERMINAL_WINDOW, |h| {
-            mastik_vm::run_line(h, &env, line)
-        });
-        match ran {
-            Ok((outcome, counts, serial)) => {
-                let result = outcome
-                    .printed
-                    .last()
-                    .cloned()
-                    .or_else(|| counts.said())
-                    .unwrap_or_else(|| "Nothing changed".into());
-                if let Some(ids) = outcome.selection {
-                    self.session.selection.set(ids);
-                }
-                self.session.command_log.push(log::Entry::typed(
-                    line,
-                    parsed.luau,
-                    result,
-                    false,
-                    serial,
-                ));
-                None
-            }
-            Err(e) => Some(e),
+        self.begin_run(
+            "the line".into(),
+            running::Code::Line(line.to_owned()),
+            read,
+            selection,
+            labels,
+            Default::default(),
+            label,
+            icon::TERMINAL_WINDOW,
+            after,
+        );
+    }
+
+    /// The open bar, when it is still on `line`: a landing reports there.
+    fn bar_on(&mut self, line: &str) -> Option<&mut Bar> {
+        self.command_bar
+            .as_mut()
+            .filter(|bar| bar.text.trim() == line && bar.ai.is_none())
+    }
+
+    /// A bar line's run landed: logged with its result, a read's value copied,
+    /// what it made selected, and the field cleared if it still holds the line.
+    pub(crate) fn bar_line_landed(
+        &mut self,
+        line: &str,
+        luau: String,
+        read: bool,
+        outcome: mastik_vm::Outcome,
+        counts: host::Counts,
+        serial: Option<u64>,
+    ) {
+        let result = match (read, outcome.value.clone()) {
+            // A read that prints (`print(.x)`) has no value: its last printed
+            // line is the result, as a write's is.
+            (true, Some(v)) => format!("= {v}"),
+            _ => outcome
+                .printed
+                .last()
+                .cloned()
+                .or_else(|| counts.said())
+                .unwrap_or_else(|| match read {
+                    true => String::new(),
+                    false => "Nothing changed".into(),
+                }),
+        };
+        // Copied as a field takes it: a string without its quotes.
+        if read && let Some(v) = outcome.copied {
+            self.egui_ctx.copy_text(v);
         }
+        if let Some(ids) = outcome.selection {
+            self.session.selection.set(ids);
+        }
+        self.session
+            .command_log
+            .push(log::Entry::typed(line, luau, result, false, serial));
+        if let Some(bar) = self.bar_on(line) {
+            *bar = Bar::default();
+        }
+    }
+
+    /// A bar line's run changed nothing: the error under the field when it
+    /// still holds the line, else on the status line.
+    pub(crate) fn bar_line_failed(&mut self, line: &str, mut e: mastik_vm::VmError) {
+        let Some(bar) = self.bar_on(line) else {
+            let said = match e.kind {
+                mastik_vm::ErrorKind::Stopped => "The line stopped — nothing changed".to_owned(),
+                _ => e.message,
+            };
+            self.session.fail(said);
+            return;
+        };
+        // The error's spans count from the trimmed line; the field holds the
+        // spaces before it.
+        let lead = bar.text.len() - bar.text.trim_start().len();
+        let shift = |r: &mut std::ops::Range<usize>| {
+            *r = r.start + lead..r.end + lead;
+        };
+        if let Some(span) = e.span.as_mut() {
+            shift(span);
+        }
+        if let Some((r, _)) = e.fix.as_mut() {
+            shift(r);
+        }
+        if e.kind == mastik_vm::ErrorKind::Stopped {
+            e.message = "Stopped — nothing changed".into();
+        }
+        bar.error = Some((bar.text.clone(), e));
     }
 
     /// `.` in Pick: run the last line in the log again on the selection, a line
     /// typed or one an edit made elsewhere was written as (a drag's `.x += 24`).
-    pub(crate) fn repeat_bar_line(&mut self, ctx: &egui::Context) {
+    pub(crate) fn repeat_bar_line(&mut self) {
         let Some(line) = self.session.command_log.last_line().map(str::to_owned) else {
             self.session.info("No line to repeat yet");
             return;
         };
-        if let Some(e) = self.run_bar_line(ctx, &line) {
-            self.session.fail(e.message);
-        }
+        self.run_bar_line(&line);
     }
 
     /// An `/ai` line's footer: where its request stands, what the keys do with
@@ -857,20 +890,20 @@ impl MastikApp {
         let Some(request) = ai_request(&bar.text).map(str::to_owned) else {
             return;
         };
+        // The script runs with the bar back in its place, where its landing
+        // reports: it stays proposed until the run lands.
+        if let Some(Ai::Replied {
+            request,
+            reply: BarReply::Script { script, .. },
+        }) = &bar.ai
+        {
+            let (request, script) = (request.clone(), script.clone());
+            self.command_bar = Some(std::mem::take(bar));
+            self.run_ai_script(&request, &script);
+            *bar = self.command_bar.take().unwrap_or_default();
+            return;
+        }
         match bar.ai.take() {
-            Some(Ai::Replied {
-                request,
-                reply: BarReply::Script { script, said },
-            }) => match self.run_ai_script(&request, &script) {
-                None => *bar = Bar::default(),
-                Some(e) => {
-                    bar.error = Some((bar.text.clone(), e));
-                    bar.ai = Some(Ai::Replied {
-                        request,
-                        reply: BarReply::Script { script, said },
-                    });
-                }
-            },
             Some(Ai::Replied {
                 reply: BarReply::Proposals { ids, .. },
                 ..
@@ -896,15 +929,10 @@ impl MastikApp {
 
     /// Run an `/ai` reply's script on the selection as one undo step named by
     /// the request, marked as the assistant's: the person runs it, the agent
-    /// wrote it. The bar's labels read in it as in a line. `None` when it ran.
-    fn run_ai_script(&mut self, request: &str, script: &str) -> Option<mastik_vm::VmError> {
+    /// wrote it. The bar's labels read in it as in a line.
+    fn run_ai_script(&mut self, request: &str, script: &str) {
         let selection = self.session.selection.ids().to_vec();
         let labels = self.bar_labels();
-        let env = mastik_vm::Env {
-            selection: &selection,
-            labels: &labels,
-            params: Default::default(),
-        };
         let label: String = match request.chars().count() > AI_LABEL_CHARS {
             true => format!(
                 "{}…",
@@ -917,40 +945,66 @@ impl MastikApp {
             .assistant
             .harness()
             .map_or_else(|| "the assistant".to_owned(), |h| h.speaker().to_owned());
-        let ran = host::run_as_step(&mut self.session, &label, icon::SPARKLE, |h| {
-            mastik_vm::run_script(h, &env, script)
-        });
-        match ran {
-            Ok((outcome, counts, serial)) => {
-                if serial.is_some()
-                    && let Some(note) = self.session.history.current_note_mut()
-                {
-                    note.origin = mastik_core::Origin::Mcp {
-                        client: speaker,
-                        tool: "/ai".into(),
-                    };
-                }
-                if let Some(ids) = outcome.selection {
-                    self.session.selection.set(ids);
-                }
-                let result = outcome
-                    .printed
-                    .last()
-                    .cloned()
-                    .or_else(|| counts.said())
-                    .unwrap_or_else(|| "Nothing changed".into());
-                self.session
-                    .command_log
-                    .ai_ran(request, script.to_owned(), result, serial);
-                None
-            }
-            // The script's place is not the field's: its span would squiggle
-            // the request.
-            Err(mut e) => {
-                e.span = None;
-                e.fix = None;
-                Some(e)
-            }
+        self.begin_run(
+            format!("{speaker}'s script"),
+            running::Code::Script(script.to_owned()),
+            false,
+            selection,
+            labels,
+            Default::default(),
+            &label,
+            icon::SPARKLE,
+            running::After::Ai {
+                request: request.to_owned(),
+                script: script.to_owned(),
+                speaker,
+            },
+        );
+    }
+
+    /// An `/ai` script's run landed, its step already marked as the agent's
+    /// (`running`): logged on the request's entry, what it made selected, and
+    /// the bar cleared if it still shows the reply.
+    pub(crate) fn ai_script_landed(
+        &mut self,
+        request: &str,
+        script: String,
+        outcome: mastik_vm::Outcome,
+        counts: host::Counts,
+        serial: Option<u64>,
+    ) {
+        if let Some(ids) = outcome.selection {
+            self.session.selection.set(ids);
+        }
+        let result = outcome
+            .printed
+            .last()
+            .cloned()
+            .or_else(|| counts.said())
+            .unwrap_or_else(|| "Nothing changed".into());
+        self.session
+            .command_log
+            .ai_ran(request, script, result, serial);
+        if let Some(bar) = self.command_bar.as_mut()
+            && matches!(&bar.ai, Some(Ai::Replied { request: r, .. }) if r == request)
+        {
+            *bar = Bar::default();
+        }
+    }
+
+    /// An `/ai` script's run changed nothing: the error under the bar's field,
+    /// the script still proposed, else on the status line.
+    pub(crate) fn ai_script_failed(&mut self, mut e: mastik_vm::VmError) {
+        // The script's place is not the field's: its span would squiggle the
+        // request.
+        e.span = None;
+        e.fix = None;
+        if e.kind == mastik_vm::ErrorKind::Stopped {
+            e.message = "Stopped — nothing changed".into();
+        }
+        match self.command_bar.as_mut() {
+            Some(bar) if bar.ai.is_some() => bar.error = Some((bar.text.clone(), e)),
+            _ => self.session.fail(e.message),
         }
     }
 
@@ -1263,27 +1317,13 @@ impl MastikApp {
         } else if keys.enter && !accepted {
             bar.suggest.state = Suggest::Off;
             let line = bar.text.trim().to_owned();
-            // The error's spans count from the trimmed line; the field holds the
-            // spaces before it.
-            let lead = bar.text.len() - bar.text.trim_start().len();
+            // While a run is in flight, `begin_run` refuses on the status line.
             if !line.is_empty() {
-                match self.run_bar_line(ctx, &line) {
-                    None => {
-                        bar = Bar::default();
-                    }
-                    Some(mut e) => {
-                        let shift = |r: &mut std::ops::Range<usize>| {
-                            *r = r.start + lead..r.end + lead;
-                        };
-                        if let Some(span) = e.span.as_mut() {
-                            shift(span);
-                        }
-                        if let Some((r, _)) = e.fix.as_mut() {
-                            shift(r);
-                        }
-                        bar.error = Some((bar.text.clone(), e));
-                    }
-                }
+                // Run with the bar back in its place, where the landing reports:
+                // the field clears, or takes the error.
+                self.command_bar = Some(std::mem::take(&mut bar));
+                self.run_bar_line(&line);
+                bar = self.command_bar.take().unwrap_or_default();
                 ctx.request_repaint();
             }
         }
@@ -1323,6 +1363,16 @@ impl MastikApp {
         let mut focus_click: Option<bool> = None;
         let parsed = mastik_vm::desugar(bar.text.trim());
         let ai_footer = ai_line.then(|| self.bar_ai_footer(&bar));
+        // A run the bar started, in flight: the seconds it has taken.
+        let running = self.session.script_run.as_ref().and_then(|r| {
+            matches!(
+                r.after,
+                running::After::Bar { .. }
+                    | running::After::Read { .. }
+                    | running::After::Ai { .. }
+            )
+            .then(|| format!("{} s", r.started.elapsed().as_secs()))
+        });
         let mut clicked_row: Option<usize> = None;
         let mut hovered_row: Option<usize> = None;
         let row_layers = bar
@@ -1397,6 +1447,10 @@ impl MastikApp {
                     _ if picking => {
                         let (left, _) = hint(pick_hint);
                         footer(ui, &left, false, "` types");
+                    }
+                    _ if running.is_some() => {
+                        let secs = running.as_deref().unwrap_or_default();
+                        footer_marked(ui, "Running · Esc stops it", false, secs, Mark::Working);
                     }
                     Some(e) => error_line(ui, e),
                     None if ai_footer.is_some() => {
@@ -2021,8 +2075,8 @@ fn footer(ui: &mut egui::Ui, left: &str, code: bool, right: &str) {
     footer_marked(ui, left, code, right, Mark::None);
 }
 
-/// What leads an `/ai` footer: nothing, the spinner while the request is on its
-/// way, or the proposal's sparkle in amber while it waits to be applied.
+/// What leads a footer: nothing, the spinner while an `/ai` request or a run is
+/// on its way, or the proposal's sparkle in amber while it waits to be applied.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Mark {
     None,
@@ -2161,6 +2215,19 @@ fn complete_row(
 pub(crate) mod tests {
     use super::*;
     use crate::palette::tests::add_rect;
+
+    /// Run bar `line` as Enter does, the bar open on it; the error it left in
+    /// the field, `None` when it ran.
+    pub(crate) fn ran_line(app: &mut MastikApp, line: &str) -> Option<mastik_vm::VmError> {
+        let held = app.command_bar.replace(Bar {
+            text: line.to_owned(),
+            ..Default::default()
+        });
+        app.run_bar_line(line);
+        let error = app.command_bar.take().and_then(|b| b.error).map(|(_, e)| e);
+        app.command_bar = held;
+        error
+    }
 
     /// One frame of the whole app, with these events and modifiers held.
     pub(crate) fn pass(
@@ -2406,7 +2473,7 @@ pub(crate) mod tests {
         let (ctx, mut app, card) = typed(".width");
         let other = add_rect(&mut app);
         app.session.selection.set_one(other);
-        assert!(app.run_bar_line(&ctx, ".width = 50").is_none());
+        assert!(ran_line(&mut app, ".width = 50").is_none());
         app.session.selection.set_one(card);
         pass(&ctx, &mut app, Vec::new(), NONE);
         let shown = |app: &MastikApp| {

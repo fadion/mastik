@@ -45,6 +45,15 @@ impl<T: Send + 'static> Job<T> {
         self.rx.recv().ok()
     }
 
+    /// [`Self::poll`], waiting up to `limit` for the answer first.
+    pub(crate) fn wait_for(&self, limit: std::time::Duration) -> Result<Option<T>, ()> {
+        match self.rx.recv_timeout(limit) {
+            Ok(v) => Ok(Some(v)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(()),
+        }
+    }
+
     /// A job that has already answered `value` (tests only), for a test that
     /// waits on the worker but leaves the landing to a frame.
     #[cfg(test)]

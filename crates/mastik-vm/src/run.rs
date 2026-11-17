@@ -6,6 +6,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use mastik_core::NodeId;
@@ -26,10 +28,20 @@ pub struct Budget {
     pub memory: usize,
 }
 
-/// A run's budget: a line run with Enter, or a script.
+/// The budget of a run that holds the thread it is called on, which waits for it:
+/// an agent's `run_script`, answered in the frame.
 pub const RUN_BUDGET: Budget = Budget {
     time: Duration::from_secs(1),
     steps: 200_000_000,
+    memory: 64 << 20,
+};
+
+/// The budget of a run on a worker, which a stop flag can end at any step: a
+/// line run with Enter, a script. Only a runaway the person leaves running
+/// meets it, so it is the held budget thirty times over, memory aside.
+pub const WORKER_BUDGET: Budget = Budget {
+    time: Duration::from_secs(30),
+    steps: 6_000_000_000,
     memory: 64 << 20,
 };
 
@@ -694,6 +706,22 @@ fn out_of_budget(message: String) -> mlua::Error {
     })
 }
 
+/// Whether `stop` is set.
+fn stopped(stop: Option<&AtomicBool>) -> bool {
+    stop.is_some_and(|s| s.load(Ordering::Relaxed))
+}
+
+/// The error a run stopped from outside ends with.
+fn stopped_error() -> mlua::Error {
+    mlua::Error::external(Raised {
+        kind: ErrorKind::Stopped,
+        message: "Stopped".into(),
+        line: None,
+        ident: None,
+        fix: None,
+    })
+}
+
 /// What the host and the run accumulate.
 struct State<'h> {
     host: &'h mut dyn Host,
@@ -710,11 +738,17 @@ struct State<'h> {
     /// calls one Lua call makes for each layer, where no interrupt fires.
     start: Instant,
     time: Duration,
+    /// Set from outside to stop the run ([`crate::Leash::stop`]).
+    stop: Option<Arc<AtomicBool>>,
 }
 
 impl State<'_> {
-    /// Stop with the time budget's error once the run has spent it.
+    /// Stop with the time budget's error once the run has spent it, or as
+    /// stopped once the stop flag is set.
     fn on_time(&self) -> mlua::Result<()> {
+        if stopped(self.stop.as_deref()) {
+            return Err(stopped_error());
+        }
         if self.start.elapsed() > self.time {
             return Err(out_of_budget(format!(
                 "Stopped after {}",
@@ -849,7 +883,8 @@ fn duration(d: Duration) -> String {
 struct Percent(f64);
 
 /// Run `code` against the host, `original` being the text the caller passed
-/// (for placing an error), as an expression first when `expression` is set.
+/// (for placing an error), as an expression first when `expression` is set,
+/// under `leash` (a live read always under [`READ_BUDGET`]).
 pub(crate) fn run(
     host: &mut dyn Host,
     env: &crate::Env<'_>,
@@ -857,12 +892,14 @@ pub(crate) fn run(
     original: &str,
     mode: Mode,
     expression: bool,
+    leash: &crate::Leash,
 ) -> Result<Outcome, VmError> {
     let budget = if mode == Mode::Read {
         READ_BUDGET
     } else {
-        RUN_BUDGET
+        leash.budget
     };
+    let stop = leash.stop.clone();
     let lua = Lua::new();
     let fail = |e: mlua::Error| convert(e, original, budget);
     lua.sandbox(true).map_err(fail)?;
@@ -870,7 +907,13 @@ pub(crate) fn run(
     let hosted = Rc::new(Cell::new(false));
     let start = Instant::now();
     let after_host = hosted.clone();
+    let flag = stop.clone();
     lua.set_interrupt(move |_| {
+        // Read at every step: one relaxed load, so a stop lands at the next
+        // call or loop edge.
+        if stopped(flag.as_deref()) {
+            return Err(stopped_error());
+        }
         let n = steps.get() + 1;
         steps.set(n);
         let clock = n.is_multiple_of(256) || after_host.replace(false);
@@ -898,6 +941,7 @@ pub(crate) fn run(
         hosted,
         start,
         time: budget.time,
+        stop,
     });
     let outer = &state;
     let value = lua

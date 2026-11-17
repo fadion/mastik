@@ -73,6 +73,11 @@ impl mastik_vm::Host for SessionHost<'_> {
         applied.map_err(|e| match e {
             CommitError::Op(e) => e.to_string(),
             CommitError::ReadOnly => crate::compare::READ_ONLY.to_owned(),
+            CommitError::Held => self
+                .s
+                .script_run
+                .as_ref()
+                .map_or_else(|| e.to_string(), |r| super::running::held(&r.name)),
         })
     }
 }

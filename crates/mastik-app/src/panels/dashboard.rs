@@ -1134,7 +1134,10 @@ impl MastikApp {
             .frame(egui::Frame::NONE.fill(color::bg()).inner_margin(20))
             .show(ui, |ui| self.dashboard_body(ui, &mut act));
         self.library_drop_hint(ui, body.response.rect);
-        if self.status_bar(ui.ctx(), body.response.rect, true) {
+        // The library shows no run: a run's document is in a tab.
+        if self.status_bar(ui.ctx(), body.response.rect, true)
+            == Some(crate::app::StatusAct::CancelExports)
+        {
             self.cancel_exports();
         }
 

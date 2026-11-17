@@ -36,6 +36,7 @@ pub use help::{
     Hover, Problem, Severity, SigParam, Signature, check, declaration_at, hover_at, signature_at,
     syntax_error,
 };
+pub use run::{Budget, READ_BUDGET, RUN_BUDGET, WORKER_BUDGET};
 pub(crate) use sugar::invisible;
 pub use sugar::{Line, LineKind, Marks, desugar, marks, quoted};
 
@@ -91,6 +92,26 @@ pub enum ErrorKind {
     Error,
     /// A budget ran out: time, steps or memory.
     Budget,
+    /// The run's stop flag was set ([`Leash::stop`]): the person stopped it.
+    Stopped,
+}
+
+/// How much a run may spend, and the flag that stops it from another thread.
+#[derive(Clone, Debug)]
+pub struct Leash {
+    pub budget: Budget,
+    /// Read at every step: once set, the run ends as [`ErrorKind::Stopped`].
+    pub stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl Leash {
+    /// [`RUN_BUDGET`], with no stop: a run that holds its caller's thread.
+    pub fn held() -> Self {
+        Self {
+            budget: RUN_BUDGET,
+            stop: None,
+        }
+    }
 }
 
 /// A failed run: what went wrong and where, in the text the caller passed.
@@ -117,7 +138,7 @@ impl std::fmt::Display for VmError {
 
 impl std::error::Error for VmError {}
 
-/// Evaluate bar `line` for its value as it is typed, under [`run::READ_BUDGET`]: any
+/// Evaluate bar `line` for its value as it is typed, under [`READ_BUDGET`]: any
 /// attempt to change the document is an error, so nothing changes. `None` for nil.
 pub fn eval_read(host: &mut dyn Host, env: &Env, line: &str) -> Result<Option<String>, VmError> {
     read_line(host, env, line).map(|o| o.value)
@@ -127,20 +148,56 @@ pub fn eval_read(host: &mut dyn Host, env: &Env, line: &str) -> Result<Option<St
 /// copied.
 pub fn read_line(host: &mut dyn Host, env: &Env, line: &str) -> Result<Outcome, VmError> {
     let luau = desugar(line).luau;
-    run::run(host, env, &luau, line, run::Mode::Read, true)
+    run::run(
+        host,
+        env,
+        &luau,
+        line,
+        run::Mode::Read,
+        true,
+        &Leash::held(),
+    )
 }
 
-/// Run bar `line` through [`desugar`] under [`run::RUN_BUDGET`]; a read line's value
+/// Run bar `line` through [`desugar`] under [`RUN_BUDGET`]; a read line's value
 /// lands in [`Outcome::value`].
 pub fn run_line(host: &mut dyn Host, env: &Env, line: &str) -> Result<Outcome, VmError> {
-    let desugared = desugar(line);
-    let expression = desugared.kind == LineKind::Read;
-    run::run(host, env, &desugared.luau, line, run::Mode::Bar, expression)
+    run_line_leashed(host, env, line, &Leash::held())
 }
 
-/// Run a whole script as written, with no line sugar, under [`run::RUN_BUDGET`].
+/// [`run_line`] under `leash`.
+pub fn run_line_leashed(
+    host: &mut dyn Host,
+    env: &Env,
+    line: &str,
+    leash: &Leash,
+) -> Result<Outcome, VmError> {
+    let desugared = desugar(line);
+    let expression = desugared.kind == LineKind::Read;
+    run::run(
+        host,
+        env,
+        &desugared.luau,
+        line,
+        run::Mode::Bar,
+        expression,
+        leash,
+    )
+}
+
+/// Run a whole script as written, with no line sugar, under [`RUN_BUDGET`].
 pub fn run_script(host: &mut dyn Host, env: &Env, source: &str) -> Result<Outcome, VmError> {
-    run::run(host, env, source, source, run::Mode::Script, false)
+    run_script_leashed(host, env, source, &Leash::held())
+}
+
+/// [`run_script`] under `leash`.
+pub fn run_script_leashed(
+    host: &mut dyn Host,
+    env: &Env,
+    source: &str,
+    leash: &Leash,
+) -> Result<Outcome, VmError> {
+    run::run(host, env, source, source, run::Mode::Script, false, leash)
 }
 
 /// `n` as the bar shows it: a whole number bare, else at most three decimals

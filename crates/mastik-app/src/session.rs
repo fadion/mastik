@@ -108,6 +108,9 @@ pub enum CommitError {
     Op(OpError),
     /// The status line already says [`crate::compare::READ_ONLY`].
     ReadOnly,
+    /// A script is running against the document (`EditorSession::script_run`);
+    /// the status line already says so ([`crate::command::running::held`]).
+    Held,
 }
 
 impl From<OpError> for CommitError {
@@ -121,6 +124,7 @@ impl std::fmt::Display for CommitError {
         match self {
             Self::Op(e) => e.fmt(f),
             Self::ReadOnly => f.write_str(crate::compare::READ_ONLY),
+            Self::Held => f.write_str("a script is running"),
         }
     }
 }
@@ -636,6 +640,11 @@ pub struct EditorSession {
     pub compare: Option<Box<crate::compare::Compare>>,
     /// The command bar's log for this document, for the session (`crate::command::log`).
     pub command_log: crate::command::log::Log,
+    /// The script running on a worker against this document as it stood, while
+    /// one is (`crate::command::running`). The document is held meanwhile: a
+    /// commit, an undo and a redo are refused here, so the run's step lands on
+    /// the document it was made from. Dropping it stops the worker.
+    pub(crate) script_run: Option<crate::command::running::Running>,
 }
 
 /// **The flex-item properties a resize changed on the user's behalf** — the
@@ -837,6 +846,25 @@ impl EditorSession {
 
     fn from_parts(mut doc: Document, ids: IdSource, path: Option<PathBuf>) -> Self {
         let resolved = Resolved::settled(&mut doc);
+        Self::with_resolved(doc, resolved, ids, path)
+    }
+
+    /// A session over a copy of another's document, its layout and its id
+    /// source, on page `page`: where a script runs on a worker
+    /// (`command::running`), committing through the same door as the live one.
+    pub(crate) fn scratch(doc: Document, resolved: Resolved, ids: IdSource, page: NodeId) -> Self {
+        let mut s = Self::with_resolved(doc, resolved, ids, None);
+        s.page = page;
+        s
+    }
+
+    /// The session over `doc`, already laid out as `resolved`.
+    fn with_resolved(
+        doc: Document,
+        resolved: Resolved,
+        ids: IdSource,
+        path: Option<PathBuf>,
+    ) -> Self {
         let saved_at = path.is_some().then(Instant::now);
         let saved_step = path.is_some().then_some(None);
         let page = doc.first_page();
@@ -885,6 +913,7 @@ impl EditorSession {
             status_pass: 0,
             compare: None,
             command_log: Default::default(),
+            script_run: None,
         }
     }
 
@@ -1513,7 +1542,7 @@ impl EditorSession {
     fn say_failure(&mut self, applied: Result<(), CommitError>) -> bool {
         match applied {
             Ok(()) => true,
-            Err(CommitError::ReadOnly) => false,
+            Err(CommitError::ReadOnly | CommitError::Held) => false,
             Err(CommitError::Op(e)) => {
                 self.fail(format!("Edit failed: {e}"));
                 false
@@ -1650,6 +1679,56 @@ impl EditorSession {
         self.commit_inner(tx, Fold::None)
     }
 
+    /// Whether a script running on a worker holds the document, saying so on
+    /// the status line when it does.
+    fn held_by_script(&mut self) -> bool {
+        let Some(run) = &self.script_run else {
+            return false;
+        };
+        let why = crate::command::running::held(&run.name);
+        self.fail(why);
+        true
+    }
+
+    /// Commit the one step a script made on a worker, against a copy of this
+    /// very document (`command::running`): `tx` is the step as that copy's
+    /// commit door settled it, its passes run, so it applies as it stands, as a
+    /// redo does. The copy minted the step's layers from this session's id
+    /// source up to `next_seq`, which it moves past. Answers the step's serial.
+    pub(crate) fn commit_settled(
+        &mut self,
+        tx: Transaction,
+        note: mastik_core::StepNote,
+        next_seq: u64,
+    ) -> Result<Option<u64>, CommitError> {
+        if self.compare.is_some() {
+            self.fail(crate::compare::READ_ONLY);
+            return Err(CommitError::ReadOnly);
+        }
+        self.end_edit_run();
+        self.last_detached = Default::default();
+        let before = self.history.current();
+        let failures = mastik_core::boolean::failures();
+        let dirty = self.history.commit_noted(&mut self.doc, tx, note)?;
+        self.ids.skip_to(next_seq);
+        self.history.end_run();
+        let revision = next_revision();
+        self.ink
+            .record((self.revision, revision), &self.doc, &self.resolved, &dirty);
+        self.resolved.update(&self.doc, &dirty);
+        self.settle_derived((self.revision, revision));
+        if mastik_core::boolean::failures() != failures {
+            self.fail("A boolean could not be computed and draws nothing — undo to bring its operands back");
+        }
+        self.keep_page();
+        self.dirty = true;
+        self.revision = revision;
+        self.commits = self.commits.wrapping_add(1);
+        self.flex_receipt = None;
+        self.clear_gesture_preview();
+        Ok(self.history.current().filter(|s| Some(*s) != before))
+    }
+
     /// Commit `tx` into the undo step on top of the history, which must still be
     /// the one at `depth` with no commit since `commits` — else a plain commit.
     /// For an edit that step's undo already takes away whole: naming the page the
@@ -1679,6 +1758,9 @@ impl EditorSession {
         if self.compare.is_some() {
             self.fail(crate::compare::READ_ONLY);
             return Err(CommitError::ReadOnly);
+        }
+        if self.held_by_script() {
+            return Err(CommitError::Held);
         }
         // **While the browser's *Edit* is open, an edit of the style's users is an
         // edit of the style** — first, so every pass below reads the style's edit and
@@ -1905,6 +1987,9 @@ impl EditorSession {
             self.fail(crate::compare::READ_ONLY);
             return false;
         }
+        if self.held_by_script() {
+            return false;
+        }
         match self.step_quietly(true) {
             Ok(Some((subjects, before))) => {
                 match self.follow_step(&subjects, &before) {
@@ -1930,6 +2015,9 @@ impl EditorSession {
     pub fn redo(&mut self) -> bool {
         if self.compare.is_some() {
             self.fail(crate::compare::READ_ONLY);
+            return false;
+        }
+        if self.held_by_script() {
             return false;
         }
         match self.step_quietly(false) {
@@ -1959,6 +2047,9 @@ impl EditorSession {
     pub fn revert(&mut self, serial: u64) -> Result<(), String> {
         if self.compare.is_some() {
             return Err(crate::compare::READ_ONLY.to_owned());
+        }
+        if let Some(run) = &self.script_run {
+            return Err(crate::command::running::held(&run.name));
         }
         let Some(step) = self.history.done().find(|s| s.serial == serial) else {
             return Err("That step is no longer in the history".into());
@@ -2075,6 +2166,9 @@ impl EditorSession {
             self.fail(crate::compare::READ_ONLY);
             return false;
         }
+        if self.held_by_script() {
+            return false;
+        }
         let here = self.history.undo_depth();
         let depth = depth.min(here + self.history.redo_depth());
         let back = depth < here;
@@ -2171,6 +2265,8 @@ impl EditorSession {
     /// collide with ids the loaded file already uses.
     pub fn adopt_document(&mut self, mut doc: Document, path: Option<PathBuf>) {
         self.compare = None;
+        // A run's step was made from the document going: dropping it stops it.
+        self.script_run = None;
         self.resolved = Resolved::settled(&mut doc);
         self.page = doc.first_page();
         self.parked.clear();

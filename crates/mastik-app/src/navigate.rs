@@ -397,7 +397,7 @@ impl MastikApp {
     /// One key of Pick's keymap. A count typed ahead runs an arrow or `.` that
     /// many times, an arrow stopping at the last layer that way; any other key
     /// spends it.
-    pub(crate) fn nav_action(&mut self, ctx: &egui::Context, nav: Nav) {
+    pub(crate) fn nav_action(&mut self, nav: Nav) {
         let times = self.navigate.count.take().unwrap_or(1);
         match nav {
             Nav::Step(step, extend) => {
@@ -414,7 +414,7 @@ impl MastikApp {
             Nav::Zoom => self.zoom_to(self.selection_bounds()),
             Nav::Repeat => {
                 for _ in 0..times {
-                    self.repeat_bar_line(ctx);
+                    self.repeat_bar_line();
                 }
             }
             Nav::Type => self.set_picking(false),

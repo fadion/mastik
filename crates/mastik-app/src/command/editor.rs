@@ -400,15 +400,22 @@ impl MastikApp {
     }
 
     /// The saved scripts' names, for the palette's *Run* rows, each with why its
-    /// row is held: the reason *Run* gives while a syntax error holds the script.
+    /// row is held: the reason *Run* gives while a syntax error holds the
+    /// script, or while another run holds the document.
     pub(crate) fn saved_script_runs(&self) -> Vec<(String, Option<String>)> {
+        let running = self
+            .session
+            .script_run
+            .as_ref()
+            .map(|r| super::running::held(&r.name));
         self.saved_scripts()
             .into_iter()
             .map(|(which, name)| {
                 let held = self
                     .script_source(&which)
                     .and_then(|src| self.scripts.help.held_line(&src))
-                    .map(super::script_help::held_reason_at);
+                    .map(super::script_help::held_reason_at)
+                    .or_else(|| running.clone());
                 (name, held)
             })
             .collect()
@@ -965,7 +972,8 @@ impl MastikApp {
         });
     }
 
-    /// Run a script now, as one undo step named after it, and report.
+    /// Run a script on a worker (`running`), as one undo step named after it,
+    /// and report when it lands.
     fn run_script_now(
         &mut self,
         which: Which,
@@ -979,41 +987,66 @@ impl MastikApp {
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect();
-        let env = mastik_vm::Env {
-            selection: &selection,
-            labels: &labels,
+        self.begin_run(
+            format!("“{name}”"),
+            super::running::Code::Script(source),
+            false,
+            selection,
+            labels,
             params,
-        };
-        let started = Instant::now();
-        let ran = host::run_as_step(&mut self.session, &name, icon::FILE_CODE, |h| {
-            mastik_vm::run_script(h, &env, &source)
-        });
-        let secs = started.elapsed().as_secs_f32();
-        match ran {
-            Ok((outcome, counts, serial)) => {
-                let said = counts.said().unwrap_or_else(|| "nothing changed".into());
-                let mut lines: Vec<(String, bool)> =
-                    outcome.printed.iter().map(|l| (l.clone(), false)).collect();
-                lines.push((format!("{name} · {said}"), false));
-                self.push_output(lines, secs);
-                if let Some(ids) = outcome.selection {
-                    self.session.selection.set(ids);
-                }
-                self.session.info(format!("{name} · {said}"));
-                self.session
-                    .command_log
-                    .push(log::Entry::script(&name, said, false, serial));
-                if matches!(self.scripts.bad, Some((ref w, _)) if *w == which) {
-                    self.scripts.bad = None;
-                }
-            }
-            Err(e) => self.script_failed(&which, &name, &e, secs),
+            &name.clone(),
+            icon::FILE_CODE,
+            super::running::After::Script { which, name },
+        );
+    }
+
+    /// Report a script's run that landed: the output pane, what it made
+    /// selected, the status line and the log.
+    pub(super) fn script_landed(
+        &mut self,
+        which: &Which,
+        name: &str,
+        outcome: mastik_vm::Outcome,
+        counts: host::Counts,
+        serial: Option<u64>,
+        secs: f32,
+    ) {
+        let said = counts.said().unwrap_or_else(|| "nothing changed".into());
+        let mut lines: Vec<(String, bool)> =
+            outcome.printed.iter().map(|l| (l.clone(), false)).collect();
+        lines.push((format!("{name} · {said}"), false));
+        self.push_output(lines, secs);
+        if let Some(ids) = outcome.selection {
+            self.session.selection.set(ids);
+        }
+        self.session.info(format!("{name} · {said}"));
+        self.session
+            .command_log
+            .push(log::Entry::script(name, said, false, serial));
+        if matches!(self.scripts.bad, Some((ref w, _)) if w == which) {
+            self.scripts.bad = None;
         }
     }
 
     /// Report a failed run: the output pane, the status line and the log, and
-    /// the editor opened at the line it failed on.
-    fn script_failed(&mut self, which: &Which, name: &str, e: &mastik_vm::VmError, secs: f32) {
+    /// the editor opened at the line it failed on. A run the person stopped
+    /// leaves the editor as it is.
+    pub(super) fn script_failed(
+        &mut self,
+        which: &Which,
+        name: &str,
+        e: &mastik_vm::VmError,
+        secs: f32,
+    ) {
+        if e.kind == mastik_vm::ErrorKind::Stopped {
+            let said = format!("{name} stopped — nothing changed");
+            self.push_output(vec![(said.clone(), true)], secs);
+            self.session.info(said);
+            self.session
+                .command_log
+                .push(log::Entry::script(name, "Stopped".into(), true, None));
+            return;
+        }
         let said = match (e.kind, e.line) {
             (mastik_vm::ErrorKind::Budget, _) => {
                 format!(
@@ -1164,6 +1197,12 @@ impl MastikApp {
             .help
             .syntax(&self.scripts.buffer)
             .map(super::script_help::held_reason);
+        // Another run holds the document until it lands or is stopped.
+        let running = self
+            .session
+            .script_run
+            .as_ref()
+            .map(|r| super::running::held(&r.name));
         let caret = caret_byte(ctx, self.scripts.code_id(), &self.scripts.buffer);
         let mut help_act = None;
         let doc = &self.session.doc;
@@ -1229,6 +1268,7 @@ impl MastikApp {
                 edited_note,
                 &problems,
                 held.as_deref(),
+                running.as_deref(),
                 &mut act,
             );
             ui::card_rule(ui);
@@ -2368,7 +2408,7 @@ fn empty_pane(ui: &mut egui::Ui, act: &mut Option<Act>) {
 /// it while open.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the head shows the script's name, place, edit state, problems and hold; \
+    reason = "the head shows the script's name, place, edit state, problems and holds; \
               bundling them would only move the list"
 )]
 fn script_head(
@@ -2379,6 +2419,7 @@ fn script_head(
     edited: bool,
     problems: &[mastik_vm::Problem],
     held: Option<&str>,
+    running: Option<&str>,
     act: &mut Option<Act>,
 ) {
     let (rect, _) = ui.allocate_exact_size(
@@ -2414,17 +2455,19 @@ fn script_head(
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let run = match held {
-            Some(why) => {
-                settings::text_button(ui, "Run", FieldButton::Disabled).on_hover_text(format!(
+        let run = match (held, running) {
+            (Some(why), _) => settings::text_button(ui, "Run", FieldButton::Disabled)
+                .on_hover_text(format!(
                     "{why} · {}",
                     crate::input::keys("Ctrl+Enter puts the caret on it")
-                ))
+                )),
+            (None, Some(why)) => {
+                settings::text_button(ui, "Run", FieldButton::Disabled).on_hover_text(why)
             }
-            None => settings::text_button(ui, "Run", FieldButton::Primary)
+            (None, None) => settings::text_button(ui, "Run", FieldButton::Primary)
                 .on_hover_text(crate::input::keys("Run the script · Ctrl+Enter")),
         };
-        if run.clicked() && held.is_none() {
+        if run.clicked() && held.is_none() && running.is_none() {
             *act = Some(Act::Run);
         }
         // The ⋯ and the loupe are toggles, on while their menu or field is up,

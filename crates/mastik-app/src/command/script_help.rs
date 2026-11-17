@@ -845,7 +845,7 @@ mod tests {
         app.session.selection.set_one(card);
         let line = ".width = 100; .height = 50; .stroke = \"#000000\"; .rotation = 45";
         assert!(
-            app.run_bar_line(&ctx, line).is_none(),
+            crate::command::tests::ran_line(&mut app, line).is_none(),
             "fixture: the line ran"
         );
         let world = app.session.resolved.world_bounds(card).unwrap();

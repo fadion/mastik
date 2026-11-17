@@ -2310,6 +2310,8 @@ impl MastikApp {
         // An undo or redo that followed its step to another page, last frame.
         self.notice_page_change();
         self.leave_a_scope_the_selection_left();
+        // Before every key reader: while a script runs, Escape stops it.
+        self.tend_script_run(&ctx);
 
         // Whether this frame's `Tab` was ours (point editing or a live text session),
         // read before the panels change focus and acted on at the end of the frame.
@@ -2478,8 +2480,10 @@ impl MastikApp {
             })
             .response
             .rect;
-        if self.status_bar(&ctx, canvas, false) {
-            self.cancel_exports();
+        match self.status_bar(&ctx, canvas, false) {
+            Some(StatusAct::CancelExports) => self.cancel_exports(),
+            Some(StatusAct::StopScript) => self.stop_script_run(),
+            None => {}
         }
         self.contrast_chrome(&ctx);
         self.vision_chrome(&ctx);
@@ -2884,7 +2888,7 @@ impl MastikApp {
             Action::Navigate => self.pick_layers(),
             Action::OpenScripts => self.open_scripts(),
             Action::RunScript(i) => self.run_listed_script(i),
-            Action::Nav(nav) => self.nav_action(ctx, nav),
+            Action::Nav(nav) => self.nav_action(nav),
         }
         ctx.request_repaint();
     }
@@ -8046,6 +8050,15 @@ pub(crate) fn status_hold(status: &crate::session::Status) -> std::time::Duratio
 /// The fade at the end of [`status_hold`].
 const STATUS_FADE: f32 = 0.3;
 
+/// What a click on [`MastikApp::status_bar`]'s word asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StatusAct {
+    /// *Cancel*: every export running.
+    CancelExports,
+    /// *Stop*: the script running.
+    StopScript,
+}
+
 /// The colour [`MastikApp::status_bar`] draws a status message in.
 pub(crate) fn status_color(status: &crate::session::Status) -> egui::Color32 {
     if status.kind == StatusKind::Error {
@@ -8924,14 +8937,15 @@ impl MastikApp {
     /// can be hovered, and a failure must be readable whole.
     ///
     /// While exports run it also says so ([`Self::exporting`]) with *Cancel*, and
-    /// answers whether that was clicked. **Interactable only then**: the rest of the
-    /// time every click and drop passes through it to the canvas.
+    /// while a script runs ([`Self::running_said`]) with *Stop*, and answers which
+    /// was clicked. **Interactable only then**: the rest of the time every click
+    /// and drop passes through it to the canvas.
     pub(crate) fn status_bar(
         &self,
         ctx: &egui::Context,
         canvas: egui::Rect,
         library: bool,
-    ) -> bool {
+    ) -> Option<StatusAct> {
         let status = self.session.status();
         let mode = if library {
             Mode::Normal
@@ -8940,15 +8954,16 @@ impl MastikApp {
         };
         let moded = mode == Mode::TextInsert;
         let exporting = self.exporting();
+        let running = (!library).then(|| self.running_said()).flatten();
         let age = status.at.elapsed().as_secs_f32();
         let hold = status_hold(status).as_secs_f32();
         let message = self.show_status && !status.text.is_empty() && age < hold;
-        if !moded && !message && exporting.is_none() {
-            return false;
+        if !moded && !message && exporting.is_none() && running.is_none() {
+            return None;
         }
-        // A card that stays (a mode, an export) does not fade with the message.
-        let stays = moded || exporting.is_some();
-        let mut cancel = false;
+        // A card that stays (a mode, an export, a run) does not fade with the message.
+        let stays = moded || exporting.is_some() || running.is_some();
+        let mut act = None;
         let fade = if message {
             ((hold - age) / STATUS_FADE).clamp(0.0, 1.0)
         } else {
@@ -8975,7 +8990,7 @@ impl MastikApp {
         };
         egui::Area::new(egui::Id::new("status-bar"))
             .order(egui::Order::Middle)
-            .interactable(exporting.is_some())
+            .interactable(exporting.is_some() || running.is_some())
             // Its own fade only: egui's appear fade would dim the mode.
             .fade_in(false)
             .pivot(egui::Align2::LEFT_BOTTOM)
@@ -9022,12 +9037,26 @@ impl MastikApp {
                                         .size(crate::ui::SMALL_PT)
                                         .color(theme::text::muted()),
                                 );
-                                cancel = crate::ui::word_link(ui, "Cancel", false).clicked();
+                                if crate::ui::word_link(ui, "Cancel", false).clicked() {
+                                    act = Some(StatusAct::CancelExports);
+                                }
+                            }
+                            if let Some(running) = &running {
+                                ui.label(
+                                    egui::RichText::new(running)
+                                        .size(crate::ui::SMALL_PT)
+                                        .color(theme::text::muted()),
+                                );
+                                let stop = crate::ui::word_link(ui, "Stop", false)
+                                    .on_hover_text(crate::input::keys("Stop the script (Esc)"));
+                                if stop.clicked() {
+                                    act = Some(StatusAct::StopScript);
+                                }
                             }
                         });
                     });
             });
-        cancel
+        act
     }
 
     /// The 46px vertical tool rail.

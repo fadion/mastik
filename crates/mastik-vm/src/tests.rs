@@ -23,6 +23,8 @@ struct TestHost {
     slow: std::time::Duration,
     /// How many verbs were called.
     verbs: usize,
+    /// Set by each verb, as the person pressing Escape while one runs.
+    stop_on_verb: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Host for TestHost {
@@ -41,6 +43,9 @@ impl Host for TestHost {
     fn verb(&mut self, name: &str, args: &Value) -> Result<Done, String> {
         std::thread::sleep(self.slow);
         self.verbs += 1;
+        if let Some(stop) = &self.stop_on_verb {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         verbs::call(
             &mut Ctx {
                 doc: &self.doc,
@@ -79,6 +84,7 @@ impl TestHost {
             commits: 0,
             slow: std::time::Duration::ZERO,
             verbs: 0,
+            stop_on_verb: None,
         }
     }
 
@@ -731,6 +737,39 @@ fn a_runaway_loop_stops_at_the_budget() {
         err.message, "Stopped after 500000 steps",
         "a read's step budget"
     );
+}
+
+/// A set stop flag ends a run as stopped: at the next step of a loop, and
+/// between the per-layer host calls of one write, where no interrupt fires.
+/// flip: `State::on_time` not reading the flag → fails at "one layer written".
+#[test]
+fn a_stop_flag_ends_the_run() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let leash = |stop: &Arc<AtomicBool>| Leash {
+        budget: WORKER_BUDGET,
+        stop: Some(stop.clone()),
+    };
+    let stop = Arc::new(AtomicBool::new(true));
+    let err = run_script_leashed(&mut h, &e, "while true do end", &leash(&stop)).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Stopped);
+    assert_eq!(err.message, "Stopped");
+    // Stopped by the first verb: the write's other two layers never run.
+    let stop = Arc::new(AtomicBool::new(false));
+    h.stop_on_verb = Some(stop.clone());
+    let before = h.verbs;
+    let err = run_script_leashed(
+        &mut h,
+        &e,
+        "while true do sel.name = \"x\" end",
+        &leash(&stop),
+    )
+    .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Stopped);
+    assert_eq!(h.verbs - before, 1, "one layer written");
 }
 
 /// The clock is read at once after a verb, so a loop of slow verbs stops near

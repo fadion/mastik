@@ -37,10 +37,11 @@ calls and loop edges); a bump re-runs the crate's tests first.
 headless list by `deps_forbidden` (`foundations.md` §3). It reaches the document only through the
 caller's `Host` (`doc`, `resolved`, `page`, `verb`, `commit`). Its surface: `Env` (selection, leap
 labels, a script's input values), `Outcome` (printed lines, a read's value as shown and as
-copied, layers created, the selection to set), `VmError { kind: Error | Budget, message, line,
-span, fix }`, `desugar`, `eval_read`, `read_line`, `run_line`, `run_script`, `header`,
-`complete`, `tokens`, `names_used`, `as_read`, `quoted`, `definitions`. The property tables and
-the budgets stay inside the crate.
+copied, layers created, the selection to set), `VmError { kind: Error | Budget | Stopped, message,
+line, span, fix }`, `desugar`, `eval_read`, `read_line`, `run_line`, `run_script` (under the held
+budget), `run_line_leashed` and `run_script_leashed` (under a `Leash`: a `Budget` and a stop
+flag), the budgets (§8), `header`, `complete`, `tokens`, `names_used`, `as_read`, `quoted`,
+`definitions`. The property tables stay inside the crate.
 
 **One sandboxed state per evaluation.** Each evaluation makes a fresh `Lua`, turns on
 `Lua::sandbox` (the global table read-only) and loads the chunk with an environment table of its
@@ -175,19 +176,63 @@ chrome. A script can only say a committed outcome; it starts where the edit valv
 
 ## 7. Transactions, undo and failure
 
-**A run is one undo step, and a failed run changes nothing.** There is no working copy:
+**A run is one undo step, and a failed run changes nothing.** `command::host::run_as_step` runs
+it against a session — the live one for an agent's `run_script` (§11), a working copy on a worker
+for every run the person starts (*Off the UI thread*, below):
 
-1. `command::host::run_as_step` ends the edit run (a run never merges into a nudge before it) and
-   marks the session, and holds the redo stack (`History::take_redo`), which each commit clears.
-2. The host commits each step to the live session as it comes (`EditorSession::try_commit`, the
+1. It ends the edit run (a run never merges into a nudge before it), marks the session, and holds
+   the redo stack (`History::take_redo`), which each commit clears.
+2. The host commits each step to that session as it comes (`EditorSession::try_commit`, the
    commit door, with what components owe), so later reads see earlier writes: positioning each
    child from the previous one works. The style browser's *Edit* is set aside for each commit, as
    for an agent, so a script's edit means the same whatever panel is open.
 3. On success it joins the steps the run made into one with `History::join_last` (each inverse was
    taken after its own step, so the latest goes first), names it after the script, the bar's verb
    or *Edit*, with the source's glyph, and ends the edit run again.
-4. On an error or a spent budget it takes back every step it made (`take_back`), rewinds to the
-   mark and gives the redo stack back; a run that made no step gives it back too.
+4. On an error, a spent budget or a stop it takes back every step it made (`take_back`), rewinds to
+   the mark and gives the redo stack back; a run that made no step gives it back too.
+
+**Off the UI thread** (`command::running`). Enter in the bar, a script from the editor or the
+palette, and an `/ai` reply's script run on a worker (`MastikApp::begin_run`), so the window keeps
+drawing:
+
+- **The copy is the document as it stood**: the document, its layout (`Resolved`) and an id source
+  at the session's next id, copied when the run starts. The worker registers the document's faces
+  first, as an export's does, and makes a scratch session of the copy (`EditorSession::scratch`),
+  so the run commits through the same commit door as the live session, every pass included.
+- **The document is held while it runs** (`EditorSession::script_run`): every door that changes it
+  — a commit, an undo, a redo, a jump in the history, a revert — refuses, and the status line says
+  *“Card grid” is running — Esc stops it*; an agent's write is refused with the same reason. The
+  canvas still pans, zooms, hovers and selects, and pages still switch: none of that is an edit.
+  Holding is the rule rather than merging the person's edits with the run's, because a script
+  measures the document as it goes (a layer placed from the one before it, a layout read back)
+  and an edit landing mid-run would make its step mean something it never measured. The hold is
+  short: a run is a few seconds at most, and *Stop* ends it at once.
+- **The step lands whole**: the worker undoes its joined step once on the copy, and the redo is
+  the step as the copy's door settled it, passes run. The live session commits that as it stands
+  (`EditorSession::commit_settled`, as a redo applies), moves its id source past the ids the copy
+  minted, and the report follows as before (the log, the status line, the editor's output, what
+  the run made selected). A run is landed only when no gesture is live and no modal is up. A
+  document replaced while the run was out (read again from disk) drops the run, which stops it;
+  should the revision still differ when it lands, nothing lands and it fails as *the document
+  changed while it ran*.
+- **A run that ends within 50 ms lands in the frame that started it** (`LANDS_INLINE`), so a quick
+  line reads as it always has, with nothing shown running. Past that, the status bar carries
+  *Running “Card grid”…* (the seconds once one has passed, `MastikApp::running_said`) with *Stop*
+  beside it, a `ui::word_link` as the exports' *Cancel* is; the bar's footer, for a line or an
+  `/ai` script it started, reads *Running · Esc stops it* led by the loading spinner, the seconds
+  on its right. The editor's *Run* and the palette's *Run ‹name›* rows are disabled meanwhile with
+  the hold's sentence, and any other start is refused with it.
+- **`Escape` stops it** (`tend_script_run`, read before every other key reader while a run is in
+  flight, a modal aside), as does *Stop*: the stop flag is set, the run is dropped at once and
+  nothing lands; the worker ends at its next step unseen (§8). The report is the door's: *The line
+  stopped — nothing changed* (in the bar's error line while it still holds the line), *“Card grid”
+  stopped — nothing changed* in the editor's output and the status line, the editor left as it
+  is. A run is one at a time per document; a tab put behind keeps its run, which lands when the
+  tab is in front again, and closing the tab stops it.
+
+An agent's `run_script` stays on the UI thread, against the live session, under the held budget
+(§8): the agent waits for its answer in the frame, and a run of its own is short.
 
 A step is counted from its inverse for the status line and the log: a `DeleteNode` in it is a
 layer made, a `CreateNode` or `InsertSubtree` one deleted, any other subject one changed, and a
@@ -228,13 +273,18 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
 
   | Budget | Time | Steps | Memory |
   | --- | --- | --- | --- |
-  | `RUN_BUDGET`: Enter in the bar, a script | 1 s | 200,000,000 | 64 MB |
+  | `WORKER_BUDGET`: Enter in the bar, a script, an `/ai` script, on a worker | 30 s | 6,000,000,000 | 64 MB |
+  | `RUN_BUDGET`: an agent's `run_script`, holding the UI thread | 1 s | 200,000,000 | 64 MB |
   | `READ_BUDGET`: the bar's live read, every keystroke | 20 ms | 500,000 | 8 MB |
 
-  A spent budget is `ErrorKind::Budget`, and the run is taken back (§7).
-- **A run happens on the UI thread, in the frame that starts it, holding the session**: no progress,
-  no stop key, no yielding across frames. It cannot call egui or re-enter the bar. The budgets are
-  what stops a runaway.
+  A spent budget is `ErrorKind::Budget`, and the run is taken back (§7). A run on a worker no
+  longer freezes the window, and the person stops it with `Escape`, so its time budget is only the
+  backstop for a runaway left running, thirty times the held one; the steps scale with it, and the
+  memory, which is what the copy cannot spare, stays.
+- **A stop flag** (`mastik_vm::Leash::stop`) ends a run from another thread: the interrupt reads it
+  at every step, and the per-layer host calls of one write read it between them, so the run ends as
+  `ErrorKind::Stopped` at its next call, loop edge or layer. A host call under way (one verb) is not
+  interrupted; it finishes, unseen. A run cannot call egui or re-enter the bar.
 
 ## 9. The log
 
@@ -348,9 +398,11 @@ remembered per script for the session.
 **A syntax error holds every run**, before the disclosure or the form (`start_script_run`): Luau's
 parser refuses the text, so a run could only fail. The status line says *Card grid has a syntax
 error on line 4*, and when the editor is open on that script the caret goes to the error. No other
-problem the check finds holds a run. Otherwise the status line says *Card grid · 6 layers changed*,
-*Card grid failed at line 4 — nothing changed* or *Card grid stopped: … — nothing changed*; a
-failure opens the editor on the script with its line marked.
+problem the check finds holds a run. The run itself is on a worker (§7, *Off the UI thread*).
+Once it lands the status line says *Card grid · 6 layers changed*, *Card grid failed at line 4 —
+nothing changed* or *Card grid stopped: … — nothing changed* (a spent budget); a failure opens the
+editor on the script with its line marked. A run the person stopped says *“Card grid” stopped —
+nothing changed* and leaves the editor as it is.
 
 **The editor** (`command/editor.rs`) is in the app: *Tools ▸ Scripts…*, and the palette's *Scripts…*
 and a *Run ‹name›* row per saved script. One floating, resizable window that leaves the canvas
@@ -656,11 +708,13 @@ rules*): a row's name is never cut for its note.
   row, when `Enter` runs the line. Otherwise `↑`/`↓`
   recall typed lines and `/ai` requests, `↓` past the newest giving back what was being typed (a
   click on a log row also puts its line in the field, a script run's excepted); `Tab` takes an error's
-  fix; `Enter` runs (a read copies its value, a string without Luau's quotes so it pastes into a
-  field as the text, and makes no step; a write is one step named after its
-  verb, else *Edit*, with `TERMINAL_WINDOW`). `Escape` closes the log's menu if it is open, else the
-  list, else clears the text, then closes.
-  A failed line stays in the field with its error.
+  fix; `Enter` runs, on a worker under `WORKER_BUDGET` (§7, *Off the UI thread*): a read copies
+  its value, a string without Luau's quotes so it pastes into a field as the text, and makes no
+  step; a write is one step named after its verb, else *Edit*, with `TERMINAL_WINDOW`. It reports
+  where it landed: the field clears if it still holds the line, a failed line stays in the field
+  with its error, and a line no longer in the field reports on the status line. `Escape` closes the
+  log's menu if it is open, else the list, else clears the text, then closes; while the bar's run
+  is in flight it stops the run instead.
 - **`/ai`**: a line reading `/ai` and a request (`ai_request`; `/aim` is not one) is a request to
   the assistant: an edit, a question, or a script. It is not Luau: no completion, no live read, and
   the footer reads *Enter asks ‹speaker›*. Typing the line starts the assistant program's lookup
@@ -701,13 +755,13 @@ rules*): a row's name is never cut for its note.
     (`reply_rows`), wearing `icon::SPARKLE` in the log's glyph ink; the editor and the panel are
     where the whole reply reads. While proposals wait to be applied, the footer leads with
     `icon::SPARKLE` in `color::warn()`; a script or a reply has no mark (`footer_marked`, `Mark`).
-  - A script runs as a script runs (`run_ai_script`: `run_as_step`, no line sugar, `RUN_BUDGET`)
-    on the selection, the bar's labels bound: one step named by the request (cut at 40
-    characters), wearing `icon::SPARKLE` and marked `Origin::Mcp { client: ‹speaker›, tool: "/ai" }`,
-    as a proposal's Apply is, since the person runs what the agent wrote. The log gives it to the
-    request's entry (`Log::ai_ran`, §9). A raise takes the run back (§7) and shows on
-    the error line without a span, since the script's place is not the field's; the script stays
-    proposed.
+  - A script runs as a script runs (`run_ai_script`: on a worker, no line sugar,
+    `WORKER_BUDGET`) on the selection, the bar's labels bound: one step named by the request (cut
+    at 40 characters), wearing `icon::SPARKLE` and marked `Origin::Mcp { client: ‹speaker›, tool:
+    "/ai" }` before it lands, as a proposal's Apply is, since the person runs what the agent wrote.
+    The log gives it to the request's entry (`Log::ai_ran`, §9). A raise takes the run back (§7)
+    and shows on the error line without a span, since the script's place is not the field's; the
+    script stays proposed.
   - `Tab` closes the bar and opens a script in the editor as a new unsaved script, or any other
     reply in the assistant panel. Editing the request drops the request and its reply; its turn
     goes on in the panel.
@@ -730,3 +784,9 @@ rules*): a row's name is never cut for its note.
 - **The syntax hold compiles the text as it is now**, never reading the check's problems: those wait
   for typing to rest, so a run started inside that wait would get through
   (`a_syntax_error_holds_every_run`).
+- **A landed run moves the session's id source past the copy's**: the copy minted the step's
+  layers from the session's next id, so without `skip_to` the next layer the person makes takes an
+  id the step already used (`a_run_lands_as_one_step`).
+- **The hold and the revision check are two defences**: the hold keeps every commit out while a run
+  is in flight, and the revision check catches what bypasses the commit door (a document read
+  again). Either alone looks sufficient.
