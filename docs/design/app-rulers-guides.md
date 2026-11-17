@@ -116,7 +116,9 @@ scoped, copied, drawn and inspected, and the canvas's press-priority ladder. Sna
 - **Appearance**: colour plus a reset (dead at default) writing `color: None` so the guide follows the
   Settings default again; *Mixed* and the swatch compare against that default. Shared implementation with the canvas ground: `inspector::colour_panel` over a
   `ColourCard`, row `single_paint_row`; each caller builds its own reset transaction.
-- *Remove* and *Remove all Guides* are 28×28 icon buttons in the card body, each one transaction.
+- *Remove* and *Remove all Guides* are 28×28 icon buttons in the card body, each one transaction:
+  `icon::TRASH` and `icon::TRASH_ALL` (the trash with sweep lines), the glyphs the context menu's
+  *Delete guide* and *Clear all guides* wear.
 
 ## Press priority on the canvas
 

@@ -1277,6 +1277,10 @@ pub mod icon {
     /// corner brackets around a small [`SPARKLE`]; not [`TARGET`], which is a
     /// variable's scope.
     pub const SCOPE_FRAME: &str = "\u{f06c}";
+    /// Remove every one of a kind at once: the guide card's *Remove all guides*.
+    /// [`TRASH`] with three sweep lines beside it, so it stays in the delete
+    /// family and is not read as removing the one selected.
+    pub const TRASH_ALL: &str = "\u{f06d}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1580,6 +1584,7 @@ pub mod icon {
         ("terminal-window", TERMINAL_WINDOW),
         ("file-code", FILE_CODE),
         ("scope-frame", SCOPE_FRAME),
+        ("trash-all", TRASH_ALL),
     ];
 }
 

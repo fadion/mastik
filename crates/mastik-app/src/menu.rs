@@ -1101,11 +1101,11 @@ impl Item {
             Item::GoToPage(_) => s("Go to page", icon::FILE, None, Group::Pages),
             Item::DeleteGuide => Spec {
                 danger: true,
-                ..s("Delete guide", icon::X, Some("Del"), Group::Clipboard)
+                ..s("Delete guide", icon::TRASH, Some("Del"), Group::Clipboard)
             },
             Item::ClearGuides => Spec {
                 danger: true,
-                ..s("Clear all guides", icon::TRASH, None, Group::Clipboard)
+                ..s("Clear all guides", icon::TRASH_ALL, None, Group::Clipboard)
             },
 
             // Head puts it above *Delete points* (§6.5): the point menu's own verb.

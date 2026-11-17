@@ -1015,8 +1015,9 @@ impl MastikApp {
             self.guide_actions(ui, guides);
         });
     }
-    /// Remove, and Remove all Guides — the guide card's action row, in two glyph
-    /// families so the pair is not told apart only by tooltip.
+    /// Remove, and Remove all Guides — the guide card's action row: the trash for
+    /// the guides selected, the trash with sweep lines for every guide on the
+    /// page, so the pair is not told apart only by tooltip.
     fn guide_actions(&mut self, ui: &mut egui::Ui, guides: &[mastik_core::Guide]) {
         let total = self.page_guides().count();
         let mut remove = false;
@@ -1025,16 +1026,17 @@ impl MastikApp {
             ui.spacing_mut().item_spacing.x = BOOL_ROW_GAP;
             ui.spacing_mut().interact_size.y = BOOL_ROW_H;
             ui.spacing_mut().button_padding.y = 0.0;
-            remove = ui::icon_button(ui, icon::X, BOOL_ROW_H, ACTION_GLYPH, false, true)
+            remove = ui::icon_button(ui, icon::TRASH, BOOL_ROW_H, ACTION_GLYPH, false, true)
                 .on_hover_text(match guides.len() {
                     0 | 1 => "Remove this guide".to_string(),
                     n => format!("Remove these {n} guides"),
                 })
                 .clicked();
             // Live even when every guide is selected, where it equals Remove.
-            remove_all = ui::icon_button(ui, icon::TRASH, BOOL_ROW_H, ACTION_GLYPH, false, true)
-                .on_hover_text(format!("Remove all {total} guides on this page"))
-                .clicked();
+            remove_all =
+                ui::icon_button(ui, icon::TRASH_ALL, BOOL_ROW_H, ACTION_GLYPH, false, true)
+                    .on_hover_text(format!("Remove all {total} guides on this page"))
+                    .clicked();
         });
         // After the row, so the borrow of `guides` is over first.
         if remove_all {
