@@ -460,7 +460,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "run_script",
-        doc: "Run a Luau script as one undo step, for loops and edits over many layers in one call; a raise or its 1 s budget changes nothing. `sel` holds `nodes`; `layer.x`, `y`, `width`, `height`, `rotation` (world space), `opacity`, `fill`, `name`, `text`, `children` read and write; a write tool is a function (`align(sel, \"left\")`). Answers what it printed, made and changed.",
+        doc: "Run a Luau script as one undo step, for loops and edits over many layers in one call; a raise or its 1 s budget changes nothing. `sel` holds `nodes`; a layer's box (world space), paints, effects, text style, layout, `name`, `text`, `children` read and write; a write tool is a function (`align(sel, \"left\")`); `random(seed)` draws. Answers what it printed, made and changed.",
         params: &[
             param("source", ParamKind::Text, true, "The script."),
             param("nodes", ParamKind::Nodes, false, "The layers `sel` holds."),
