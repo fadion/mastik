@@ -83,7 +83,8 @@ impl AssistantPrefs {
     }
 }
 
-/// What the session was started with; a change to any of it restarts it.
+/// What the session runs with; a change to any of it restarts it, but for
+/// `level`, which [`MastikApp::assistant_set_level`] gives a session it keeps.
 #[derive(Clone, Debug, PartialEq)]
 struct Started {
     harness: ai::Harness,
@@ -103,6 +104,9 @@ struct Live {
     key: String,
     /// The host's grants, which hold the key's level until the session ends.
     grants: Option<crate::mcp::access::Grants>,
+    /// The thread the session's system prompt replays, kept to write that
+    /// prompt again for a new level.
+    replay: String,
 }
 
 impl Drop for Live {
@@ -132,6 +136,11 @@ struct Running {
     /// What the agent had been shown before this turn, put back if the turn
     /// is refused before the harness reads it.
     look_before: Option<prompt::Look>,
+    /// The level this turn told the agent of, owed again if it is refused so.
+    told_level: Option<Level>,
+    /// What the agent had seen of the scope before this turn, put back as
+    /// `look_before` is.
+    scope_before: Option<(String, u64)>,
 }
 
 /// Finding the program, off the UI thread: a probe runs it.
@@ -256,6 +265,12 @@ pub(crate) struct Assistant {
     pub(crate) focus: bool,
     /// What the agent was shown at its last turn.
     look: Option<prompt::Look>,
+    /// The level the live session was given since its last turn, which the
+    /// next turn's preamble tells the agent of.
+    level_news: Option<Level>,
+    /// The scope as the live session was last pictured it: its frame's id and
+    /// [`prompt::subtree_hash`].
+    scope_shown: Option<(String, u64)>,
     /// Proposals applied from their cards, by proposal id, with the undo step
     /// each made; `None` when a reloaded thread could not find that step again.
     pub(crate) applied: std::collections::HashMap<u64, Option<crate::mcp::propose::Applied>>,
@@ -362,6 +377,8 @@ impl Assistant {
             self.msgs.push(Msg::Note(Note::Said(why.into())));
         }
         self.look = None;
+        self.level_news = None;
+        self.scope_shown = None;
     }
 }
 
@@ -979,8 +996,13 @@ impl MastikApp {
             let Some(r) = self.assistant.running.take() else {
                 return;
             };
-            // The harness never read the turn, so it was never shown this look.
+            // The harness never read the turn, so it was never shown this look,
+            // nor told of its level.
             self.assistant.look = r.look_before;
+            self.assistant.scope_shown = r.scope_before;
+            if r.told_level.is_some() && self.assistant.level_news.is_none() {
+                self.assistant.level_news = r.told_level;
+            }
             self.assistant.msgs.push(Msg::Note(Note::Failed {
                 text: why.to_string(),
                 question: r.question,
@@ -1277,6 +1299,26 @@ impl MastikApp {
             .map(|id| id.to_wire())
             .collect();
         let earlier_refs: Vec<&str> = earlier.iter().map(String::as_str).collect();
+        // The scope is pictured while the agent has not seen it as it is now;
+        // it leads, and stands in for the same frame attached.
+        let scope_seen = scope
+            .as_ref()
+            .map(|c| (c.id.clone(), prompt::subtree_hash(&snap, &c.id)));
+        let scope_due = scope_seen.is_some() && scope_seen != self.assistant.scope_shown;
+        let mut pictured: Vec<Chip> = scope.iter().filter(|_| scope_due).cloned().collect();
+        pictured.extend(
+            chips
+                .iter()
+                .filter(|c| !pictured.iter().any(|p| p.id == c.id))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        let (pictured, images): (Vec<Chip>, Vec<Vec<u8>>) = match h.takes_images() {
+            true => self.chip_renders(&pictured).into_iter().unzip(),
+            false => (pictured, Vec::new()),
+        };
+        let scope_pictured =
+            scope_due && pictured.first().map(|c| &c.id) == scope.as_ref().map(|c| &c.id);
         let pre = prompt::preamble(&prompt::Turn {
             rev,
             snap: &snap,
@@ -1287,12 +1329,12 @@ impl MastikApp {
             scope: scope.as_ref(),
             earlier: &earlier_refs,
             page_id: &page_id,
+            level: self.assistant.level_news,
+            pictured: &pictured,
+            scope_pictured,
+            images: h.takes_images(),
         });
         let look = prompt::Look::of(rev, &snap);
-        let images = match h.takes_images() {
-            true => self.chip_renders(&chips),
-            false => Vec::new(),
-        };
         let turn = ai::Turn {
             text: format!("{pre}{}", turn.as_deref().unwrap_or(&text)),
             images,
@@ -1305,6 +1347,11 @@ impl MastikApp {
             // What the agent was shown moves on only with a turn it was sent.
             Ok(()) => {
                 let look_before = self.assistant.look.replace(look);
+                let told_level = self.assistant.level_news.take();
+                let scope_before = match scope_pictured {
+                    true => std::mem::replace(&mut self.assistant.scope_shown, scope_seen),
+                    false => self.assistant.scope_shown.clone(),
+                };
                 self.assistant.running = Some(Running {
                     msg,
                     question,
@@ -1314,6 +1361,8 @@ impl MastikApp {
                     diagnostics: String::new(),
                     stopping: false,
                     look_before,
+                    told_level,
+                    scope_before,
                 });
             }
             Err(refusal) => {
@@ -1328,9 +1377,10 @@ impl MastikApp {
         true
     }
 
-    /// Each attached layer at 1×, or smaller where its longer side would pass
-    /// [`crate::mcp::PNG_CEILING`], for a harness whose input takes images.
-    fn chip_renders(&self, chips: &[Chip]) -> Vec<Vec<u8>> {
+    /// Each pictured layer at 1×, or smaller where its longer side would pass
+    /// [`crate::mcp::PNG_CEILING`], for a harness whose input takes images,
+    /// beside its chip; a layer with nothing to draw is left out.
+    fn chip_renders(&self, chips: &[Chip]) -> Vec<(Chip, Vec<u8>)> {
         chips
             .iter()
             .filter_map(|c| {
@@ -1348,7 +1398,8 @@ impl MastikApp {
                     &[id],
                     &opts,
                 )?;
-                Some(mastik_export::png::encode_rgba8(&r.rgba, r.width, r.height))
+                let png = mastik_export::png::encode_rgba8(&r.rgba, r.width, r.height);
+                Some((c.clone(), png))
             })
             .collect()
     }
@@ -1395,6 +1446,7 @@ impl MastikApp {
             None => return Err(Why::Looking(h).sentence()),
         };
         let replay = self.assistant.replay_for(h.key());
+        self.assistant.level_news = None;
         self.assistant.sessions += 1;
         let key = client_key(self.assistant.sessions);
         let Ok(exe) = std::env::current_exe() else {
@@ -1435,6 +1487,7 @@ impl MastikApp {
             started: want,
             key,
             grants: self.mcp.as_ref().map(|h| h.grants()),
+            replay,
         });
         self.assistant.look = None;
         Ok(())
@@ -1507,18 +1560,52 @@ impl MastikApp {
         self.assistant.focus = true;
     }
 
-    /// Switch the chat's level; the session restarts on the next question with
-    /// the prose replayed.
+    /// Switch the chat's level, keeping the session where its harness can take
+    /// the new grant ([`Self::assistant_regrant`]); where it cannot, the session
+    /// ends and the next question starts one with the prose replayed.
     pub(crate) fn assistant_set_level(&mut self, level: Level) {
         if self.assistant_level() == level {
             return;
         }
         self.assistant.level = Some(level);
-        if self.assistant.live.is_some() {
+        self.assistant_follow_level();
+    }
+
+    /// Bring the live session to the level the chat runs at now: regranted
+    /// in place, or ended when its harness cannot keep its conversation.
+    fn assistant_follow_level(&mut self) {
+        let level = self.assistant_level();
+        let behind = self
+            .assistant
+            .live
+            .as_ref()
+            .is_some_and(|l| l.started.level != level);
+        if behind && !self.assistant_regrant(level) {
             self.assistant
                 .end_session(Some("Stopped: the access level changed."));
             self.assistant.save();
         }
+    }
+
+    /// Give the live session `level` and keep it: the host's grant changes at
+    /// once, the harness takes the new tools and system prompt from the next
+    /// question, whose preamble tells the agent. `false` when the harness
+    /// cannot keep the conversation (`ai::Session::set_access`), nothing
+    /// changed.
+    fn assistant_regrant(&mut self, level: Level) -> bool {
+        let tools = self.assistant_tools(level);
+        let Some(live) = self.assistant.live.as_mut() else {
+            return false;
+        };
+        let system = prompt::system(level, &live.started.instructions, &live.replay);
+        if !live.session.set_access(tools, system) {
+            return false;
+        }
+        live.started.level = level;
+        let (key, owner) = (live.key.clone(), live.session.owner());
+        self.assistant_grant(&key, level, owner);
+        self.assistant.level_news = Some(level);
+        true
     }
 
     /// Ask the question a failure note answered again, with its chips and in
@@ -1564,19 +1651,14 @@ impl MastikApp {
             || before.model != now.model
             || before.effort != now.effort
             || before.instructions != now.instructions;
-        // A chat on the default access follows it: its grant was given at the
-        // old level, so the session ends rather than keep writing above it.
-        let level = self.assistant_level();
-        let regranted = self
-            .assistant
-            .live
-            .as_ref()
-            .is_some_and(|l| l.started.level != level);
-        if (changed || regranted) && self.assistant.live.is_some() {
+        if changed && self.assistant.live.is_some() {
             self.assistant
                 .end_session(Some("Stopped: the assistant's settings changed."));
             self.assistant.save();
         }
+        // A chat on the default access follows it, as a switch in the head does.
+        self.assistant_follow_level();
+        let now = &self.prefs.assistant;
         if let Some(h) = now.harness() {
             ai::warm(h, now.program_path());
         }
@@ -1696,7 +1778,7 @@ mod tests {
             name: None,
         }])));
         let chip = app.chip_of(id).unwrap();
-        let [png] = &app.chip_renders(&[chip])[..] else {
+        let [(_, png)] = &app.chip_renders(&[chip])[..] else {
             panic!("one render");
         };
         let w = image::load_from_memory(png).unwrap().width();
@@ -1851,6 +1933,8 @@ mod tests {
             diagnostics: String::new(),
             stopping: false,
             look_before: None,
+            told_level: None,
+            scope_before: None,
         });
         app
     }

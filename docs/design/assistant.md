@@ -46,8 +46,14 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 - **Every harness streams JSON lines**, and no flag or stream shape is driven that was not measured
   against the real program. DeepSeek Harness's `--json` sends a step at a time rather than text
   deltas.
-- **Images reach Claude Code and Codex only**: Claude Code as content blocks in the turn's line,
-  Codex as `--image` files. `Harness::takes_images` is false for the rest, which get no render.
+- **Images reach Claude Code, Codex, Copilot and OpenCode**: Claude Code as content blocks in the
+  turn's line, the others as PNG files written into the session's working folder and named on the
+  turn's command line, Codex's `--image`, Copilot's `--attachment` and OpenCode's `--file` (all in
+  the `--flag=value` form). Inside the working folder, so neither Copilot's path check nor
+  OpenCode's external-folder rule meets them. Copilot's and OpenCode's flags are read off their
+  own `--help`, not yet a measured run. `Harness::takes_images` is false for Antigravity, Cursor
+  and DeepSeek Harness, which have no way in for an image and are told in words instead (§4,
+  *Pictures*).
 - **DeepSeek Harness takes almost nothing as a flag.** A `--patch` overlay written into the
   session's own `DSH_HOME` carries the model, the effort, the seal (every built-in tool row
   disabled by id), the sign-in and Mastik's server. The overlay is checked with `--dump-config`
@@ -196,11 +202,35 @@ access level lists and everything else is denied.
 ### Access levels
 
 **Access** (`mcp::access::Level`) decides what the agent may do. Settings holds the default for a
-new chat, and the panel's head switches it for the chat in front. A switch ends the session, and a
-running turn with a note (*Stopped: the access level changed.*); the next question starts a new
-session with the prose replayed. A chat on the default follows it: saving another default in
-Settings ends its session, since its grant was given at the old level. Tools above the level are **left out of the tool list**, not
-listed and refused: an agent that sees a tool plans around it.
+new chat, and the panel's head switches it for the chat in front; a chat on the default follows
+it when another is saved. Tools above the level are **left out of the tool list**, not listed and
+refused: an agent that sees a tool plans around it.
+
+**A switch keeps the session** (`assistant_regrant`, `Session::set_access`), so the agent keeps
+what it has read:
+
+- **The host's grant changes at once.** A call from then on is answered at the new level, a
+  running turn's included, and `tools/list` lists the new level's tools. A running turn is not
+  stopped.
+- **The harness takes it from the next question.** Every later turn's command line carries the
+  new allow-list, and that turn first rewrites what holds the grant outside it: Claude Code's
+  system-prompt file, Cursor's `.cursor/cli.json`, OpenCode's `opencode.json` (read back again
+  before the turn), Antigravity's rules in its `settings.json`. A rewrite that fails refuses the
+  turn and is tried again with the next.
+- **Per harness:** Codex (`-c` approvals), Copilot (`--available-tools`), OpenCode, Cursor and
+  DeepSeek Harness (whose overlay names no Mastik tool) start a process per turn, so the next turn
+  simply resumes its conversation under the new grant. Claude Code and Antigravity hold one
+  process whose allow-list was fixed at its start: the next turn ends it and starts it again with
+  `--resume` or `--conversation`, the same resume a Stop that had to kill uses, so the
+  conversation and its reads carry on in the new process.
+- **The agent is told.** The next turn's preamble opens with `access changed by the person, from
+  now on:` and the level's paragraph from the system prompt (`prompt::level_rules`), since a harness that took the system prompt in the
+  first turn still holds the old one; Claude Code's restarted process also reads the new system
+  prompt.
+- **Where it cannot be kept, it restarts as before**: a persistent harness whose running process
+  has not yet named its conversation would lose it, so the session ends (a running turn with
+  *Stopped: the access level changed.*) and the next question starts a new one with the prose
+  replayed.
 
 - **Look** — Phase 1's reads and exports (`mcp.md` §8.4). `export_png` is the agent's eyes.
 - **Propose** (the default) — Look, plus `propose_edit` (*Proposals*).
@@ -302,7 +332,8 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
 - **Each turn opens with a preamble**, fenced as data: the revision; the page; the selection; the
   layers added, changed and removed since the last turn, by id and name (forty at most, then how
   many more); the scope, as `scope: ‹name› ‹id› (kind, w×h); work in this frame unless the question
-  names another place`; the attached layers; the person's last three questions, since a harness's
+  names another place`; the attached layers; the pictures (*Pictures*); the access level when the
+  person changed it since the last turn (*Access levels*); the person's last three questions, since a harness's
   own memory of earlier turns is unreliable; and `style: brief`. The scope line and `style: brief`
   go on every turn, since an instruction given once fades over a long thread. The page outline,
   names and ids only, goes only on a session's first turn, the scoped frame first when it is on
@@ -344,10 +375,9 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   is edited, in Present, focus and private mode, and while the assistant is *Off*. They pass the
   wheel and a pinch to the canvas beneath, as its other overlays do.
 - **A chip is a reference, not a copy** (`ui::layer_chip`): the layer's id, name, kind and size go
-  with the question, and the agent reads the rest through the tools. For a harness that takes
-  images, an attached layer also goes with a 1× render, scaled down to 4096 on its longer side
-  (`export_png`'s ceiling) since it is drawn on the UI thread. A chip's × removes it; a chip whose layer
-  is deleted shows struck through and is not sent.
+  with the question, and the agent reads the rest through the tools, and a picture of it goes too
+  (*Pictures*). A chip's × removes it; a chip whose layer is deleted shows struck through and is
+  not sent.
 - **While the panel is open, an attached layer wears a dashed accent outline** 5 outside it; its
   number is on its lit ask button. A closed panel leaves no outline. Hovering a chip outlines its
   layer; clicking one selects it and zooms to it.
@@ -392,7 +422,25 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   the selection's ink, a component set's tab included; a main component's chip and an instance's
   tag keep their violet, the glyph their mark. Private mode leaves it plain. It gets no outline, which would read as the
   dashed one an attached layer wears.
-- **No render goes with the scope**, and the MCP server knows nothing of it.
+- **The scope's picture goes when the agent has not seen the frame as it is** (*Pictures*): on a
+  session's first turn with the scope, after the scope moves to another frame, and after anything
+  in the frame changes (`prompt::subtree_hash` over its layers). The MCP server knows nothing of
+  the scope.
+
+### Pictures
+
+- **Every question pictures what it is about**: the scope when it is due (above), first, then
+  each attached layer. The scoped frame also attached is pictured once, as the scope.
+- **To a harness that takes images** (§2) each goes as a render at 1×, scaled down to 4096 on its
+  longer side (`export_png`'s ceiling) since it is drawn on the UI thread (`chip_renders`), and the
+  preamble names them in order (`pictures: one image per layer, in this order: …`), the scope
+  marked as such, so the agent knows which image is which. A layer with nothing to draw is left
+  out of both.
+- **To one that does not**, the preamble says no picture reaches it and describes each in a line
+  (`prompt::sketch`): kind and size, its own fills, how many layers it holds by kind, and the
+  first of its text, quoted, names written as the preamble writes names.
+- What the agent was shown of the scope moves on only with a turn sent, and back when the turn is
+  refused before the harness reads it, as the layer changes do.
 
 ## 5. Settings
 
@@ -515,7 +563,8 @@ layers being asked about, and is one more kind of surface.
   `agy` its marker recorded, else the one found now: a standing grant there is worse than one
   command. A marker whose withdrawal did not hold stays for the next launch.
 - **What leaves the machine** is what the harness sends: the question, the attached layers' and
-  the scope's references, and whatever the agent reads through the tools. No document file is handed over, and
+  the scope's references and pictures (or their descriptions), and whatever the agent reads
+  through the tools. No document file is handed over, and
   no telemetry is sent by Mastik.
 - **The agent log** (`mcp::agent_log`) is `agent_log.jsonl` in the machine data folder: one line
   `{at, tool, document, key, ok}` per granted call, refusals included, a call through `call` under
@@ -544,6 +593,10 @@ layers being asked about, and is one more kind of surface.
   `run_command` still act, which was measured writing a file outside the run folder. Plan mode
   refuses both and leaves Mastik's allowed tools working. Headless, a refused tool ends its turn,
   so the system prompt tells every agent to call Mastik's tools directly rather than look around.
+- **A persistent process ended for a new grant still has a reader.** Its exit arrives while the
+  turn that ended it is in flight, so the reader of an ended generation reports nothing, or it
+  would end that turn as the harness having exited
+  (`a_new_grant_restarts_claude_code_resuming_its_conversation`).
 - **Cursor runs in its default mode.** `--mode ask` held back nothing the permissions file did not,
   and had the model refuse the edits a chat at *Edit* asked for.
 - **DeepSeek Harness grows tool plugins.** The per-turn check refuses a profile with a tool row
