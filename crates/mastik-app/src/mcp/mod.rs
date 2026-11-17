@@ -1753,6 +1753,62 @@ mod tests {
         assert!(read.is_error, "a page is refused");
     }
 
+    /// A board holding a main and its instance, read with `get_tree` in short ids
+    /// and inserted back through the commit door, is a main and an instance of
+    /// it again, not a plain copy.
+    ///
+    /// flip: `verbs::tree` dropping every `id` → fails at "an instance of the
+    /// new main", the copy linked to the first main instead.
+    #[test]
+    fn get_tree_round_trips_a_main_and_its_instance() {
+        fn short(engine: &mut Engine, docs: &mut One, tool: &str, args: Value) -> Output {
+            let (reply, _answer) = sync_channel(1);
+            let mut call = Call::new(1, Some("k".into()), tool, args, reply);
+            call.short_ids = true;
+            engine.handle(docs, call)
+        }
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        let out = short(
+            &mut engine,
+            &mut docs,
+            "use_document",
+            json!({ "document": "a" }),
+        );
+        let page = ok(&out)["pages"][0]["id"].as_str().unwrap().to_owned();
+        let frame = |w: f64| json!({ "Artboard": { "size": { "width": w, "height": 40 } } });
+        let steps = json!([
+            { "tool": "create_node", "args": { "parent": page, "kind": frame(400.0), "name": "Board" }, "as": "board" },
+            { "tool": "create_node", "args": { "parent": "@board", "kind": frame(120.0), "name": "Button" }, "as": "main" },
+            { "tool": "create_text", "args": { "parent": "@main", "text": "Go" } },
+            { "tool": "make_component", "args": { "nodes": ["@main"] } },
+            { "tool": "create_instance", "args": { "main": "@main", "parent": "@board", "x": 200, "y": 0 } },
+        ]);
+        let out = short(&mut engine, &mut docs, "batch", json!({ "steps": steps }));
+        let board = ok(&out)["steps"][0]["created"][0]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let out = short(&mut engine, &mut docs, "get_tree", json!({ "id": board }));
+        let tree = ok(&out)["tree"].clone();
+        let link = tree["children"][1]["copy_of"].as_str().unwrap_or_default();
+        assert!(
+            link.starts_with('n') && !link.contains(':'),
+            "short ids: {tree}"
+        );
+        let args = json!({ "parent": page, "tree": tree });
+        let out = short(&mut engine, &mut docs, "insert_subtree", args);
+        let s = &docs.session;
+        let known = short::known_actors(&s.doc, s.ids.actor());
+        let copy = NodeId::from_short(ok(&out)["created"][0].as_str().unwrap(), &known).unwrap();
+        let kids = s.doc.get(copy).unwrap().children().to_vec();
+        assert!(s.doc.get(kids[0]).unwrap().component(), "a main");
+        assert_eq!(
+            s.doc.get(kids[1]).unwrap().link(),
+            Some(kids[0]),
+            "an instance of the new main"
+        );
+    }
+
     /// `replace_font` takes a family the host can set, in the host's spelling,
     /// and refuses one it cannot.
     ///

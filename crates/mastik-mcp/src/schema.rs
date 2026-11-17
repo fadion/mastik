@@ -78,7 +78,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "get_tree",
-        doc: "A layer and the layers inside it in the shape `insert_subtree` takes and the setters write: the kind with a text's runs, every fill and stroke with the hidden ones and their framing, align, `dashes`, cap and join, effects and exports. Read this before writing a whole list back with `set_fills`, `set_strokes`, `set_effects`, `set_exports` or `set_text_style`; the snapshot keeps only what is drawn. A binding inside a fill, stroke, effect or layout item travels with it; a bound size, corner, text, gap, padding, flow, visibility or opacity is written as its drawn value, unbound. It leaves out styles, modes, width queries, the pivot, the element, link and component state: inserting it makes a plain copy.",
+        doc: "A layer and the layers inside it in the shape `insert_subtree` takes and the setters write: the kind with a text's runs, every fill and stroke with the hidden ones and their framing, align, `dashes`, cap and join, effects and exports. Read this before writing a whole list back with `set_fills`, `set_strokes`, `set_effects`, `set_exports` or `set_text_style`; the snapshot keeps only what is drawn. It is the model: styles, modes, width queries, pivot, element, link, grids, guides, a main's `component`, a copy's `copy_of`, a set, properties and `bindings` (a bound field's literal is its placeholder), so inserting it makes what it read, an instance an instance. An `id` is kept where the tree refers to that layer.",
         params: &[param("id", ParamKind::Node, true, "The layer.")],
     },
     Tool {

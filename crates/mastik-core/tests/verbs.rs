@@ -5194,8 +5194,13 @@ fn tree_reads_a_layer_back_as_insert_subtree_takes_it() {
     let read = verbs::tree(&doc, f).expect("a layer");
     assert_eq!(
         read["kind"]["Artboard"]["size"]["width"],
-        json!(240.0),
-        "the bound width as drawn"
+        json!(0.0),
+        "the bound width's placeholder"
+    );
+    assert_eq!(
+        read["bindings"],
+        json!([{ "field": { "size": 0 }, "variable": doc.variables().iter().next().unwrap().id }]),
+        "beside its binding"
     );
     assert_eq!(
         read["fills"].as_array().map(Vec::len),
@@ -5213,6 +5218,12 @@ fn tree_reads_a_layer_back_as_insert_subtree_takes_it() {
         verbs::tree(&doc, copy),
         Some(read),
         "the copy reads back the same"
+    );
+    let drawn = doc.resolved_kind(copy).unwrap();
+    assert_eq!(
+        drawn.box_size().map(|s| s.width),
+        Some(240.0),
+        "drawn bound"
     );
     let NodeKind::Text { spans, .. } = doc
         .get(doc.get(copy).unwrap().children()[0])
@@ -6320,5 +6331,120 @@ fn trace_image_needs_a_renderer() {
         refused_param(&doc, &mut ids, "trace_image", args),
         "node",
         "no picture"
+    );
+}
+
+/// A board holding a main and its instance, read with `tree` and inserted back,
+/// is a main and its instance again: the copy's links point at the new main,
+/// its property at the new label, and the style, the binding, the pivot, the
+/// frame's mode and the instance's override come across. The instance read
+/// alone inserts as another instance of the first main.
+/// flip: `tree_ops` without its `copy_of` → fails at "an instance of the new main".
+#[test]
+fn a_tree_inserts_back_as_what_it_read() {
+    let (mut doc, mut ids, page) = blank();
+    let steps = json!([
+        { "verb": "create_node", "args": { "parent": page.to_wire(), "kind": frame(400.0, 200.0), "name": "Board" }, "as": "board" },
+        { "verb": "create_node", "args": { "parent": "@board", "kind": frame(120.0, 40.0), "name": "Button" }, "as": "main" },
+        { "verb": "create_text", "args": { "parent": "@main", "text": "Go" }, "as": "label" },
+        { "verb": "make_component", "args": { "nodes": ["@main"] } },
+        { "verb": "define_property", "args": { "node": "@label", "kind": "text", "name": "Label" } },
+        { "verb": "add_variable", "args": { "kind": "number", "name": "r", "value": 6 }, "as": "r" },
+        { "verb": "bind_variable", "args": { "nodes": ["@main"], "field": "radius", "variable": "@r" } },
+        { "verb": "add_style", "args": { "value": { "fills": ["#3366cc"] }, "name": "Brand", "nodes": ["@main"] } },
+        { "verb": "set_pivot", "args": { "node": "@main", "pivot": { "Normalized": { "x": 0.0, "y": 1.0 } } } },
+        { "verb": "add_mode", "args": { "name": "Dark" }, "as": "dark" },
+        { "verb": "set_frame_mode", "args": { "node": "@board", "mode": "@dark" } },
+        { "verb": "create_instance", "args": { "main": "@main", "parent": "@board", "x": 200, "y": 0 }, "as": "inst" },
+        { "verb": "set_instance_property", "args": { "node": "@inst", "property": "Label", "value": "Stop" } },
+    ]);
+    let made = script(&mut doc, &mut ids, steps);
+    let board = NodeId::from_wire(&made[0][0]).unwrap();
+    let main = NodeId::from_wire(&made[1][0]).unwrap();
+    let inst = NodeId::from_wire(&made[11][0]).unwrap();
+
+    let read = verbs::tree(&doc, board).expect("the board");
+    let copy = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": read }),
+    )[0];
+    let kids = doc.get(copy).unwrap().children().to_vec();
+    let (new_main, new_inst) = (kids[0], kids[1]);
+    let m = doc.get(new_main).unwrap();
+    assert!(m.component(), "a main");
+    assert_eq!(
+        m.styles().fills,
+        doc.get(main).unwrap().styles().fills,
+        "its style"
+    );
+    assert_eq!(
+        m.corner_vars(),
+        doc.get(main).unwrap().corner_vars(),
+        "its binding"
+    );
+    assert_eq!(m.pivot(), doc.get(main).unwrap().pivot(), "its pivot");
+    let label = m.children()[0];
+    assert_eq!(
+        m.props()[0].value.bound,
+        vec![label],
+        "its property, at the new label"
+    );
+    assert_eq!(
+        doc.get(copy).unwrap().modes(),
+        doc.get(board).unwrap().modes(),
+        "the frame's mode"
+    );
+    assert_eq!(
+        doc.get(new_inst).unwrap().link(),
+        Some(new_main),
+        "an instance of the new main"
+    );
+    let inst_label = doc.get(new_inst).unwrap().children()[0];
+    assert_eq!(doc.get(inst_label).unwrap().link(), Some(label));
+    let NodeKind::Text { content, .. } = doc.get(inst_label).unwrap().kind() else {
+        unreachable!()
+    };
+    assert_eq!(content, "Stop", "its override");
+    assert_eq!(
+        verbs::tree(&doc, copy).map(|mut v| {
+            v.as_object_mut().unwrap().remove("name");
+            v
+        }),
+        verbs::tree(&doc, board)
+            .map(|mut v| {
+                v.as_object_mut().unwrap().remove("name");
+                v
+            })
+            .map(|v| {
+                // The ids a tree keeps are its own layers', new in the copy.
+                let mut text = v.to_string();
+                for (old, new) in [
+                    (main, new_main),
+                    (doc.get(main).unwrap().children()[0], label),
+                ] {
+                    text = text.replace(&old.to_wire(), &new.to_wire());
+                }
+                serde_json::from_str(&text).unwrap()
+            }),
+        "the copy reads back as the board"
+    );
+
+    let alone = verbs::tree(&doc, inst).expect("the instance");
+    let another = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": alone }),
+    )[0];
+    assert_eq!(
+        doc.get(another).unwrap().link(),
+        Some(main),
+        "another instance"
+    );
+    assert_eq!(
+        mastik_core::component::instance_root(&doc, another),
+        Some(another)
     );
 }

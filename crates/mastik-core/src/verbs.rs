@@ -2198,7 +2198,15 @@ pub static VERBS: &[Verb] = &[
             let raw = settle::<Tree>("Tree", raw).map_err(|why| a.invalid("tree", why))?;
             let tree: Tree = serde_json::from_value(raw).map_err(|e| a.invalid("tree", e))?;
             let mut done = Done::default();
-            tree_ops(ctx, a, &tree, parent, index, &mut done)?;
+            let mut minted = Minted::default();
+            mint_tree(ctx.ids, &tree, &mut done.created, &mut minted);
+            let created = done.created.clone();
+            let mut late = Late::new();
+            let mut ids = created.iter();
+            tree_ops(
+                ctx, a, &tree, parent, index, &mut ids, &minted, &mut done, &mut late,
+            )?;
+            done.tx.0.extend(late);
             if let Some(&root) = done.created.first() {
                 place_corner(ctx.doc, a, &mut done.tx, root);
             }
@@ -6266,12 +6274,17 @@ fn guide_ops(
 }
 
 /// One layer of `insert_subtree`'s tree: what `create_node` takes, the properties
-/// the single-layer verbs set, each in the same form, and the layers inside it.
-/// Ids are minted as it is created, so a caller never writes one.
+/// the single-layer verbs set, each in the same form, what it reads (styles,
+/// modes, bindings) and its part in a component, and the layers inside it.
+/// Ids are minted as it is created, so a caller never writes one; `id` names
+/// the layer [`tree`] read, only for another layer of the same tree to refer to.
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Tree {
     pub kind: NodeKind,
+    /// The layer this one was read from, where another layer of the tree
+    /// refers to it (`copy_of`, `swap`, a property's `bound`).
+    pub id: Option<String>,
     pub name: Option<String>,
     pub transform: Option<Affine>,
     pub visible: Option<bool>,
@@ -6290,24 +6303,92 @@ pub struct Tree {
     pub display: Option<Display>,
     pub item: Option<LayoutItem>,
     pub insets: Option<Insets>,
+    pub pivot: Option<Pivot>,
+    pub element: Option<crate::element::HtmlElement>,
+    /// The address a layer written as a link goes to, as `set`'s `link`.
+    pub link: Option<String>,
+    pub grids: Option<Vec<crate::layout::LayoutGrid>>,
+    /// A frame's own guides; each is added anew, whatever `id` it carries.
+    pub guides: Option<Vec<GuideIn>>,
+    pub styles: Option<crate::style::StyleRefs>,
+    pub modes: Option<Vec<ModeId>>,
+    pub queries: Option<Vec<crate::variable::Breakpoints>>,
+    /// The layer's own bound fields, as `bind_variable` names them; a fill's,
+    /// stroke's, effect's, limit's or flow's binding travels in its item.
+    pub bindings: Option<Vec<TreeBinding>>,
+    /// A main component.
+    pub component: Option<bool>,
+    /// The layer this one is a linked copy of, an instance's or a nested copy's.
+    pub copy_of: Option<String>,
+    /// The main a nested copy's contents are swapped to.
+    pub swap: Option<String>,
+    pub set: Option<crate::variant::VariantSet>,
+    pub variant: Option<Vec<String>>,
+    pub props: Option<Vec<crate::variant::Property>>,
+    pub description: Option<String>,
+    pub doc_link: Option<String>,
     /// Bottom first.
     #[serde(default)]
     pub children: Vec<Tree>,
 }
 
+/// One bound field of a tree's layer, as the snapshot's `bindings` reads it.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct TreeBinding {
+    pub field: build::BoundField,
+    pub variable: VarId,
+}
+
+/// The ids a tree's layers will take, by the id each was read under: what a
+/// reference inside the tree is remapped through.
+type Minted = rustc_hash::FxHashMap<NodeId, NodeId>;
+
+/// Mint `tree`'s ids, root first and each layer before its children, as
+/// `insert_subtree` answers them, keeping each read `id`'s new one in `minted`.
+fn mint_tree(ids: &mut IdSource, tree: &Tree, out: &mut Vec<NodeId>, minted: &mut Minted) {
+    let id = ids.mint();
+    out.push(id);
+    if let Some(read) = tree.id.as_deref().and_then(NodeId::from_wire) {
+        minted.insert(read, id);
+    }
+    for child in &tree.children {
+        mint_tree(ids, child, out, minted);
+    }
+}
+
+/// A layer a tree refers to by `wire`: the tree's own layer read under it, else
+/// the document's.
+fn tree_ref(a: &Args<'_>, minted: &Minted, wire: &str) -> Result<NodeId, VerbError> {
+    let id = NodeId::from_wire(wire)
+        .ok_or_else(|| a.invalid("tree", format!("`{wire}` is not a layer id")))?;
+    Ok(minted.get(&id).copied().unwrap_or(id))
+}
+
+/// What a tree's layers carry that is checked only once every layer is there
+/// (a main, a link, a set and its properties): written after the last layer's
+/// own ops, so each names layers the transaction has made.
+type Late = Vec<Operation>;
+
 /// The ops creating `tree` at `index` in `parent`, then its children inside it,
-/// appended to `done` with each layer it mints. A layer is created before its
-/// properties are set, so each op meets the layer it names.
+/// appended to `done`, each layer taking the next of `ids`, minted beforehand
+/// ([`mint_tree`]) so a layer may refer to one after it. A layer is created
+/// before its properties are set, so each op meets the layer it names.
+#[allow(clippy::too_many_arguments)]
 fn tree_ops(
     ctx: &mut Ctx<'_>,
     a: &Args<'_>,
     tree: &Tree,
     parent: NodeId,
     index: usize,
+    ids: &mut std::slice::Iter<'_, NodeId>,
+    minted: &Minted,
     done: &mut Done,
+    late: &mut Late,
 ) -> Result<(), VerbError> {
-    let id = ctx.ids.mint();
-    done.created.push(id);
+    let id = *ids
+        .next()
+        .ok_or(VerbError::Nothing("a tree layer has no id"))?;
     let ops = &mut done.tx.0;
     ops.push(Operation::CreateNode {
         id,
@@ -6386,22 +6467,241 @@ fn tree_ops(
     if let Some(item) = tree.item {
         ops.push(Operation::SetLayoutItem { id, item });
     }
+    if let Some(pivot) = tree.pivot {
+        ops.push(Operation::SetPivot {
+            id,
+            pivot: Some(pivot),
+        });
+    }
+    if let Some(element) = tree.element {
+        ops.push(Operation::SetElement {
+            id,
+            element: Some(element),
+        });
+    }
+    if let Some(href) = &tree.link {
+        ops.push(Operation::SetHref {
+            id,
+            href: href.clone(),
+        });
+    }
+    if let Some(styles) = tree.styles {
+        for (slot, style) in styles.iter() {
+            let style = Some(style);
+            ops.push(match slot {
+                StyleSlot::Fills => Operation::SetFillStyle { id, style },
+                StyleSlot::Strokes => Operation::SetStrokeStyle { id, style },
+                StyleSlot::Effects => Operation::SetEffectsStyle { id, style },
+                StyleSlot::Text => Operation::SetTypeStyle { id, style },
+                StyleSlot::Layout => Operation::SetLayoutStyle { id, style },
+            });
+        }
+    }
+    if let Some(modes) = &tree.modes {
+        ops.push(Operation::SetModes {
+            id,
+            modes: modes.clone(),
+        });
+    }
+    if let Some(queries) = &tree.queries {
+        ops.push(Operation::SetQueries {
+            id,
+            queries: queries.clone(),
+        });
+    }
+    if let Some(bindings) = &tree.bindings {
+        ops.extend(binding_ops(a, id, bindings)?);
+    }
+    if let Some(grids) = &tree.grids {
+        let grids = rekeyed(ctx, &[], grids.clone());
+        done.tx.0.push(Operation::SetLayoutGrids { id, grids });
+    }
+    for g in tree.guides.iter().flatten() {
+        let guide = crate::guide::Guide {
+            id: crate::guide::GuideId(ctx.ids.mint()),
+            axis: g.axis,
+            position: g.position,
+            color: g.color,
+            owner: id,
+        };
+        done.tx.0.push(Operation::AddGuide { guide });
+    }
+    if tree.component == Some(true) {
+        late.push(Operation::SetComponent {
+            id,
+            component: true,
+        });
+    }
+    if let Some(set) = &tree.set {
+        late.push(Operation::SetVariantSet {
+            id,
+            set: Some(set.clone()),
+        });
+    }
+    if let Some(values) = &tree.variant {
+        late.push(Operation::SetVariant {
+            id,
+            values: values.clone(),
+        });
+    }
+    if let Some(source) = &tree.copy_of {
+        late.push(Operation::SetLink {
+            id,
+            link: Some(tree_ref(a, minted, source)?),
+        });
+    }
+    if let Some(main) = &tree.swap {
+        late.push(Operation::SetSwap {
+            id,
+            swap: Some(tree_ref(a, minted, main)?),
+        });
+    }
+    if let Some(props) = &tree.props {
+        let remap = |ids: &[NodeId]| -> Vec<NodeId> {
+            ids.iter()
+                .map(|i| minted.get(i).copied().unwrap_or(*i))
+                .collect()
+        };
+        let props = props
+            .iter()
+            .map(|p| crate::variant::Property {
+                bound: remap(&p.bound),
+                preferred: remap(&p.preferred),
+                ..p.clone()
+            })
+            .collect();
+        let props = rekeyed(ctx, &[], props);
+        late.push(Operation::SetProperties { id, props });
+    }
+    if let Some(text) = &tree.description {
+        late.push(Operation::SetDescription {
+            of: crate::op::Described::Node(id),
+            text: text.clone(),
+        });
+    }
+    if let Some(url) = &tree.doc_link {
+        late.push(Operation::SetDocLink {
+            id,
+            url: url.clone(),
+        });
+    }
     for (i, child) in tree.children.iter().enumerate() {
-        tree_ops(ctx, a, child, id, i, done)?;
+        tree_ops(ctx, a, child, id, i, ids, minted, done, late)?;
     }
     Ok(())
 }
 
+/// The ops binding a tree layer's own fields: each binding written alone, beside
+/// the literal the tree gives, which reads as the placeholder [`tree`] wrote. A
+/// binding a fill, stroke, effect or layout item carries in itself is refused
+/// here, naming where it goes.
+fn binding_ops(
+    a: &Args<'_>,
+    id: NodeId,
+    bindings: &[TreeBinding],
+) -> Result<Vec<Operation>, VerbError> {
+    use crate::variable::{TEXT_CONTENT, TEXT_FAMILY};
+    use build::BoundField as F;
+    let mut corners = [None; 4];
+    let mut spacing = [None; 6];
+    let mut size = [None; 2];
+    let mut text = [None; 7];
+    let (mut visible, mut opacity) = (None, None);
+    for b in bindings {
+        if !b.field.in_range() {
+            return Err(a.invalid("tree", "a binding names no such place in its field"));
+        }
+        let var = Some(b.variable);
+        match b.field {
+            F::Radius => corners = [var; 4],
+            F::Corner(k) => corners[k] = var,
+            F::Spacing(bits) => (0..6)
+                .filter(|k| bits & (1 << k) != 0)
+                .for_each(|k| spacing[k] = var),
+            F::Size(k) => size[k] = var,
+            F::Content => text[TEXT_CONTENT] = var,
+            F::Family => text[TEXT_FAMILY] = var,
+            F::Type(k) => text[k] = var,
+            F::Visible => visible = var,
+            F::Opacity => opacity = var,
+            F::Flow(_) => {
+                return Err(a.invalid("tree", "a flex's flow binding travels in its `display`"));
+            }
+            F::Fill(_) | F::Stroke(_) | F::StrokeWidth(_) | F::Effect(..) | F::Limit(_) => {
+                return Err(a.invalid(
+                    "tree",
+                    "a fill's, stroke's, effect's or limit's binding travels in that item",
+                ));
+            }
+        }
+    }
+    let mut ops = Vec::new();
+    if corners.iter().any(Option::is_some) {
+        ops.push(Operation::SetCornerVars { id, vars: corners });
+    }
+    if spacing.iter().any(Option::is_some) {
+        ops.push(Operation::SetSpacingVars { id, vars: spacing });
+    }
+    if size.iter().any(Option::is_some) {
+        ops.push(Operation::SetSizeVars { id, vars: size });
+    }
+    if text.iter().any(Option::is_some) {
+        ops.push(Operation::SetTextVars { id, vars: text });
+    }
+    if visible.is_some() {
+        ops.push(Operation::SetVisibleVar { id, var: visible });
+    }
+    if opacity.is_some() {
+        ops.push(Operation::SetOpacityVar { id, var: opacity });
+    }
+    Ok(ops)
+}
+
+/// A layer's own bound fields, in [`TreeBinding`]'s terms: the ones a paint,
+/// stroke, effect, layout item or flex does not carry in itself.
+fn own_bindings(n: &crate::node::Node) -> Vec<TreeBinding> {
+    use crate::variable::{TEXT_CONTENT, TEXT_FAMILY};
+    use build::BoundField as F;
+    let mut out = Vec::new();
+    let mut push = |field, var: Option<VarId>| {
+        if let Some(variable) = var {
+            out.push(TreeBinding { field, variable });
+        }
+    };
+    for (k, v) in n.corner_vars().into_iter().enumerate() {
+        push(F::Corner(k), v);
+    }
+    for (k, v) in n.spacing_vars().into_iter().enumerate() {
+        push(F::Spacing(1 << k), v);
+    }
+    push(F::Visible, n.visible_var());
+    push(F::Opacity, n.opacity_var());
+    for (k, v) in n.size_vars().into_iter().enumerate() {
+        push(F::Size(k), v);
+    }
+    for (k, v) in n.text_vars().into_iter().enumerate() {
+        let field = match k {
+            TEXT_CONTENT => F::Content,
+            TEXT_FAMILY => F::Family,
+            k => F::Type(k),
+        };
+        push(field, v);
+    }
+    out
+}
+
 /// Layer `id` and the layers inside it as a [`Tree`], the shape `insert_subtree`
 /// takes and the setters write: its kind with a text's runs, every fill and stroke
-/// with the hidden ones, its effects and exports, each field only where it differs
-/// from a new layer's, and no item ids. A binding a paint, stroke, effect or layout
-/// item carries travels in it; any other bound field (size, corners, text, gaps,
-/// padding, flow, visibility, opacity) is written as drawn, unbound. Only what
-/// `Tree` holds is read: no styles, modes, width queries, pivot, element, link or
-/// component state. `None` for no such layer. Every value in its full shape;
-/// [`tree`] writes the short forms.
-fn full_tree(doc: &Document, id: NodeId) -> Option<Value> {
+/// with the hidden ones, its effects and exports, what it reads (styles, modes,
+/// width queries, its own bindings), its pivot, element, link, grids and guides,
+/// and its part in a component, each field only where it differs from a new
+/// layer's, and no item ids. With `drawn`, a bound field is written as drawn and
+/// left unbound, for a `like` sample's look; without, it is the model: the
+/// placeholder literal beside its binding, so the tree inserts back as it was.
+/// Every layer carries its `id`, which [`tree`] keeps only where the tree refers
+/// to it. `None` for no such layer. Every value in its full shape; [`tree`]
+/// writes the short forms.
+fn full_tree(doc: &Document, id: NodeId, drawn: bool) -> Option<Value> {
     fn values<T: serde::Serialize>(list: &[Keyed<T>]) -> Value {
         serde_json::to_value(list.iter().map(|k| &k.value).collect::<Vec<_>>()).unwrap_or_default()
     }
@@ -6410,14 +6710,17 @@ fn full_tree(doc: &Document, id: NodeId) -> Option<Value> {
     let mut put = |k: &str, v: Value| {
         out.insert(k.to_owned(), v);
     };
-    // A bound field's stored literal is a placeholder, so each is written as drawn.
-    let mut kind = doc
-        .resolved_kind(id)
-        .map_or_else(|| n.kind().clone(), std::borrow::Cow::into_owned);
-    if let Some(radii) = kind.corner_radii().and_then(|r| doc.resolve_corners(id, r)) {
+    let mut kind = match drawn {
+        true => doc
+            .resolved_kind(id)
+            .map_or_else(|| n.kind().clone(), std::borrow::Cow::into_owned),
+        false => n.kind().clone(),
+    };
+    if drawn && let Some(radii) = kind.corner_radii().and_then(|r| doc.resolve_corners(id, r)) {
         kind.set_corner_radii(radii);
     }
     put("kind", serde_json::to_value(&kind).unwrap_or_default());
+    put("id", Value::from(id.to_wire()));
     put("name", Value::from(n.name()));
     if n.transform() != Affine::IDENTITY {
         put(
@@ -6425,13 +6728,20 @@ fn full_tree(doc: &Document, id: NodeId) -> Option<Value> {
             serde_json::to_value(n.transform()).unwrap_or_default(),
         );
     }
-    if !doc.shown(id) {
+    let visible = match drawn {
+        true => doc.shown(id),
+        false => n.visible(),
+    };
+    if !visible {
         put("visible", Value::Bool(false));
     }
     if n.locked() {
         put("locked", Value::Bool(true));
     }
-    let opacity = doc.drawn_opacity(id);
+    let opacity = match drawn {
+        true => doc.drawn_opacity(id),
+        false => n.opacity(),
+    };
     if opacity != 1.0 {
         put("opacity", Value::from(opacity));
     }
@@ -6462,8 +6772,12 @@ fn full_tree(doc: &Document, id: NodeId) -> Option<Value> {
     if !n.exports().is_empty() {
         put("exports", values(n.exports()));
     }
-    if let Some(d) = doc.resolved_display(id) {
-        put("display", serde_json::to_value(&*d).unwrap_or_default());
+    let display = match drawn {
+        true => doc.resolved_display(id).map(std::borrow::Cow::into_owned),
+        false => n.display().cloned(),
+    };
+    if let Some(d) = display {
+        put("display", serde_json::to_value(&d).unwrap_or_default());
     }
     if *n.item() != LayoutItem::default() {
         put("item", serde_json::to_value(n.item()).unwrap_or_default());
@@ -6474,10 +6788,86 @@ fn full_tree(doc: &Document, id: NodeId) -> Option<Value> {
             serde_json::to_value(n.insets()).unwrap_or_default(),
         );
     }
+    if let Some(pivot) = n.pivot() {
+        put("pivot", serde_json::to_value(pivot).unwrap_or_default());
+    }
+    if let Some(element) = n.element() {
+        put("element", serde_json::to_value(element).unwrap_or_default());
+    }
+    if !n.href().is_empty() {
+        put("link", Value::from(n.href()));
+    }
+    if !n.grids().is_empty() {
+        put("grids", values(n.grids()));
+    }
+    let guides: Vec<Value> = doc
+        .guides()
+        .iter()
+        .filter(|g| g.owner == id && !doc.is_page(id))
+        .map(|g| {
+            let g = GuideIn {
+                id: None,
+                ..GuideIn::of(g)
+            };
+            serde_json::to_value(g).unwrap_or_default()
+        })
+        .collect();
+    if !guides.is_empty() {
+        put("guides", Value::Array(guides));
+    }
+    if n.styles() != crate::style::StyleRefs::default() {
+        put(
+            "styles",
+            serde_json::to_value(n.styles()).unwrap_or_default(),
+        );
+    }
+    if !n.modes().is_empty() {
+        put("modes", serde_json::to_value(n.modes()).unwrap_or_default());
+    }
+    if !n.queries().is_empty() {
+        put(
+            "queries",
+            serde_json::to_value(n.queries()).unwrap_or_default(),
+        );
+    }
+    let bindings = own_bindings(n);
+    if !drawn && !bindings.is_empty() {
+        put(
+            "bindings",
+            serde_json::to_value(bindings).unwrap_or_default(),
+        );
+    }
+    if n.component() {
+        put("component", Value::Bool(true));
+    }
+    if let Some(source) = n.link() {
+        put("copy_of", Value::from(source.to_wire()));
+    }
+    if let Some(main) = n.swap() {
+        put("swap", Value::from(main.to_wire()));
+    }
+    if let Some(set) = n.set() {
+        put("set", serde_json::to_value(set).unwrap_or_default());
+    }
+    if !n.variant().is_empty() {
+        put(
+            "variant",
+            serde_json::to_value(n.variant()).unwrap_or_default(),
+        );
+    }
+    if !n.props().is_empty() {
+        put("props", values(n.props()));
+    }
+    if !n.description().is_empty() {
+        put("description", Value::from(n.description()));
+    }
+    if !n.doc_link().is_empty() {
+        put("doc_link", Value::from(n.doc_link()));
+    }
     let children: Vec<Value> = n
         .children()
         .iter()
-        .filter_map(|c| full_tree(doc, *c))
+        .filter_map(|c| full_tree(doc, *c, drawn))
         .collect();
     if !children.is_empty() {
         put("children", Value::Array(children));
@@ -6485,12 +6875,98 @@ fn full_tree(doc: &Document, id: NodeId) -> Option<Value> {
     Some(Value::Object(out))
 }
 
-/// [`full_tree`] in the short forms `insert_subtree` reads: hex colours, paints
-/// without their default fields, lengths as `"22px"`, a path as SVG data.
+/// [`full_tree`] of the model in the short forms `insert_subtree` reads: hex
+/// colours, paints without their default fields, lengths as `"22px"`, a path as
+/// SVG data. A layer keeps its `id` only where another layer of the tree refers
+/// to it, and a link that leaves the tree for an instance the read is inside of
+/// is dropped: that copy is placed as a plain one, as a layer pasted out of an
+/// instance is.
 pub fn tree(doc: &Document, id: NodeId) -> Option<Value> {
-    let mut v = full_tree(doc, id)?;
+    let mut v = full_tree(doc, id, false)?;
+    // A layer inside an instance the read starts within is linked through that
+    // instance's root, which the tree does not hold.
+    let outer = crate::component::instance_root(doc, id).filter(|r| *r != id);
+    if let Some(outer) = outer {
+        unlink_members(doc, outer, &mut v);
+    }
+    let mut referred = std::collections::HashSet::new();
+    referenced(&v, &mut referred);
+    keep_referred_ids(&mut v, &referred);
     loose::tighten("tree", &mut v);
     Some(v)
+}
+
+/// Drop `copy_of` from every layer of `v` whose instance root is `outer`.
+fn unlink_members(doc: &Document, outer: NodeId, v: &mut Value) {
+    let Value::Object(map) = v else { return };
+    let id = map
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(NodeId::from_wire);
+    if id.and_then(|id| crate::component::instance_root(doc, id)) == Some(outer) {
+        map.remove("copy_of");
+    }
+    for child in map
+        .get_mut("children")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        unlink_members(doc, outer, child);
+    }
+}
+
+/// Every layer id a layer of `v` refers to: its link, its swap, and its
+/// properties' bound layers and preferred mains.
+fn referenced(v: &Value, out: &mut std::collections::HashSet<String>) {
+    let Value::Object(map) = v else { return };
+    for key in ["copy_of", "swap"] {
+        if let Some(Value::String(s)) = map.get(key) {
+            out.insert(s.clone());
+        }
+    }
+    for p in map
+        .get("props")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for key in ["bound", "preferred"] {
+            for s in p.get(key).and_then(Value::as_array).into_iter().flatten() {
+                if let Some(s) = s.as_str() {
+                    out.insert(s.to_owned());
+                }
+            }
+        }
+    }
+    for child in map
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        referenced(child, out);
+    }
+}
+
+/// Keep each layer's `id` in `v` only where `referred` holds it.
+fn keep_referred_ids(v: &mut Value, referred: &std::collections::HashSet<String>) {
+    let Value::Object(map) = v else { return };
+    if map
+        .get("id")
+        .and_then(Value::as_str)
+        .is_none_or(|id| !referred.contains(id))
+    {
+        map.remove("id");
+    }
+    for child in map
+        .get_mut("children")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        keep_referred_ids(child, referred);
+    }
 }
 
 /// `v`, a read of the model such as a variable's cells or a style's value, in
@@ -6539,7 +7015,7 @@ fn expand_like(doc: &Document, v: &mut Value) -> Result<(), String> {
             .as_str()
             .and_then(NodeId::from_wire)
             .ok_or_else(|| format!("`like`: {like} is not a layer id"))?;
-        let Some(Value::Object(src)) = full_tree(doc, id) else {
+        let Some(Value::Object(src)) = full_tree(doc, id, true) else {
             return Err(format!("`like`: no layer `{}`", id.to_wire()));
         };
         let src_is_text = src.get("kind").and_then(|k| k.get("Text")).is_some();
