@@ -51,9 +51,6 @@ Items run cheapest first.
   drift chroma. With it, *Generate scale*: a 50–950 ramp of colour variables from one colour, even
   in lightness, from the variables browser, MCP and Luau. `contrast::nearest` already moves colours
   in OKLCH.
-- **N-fold radial symmetry for the pen and pencil.** `symmetry::PathMirror` holds a vertical and a
-  horizontal axis; a rotational order (3–12 copies about the centre, optionally mirrored) needs a
-  model change and its own rule for what the path stores, as the mirror's flags have.
 - **Design system health.** One card for a document: how much paint, type and spacing is bound to
   variables and styles against raw values, detached instances, unused styles, variables and
   components, near-duplicate colours, and kits waiting on updates. Most of the readings exist
