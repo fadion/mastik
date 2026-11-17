@@ -452,10 +452,15 @@ Four controls: the op dropdown plus three 28×28 icon buttons, `ACTION_GLYPH` 16
 ## The Mask card
 
 `inspector::inspector_mask`: directly under the identity card while the selection is a mask **or a
-container holding one**. One dropdown: *Shape*, *Alpha* or *Luminance* (`MaskMode::ALL`). Targets come from
-`inspector::mask_card_targets` (free function): the selected layer if it is a mask, else its **direct**
-mask children. A list — two runs report *Mixed* and a pick writes every target that would change, in
-one transaction. There is no "mask group" flag; it is derived from the children every time.
+container holding one**. One row: a dropdown of *Shape*, *Alpha* or *Luminance* (`MaskMode::ALL`) and,
+beside it, an *Invert* toggle (`ui::field_button_marked`, glyph `icon::MASK_INVERT`, tooltip *Invert —
+show only what lies outside the mask*). Targets come from `inspector::mask_card_targets` (free
+function): the selected layer if it is a mask, else its **direct** mask children. A list — two runs
+report *Mixed* and a pick writes every target that would change, in one transaction. The toggle is On
+only while every target is inverted; a click inverts them all, or turns them all back when all are
+(undo step *Invert mask*). On an instance each control carries its own override mark (`sub_mark`, over
+`SetMaskMode` and `SetMaskInverted`), and the component panel's reset groups both under *Mask*. There
+is no "mask group" flag; it is derived from the children every time.
 
 ## When a boolean fails
 

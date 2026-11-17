@@ -1288,6 +1288,9 @@ pub mod icon {
     /// not borrow [`LAYER_BLUR`]'s soft dots for their opposite or read as
     /// [`DIAMOND`]'s plain rhombus.
     pub const SHARPEN: &str = "\u{f06e}";
+    /// *Invert* in the Mask card: [`MASK`]'s fill swapped, a solid square with a
+    /// round window, so what shows is what lies outside the mask.
+    pub const MASK_INVERT: &str = "\u{f074}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1594,6 +1597,7 @@ pub mod icon {
         ("scope-frame", SCOPE_FRAME),
         ("trash-all", TRASH_ALL),
         ("sharpen", SHARPEN),
+        ("mask-invert", MASK_INVERT),
     ];
 }
 

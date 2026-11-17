@@ -2458,7 +2458,8 @@ impl MastikApp {
         }
     }
 
-    /// The **Mask** card: how the selection masks.
+    /// The **Mask** card: how the selection masks, its mode and whether it is
+    /// inverted, on one row.
     ///
     /// Present only when there is a mask to describe ([`Self::mask_card_targets`]),
     /// including on the mask group the operation leaves selected.
@@ -2490,42 +2491,98 @@ impl MastikApp {
             |id, mode| Operation::SetMaskMode { id, mode },
             |m| m.label().to_owned(),
         );
+        // Lit only when every target is inverted; a click then turns them all back.
+        let inverted: Vec<(NodeId, bool)> = targets
+            .iter()
+            .filter_map(|t| self.session.doc.get(*t).map(|n| (*t, n.mask_inverted())))
+            .collect();
+        let all_inverted = inverted.iter().all(|(_, on)| *on);
+        let invert_mark = self.sub_mark(
+            &targets,
+            |op| match op {
+                Operation::SetMaskInverted { inverted, .. } => Some(*inverted),
+                _ => None,
+            },
+            |n| Some(n.mask_inverted()),
+            |on| *on,
+            |c, on| *c = on,
+            |id, inverted| Operation::SetMaskInverted { id, inverted },
+            |on| match on {
+                true => "inverted".to_owned(),
+                false => "not inverted".to_owned(),
+            },
+        );
 
         let mut pick = None;
         let mut reset = false;
+        let mut invert = false;
+        let mut invert_reset = false;
         self.panel(ui, "Mask", None, |_app, ui| {
             ui.spacing_mut().interact_size.y = 28.0;
             ui.spacing_mut().button_padding.y = 0.0;
+            ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
             let label = match shared {
                 Some(m) => m.label(),
                 None => "Mixed",
             };
-            let face = egui::ComboBox::from_id_salt("mask-mode")
-                .icon(ui::combo_chevron)
-                .width(ui.available_width())
-                .selected_text(ui::glyph_and_text(icon::MASK, label))
-                .show_ui(ui, |ui| {
-                    ui::menu_rows(ui);
-                    if let Some(m) = &mark {
-                        reset = super::component::menu_reset_row(ui, m);
-                    }
-                    // "Mixed" is a report, not a value, so it is not an option.
-                    for option in mastik_core::MaskMode::ALL {
-                        if ui
-                            .selectable_label(shared == Some(option), option.label())
-                            .on_hover_text(option.describe())
-                            .clicked()
-                        {
-                            pick = Some(option);
+            ui.horizontal(|ui| {
+                let face = egui::ComboBox::from_id_salt("mask-mode")
+                    .icon(ui::combo_chevron)
+                    .width(ui.available_width() - 28.0 - ui::CARD_COL_GAP)
+                    .selected_text(ui::glyph_and_text(icon::MASK, label))
+                    .show_ui(ui, |ui| {
+                        ui::menu_rows(ui);
+                        if let Some(m) = &mark {
+                            reset = super::component::menu_reset_row(ui, m);
                         }
-                    }
-                })
-                .response;
-            if mark.is_some() {
-                super::component::combo_dot(ui.painter(), face.rect);
-            }
+                        // "Mixed" is a report, not a value, so it is not an option.
+                        for option in mastik_core::MaskMode::ALL {
+                            if ui
+                                .selectable_label(shared == Some(option), option.label())
+                                .on_hover_text(option.describe())
+                                .clicked()
+                            {
+                                pick = Some(option);
+                            }
+                        }
+                    })
+                    .response;
+                if mark.is_some() {
+                    super::component::combo_dot(ui.painter(), face.rect);
+                }
+                let (resp, reset) = ui::field_button_marked(
+                    ui,
+                    icon::MASK_INVERT,
+                    egui::Vec2::splat(28.0),
+                    ui::FieldButton::on_if(all_inverted),
+                    invert_mark.as_ref().map(Mark::field),
+                );
+                invert_reset = reset;
+                invert = !reset
+                    && tip_unless_marked(
+                        resp,
+                        &invert_mark,
+                        "Invert — show only what lies outside the mask",
+                    )
+                    .clicked();
+            });
         });
         self.reset_marked(reset, &mark);
+        self.reset_marked(invert_reset, &invert_mark);
+        if invert {
+            let ops: Vec<Operation> = inverted
+                .iter()
+                .filter(|(_, was)| *was == all_inverted)
+                .map(|(t, _)| Operation::SetMaskInverted {
+                    id: *t,
+                    inverted: !all_inverted,
+                })
+                .collect();
+            if !ops.is_empty() {
+                self.session.name_step("Invert mask", icon::MASK_INVERT);
+                self.commit_edit(Transaction(ops));
+            }
+        }
         if let Some(mode) = pick {
             // Only the targets that would change, so a no-op pick is no undo step.
             let ops: Vec<Operation> = modes
