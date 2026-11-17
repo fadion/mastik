@@ -10792,6 +10792,15 @@ impl MastikApp {
                 color::MEASURE,
             );
         }
+        // The points the Distort card's shown row would add, hollow in the selection's
+        // blue, as Clean up marks the ones it would drop.
+        for p in self.distort_adding() {
+            painter.circle_stroke(
+                self.to_screen(*p, rect, ppp),
+                DROPPING_DOT_PX,
+                egui::Stroke::new(1.0, color::SELECT),
+            );
+        }
 
         // As chrome, since the renderer's ghost can be culled with the root.
         if let Some(area) = self.create_outline_box(ui, rect, ppp, resp) {

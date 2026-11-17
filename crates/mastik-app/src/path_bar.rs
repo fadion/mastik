@@ -185,6 +185,7 @@ enum Verb {
     Split,
     CleanUp,
     Offset,
+    Distort,
     PixelFit,
     /// The pen's and the pencil's mirror switch, which opens its flyout.
     Mirror,
@@ -202,6 +203,7 @@ struct Shown {
     bar: egui::Rect,
     offset: egui::Rect,
     cleanup: egui::Rect,
+    distort: egui::Rect,
     mirror: egui::Rect,
     /// The lit envelope button, which the warp card's top lines up with.
     shape: egui::Rect,
@@ -220,6 +222,7 @@ impl MastikApp {
         let mut clicked: Option<Verb> = None;
         let (mut offset, mut mirror) = (egui::Rect::NOTHING, egui::Rect::NOTHING);
         let (mut shape, mut cleanup) = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        let mut distort = egui::Rect::NOTHING;
         let shown = egui::Area::new(egui::Id::new("path-bar"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::LEFT_CENTER)
@@ -251,6 +254,7 @@ impl MastikApp {
                                     match verb {
                                         Verb::Offset => offset = resp.rect,
                                         Verb::CleanUp => cleanup = resp.rect,
+                                        Verb::Distort => distort = resp.rect,
                                         Verb::Mirror => mirror = resp.rect,
                                         Verb::WarpShape(_) if *active => shape = resp.rect,
                                         _ => {}
@@ -269,6 +273,7 @@ impl MastikApp {
             bar: shown.response.rect,
             offset,
             cleanup,
+            distort,
             mirror,
             shape,
         }
@@ -435,6 +440,7 @@ impl MastikApp {
             self.mirror_open = false;
             self.close_offset_card();
             self.close_cleanup();
+            self.close_distort();
             return self.warp_bar(ctx);
         }
         // The mirror's flyout hangs from the drawing bar, or the edit bar's
@@ -447,6 +453,7 @@ impl MastikApp {
             self.edit_mirror = None;
             self.close_offset_card();
             self.close_cleanup();
+            self.close_distort();
             if matches!(self.tool, Tool::Pen | Tool::Pencil) {
                 self.drawing_bar(ctx);
             }
@@ -556,6 +563,14 @@ impl MastikApp {
                 verb: Verb::Offset,
             },
             E::Btn {
+                glyph: icon::DISTORT,
+                tip: "Distort — roughen, zig-zag, pucker or bloat",
+                dimmed: "",
+                active: self.distort.is_some(),
+                enabled: true,
+                verb: Verb::Distort,
+            },
+            E::Btn {
                 glyph: icon::PIXEL_FIT,
                 tip: match has_points {
                     true => "Pixel-fit — move the selected points onto whole pixels",
@@ -589,6 +604,7 @@ impl MastikApp {
             Some(Verb::Split) => self.split_points(None),
             Some(Verb::CleanUp) => self.toggle_cleanup(id),
             Some(Verb::Offset) => self.toggle_offset_card(id),
+            Some(Verb::Distort) => self.toggle_distort(id),
             Some(Verb::PixelFit) => self.pixel_fit_points(),
             Some(Verb::Done) => {
                 self.choose_tool(Tool::Select);
@@ -610,15 +626,19 @@ impl MastikApp {
         if self.cleanup.is_some() {
             self.cleanup_ui(ctx, bar_rect, shown.cleanup);
         }
+        if self.distort.is_some() {
+            self.distort_ui(ctx, bar_rect, shown.distort);
+        }
     }
 
-    /// Open the Offset card on `id`, or close it. The Clean up card, which hangs in
-    /// the same place, closes.
+    /// Open the Offset card on `id`, or close it. The Clean up and Distort cards,
+    /// which hang in the same place, close.
     fn toggle_offset_card(&mut self, id: NodeId) {
         if self.offset_card.take().is_some() {
             return;
         }
         self.close_cleanup();
+        self.close_distort();
         let Some(NodeKind::Path {
             path,
             corner_radii,

@@ -517,6 +517,7 @@ impl MastikApp {
         self.drop_offset_card();
         // Its refits are of this document's path; another may share the node id.
         self.close_cleanup();
+        self.close_distort();
         // A chart's data window, import box and pending read name this
         // document's charts; another may share the node ids.
         self.chart_data = None;

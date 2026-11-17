@@ -106,6 +106,7 @@ mod contrast;
 #[cfg(test)]
 mod control_audit;
 mod cursor;
+mod distort;
 mod expr;
 mod eyedropper;
 #[cfg(windows)]

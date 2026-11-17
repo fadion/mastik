@@ -1131,6 +1131,9 @@ pub mod icon {
     /// *Pixel-fit*: an arrow pushing a square's corner onto the grid. Not
     /// [`GRID_FOUR`], which means the View menu's grid.
     pub const PIXEL_FIT: &str = "\u{f056}";
+    /// *Distort*: a box whose top edge zig-zags, the outline roughened. Not
+    /// [`WAVE_SINE`] or a warp glyph, which bend the whole shape.
+    pub const DISTORT: &str = "\u{f077}";
     /// The top bar's Tools menu: a toolbox, its handle up and its lid's band
     /// latched. Not [`MAGIC_WAND`], which means clean-up.
     pub const TOOLBOX: &str = "\u{f057}";
@@ -1540,6 +1543,7 @@ pub mod icon {
         ("split-point", SPLIT_POINT),
         ("knife-cut", KNIFE_CUT),
         ("pixel-fit", PIXEL_FIT),
+        ("distort", DISTORT),
         ("toolbox", TOOLBOX),
         ("dice", DICE),
         ("fill-content", FILL_CONTENT),

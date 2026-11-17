@@ -158,14 +158,15 @@ fn anchors_in(path: &BezPath) -> usize {
 }
 
 impl MastikApp {
-    /// Open the Clean up card on `id`, or close it. The Offset card, which hangs in
-    /// the same place, closes, and so do the Clean up and Fill with content boxes,
+    /// Open the Clean up card on `id`, or close it. The Offset and Distort cards,
+    /// which hang in the same place, close, and so do the Clean up and Fill with content boxes,
     /// which close this card when they open.
     pub(crate) fn toggle_cleanup(&mut self, id: NodeId) {
         if self.cleanup.is_some() {
             return self.close_cleanup();
         }
         self.close_offset_card();
+        self.close_distort();
         let Some(card) = self.read_cleanup(id) else {
             return;
         };

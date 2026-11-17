@@ -33,6 +33,7 @@ pub mod content_fill;
 pub mod contrast;
 pub mod credit;
 pub mod diff;
+pub mod distort;
 pub mod document;
 pub mod edit;
 pub mod effect;

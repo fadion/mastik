@@ -1562,6 +1562,36 @@ fn sweep_on(theme: Theme) {
     };
     let found = opened(&ctx, &mut app, |_, a| a.toggle_cleanup(path));
     check("clean up card", app, found);
+    // The path bar's Distort card on a path whose points are edited: its fields,
+    // its meter, its buttons and the Corner · Smooth strip.
+    let mut app = with_a_rect(&ctx);
+    let path = {
+        let a = &mut app;
+        let page = a.session.doc.first_page();
+        let id = a.session.ids.mint();
+        let mut p = mastik_core::kurbo::BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((100.0, 0.0));
+        p.line_to((100.0, 80.0));
+        assert!(a.session.commit(Transaction(vec![Operation::CreateNode {
+            id,
+            parent: page,
+            index: 1,
+            kind: NodeKind::Path {
+                path: p,
+                corner_radii: Vec::new(),
+                corner_smoothing: 0.0,
+                mirror: mastik_core::symmetry::PathMirror::NONE,
+            },
+            transform: Some(Affine::translate((300.0, 0.0))),
+            name: None,
+        }])));
+        a.session.selection.set_one(id);
+        a.tool = crate::tools::Tool::Node;
+        id
+    };
+    let found = opened(&ctx, &mut app, |_, a| a.toggle_distort(path));
+    check("distort card", app, found);
     // *Trace image…* on the box given a picture fill: its segments, fields, switch
     // and foot. The settings draw whether or not the picture has pixels behind it.
     let mut app = with_a_rect(&ctx);

@@ -252,14 +252,14 @@ row's resting badge (`BADGE_MIRROR`, tooltip *Mirrored path*), which the eye and
 A short rail floats beside the tool rail, centred on its Pen slot (`MastikApp::pen_button`, whichever
 of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; every bar is drawn by
 `show_bar`). It shows nothing the canvas does not already offer except *Clean up*, *Offset*,
-*Pixel-fit* on selected points and the mirror.
+*Distort*, *Pixel-fit* on selected points and the mirror.
 
 - **While a path's points are edited** (`canvas::edited_path`) it holds the node tool's verbs: select
   points (`A`), the pen bias (`P`) and Mirror, the edit's own switch with the drawing bar's flyout,
   dimmed until the pen bias is picked (*Pick the pen to mirror what it draws*) and on a mirrored
   path, whose runs follow its own axes; *Make corner*, *Make smooth* and *Join*, dimmed until the
   point selection allows them; *Reverse* (`Shift+D`); *Split at point*; *Clean up* (the wand);
-  *Offset*; *Pixel-fit* (`pixel_fit_points`: the selected points, or the whole path with none
+  *Offset*; *Distort* (`icon::DISTORT`, a box whose top edge zig-zags); *Pixel-fit* (`pixel_fit_points`: the selected points, or the whole path with none
   selected; *Pixel-fit*, below); and *Done* (`Enter`).
 - **Split at point** (`canvas::split_points`, `edit::split_at_points`) cuts the edited path at its
   selected anchors: a closed run opens there and an open run becomes two subpaths of the same layer.
@@ -282,10 +282,10 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
   dragged (*The axis is where it starts*). A pick or a press elsewhere closes it, and so does
   `Escape`, a rung of the ladder; leaving the pen and the pencil drops it.
 - **While a warp envelope is open** the warp bar stands in its place, ahead of both, and the mirror
-  flyout and the two cards close (`path_bar::warp_bar`, `tools.md` *Warp*).
+  flyout and the three cards close (`path_bar::warp_bar`, `tools.md` *Warp*).
 
 - **The Clean up card** (`crate::cleanup`) hangs beside the bar, its top on the wand's, as the
-  Offset card does, and the two replace each other; opening it closes the *Clean up* and *Fill with
+  Offset and Distort cards do, and the three replace each other; opening it closes the *Clean up* and *Fill with
   content* boxes, which close it. It is a popover (`ui::menu_frame`,
   `popover_head` *Clean up* with its ×) of four `ui::labelled` rows, each a field and a word button
   of one width: *Simplify* (accuracy in px, from `SIMPLIFY_MIN_ACCURACY` to 20, *Apply*, with
@@ -314,6 +314,32 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
     differently.
     *Smooth selected* (`edit::smooth_points`) moves each selected anchor's handles that far toward
     fresh smooth ones, along the line between its neighbours, a third of the shorter leg long.
+- **The Distort card** (`crate::distort`, `mastik_core::distort`) is its own card rather than
+  Clean up rows, since Clean up makes a path tidier and these make it rougher. Built as Clean up's
+  and hung the same way: `popover_head` *Distort*; *Roughen* (Size px, Detail %), *Zig-zag* (Size
+  px, Ridges) and *Pucker / Bloat* (Amount −100 to +100 % on a signed metered field), each with
+  *Apply*; a rule; *New points* (*Corner* · *Smooth*); and a caption, *Acts on the whole path.
+  Select points to distort only between them.* or *Acts between the 4 selected points*. A row
+  previews as Clean up's do, the points it would add drawn as hollow dots in the selection blue
+  (`distort_adding`). Each *Apply* is one undo step: *Roughen*, *Zig-zag*, or *Pucker* below zero
+  and *Bloat* otherwise. Its numbers are kept while it is closed (`distort_numbers`), a
+  right-click puts a scrub back (`InFlight::distort_scrub`), and `Escape` closes it (a rung under
+  Clean up's). It runs on the UI thread: nothing in it refits.
+  - The filters move the editor's anchors in world space, so sizes are world units, and answer
+    ordinary anchors, so nothing stays live. With anchors selected only segments with both ends
+    selected change; with none, every segment. *Roughen* adds points evenly by arc length
+    (`ROUGHEN_DENSITY` per unit at full detail, at most `MAX_ADDED_PER_SEGMENT` a segment), then
+    moves each of them and each anchor in scope up to the size, evenly over a disc, from
+    `content_fill`'s splitmix stream seeded by the card's seed: the preview shows the seed *Apply*
+    bakes, and each *Apply* moves to the next, so pressing it again roughens differently.
+    *Zig-zag* adds `2·ridges − 1` points a segment, alternately half the size either side along the
+    normal, the anchors fixed. *Pucker / Bloat* moves both control points of each segment by
+    ⁴⁄₃ · amount · (the segment's middle − the centre of the drawing's anchors), so −100 % brings
+    the middle to the centre; the anchors stay and none is added.
+  - *Smooth* gives each anchor between two changed segments a Catmull-Rom tangent, (next −
+    previous) / 6, and one at the edge of the scope a handle a sixth of the way toward its changed
+    neighbour; *Corner* leaves them corners and those segments straight. Either way such an anchor loses its
+    corner radius.
 - **Simplify** (`build::simplify_outline_within`) flattens the drawn outline and refits it
   with `fit`'s cubics, within the card's accuracy (`SIMPLIFY_ACCURACY`, 0.5 px in the layer's
   units, at first), as *Offset path*'s refit does. Turns sharper than `SIMPLIFY_CORNER_DEG` (15°), read over a few accuracies rather than
@@ -368,7 +394,7 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
 ## Path corner radii
 
 `NodeKind::Path` carries a radius per anchor, resolved by `geometry::local_path` like a `Rect`'s four —
-never baked, except by *Simplify* and *Offset*, which replace the anchors. The Appearance field writes the selected corner points, or every corner when the path is
+never baked, except by *Simplify* and *Offset*, which replace the anchors; *Roughen* and *Zig-zag* drop it from the anchors they touch. The Appearance field writes the selected corner points, or every corner when the path is
 selected without the node tool. Every corner rounds; a radius on a smooth anchor draws nothing.
 
 ## Pixel-fit

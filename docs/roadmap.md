@@ -38,9 +38,6 @@ Items run cheapest first.
 - **Linear and grid repeat.** `Line` and `Grid` beside the ring in *Repeat around origin*
   (`mastik_core::repeat`, `Ring`, `Place`), reusing its group and linked-copy placement:
   step-and-repeat, with copies optionally linked as instances.
-- **Baked path filters.** *Roughen*, *Zig-zag* and *Pucker / Bloat* in the path bar's Clean up
-  card, built as *Simplify* and *Offset* are: flatten, displace, refit. They give the hand-drawn and
-  organic edge most illustration asks for.
 - **Honour an imported picture's colour profile.** `mastik_render::images::decode` reads no ICC
   profile, so a Display P3 phone photo or an Adobe RGB JPEG draws as if its numbers were sRGB,
   desaturated on the canvas and in every export. Convert to sRGB at decode with the profile `image`

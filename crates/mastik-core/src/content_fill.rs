@@ -890,8 +890,9 @@ pub fn kind_from_text(text: &str) -> Option<Kind> {
 
 // --- drawing ------------------------------------------------------------------
 
-/// A splitmix64 stream: small, seedable and the same on every machine.
-struct Rng(u64);
+/// A splitmix64 stream: small, seedable and the same on every machine. Shared
+/// with `distort`'s Roughen, whose preview must be what Apply bakes.
+pub(crate) struct Rng(u64);
 
 fn mix(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -907,10 +908,15 @@ fn hash_str(s: &str) -> u64 {
 }
 
 impl Rng {
-    fn new(parts: &[u64]) -> Self {
+    pub(crate) fn new(parts: &[u64]) -> Self {
         Rng(parts.iter().fold(0x9E37_79B9_7F4A_7C15, |h, p| {
             mix(h ^ p.wrapping_add(0x9E37_79B9))
         }))
+    }
+
+    /// A number in `0..1`.
+    pub(crate) fn unit(&mut self) -> f64 {
+        (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
 
     fn next(&mut self) -> u64 {

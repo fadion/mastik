@@ -195,6 +195,8 @@ pub(crate) struct InFlight {
     pub(crate) trace_scrub: Option<crate::trace::TraceNumbers>,
     /// The Clean up card's numbers as they were when a scrub of one began, likewise.
     pub(crate) cleanup_scrub: Option<crate::cleanup::CleanupNumbers>,
+    /// The Distort card's numbers as they were when a scrub of one began, likewise.
+    pub(crate) distort_scrub: Option<crate::distort::DistortNumbers>,
     /// The Offset card's distance as it was when its scrub began, likewise.
     pub(crate) offset_scrub: Option<f64>,
     /// The vision bar's condition and its severity as it was when the slider was
@@ -319,6 +321,13 @@ mod in_flight_tests {
                 "cleanup_scrub",
                 InFlight {
                     cleanup_scrub: Some(Default::default()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "distort_scrub",
+                InFlight {
+                    distort_scrub: Some(Default::default()),
                     ..Default::default()
                 },
             ),
@@ -1021,6 +1030,10 @@ pub struct MastikApp {
     pub(crate) cleanup: Option<crate::cleanup::CleanupCard>,
     /// The Clean up card's numbers, kept while it is closed.
     pub(crate) cleanup_numbers: crate::cleanup::CleanupNumbers,
+    /// The path bar's Distort card, while it is open (`crate::distort`).
+    pub(crate) distort: Option<crate::distort::DistortCard>,
+    /// The Distort card's numbers, kept while it is closed.
+    pub(crate) distort_numbers: crate::distort::DistortNumbers,
     /// Exports rendering and writing on workers (`panels::export`).
     pub(crate) exports: Vec<crate::panels::RunningExport>,
     /// Dropped and picked files being read on workers, oldest first (`crate::import`).
@@ -1903,6 +1916,8 @@ impl MastikApp {
             offset_card: None,
             cleanup: None,
             cleanup_numbers: Default::default(),
+            distort: None,
+            distort_numbers: Default::default(),
             exports: Vec::new(),
             imports: Vec::new(),
             png_copy: None,
@@ -3151,6 +3166,7 @@ impl MastikApp {
         self.in_flight.warp_scrub = None;
         self.in_flight.trace_scrub = None;
         self.in_flight.cleanup_scrub = None;
+        self.in_flight.distort_scrub = None;
         self.in_flight.offset_scrub = None;
         self.in_flight.vision_scrub = None;
         self.in_flight.track_drag = None;
@@ -3176,7 +3192,8 @@ impl MastikApp {
         let standing = self.repeat_preview_standing()
             || self.blend_preview_standing()
             || self.warp_preview_standing()
-            || self.cleanup_preview_standing();
+            || self.cleanup_preview_standing()
+            || self.distort_preview_standing();
         let field = ctx.dragged_id().is_some()
             || (self.session.has_gesture_preview() && !standing)
             || self.in_flight.any()
@@ -3293,9 +3310,12 @@ impl MastikApp {
         {
             card.restore(n);
         }
-        // And the path bar's two cards'.
+        // And the path bar's three cards'.
         if let Some(n) = self.in_flight.cleanup_scrub.take() {
             self.cleanup_numbers = n;
+        }
+        if let Some(n) = self.in_flight.distort_scrub.take() {
+            self.restore_distort_scrub(n);
         }
         if let Some(d) = self.in_flight.offset_scrub.take() {
             self.restore_offset_scrub(d);
@@ -3394,6 +3414,8 @@ impl MastikApp {
             self.drop_offset_card();
         } else if self.cleanup.is_some() {
             self.close_cleanup();
+        } else if self.distort.is_some() {
+            self.close_distort();
         } else if self.pen_bias {
             // The bias, above the points it was armed over.
             self.pen_bias = false;

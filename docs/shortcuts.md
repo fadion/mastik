@@ -564,7 +564,7 @@ inner rungs first) → the Credits card (`credits_open`) → the Repeat around o
 the pen →
 **a gesture in flight**
 (`cancel_gesture`) → **a chrome field that just lost focus** (`chrome_focus`) → the path bar's
-Offset card (`offset_card`) → the path bar's Clean up card (`cleanup`) → pen bias armed over an edit → the point selection → the pivot handle → the entered group (selects it) → a tool that is
+Offset card (`offset_card`) → the path bar's Clean up card (`cleanup`) → its Distort card (`distort`) → pen bias armed over an edit → the point selection → the pivot handle → the entered group (selects it) → a tool that is
 not Select (to Select) → **the layer selection**, the fall-through `else`.
 
 🚨 A prose ordering is the least checkable thing this project writes down: an earlier list omitted
