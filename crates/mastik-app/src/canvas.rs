@@ -3274,9 +3274,11 @@ impl MastikApp {
         match &self.drag {
             Drag::Pan => self.pan_by_drag(ui, resp),
             Drag::Move { anchor } => {
-                let (delta, _) = self.snapped_move(world - *anchor, shift);
-                // Alt turns the move into a copy at any point in the drag.
+                let raw = world - *anchor;
+                // Alt turns the move into a copy at any point in the drag; synced
+                // first, since whether the originals are snap targets hangs on it.
                 self.sync_alt_clone(alt);
+                let (delta, _) = self.snapped_move(raw, shift);
                 match &mut self.alt_clone {
                     Some(clone) => {
                         clone.delta = delta;
@@ -3412,8 +3414,8 @@ impl MastikApp {
             Drag::Move { anchor } => {
                 let raw = world - anchor;
                 if raw.hypot() > 1e-4 {
-                    let (delta, _) = self.snapped_move(raw, shift);
                     self.sync_alt_clone(alt);
+                    let (delta, _) = self.snapped_move(raw, shift);
                     // Built with the drag back in place: whether an in-flow item
                     // leaves its layout is read off the drag's pointer (`move_pointer`).
                     self.drag = Drag::Move { anchor };
@@ -4324,6 +4326,8 @@ impl MastikApp {
             } else {
                 Vec::new()
             },
+            // A moved box's row and column, which only `snapped_move` knows.
+            beyond: Vec::new(),
             outlines: snap::Outlines::default(),
             guides: if self.snap_guides {
                 let mut lines = self.guide_lines();
@@ -4544,8 +4548,27 @@ impl MastikApp {
         else {
             return (delta, snap::Marks::default());
         };
-        let ids = self.session.selection.ids().to_vec();
-        let result = snap::snap_rect(bounds + delta, axes, &self.snapping(&ids));
+        // An Alt-drag leaves the originals where they are, so they are targets like
+        // any other layer: a copy dragged past its original takes the row's gap.
+        let moving = match self.alt_clone {
+            Some(_) => Vec::new(),
+            None => self.session.selection.ids().to_vec(),
+        };
+        let mut snapping = self.snapping(&moving);
+        if self.snap_shapes {
+            // The rest of a row may be off-screen; a gap copied from it still counts.
+            let view = self.session.camera.viewport(self.canvas_px).view;
+            snapping.beyond = snap::beyond(
+                &self.session.doc,
+                &self.session.resolved,
+                self.session.page,
+                &moving,
+                view,
+                bounds + delta,
+                SNAP_TARGET_LIMIT,
+            );
+        }
+        let result = snap::snap_rect(bounds + delta, axes, &snapping);
         (delta + result.adjust, result.marks)
     }
 
@@ -21638,6 +21661,92 @@ mod select_drag_tests {
             app.session.doc.get(a).unwrap().transform().translation(),
             Vec2::ZERO,
             "the original stays put"
+        );
+    }
+
+    /// An Alt-drag copy dragged past its original takes the row's gap: the original
+    /// stays put, so it is a spacing neighbour like any other layer.
+    /// flip: `snapped_move` leaving the selection out of the targets during an Alt-drag
+    /// → fails at "the row's gap".
+    #[test]
+    fn an_alt_drag_copy_takes_the_gap_of_the_row_it_extends() {
+        let ctx = egui::Context::default();
+        // `a` at 0..100 and `b` at 200..300: a gap of 100.
+        let (mut app, a, b) = app_with_two_rects(&ctx);
+        app.canvas_px = (800, 600);
+        app.session.selection.set(vec![b]);
+        let root = app.session.doc.first_page();
+        let at = |app: &MastikApp, x, y| app.to_screen(Point::new(x, y), AREA, 1.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: ALT_SHIFT,
+        };
+
+        // The move's anchor is where the drag clears egui's threshold, so the drag
+        // starts with a step past it; from there, 202 to the right is 2 past where
+        // the row's gap puts the copy.
+        let press = at(&app, 250.0, 50.0);
+        let start = at(&app, 258.0, 50.0);
+        let to = at(&app, 460.0, 50.0);
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(press)]);
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(press), button(press, true)],
+        );
+        for step in [start, to, to] {
+            frame(&ctx, &mut app, vec![egui::Event::PointerMoved(step)]);
+        }
+        frame(&ctx, &mut app, vec![button(to, false)]);
+
+        let children = app.session.doc.get(root).unwrap().children().to_vec();
+        assert_eq!(children.len(), 3, "the drag has to leave a copy");
+        let copy = *children.iter().find(|&&c| c != a && c != b).unwrap();
+        let left = app.session.resolved.world_bounds(copy).unwrap().min_x();
+        assert!(
+            (left - 400.0).abs() < 1e-9,
+            "the copy takes the row's gap, 100 past `b`, not {left}"
+        );
+    }
+
+    /// A row whose first box is off-screen still lends its gap to a box moved past
+    /// its end.
+    /// flip: `snapped_move` leaving `beyond` empty → fails at "off-screen".
+    #[test]
+    fn a_gap_copied_from_off_screen_still_snaps() {
+        let ctx = egui::Context::default();
+        // `a` at 0..100 and `b` at 200..300: a gap of 100.
+        let (mut app, a, b) = app_with_two_rects(&ctx);
+        app.canvas_px = (800, 600);
+        let root = app.session.doc.first_page();
+        let c = app.session.ids.mint();
+        let kind = app.session.doc.get(b).unwrap().kind().clone();
+        assert!(app.session.commit(Transaction(vec![Operation::CreateNode {
+            id: c,
+            parent: root,
+            index: 2,
+            kind,
+            transform: Some(Affine::translate((500.0, 0.0))),
+            name: None,
+        }])));
+        app.session.selection.set(vec![c]);
+        // The view spans x 150..950, so `a` is off-screen and `b` and `c` are not.
+        app.session.camera.zoom = 1.0;
+        app.session.camera.center = Point::new(550.0, 50.0);
+        let view = app.session.camera.viewport(app.canvas_px).view;
+        let a_box = app.session.resolved.world_bounds(a).unwrap();
+        assert!(
+            a_box.max_x() < view.min_x(),
+            "`a` must be off-screen: {view:?}"
+        );
+
+        // 3 past where the row's gap puts `c`'s left edge, 400.
+        let (delta, _) = app.snapped_move(Vec2::new(-97.0, 0.0), false);
+        assert!(
+            (delta.x + 100.0).abs() < 1e-9,
+            "the gap set off-screen is the one taken, not {delta:?}"
         );
     }
 

@@ -58,6 +58,11 @@ for Move and Resize, never stashed on `Drag`.
   neighbours, or match the rhythm past the end of a run. Only boxes that **share a band** with the
   moving one; nothing against a neighbour it overlaps on that axis; nothing under `snap::MIN_GAP`
   (0.5). Move only. Off when *Snap to shapes* is off.
+  - The rhythm is read from the nearest box and the next one **clear of it**, so the children of a
+    frame or the members of a group beside it are passed over.
+  - A neighbour a gap is made against is always in view; the rhythm's far box may be off-screen
+    (`snap::beyond`, the row and column through the moving box across the page, nearest first).
+  - An Alt-drag's originals stay put, so they are targets like any other layer.
 - **Shift locks the axis** (`snap::move_axes`, `snap::constrain`): the dominant axis re-read from the
   live delta every frame, tie to x. Constrained *inside* the snap: `snap_rect` takes the `(bool, bool)`
   pair and gates node, guide and pixel candidates per axis, so a locked axis gets zero adjustment and

@@ -52,6 +52,11 @@ fn pixel_delta(value: f64) -> f64 {
 pub struct Snapping {
     /// Node bounds. Empty when *Snap to shapes* is off.
     pub targets: Vec<Rect>,
+    /// Bounds of shown layers outside the view in the moving box's row and column
+    /// ([`beyond`]). Only spacing reads them, and only as the far box of a rhythm:
+    /// the neighbour a gap is made against is always one in view, so a gap copied
+    /// from off-screen still lands next to something visible.
+    pub beyond: Vec<Rect>,
     /// Ruler guides. Empty when *Snap to guides* is off.
     pub guides: GuideLines,
     /// Other outlines' anchors and segments, for a dragged **point** to land on
@@ -97,6 +102,7 @@ impl Snapping {
     pub fn none(zoom: f64) -> Self {
         Self {
             targets: Vec::new(),
+            beyond: Vec::new(),
             outlines: Outlines::default(),
             guides: GuideLines::default(),
             baselines: Vec::new(),
@@ -287,13 +293,21 @@ struct Spacing {
 const MIN_GAP: f64 = 0.5;
 
 /// The **spacing** candidates on one axis: centre the moving box between its two
-/// nearest neighbours, or match the gap between the two nearest on one side (so a
-/// row spaces itself as it is built).
+/// nearest neighbours, or match the gap between the two nearest on one side that
+/// are clear of each other (so a row spaces itself as it is built, frames with
+/// content included).
 ///
 /// Only boxes that share a band with the moving one count (a strict overlap on the
 /// other axis), and nothing is offered for a box that overlaps a neighbour along
-/// this axis, where there is no gap to equalize.
-fn spacing_candidates(moving: Rect, targets: &[Rect], axis: Axis) -> Vec<(f64, Spacing)> {
+/// this axis, where there is no gap to equalize. The neighbours a gap is made
+/// against come from `targets`, the boxes in view; `beyond` lends only a rhythm's
+/// far box.
+fn spacing_candidates(
+    moving: Rect,
+    targets: &[Rect],
+    beyond: &[Rect],
+    axis: Axis,
+) -> Vec<(f64, Spacing)> {
     let along = |r: &Rect| match axis {
         Axis::Horizontal => (r.min_x(), r.max_x()),
         Axis::Vertical => (r.min_y(), r.max_y()),
@@ -305,29 +319,32 @@ fn spacing_candidates(moving: Rect, targets: &[Rect], axis: Axis) -> Vec<(f64, S
     let (m_lo, m_hi) = along(&moving);
     let m_band = band(&moving);
 
-    // The row, split by side; a target overlapping along the axis is in neither list.
-    let mut before: Vec<Rect> = Vec::new();
-    let mut after: Vec<Rect> = Vec::new();
-    for t in targets {
-        let t_band = band(t);
+    // The row, split by side, each box marked with whether it is in view; a target
+    // overlapping along the axis is in neither list.
+    let mut before: Vec<(Rect, bool)> = Vec::new();
+    let mut after: Vec<(Rect, bool)> = Vec::new();
+    let marked = targets.iter().map(|t| (*t, true));
+    for (t, seen) in marked.chain(beyond.iter().map(|t| (*t, false))) {
+        let t_band = band(&t);
         if t_band.0.max(m_band.0) >= t_band.1.min(m_band.1) {
             continue; // not in the same row
         }
-        let (t_lo, t_hi) = along(t);
+        let (t_lo, t_hi) = along(&t);
         if t_hi <= m_lo {
-            before.push(*t);
+            before.push((t, seen));
         } else if t_lo >= m_hi {
-            after.push(*t);
+            after.push((t, seen));
         }
     }
     // Nearest first on each side.
-    before.sort_by(|a, b| along(b).1.total_cmp(&along(a).1));
-    after.sort_by(|a, b| along(a).0.total_cmp(&along(b).0));
+    before.sort_by(|a, b| along(&b.0).1.total_cmp(&along(&a.0).1));
+    after.sort_by(|a, b| along(&a.0).0.total_cmp(&along(&b.0).0));
 
     let mut out = Vec::new();
 
     // Centre between the two nearest: offered only when the average gap is real.
-    if let (Some(low), Some(high)) = (before.first(), after.first()) {
+    if let (Some(&(low, true)), Some(&(high, true))) = (before.first(), after.first()) {
+        let (low, high) = (&low, &high);
         let gap_low = m_lo - along(low).1;
         let gap_high = along(high).0 - m_hi;
         if (gap_low + gap_high) / 2.0 > MIN_GAP {
@@ -342,10 +359,19 @@ fn spacing_candidates(moving: Rect, targets: &[Rect], axis: Axis) -> Vec<(f64, S
         }
     }
 
-    // Match the rhythm: the gap between the two nearest on a side is what the gap
-    // to the nearer of them wants to become.
+    // Match the rhythm: the gap between the nearest box on a side and the next one
+    // clear of it is what the gap to the nearest wants to become. The targets hold a
+    // frame's children and a group's members beside it, so the box after the nearest
+    // is often inside it, with no gap between them; those are passed over.
     for (side, sign) in [(&before, 1.0), (&after, -1.0)] {
-        let (Some(near), Some(next)) = (side.first(), side.get(1)) else {
+        let Some((near, true)) = side.first() else {
+            continue;
+        };
+        let (n_lo, n_hi) = along(near);
+        let Some((next, _)) = side.iter().skip(1).find(|(t, _)| {
+            let (t_lo, t_hi) = along(t);
+            t_hi <= n_lo || t_lo >= n_hi
+        }) else {
             continue;
         };
         let Some(rhythm) = measure::gap(*near, *next, axis) else {
@@ -456,7 +482,7 @@ pub fn snap_rect(moving: Rect, axes: (bool, bool), s: &Snapping) -> Snap {
         if !free {
             continue;
         }
-        for (delta, spacing) in spacing_candidates(moving, &s.targets, axis) {
+        for (delta, spacing) in spacing_candidates(moving, &s.targets, &s.beyond, axis) {
             consider_delta(best, delta, tolerance, Matched::Spacing(spacing));
         }
     }
@@ -1093,6 +1119,47 @@ pub fn targets(
     out
 }
 
+/// World bounds on `page` outside `view` that share a row or a column with
+/// `around`, the moving box: what a spacing snap may copy a gap from when the rest
+/// of a row is off-screen. Nearest to `around` first, at most `limit`, so a crowded
+/// row keeps the boxes a rhythm is read from. The same exclusions as [`targets`].
+pub fn beyond(
+    doc: &Document,
+    res: &Resolved,
+    page: NodeId,
+    moving: &[NodeId],
+    view: Rect,
+    around: Rect,
+    limit: usize,
+) -> Vec<Rect> {
+    // Past any world coordinate a layer can have.
+    const FAR: f64 = 1e12;
+    let row = Rect::new(-FAR, around.min_y(), FAR, around.max_y());
+    let column = Rect::new(around.min_x(), -FAR, around.max_x(), FAR);
+    let in_view: std::collections::HashSet<NodeId> = mastik_core::nodes_in_view(res, page, view)
+        .into_iter()
+        .collect();
+    let mut ids = mastik_core::nodes_in_view(res, page, row);
+    ids.extend(mastik_core::nodes_in_view(res, page, column));
+    ids.sort_unstable();
+    ids.dedup();
+    let mut out: Vec<Rect> = ids
+        .into_iter()
+        .filter(|id| !in_view.contains(id))
+        .filter(|id| !moving.contains(id) && !is_inside_any(doc, *id, moving))
+        .filter(|id| doc.get(*id).is_none_or(|_| doc.shown(*id)))
+        .filter_map(|id| res.world_bounds(id))
+        .collect();
+    let apart = |b: &Rect| {
+        let dx = (b.min_x() - around.max_x()).max(around.min_x() - b.max_x());
+        let dy = (b.min_y() - around.max_y()).max(around.min_y() - b.max_y());
+        dx.max(dy)
+    };
+    out.sort_by(|a, b| apart(a).total_cmp(&apart(b)));
+    out.truncate(limit);
+    out
+}
+
 fn ancestors(doc: &Document, id: NodeId) -> Vec<NodeId> {
     let mut out = Vec::new();
     let mut cursor = doc.get(id).and_then(|n| n.parent());
@@ -1676,6 +1743,51 @@ mod tests {
         assert!(((moving + snap.adjust).min_x() - 400.0).abs() < 1e-9);
         // Both the gap it copied and the gap it made.
         assert_eq!(gaps_of(&snap), vec![100.0, 100.0]);
+    }
+
+    /// Frames with content still set a rhythm: the boxes inside the nearest frame
+    /// sit between it and the frame before it in the targets, and are passed over.
+    /// flip: take the second-nearest box on a side whether or not it is clear of the
+    /// nearest, in `spacing_candidates` → fails at the adjust.
+    #[test]
+    fn frames_with_content_set_a_rhythm_too() {
+        let row = [
+            r(0.0, 0.0, 100.0, 1000.0),
+            r(10.0, 10.0, 90.0, 60.0), // inside the first frame
+            r(200.0, 0.0, 300.0, 1000.0),
+            r(210.0, 10.0, 290.0, 60.0), // inside the second
+            r(220.0, 900.0, 250.0, 990.0),
+        ];
+        let moving = r(403.0, 0.0, 503.0, 1000.0);
+        let snap = snap_rect(moving, FREE, &shapes(&row, 1.0));
+        assert!((snap.adjust.x + 3.0).abs() < 1e-9, "{:?}", snap.adjust);
+        assert_eq!(gaps_of(&snap), vec![100.0, 100.0]);
+    }
+
+    /// A box off-screen lends a rhythm its far end, but a gap is only ever made
+    /// against a box in view.
+    /// flip: `spacing_candidates` taking the nearest box whether or not it is in
+    /// view → fails at "made against".
+    #[test]
+    fn an_off_screen_box_lends_a_rhythm_but_is_never_the_neighbour() {
+        let (first, second) = (r(0.0, 0.0, 100.0, 1000.0), r(200.0, 0.0, 300.0, 1000.0));
+        let moving = r(403.0, 17.0, 453.0, 73.0);
+        let with = |targets: &[Rect], beyond: &[Rect]| Snapping {
+            targets: targets.to_vec(),
+            beyond: beyond.to_vec(),
+            ..Snapping::none(1.0)
+        };
+
+        let lent = snap_rect(moving, FREE, &with(&[second], &[first]));
+        assert!((lent.adjust.x + 3.0).abs() < 1e-9, "{:?}", lent.adjust);
+        assert_eq!(gaps_of(&lent), vec![100.0, 100.0]);
+
+        let none = snap_rect(moving, FREE, &with(&[], &[first, second]));
+        assert_eq!(
+            none.adjust.x, 0.0,
+            "a gap was made against a box off-screen: {:?}",
+            none.adjust
+        );
     }
 
     /// An alignment wins unless spacing is strictly nearer.
