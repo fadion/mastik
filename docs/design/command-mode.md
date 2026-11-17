@@ -271,7 +271,9 @@ document records what its run committed and never needs it.
 - **The library folder.** A script's name is its file's stem. A name finds the file with exactly
   that name, else the one file whose name differs only in case, as Windows and macOS compare file
   names; where a case-sensitive folder holds several (`Grid.luau` and `grid.luau`) and none exact,
-  the name is refused rather than guessed. A `.luau` file that is not UTF-8 text is not listed, but
+  the name is refused rather than guessed. The editor follows, renames and deletes the open
+  script only by its own file's exact name, so once that file is gone a neighbour differing in
+  case alone is never taken for it. A `.luau` file that is not UTF-8 text is not listed, but
   its name stays taken: nothing is saved, renamed or written over it. So is any other name the
   system resolves to something the library does not list (a symlink, a directory, a name it
   compares differently): a name with no listed script is only ever created, never written

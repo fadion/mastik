@@ -123,6 +123,11 @@ impl Library {
         out
     }
 
+    /// Whether a script file has exactly the name `name`, case and all.
+    pub fn is_listed(&self, name: &str) -> bool {
+        self.files().iter().any(|(n, _)| n == name)
+    }
+
     /// The source of the script called `name`.
     pub fn read(&self, name: &str) -> Result<String, ScriptError> {
         let path = self.existing(name)?;

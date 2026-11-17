@@ -446,7 +446,7 @@ impl MastikApp {
         if self.scripts.pending.is_some() {
             return;
         }
-        let Ok(now) = library::read(&name) else {
+        let Ok(now) = library::read_own(&name) else {
             return;
         };
         if self.scripts.on_disk.as_ref() == Some(&now) {
@@ -1892,6 +1892,17 @@ mod library {
         open()?.read(name)
     }
 
+    /// The script whose file has exactly the name `name`, as [`read`] gives it.
+    /// The open script's name came from its file's: once that file is gone, a
+    /// neighbour differing in case alone is another person's script.
+    pub(crate) fn read_own(name: &str) -> Result<String, ScriptError> {
+        let lib = open()?;
+        if !lib.is_listed(name) {
+            return Err(ScriptError::Missing(name.to_owned()));
+        }
+        lib.read(name)
+    }
+
     /// Bring the folder's API definitions up to this version's.
     pub(crate) fn write_definitions() -> Result<(), ScriptError> {
         open()?.write_definitions(&mastik_vm::definitions())
@@ -1901,16 +1912,26 @@ mod library {
         open()?.write(name, source).map(|_| ())
     }
 
+    /// Rename the script whose file is exactly `from`, as [`read_own`] finds it.
     pub(crate) fn rename(from: &str, to: &str) -> Result<(), ScriptError> {
-        open()?.rename(from, to).map(|_| ())
+        let lib = open()?;
+        if !lib.is_listed(from) {
+            return Err(ScriptError::Missing(from.to_owned()));
+        }
+        lib.rename(from, to).map(|_| ())
     }
 
     pub(crate) fn duplicate(name: &str) -> Result<String, ScriptError> {
         open()?.duplicate(name)
     }
 
+    /// Delete the script whose file is exactly `name`, as [`read_own`] finds it.
     pub(crate) fn delete(name: &str) -> Result<(), ScriptError> {
-        open()?.delete(name)
+        let lib = open()?;
+        if !lib.is_listed(name) {
+            return Err(ScriptError::Missing(name.to_owned()));
+        }
+        lib.delete(name)
     }
 
     /// `wanted`, numbered past the library's scripts that have it.
@@ -4180,6 +4201,29 @@ mod tests {
         assert_eq!(
             app.session.status().text,
             "Reloaded “Grid”: it changed on disk"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// In a case-sensitive folder, once the open `Grid`'s file is gone, its
+    /// neighbour `grid` is not reloaded into the pane, and a delete or rename of
+    /// `Grid` never reaches it.
+    /// flip: `follow_library_disk` reading with `library::read` → fails at "the
+    /// pane keeps Grid's text".
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_gone_library_script_is_not_its_other_case_neighbour() {
+        let (dir, mut app) = open_on_library("gone", "a");
+        std::fs::write(dir.join("grid.luau"), "b").unwrap();
+        std::fs::remove_file(dir.join("Grid.luau")).unwrap();
+        app.refresh_script_library();
+        assert_eq!(app.scripts.buffer, "a", "the pane keeps Grid's text");
+        assert!(library::delete("Grid").is_err());
+        assert!(library::rename("Grid", "X").is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("grid.luau")).unwrap(),
+            "b",
+            "grid is untouched"
         );
         let _ = std::fs::remove_dir_all(dir);
     }
