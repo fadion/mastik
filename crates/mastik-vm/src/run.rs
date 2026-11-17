@@ -57,6 +57,9 @@ pub(crate) enum Mode {
 const META: &str = "mastik.meta";
 /// The registry key of the weak table from a collection to its layers.
 const IDS: &str = "mastik.ids";
+/// The registry key of the metatable an empty list read from the model wears,
+/// so it is written back as a list: Lua's `{}` is a list and an object alike.
+const LIST: &str = "mastik.list";
 
 /// The permitted standard library, read from the sandboxed globals.
 pub(crate) const STDLIB: &[&str] = &[
@@ -758,6 +761,24 @@ impl State<'_> {
         self.created.extend(&done.created);
         Ok((done.created, done.made))
     }
+
+    /// Clear the style colour of the texts among `ids` that have one: a text
+    /// draws in it over its fills, so new fills would not show.
+    fn clear_text_colour(&mut self, ids: &[NodeId]) -> Result<(), String> {
+        let coloured: Vec<serde_json::Value> =
+            mastik_core::build::coloured_texts(self.host.doc(), ids)
+                .iter()
+                .map(|id| json!(id.to_wire()))
+                .collect();
+        if coloured.is_empty() {
+            return Ok(());
+        }
+        self.apply(
+            "set_text_style",
+            &json!({ "nodes": coloured, "style": { "color": null } }),
+        )
+        .map(|_| ())
+    }
 }
 
 /// An error a callback raised, carried through Lua back to [`run`].
@@ -890,6 +911,7 @@ pub(crate) fn run(
             lua.set_named_registry_value(IDS, ids)?;
             let meta = lua.create_table()?;
             lua.set_named_registry_value(META, &meta)?;
+            lua.set_named_registry_value(LIST, lua.create_table()?)?;
 
             let shared = scope.create_function(move |lua, (t, name): (Table, String)| {
                 let ids = ids_of(lua, &t)?;
@@ -1089,7 +1111,14 @@ fn params_table<'s>(
     Ok(t)
 }
 
-/// A JSON value as Lua: objects and arrays as tables.
+/// Whether `t` is an empty list read from the model ([`LIST`]).
+fn is_list(lua: &Lua, t: &Table) -> mlua::Result<bool> {
+    let list: Table = lua.named_registry_value(LIST)?;
+    Ok(t.metatable().is_some_and(|m| m == list))
+}
+
+/// A JSON value as Lua: objects and arrays as tables, an empty array marked as
+/// a list ([`LIST`]).
 fn json_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<Value> {
     Ok(match v {
         serde_json::Value::Null => Value::Nil,
@@ -1100,6 +1129,9 @@ fn json_lua(lua: &Lua, v: &serde_json::Value) -> mlua::Result<Value> {
             let t = lua.create_table()?;
             for (i, item) in list.iter().enumerate() {
                 t.raw_set(i + 1, json_lua(lua, item)?)?;
+            }
+            if list.is_empty() {
+                t.set_metatable(Some(lua.named_registry_value::<Table>(LIST)?))?;
             }
             Value::Table(t)
         }
@@ -1325,6 +1357,7 @@ fn val_lua(lua: &Lua, v: Val) -> mlua::Result<Value> {
         Val::Str(s) => Value::String(lua.create_string(&s)?),
         Val::Bool(b) => Value::Boolean(b),
         Val::Layers(ids) => Value::Table(coll(lua, &ids)?),
+        Val::Json(v) => json_lua(lua, &v)?,
     })
 }
 
@@ -1488,6 +1521,11 @@ fn write(
     {
         return write_percent(lua, state, ids, prop, p.0);
     }
+    if MODELLED.contains(&prop)
+        || (matches!(prop, "fill" | "stroke") && matches!(v, Value::Table(_)))
+    {
+        return write_model(lua, state, ids, property, v);
+    }
     let fail = |why: String| raise(lua, why);
     let wrong = || {
         raise(
@@ -1594,19 +1632,7 @@ fn write(
             if prop == "fill" {
                 st.apply("set_fills", &json!({ "nodes": wires, "fills": paint }))
                     .map_err(fail)?;
-                // A text draws in its style's colour over its fills, so new fills clear it.
-                let coloured: Vec<serde_json::Value> =
-                    mastik_core::build::coloured_texts(st.host.doc(), ids)
-                        .iter()
-                        .map(|id| json!(id.to_wire()))
-                        .collect();
-                if !coloured.is_empty() {
-                    st.apply(
-                        "set_text_style",
-                        &json!({ "nodes": coloured, "style": { "color": null } }),
-                    )
-                    .map_err(fail)?;
-                }
+                st.clear_text_colour(ids).map_err(fail)?;
             } else {
                 st.apply("set_strokes", &json!({ "nodes": wires, "strokes": paint }))
                     .map_err(fail)?;
@@ -1658,6 +1684,10 @@ fn write(
                 .map_err(fail)?;
         }
         PropType::Layers => return Err(raise(lua, format!("`.{prop}` is read-only"))),
+        // Every one is `MODELLED`, written above.
+        PropType::Table | PropType::Length | PropType::Sides => {
+            return Err(no_property(lua, prop));
+        }
     }
     Ok(())
 }
@@ -1668,9 +1698,281 @@ fn article(ty: PropType) -> &'static str {
         PropType::Number => "a number",
         PropType::Text => "a string",
         PropType::Bool => "true or false",
-        PropType::Colour => "a colour like \"#ff7a1a\", or nil",
+        PropType::Colour => "a colour like \"#ff7a1a\", a paint's table, or nil",
         PropType::Layers => "a collection",
+        PropType::Table => "a table",
+        PropType::Length => "a number of px or a length like \"0.05em\"",
+        PropType::Sides => "a number or a table of four",
     }
+}
+
+/// The properties written as the model's own values, through [`write_model`].
+const MODELLED: &[&str] = &[
+    "fills",
+    "strokes",
+    "effects",
+    "font_family",
+    "font_size",
+    "font_weight",
+    "italic",
+    "line_height",
+    "letter_spacing",
+    "text_case",
+    "text_align",
+    "layout",
+    "direction",
+    "gap",
+    "padding",
+    "layout_item",
+];
+
+/// `v` as plain JSON for a verb's argument of `kind`, with no leap labels to read.
+fn plain_json(lua: &Lua, v: &Value, kind: Option<ParamKind>) -> Result<serde_json::Value, String> {
+    let labels = rustc_hash::FxHashMap::default();
+    let env = crate::Env {
+        selection: &[],
+        labels: &labels,
+        params: Map::new(),
+    };
+    to_json(lua, v, kind, &env, 0, &mut ArgBudget::new())
+}
+
+/// An enum word as the model spells it, written in any case or with dashes:
+/// `"row-reverse"` and `"ROW_REVERSE"` are `"RowReverse"`.
+fn model_word(s: &str) -> String {
+    s.split(['-', '_', ' '])
+        .map(|w| {
+            let mut c = w.chars();
+            c.next().map_or_else(String::new, |f| {
+                f.to_uppercase()
+                    .chain(c.flat_map(char::to_lowercase))
+                    .collect()
+            })
+        })
+        .collect()
+}
+
+/// A length a script wrote, in the model's shape: a number is px, and a string
+/// `"12px"`, `"0.05em"` or `"5%"` (of the font size, as the field shows it).
+fn length_json(v: &Value) -> Option<serde_json::Value> {
+    if let Some(n) = number(v) {
+        return n.is_finite().then(|| json!({ "Px": n }));
+    }
+    let Value::String(s) = v else {
+        return None;
+    };
+    let s = s.to_str().ok()?.trim().to_owned();
+    let (n, unit) = if let Some(n) = s.strip_suffix("px") {
+        (n, "Px")
+    } else if let Some(n) = s.strip_suffix("em") {
+        (n, "Em")
+    } else if let Some(n) = s.strip_suffix('%') {
+        let n: f64 = n.trim().parse().ok()?;
+        return n.is_finite().then(|| json!({ "Em": n / 100.0 }));
+    } else {
+        (s.as_str(), "Px")
+    };
+    let n: f64 = n.trim().parse().ok()?;
+    n.is_finite().then(|| json!({ unit: n }))
+}
+
+/// The character attribute `prop` set to `v`, as `style_text` takes it.
+fn char_attr(prop: &str, v: &Value) -> Option<serde_json::Value> {
+    let text = |v: &Value| match v {
+        Value::String(s) => s.to_str().ok().map(|s| s.to_owned()),
+        _ => None,
+    };
+    Some(match prop {
+        "font_family" => json!({ "Family": text(v)? }),
+        "font_size" => json!({ "Size": number(v).filter(|n| n.is_finite())? }),
+        "font_weight" => {
+            let w = number(v).filter(|n| n.is_finite() && *n >= 1.0 && *n <= 1000.0)?;
+            json!({ "Weight": w.round() as u16 })
+        }
+        "italic" => match v {
+            Value::Boolean(b) => json!({ "Italic": b }),
+            _ => return None,
+        },
+        "line_height" => match v {
+            Value::Nil => json!({ "LineHeight": null }),
+            v => json!({ "LineHeight": length_json(v)? }),
+        },
+        "letter_spacing" => json!({ "LetterSpacing": length_json(v)? }),
+        "text_case" => json!({ "Case": model_word(&text(v)?) }),
+        _ => return None,
+    })
+}
+
+/// Write a property whose value is the model's own (`MODELLED`, or a paint's
+/// table for `.fill` and `.stroke`) through the verb the inspector's card uses.
+fn write_model(
+    lua: &Lua,
+    state: &RefCell<State<'_>>,
+    ids: &[NodeId],
+    property: &props::Property,
+    v: Value,
+) -> mlua::Result<()> {
+    let prop = property.name;
+    let fail = |why: String| raise(lua, format!("`.{prop}`: {why}"));
+    let wrong = || {
+        raise(
+            lua,
+            format!(
+                "`.{prop}` is {}, not {}",
+                article(property.ty),
+                type_name(&v)
+            ),
+        )
+    };
+    let wires: Vec<serde_json::Value> = ids.iter().map(|id| json!(id.to_wire())).collect();
+    let mut st = state.borrow_mut();
+    // Each layer `f` refuses, by name: a text's property on a frame, a gap where
+    // nothing is laid out.
+    let named = |st: &State<'_>, id: NodeId| describe(st.host.doc(), &[id]);
+    match prop {
+        "fill" | "fills" | "stroke" | "strokes" | "effects" => {
+            let list_kind = match prop {
+                "fill" | "fills" => "[Fill]",
+                "stroke" | "strokes" => "[Stroke]",
+                _ => "[Effect]",
+            };
+            let list = match &v {
+                Value::Nil => json!([]),
+                Value::Table(_) if matches!(prop, "fill" | "stroke") => {
+                    json!([plain_json(lua, &v, None).map_err(fail)?])
+                }
+                Value::Table(_) => {
+                    plain_json(lua, &v, Some(ParamKind::Model(list_kind))).map_err(fail)?
+                }
+                _ => return Err(wrong()),
+            };
+            match list_kind {
+                "[Fill]" => {
+                    st.apply("set_fills", &json!({ "nodes": wires, "fills": list }))
+                        .map_err(fail)?;
+                    st.clear_text_colour(ids).map_err(fail)?;
+                }
+                "[Stroke]" => {
+                    st.apply("set_strokes", &json!({ "nodes": wires, "strokes": list }))
+                        .map_err(fail)?;
+                }
+                _ => {
+                    st.apply("set_effects", &json!({ "nodes": wires, "effects": list }))
+                        .map_err(fail)?;
+                }
+            }
+        }
+        "font_family" | "font_size" | "font_weight" | "italic" | "line_height"
+        | "letter_spacing" | "text_case" => {
+            let attr = char_attr(prop, &v).ok_or_else(wrong)?;
+            for id in ids {
+                st.on_time()?;
+                if !matches!(
+                    st.host.doc().get(*id).map(|n| n.kind()),
+                    Some(mastik_core::NodeKind::Text { .. })
+                ) {
+                    return Err(fail(format!("“{}” is not a text", named(&st, *id))));
+                }
+                st.apply(
+                    "style_text",
+                    &json!({ "node": id.to_wire(), "attrs": [attr] }),
+                )
+                .map_err(fail)?;
+            }
+        }
+        "text_align" => {
+            let Value::String(s) = &v else {
+                return Err(wrong());
+            };
+            let align = model_word(&s.to_str()?);
+            for id in ids {
+                st.on_time()?;
+                let paragraph = match st.host.doc().get(*id).map(|n| n.kind()) {
+                    Some(mastik_core::NodeKind::Text { paragraph, .. }) => {
+                        serde_json::to_value(paragraph).map_err(|e| fail(e.to_string()))?
+                    }
+                    _ => return Err(fail(format!("“{}” is not a text", named(&st, *id)))),
+                };
+                let mut paragraph = paragraph;
+                paragraph["align"] = json!(align);
+                st.apply(
+                    "set_paragraph_style",
+                    &json!({ "nodes": [id.to_wire()], "paragraph": paragraph }),
+                )
+                .map_err(fail)?;
+            }
+        }
+        "layout" => {
+            let args = match &v {
+                Value::Nil => json!({ "nodes": wires }),
+                Value::Table(_) => json!({
+                    "nodes": wires,
+                    "display": plain_json(lua, &v, Some(ParamKind::Model("Display"))).map_err(fail)?,
+                }),
+                _ => return Err(wrong()),
+            };
+            st.apply("set_display", &args).map_err(fail)?;
+        }
+        "layout_item" => {
+            let Value::Table(_) = &v else {
+                return Err(wrong());
+            };
+            let item = plain_json(lua, &v, Some(ParamKind::Model("LayoutItem"))).map_err(fail)?;
+            st.apply("set_layout_item", &json!({ "nodes": wires, "item": item }))
+                .map_err(fail)?;
+        }
+        "direction" | "gap" | "padding" => {
+            let (key, value) = match (prop, &v) {
+                ("direction", Value::String(s)) => ("direction", json!(model_word(&s.to_str()?))),
+                ("gap", v) if number(v).is_some_and(f64::is_finite) => ("gap", json!(number(v))),
+                ("padding", v) if number(v).is_some_and(f64::is_finite) => {
+                    let n = number(v);
+                    ("padding", json!([n, n, n, n]))
+                }
+                ("padding", Value::Table(_)) => {
+                    let sides =
+                        plain_json(lua, &v, Some(ParamKind::Model("[f64]"))).map_err(fail)?;
+                    ("padding", sides)
+                }
+                _ => return Err(wrong()),
+            };
+            for id in ids {
+                st.on_time()?;
+                let display = st.host.doc().get(*id).and_then(|n| n.display()).cloned();
+                let Some(display) = display else {
+                    return Err(fail(format!(
+                        "“{}” lays out nothing — set its .layout first",
+                        named(&st, *id)
+                    )));
+                };
+                let grid = matches!(display, mastik_core::container::Display::Grid(_));
+                if grid && key == "direction" {
+                    return Err(fail(format!(
+                        "“{}” is a grid, which has no direction",
+                        named(&st, *id)
+                    )));
+                }
+                let mut whole = serde_json::to_value(&display).map_err(|e| fail(e.to_string()))?;
+                let inner = whole
+                    .get_mut(if grid { "Grid" } else { "Flex" })
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or_else(|| fail("its layout reads in no known shape".into()))?;
+                if key == "gap" {
+                    inner.insert("row_gap".into(), value.clone());
+                    inner.insert("column_gap".into(), value.clone());
+                } else {
+                    inner.insert(key.into(), value.clone());
+                }
+                st.apply(
+                    "set_display",
+                    &json!({ "nodes": [id.to_wire()], "display": whole }),
+                )
+                .map_err(fail)?;
+            }
+        }
+        _ => return Err(no_property(lua, prop)),
+    }
+    Ok(())
 }
 
 /// `width` or `height` as a percentage of the container, where the size field
@@ -1749,7 +2051,7 @@ fn adjust(
     let Some(property) = props::find(name) else {
         return Err(no_property(lua, name));
     };
-    if property.ty != PropType::Number {
+    if !matches!(property.ty, PropType::Number | PropType::Length) {
         return Err(raise(
             lua,
             format!(
@@ -2005,7 +2307,8 @@ fn to_json(
                 };
             }
             let listy = matches!(kind, Some(ParamKind::Model(m)) if m.starts_with('['))
-                || matches!(kind, Some(ParamKind::Nodes));
+                || matches!(kind, Some(ParamKind::Nodes))
+                || is_list(lua, t).map_err(lua_err)?;
             if t.raw_len() > 0 || (listy && t.clone().pairs::<Value, Value>().next().is_none()) {
                 let mut list = Vec::new();
                 for item in t.clone().sequence_values::<Value>() {

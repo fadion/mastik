@@ -136,10 +136,25 @@ decision 2):
 | `width`, `height` | the layer's own box | the `set_size` verb; `percent(n)` or `50%` sets the size's % mode (`set_layout_item`) only where the size field offers %, a resizable item of a flex or grid container, and is an error saying so elsewhere |
 | `rotation` | degrees, clockwise on the page | `edit::turned_to` |
 | `opacity`, `corner_radius`, `name`, `visible`, `locked`, `text`, `blend` | the layer's own | the matching verb |
-| `fill`, `stroke` | the one solid paint as `"#rrggbb"` (`"#rrggbbaa"` when not opaque), nil for none; anything else is no one value | `set_fills` / `set_strokes`; a text's style colour is cleared so the fill shows |
+| `fill`, `stroke` | the one paint: a shown plain colour (and a stroke with every default but its colour) as `"#rrggbb"` (`"#rrggbbaa"` when not opaque), any other one paint — a gradient, a picture, a hidden or bound one — as its table, nil for none; several are no one value | `set_fills` / `set_strokes`, a colour or one paint's table; a text's style colour is cleared so the fill shows |
+| `fills`, `strokes`, `effects` | the whole list, bottom first, each item a table (a plain fill as its colour) | `set_fills` / `set_strokes` / `set_effects`; nil or `{}` clears |
+| `font_family`, `font_size`, `font_weight`, `italic`, `line_height`, `letter_spacing`, `text_case` | a text's character style over all its characters (no one value when its runs differ); a length as a number of px or a string such as `"1.4em"`, `line_height` nil for auto; nil on any other layer | `style_text` over the whole text, as the Text card writes it, so the runs that set the field give way; a length takes px, `"12px"`, `"0.05em"` or `"5%"` of the font size; refused on a layer that is not a text |
+| `text_align` | a text's paragraph alignment (`"Start"`, `"Center"`…) | `set_paragraph_style`, the rest of the paragraph kept |
+| `layout` | a frame's flex or grid layout as its table, `{ Flex = { … } }` or `{ Grid = { … } }`, nil for none | `set_display`; nil turns it off |
+| `gap`, `padding`, `direction` | the layout's gap (no one value when its rows and columns differ), its padding (one number when the sides agree, else `{ top, right, bottom, left }`) and a flex layout's direction; nil without a layout | `set_display`, the rest of the layout kept; refused where nothing is laid out, and `direction` on a grid |
+| `layout_item` | how the layer sizes and places itself in its parent's layout, as its table (`{}` for the defaults) | `set_layout_item` |
 | `id`, `kind`, `parent`, `children`, `prev`, `next` | read-only | — |
 
-A name people guess (`alpha`, `colour`, `radius`) raises with the property it means as the fix.
+**Read and write round-trip**: a table reads in the short forms the verbs read back to the same
+value (`verbs::shorten`: hex colours, a paint without its default fields, lengths as `"22px"`),
+so `local f = sel.fills; sel.fills = f` changes nothing, and a read table edited in Lua writes
+back (`local s = sel.strokes; s[1].width = 3; sel.strokes = s`). An empty list read from the
+model keeps a list's mark, since Lua's `{}` is a list and an object alike. Enum words take any
+case and dashes (`"row-reverse"` is `"RowReverse"`). `sel:adjust` steps any number, a px length
+included.
+
+A name people guess (`alpha`, `colour`, `radius`, `weight`, `tracking`, `shadow`) raises with the
+property it means as the fix.
 
 **A verb call**: a collection given first fills the verb's subject (its first layer parameter),
 else the selection does; a verb of one layer runs once for each; the remaining arguments fill the

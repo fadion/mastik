@@ -174,7 +174,28 @@ pub fn definitions() -> String {
     out.push_str("declare class Layers\n");
     for p in PROPERTIES {
         comment(&mut out, "    ", p.doc);
-        let optional = if matches!(p.name, "prev" | "next" | "parent" | "fill" | "stroke") {
+        // Nil where a layer has none: a text's style on a frame, a gap where
+        // nothing is laid out.
+        let optional = if matches!(
+            p.name,
+            "prev"
+                | "next"
+                | "parent"
+                | "fill"
+                | "stroke"
+                | "font_family"
+                | "font_size"
+                | "font_weight"
+                | "italic"
+                | "line_height"
+                | "letter_spacing"
+                | "text_case"
+                | "text_align"
+                | "layout"
+                | "direction"
+                | "gap"
+                | "padding"
+        ) {
             "?"
         } else {
             ""

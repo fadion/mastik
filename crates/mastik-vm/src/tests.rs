@@ -1664,6 +1664,192 @@ fn declaration_is_the_nearest_above() {
     assert_eq!(at(src, "b)"), Some(17), "a typed local list");
 }
 
+/// Paints, effects, text style and layout read back what was written, and
+/// writing back what was read leaves the value as it was.
+/// flip: `props::short` skipping `verbs::shorten` → fails at "reads as written"
+/// for the fills' hex.
+#[test]
+fn modelled_properties_round_trip() {
+    let mut h = TestHost::new();
+    let frame = h.frame("Card", 400.0, 300.0);
+    let r = h.rect(frame, "Box", 0.0, 0.0, 40.0, 40.0);
+    let t = h.make(
+        "create_text",
+        json!({ "parent": frame.to_wire(), "text": "Hello" }),
+    )[0];
+    let labels = FxHashMap::default();
+    let run = |h: &mut TestHost, id: NodeId, src: &str| {
+        run_script(h, &env(&[id], &labels), src).unwrap_or_else(|e| panic!("{src}: {}", e.message))
+    };
+    let read = |h: &TestHost, id: NodeId, prop: &str| crate::props::read(&h.doc, &h.res, id, prop);
+    // A gradient under a plain colour, a shadow, a dashed stroke, a flex layout.
+    use mastik_core::peniko::{Color, Gradient};
+    let gradient = mastik_core::Fill {
+        brush: mastik_core::Brush::Gradient(
+            Gradient::new_linear((0.0, 0.0), (40.0, 40.0))
+                .with_stops([
+                    Color::from_rgb8(0x12, 0x35, 0x2a),
+                    Color::from_rgb8(0xf0, 0xc0, 0x40),
+                ])
+                .into(),
+        )
+        .into(),
+        visible: false,
+    };
+    let fills = json!(["#ff0000", serde_json::to_value(&gradient).unwrap()]);
+    for (verb, key, model) in [
+        ("set_fills", "fills", "[Fill]"),
+        ("set_strokes", "strokes", "[Stroke]"),
+        ("set_effects", "effects", "[Effect]"),
+    ] {
+        let value = if key == "fills" {
+            fills.clone()
+        } else {
+            verbs::example(model).unwrap()
+        };
+        h.make(verb, json!({ "nodes": [r.to_wire()], key: value }));
+    }
+    h.make(
+        "set_display",
+        json!({ "nodes": [frame.to_wire()], "display": verbs::example("Display").unwrap() }),
+    );
+    h.make(
+        "set_layout_item",
+        json!({ "nodes": [r.to_wire()], "item": verbs::example("LayoutItem").unwrap() }),
+    );
+    for (id, prop, least) in [(r, "fills", 2), (r, "strokes", 1), (r, "effects", 1)] {
+        let v = read(&h, id, prop).unwrap();
+        assert!(
+            matches!(&v, crate::props::Val::Json(Value::Array(a)) if a.len() >= least && a.last().is_some_and(Value::is_object)),
+            "the fixture's {prop} hold a table: {v:?}"
+        );
+    }
+    assert!(matches!(
+        read(&h, frame, "layout").unwrap(),
+        crate::props::Val::Json(_)
+    ));
+    let cases: &[(NodeId, &str)] = &[
+        (r, "fills"),
+        (r, "strokes"),
+        (r, "effects"),
+        (r, "layout_item"),
+        (frame, "layout"),
+        (frame, "gap"),
+        (frame, "padding"),
+        (frame, "direction"),
+        (t, "font_family"),
+        (t, "font_size"),
+        (t, "font_weight"),
+        (t, "italic"),
+        (t, "line_height"),
+        (t, "letter_spacing"),
+        (t, "text_case"),
+        (t, "text_align"),
+    ];
+    for (id, prop) in cases {
+        let before = read(&h, *id, prop).unwrap();
+        assert!(
+            !matches!(before, crate::props::Val::Mixed(_)),
+            "{prop} reads one value: {before:?}"
+        );
+        run(
+            &mut h,
+            *id,
+            &format!("local v = sel.{prop}\nsel.{prop} = v"),
+        );
+        assert_eq!(read(&h, *id, prop).unwrap(), before, "{prop} as it was");
+    }
+    // Each reads as written.
+    let fills_read = run(&mut h, r, "return sel.fills[1]").copied;
+    assert_eq!(fills_read.as_deref(), Some("#ff0000"), "reads as written");
+    // One gradient is `.fill`'s table, and writes back as itself.
+    run(&mut h, r, "sel.fills = { sel.fills[2] }");
+    let kind = run(&mut h, r, "return type(sel.fill)").copied;
+    assert_eq!(
+        kind.as_deref(),
+        Some("table"),
+        "a gradient reads as its table"
+    );
+    let before = read(&h, r, "fills").unwrap();
+    run(
+        &mut h,
+        r,
+        "local f = sel.fill\nsel.fill = nil\nsel.fill = f",
+    );
+    assert_eq!(read(&h, r, "fills").unwrap(), before, "fill as it was");
+    for (id, src, prop, want) in [
+        (t, "sel.font_size = 24", "font_size", "24"),
+        (t, "sel.font_weight = 700", "font_weight", "700"),
+        (t, "sel.italic = true", "italic", "true"),
+        (t, "sel.line_height = 30", "line_height", "30"),
+        (t, "sel.line_height = \"1.5em\"", "line_height", "\"1.5em\""),
+        (t, "sel.line_height = nil", "line_height", "nil"),
+        (
+            t,
+            "sel.letter_spacing = \"5%\"",
+            "letter_spacing",
+            "\"0.05em\"",
+        ),
+        (t, "sel.text_case = \"upper\"", "text_case", "\"Upper\""),
+        (t, "sel.text_align = \"center\"", "text_align", "\"Center\""),
+        (t, "sel.font_family = \"Inter\"", "font_family", "\"Inter\""),
+        (frame, "sel.gap = 18", "gap", "18"),
+        (frame, "sel.padding = 8", "padding", "8"),
+        (
+            frame,
+            "sel.padding = {1, 2, 3, 4}",
+            "padding",
+            "{1, 2, 3, 4}",
+        ),
+        (
+            frame,
+            "sel.direction = \"column\"",
+            "direction",
+            "\"Column\"",
+        ),
+        (r, "sel.fill = \"#00ff00\"", "fill", "\"#00ff00\""),
+        (r, "sel.effects = {}", "effects", "{}"),
+        (frame, "sel.layout = nil", "layout", "nil"),
+    ] {
+        run(&mut h, id, src);
+        let got = run(&mut h, id, &format!("return sel.{prop}"))
+            .value
+            .unwrap_or_else(|| "nil".into());
+        assert_eq!(got, want, "{src}");
+    }
+    // An empty list read from the model writes back as a list, never an object.
+    // flip: `is_list` answering false → fails here, "expected a sequence".
+    run(
+        &mut h,
+        r,
+        "sel.strokes = { { brush = \"#000000\", width = 2, dashes = sel.effects } }",
+    );
+    assert_eq!(
+        run(&mut h, r, "return sel.strokes[1].width")
+            .value
+            .as_deref(),
+        Some("2")
+    );
+    // `adjust` steps a text's size, and a text's property refuses a frame.
+    run(&mut h, t, "sel:adjust(\"font_size\", 2)");
+    assert_eq!(
+        read(&h, t, "font_size").unwrap(),
+        crate::props::Val::Num(26.0)
+    );
+    let err = run_script(&mut h, &env(&[r], &labels), "sel.font_size = 12").unwrap_err();
+    assert!(
+        err.message.contains("“Box” is not a text"),
+        "{}",
+        err.message
+    );
+    let err = run_script(&mut h, &env(&[frame], &labels), "sel.gap = 4").unwrap_err();
+    assert!(
+        err.message.contains("set its .layout first"),
+        "{}",
+        err.message
+    );
+}
+
 /// `random(seed)` draws the same numbers for the same seed, in each of its
 /// three forms and within their bounds, and a seed is required.
 /// flip: `Rng::new` ignoring its seed → fails at "another seed draws others".

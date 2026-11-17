@@ -3,7 +3,9 @@
 //! read, and each property's value on one layer.
 
 use mastik_core::build::{self, PaintShown};
-use mastik_core::{Brush, Document, NodeId, NodeKind, Resolved};
+use mastik_core::container::Display;
+use mastik_core::typography::{CharAttr, CharAttrKind, Length};
+use mastik_core::{Document, NodeId, NodeKind, Resolved};
 
 /// What a property's value is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,10 +13,17 @@ pub enum PropType {
     Number,
     Text,
     Bool,
-    /// A colour as `"#rrggbb"` or `"#rrggbbaa"`.
+    /// One paint: a colour as `"#rrggbb"` or `"#rrggbbaa"`, any other paint as
+    /// a table.
     Colour,
     /// A layer collection.
     Layers,
+    /// A table in the model's own shape, as the verb writing it takes it.
+    Table,
+    /// A length: a number of px, or a string such as `"0.05em"`.
+    Length,
+    /// One number for every side, or four, top first and clockwise.
+    Sides,
 }
 
 impl PropType {
@@ -22,9 +31,13 @@ impl PropType {
     pub fn luau(self) -> &'static str {
         match self {
             PropType::Number => "number",
-            PropType::Text | PropType::Colour => "string",
+            PropType::Text => "string",
+            PropType::Colour => "string | { [string]: any }",
             PropType::Bool => "boolean",
             PropType::Layers => "Layers",
+            PropType::Table => "{ [any]: any }",
+            PropType::Length => "number | string",
+            PropType::Sides => "number | { number }",
         }
     }
 }
@@ -107,14 +120,35 @@ pub static PROPERTIES: &[Property] = &[
         PropType::Colour,
         true,
         "fills",
-        "The one solid fill as \"#rrggbb\"; nil for none",
+        "The one fill: a colour as \"#rrggbb\", a gradient or picture as a table; nil for none",
     ),
     prop(
         "stroke",
         PropType::Colour,
         true,
         "strokes",
-        "The one solid stroke as \"#rrggbb\"; nil for none",
+        "The one stroke: a colour as \"#rrggbb\", else a table; nil for none",
+    ),
+    prop(
+        "fills",
+        PropType::Table,
+        true,
+        "fill lists",
+        "Every fill, bottom first: a plain colour as \"#rrggbb\", any other as a table",
+    ),
+    prop(
+        "strokes",
+        PropType::Table,
+        true,
+        "stroke lists",
+        "Every stroke, bottom first, each a table: its brush, width, align, dashes",
+    ),
+    prop(
+        "effects",
+        PropType::Table,
+        true,
+        "effect lists",
+        "Shadows and blurs, in order, each a table such as { DropShadow = { … } }",
     ),
     prop("name", PropType::Text, true, "names", "The layer's name"),
     prop(
@@ -151,6 +185,97 @@ pub static PROPERTIES: &[Property] = &[
         true,
         "blend modes",
         "How the layer blends with what is under it",
+    ),
+    prop(
+        "font_family",
+        PropType::Text,
+        true,
+        "font families",
+        "A text's font family",
+    ),
+    prop(
+        "font_size",
+        PropType::Number,
+        true,
+        "font sizes",
+        "A text's font size in px",
+    ),
+    prop(
+        "font_weight",
+        PropType::Number,
+        true,
+        "font weights",
+        "A text's weight, 100 to 900: 400 regular, 700 bold",
+    ),
+    prop(
+        "italic",
+        PropType::Bool,
+        true,
+        "italics",
+        "Whether a text is italic",
+    ),
+    prop(
+        "line_height",
+        PropType::Length,
+        true,
+        "line heights",
+        "A text's line height: px as a number, \"1.4em\" of the font size; nil for auto",
+    ),
+    prop(
+        "letter_spacing",
+        PropType::Length,
+        true,
+        "letter spacings",
+        "A text's letter spacing: px as a number, or \"0.05em\" of the font size",
+    ),
+    prop(
+        "text_case",
+        PropType::Text,
+        true,
+        "text cases",
+        "A text's case: \"Original\", \"Upper\", \"Lower\" or \"Title\"",
+    ),
+    prop(
+        "text_align",
+        PropType::Text,
+        true,
+        "text alignments",
+        "A text's alignment: \"Start\", \"End\", \"Left\", \"Center\", \"Right\" or \"Justify\"",
+    ),
+    prop(
+        "layout",
+        PropType::Table,
+        true,
+        "layouts",
+        "How a frame lays out its children: { Flex = { … } } or { Grid = { … } }; nil for none",
+    ),
+    prop(
+        "direction",
+        PropType::Text,
+        true,
+        "directions",
+        "A flex layout's direction: \"Row\", \"Column\", \"RowReverse\" or \"ColumnReverse\"",
+    ),
+    prop(
+        "gap",
+        PropType::Number,
+        true,
+        "gaps",
+        "The gap between a flex or grid layout's children, rows and columns alike",
+    ),
+    prop(
+        "padding",
+        PropType::Sides,
+        true,
+        "paddings",
+        "A flex or grid layout's padding: one number, or { top, right, bottom, left }",
+    ),
+    prop(
+        "layout_item",
+        PropType::Table,
+        true,
+        "layout items",
+        "How a layer sizes and places itself in its parent's layout: grow, basis, align_self…",
     ),
     prop(
         "id",
@@ -245,6 +370,16 @@ pub(crate) const GUESSES: &[(&str, &str)] = &[
     ("characters", "text"),
     ("label", "name"),
     ("type", "kind"),
+    ("family", "font_family"),
+    ("font", "font_family"),
+    ("weight", "font_weight"),
+    ("leading", "line_height"),
+    ("tracking", "letter_spacing"),
+    ("case", "text_case"),
+    ("shadow", "effects"),
+    ("shadows", "effects"),
+    ("spacing", "gap"),
+    ("display", "layout"),
 ];
 
 /// The property called `name`.
@@ -260,6 +395,9 @@ pub(crate) enum Val {
     Str(String),
     Bool(bool),
     Layers(Vec<NodeId>),
+    /// A value in the model's own shape, written short as the verbs read it
+    /// back (`verbs::shorten`): a paint list, an effect, a layout.
+    Json(serde_json::Value),
     /// The layer itself holds several values: a group whose shapes differ. Says why.
     Mixed(String),
 }
@@ -273,8 +411,104 @@ impl Val {
             Val::Str(s) => format!("\"{s}\""),
             Val::Bool(b) => b.to_string(),
             Val::Layers(ids) => crate::describe(doc, ids),
+            Val::Json(v) => {
+                let s = v.to_string();
+                match s.char_indices().nth(40) {
+                    Some((at, _)) => format!("{}…", &s[..at]),
+                    None => s,
+                }
+            }
             Val::Mixed(_) => "mixed".into(),
         }
+    }
+}
+
+/// `v`, the value of a field called `key`, in the short forms the verbs read
+/// back to the same value: a colour as hex, a paint without its default fields.
+fn short(key: &str, v: serde_json::Value) -> Val {
+    let mut wrapped = serde_json::Value::Object(serde_json::Map::from_iter([(key.to_owned(), v)]));
+    mastik_core::verbs::shorten(&mut wrapped);
+    match wrapped {
+        serde_json::Value::Object(mut map) => map.remove(key).map_or(Val::Nil, Val::Json),
+        _ => Val::Nil,
+    }
+}
+
+/// `items`, each serialized, in the short forms as the list field `key` holds them.
+fn short_list(key: &str, items: Vec<serde_json::Result<serde_json::Value>>) -> Val {
+    let list: Vec<serde_json::Value> = items.into_iter().filter_map(Result::ok).collect();
+    short(key, serde_json::Value::Array(list))
+}
+
+/// A length as a script reads it: px as a number, else `"0.05em"`.
+fn length(l: Length) -> Val {
+    match l {
+        Length::Px(n) => Val::Num(n),
+        Length::Em(f) => Val::Str(format!("{f}em")),
+    }
+}
+
+/// A unit variant's name as serde wrote it (`"Center"`, `"Upper"`).
+fn variant(v: serde_json::Result<serde_json::Value>) -> Val {
+    match v {
+        Ok(serde_json::Value::String(s)) => Val::Str(s),
+        _ => Val::Nil,
+    }
+}
+
+/// One character attribute of a text layer over all its characters: the value
+/// they share, `Mixed` when runs differ, nil for any other layer.
+fn char_attr(node: &mastik_core::Node, kind: CharAttrKind) -> Val {
+    let NodeKind::Text {
+        content,
+        style,
+        spans,
+        ..
+    } = node.kind()
+    else {
+        return Val::Nil;
+    };
+    let mut values = spans.values_in(style, kind, 0..content.len());
+    if values.len() != 1 {
+        return Val::Mixed("its characters differ".into());
+    }
+    match values.remove(0) {
+        CharAttr::Family(f) => Val::Str(f),
+        CharAttr::Size(n) => Val::Num(n),
+        CharAttr::Weight(w) => Val::Num(f64::from(w)),
+        CharAttr::Italic(b) => Val::Bool(b),
+        CharAttr::LineHeight(l) => l.map_or(Val::Nil, length),
+        CharAttr::LetterSpacing(l) => length(l),
+        CharAttr::Case(c) => variant(serde_json::to_value(c)),
+        _ => Val::Nil,
+    }
+}
+
+/// The two gaps of `d` as one number, or `Mixed` when they differ.
+fn gap(d: &Display) -> Val {
+    let (row, column) = match d {
+        Display::Flex(f) => (f.row_gap, f.column_gap),
+        Display::Grid(g) => (g.row_gap, g.column_gap),
+    };
+    if (row - column).abs() <= build::RADIUS_AGREEMENT {
+        Val::Num(row)
+    } else {
+        Val::Mixed("its row and column gaps differ".into())
+    }
+}
+
+/// The padding of `d`: one number when its sides agree, else the four.
+fn padding(d: &Display) -> Val {
+    let p = match d {
+        Display::Flex(f) => f.padding,
+        Display::Grid(g) => g.padding,
+    };
+    if p.iter()
+        .all(|s| (s - p[0]).abs() <= build::RADIUS_AGREEMENT)
+    {
+        Val::Num(p[0])
+    } else {
+        Val::Json(serde_json::json!(p))
     }
 }
 
@@ -317,28 +551,29 @@ pub fn kind_name(kind: &NodeKind) -> &'static str {
     }
 }
 
-/// `rgba` as `"#rrggbb"`, or `"#rrggbbaa"` when it is not opaque.
-pub(crate) fn hex(rgba: [u8; 4]) -> String {
-    let [r, g, b, a] = rgba;
-    if a == 255 {
-        format!("#{r:02x}{g:02x}{b:02x}")
-    } else {
-        format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
-    }
-}
-
-/// The paint value of a list of `(brush, visible)` items: one solid colour as
-/// hex, none as `Nil`, and anything else — a gradient, a picture, several, a
-/// variable's colour — as `Mixed`.
-fn paint_value(items: &[(&mastik_core::BrushSource, bool)], what: &str) -> Val {
-    match items {
-        [] => Val::Nil,
-        [(_, false)] => Val::Mixed(format!("its {what} is hidden")),
-        [(brush, true)] => match brush.literal() {
-            Some(Brush::Solid(c)) => Val::Str(hex(c.to_rgba8().to_u8_array())),
-            _ => Val::Mixed(format!("its {what} is not one solid colour")),
+/// The one paint of a list, `.fill` or `.stroke`: a shown solid colour as hex,
+/// none as `Nil`, any other one paint (a gradient, a picture, a hidden or bound
+/// one, a stroke's width) as its table in `list`'s short form, and several as
+/// `Mixed`, read whole through `.fills` or `.strokes`.
+fn paint_value(list: Val, what: &str) -> Val {
+    match list {
+        Val::Json(serde_json::Value::Array(mut items)) => match items.len() {
+            0 => Val::Nil,
+            1 => match items.remove(0) {
+                serde_json::Value::String(hex) => Val::Str(hex),
+                // A stroke with every default but its colour reads as the colour.
+                serde_json::Value::Object(map)
+                    if map.len() == 1 && map.get("brush").is_some_and(|b| b.is_string()) =>
+                {
+                    map.get("brush")
+                        .and_then(|b| b.as_str())
+                        .map_or(Val::Nil, |hex| Val::Str(hex.to_owned()))
+                }
+                one => Val::Json(one),
+            },
+            _ => Val::Mixed(format!("it has several {what}s — .{what}s reads them all")),
         },
-        _ => Val::Mixed(format!("it has several {what}s")),
+        other => other,
     }
 }
 
@@ -359,20 +594,57 @@ pub(crate) fn read(doc: &Document, res: &Resolved, id: NodeId, prop: &str) -> Re
         })),
         // The stored `f32` read back as the decimal it was written as.
         "opacity" => Val::Num((f64::from(node.opacity()) * 1e6).round() / 1e6),
-        "fill" => match build::shared_fills(doc, &[id]) {
+        "fill" => paint_value(read(doc, res, id, "fills")?, "fill"),
+        "stroke" => paint_value(read(doc, res, id, "strokes")?, "stroke"),
+        "fills" => match build::shared_fills(doc, &[id]) {
             PaintShown::Mixed => Val::Mixed("the layers inside it differ".into()),
-            PaintShown::List(list) => {
-                let items: Vec<_> = list.iter().map(|f| (&f.brush, f.visible)).collect();
-                paint_value(&items, "fill")
-            }
+            PaintShown::List(list) => short_list(
+                "fills",
+                list.iter()
+                    .map(|f| serde_json::to_value(&f.value))
+                    .collect(),
+            ),
         },
-        "stroke" => match build::shared_strokes(doc, &[id]) {
+        "strokes" => match build::shared_strokes(doc, &[id]) {
             PaintShown::Mixed => Val::Mixed("the layers inside it differ".into()),
-            PaintShown::List(list) => {
-                let items: Vec<_> = list.iter().map(|s| (&s.brush, s.visible)).collect();
-                paint_value(&items, "stroke")
-            }
+            PaintShown::List(list) => short_list(
+                "strokes",
+                list.iter()
+                    .map(|s| serde_json::to_value(&s.value))
+                    .collect(),
+            ),
         },
+        "effects" => short_list(
+            "effects",
+            node.effects()
+                .iter()
+                .map(|e| serde_json::to_value(&e.value))
+                .collect(),
+        ),
+        "font_family" => char_attr(node, CharAttrKind::Family),
+        "font_size" => char_attr(node, CharAttrKind::Size),
+        "font_weight" => char_attr(node, CharAttrKind::Weight),
+        "italic" => char_attr(node, CharAttrKind::Italic),
+        "line_height" => char_attr(node, CharAttrKind::LineHeight),
+        "letter_spacing" => char_attr(node, CharAttrKind::LetterSpacing),
+        "text_case" => char_attr(node, CharAttrKind::Case),
+        "text_align" => match node.kind() {
+            NodeKind::Text { paragraph, .. } => variant(serde_json::to_value(paragraph.align)),
+            _ => Val::Nil,
+        },
+        "layout" => match node.display() {
+            None => Val::Nil,
+            Some(d) => serde_json::to_value(d).map_or(Val::Nil, |v| short("layout", v)),
+        },
+        "direction" => match node.display() {
+            Some(Display::Flex(f)) => variant(serde_json::to_value(f.direction)),
+            _ => Val::Nil,
+        },
+        "gap" => node.display().map_or(Val::Nil, gap),
+        "padding" => node.display().map_or(Val::Nil, padding),
+        "layout_item" => {
+            serde_json::to_value(node.item()).map_or(Val::Nil, |v| short("layout_item", v))
+        }
         "name" => Val::Str(node.name().to_owned()),
         "visible" => Val::Bool(node.visible()),
         "locked" => Val::Bool(node.locked()),
