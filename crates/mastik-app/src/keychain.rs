@@ -57,7 +57,7 @@ mod tests {
     /// and an empty one reads as none rather than as a slice of nothing.
     /// Ignored: it writes to the real keychain. Run it by hand with `--ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "writes to the real keychain"]
     fn a_token_is_kept_read_and_forgotten() {
         let account = "figma-token-test";
         super::os::store(account, "figd_test").expect("the store keeps it");

@@ -98,7 +98,8 @@ Before Pass 0, verify in order (these are the project's own gates, in CLAUDE.md'
    - `cargo test -p mastik-app fonts -- --ignored` — the network tests (Fontsource/jsDelivr).
      Slice S21 leans on them.
 
-   All 33 `#[ignore]`s in the tree are legitimately gated (GPU, network, one 23-second boolean
+   Every `#[ignore]` in the tree is gated on something a workspace run cannot provide (a GPU, the
+   network, a real keychain, files written on demand, a child process a test starts, a long
    instrument). "No `#[ignore]`" is therefore **not** a precondition here; "every `#[ignore]` has a
    reason string and the gated suites were run once" is.
 8. **The two record-integrity baselines** from CLAUDE.md, run and recorded in `facts.md`:
