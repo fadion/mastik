@@ -26,15 +26,23 @@ pub(crate) fn known_actors(doc: &Document, own: u64) -> Vec<u64> {
 }
 
 /// Rewrite every full id of a `known` actor in `out` to its short form. Image
-/// and file contents keep their bytes.
+/// and file contents keep their bytes. A text that is the structure's own
+/// serialization is written again from the shortened structure, so it keeps the
+/// document's words as stored; any other text is rewritten as flat text.
 pub(crate) fn shorten(out: &mut Output, known: &[u64]) {
+    let copy = out.structured.as_ref().map(Value::to_string);
     if let Some(v) = out.structured.as_mut() {
         shorten_value(v, known);
     }
     for c in &mut out.content {
-        if let Content::Text(text) = c
-            && let Some(short) = shorten_text(text, known)
+        let Content::Text(text) = c else {
+            continue;
+        };
+        if let Some(v) = &out.structured
+            && copy.as_ref() == Some(text)
         {
+            *text = v.to_string();
+        } else if let Some(short) = shorten_text(text, known) {
             *text = short;
         }
     }
@@ -226,6 +234,34 @@ mod tests {
         assert_eq!(answer["text"], "see aa:3", "a text stays");
         assert_eq!(answer["name"], "aa:4");
         assert_eq!(answer["source"], "x = aa:5");
+    }
+
+    /// An answer's text copy, the half most harnesses hand the model, keeps a
+    /// stored text's ids in full as its structure does; a free text (a refusal)
+    /// is still written short.
+    ///
+    /// flip: `shorten` rewriting a structured answer's text copy as flat text →
+    /// fails at "the text copy keeps the text".
+    #[test]
+    fn an_answers_text_copy_keeps_stored_words() {
+        let known = [0xaa];
+        let mut out = Output::json(serde_json::json!({ "text": "see aa:3", "id": "aa:3" }));
+        shorten(&mut out, &known);
+        let Content::Text(copy) = &out.content[0] else {
+            panic!("a text copy");
+        };
+        assert!(
+            copy.contains("\"see aa:3\""),
+            "the text copy keeps the text: {copy}"
+        );
+        assert!(copy.contains("\"naa_3\""), "the id is short: {copy}");
+        assert_eq!(out.structured.as_ref().unwrap()["id"], "naa_3");
+        let mut refused = Output::error("no layer aa:3");
+        shorten(&mut refused, &known);
+        assert!(
+            matches!(&refused.content[0], Content::Text(t) if t == "no layer naa_3"),
+            "a free text is written short"
+        );
     }
 
     /// An actor that minted only a style stays known after the session's own
