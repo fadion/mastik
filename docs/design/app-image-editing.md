@@ -215,9 +215,9 @@ window onto its picture. There is no crop tool, rail button or `C` key.
 - **A held shape** (`canvas::crop_held_shape`): while the card's Aspect is not Free every handle holds
   it (`edit::crop_resized_held`) — a corner holds the far corner and follows the pointer's larger
   reach, a side moves its edge and grows the other axis about the middle, the picture's edge winning
-  over the pointer. Shift swaps the rule for the drag: on Free it holds the box's shape at the press,
-  as Shift does on a resize; on a shape it lets go. A side drag's box has no held edge, so it is
-  written whole by `edit::reshape_box`.
+  over the pointer. A picked shape holds whether Shift is down or not, since it is the shape the crop
+  must end in; on Free, Shift holds the box's shape at the press, as Shift does on a resize. A side
+  drag's box has no held edge, so it is written whole by `edit::reshape_box`.
 - Both drags capture start values at the press and re-derive each frame (`session.set_preview`). The
   **commit is gated on travel** (`grab_world`, `gesture_travelled`, §9.3); an untravelled release
   clears the preview (`clear_gesture_preview`). The preview is ungated.
@@ -234,7 +234,8 @@ window onto its picture. There is no crop tool, rail button or `C` key.
   from the free `canvas::crop_chrome`) draws the window **dashed** — 3pt at 6/6 (`CROP_DASH_PX`,
   `CROP_GAP_PX`, `CROP_STROKE_PX`) — with hollow corner handles, plus the picture's solid outline when
   the ghost is live, both via `shown_crop`. Cursor: the open hand (`Bitmap::Pan`) over the
-  picture, the closed one while panning it, `Bitmap::Resize` at the handle's angle on handles.
+  picture, the closed one while panning it, `Bitmap::Resize` at the handle's angle on handles and
+  for the whole of a handle drag, wherever the pointer goes.
   While a handle is held, thirds hairlines cross the window (`canvas::crop_thirds`, in the picture
   outline's `SELECT_DIM`); a pan does not show them.
 - **Done pill** (`canvas::crop_exit_pill`) in the size badge's slot, same ground, ink, radius, gap and

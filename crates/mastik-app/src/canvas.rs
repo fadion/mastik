@@ -2382,9 +2382,14 @@ impl MastikApp {
                     true => Badge::Minus,
                     false => Badge::Plus,
                 })),
-                // Handles get resize cursors from `crop_hover`.
+                // Handles get resize cursors from `crop_hover`; a held handle
+                // keeps its own wherever the pointer goes.
                 Tool::ImageEdit => match self.drag {
                     Drag::CropPan { .. } => (egui::CursorIcon::Grabbing, Some(Bitmap::Panning)),
+                    Drag::CropResize { id, handle, .. } => match self.crop_frame(id) {
+                        Some((world, _)) => crop_handle_cursor(world, handle),
+                        None => arrow(None),
+                    },
                     _ => match self.crop_hover(resp, rect, ppp) {
                         Some(c) => c,
                         None => arrow(None),
@@ -5695,13 +5700,12 @@ impl MastikApp {
         Some((r, shape.label(portrait)))
     }
 
-    /// The shape a crop handle drag keeps: the card's, unless Shift lets go of
-    /// it; with the card on Free, Shift holds `frame`'s own shape, as Shift does
-    /// on a resize.
+    /// The shape a crop handle drag keeps: the card's, Shift or not, since a
+    /// picked shape is the one the crop must end in; with the card on Free,
+    /// Shift holds `frame`'s own shape, as Shift does on a resize.
     fn crop_held_shape(&self, id: NodeId, fill: usize, frame: KRect, shift: bool) -> Option<f64> {
         match (self.crop_shape_in_force(id, fill), shift) {
-            (Some((r, _)), false) => Some(r),
-            (Some(_), true) => None,
+            (Some((r, _)), _) => Some(r),
             (None, true) => (frame.height() > 0.0).then(|| frame.width() / frame.height()),
             (None, false) => None,
         }
@@ -5964,11 +5968,7 @@ impl MastikApp {
         let (world, frame) = self.crop_frame(id)?;
         let at = world.inverse() * self.to_world(resp.hover_pos()?, rect, ppp);
         match (self.crop_handle_at(frame, at), frame.contains(at)) {
-            (Some(h), _) => {
-                let (ox, oy) = h.outward();
-                let d = (world * Point::new(ox, oy)) - (world * Point::ZERO);
-                Some(resize_cursor(egui::vec2(d.x as f32, d.y as f32)))
-            }
+            (Some(h), _) => Some(crop_handle_cursor(world, h)),
             (None, true) => (self.crop_state(id, fill).is_some())
                 .then_some((egui::CursorIcon::Grab, Some(Bitmap::Pan))),
             (None, false) => None,
@@ -11931,6 +11931,14 @@ pub(crate) fn handle_cursor(dragging: bool) -> Pointer {
 /// angle in 15° steps.
 pub(crate) fn resize_cursor(out: egui::Vec2) -> Pointer {
     (resize_icon(out), Some(Bitmap::Resize(Turn::toward(out))))
+}
+
+/// The resize cursor for crop handle `h` on a layer drawn through `world`, at
+/// the angle the handle faces once the layer's rotation is applied.
+fn crop_handle_cursor(world: Affine, h: Handle) -> Pointer {
+    let (ox, oy) = h.outward();
+    let d = (world * Point::new(ox, oy)) - (world * Point::ZERO);
+    resize_cursor(egui::vec2(d.x as f32, d.y as f32))
 }
 
 /// The skew cursor along a side running `along` on screen.
@@ -20846,6 +20854,95 @@ mod crop_click_tests {
             1,
             "and is one undo step"
         );
+    }
+
+    /// A shape picked on the card holds through a handle drag with Shift down;
+    /// on Free, Shift holds the box's own shape.
+    /// flip: `crop_held_shape` letting go of the card's shape under Shift →
+    /// fails at "Shift keeps the picked shape".
+    #[test]
+    fn shift_does_not_let_go_of_a_picked_crop_shape() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, id) = app_cropping(&ctx);
+        let frame = KRect::new(0.0, 0.0, 100.0, 50.0);
+        assert_eq!(
+            app.crop_held_shape(id, 0, frame, false),
+            None,
+            "Free holds nothing"
+        );
+        assert_eq!(
+            app.crop_held_shape(id, 0, frame, true),
+            Some(2.0),
+            "Free with Shift holds the box's shape"
+        );
+        app.crop_aspect = crate::panels::CropAspect {
+            picture: Some(mastik_core::ImageId("a-photo".into())),
+            shape: crate::panels::CropShape::Square,
+            portrait: false,
+        };
+        assert_eq!(app.crop_held_shape(id, 0, frame, false), Some(1.0));
+        assert_eq!(
+            app.crop_held_shape(id, 0, frame, true),
+            Some(1.0),
+            "Shift keeps the picked shape"
+        );
+    }
+
+    /// A held crop handle keeps its resize cursor wherever the pointer goes: over
+    /// the picture, where the open hand is, and off the layer, where the arrow is.
+    /// flip: dropping `canvas_cursor`'s `Drag::CropResize` arm → fails at "over
+    /// the picture".
+    #[test]
+    fn a_held_crop_handle_keeps_its_resize_cursor() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, id) = app_cropping(&ctx);
+        let size = egui::vec2(400.0, 300.0);
+        let area = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let icon = |app: &mut MastikApp, at: egui::Pos2| {
+            let mut last = egui::CursorIcon::Default;
+            for _ in 0..2 {
+                let out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(area),
+                        events: vec![egui::Event::PointerMoved(at)],
+                        ..Default::default()
+                    },
+                    |ui| {
+                        let resp = ui.interact(
+                            area,
+                            egui::Id::new("crop-cursor-probe"),
+                            egui::Sense::click_and_drag(),
+                        );
+                        app.canvas_cursor(ui, &resp, area, 1.0);
+                    },
+                );
+                last = out.platform_output.cursor_icon;
+            }
+            last
+        };
+        // The layer spans 150..250 across and 100..200 down on this canvas.
+        let inside = egui::pos2(200.0, 150.0);
+        let outside = egui::pos2(40.0, 40.0);
+        assert_eq!(
+            icon(&mut app, inside),
+            egui::CursorIcon::Grab,
+            "fixture: at rest the picture shows the open hand"
+        );
+        let frame = KRect::new(0.0, 0.0, 100.0, 100.0);
+        app.drag = Drag::CropResize {
+            id,
+            fill: 0,
+            handle: Handle::BottomRight,
+            frame,
+            start: frame,
+            limit: frame,
+            grab_world: Point::new(100.0, 100.0),
+        };
+        let resize = crop_handle_cursor(Affine::IDENTITY, Handle::BottomRight).0;
+        assert_eq!(icon(&mut app, inside), resize, "over the picture");
+        assert_eq!(icon(&mut app, outside), resize, "off the layer");
     }
 }
 
