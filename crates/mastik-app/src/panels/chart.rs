@@ -570,7 +570,7 @@ impl MastikApp {
         body: impl FnOnce(&mut Self, &mut egui::Ui),
     ) {
         let open = !self.collapsed_panels.contains(key);
-        if ui::fold_rule(ui, label, open).clicked() {
+        if ui::fold_rule(ui, label, open, 0).clicked() {
             if open {
                 self.collapsed_panels.insert(key);
             } else {
