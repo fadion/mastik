@@ -290,7 +290,7 @@ pub(crate) fn run() -> Result<(), String> {
             // `endpoint::hosts` (this process's own among them), is no client
             // leaving: counting it ended `serve` before its first call.
             Ok(Request::Closed(conn)) => {
-                if engine.closed(conn) {
+                if engine.closed(&mut docs, conn) {
                     let used: Vec<PathBuf> = engine.in_use().map(Path::to_path_buf).collect();
                     docs.open.retain(|p, _| used.contains(p));
                 }

@@ -12,6 +12,7 @@ mod agent_log;
 mod context;
 mod describe;
 pub(crate) mod endpoint;
+mod group;
 mod inspect;
 mod kits;
 pub(crate) mod propose;
@@ -134,6 +135,8 @@ struct Connection {
     /// When it last called, in [`Engine::tick`]s: the least recent keyed client
     /// is forgotten first.
     used: u64,
+    /// The `group_steps` group it has open, on its current document.
+    group: Option<group::Group>,
 }
 
 /// Whose state a call reads: a keyed client's, which outlives its connections,
@@ -183,6 +186,9 @@ pub(crate) struct Engine {
     clients: HashMap<Who, Connection>,
     /// The connections open now, which `serve` waits on.
     live: std::collections::HashSet<Conn>,
+    /// The key each open connection called with, so a keyed client's open
+    /// group closes when its last connection does.
+    keys: HashMap<Conn, String>,
     tick: u64,
     /// The levels the window granted its chats.
     grants: access::Grants,
@@ -196,11 +202,40 @@ pub(crate) struct Engine {
 
 impl Engine {
     /// Forget a connection that closed, and its state unless a key holds it.
+    /// A group the client left open closes: an unkeyed client's with its
+    /// connection, a keyed one's with the last connection it called on.
     /// Answers whether it had called: a connection that only looked whether the
     /// endpoint answers, as `endpoint::hosts` does, is no client leaving.
-    pub(crate) fn closed(&mut self, conn: Conn) -> bool {
-        self.clients.remove(&Who::Conn(conn));
+    pub(crate) fn closed(&mut self, docs: &mut impl Documents, conn: Conn) -> bool {
+        let mut open = self
+            .clients
+            .remove(&Who::Conn(conn))
+            .and_then(|mut c| c.group.take());
+        if let Some(key) = self.keys.remove(&conn)
+            && !self.keys.values().any(|k| *k == key)
+        {
+            open = open.or_else(|| {
+                self.clients
+                    .get_mut(&Who::Key(key))
+                    .and_then(|c| c.group.take())
+            });
+        }
+        if let Some(g) = open {
+            group::close(docs, g);
+        }
         self.live.remove(&conn)
+    }
+
+    /// The assistant's turn for the chat keyed `key` has ended: a group it left
+    /// open closes, as one a disconnecting client leaves.
+    pub(crate) fn turn_ended(&mut self, docs: &mut impl Documents, key: &str) {
+        let open = self
+            .clients
+            .get_mut(&Who::Key(key.to_owned()))
+            .and_then(|c| c.group.take());
+        if let Some(g) = open {
+            group::close(docs, g);
+        }
     }
 
     /// The documents some client is using, for a host deciding what it may close.
@@ -218,6 +253,9 @@ impl Engine {
     /// used keyed client is forgotten past [`CLIENTS`].
     fn client(&mut self, call: &Call) -> &mut Connection {
         self.live.insert(call.conn);
+        if let Some(key) = &call.key {
+            self.keys.insert(call.conn, key.clone());
+        }
         self.tick += 1;
         let who = who(call);
         if !self.clients.contains_key(&who) && matches!(who, Who::Key(_)) {
@@ -351,6 +389,12 @@ impl Engine {
             };
             return match docs.open(wanted) {
                 Ok(path) => {
+                    // A group's steps are one document's history.
+                    if conn.document.as_deref() != Some(path.as_path())
+                        && let Some(g) = conn.group.take()
+                    {
+                        group::close(docs, g);
+                    }
                     let Some(session) = docs.session(&path) else {
                         return Output::error(format!("{} did not open", path.display()));
                     };
@@ -451,6 +495,7 @@ impl Engine {
         let Some(session) = docs.session(&path) else {
             conn.document = None;
             conn.shown.clear();
+            conn.group = None;
             return Output::error(format!(
                 "{} is no longer open: call `use_document` again.",
                 path.display()
@@ -483,6 +528,8 @@ impl Engine {
             actions::run(docs, &path, &call)
         } else if call.tool == "get_view" {
             Ok(Answer::Json(view(session, canvas)))
+        } else if call.tool == "group_steps" {
+            group::run(conn, session, &path, agent(&call), &call.client, &call.args)
         } else if matches!(call.tool.as_str(), "batch" | "set") {
             // Each step's commit clears the person's redo; one that ends refused,
             // or lands nothing, gives it back below.
@@ -553,6 +600,10 @@ impl Engine {
                     _ => output.content.push(Content::Text(line)),
                 }
             }
+        }
+        // A joined history is written where a tab behind or `serve` keeps it.
+        if call.tool == "group_steps" && !output.is_error {
+            let _ = docs.committed(&path);
         }
         stamp(&mut output, after, changed);
         if let Some(p) = proposed {
@@ -1754,8 +1805,8 @@ mod tests {
     fn a_probe_closing_is_no_client_leaving() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
         open(&mut engine, &mut docs, 1);
-        assert!(!engine.closed(2), "a probe never called");
-        assert!(engine.closed(1), "a client that called left");
+        assert!(!engine.closed(&mut docs, 2), "a probe never called");
+        assert!(engine.closed(&mut docs, 1), "a client that called left");
     }
 
     /// A table tool's model argument sent as JSON text is read as the structure
@@ -3030,7 +3081,7 @@ mod tests {
         );
         let card = ok(&made)["created"][0].clone();
         let base = ok(&made)["rev"].clone();
-        engine.closed(1);
+        engine.closed(&mut docs, 1);
 
         // The person renames it while no connection is open.
         open(&mut engine, &mut docs, 9);
@@ -3073,7 +3124,7 @@ mod tests {
             "refused by the name it read: {why}"
         );
 
-        engine.closed(9);
+        engine.closed(&mut docs, 9);
         assert!(
             call(&mut engine, &mut docs, 10, "get_selection", json!({})).is_error,
             "a new unkeyed connection starts with no document"
@@ -3099,7 +3150,7 @@ mod tests {
             "use_document",
             use_doc(false),
         ));
-        engine.closed(1);
+        engine.closed(&mut docs, 1);
         open(&mut engine, &mut docs, 9);
         rect(&mut engine, &mut docs, 9, "Badge");
         let restored = keyed(&mut engine, &mut docs, 2, k, "use_document", use_doc(true));
@@ -3129,7 +3180,7 @@ mod tests {
                 "use_document",
                 json!({ "document": "a" }),
             ));
-            engine.closed(n as Conn);
+            engine.closed(&mut docs, n as Conn);
         }
         // The kept one first: asking for the forgotten one makes it anew,
         // forgetting the next oldest.

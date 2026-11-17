@@ -92,7 +92,7 @@ impl MastikApp {
                 // Its connection gave up waiting and told the agent nothing changed.
                 Request::Call(_) => {}
                 Request::Closed(conn) => {
-                    host.engine.closed(conn);
+                    host.engine.closed(self, conn);
                 }
             }
         }
@@ -100,6 +100,16 @@ impl MastikApp {
         if answered {
             self.egui_ctx.request_repaint();
         }
+    }
+
+    /// The assistant's turn for the chat keyed `key` has ended: a `group_steps`
+    /// group it left open closes.
+    pub(crate) fn mcp_turn_ended(&mut self, key: &str) {
+        let Some(mut host) = self.mcp.take() else {
+            return;
+        };
+        host.engine.turn_ended(self, key);
+        self.mcp = Some(host);
     }
 
     /// Read `path` into a tab behind the one in front.

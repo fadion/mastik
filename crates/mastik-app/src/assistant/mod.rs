@@ -908,8 +908,17 @@ impl MastikApp {
             }
             return;
         }
+        let turn = self.assistant.running.is_some();
+        let key = self.assistant.live.as_ref().map(|l| l.key.clone());
         for e in events {
             self.assistant_event(e);
+        }
+        // A `group_steps` group the agent left open closes with its turn.
+        if turn
+            && self.assistant.running.is_none()
+            && let Some(key) = key
+        {
+            self.mcp_turn_ended(&key);
         }
         ctx.request_repaint();
     }

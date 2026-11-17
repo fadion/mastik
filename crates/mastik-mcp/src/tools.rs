@@ -36,7 +36,7 @@ pub const PHASE_1: [&str; 26] = [
 ///
 /// `create_node`, `insert_subtree`, `duplicate` and `add_image` return the new
 /// ids: the handler minted them, so it knows them.
-pub const PHASE_2: [&str; 80] = [
+pub const PHASE_2: [&str; 81] = [
     "create_node",
     "create_text",
     "insert_subtree",
@@ -114,6 +114,7 @@ pub const PHASE_2: [&str; 80] = [
     "redo",
     "set_selection",
     "batch",
+    "group_steps",
     "set",
     "run_script",
     "call",
@@ -216,7 +217,7 @@ pub const ASSISTANT: [&str; 1] = ["propose_edit"];
 /// The tools `tools/list` names by default (§8.4, *Core*): what nearly every
 /// task uses. Every other tool still answers by name, through `call`, or listed
 /// with `mastik mcp-proxy --tools all`; a short list is read on every turn.
-pub const CORE: [&str; 41] = [
+pub const CORE: [&str; 42] = [
     "use_document",
     "list_documents",
     "get_selection",
@@ -253,6 +254,7 @@ pub const CORE: [&str; 41] = [
     "bind_variable",
     "add_variable",
     "batch",
+    "group_steps",
     "run_script",
     "call",
     "undo",
@@ -339,11 +341,12 @@ mod tests {
 
     /// Phase 2 tools no verb answers: the session's, and `batch` and
     /// `run_script`, which run verbs.
-    const SESSION: [&str; 7] = [
+    const SESSION: [&str; 8] = [
         "undo",
         "redo",
         "set_selection",
         "batch",
+        "group_steps",
         "set",
         "run_script",
         "call",

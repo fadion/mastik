@@ -391,6 +391,24 @@ pub static TOOLS: &[Tool] = &[
         ],
     },
     Tool {
+        name: "group_steps",
+        doc: "Make the writes between `begin` and `end` one undo step, for a request of several calls; each still lands at once. A group left open ends with your turn or connection",
+        params: &[
+            param(
+                "action",
+                ParamKind::Choice(&["begin", "end"]),
+                true,
+                "`begin` before the first write, `end` after the last.",
+            ),
+            param(
+                "name",
+                ParamKind::Text,
+                false,
+                "With `begin`: the step's name in History; `group` when absent.",
+            ),
+        ],
+    },
+    Tool {
         name: "set",
         doc: "Set properties of layers in one undo step, each as its own setter takes it: name, visible, locked, opacity, blend, clip, fills, strokes, effects, exports, display, item, insets, text, text_style, paragraph, block, transform, geometry, element, link, size {width, height}, at [x, y] (its box's left and top in its parent), rotation (degrees), corner_radius, fill, stroke; x, y, width or height alone keeps the rest. Style part of a text with `style_text`.",
         params: &[
@@ -1000,8 +1018,8 @@ mod tests {
     /// budget.
     #[test]
     fn the_tool_list_stays_within_its_budget() {
-        const CORE_BUDGET: usize = 25_900;
-        const ALL_BUDGET: usize = 101_900;
+        const CORE_BUDGET: usize = 26_450;
+        const ALL_BUDGET: usize = 102_450;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

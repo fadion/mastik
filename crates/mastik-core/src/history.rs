@@ -469,6 +469,13 @@ impl History {
         self.undo.last().map(|s| s.serial)
     }
 
+    /// The serial the latest step took, done or undone: every step committed
+    /// after this call has a greater one, which marks where a run of later
+    /// steps begins.
+    pub fn last_serial(&self) -> u64 {
+        self.next_serial
+    }
+
     /// The note of the step on top of the undo stack, for a caller completing it
     /// with what only the applied edit can tell (a created node's name).
     pub fn current_note_mut(&mut self) -> Option<&mut StepNote> {
