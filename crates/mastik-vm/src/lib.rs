@@ -20,6 +20,7 @@ mod header;
 mod help;
 mod lex;
 mod props;
+mod random;
 mod run;
 mod sugar;
 

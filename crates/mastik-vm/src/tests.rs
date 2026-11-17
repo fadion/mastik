@@ -1663,3 +1663,62 @@ fn declaration_is_the_nearest_above() {
     let src = "local a: number, b = 1, 2\nprint(b)";
     assert_eq!(at(src, "b)"), Some(17), "a typed local list");
 }
+
+/// `random(seed)` draws the same numbers for the same seed, in each of its
+/// three forms and within their bounds, and a seed is required.
+/// flip: `Rng::new` ignoring its seed → fails at "another seed draws others".
+#[test]
+fn random_draws_are_fixed_by_their_seed() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let draws = "local r = random(SEED)\nlocal out = {}\n\
+                 for i = 1, 200 do table.insert(out, r()) end\n\
+                 for i = 1, 200 do table.insert(out, r(6)) end\n\
+                 for i = 1, 200 do table.insert(out, r(-3, 3)) end\n\
+                 return table.concat(out, ',')";
+    let run = |h: &mut TestHost, seed: &str| {
+        run_script(h, &e, &draws.replace("SEED", seed))
+            .unwrap()
+            .copied
+            .unwrap()
+    };
+    let first = run(&mut h, "42");
+    // `assert!` rather than `assert_eq!`: the draws are 600 numbers long.
+    assert!(first == run(&mut h, "42"), "the same seed draws the same");
+    assert!(first == run(&mut h, "42.0"), "a whole seed is itself");
+    assert!(first != run(&mut h, "43"), "another seed draws others");
+    assert!(run(&mut h, "\"grid\"") == run(&mut h, "\"grid\""));
+    let values: Vec<f64> = first.split(',').map(|v| v.parse().unwrap()).collect();
+    assert!(values[..200].iter().all(|v| (0.0..1.0).contains(v)));
+    assert!(
+        values[200..400]
+            .iter()
+            .all(|v| (1.0..=6.0).contains(v) && v.fract() == 0.0)
+    );
+    assert!(
+        values[400..]
+            .iter()
+            .all(|v| (-3.0..=3.0).contains(v) && v.fract() == 0.0)
+    );
+    for n in 1..=6 {
+        assert!(values[200..400].contains(&f64::from(n)), "{n} is drawn");
+    }
+    // The generator is the crate's own, so the numbers a seed draws never move.
+    let out = run_script(&mut h, &e, "local r = random(1) return r(1000000)").unwrap();
+    assert_eq!(out.value.as_deref(), Some("702922"), "pinned");
+    for (src, said) in [
+        ("random()", "`random` needs a seed"),
+        ("random({})", "`random`'s seed is a number or a string"),
+        ("random(1)(2.5)", "A random draw takes whole numbers"),
+        (
+            "random(1)(3, 1)",
+            "A random draw from 3 to 1 has no whole number",
+        ),
+    ] {
+        let err = run_script(&mut h, &e, src).unwrap_err();
+        assert!(err.message.starts_with(said), "{src}: {}", err.message);
+    }
+    let out = run_script(&mut h, &e, "return tostring(random(7))").unwrap();
+    assert_eq!(out.copied.as_deref(), Some("random(7)"));
+}

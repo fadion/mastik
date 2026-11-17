@@ -95,9 +95,9 @@ The environment's `__index` (`run::resolve`) answers an unknown name in this ord
 3. **Leap labels**, two lowercase home-row letters, each bound to its layer for as long as the
    document is open (*Pick*). A label whose layer was deleted raises.
 4. **Registry verbs**, by their registry names.
-5. `print` (to the bar's result or the editor's output), `percent`, `math` without `random` and
-   `randomseed`, `table` without the deprecated `foreach`, `foreachi` and `getn`, `param` (a
-   script's inputs, §10), and the allowlist `string`, `ipairs`,
+5. `print` (to the bar's result or the editor's output), `percent`, `random` (§8), `math`
+   without `random` and `randomseed`, `table` without the deprecated `foreach`, `foreachi` and
+   `getn`, `param` (a script's inputs, §10), and the allowlist `string`, `ipairs`,
    `pairs`, `select`, `tonumber`, `tostring`, `type`, `assert`, `error`. A name off the allowlist
    (`os`, `debug`, `require`, `load`, `pcall`, `setmetatable`…) is an unknown name.
 6. **A layer name** on the current page, matched exactly. Two or more raise, naming the count and
@@ -186,8 +186,15 @@ things together: nothing runs a script but the person, by hand (§10), and every
 sandbox. What is left is an escape through a bug in Luau or `mlua`.
 
 - `Lua::sandbox` on; names off the allowlist (§4) do not resolve.
-- **No filesystem, network, clock or randomness.** A run is deterministic, as replayed operations
-  are (§12 of `foundations.md`).
+- **No filesystem, network, clock or unseeded randomness.** A run is deterministic, as replayed
+  operations are (§12 of `foundations.md`). Randomness is **seeded**: `random(seed)` (a number or
+  a string) answers a generator, `math.random`'s three forms, whose draws the seed fixes —
+  `rng()` a fraction from 0 up to 1, `rng(n)` a whole number from 1 to n, `rng(m, n)` one from m
+  to n — so scatter, jitter and generated patterns come out the same each run and a new seed
+  deals again. A seed is required. The generator is the crate's own (`random.rs`, xoshiro256**
+  seeded through SplitMix64, a whole number seeding as itself and a string by its FNV-1a hash), so
+  the numbers a seed draws never change with a dependency (`random_draws_are_fixed_by_their_seed`
+  pins one).
 - **Budgets**, counted by `set_interrupt` (Luau calls it at every call and loop iteration; the clock
   is read every 256th, and at once after a verb or commit, which may be slow) and
   `set_memory_limit` above what the fresh state holds. Printed output lives outside Lua's memory,

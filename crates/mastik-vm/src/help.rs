@@ -445,6 +445,7 @@ fn name_type(name: &str) -> Option<&'static str> {
     match name {
         "sel" | "selection" | "children" => Some("Layers"),
         "parent" | "prev" | "next" => Some("Layers?"),
+        "random" => Some("(seed: number | string) -> Random"),
         _ => None,
     }
 }

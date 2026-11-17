@@ -54,6 +54,7 @@ const API_GLOBALS: &[&str] = &[
     "next",
     "children",
     "percent",
+    "random",
 ];
 
 /// Whether lexeme `i` of `lexemes` is one of Mastik's names.
@@ -206,6 +207,17 @@ pub fn definitions() -> String {
         "`percent(50)` is the size `50%`, for a laid-out layer's width or height",
     );
     out.push_str("declare function percent(n: number): any\n\n");
+    out.push_str(
+        "--- Numbers drawn from a seed: `rng()` a fraction from 0 to 1, `rng(n)` a whole\n\
+         --- number from 1 to n, `rng(m, n)` one from m to n. The same seed draws the same.\n\
+         export type Random = ((() -> number) & ((n: number) -> number) & ((m: number, n: number) -> number))\n",
+    );
+    comment(
+        &mut out,
+        "",
+        "`random(seed)`: a generator drawing the same numbers for the same seed",
+    );
+    out.push_str("declare function random(seed: number | string): Random\n\n");
     for verb in verbs::VERBS {
         let subject = verb
             .params

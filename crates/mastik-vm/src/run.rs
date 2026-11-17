@@ -594,6 +594,10 @@ pub(crate) const NAMES: &[(&str, &str)] = &[
     ("children", "The layers inside the selection"),
     ("param", "The script's inputs, by name"),
     ("percent", "`percent(50)` is the size `50%`"),
+    (
+        "random",
+        "`random(seed)`: a generator drawing the same numbers for the same seed",
+    ),
     ("print", "Show values in the output"),
 ];
 
@@ -791,7 +795,7 @@ fn current_line(lua: &Lua) -> Option<u32> {
 }
 
 /// An error naming `message`, at the line running.
-fn raise(lua: &Lua, message: impl Into<String>) -> mlua::Error {
+pub(crate) fn raise(lua: &Lua, message: impl Into<String>) -> mlua::Error {
     raise_at(lua, message, None, None)
 }
 
@@ -1145,6 +1149,10 @@ fn resolve(
     match name {
         "print" => return Ok((Value::Function(print.clone()), true)),
         "percent" => return Ok((Value::Function(percent.clone()), true)),
+        "random" => {
+            let random = lua.create_function(crate::random::random)?;
+            return Ok((Value::Function(random), true));
+        }
         "math" | "table" => return Ok((Value::Table(safe_library(lua, name)?), true)),
         "param" => return Ok((Value::Table(params.clone()), true)),
         n if STDLIB.contains(&n) => return Ok((lua.globals().get(n)?, true)),
@@ -1196,7 +1204,8 @@ pub(crate) fn named(doc: &mastik_core::Document, page: NodeId, name: &str) -> Ve
 }
 
 /// A read-only copy of library `name`: `math` without its random numbers, since
-/// a run is deterministic, and `table` without the deprecated `foreach`,
+/// a run is deterministic (`random(seed)` draws numbers its seed fixes), and
+/// `table` without the deprecated `foreach`,
 /// `foreachi` and `getn`, so every member a script reaches is one [`LIBRARY`] lists.
 fn safe_library(lua: &Lua, name: &str) -> mlua::Result<Table> {
     let library: Table = lua.globals().get(name)?;
@@ -2047,7 +2056,7 @@ fn shown(lua: &Lua, state: &RefCell<State<'_>>, v: &Value) -> mlua::Result<Optio
         Value::Function(_) => "function".into(),
         Value::UserData(ud) => match ud.borrow::<Percent>() {
             Ok(p) => format!("{}%", format_number(p.0)),
-            Err(_) => "userdata".into(),
+            Err(_) => mlua::ObjectLike::to_string(ud).unwrap_or_else(|_| "userdata".into()),
         },
         _ => "value".into(),
     }))
