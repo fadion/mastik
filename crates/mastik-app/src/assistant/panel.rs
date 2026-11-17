@@ -833,7 +833,7 @@ impl MastikApp {
     fn proposal_card(&self, ui: &mut egui::Ui, id: u64, acts: &mut Vec<Act>) {
         let Some(p) = self.held_proposal(id) else {
             ui.label(
-                egui::RichText::new("This proposal is no longer held; ask again to see it.")
+                egui::RichText::new("This proposal was not kept; ask again to see it.")
                     .size(ui::SMALL_PT)
                     .color(theme::text::faint()),
             );
@@ -922,8 +922,10 @@ impl MastikApp {
                             match (applied, &stale, here) {
                                 (Some(a), _, _) => {
                                     ui.label(faint("Applied as one step"));
-                                    let undoable =
-                                        here && crate::mcp::propose::can_undo(&self.session, &a);
+                                    let undoable = here
+                                        && a.is_some_and(|a| {
+                                            crate::mcp::propose::can_undo(&self.session, &a)
+                                        });
                                     if undoable {
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
@@ -991,13 +993,14 @@ impl MastikApp {
             });
     }
 
-    /// The proposal called `id`, while the window's MCP host keeps it.
+    /// The proposal called `id`: the thread's copy, else the window's MCP
+    /// host's while it keeps it.
     fn held_proposal(&self, id: u64) -> Option<&crate::mcp::propose::Proposal> {
-        #[cfg(test)]
-        if let Some(p) = self.assistant.held.iter().find(|p| p.id == id) {
-            return Some(p);
-        }
-        self.mcp.as_ref().and_then(|h| h.proposal(id))
+        self.assistant
+            .proposals
+            .iter()
+            .find(|p| p.id == id)
+            .or_else(|| self.mcp.as_ref().and_then(|h| h.proposal(id)))
     }
 
     /// Apply a proposal from its card, as one undo step marked as the
@@ -1017,7 +1020,11 @@ impl MastikApp {
         }
         match crate::mcp::propose::apply(&mut self.session, &p) {
             Ok(a) => {
-                self.assistant.applied.insert(id, a);
+                self.assistant.applied.insert(id, Some(a));
+                if !self.assistant.proposals.iter().any(|k| k.id == id) {
+                    self.assistant.proposals.push(p);
+                }
+                self.assistant.save();
             }
             Err(why) => self.session.info(why),
         }
@@ -1026,7 +1033,7 @@ impl MastikApp {
     /// Undo an applied proposal: its step while it is the last, else alone
     /// under the later ones when they changed other things, saying why not.
     fn assistant_undo(&mut self, id: u64) {
-        let Some(a) = self.assistant.applied.get(&id).copied() else {
+        let Some(Some(a)) = self.assistant.applied.get(&id).copied() else {
             return;
         };
         // A text edit still open would land after the proposal's step.
@@ -1038,6 +1045,7 @@ impl MastikApp {
             Ok(()) => {
                 self.document_rewound();
                 self.assistant.applied.remove(&id);
+                self.assistant.save();
             }
             Err(why) => self.session.info(why),
         }
@@ -1393,7 +1401,7 @@ mod tests {
         );
         let pid = proposed["proposal"].as_u64().unwrap();
         app.assistant
-            .held
+            .proposals
             .push(engine.proposal(pid).expect("held").clone());
         let node = app.session.doc.get(id).unwrap();
         let parts = mastik_core::TextParts::of(node.kind()).unwrap();
@@ -1411,7 +1419,7 @@ mod tests {
         });
         app.mode = crate::input::Mode::TextInsert;
         assert!(
-            crate::mcp::propose::stale(&app.session, &app.assistant.held[0]).is_none(),
+            crate::mcp::propose::stale(&app.session, &app.assistant.proposals[0]).is_none(),
             "the card offers Apply"
         );
         app.assistant_apply(pid);

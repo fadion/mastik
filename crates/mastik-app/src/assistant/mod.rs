@@ -256,8 +256,12 @@ pub(crate) struct Assistant {
     pub(crate) focus: bool,
     /// What the agent was shown at its last turn.
     look: Option<prompt::Look>,
-    /// Proposals applied from their cards, by proposal id.
-    pub(crate) applied: std::collections::HashMap<u64, crate::mcp::propose::Applied>,
+    /// Proposals applied from their cards, by proposal id, with the undo step
+    /// each made; `None` when a reloaded thread could not find that step again.
+    pub(crate) applied: std::collections::HashMap<u64, Option<crate::mcp::propose::Applied>>,
+    /// The proposals this thread's cards show, copied from the host as each
+    /// arrives and saved with the thread, so a card outlives the host's memory.
+    pub(crate) proposals: Vec<crate::mcp::propose::Proposal>,
     /// The layer a chip under the pointer outlines.
     pub(crate) hovered: Option<String>,
     /// The panel's drag edge lights after the layers panel's dwell.
@@ -267,9 +271,6 @@ pub(crate) struct Assistant {
     /// Each harness's program, model and effort as last set in Settings this
     /// session, which come back when it is picked again.
     pub(crate) remembered: std::collections::HashMap<String, (String, String, String)>,
-    /// Proposals a test holds in place of the MCP host a headless window lacks.
-    #[cfg(test)]
-    pub(crate) held: Vec<crate::mcp::propose::Proposal>,
 }
 
 impl Assistant {
@@ -291,7 +292,8 @@ impl Assistant {
     /// replayed; a note saying so goes above the question, once per thread.
     fn replay_for(&mut self, harness: &str) -> String {
         let earlier = &self.msgs[..self.msgs.len().saturating_sub(2)];
-        if let Some(r) = prompt::replay(earlier, harness) {
+        let applied = |id| self.applied.contains_key(&id);
+        if let Some(r) = prompt::replay(earlier, harness, &self.proposals, &applied) {
             return r;
         }
         let note = Msg::Note(Note::Said(WITHHELD.into()));
@@ -327,7 +329,9 @@ impl Assistant {
             return true;
         };
         let streaming = self.running.as_ref().map(|r| r.msg);
-        match thread::save(file, &thread::for_saving(&self.msgs, streaming)) {
+        let applied = |id| self.applied.contains_key(&id);
+        let saved = thread::for_saving(&self.msgs, streaming, &self.proposals, &applied);
+        match thread::save(file, &saved) {
             Ok(()) => true,
             Err(e) => {
                 log::warn!(
@@ -931,7 +935,20 @@ impl MastikApp {
             self.assistant.save();
         }
         let file = thread::file_for(now.1.as_deref(), now.2.as_deref());
-        self.assistant.msgs = file.as_deref().map(thread::load).unwrap_or_default();
+        let saved = file.as_deref().map(thread::load).unwrap_or_default();
+        self.assistant.msgs = saved.msgs;
+        // An applied card's undo step is found again in the document's
+        // history, whose serials were minted afresh.
+        self.assistant.applied = saved
+            .proposals
+            .iter()
+            .filter(|k| k.applied)
+            .map(|k| {
+                let step = crate::mcp::propose::applied_step(&self.session, &k.proposal);
+                (k.proposal.id, step)
+            })
+            .collect();
+        self.assistant.proposals = saved.proposals.into_iter().map(|k| k.proposal).collect();
         self.assistant.file = file;
         let a = &mut self.assistant;
         if let Some((tab, ..)) = &a.doc
@@ -946,7 +963,6 @@ impl MastikApp {
             .retain(|tab, _| tab.is_none_or(|t| tabs.get(t).is_some()));
         self.assistant.doc = Some(now);
         self.assistant.chips.clear();
-        self.assistant.applied.clear();
         self.assistant.level = None;
         self.assistant.look = None;
         self.assistant.recall = None;
@@ -982,6 +998,7 @@ impl MastikApp {
             Some(Msg::Agent { parts, .. }) => parts,
             _ => return,
         };
+        let mut proposed = None;
         match e {
             ai::Event::Alive => r.alive = true,
             ai::Event::Text(t) => {
@@ -1020,6 +1037,7 @@ impl MastikApp {
                     t.result = result_of(&text, is_error, image);
                     if t.name == "propose_edit" && !is_error {
                         t.proposal = proposal_in(&text);
+                        proposed = t.proposal;
                     }
                 }
             }
@@ -1089,6 +1107,14 @@ impl MastikApp {
                 }
                 a.save();
             }
+        }
+        // The thread keeps its own copy, which it saves; the host keeps only
+        // its last few, in memory.
+        if let Some(id) = proposed
+            && !self.assistant.proposals.iter().any(|p| p.id == id)
+            && let Some(p) = self.mcp.as_ref().and_then(|h| h.proposal(id))
+        {
+            self.assistant.proposals.push(p.clone());
         }
     }
 
@@ -1474,6 +1500,7 @@ impl MastikApp {
         self.assistant.end_session(None);
         self.assistant.msgs.clear();
         self.assistant.applied.clear();
+        self.assistant.proposals.clear();
         self.assistant.recall = None;
         self.assistant.thread_epoch += 1;
         self.assistant.save();

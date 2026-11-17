@@ -7,7 +7,8 @@
 //! `changed` a tool result carries.
 
 use super::Level;
-use super::thread::{Chip, Msg};
+use super::thread::{Chip, Msg, Part};
+use crate::mcp::propose::Proposal;
 use mastik_export::Snapshot;
 use std::collections::HashMap;
 
@@ -109,10 +110,16 @@ pub(crate) fn system(level: Level, instructions: &str, replay: &str) -> String {
     s
 }
 
-/// The thread's prose for a fresh session, questions and answers only, never
-/// tool calls. `None` when another harness wrote any of it: its prose is not
-/// replayed.
-pub(crate) fn replay(msgs: &[Msg], harness: &str) -> Option<String> {
+/// The thread's prose for a fresh session: questions and answers, and each
+/// proposal the agent made with whether the person applied it, never the
+/// other tool calls, whose reads may have gone stale. `None` when another
+/// harness wrote any of it: its prose is not replayed.
+pub(crate) fn replay(
+    msgs: &[Msg],
+    harness: &str,
+    proposals: &[Proposal],
+    applied: &dyn Fn(u64) -> bool,
+) -> Option<String> {
     let mut out = String::new();
     for m in msgs {
         match m {
@@ -121,7 +128,9 @@ pub(crate) fn replay(msgs: &[Msg], harness: &str) -> Option<String> {
                 out.push_str(text.trim());
                 out.push('\n');
             }
-            Msg::Agent { harness: by, .. } => {
+            Msg::Agent {
+                harness: by, parts, ..
+            } => {
                 if by != harness {
                     return None;
                 }
@@ -130,6 +139,24 @@ pub(crate) fn replay(msgs: &[Msg], harness: &str) -> Option<String> {
                     out.push_str("You: ");
                     out.push_str(prose.trim());
                     out.push('\n');
+                }
+                let made = parts.iter().filter_map(|p| match p {
+                    Part::Tool(t) => t.proposal,
+                    Part::Text(_) => None,
+                });
+                for id in made {
+                    let Some(p) = proposals.iter().find(|p| p.id == id) else {
+                        continue;
+                    };
+                    let state = match applied(id) {
+                        true => "the person applied it",
+                        false => "it was not applied",
+                    };
+                    out.push_str(&format!(
+                        "You proposed \"{}\" ({}): {state}.\n",
+                        named(&p.title),
+                        named(&p.changes.join("; "))
+                    ));
                 }
             }
             Msg::Note(_) => {}
@@ -466,11 +493,70 @@ mod tests {
                 stats: None,
             },
         ];
-        assert!(replay(&msgs, "claude").is_none());
+        let none = |_| false;
+        assert!(replay(&msgs, "claude", &[], &none).is_none());
         assert_eq!(
-            replay(&msgs, "codex").as_deref(),
+            replay(&msgs, "codex", &[], &none).as_deref(),
             Some("Person: q\nYou: a\n")
         );
+    }
+
+    /// A replay names each proposal the agent made and whether the person
+    /// applied it, and no other tool call.
+    /// flip: `replay` reading `applied` as `false` always → fails at "applied".
+    #[test]
+    fn a_replay_names_proposals_and_whether_applied() {
+        use super::super::thread::{ToolRow, ToolState};
+        let row = |name: &str, proposal: Option<u64>| {
+            Part::Tool(ToolRow {
+                id: name.into(),
+                name: name.into(),
+                arg: String::new(),
+                state: ToolState::Done,
+                result: "1 line".into(),
+                proposal,
+            })
+        };
+        let msgs = vec![
+            Msg::Person {
+                text: "q".into(),
+                chips: Vec::new(),
+                scope: None,
+            },
+            Msg::Agent {
+                speaker: "Claude".into(),
+                harness: "claude".into(),
+                parts: vec![
+                    row("get_node", None),
+                    row("propose_edit", Some(7)),
+                    row("propose_edit", Some(8)),
+                ],
+                stats: None,
+            },
+        ];
+        let proposal = |id: u64, title: &str| Proposal {
+            id,
+            key: None,
+            document: std::path::PathBuf::new(),
+            title: title.into(),
+            changes: vec!["set_name · Hero".into()],
+            calls: Vec::new(),
+            rev: 1,
+            writes: Vec::new(),
+            before: Vec::new(),
+            client: "Claude".into(),
+        };
+        let kept = [proposal(7, "Rename"), proposal(8, "Fade")];
+        let r = replay(&msgs, "claude", &kept, &|id| id == 7).expect("same harness");
+        assert!(
+            r.contains("You proposed \"Rename\" (set_name · Hero): the person applied it."),
+            "applied: {r}"
+        );
+        assert!(
+            r.contains("\"Fade\" (set_name · Hero): it was not applied."),
+            "{r}"
+        );
+        assert!(!r.contains("get_node"), "{r}");
     }
 
     /// A scope is named on its own line, before the attached layers, with the

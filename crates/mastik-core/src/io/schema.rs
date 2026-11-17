@@ -781,19 +781,19 @@ impl ImageDto {
     }
 }
 
-/// `serde(with)` for an operation's node list (`Operation::InsertSubtree`), in the
-/// file's own node form.
-pub(crate) mod node_list {
+/// `serde(with)` for a list of nodes in the file's own node form: an operation's
+/// (`Operation::InsertSubtree`), or a saved proposal's layers as they were.
+pub mod node_list {
     use super::NodeDto;
     use crate::node::Node;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub(crate) fn serialize<S: Serializer>(nodes: &[Node], s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(nodes: &[Node], s: S) -> Result<S::Ok, S::Error> {
         let dtos: Vec<NodeDto> = nodes.iter().map(NodeDto::from_node).collect();
         dtos.serialize(s)
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Node>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Node>, D::Error> {
         Vec::<NodeDto>::deserialize(d)?
             .into_iter()
             .map(|n| n.into_node().map_err(serde::de::Error::custom))

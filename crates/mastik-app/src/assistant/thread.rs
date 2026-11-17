@@ -5,12 +5,26 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::mcp::propose::Proposal;
+
 /// The most messages a saved thread keeps; the oldest go first.
 pub(crate) const KEPT: usize = 100;
 
-/// What a saved tool result reads as: results can be large and are the
-/// document's content, so only the call is kept.
-pub(crate) const RESULT_NOT_SAVED: &str = "(result not saved)";
+/// The longest tool result a saved row keeps, in characters. A row holds its
+/// result already cut short ([`ToolRow::result`]); this bounds the file
+/// whatever a row is given.
+pub(crate) const RESULT_KEPT: usize = 120;
+
+/// What a saved row whose call never answered reads as: a turn stopped
+/// while the call ran.
+pub(crate) const NO_RESULT: &str = "(no result)";
+
+/// The largest proposal a saved thread keeps, as JSON: `calls` can carry a
+/// whole subtree. A card whose proposal was left out says so.
+pub(crate) const PROPOSAL_BYTES: usize = 64 * 1024;
+
+/// The most bytes of proposals one saved thread keeps, newest first.
+pub(crate) const PROPOSALS_BYTES: usize = 1024 * 1024;
 
 /// A layer attached to a question: a reference the agent reads through the
 /// tools, never a copy.
@@ -120,9 +134,51 @@ impl Msg {
     }
 }
 
-/// The thread as saved: tool results replaced, at most [`KEPT`] messages, and
-/// nothing after a turn still streaming.
-pub(crate) fn for_saving(msgs: &[Msg], streaming: Option<usize>) -> Vec<Msg> {
+/// A proposal a card in the thread shows, as the thread's file keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Kept {
+    pub proposal: Proposal,
+    /// The person applied it from its card.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub applied: bool,
+}
+
+/// A thread as its file holds it: the messages, and the proposals their
+/// cards show.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Saved {
+    pub msgs: Vec<Msg>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposals: Vec<Kept>,
+}
+
+/// A file in either form: the thread with its proposals, or the bare list of
+/// messages a thread was saved as before proposals were kept.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OnDisk {
+    Saved(Saved),
+    Msgs(Vec<Msg>),
+}
+
+/// `text` cut to `n` characters, with an ellipsis when cut.
+fn cut(text: &str, n: usize) -> String {
+    match text.char_indices().nth(n) {
+        Some((i, _)) => format!("{}…", &text[..i]),
+        None => text.to_owned(),
+    }
+}
+
+/// The thread as saved: at most [`KEPT`] messages, nothing after a turn still
+/// streaming, each tool result within [`RESULT_KEPT`], and the proposals the
+/// kept cards show, newest first within [`PROPOSAL_BYTES`] each and
+/// [`PROPOSALS_BYTES`] in all. `applied` says which the person applied.
+pub(crate) fn for_saving(
+    msgs: &[Msg],
+    streaming: Option<usize>,
+    proposals: &[Proposal],
+    applied: &dyn Fn(u64) -> bool,
+) -> Saved {
     let end = streaming.map_or(msgs.len(), |i| i.min(msgs.len()));
     let mut kept: Vec<Msg> = msgs[..end]
         .iter()
@@ -138,12 +194,14 @@ pub(crate) fn for_saving(msgs: &[Msg], streaming: Option<usize>) -> Vec<Msg> {
                 parts: parts
                     .iter()
                     .map(|p| match p {
+                        // A call stopped before it answered has no result.
+                        Part::Tool(t) if t.state == ToolState::Running => Part::Tool(ToolRow {
+                            result: NO_RESULT.into(),
+                            state: ToolState::Done,
+                            ..t.clone()
+                        }),
                         Part::Tool(t) => Part::Tool(ToolRow {
-                            result: RESULT_NOT_SAVED.into(),
-                            state: match t.state {
-                                ToolState::Running => ToolState::Done,
-                                s => s,
-                            },
+                            result: cut(&t.result, RESULT_KEPT),
                             ..t.clone()
                         }),
                         p => p.clone(),
@@ -174,7 +232,41 @@ pub(crate) fn for_saving(msgs: &[Msg], streaming: Option<usize>) -> Vec<Msg> {
             }
         }
     }
-    kept
+    let shown: Vec<u64> = kept
+        .iter()
+        .flat_map(|m| match m {
+            Msg::Agent { parts, .. } => parts.as_slice(),
+            _ => &[],
+        })
+        .filter_map(|p| match p {
+            Part::Tool(t) => t.proposal,
+            Part::Text(_) => None,
+        })
+        .collect();
+    let mut room = PROPOSALS_BYTES;
+    let mut cards: Vec<Kept> = Vec::new();
+    for id in shown.iter().rev() {
+        let Some(p) = proposals.iter().find(|p| p.id == *id) else {
+            continue;
+        };
+        if cards.iter().any(|k| k.proposal.id == *id) {
+            continue;
+        }
+        let card = Kept {
+            proposal: p.clone(),
+            applied: applied(*id),
+        };
+        let size = serde_json::to_vec(&card).map_or(usize::MAX, |b| b.len());
+        if size <= PROPOSAL_BYTES && size <= room {
+            room -= size;
+            cards.push(card);
+        }
+    }
+    cards.reverse();
+    Saved {
+        msgs: kept,
+        proposals: cards,
+    }
 }
 
 /// The folder the chats live in.
@@ -213,22 +305,29 @@ fn path_hash(p: &Path) -> u64 {
 }
 
 /// Read a saved chat; an unreadable one reads as empty.
-pub(crate) fn load(file: &Path) -> Vec<Msg> {
-    std::fs::read(file)
+pub(crate) fn load(file: &Path) -> Saved {
+    let read = std::fs::read(file)
         .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+        .and_then(|b| serde_json::from_slice::<OnDisk>(&b).ok());
+    match read {
+        Some(OnDisk::Saved(s)) => s,
+        Some(OnDisk::Msgs(msgs)) => Saved {
+            msgs,
+            proposals: Vec::new(),
+        },
+        None => Saved::default(),
+    }
 }
 
 /// Write a chat through the atomic writer, or remove its file when it is empty.
-pub(crate) fn save(file: &Path, msgs: &[Msg]) -> std::io::Result<()> {
-    if msgs.is_empty() {
+pub(crate) fn save(file: &Path, saved: &Saved) -> std::io::Result<()> {
+    if saved.msgs.is_empty() {
         return match std::fs::remove_file(file) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         };
     }
-    let bytes = serde_json::to_vec(msgs).map_err(std::io::Error::other)?;
+    let bytes = serde_json::to_vec(saved).map_err(std::io::Error::other)?;
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -284,19 +383,152 @@ mod tests {
         assert_eq!(m.prose(), "Let me look.\n\nThe frame is Fixed.");
     }
 
-    /// A saved thread keeps the calls but not their results.
-    /// flip: `for_saving` keeping `t.result` → fails at the result.
-    #[test]
-    fn tool_results_are_not_saved() {
-        let saved = for_saving(&[person("q"), agent("a", Some("get_node"))], None);
-        let Msg::Agent { parts, .. } = &saved[1] else {
+    /// `for_saving` with no proposals.
+    fn saving(msgs: &[Msg], streaming: Option<usize>) -> Vec<Msg> {
+        for_saving(msgs, streaming, &[], &|_| false).msgs
+    }
+
+    /// The tool row of agent message `m` at part `i`.
+    fn row_at(msgs: &[Msg], m: usize, i: usize) -> &ToolRow {
+        let Msg::Agent { parts, .. } = &msgs[m] else {
             panic!("not an agent turn");
         };
-        let Part::Tool(t) = &parts[1] else {
+        let Part::Tool(t) = &parts[i] else {
             panic!("not a tool row");
         };
-        assert_eq!(t.name, "get_node");
-        assert_eq!(t.result, RESULT_NOT_SAVED);
+        t
+    }
+
+    /// A saved thread keeps each call's result as its row shows it, cut to the
+    /// bound, and a call stopped before it answered reads as having none.
+    /// flip: `for_saving` keeping `t.result` uncut → fails at "cut to the bound".
+    #[test]
+    fn tool_results_are_saved_within_their_bound() {
+        let mut long = agent("a", Some("get_node"));
+        if let Msg::Agent { parts, .. } = &mut long
+            && let Some(Part::Tool(t)) = parts.last_mut()
+        {
+            t.result = "x".repeat(RESULT_KEPT * 3);
+        }
+        let mut stopped = agent("b", Some("get_view"));
+        if let Msg::Agent { parts, .. } = &mut stopped
+            && let Some(Part::Tool(t)) = parts.last_mut()
+        {
+            t.state = ToolState::Running;
+            t.result = String::new();
+        }
+        let msgs = [
+            person("q"),
+            agent("a", Some("get_node")),
+            person("r"),
+            long,
+            person("s"),
+            stopped,
+        ];
+        let saved = saving(&msgs, None);
+        assert_eq!(row_at(&saved, 1, 1).result, "+24 lines", "kept as shown");
+        assert_eq!(
+            row_at(&saved, 3, 1).result.chars().count(),
+            RESULT_KEPT + 1,
+            "cut to the bound"
+        );
+        let t = row_at(&saved, 5, 1);
+        assert_eq!((t.state, t.result.as_str()), (ToolState::Done, NO_RESULT));
+    }
+
+    /// A proposal for a test: `id`, titled `title`, its calls `bytes` long.
+    fn proposal(id: u64, title: &str, bytes: usize) -> Proposal {
+        Proposal {
+            id,
+            key: Some("assistant-1-1".into()),
+            document: PathBuf::from("a.mastik"),
+            title: title.into(),
+            changes: vec!["set_name · Hero".into()],
+            calls: vec![(
+                "set_name".into(),
+                serde_json::json!({ "node": "1:2", "name": "x".repeat(bytes) }),
+            )],
+            rev: 3,
+            writes: Vec::new(),
+            before: Vec::new(),
+            client: "Claude".into(),
+        }
+    }
+
+    /// An agent turn whose one call proposed `id`.
+    fn proposed(id: u64) -> Msg {
+        let mut m = agent("Proposed.", Some("propose_edit"));
+        if let Msg::Agent { parts, .. } = &mut m
+            && let Some(Part::Tool(t)) = parts.last_mut()
+        {
+            t.proposal = Some(id);
+        }
+        m
+    }
+
+    /// A saved thread keeps the proposals its kept cards show, each with
+    /// whether it was applied, and reads back as it was written; one over its
+    /// own bound, one whose card was cut and one no card shows are left out.
+    ///
+    /// flip: `for_saving` without the `PROPOSAL_BYTES` check → fails at "too
+    /// large"; keeping every proposal given → fails at "no card shows it".
+    #[test]
+    fn proposals_are_saved_with_their_cards_and_load_back() {
+        let msgs = vec![
+            person("q"),
+            proposed(1),
+            person("r"),
+            proposed(2),
+            person("s"),
+            proposed(3),
+        ];
+        let given = [
+            proposal(1, "Rename", 10),
+            proposal(2, "Huge", PROPOSAL_BYTES),
+            proposal(3, "Fade", 10),
+            proposal(4, "Elsewhere", 10),
+        ];
+        let saved = for_saving(&msgs, None, &given, &|id| id == 1);
+        let ids: Vec<(u64, bool)> = saved
+            .proposals
+            .iter()
+            .map(|k| (k.proposal.id, k.applied))
+            .collect();
+        assert_eq!(ids, [(1, true), (3, false)], "too large; no card shows it");
+
+        let dir =
+            std::env::temp_dir().join(format!("mastik-thread-{}", crate::session::random_actor()));
+        let file = dir.join("t.json");
+        save(&file, &saved).expect("saved");
+        assert_eq!(load(&file), saved, "reads back as written");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Past the message cap the first card goes, and its proposal with it.
+        let mut many = vec![person("q"), proposed(1)];
+        for i in 0..KEPT {
+            many.push(person(&format!("q{i}")));
+            many.push(agent("a", None));
+        }
+        let cut = for_saving(&many, None, &given, &|_| false);
+        assert!(cut.proposals.is_empty(), "its card was cut");
+    }
+
+    /// A thread saved as a bare list of messages, before proposals were kept,
+    /// still loads.
+    /// flip: `load` dropping a list's messages → fails at the message.
+    #[test]
+    fn a_thread_saved_as_a_list_loads() {
+        let dir = std::env::temp_dir().join(format!(
+            "mastik-thread-old-{}",
+            crate::session::random_actor()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t.json");
+        std::fs::write(&file, r#"[{"Person":{"text":"q","chips":[]}}]"#).unwrap();
+        let loaded = load(&file);
+        assert_eq!(loaded.msgs, vec![person("q")]);
+        assert!(loaded.proposals.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The oldest messages go past the cap, and the thread starts at a question.
@@ -309,7 +541,7 @@ mod tests {
             msgs.push(agent("a", None));
         }
         msgs.insert(1, Msg::Note(Note::Said("x".into())));
-        let saved = for_saving(&msgs, None);
+        let saved = saving(&msgs, None);
         assert!(saved.len() <= KEPT);
         assert!(matches!(saved[0], Msg::Person { .. }));
     }
@@ -330,7 +562,7 @@ mod tests {
             question: asked,
             details: String::new(),
         }));
-        let saved = for_saving(&msgs, None);
+        let saved = saving(&msgs, None);
         let Some(Msg::Note(Note::Failed { question, .. })) = saved.last() else {
             panic!("the note went");
         };
@@ -340,7 +572,7 @@ mod tests {
     /// A turn still streaming is not saved, nor anything after it.
     #[test]
     fn a_streaming_turn_is_not_saved() {
-        let saved = for_saving(&[person("q"), agent("half", None)], Some(1));
+        let saved = saving(&[person("q"), agent("half", None)], Some(1));
         assert_eq!(saved, vec![person("q")]);
     }
 

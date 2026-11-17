@@ -11,8 +11,9 @@ use mastik_core::{Node, NodeId};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// An edit a chat proposed, kept until the person applies or drops it.
-#[derive(Clone)]
+/// An edit a chat proposed, kept until the person applies or drops it. A
+/// thread saves the proposals its cards show, so one outlives the host's memory.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Proposal {
     pub id: u64,
     /// The chat's key, when it gave one.
@@ -29,6 +30,7 @@ pub(crate) struct Proposal {
     /// The layers it writes that were there when it was proposed.
     pub writes: Vec<NodeId>,
     /// Each of `writes` as it was then, for [`stale`].
+    #[serde(with = "mastik_core::io::schema::node_list")]
     pub before: Vec<Node>,
     /// The client's name, which the applied step's History row shows.
     pub client: String,
@@ -277,6 +279,29 @@ pub(crate) fn stale(session: &EditorSession, p: &Proposal) -> Option<String> {
         .map(|(_, was)| was.name().to_owned())
 }
 
+/// The undo step applying `p` made, found again in a history whose serials
+/// were minted afresh (a reopened document, a thread loaded again): the one done
+/// step that is a `propose_edit` by `p`'s chat under `p`'s title. `None` when
+/// none or several are, since a guess could undo the wrong step.
+pub(crate) fn applied_step(session: &EditorSession, p: &Proposal) -> Option<Applied> {
+    let agent = p.key.as_deref().map(super::keyed_agent);
+    let mut found = session
+        .history
+        .done()
+        .enumerate()
+        .filter(|(_, s)| {
+            s.note.label == p.title
+                && s.note.agent == agent
+                && matches!(&s.note.origin, mastik_core::Origin::Mcp { tool, .. } if tool == "propose_edit")
+        })
+        .map(|(i, s)| Applied {
+            serial: s.serial,
+            depth: i + 1,
+        });
+    let one = found.next()?;
+    found.next().is_none().then_some(one)
+}
+
 /// Whether the step `a` made is still the last one done, so undoing it takes
 /// back the proposal alone.
 pub(crate) fn is_last(session: &EditorSession, a: &Applied) -> bool {
@@ -432,6 +457,44 @@ mod tests {
         assert_eq!(stale(&docs.session, p).as_deref(), Some("Card"));
         assert!(docs.session.undo());
         assert!(!is_last(&docs.session, &applied), "undone");
+    }
+
+    /// A proposal saved and read back is the same proposal, so a restored card
+    /// still finds a changed layer; its applied step is found again by its
+    /// note, and not where two steps would answer.
+    ///
+    /// flip: `applied_step` taking the first match → fails at "two steps".
+    #[test]
+    fn a_saved_proposal_reads_back_and_finds_its_step() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let card = rect(&mut engine, &mut docs, 1, "Card");
+        let calls = json!([{ "verb": "set_name", "args": { "node": card, "name": "Hero" } }]);
+        let answer = ok(&propose(&mut engine, &mut docs, calls.clone())).clone();
+        let p = engine
+            .proposal(answer["proposal"].as_u64().unwrap())
+            .unwrap()
+            .clone();
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Proposal = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p, "reads back");
+        assert_eq!(stale(&docs.session, &back), None);
+
+        let applied = apply(&mut docs.session, &back).unwrap();
+        assert_eq!(applied_step(&docs.session, &back), Some(applied));
+        // The written layer changed since: the restored copy sees it.
+        assert_eq!(stale(&docs.session, &back).as_deref(), Some("Card"));
+
+        // A second proposal of the same title by the same chat, applied too.
+        let args = json!({ "node": card, "name": "Card" });
+        ok(&call(&mut engine, &mut docs, 1, "set_name", args));
+        let answer = ok(&propose(&mut engine, &mut docs, calls)).clone();
+        let again = engine
+            .proposal(answer["proposal"].as_u64().unwrap())
+            .unwrap()
+            .clone();
+        apply(&mut docs.session, &again).unwrap();
+        assert_eq!(applied_step(&docs.session, &back), None, "two steps");
     }
 
     /// The card's *Undo* takes back an applied proposal alone under a later edit

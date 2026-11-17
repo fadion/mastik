@@ -3179,7 +3179,7 @@ pub(crate) mod tests {
             ),
             "fixture: the edit is proposed"
         );
-        app.assistant.held.push(crate::mcp::propose::Proposal {
+        app.assistant.proposals.push(crate::mcp::propose::Proposal {
             id: 1,
             key: None,
             document: std::path::PathBuf::new(),

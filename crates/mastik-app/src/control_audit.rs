@@ -1247,7 +1247,7 @@ fn sweep_on(theme: Theme) {
     let found = opened(&ctx, &mut app, |_, a| {
         use crate::assistant::thread::{Chip, Msg, Part, Stats, ToolRow, ToolState};
         let node = a.session.selection.ids()[0];
-        a.assistant.held.push(crate::mcp::propose::Proposal {
+        a.assistant.proposals.push(crate::mcp::propose::Proposal {
             id: 1,
             key: None,
             document: a.session.path.clone().expect("set above"),

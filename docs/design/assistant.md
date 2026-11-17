@@ -247,9 +247,18 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   person's document, its revision and their redo stay as they were. The answer is
   `{proposal, changes}`: the id, and what each call changes in its verb's own words. A refusal
   names the call and proposes nothing.
-- **The host keeps the last 64 proposals in memory.** A tool row of `propose_edit` renders as its
-  card; one the host no longer holds (after a restart) says *This proposal is no longer held; ask
-  again to see it.*
+- **The thread keeps its proposals; the host keeps only its last 64, in memory.** As a
+  `propose_edit` result arrives, the panel copies the proposal out of the host into the thread
+  (`Assistant::proposals`), and the thread's file saves it with whether the person applied it
+  (§6), so a card survives a restart, a tab switch and the host forgetting it. A tool row of
+  `propose_edit` renders as its card; one whose proposal was not kept (too large to save, or saved
+  before proposals were) says *This proposal was not kept; ask again to see it.*
+- **An applied card is found again on load.** Step serials are minted afresh when a document's
+  history is read back, so a saved card records only that it was applied; loading the thread
+  finds its undo step again (`propose::applied_step`): the one done step that is a `propose_edit`
+  by the card's chat under its title. Found, the card offers *Undo* as before; none or several
+  found, it reads *Applied as one step* with no *Undo*, since a guess could take back the wrong
+  step.
 - **The card** heads with the sparkle, the title and the count of changes, lists the changes, and
   ends in one of:
   - **Apply** — runs the calls again on the document as it is, as one undo step named by the title
@@ -305,8 +314,10 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
 - **The design is never sent whole.** The agent's earlier reads stay in its session, and the
   preamble says which went stale. Tool results' `changed` cannot do this alone: an agent answering
   from memory calls no tool.
-- **A restored conversation** replays its prose, never its tool calls, into a fresh session's
-  system prompt; a thread another harness wrote is not replayed, and the chat says so.
+- **A restored conversation** replays its prose into a fresh session's system prompt, with a line
+  for each proposal the agent made, its title, its changes and whether the person applied it. No
+  other tool call is replayed, since what a read returned may have gone stale. A thread another
+  harness wrote is not replayed, and the chat says so.
 - **Document content is data, never instructions.** Layer names, text content, component
   descriptions and variable names may come from someone else's file or kit; the system prompt and
   the MCP server's instructions say so.
@@ -489,8 +500,12 @@ layers being asked about, and is one more kind of surface.
   person's, not the work's. It is written through `atomic::write`; when the document's id or path
   changes, the old file is removed only once the new one is written. At most 100 messages, cut
   from the front to start at a question, with each *Ask again* re-pointed at its question's new
-  place (one whose question was cut keeps its words and loses the button); tool results are saved
-  as *(result not saved)*, and a turn still streaming is not saved.
+  place (one whose question was cut keeps its words and loses the button), and a turn still
+  streaming is not saved. A tool row keeps its result as the row shows it (a line count, *image*,
+  an error's first line), cut to 120 characters (`thread::RESULT_KEPT`); a call stopped before it
+  answered saves as *(no result)*. The file also holds the proposals the kept cards show, newest
+  first, each at most 64 KiB and 1 MiB in all as JSON (`thread::Saved`); a proposal past either
+  bound, or whose card was cut, is left out. A file saved as a bare list of messages still loads.
 
 ## 7. Logging and privacy
 
