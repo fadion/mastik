@@ -1521,3 +1521,77 @@ fn the_writers_own_clip_spelling_round_trips() {
         all.len()
     );
 }
+
+/// A round dotted stroke comes back from its own SVG as the same dotted stroke,
+/// since SVG draws a zero-length dash's round cap itself; a square dot, which it
+/// cannot, is written as a short dash and reported as a round-trip loss.
+///
+/// flip: the SVG writer resolving dashes with `Dots::Substitute` → fails at "comes
+/// back dotted" (`[0.04, 11.96]`, Dashed).
+#[test]
+fn a_round_dotted_stroke_round_trips_as_dots() {
+    use mastik_core::kurbo::Cap;
+    let line = |cap: Cap| {
+        let mut ids = IdSource::new(0xD07);
+        let root = ids.mint();
+        let id = ids.mint();
+        let mut doc = Document::new(root);
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Line {
+                    end: Point::new(120.0, 0.0),
+                },
+                transform: Some(Affine::translate((10.0, 10.0))),
+                name: None,
+            },
+            Operation::SetStrokes {
+                id,
+                strokes: keyed_by_position([mastik_core::Stroke {
+                    brush: mastik_core::peniko::Brush::Solid(Color::from_rgba8(0, 0, 0, 255))
+                        .into(),
+                    width: 4.0,
+                    cap,
+                    dashes: vec![0.0, 12.0],
+                    ..Default::default()
+                }]),
+            },
+        ]))
+        .expect("the fixture applies");
+        let res = Resolved::rebuild(&doc);
+        mastik_export::svg::svg_of_reported(&doc, &res, &[root])
+    };
+
+    let round = line(Cap::Round);
+    assert!(round.round_trip.is_empty(), "{:?}", round.round_trip);
+    let (doc, ids) = reimport(&round.svg);
+    let stroke = ids
+        .iter()
+        .find_map(|id| {
+            doc.get(*id)?
+                .paint()
+                .strokes
+                .first()
+                .map(|s| s.value.clone())
+        })
+        .expect("the line comes back stroked");
+    assert_eq!(
+        stroke.dash_style(),
+        mastik_core::DashStyle::Dotted,
+        "comes back dotted: {:?}",
+        stroke.dashes
+    );
+    assert_eq!(stroke.dashes, vec![0.0, 12.0], "with the same spacing");
+
+    let square = line(Cap::Square);
+    assert!(
+        square
+            .round_trip
+            .iter()
+            .any(|s| s.contains("square-dotted")),
+        "a square dot's loss is reported: {:?}",
+        square.round_trip
+    );
+}

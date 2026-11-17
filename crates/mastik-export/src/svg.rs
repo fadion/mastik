@@ -13,6 +13,7 @@
 //! `text::export_lines`. Asked for outlines ([`svg_with`]), text is instead the
 //! glyph outlines the canvas draws, which no viewer can re-shape.
 
+use mastik_core::geometry::Dots;
 use mastik_core::kurbo::{Affine, BezPath, Insets, Rect, Shape};
 use mastik_core::peniko::{Color, Extend, GradientKind};
 use mastik_core::{
@@ -1219,6 +1220,14 @@ fn report_node(
         // no shipped reader can read a `<pattern>` back.
         report.round_trip("an image fill, written as a pattern this app cannot read back");
     }
+    // `resolved_dashes` keeps a round dot as a zero-length dash, which SVG draws;
+    // a butt or square one is written as a dash one width long.
+    let squared_dot = visible_strokes(node.paint()).any(|(_, s)| {
+        s.cap != mastik_core::kurbo::Cap::Round && s.dashes.iter().any(|d| *d <= 0.0)
+    });
+    if squared_dot {
+        report.round_trip("a square-dotted stroke, written as short dashes");
+    }
     // Square-kernel `feMorphology` (see `shadow_graph`), only if it is in the file:
     // nonzero spread, visible effect, and the `<filter>` written.
     if filter_written
@@ -1760,7 +1769,7 @@ fn dash_pieces(
     s: &Stroke,
     width: f64,
 ) -> Option<Vec<(BezPath, Vec<f64>)>> {
-    geometry::dash_fit_pieces(s, width, shape?)
+    geometry::dash_fit_pieces(s, width, shape?, Dots::KeepRound)
 }
 
 /// The path `s` is laid along when it is not `shape` itself (a thick stroke on a
@@ -1828,12 +1837,18 @@ fn outline(node: &Node, res: &Resolved, id: NodeId) -> Option<BezPath> {
 /// The dash pattern for a stroke drawn on `shape`, at `width`.
 ///
 /// Wrapped so neither emit path forgets the dot substitution and fit-to-corners
-/// scaling (§6.3).
+/// scaling (§6.3). A round cap's zero-length dash is written as zero: SVG draws
+/// its dot, and the file then reads back as the same dotted stroke.
 fn resolved_dashes(shape: Option<&BezPath>, s: &Stroke, width: f64) -> Vec<f64> {
     match shape {
-        Some(path) => geometry::resolved_dashes(s, width, path),
+        Some(path) => geometry::resolved_dashes_for(s, width, path, Dots::KeepRound),
         // No outline to fit; the dot substitution needs none.
-        None => geometry::resolved_dashes(s, width, &mastik_core::kurbo::BezPath::new()),
+        None => geometry::resolved_dashes_for(
+            s,
+            width,
+            &mastik_core::kurbo::BezPath::new(),
+            Dots::KeepRound,
+        ),
     }
 }
 
@@ -1978,13 +1993,13 @@ fn emit_strokes(
                             continue;
                         };
                         // A side is one subpath, so its own fit is exact.
-                        let dashes = geometry::resolved_dashes(s, *w, &edge);
+                        let dashes = geometry::resolved_dashes_for(s, *w, &edge, Dots::KeepRound);
                         segments(out, &[(edge, dashes)], *w);
                     }
                 }
                 (None, Some(parts)) => segments(out, parts, s.width),
                 (None, None) if let Some(path) = &trimmed => {
-                    let dashes = geometry::resolved_dashes(s, s.width, path);
+                    let dashes = resolved_dashes(Some(path), s, s.width);
                     segments(out, &[(path.clone(), dashes)], s.width);
                 }
                 (None, None) => write_element(

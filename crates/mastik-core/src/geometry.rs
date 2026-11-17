@@ -1266,35 +1266,60 @@ fn append_arc(path: &mut BezPath, arc: &Arc) {
 /// round dot.
 pub const ROUND_DOT_LENGTH: f64 = 0.01;
 
+/// Who draws a zero-length dash's dot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dots {
+    /// The strokers, which drop a dash with no length: every one is given one.
+    Substitute,
+    /// A file format that caps a zero-length dash itself (SVG): a round cap's
+    /// stays zero, so the file reads back as written; butt and square still get
+    /// their square dot.
+    KeepRound,
+}
+
 /// The dash pattern a backend should draw `stroke` with along `path`, at the
 /// `width` actually being laid down (which is the stroke's own except on a
-/// `Custom` side).
+/// `Custom` side). [`resolved_dashes_for`] with [`Dots::Substitute`].
+pub fn resolved_dashes(stroke: &Stroke, width: f64, path: &BezPath) -> Vec<f64> {
+    resolved_dashes_for(stroke, width, path, Dots::Substitute)
+}
+
+/// [`resolved_dashes`], with `dots` saying who draws a zero-length dash.
 ///
 /// Two things the model leaves until here, because both need numbers it does not
 /// carry (§5.3):
 ///
-/// - **A dot is a zero-length dash**, which draws nothing under any cap: the
-///   strokers drop a segment with no length before capping it. `Cap::Butt` and
-///   `Cap::Square` get a square dot one width long, `Cap::Round` a dash
-///   [`ROUND_DOT_LENGTH`] of the width long that its caps round into a dot, the
-///   gap shortened in both so the **period is preserved**.
+/// - **A dot is a zero-length dash**, which the strokers drop under any cap.
+///   Every zero-length ink entry, in a pattern of any length, becomes a square
+///   dot one width long under `Cap::Butt` and `Cap::Square`, and under
+///   `Cap::Round` a dash [`ROUND_DOT_LENGTH`] of the width long that its caps
+///   round into a dot; the gap after it is shortened so the **period is
+///   preserved**. An odd-length pattern is doubled first, as SVG and the
+///   strokers read it, so its ink entries alternate.
 /// - **Fit to corners** scales the pattern so a whole number of periods spans the
 ///   outline, which needs the path's length.
-pub fn resolved_dashes(stroke: &Stroke, width: f64, path: &BezPath) -> Vec<f64> {
+pub fn resolved_dashes_for(stroke: &Stroke, width: f64, path: &BezPath, dots: Dots) -> Vec<f64> {
     if stroke.dashes.is_empty() {
         return Vec::new();
     }
     let mut pattern = stroke.dashes.clone();
-    if let [length, gap] = pattern.as_mut_slice()
-        && *length <= 0.0
-    {
-        let period = *gap;
+    let substitutes = !(dots == Dots::KeepRound && stroke.cap == Cap::Round);
+    if substitutes {
+        // Doubled, every entry of an odd pattern is ink once.
+        if pattern.len() % 2 == 1 && pattern.iter().any(|d| *d <= 0.0) {
+            pattern.extend_from_within(..);
+        }
         let dot = match stroke.cap {
             Cap::Round => width * ROUND_DOT_LENGTH,
             _ => width,
         };
-        *length = dot.min(period);
-        *gap = (period - dot).max(0.0);
+        for [length, gap] in pattern.as_chunks_mut::<2>().0 {
+            if *length <= 0.0 {
+                let period = *gap;
+                *length = dot.min(period);
+                *gap = (period - dot).max(0.0);
+            }
+        }
     }
     if stroke.dash_fit {
         pattern = fitted_dashes(&pattern, path.perimeter(TOLERANCE));
@@ -1318,6 +1343,7 @@ pub fn dash_fit_pieces(
     stroke: &Stroke,
     width: f64,
     path: &BezPath,
+    dots: Dots,
 ) -> Option<Vec<(BezPath, Vec<f64>)>> {
     if !stroke.dash_fit || stroke.dashes.is_empty() {
         return None;
@@ -1330,7 +1356,7 @@ pub fn dash_fit_pieces(
         pieces
             .into_iter()
             .map(|sub| {
-                let dashes = resolved_dashes(stroke, width, &sub);
+                let dashes = resolved_dashes_for(stroke, width, &sub, dots);
                 (sub, dashes)
             })
             .collect(),

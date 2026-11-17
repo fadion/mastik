@@ -2545,7 +2545,8 @@ pub fn stroke_ink(kind: &NodeKind, shape: &kurbo::BezPath, s: &Stroke) -> Option
         } else {
             width * 2.0
         };
-        let runs = crate::geometry::dash_fit_pieces(s, width, path).unwrap_or_else(|| {
+        let dots = crate::geometry::Dots::Substitute;
+        let runs = crate::geometry::dash_fit_pieces(s, width, path, dots).unwrap_or_else(|| {
             vec![(
                 path.clone(),
                 crate::geometry::resolved_dashes(s, width, path),

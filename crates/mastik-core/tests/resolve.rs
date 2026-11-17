@@ -1860,6 +1860,44 @@ fn a_dotted_stroke_survives_every_cap() {
     );
 }
 
+/// Every zero-length ink entry of a longer pattern becomes a dot too, under
+/// every cap and with the period kept, and an odd pattern is doubled first so
+/// its zero entry is a dot wherever it falls on ink.
+///
+/// flip: `resolved_dashes_for` substituting only a two-entry pattern → fails at
+/// "a dash-dot keeps its dots".
+#[test]
+fn a_custom_patterns_dots_survive_every_cap() {
+    use mastik_core::Stroke;
+    use mastik_core::geometry::{local_path, resolved_dashes};
+    use mastik_core::kurbo::Cap;
+
+    let path = local_path(&rect(40.0, 20.0)).expect("outline");
+    let stroke = |cap, dashes: &[f64]| Stroke {
+        dashes: dashes.to_vec(),
+        width: 2.0,
+        cap,
+        ..Default::default()
+    };
+    for cap in [Cap::Butt, Cap::Square, Cap::Round] {
+        let got = resolved_dashes(&stroke(cap, &[0.0, 6.0, 10.0, 6.0]), 2.0, &path);
+        assert_eq!(got.len(), 4, "{cap:?}");
+        assert!(got[0] > 0.0, "{cap:?}: a dash-dot keeps its dots: {got:?}");
+        assert_eq!(&got[2..], &[10.0, 6.0], "{cap:?}: the dash is untouched");
+        let period: f64 = got.iter().sum();
+        assert!((period - 22.0).abs() < 1e-9, "{cap:?}: period {period}");
+
+        let odd = resolved_dashes(&stroke(cap, &[4.0, 0.0, 6.0]), 2.0, &path);
+        assert_eq!(odd.len(), 6, "{cap:?}: doubled: {odd:?}");
+        assert!(
+            odd.iter().step_by(2).all(|d| *d > 0.0),
+            "{cap:?}: no ink entry is left zero: {odd:?}"
+        );
+        let period: f64 = odd.iter().sum();
+        assert!((period - 20.0).abs() < 1e-9, "{cap:?}: period {period}");
+    }
+}
+
 /// Fit to corners scales the pattern so a whole number of periods spans the
 /// outline, which is what puts ink on the corners rather than a gap.
 ///
@@ -2481,7 +2519,10 @@ fn a_booleans_box_corner_is_not_its_transforms_origin() {
 #[test]
 fn a_fitted_dash_is_fitted_to_each_subpath_it_is_laid_along() {
     use mastik_core::Stroke;
-    use mastik_core::geometry::{dash_fit_pieces, resolved_dashes};
+    use mastik_core::geometry::{Dots, resolved_dashes};
+    let dash_fit_pieces = |s: &Stroke, w: f64, p: &mastik_core::kurbo::BezPath| {
+        mastik_core::geometry::dash_fit_pieces(s, w, p, Dots::Substitute)
+    };
     use mastik_core::kurbo::Shape;
 
     let mut path = Rect::new(0.0, 0.0, 30.0, 20.0).to_path(0.01);

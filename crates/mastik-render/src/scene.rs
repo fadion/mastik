@@ -3720,7 +3720,7 @@ fn lay_dashed<P: ScenePainter>(
         dashes,
         dash_offset: s.dash_offset,
     };
-    match geometry::dash_fit_pieces(s, width, path) {
+    match geometry::dash_fit_pieces(s, width, path, geometry::Dots::Substitute) {
         Some(pieces) => {
             for (sub, dashes) in pieces {
                 lay_stroke(painter, at, &sub, &paint(dashes));
