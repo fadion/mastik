@@ -1581,6 +1581,35 @@ fn sweep_on(theme: Theme) {
     let found = opened(&ctx, &mut app, |_, a| a.open_trace());
     assert!(app.trace.is_some(), "the trace card opened");
     check("trace card", app, found);
+    // *Reduce picture…* on a large picture drawn small: its size and format
+    // dropdowns, the quality field and the foot. Its bytes do not decode, so the
+    // foot's *Reduce* is the dimmed state.
+    let mut app = with_a_rect(&ctx);
+    let id = app.session.selection.ids()[0];
+    let picture = mastik_core::ImageId("reduce".into());
+    app.session
+        .try_commit(Transaction(vec![
+            Operation::AddImage {
+                id: picture.clone(),
+                entry: mastik_core::ImageEntry {
+                    source: mastik_core::ImageSource::Embedded(vec![0u8; 64].into()),
+                    format: mastik_core::ImageFormat::Jpeg,
+                    width: 6000,
+                    height: 4000,
+                },
+            },
+            Operation::SetFills {
+                id,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: mastik_core::image_brush(picture.clone()).into(),
+                    visible: true,
+                }]),
+            },
+        ]))
+        .expect("a picture fill");
+    let found = opened(&ctx, &mut app, |_, a| a.open_reduce(id, picture));
+    assert!(app.reduce.is_some(), "the reduce card opened");
+    check("reduce card", app, found);
     let mut app = with_a_set(&ctx);
     let found = inspector(&ctx, &mut app);
     check("variants card", app, found);
