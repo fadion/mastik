@@ -174,7 +174,7 @@ comes from the committed document.
 ### Effects (§5.3a)
 
 - **Rows.** One per effect: kind glyph, name, one headline number and ✕, with the eye outside the field. The headline is a shadow's alpha %, a blur's radius, a sharpen's amount and radius (`60% · 1.5`), or the count of off-neutral channels for Filters. `+` adds a drop shadow.
-- **Sharpen's popover** holds *Amount*, a `ui::value_field_metered` whose `Meter::Amount` fills from the left as an opacity's does (0–200%), and *Radius*, the layer blur's field. Its glyph is `icon::SHARPEN`, a cut gem, not the layer blur's soft dots.
+- **Sharpen's popover** holds one row of two half-width fields, as a shadow's Blur and Spread: *Amount*, a plain `ui::value_field` in percent (0–200%), and *Radius*, the layer blur's field. Metered fields are for photo adjustments only: the picture card's Adjustments tab and the Filters effect. Its glyph is `icon::SHARPEN`, a cut gem, not the layer blur's soft dots.
 - **Order.** Model order, first at the top: effects are a pipeline (§6.4). Fill draws upside down because paints stack in space.
 - **Popover.** A card whose title is a kind combo; retyping carries shared fields over (`EffectKind::retyped`). It sits in the shared popover lane and dismisses through `panels::dismissed_by_click`.
 - **Shadow colour** is a Fill row (chip, hex, %) on `PaintSlot::Effect(i)`; the % *is* the alpha.

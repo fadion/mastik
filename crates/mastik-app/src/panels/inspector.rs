@@ -10644,41 +10644,44 @@ impl MastikApp {
                             }
                         }
                         EffectKind::Sharpen { amount, radius } => {
-                            // A one-way amount, filling from the left as Opacity's does.
-                            let top = mastik_core::effect::MAX_SHARPEN;
-                            let mut shown = amount * 100.0;
-                            let resp = ui::value_field_metered(
-                                ui,
-                                egui::vec2(inner, CELL),
-                                Prefix::Text("Amount"),
-                                ui::Meter::Amount((amount / top) as f32),
-                                &mut shown,
-                                Scrub::whole(0.25).range(0.0..=top * 100.0),
-                                |d| d.suffix("%").max_decimals(0),
-                            )
-                            .on_hover_text(
-                                "How hard edges are pushed apart: 0% leaves the layer alone, \
-                                 200% is the most",
-                            );
-                            self.effect_valve(&resp, subjects, index, move |k| {
-                                if let EffectKind::Sharpen { amount, .. } = k {
-                                    *amount = (shown / 100.0).clamp(0.0, top);
+                            // One row of plain fields, as a shadow's Blur and Spread.
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = COL;
+                                let cell = egui::vec2(half, CELL);
+                                let top = mastik_core::effect::MAX_SHARPEN;
+                                let mut shown = amount * 100.0;
+                                let resp = ui::value_field(
+                                    ui,
+                                    cell,
+                                    Prefix::Text("Amount"),
+                                    &mut shown,
+                                    Scrub::whole(0.25).range(0.0..=top * 100.0),
+                                    |d| d.suffix("%").max_decimals(0),
+                                )
+                                .on_hover_text(
+                                    "How hard edges are pushed apart: 0% leaves the layer \
+                                     alone, 200% is the most",
+                                );
+                                self.effect_valve(&resp, subjects, index, move |k| {
+                                    if let EffectKind::Sharpen { amount, .. } = k {
+                                        *amount = (shown / 100.0).clamp(0.0, top);
+                                    }
+                                });
+                                if let Some(r) = self.effect_number_field(
+                                    ui,
+                                    subjects,
+                                    index,
+                                    mastik_core::EFFECT_BLUR,
+                                    "Radius",
+                                    cell,
+                                    *radius,
+                                    0.0..=MAX_BLUR,
+                                ) {
+                                    let _ = r.on_hover_text(
+                                        "How wide an edge the mask reads, in a blur's units",
+                                    );
                                 }
                             });
-                            if let Some(r) = self.effect_number_field(
-                                ui,
-                                subjects,
-                                index,
-                                mastik_core::EFFECT_BLUR,
-                                "Radius",
-                                egui::vec2(inner, CELL),
-                                *radius,
-                                0.0..=MAX_BLUR,
-                            ) {
-                                let _ = r.on_hover_text(
-                                    "How wide an edge the mask reads, in a blur's units",
-                                );
-                            }
                         }
                         EffectKind::BackgroundBlur { radius } => {
                             if let Some(r) = self.effect_number_field(
