@@ -2818,8 +2818,10 @@ mod tests {
     }
 
     /// A card keeps the top it opened at while its height changes, so a row
-    /// that folds stays under the pointer; reopened, it centres on its new height.
-    /// flip: `ui::dialog_top` centring on this pass's height → fails at "kept".
+    /// that folds stays under the pointer; reopened, it centres on its new height,
+    /// and grown past the window's foot, it is lifted.
+    /// flip: `ui::dialog_top` centring on this pass's height → fails at "kept";
+    /// `ui::dialog_top` dropping its foot clamp → fails at "lifted above the foot".
     #[test]
     fn a_card_keeps_its_top_as_its_rows_fold() {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
@@ -2867,6 +2869,16 @@ mod tests {
         assert!(
             (reopened.center().y - screen.center().y).abs() < 1.0,
             "reopened on its new height: {reopened:?}"
+        );
+
+        // Grown past the window's foot, it is lifted to end above it.
+        for _ in 0..3 {
+            frame(Some(500.0));
+        }
+        let grown = frame(Some(500.0));
+        assert!(
+            grown.bottom() <= screen.bottom() - crate::ui::SCREEN_MARGIN + 1.0,
+            "lifted above the foot: {grown:?}"
         );
     }
 
