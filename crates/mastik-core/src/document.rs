@@ -183,6 +183,7 @@ pub(crate) fn root_node(id: NodeId, name: String) -> Node {
         fill_hidden_in_export: false,
         mask: false,
         mask_mode: MaskMode::default(),
+        mask_inverted: false,
         fill_rule: FillRule::default(),
         paint: Paint::default(),
         pivot: None,
@@ -1722,6 +1723,9 @@ impl Document {
             }
             Operation::SetMask { id, mask } => self.op_set_mask(*id, *mask, dirty),
             Operation::SetMaskMode { id, mode } => self.op_set_mask_mode(*id, *mode, dirty),
+            Operation::SetMaskInverted { id, inverted } => {
+                self.op_set_mask_inverted(*id, *inverted, dirty)
+            }
             Operation::SetFillRule { id, rule } => self.op_set_fill_rule(*id, *rule, dirty),
             Operation::SetFills { id, fills } => self.op_set_fills(*id, fills, dirty),
             Operation::SetStrokes { id, strokes } => self.op_set_strokes(*id, strokes, dirty),
@@ -2531,6 +2535,7 @@ impl Document {
             // reads as the tool having failed.
             mask: false,
             mask_mode: MaskMode::default(),
+            mask_inverted: false,
             fill_rule: FillRule::default(),
             paint: Paint::default(),
             // A fresh node pivots on its own centre, which is what `None` says.
@@ -3807,6 +3812,23 @@ impl Document {
         Ok(Operation::SetMaskMode { id, mode: old })
     }
 
+    /// Gated like `op_set_mask_mode` — not at all — and dirtying the subtree for
+    /// the same reason: the flag flips which side of the mask the run shows on.
+    fn op_set_mask_inverted(
+        &mut self,
+        id: NodeId,
+        inverted: bool,
+        dirty: &mut DirtySet,
+    ) -> Result<Operation, OpError> {
+        let node = self.nodes.get_mut(&id).ok_or(OpError::NoSuchNode(id))?;
+        let old = node.mask_inverted;
+        node.mask_inverted = inverted;
+        for d in self.subtree_ids(id) {
+            dirty.0.insert(d);
+        }
+        Ok(Operation::SetMaskInverted { id, inverted: old })
+    }
+
     /// Set how `id`'s geometry decides its interior (§15 D239).
     ///
     /// **The node alone, not the subtree**, unlike `op_set_mask_mode`: a fill rule
@@ -4096,6 +4118,7 @@ pub fn remap_subtree(template: &[Node], ids: &mut IdSource) -> Option<(Vec<Node>
             // index it was inserted at.
             mask: n.mask,
             mask_mode: n.mask_mode,
+            mask_inverted: n.mask_inverted,
             fill_rule: n.fill_rule,
             paint: n.paint.clone(),
             pivot: n.pivot,
@@ -4442,6 +4465,7 @@ mod tests {
             fill_hidden_in_export: false,
             mask: false,
             mask_mode: MaskMode::default(),
+            mask_inverted: false,
             fill_rule: FillRule::default(),
             paint: Paint::default(),
             pivot: None,

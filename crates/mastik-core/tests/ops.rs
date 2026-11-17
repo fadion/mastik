@@ -1905,6 +1905,48 @@ fn the_mask_mode_survives_the_mask_being_released() {
     );
 }
 
+/// The inverted flag is remembered across the mask going off and on, as the mode
+/// is, and undoing it restores the flag it replaced.
+/// flip: `op_set_mask_inverted` returning `inverted` as its inverse → fails at
+/// "undone".
+#[test]
+fn the_inverted_flag_survives_the_mask_being_released_and_undoes() {
+    let (mut doc, mut ids, ab) = base();
+    let mut hist = History::new();
+    let r = ids.mint();
+    create(&mut hist, &mut doc, r, ab, rect());
+    hist.commit(
+        &mut doc,
+        Transaction(vec![
+            Operation::SetMask { id: r, mask: true },
+            Operation::SetMaskInverted {
+                id: r,
+                inverted: true,
+            },
+        ]),
+    )
+    .unwrap();
+    for mask in [false, true] {
+        hist.commit(
+            &mut doc,
+            Transaction(vec![Operation::SetMask { id: r, mask }]),
+        )
+        .unwrap();
+        assert!(doc.get(r).unwrap().mask_inverted(), "kept, mask {mask}");
+    }
+    hist.commit(
+        &mut doc,
+        Transaction(vec![Operation::SetMaskInverted {
+            id: r,
+            inverted: false,
+        }]),
+    )
+    .unwrap();
+    assert!(!doc.get(r).unwrap().mask_inverted());
+    hist.undo(&mut doc).unwrap();
+    assert!(doc.get(r).unwrap().mask_inverted(), "undone");
+}
+
 /// Effects take a **container** and refuse only the **root**, which is the
 /// opposite gate from every other paint operation and the reason `SetEffects`
 /// does not reuse `is_paintable`.

@@ -45,6 +45,7 @@ pub(crate) fn migrate(mut value: Value) -> Result<Value, IoError> {
             14 => migrate_14_to_15(&mut value),
             15 => migrate_15_to_16(&mut value),
             16 => migrate_16_to_17(&mut value),
+            17 => migrate_17_to_18(&mut value),
             other => return Err(IoError::UnsupportedVersion(other)),
         }
     }
@@ -455,6 +456,20 @@ fn migrate_16_to_17(value: &mut Value) {
         .filter(|d| d.is_object())
     {
         inner["schema_version"] = Value::from(17u32);
+    }
+}
+
+/// v17 → v18: the inverted-mask flag (`NodeDto::mask_inverted`). A number and
+/// nothing else: a v17 file holds no inverted mask. The bump is for the older
+/// build, which would drop the flag and save the mask back the right way out.
+fn migrate_17_to_18(value: &mut Value) {
+    value["schema_version"] = Value::from(18u32);
+    if let Some(inner) = value
+        .get_mut("published")
+        .and_then(|p| p.get_mut("document"))
+        .filter(|d| d.is_object())
+    {
+        inner["schema_version"] = Value::from(18u32);
     }
 }
 

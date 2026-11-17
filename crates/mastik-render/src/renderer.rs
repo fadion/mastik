@@ -113,6 +113,9 @@ pub struct GhostNode {
     pub mask: bool,
     /// How it masks, as `Node::mask_mode` does. Read only when `mask` is set.
     pub mask_mode: mastik_core::MaskMode,
+    /// Whether it masks inversely, as `Node::mask_inverted` does. Read only when
+    /// `mask` is set.
+    pub mask_inverted: bool,
     pub children: Vec<GhostNode>,
 }
 
@@ -136,6 +139,7 @@ impl GhostNode {
             clip: false,
             mask: false,
             mask_mode: mastik_core::MaskMode::default(),
+            mask_inverted: false,
             children: Vec::new(),
         }
     }
@@ -1820,11 +1824,15 @@ impl RenderOverrides {
             Operation::SetMaskMode { id, mode } if self.ghost(*id).is_some() => {
                 self.ghost_mut(*id)?.mask_mode = *mode;
             }
+            Operation::SetMaskInverted { id, inverted } if self.ghost(*id).is_some() => {
+                self.ghost_mut(*id)?.mask_inverted = *inverted;
+            }
             // A mask changes which *other* nodes the walk clips, and an override
             // patches one node. Nothing sets these on a document node mid-gesture.
             Operation::SetClip { .. }
             | Operation::SetMask { .. }
             | Operation::SetMaskMode { .. }
+            | Operation::SetMaskInverted { .. }
             // A fill rule is not structural, but `NodeOverride` has no field for it
             // and nothing scrubs it; if something does, add a field.
             | Operation::SetFillRule { .. } => return None,
@@ -2342,6 +2350,7 @@ fn build_ghost(
         clip: node.clip(),
         mask: node.mask(),
         mask_mode: node.mask_mode(),
+        mask_inverted: node.mask_inverted(),
         children,
     })
 }

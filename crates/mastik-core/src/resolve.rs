@@ -60,7 +60,12 @@ fn clipped_to(b: Rect, m: Rect) -> Option<Rect> {
 /// mask, so the bounds must not either, or a container's box shrinks below its
 /// artwork and `scene::paint_node` prunes it. One function serves both
 /// [`Resolved::recompute_bounds`] and `resolve_subtree` so they cannot drift.
+/// `None` for an inverted mask: what it lets through is the run less its outline,
+/// and the run's own box is the tightest box that never undershoots that.
 fn mask_extent(doc: &Document, boxes: &FxHashMap<NodeId, Rect>, id: NodeId) -> Option<Rect> {
+    if doc.get(id)?.mask_inverted() && doc.get(id)?.mask() {
+        return None;
+    }
     match mask_parts(doc, id)? {
         MaskParts::Members(cs) => cs
             .into_iter()

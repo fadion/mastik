@@ -267,6 +267,10 @@ impl Writer<'_> {
                 if c.mask_mode() != MaskMode::Shape {
                     self.approximate("Alpha and luminance masks, clipped to the mask's shape");
                 }
+                // Penpot has no inverse of a mask.
+                if c.mask_inverted() {
+                    self.approximate("Inverted masks, as masks the right way out");
+                }
                 let gid = uuid(&["mask", &child.to_wire()]);
                 let held: Vec<Written> = self
                     .shape(child, &gid, frame, page, out)
@@ -1327,7 +1331,9 @@ fn touched(overrides: &[mastik_core::reset::Override]) -> Vec<&'static str> {
                 &["geometry-group", "radius-group"]
             }
             Operation::SetClip { .. } => &["show-content"],
-            Operation::SetMask { .. } | Operation::SetMaskMode { .. } => &["mask-group"],
+            Operation::SetMask { .. }
+            | Operation::SetMaskMode { .. }
+            | Operation::SetMaskInverted { .. } => &["mask-group"],
             Operation::SetInsets { .. } => &["constraints-group"],
             Operation::SetDisplay { .. } | Operation::SetLayoutStyle { .. } => &[
                 "layout-container",

@@ -67,6 +67,10 @@ pub struct Node {
     /// *How* this node masks. A field beside the flag so the mode survives the
     /// mask being switched off and on; inert while `mask` is false.
     pub(crate) mask_mode: MaskMode,
+    /// Whether this mask keeps what lies **outside** it instead: the run shows
+    /// everywhere except where the mask would let it through. Beside the mode
+    /// for the same reason, and as inert while `mask` is false.
+    pub(crate) mask_inverted: bool,
     /// How this node's geometry decides its own interior (§15 D239). On the node
     /// rather than on a [`Fill`]: the hit test and the mask ask it, and a node
     /// with no fill still has an inside.
@@ -447,6 +451,11 @@ impl Node {
     /// [`Self::mask`] is false.
     pub fn mask_mode(&self) -> MaskMode {
         self.mask_mode
+    }
+    /// Whether this mask is inverted: it keeps the run outside itself. Remembered,
+    /// like [`Self::mask_mode`], while [`Self::mask`] is false.
+    pub fn mask_inverted(&self) -> bool {
+        self.mask_inverted
     }
     /// How this node's geometry decides its interior (§15 D239) — the **effective**
     /// rule, which for one kind is not the stored one.

@@ -178,6 +178,12 @@ pub enum Operation {
         id: NodeId,
         mode: MaskMode,
     },
+    /// Whether this layer masks inversely, keeping the run outside itself. Its
+    /// own op beside `SetMaskMode`, writable and remembered on a non-mask too.
+    SetMaskInverted {
+        id: NodeId,
+        inverted: bool,
+    },
     /// How this layer's geometry decides its interior — non-zero or even-odd
     /// (§15 D239).
     ///
@@ -675,6 +681,7 @@ impl Operation {
             | Operation::SetFillHiddenInExport { id, .. }
             | Operation::SetMask { id, .. }
             | Operation::SetMaskMode { id, .. }
+            | Operation::SetMaskInverted { id, .. }
             | Operation::SetFillRule { id, .. }
             | Operation::SetFills { id, .. }
             | Operation::SetStrokes { id, .. }
@@ -792,6 +799,7 @@ impl Operation {
             | Operation::SetFillHiddenInExport { id, .. }
             | Operation::SetMask { id, .. }
             | Operation::SetMaskMode { id, .. }
+            | Operation::SetMaskInverted { id, .. }
             | Operation::SetFillRule { id, .. }
             | Operation::SetFills { id, .. }
             | Operation::SetStrokes { id, .. }
@@ -1003,6 +1011,7 @@ impl Operation {
             // question is about the operation, not the state it lands in, as for
             // `SetGeometry` on a shape already that size.
             | Operation::SetMaskMode { .. }
+            | Operation::SetMaskInverted { .. }
             // **True: a geometry change wearing a paint-shaped op.** The rule
             // decides which parts are inside, so hit testing and masks change too.
             | Operation::SetFillRule { .. }
@@ -1339,6 +1348,9 @@ impl Operation {
             }
             Operation::SetMask { id, mask } => node(id).is_some_and(|n| n.mask() == *mask),
             Operation::SetMaskMode { id, mode } => node(id).is_some_and(|n| n.mask_mode() == *mode),
+            Operation::SetMaskInverted { id, inverted } => {
+                node(id).is_some_and(|n| n.mask_inverted() == *inverted)
+            }
             Operation::SetFillRule { id, rule } => node(id).is_some_and(|n| n.fill_rule() == *rule),
 
             // `takes_paint` is the gate `apply` applies, spelled here so an

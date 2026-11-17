@@ -68,6 +68,7 @@ fn mode(op: &Operation) -> Mode {
         | Operation::SetFillHiddenInExport { .. }
         | Operation::SetMask { .. }
         | Operation::SetMaskMode { .. }
+        | Operation::SetMaskInverted { .. }
         | Operation::SetFillRule { .. }
         // A credit follows the picture it credits: a photo filled into a main, its
         // picture replaced, an icon ungrouped in it reach every copy, and a copy's
@@ -1227,6 +1228,7 @@ pub(crate) fn untouched(
         fill_hidden_in_export,
         mask,
         mask_mode,
+        mask_inverted,
         fill_rule,
         paint,
         effects,
@@ -1270,6 +1272,7 @@ pub(crate) fn untouched(
         && c.fill_hidden_in_export == *fill_hidden_in_export
         && c.mask == *mask
         && c.mask_mode == *mask_mode
+        && c.mask_inverted == *mask_inverted
         && c.fill_rule == *fill_rule
         && c.paint == *paint
         && c.effects == *effects

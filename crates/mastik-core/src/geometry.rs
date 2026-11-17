@@ -2132,6 +2132,7 @@ mod tests {
             fill_hidden_in_export: false,
             mask: false,
             mask_mode: Default::default(),
+            mask_inverted: false,
             fill_rule: Default::default(),
             paint: Paint::default(),
             pivot: None,

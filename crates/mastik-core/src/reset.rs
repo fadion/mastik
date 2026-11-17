@@ -61,6 +61,7 @@ pub fn state_ops(node: &Node) -> Vec<Operation> {
         fill_hidden_in_export,
         mask,
         mask_mode,
+        mask_inverted,
         fill_rule,
         paint: Paint { fills, strokes },
         effects,
@@ -133,6 +134,10 @@ pub fn state_ops(node: &Node) -> Vec<Operation> {
         O::SetMaskMode {
             id,
             mode: *mask_mode,
+        },
+        O::SetMaskInverted {
+            id,
+            inverted: *mask_inverted,
         },
         O::SetFillRule {
             id,

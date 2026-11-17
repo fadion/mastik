@@ -1004,34 +1004,52 @@ fn a_v15_file_climbs_through_the_export_fill_flags_step() {
     assert_eq!(loaded, plain, "number-only steps");
 }
 
-/// A file carrying scripts is v17, so a v16 build refuses it rather than
-/// dropping the scripts on its next save; a v16 file loads and saves as v17
-/// with nothing else moved.
-/// flip: `CURRENT_SCHEMA_VERSION` left at 16 → fails at "saved as v17".
+/// A v16 file climbs through v17, the scripts' number-only step, to the current
+/// version with nothing else moved.
+/// flip: `migrate_16_to_17` dropped from the ladder → fails at the load.
 #[test]
-fn scripts_are_a_v17_field_and_a_v16_file_climbs_to_it() {
-    let (mut doc, _) = rich_document();
-    doc.apply(&Transaction(vec![Operation::AddScript {
-        script: mastik_core::Script {
-            id: mastik_core::IdSource::new(0xAD).mint_script(),
-            name: "Tidy".into(),
-            source: "print(1)".into(),
-        },
-        index: 0,
-    }]))
-    .unwrap();
-    let saved: serde_json::Value = serde_json::from_slice(&io::save(&doc).unwrap()).unwrap();
-    assert_eq!(
-        saved["schema_version"],
-        serde_json::json!(17),
-        "saved as v17"
-    );
-
+fn a_v16_file_climbs_through_the_scripts_step() {
     let (plain, _) = rich_document();
     let mut old: serde_json::Value = serde_json::from_slice(&io::save(&plain).unwrap()).unwrap();
     old["schema_version"] = serde_json::json!(16);
     let loaded = io::load(&serde_json::to_vec(&old).unwrap()).unwrap();
-    assert_eq!(loaded.schema_version(), 17);
+    assert_eq!(loaded.schema_version(), io::CURRENT_SCHEMA_VERSION);
+    assert_eq!(loaded, plain, "number-only steps");
+}
+
+/// A file carrying an inverted mask is v18, so a v17 build refuses it rather
+/// than dropping the flag and saving the mask back the right way out; a v17 file
+/// loads and saves as v18 with nothing else moved.
+/// flip: `CURRENT_SCHEMA_VERSION` left at 17 → fails at "saved as v18".
+#[test]
+fn an_inverted_mask_is_a_v18_field_and_a_v17_file_climbs_to_it() {
+    let (mut doc, root) = rich_document();
+    let frame = doc.get(root).unwrap().children()[0];
+    let group = doc.get(frame).unwrap().children()[0];
+    let rect = doc.get(group).unwrap().children()[0];
+    doc.apply(&Transaction(vec![
+        Operation::SetMask {
+            id: rect,
+            mask: true,
+        },
+        Operation::SetMaskInverted {
+            id: rect,
+            inverted: true,
+        },
+    ]))
+    .unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&io::save(&doc).unwrap()).unwrap();
+    assert_eq!(
+        saved["schema_version"],
+        serde_json::json!(18),
+        "saved as v18"
+    );
+
+    let (plain, _) = rich_document();
+    let mut old: serde_json::Value = serde_json::from_slice(&io::save(&plain).unwrap()).unwrap();
+    old["schema_version"] = serde_json::json!(17);
+    let loaded = io::load(&serde_json::to_vec(&old).unwrap()).unwrap();
+    assert_eq!(loaded.schema_version(), 18);
     assert_eq!(loaded, plain, "a number-only step");
 }
 
@@ -2292,6 +2310,53 @@ fn the_mask_mode_is_absent_until_something_is_not_a_shape_mask() {
         io::save(&doc).unwrap(),
         shape_masked,
         "back to the default takes the key out again"
+    );
+}
+
+/// The inverted flag writes no key until a mask is inverted, round-trips once
+/// one is, and is kept on a layer whose mask flag is off.
+/// flip: `NodeDto::into_node` reading `mask_inverted: false` → fails at the
+/// round trip's `assert_eq!(doc, loaded)`.
+#[test]
+fn the_inverted_flag_is_absent_until_a_mask_is_inverted() {
+    let (mut doc, root) = rich_document();
+    let frame = doc.get(root).unwrap().children()[0];
+    let group = doc.get(frame).unwrap().children()[0];
+    let rect = doc.get(group).unwrap().children()[0];
+    doc.apply(&Transaction(vec![Operation::SetMask {
+        id: rect,
+        mask: true,
+    }]))
+    .unwrap();
+    let plain = io::save(&doc).unwrap();
+    assert!(
+        !String::from_utf8(plain).unwrap().contains("mask_inverted"),
+        "a mask the right way out writes no key"
+    );
+
+    doc.apply(&Transaction(vec![
+        Operation::SetMaskInverted {
+            id: rect,
+            inverted: true,
+        },
+        Operation::SetMask {
+            id: rect,
+            mask: false,
+        },
+    ]))
+    .unwrap();
+    let bytes = io::save(&doc).unwrap();
+    assert!(
+        String::from_utf8(bytes.clone())
+            .unwrap()
+            .contains("mask_inverted"),
+        "an inverted layer writes the key"
+    );
+    let loaded = io::load(&bytes).unwrap();
+    assert_eq!(doc, loaded);
+    assert!(
+        loaded.get(rect).unwrap().mask_inverted(),
+        "still inverted, remembered while the mask is off"
     );
 }
 

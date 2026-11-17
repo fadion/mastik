@@ -4773,9 +4773,18 @@ pub static VERBS: &[Verb] = &[
                 ParamKind::Choice(MASK_MODES),
                 "what of the mask decides what survives: its outline (`shape`), its alpha, or its brightness (`luminance`); kept unless given",
             ),
+            opt(
+                "inverted",
+                BOOL,
+                "keep what lies outside the mask instead of inside; kept unless given",
+            ),
         ],
         run: |ctx, a| {
             let mask = a.bool("mask").unwrap_or(true);
+            let inverted = a.bool("inverted");
+            if inverted.is_some() && !mask {
+                return Err(a.invalid("inverted", "only a mask is inverted"));
+            }
             let mode = match a.choice("mode") {
                 Some(_) if !mask => return Err(a.invalid("mode", "only a mask has a mode")),
                 Some(word) => Some(
@@ -4800,6 +4809,11 @@ pub static VERBS: &[Verb] = &[
                     && node(ctx, id)?.mask_mode() != mode
                 {
                     ops.push(Operation::SetMaskMode { id, mode });
+                }
+                if let Some(inverted) = inverted
+                    && node(ctx, id)?.mask_inverted() != inverted
+                {
+                    ops.push(Operation::SetMaskInverted { id, inverted });
                 }
             }
             Ok(Done::ops(ops))
@@ -6297,6 +6311,7 @@ pub struct Tree {
     pub mask: Option<bool>,
     /// A [`MASK_MODES`] word.
     pub mask_mode: Option<String>,
+    pub mask_inverted: Option<bool>,
     pub fills: Option<Vec<Fill>>,
     pub strokes: Option<Vec<Stroke>>,
     pub effects: Option<Vec<Effect>>,
@@ -6438,6 +6453,9 @@ fn tree_ops(
         })?;
         let mode = crate::node::MaskMode::ALL[at];
         ops.push(Operation::SetMaskMode { id, mode });
+    }
+    if let Some(inverted) = tree.mask_inverted {
+        ops.push(Operation::SetMaskInverted { id, inverted });
     }
     if let Some(fills) = &tree.fills {
         let fills = rekeyed(ctx, &[], fills.clone());
@@ -6759,6 +6777,9 @@ fn full_tree(doc: &Document, id: NodeId, drawn: bool) -> Option<Value> {
             .position(|m| *m == n.mask_mode())
             .unwrap_or(0);
         put("mask_mode", Value::from(MASK_MODES[at]));
+        if n.mask_inverted() {
+            put("mask_inverted", Value::Bool(true));
+        }
     }
     let paint = n.paint();
     if !paint.fills.is_empty() {

@@ -3173,6 +3173,67 @@ fn a_mask_is_unclickable_and_what_it_masks_is_clickable_only_inside_it() {
     );
 }
 
+/// An inverted mask turns both answers round: the masked layer is hit outside
+/// the mask and not inside it, and its container keeps the masked layer's whole
+/// box, since what passes is the layer less a hole — in the full pass, the
+/// incremental one and the local box alike.
+/// flip: `resolve::mask_extent`'s inverted early return removed → fails at
+/// "the group keeps the masked layer's box".
+#[test]
+fn an_inverted_mask_is_hit_through_outside_it_and_bounds_its_container_by_the_run() {
+    let (mut doc, group, mask, masked) = mask_fixture();
+    doc.apply(&Transaction(vec![Operation::SetMask {
+        id: mask,
+        mask: true,
+    }]))
+    .unwrap();
+    let mut inc = Resolved::rebuild(&doc);
+    assert_eq!(
+        inc.world_bounds(group),
+        Some(Rect::new(0.0, 0.0, 50.0, 50.0)),
+        "fixture: the plain mask narrows the group"
+    );
+    let dirty = doc
+        .apply(&Transaction(vec![Operation::SetMaskInverted {
+            id: mask,
+            inverted: true,
+        }]))
+        .unwrap()
+        .dirty;
+    inc.update(&doc, &dirty);
+    let res = Resolved::rebuild(&doc);
+
+    let big = Rect::new(0.0, 0.0, 500.0, 400.0);
+    assert_eq!(
+        res.world_bounds(group),
+        Some(big),
+        "the group keeps the masked layer's box"
+    );
+    assert_eq!(res.ink_bounds(group), Some(big), "and so does its ink");
+    assert_eq!(
+        inc.world_bounds(group),
+        Some(big),
+        "in the incremental pass"
+    );
+    assert_eq!(inc.ink_bounds(group), Some(big), "its ink too");
+    assert_eq!(
+        mastik_core::local_box(&doc, &res, group),
+        Some(big),
+        "and the local box"
+    );
+
+    let inside = hit_test(&res, &doc, doc.first_page(), Point::new(25.0, 25.0), 0.0);
+    assert!(
+        !inside.contains(&masked) && !inside.contains(&mask),
+        "inside the mask the layer is cut away: {inside:?}"
+    );
+    let outside = hit_test(&res, &doc, doc.first_page(), Point::new(300.0, 200.0), 0.0);
+    assert!(
+        outside.contains(&masked),
+        "outside it the layer is there to be picked: {outside:?}"
+    );
+}
+
 /// A **text** layer masks with its glyphs.
 ///
 /// This is the case §15 D191 named as one of the two the fill model cannot

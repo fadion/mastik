@@ -5505,6 +5505,37 @@ fn set_mask_sets_the_mode_of_a_mask() {
     assert_eq!(refused_param(&doc, &mut ids, "set_mask", args), "mode");
 }
 
+/// `set_mask` inverts a mask and keeps the inversion when not given, and
+/// refuses one for a layer that stops being a mask.
+///
+/// flip: `set_mask` dropping its `SetMaskInverted` → fails at "inverted".
+#[test]
+fn set_mask_inverts_a_mask() {
+    let (mut doc, mut ids, page) = blank();
+    let r = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": rect(10.0, 10.0) }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_mask",
+        json!({ "nodes": [r.to_wire()], "mask": true, "inverted": true }),
+    );
+    assert!(doc.get(r).unwrap().mask_inverted(), "inverted");
+    run(
+        &mut doc,
+        &mut ids,
+        "set_mask",
+        json!({ "nodes": [r.to_wire()], "mask": true, "mode": "alpha" }),
+    );
+    assert!(doc.get(r).unwrap().mask_inverted(), "kept unless given");
+    let args = json!({ "nodes": [r.to_wire()], "mask": false, "inverted": false });
+    assert_eq!(refused_param(&doc, &mut ids, "set_mask", args), "inverted");
+}
+
 /// A frame is written as an element its kind offers and, as a link, takes an
 /// address; a shape, an element a text takes, a link address on a layer that is
 /// no link and an address a link cannot take are refused.

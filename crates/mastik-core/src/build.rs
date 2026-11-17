@@ -3152,7 +3152,7 @@ pub(crate) fn carried_credit(
     })
 }
 
-/// `node`'s mask flag and mode, set on `new`, which draws in its place.
+/// `node`'s mask flag, mode and inversion, set on `new`, which draws in its place.
 pub(crate) fn carried_mask(node: &Node, new: NodeId) -> Vec<Operation> {
     let mut ops = Vec::new();
     if node.mask() {
@@ -3164,6 +3164,12 @@ pub(crate) fn carried_mask(node: &Node, new: NodeId) -> Vec<Operation> {
             ops.push(Operation::SetMaskMode {
                 id: new,
                 mode: node.mask_mode(),
+            });
+        }
+        if node.mask_inverted() {
+            ops.push(Operation::SetMaskInverted {
+                id: new,
+                inverted: true,
             });
         }
     }

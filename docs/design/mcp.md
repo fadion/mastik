@@ -60,7 +60,7 @@ Phase 2 — write (1:1 with operations/composites):
 `duplicate(nodes, dx?, dy?)`, `join_paths(node, other)`, `repeat(nodes, count, angle?, turn?)`, `align(nodes, edge)`,
 `distribute(nodes, axis)`, `tidy_up(nodes)`, `slice(nodes)`, `set_transform`, `set_pivot`, `set_geometry`,
 `set_point(node, point, subpath?, x?, y?, in_x?, in_y?, out_x?, out_y?, radius?)`, `set_size(node, width, height)`, `fit_to_content(node)`, `pixel_fit(nodes)`, `set_name`, `set_visible`,
-`set_locked`, `set_opacity`, `set_blend(nodes, blend)`, `set_clip(nodes, clip)`, `set_mask(nodes, mask, mode?)`, `set_element(node, element?)`,
+`set_locked`, `set_opacity`, `set_blend(nodes, blend)`, `set_clip(nodes, clip)`, `set_mask(nodes, mask, mode?, inverted?)`, `set_element(node, element?)`,
 `set_link(node, href)`, `set_text`, `replace_text(find, replace, nodes?, …)`, `replace_font(from, to)`, `set_text_style(nodes, style, spans?)`,
 `set_text_spans`, `set_paragraph_style(nodes, paragraph)`, `set_block_style(nodes, block)`, `style_text(node, attrs, start?, end?)`,
 `style_paragraphs(node, attrs, start?, end?)`, `set_fills(nodes, fills)`, `set_strokes(nodes, strokes)`,

@@ -173,7 +173,8 @@ fn inks(brush: &crate::Brush) -> bool {
 }
 
 /// The polygons the children of `node`, whose transform into world space is
-/// `world`, paint: each masked run cut to its mask.
+/// `world`, paint: each masked run cut to its mask, or cut by it when the mask
+/// is inverted.
 fn collect_children(
     doc: &Document,
     res: &Resolved,
@@ -182,6 +183,7 @@ fn collect_children(
     out: &mut Vec<Vec<[f64; 2]>>,
 ) {
     let mut mask: Option<Vec<Vec<[f64; 2]>>> = None;
+    let mut rule = OverlayRule::Intersect;
     for c in node.children() {
         if !crate::resolve::lends_bounds(doc, *c) {
             continue;
@@ -195,15 +197,19 @@ fn collect_children(
                 .and_then(|r| {
                     std::panic::catch_unwind(|| flat(r.simplify_shape(FillRule::NonZero))).ok()
                 });
+            rule = if child.mask_inverted() {
+                OverlayRule::Difference
+            } else {
+                OverlayRule::Intersect
+            };
             continue;
         }
         let mut own = Vec::new();
         collect(doc, res, *c, &mut own);
         match &mask {
             Some(m) => {
-                let cut = std::panic::catch_unwind(|| {
-                    flat(own.overlay(m, OverlayRule::Intersect, FillRule::NonZero))
-                });
+                let cut =
+                    std::panic::catch_unwind(|| flat(own.overlay(m, rule, FillRule::NonZero)));
                 out.extend(cut.unwrap_or_default());
             }
             None => out.extend(own),

@@ -309,8 +309,12 @@ pub(crate) fn children_box(doc: &Document, res: &Resolved, node: &crate::Node) -
 
 /// The box `id` clips with when it is a mask, in its own local space:
 /// `resolve::mask_parts` folded over [`local_box`]. Separate from the world-space
-/// fold to avoid an inverse per child.
+/// fold to avoid an inverse per child. `None` for an inverted mask, as
+/// `resolve::mask_extent` answers.
 fn mask_extent_local(doc: &Document, res: &Resolved, id: NodeId) -> Option<Rect> {
+    if doc.get(id)?.mask_inverted() && doc.get(id)?.mask() {
+        return None;
+    }
     match crate::resolve::mask_parts(doc, id)? {
         crate::resolve::MaskParts::Members(cs) => cs
             .into_iter()
@@ -476,8 +480,8 @@ pub fn is_within(doc: &Document, id: NodeId, ancestor: NodeId) -> bool {
 ///
 /// Two readings of one fact: a mask is never hit (it paints nothing; the layers
 /// panel and a marquee still reach it through bounds), and masked content is hit
-/// only inside its mask. Every ancestor is asked, since a mask two levels up clips
-/// this layer just as surely.
+/// only inside its mask — outside it, under an inverted one. Every ancestor is
+/// asked, since a mask two levels up clips this layer just as surely.
 fn masked_away(doc: &Document, res: &Resolved, id: NodeId, p: Point) -> bool {
     let mut cursor = id;
     loop {
@@ -497,7 +501,7 @@ fn masked_away(doc: &Document, res: &Resolved, id: NodeId, p: Point) -> bool {
         if let Some(mask) = doc.governing_mask(cursor)
             && let Some(pw) = res.world_transform(parent)
             && let Some(path) = res.mask_path(doc, mask)
-            && !path.contains(pw.inverse() * p)
+            && path.contains(pw.inverse() * p) == doc.get(mask).is_some_and(|m| m.mask_inverted())
         {
             return true;
         }

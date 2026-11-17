@@ -279,6 +279,10 @@ pub(crate) struct NodeDto {
     /// earlier file's masks are shape masks (invariant 9).
     #[serde(default, skip_serializing_if = "is_shape_mask")]
     pub mask_mode: MaskMode,
+    /// Whether the mask keeps the run outside itself (§5.3). Additive, off by
+    /// default and skipped when off (invariant 9). New in v18.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mask_inverted: bool,
     /// How the node's geometry decides its interior (§15 D239). Additive and
     /// skipped at its default: every earlier file meant non-zero (invariant 9).
     #[serde(default, skip_serializing_if = "is_nonzero_fill")]
@@ -519,6 +523,7 @@ impl NodeDto {
             fill_hidden_in_export: n.fill_hidden_in_export() && n.kind().clips_children(),
             mask: n.mask(),
             mask_mode: n.mask_mode(),
+            mask_inverted: n.mask_inverted(),
             // The stored field, not `fill_rule()`, which answers the effective
             // rule and would write `EvenOdd` into every `Exclude` (invariant 9).
             fill_rule: n.fill_rule,
@@ -646,6 +651,7 @@ impl NodeDto {
             mask,
             // Not gated on `mask`: the mode is remembered while the mask is off.
             mask_mode: self.mask_mode,
+            mask_inverted: self.mask_inverted,
             fill_rule: self.fill_rule,
             paint,
             pivot: self.pivot.map(crate::node::Pivot::clamped),
