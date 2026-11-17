@@ -202,6 +202,24 @@ impl Derived {
     }
 }
 
+/// A full-resolution buffer being built off the frame, for the derived entry
+/// `key`: a full pass over a large photograph takes a sixth of a second or more,
+/// which on the frame's thread is that long a freeze.
+struct Promotion {
+    key: (ImageId, AdjustKey),
+    /// The atlas factor when it was started, which its reduced copy was cut at.
+    factor: u32,
+    worker: std::thread::JoinHandle<Promoted>,
+}
+
+/// What a [`Promotion`] hands back: the picture at its own size and, under an
+/// atlas factor of 2 or more, that buffer already reduced for the GPU, since
+/// [`ImageStore::atlas_pixels`] would otherwise make the same pass on the frame.
+struct Promoted {
+    data: ImageData,
+    atlas: Option<(ImageData, Affine)>,
+}
+
 /// The adjustment's numbers as bits ([`ImageAdjust::key_bits`]) — an
 /// [`ImageAdjust`] is `f32`s and so is neither `Eq` nor `Hash`, and a cache key has
 /// to be both.
@@ -304,6 +322,8 @@ pub struct ImageStore {
     /// Bumped whenever what [`Self::pixels`] or [`Self::atlas_pixels`] would
     /// answer changes — see [`Self::generation`].
     generation: u64,
+    /// The one full-resolution buffer being built off the frame, if any.
+    promotion: Option<Promotion>,
 }
 
 impl ImageStore {
@@ -353,6 +373,7 @@ impl ImageStore {
             // "No reduction" until a `prepare` has seen what the document holds.
             atlas_factor: 1,
             generation: 0,
+            promotion: None,
         }
     }
 
@@ -399,6 +420,7 @@ impl ImageStore {
             let mut cache = self.derived.lock().unwrap_or_else(|e| e.into_inner());
             cache.atlas.retain(|(_, at), _| *at == f);
         }
+        self.land_promotion(false);
         self.promote_settled();
         self.evict_derived();
     }
@@ -446,46 +468,120 @@ impl ImageStore {
         })
     }
 
-    /// Build the full-resolution answer for an adjustment that has stood still,
-    /// and drop the preview it replaces.
+    /// Start building the full-resolution answer for an adjustment that has
+    /// stood still, on a worker; [`Self::land_promotion`] swaps it in for the
+    /// preview on a later frame, which goes on drawing the preview meanwhile.
     ///
     /// Runs off the two previous frames' asks (see [`SETTLED_FRAMES`]). The
     /// pipeline comes from the entry, since the previewed value may be an override
-    /// the document never saw. One per frame however many are due, as a full pass
-    /// over a large photograph is a visible fraction of a second; the pick is
-    /// sorted so the order is not a hash order.
+    /// the document never saw. One at a time; one whose value the last frame did
+    /// not draw (the slider moved on) is let go, its thread left to finish unheard.
+    /// The pick is sorted so the order is not a hash order.
     fn promote_settled(&mut self) {
         let clock = self.clock;
         if clock < SETTLED_FRAMES {
             return;
         }
-        let due: Option<((ImageId, AdjustKey), AdjustPipeline)> = {
-            let cache = self.derived.get_mut().unwrap_or_else(|e| e.into_inner());
+        let cache = self.derived.get_mut().unwrap_or_else(|e| e.into_inner());
+        // Still wanted while the last frame drew its value.
+        if self.promotion.as_ref().is_some_and(|p| {
             cache
                 .entries
-                .iter()
-                .filter(|(_, d)| {
-                    // Asked on the previous frame and the one before it.
-                    !d.full
-                        && d.asked + 1 == clock
-                        && d.asked_before == Some(clock - SETTLED_FRAMES)
-                })
-                .min_by(|a, b| a.0.cmp(b.0))
-                .map(|(k, d)| (k.clone(), d.pipeline))
+                .get(&p.key)
+                .is_some_and(|d| d.asked + 1 == clock)
+        }) {
+            return;
+        }
+        let due: Option<((ImageId, AdjustKey), AdjustPipeline)> = cache
+            .entries
+            .iter()
+            .filter(|(_, d)| {
+                // Asked on the previous frame and the one before it.
+                !d.full && d.asked + 1 == clock && d.asked_before == Some(clock - SETTLED_FRAMES)
+            })
+            .min_by(|a, b| a.0.cmp(b.0))
+            .map(|(k, d)| (k.clone(), d.pipeline));
+        let Some((key, pipeline)) = due else {
+            return;
         };
-        if let Some((key, pipeline)) = due
-            && let Some(base) = self.entries.get(&key.0)
-        {
-            let data = adjusted_data(&base.data, &pipeline);
-            let cache = self.derived.get_mut().unwrap_or_else(|e| e.into_inner());
-            if let Some(d) = cache.entries.get_mut(&key) {
-                d.bytes = data.data.data().len();
-                d.data = data;
-                d.to_source = Affine::IDENTITY;
-                d.full = true;
-                self.generation += 1;
+        let Some(base) = self.entries.get(&key.0) else {
+            return;
+        };
+        let source = base.data.clone();
+        let factor = self.atlas_factor();
+        let build = move || {
+            let data = adjusted_data(&source, &pipeline);
+            let atlas = (factor >= 2).then(|| reduced_by(&data, factor)).flatten();
+            Promoted { data, atlas }
+        };
+        // A machine that will not start a thread still gets the picture, at the
+        // old cost of a frozen frame.
+        let worker = std::thread::Builder::new()
+            .name("adjust-promote".into())
+            .spawn(build.clone());
+        match worker {
+            Ok(worker) => {
+                self.promotion = Some(Promotion {
+                    key,
+                    factor,
+                    worker,
+                });
+            }
+            Err(_) => {
+                let done = build();
+                self.install_promoted(&key, factor, done);
             }
         }
+    }
+
+    /// Swap a finished [`Promotion`] in for its preview, waiting for it when
+    /// `block` (a test's way to stand in for the frames a worker takes). Nothing
+    /// lands when the entry it was built for has gone or the worker panicked.
+    fn land_promotion(&mut self, block: bool) {
+        let ready = self
+            .promotion
+            .as_ref()
+            .is_some_and(|p| block || p.worker.is_finished());
+        if !ready {
+            return;
+        }
+        let Some(p) = self.promotion.take() else {
+            return;
+        };
+        if let Ok(done) = p.worker.join() {
+            self.install_promoted(&p.key, p.factor, done);
+        }
+    }
+
+    /// Put `done` in place of `key`'s preview, if that preview is still held and
+    /// was drawn on the last frame (a full buffer is kept until the budget needs
+    /// it, so one for a value the slider left would be held for nothing), with its
+    /// reduced copy where the atlas factor is still the one it was cut at.
+    fn install_promoted(&mut self, key: &(ImageId, AdjustKey), factor: u32, done: Promoted) {
+        let (current, clock) = (self.atlas_factor(), self.clock);
+        let cache = self.derived.get_mut().unwrap_or_else(|e| e.into_inner());
+        let Some(d) = cache
+            .entries
+            .get_mut(key)
+            .filter(|d| !d.full && d.asked + 1 >= clock)
+        else {
+            return;
+        };
+        let blob = done.data.data.id();
+        d.bytes = done.data.data.data().len();
+        d.data = done.data;
+        d.to_source = Affine::IDENTITY;
+        d.full = true;
+        if let Some(atlas) = done.atlas.filter(|_| factor == current) {
+            cache.atlas.insert((blob, factor), atlas);
+        }
+        self.generation += 1;
+    }
+
+    /// Wait for the promotion in flight and land it, for a test.
+    #[cfg(test)]
+    fn settle_promotion(&mut self) {
+        self.land_promotion(true);
     }
 
     /// Drop derived buffers nothing is looking at.
@@ -1957,7 +2053,12 @@ mod tests {
         /// A settled adjustment is promoted and a moving one is not; the failure
         /// modes mirror each other, so it is one test. The drag half asserts
         /// `derived_full_len`, not the width: a fresh key always gets a preview, and
-        /// the eager rule's fault is a full buffer only the count can see.
+        /// the eager rule's fault is a full buffer only the count can see. The
+        /// promotion is built off the frame: the frame that starts it still draws
+        /// the preview.
+        ///
+        /// flip: `promote_settled` building the buffer on the frame (its no-thread
+        /// fallback) → fails at "the frame that settled it waited".
         #[test]
         fn a_settled_adjustment_reaches_full_resolution_and_a_moving_one_does_not() {
             let n = PREVIEW_EDGE * 2;
@@ -1985,21 +2086,29 @@ mod tests {
                 );
             }
 
-            // Released: the same value every frame from here on.
+            // Released: the same value every frame from here on. The third frame's
+            // prepare is the first to see it asked twice, and starts the worker.
             let settled = reference("a", |a| a.exposure = 0.95);
             let mut widths = Vec::new();
             let generation = store.generation();
-            for _ in 0..4 {
+            for _ in 0..3 {
                 store.prepare(&doc);
                 widths.push(store.pixels(&settled).expect("held").data.width);
             }
             assert!(
-                widths.last() == Some(&n),
-                "a slider that stopped never reached full resolution: {widths:?}"
+                widths.iter().all(|w| *w < n),
+                "the frame that settled it waited for the full pass: {widths:?}"
             );
             assert!(
-                widths.iter().filter(|w| **w == n).count() <= 3,
-                "it was promoted before it had stood still: {widths:?}"
+                store.promotion.is_some(),
+                "the full pass is under way off the frame"
+            );
+            store.settle_promotion();
+            store.prepare(&doc);
+            widths.push(store.pixels(&settled).expect("held").data.width);
+            assert!(
+                widths.last() == Some(&n),
+                "a slider that stopped never reached full resolution: {widths:?}"
             );
             assert!(
                 !store.wants_frame(),
@@ -2012,6 +2121,46 @@ mod tests {
             );
         }
 
+        /// A value the slider left while its full pass was under way is let go:
+        /// the next value to settle starts its own at once, and the left one never
+        /// lands.
+        ///
+        /// flip: `promote_settled` waiting on any promotion in flight, whether its
+        /// entry is held or not → fails at "the newly settled value waited".
+        #[test]
+        fn a_promotion_the_slider_left_is_let_go() {
+            let n = PREVIEW_EDGE * 2;
+            let mut store = store_with(n, true);
+            let doc = doc_with(&[], 8);
+            let left = reference("a", |a| a.exposure = 0.5);
+            for _ in 0..3 {
+                store.prepare(&doc);
+                store.pixels(&left);
+            }
+            let started = store.promotion.as_ref().map(|p| p.key.clone());
+            assert_eq!(
+                started,
+                Some((id("a"), AdjustKey::of(&left.adjust))),
+                "fixture: the first value's full pass is under way"
+            );
+            // Moved on and held: the first value's preview goes stale.
+            let held = reference("a", |a| a.exposure = -0.5);
+            for _ in 0..3 {
+                store.prepare(&doc);
+                store.pixels(&held);
+            }
+            assert_eq!(
+                store.promotion.as_ref().map(|p| p.key.clone()),
+                Some((id("a"), AdjustKey::of(&held.adjust))),
+                "the newly settled value waited on one nobody will draw"
+            );
+            store.settle_promotion();
+            store.prepare(&doc);
+            assert_eq!(store.pixels(&held).expect("held").data.width, n);
+            assert!(!store.holds_derived(&left), "the left value went");
+            assert_eq!(store.derived_full_len(), 1, "and only the held one landed");
+        }
+
         /// A scrolled-past preview is dropped and a full-resolution answer is kept.
         #[test]
         fn a_stale_preview_is_dropped_where_a_stale_full_answer_is_not() {
@@ -2021,10 +2170,14 @@ mod tests {
 
             // One adjustment held still long enough to be promoted...
             let kept = reference("a", |a| a.exposure = 0.5);
-            for _ in 0..4 {
+            for _ in 0..3 {
                 store.prepare(&doc);
                 store.pixels(&kept);
             }
+            store.settle_promotion();
+            store.prepare(&doc);
+            store.pixels(&kept);
+            assert_eq!(store.derived_full_len(), 1, "fixture: it was promoted");
             assert_eq!(store.derived_len(), 1);
 
             // ...then a run of values nobody comes back to.
