@@ -142,10 +142,17 @@ impl Library {
 
     /// Write `source` as the script called `name`, creating it or replacing its
     /// source. A script whose name differs only in case is the same script; a
-    /// file that is not UTF-8 text is refused, never replaced.
+    /// file that is not UTF-8 text is refused, never replaced. A name with no
+    /// listed script is only ever created: when the system already resolves it
+    /// to something (a symlink, a directory, a name it compares differently),
+    /// that is refused as taken rather than written through.
     pub fn write(&self, name: &str, source: &str) -> Result<PathBuf, ScriptError> {
         check_name(name)?;
-        let path = self.find(name)?.unwrap_or_else(|| self.path_of(name));
+        let path = match self.find(name)? {
+            Some(path) => path,
+            None if self.on_disk(name) => return Err(ScriptError::Taken(name.to_owned())),
+            None => self.path_of(name),
+        };
         if let Ok(bytes) = std::fs::read(&path)
             && std::str::from_utf8(&bytes).is_err()
         {
@@ -166,6 +173,12 @@ impl Library {
             .iter()
             .any(|(n, p)| n.to_lowercase() == want && *p != old)
         {
+            return Err(ScriptError::Taken(to.to_owned()));
+        }
+        // A change of case alone resolves `to` to `old` itself where names compare
+        // without case; anything else already there was not listed.
+        let recased = script_name(&old).is_some_and(|n| n.to_lowercase() == want);
+        if !recased && self.on_disk(to) {
             return Err(ScriptError::Taken(to.to_owned()));
         }
         let new = self.path_of(to);
@@ -198,7 +211,7 @@ impl Library {
             .into_iter()
             .map(|(name, _)| name.to_lowercase())
             .collect();
-        if !taken.contains(&wanted.to_lowercase()) {
+        if !taken.contains(&wanted.to_lowercase()) && !self.on_disk(wanted) {
             return wanted.to_owned();
         }
         let (stem, from) = match mastik_core::naming::numbered(wanted) {
@@ -207,13 +220,19 @@ impl Library {
         };
         (from..=u32::MAX)
             .map(|n| format!("{stem} {n}"))
-            .find(|c| !taken.contains(&c.to_lowercase()))
+            .find(|c| !taken.contains(&c.to_lowercase()) && !self.on_disk(c))
             .unwrap_or_else(|| format!("{stem} {from}"))
     }
 
     /// The file a script called `name` would be written to.
     fn path_of(&self, name: &str) -> PathBuf {
         self.dir.join(format!("{name}.{EXT}"))
+    }
+
+    /// Whether the system resolves `name`'s file to anything, listed or not,
+    /// without following a symlink.
+    fn on_disk(&self, name: &str) -> bool {
+        std::fs::symlink_metadata(self.path_of(name)).is_ok()
     }
 
     /// Every script file in the folder by its script name, whether or not its
@@ -488,6 +507,52 @@ mod tests {
         assert_eq!(found("TIDY"), Ok(Some("Tidy.luau".into())), "one in a case");
         assert_eq!(found("Nope"), Ok(None));
         assert!(found("GRID").is_err(), "two in other cases");
+    }
+
+    /// A name the system resolves to something the library does not list (here
+    /// a directory) is taken: a write and a rename onto it are refused, and a
+    /// new name is numbered past it.
+    /// flip: `Library::write` writing to `path_of` when `find` misses → fails at
+    /// "a write is refused".
+    #[test]
+    fn an_unlisted_name_on_disk_is_never_written_through() {
+        let lib = scratch("unlisted");
+        std::fs::create_dir_all(lib.dir().join("Grid.luau")).unwrap();
+        lib.write("Tidy", "t").unwrap();
+        assert_eq!(names(&lib), ["Tidy"], "fixture: it is not listed");
+        assert!(
+            matches!(lib.write("Grid", "x"), Err(ScriptError::Taken(_))),
+            "a write is refused"
+        );
+        assert!(matches!(
+            lib.rename("Tidy", "Grid"),
+            Err(ScriptError::Taken(_))
+        ));
+        assert_eq!(lib.unique_name("Grid"), "Grid 2");
+        assert!(lib.dir().join("Grid.luau").is_dir());
+        let _ = std::fs::remove_dir_all(lib.dir());
+    }
+
+    /// A script linked into the folder is never written through: the file the
+    /// link points at keeps its text.
+    /// flip: `Library::write` writing to `path_of` when `find` misses → fails at
+    /// "the linked file keeps its text".
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_script_is_never_written_through() {
+        let lib = scratch("link");
+        std::fs::create_dir_all(lib.dir()).unwrap();
+        let outside = lib.dir().with_extension("outside.luau");
+        std::fs::write(&outside, "a").unwrap();
+        std::os::unix::fs::symlink(&outside, lib.dir().join("Grid.luau")).unwrap();
+        assert!(matches!(lib.write("Grid", "b"), Err(ScriptError::Taken(_))));
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "a",
+            "the linked file keeps its text"
+        );
+        let _ = std::fs::remove_dir_all(lib.dir());
+        let _ = std::fs::remove_file(&outside);
     }
 
     /// A script file that is not UTF-8 text is not listed, but its name stays
