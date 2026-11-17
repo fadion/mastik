@@ -4413,6 +4413,55 @@ fn a_subset_face_draws_its_script_and_keeps_its_alias_on_a_worker() {
     assert!(uses_italic(&again), "on the worker");
 }
 
+/// A worker handed every face this thread holds draws a family the document did
+/// not use when the faces were taken, as a script setting a new family does.
+/// Inter's italic, registered as the family, tells its face from Inter's.
+///
+/// flip: `registered_font_data` answering nothing → fails at "on the worker".
+#[test]
+fn a_worker_given_the_registered_faces_draws_a_family_new_to_the_document() {
+    let italic = mastik_core::text::bundled_inter()[1];
+    let family = "Registered Probe Sans";
+    assert!(mastik_core::text::register_fonts_as(
+        italic.to_vec(),
+        family
+    ));
+    let fonts = mastik_core::text::registered_font_data();
+    let mut ids = IdSource::new(0xF049);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let id = ids.mint();
+    let mut kind = text("Probe", 40.0);
+    if let NodeKind::Text { style, .. } = &mut kind {
+        style.font_family = family.into();
+    }
+    doc.apply(&Transaction(vec![Operation::CreateNode {
+        id,
+        parent: root,
+        index: 0,
+        kind,
+        transform: None,
+        name: None,
+    }]))
+    .unwrap();
+    let uses_italic = |fonts: &[mastik_core::peniko::FontData]| {
+        fonts.iter().any(|f| f.data.len() == italic.len())
+    };
+    assert!(
+        uses_italic(&Resolved::rebuild(&doc).text_fonts()),
+        "fixture: the family draws in its face here"
+    );
+    let again = std::thread::scope(|s| {
+        s.spawn(|| {
+            mastik_core::text::register_font_data(&fonts);
+            Resolved::rebuild(&doc).text_fonts()
+        })
+        .join()
+        .unwrap()
+    });
+    assert!(uses_italic(&again), "on the worker");
+}
+
 /// Text set in a family nothing registered is drawn in its loaded stand-in rather
 /// than Inter. Inter's italic, registered as Carlito, stands in for Calibri.
 ///

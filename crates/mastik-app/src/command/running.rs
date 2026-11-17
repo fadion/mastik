@@ -121,6 +121,9 @@ pub(crate) struct Landed {
 struct Order {
     doc: mastik_core::Document,
     resolved: mastik_core::Resolved,
+    /// Every face the window's text engine holds, so a family the script sets
+    /// measures as it would on the UI thread.
+    fonts: Vec<mastik_core::peniko::FontData>,
     ids: IdSource,
     page: NodeId,
     selection: Vec<NodeId>,
@@ -135,8 +138,8 @@ struct Order {
 /// Run `order` on a copy of the session it was taken from: one step, settled.
 fn work(order: Order, stop: Arc<AtomicBool>) -> Landed {
     let started = Instant::now();
-    // A worker's text engine holds only Inter: the document's faces first.
-    mastik_core::text::register_font_data(&order.resolved.text_fonts());
+    // A worker's text engine holds only Inter: the window's faces first.
+    mastik_core::text::register_font_data(&order.fonts);
     let mut scratch = EditorSession::scratch(order.doc, order.resolved, order.ids, order.page);
     let env = mastik_vm::Env {
         selection: &order.selection,
@@ -215,6 +218,7 @@ impl MastikApp {
         let order = Order {
             doc: s.doc.clone(),
             resolved: s.resolved.clone(),
+            fonts: mastik_core::text::registered_font_data(),
             ids,
             page: s.page,
             selection,

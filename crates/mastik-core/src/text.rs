@@ -158,6 +158,34 @@ pub fn register_font_data(fonts: &[FontData]) {
     });
 }
 
+/// Every face registered with this thread's shaping engine, once each: what a
+/// worker hands to [`register_font_data`] to measure as this thread would,
+/// families the document does not use yet included.
+pub fn registered_font_data() -> Vec<FontData> {
+    ENGINE.with(|engine| {
+        let collection = &mut engine.borrow_mut().font_cx.collection;
+        let names: Vec<String> = collection.family_names().map(str::to_owned).collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for name in names {
+            let Some(info) = collection
+                .family_id(&name)
+                .and_then(|id| collection.family(id))
+            else {
+                continue;
+            };
+            for font in info.fonts() {
+                if let parley::fontique::SourceKind::Memory(blob) = font.source().kind()
+                    && seen.insert((blob.id(), font.index()))
+                {
+                    out.push(FontData::new(blob.clone(), font.index()));
+                }
+            }
+        }
+        out
+    })
+}
+
 /// Un-register every face of `family` from this thread's shaping engine; returns
 /// whether anything was removed.
 ///

@@ -197,8 +197,9 @@ palette, and an `/ai` reply's script run on a worker (`MastikApp::begin_run`), s
 drawing:
 
 - **The copy is the document as it stood**: the document, its layout (`Resolved`) and an id source
-  at the session's next id, copied when the run starts. The worker registers the document's faces
-  first, as an export's does, and makes a scratch session of the copy (`EditorSession::scratch`),
+  at the session's next id, copied when the run starts. The worker registers every face the window's
+  text engine holds first (`text::registered_font_data`), so a family the script sets measures as
+  it would on the UI thread, and makes a scratch session of the copy (`EditorSession::scratch`),
   so the run commits through the same commit door as the live session, every pass included.
 - **The document is held while it runs** (`EditorSession::script_run`): every door that changes it
   — a commit, an undo, a redo, a jump in the history, a revert — refuses, and the status line says
