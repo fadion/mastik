@@ -121,21 +121,6 @@ Items run cheapest first.
   values where a variable or style fits, near-duplicate colours, inconsistent radii and low
   contrast. The same checks feed *Design system health* and `mastik check`.
 
-## Now · Assistant
-
-Items run cheapest first.
-
-- **Keep proposals across a restart, and tool results in the chat history.** Proposals live in
-  memory (`assistant::applied`, `mcp::propose`) and saved chats store tool results as "(result not
-  saved)", so a reopened thread starts blind. Save both, bounded in size.
-- **A render with the scope and the chips for every harness.** Only Claude Code and Codex get a
-  render of attached layers, and the scope sends none (`design/assistant.md` §2, §6). Send one to
-  every harness that takes images, and a short description of it to one that does not.
-- **Change the access level without restarting the session.** A change restarts the harness's
-  session on the next question with only the prose replayed (`assistant_set_level`, `Started`), so
-  the agent loses its earlier reads. Keep the session and change only its grant, where the harness
-  allows it.
-
 ## Now · Command bar and scripting
 
 Items run cheapest first.
