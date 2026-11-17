@@ -809,7 +809,8 @@ pub(crate) struct DashboardState {
     ///
     /// `None` is "not steered yet", not row zero: the highlight then sits on the
     /// first document match, which the groups above can push down as the query
-    /// changes. Cleared when the query changes and when the overlay opens.
+    /// changes. Cleared when the query changes, when the overlay opens and when
+    /// the row it was steered onto leaves the dropdown.
     pub(crate) search_row: Option<usize>,
     /// The row [`Self::search_row`] was steered onto, by what it offers, so the
     /// highlight stays on it when rows sort in above it; read only while
@@ -1464,13 +1465,19 @@ impl MastikApp {
             .chain(show_all.map(|_| SearchRowKey::ShowAll))
             .chain(scope.as_ref().map(|_| SearchRowKey::Widen))
             .collect();
-        let steered = self.dash.search_row.map(|row| {
-            self.dash
-                .search_steered
-                .as_ref()
-                .and_then(|k| keys.iter().position(|x| x == k))
-                .unwrap_or(row)
-        });
+        // A row whose document has left the capped list is no longer steered:
+        // its old number now names another document.
+        let steered = self
+            .dash
+            .search_row
+            .and_then(|row| match &self.dash.search_steered {
+                Some(k) => keys.iter().position(|x| x == k),
+                None => Some(row),
+            });
+        if steered.is_none() {
+            self.dash.search_row = None;
+            self.dash.search_steered = None;
+        }
         let mut sel = steered.unwrap_or(default).min(rows - 1);
         if step != 0 {
             // Clamped rather than wrapping, as `arrow_target` does for the grid.
@@ -9886,6 +9893,88 @@ mod tests {
             app.session.path.as_deref(),
             Some(paths[1].as_path()),
             "the document it was steered onto"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A steered document pushed past the dropdown's cap drops the steer, so
+    /// `Enter` does not open the document now at its old row.
+    /// flip: `search_results` falling back to the steered row's number → fails
+    /// at "no document opens".
+    #[test]
+    fn a_steered_search_row_pushed_past_the_cap_is_let_go() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "search-steer-cap");
+        // Each holds the text *Pay now, safely*; newest first.
+        for i in 0..=SEARCH_MAX {
+            let mut doc = crate::library::index::tests::doc();
+            let path = store::file_document(&root, None, &format!("Doc {i}"), &mut doc).unwrap();
+            let at = 1_700_100_000 - 1_000 * i as u64;
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(at))
+                .unwrap();
+        }
+        app.library.refresh();
+        app.dash.nav = Nav::All;
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        app.dash.search = Some("pay".into());
+        let _ = galleys(&mut app, &ctx);
+        press(&mut app, &ctx, egui::Key::ArrowUp);
+        let last = format!("Doc {}", SEARCH_MAX - 1);
+        let shown = app.search_matches(&search::words("pay"));
+        assert_eq!(shown[SEARCH_MAX - 1].entry.display_name(), last);
+        assert_eq!(
+            app.dash.search_steered,
+            Some(SearchRowKey::File(shown[SEARCH_MAX - 1].entry.path.clone())),
+            "steered from Show all onto the last row shown"
+        );
+
+        // A frame called *Pay* is an exact match, which sorts above every text.
+        let mut ids = mastik_core::IdSource::new(0x5EF);
+        let mut gamma = mastik_core::Document::new(ids.mint());
+        let page = gamma.first_page();
+        gamma
+            .apply(&mastik_core::Transaction(vec![
+                mastik_core::Operation::CreateNode {
+                    id: ids.mint(),
+                    parent: page,
+                    index: 0,
+                    kind: mastik_core::NodeKind::Artboard {
+                        size: mastik_core::kurbo::Size::new(10.0, 10.0),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: None,
+                    name: Some("Pay".into()),
+                },
+            ]))
+            .unwrap();
+        store::file_document(&root, None, "Gamma", &mut gamma).unwrap();
+        app.library.refresh();
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let found = app.search_matches(&search::words("pay"));
+        assert_eq!(
+            found[0].entry.display_name(),
+            "Gamma",
+            "the fixture's order"
+        );
+        assert_eq!(
+            found[SEARCH_MAX].entry.display_name(),
+            last,
+            "pushed past the cap"
+        );
+        press(&mut app, &ctx, egui::Key::Enter);
+        assert!(app.session.path.is_none(), "no document opens");
+        assert_eq!(
+            app.dash.search_page.as_deref(),
+            Some("pay"),
+            "Enter takes Show all"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
