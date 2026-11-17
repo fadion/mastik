@@ -29,9 +29,12 @@ pub(crate) fn bar_request(request: &str) -> String {
          one Luau script for Mastik's command bar in a ```luau block and change nothing \
          yourself, since the person runs the script as one undo step. `sel` is the selection, \
          a list of layers; a layer's x, y, width, height and rotation (world space), opacity, \
-         fill, stroke, corner_radius, name, text and visible read and write, and children, \
-         parent, prev and next reach its neighbours; a write tool is a function taking the \
-         layers first (`align(sel, \"left\")`); print shows a line. Say one plain sentence \
+         fill, stroke, fills, strokes, effects, corner_radius, name, text, visible, a text's \
+         font_family, font_size, font_weight and text_align, and a frame's layout, gap and \
+         padding read and write, and children, parent, prev and next reach its neighbours; \
+         a write tool is a function taking the layers first (`align(sel, \"left\")`); \
+         `random(seed)` gives a seeded generator (`rng(m, n)`), since math.random is \
+         withheld; print shows a line. Say one plain sentence \
          under 80 characters of what you did or what the script does, naming layers by name, \
          last in your reply or just before the script's block, and nothing else.\n\n\
          Request: {request}"
