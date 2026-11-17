@@ -11929,7 +11929,7 @@ mod layers_width_tests {
         crate::theme::install(&ctx);
         let _ = ctx.run_ui(Default::default(), |_| {});
         let mut app = MastikApp::headless(&ctx);
-        let mut frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
             ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
