@@ -27,12 +27,6 @@ The design and its open questions are in `prototyping.md`.
 
 Items run cheapest first.
 
-- **More warp presets.** Wave, Rise, Squeeze, Fisheye and Twist beside Arc, Flag and Bulge
-  (`warp::Preset`): each is one map function into the existing refit, and the result stays baked
-  paths.
-- **Linear and grid repeat.** `Line` and `Grid` beside the ring in *Repeat around origin*
-  (`mastik_core::repeat`, `Ring`, `Place`), reusing its group and linked-copy placement:
-  step-and-repeat, with copies optionally linked as instances.
 - **Honour an imported picture's colour profile.** `mastik_render::images::decode` reads no ICC
   profile, so a Display P3 phone photo or an Adobe RGB JPEG draws as if its numbers were sRGB,
   desaturated on the canvas and in every export. Convert to sRGB at decode with the profile `image`
