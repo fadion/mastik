@@ -3961,11 +3961,14 @@ mod tests {
     /// Find over a long script marks only the matches on the rows in view, each
     /// where its text is, and still scrolls to a current match out of view.
     /// flip: `paint_find_marks` walking every match, not the range in view →
-    /// fails at "only the rows in view".
+    /// fails at "only the rows in view"; its running count counting bytes, or
+    /// never advancing → fails at "a line apart".
     #[test]
     fn find_marks_only_the_matches_in_view() {
         use crate::command::tests::pass;
-        let source = "sel.x = 1\n".repeat(1500);
+        // A character wider than a byte before each match: the walk counts
+        // characters.
+        let source = "x→ = sel\n".repeat(1500);
         let (ctx, mut app) = open_on(&source);
         let loupe = head_glyph(&ctx, &mut app, icon::MAGNIFYING_GLASS);
         click_at(&ctx, &mut app, loupe);
@@ -4001,6 +4004,29 @@ mod tests {
         assert!(
             (first - (code.top() + (ui::CODE_LINE_H - ui::CODE_ROW_H) / 2.0)).abs() < 2.0,
             "the first on the first line: {first} vs {code:?}"
+        );
+        // Each mark sits on its own line, a line below the last, over `sel`.
+        let mut by_top = shown.clone();
+        by_top.sort_by(|a, b| a.top().total_cmp(&b.top()));
+        let prefix = ctx.fonts_mut(|f| {
+            f.layout_no_wrap(
+                "x→ = ".into(),
+                egui::FontId::monospace(ui::CODE_PT),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x
+        });
+        let left = code.left() + prefix;
+        for pair in by_top.windows(2) {
+            assert!(
+                (pair[1].top() - pair[0].top() - ui::CODE_LINE_H).abs() < 0.5,
+                "a line apart: {pair:?}"
+            );
+        }
+        assert!(
+            by_top.iter().all(|r| (r.left() - left).abs() < 1.0),
+            "each over its match, at {left}: {by_top:?}"
         );
         app.scripts.find_current = 1200;
         app.scripts.find_reveal = true;
@@ -4224,6 +4250,58 @@ mod tests {
             "the code keeps the keyboard"
         );
         assert_eq!(caret(&ctx, &app), Some(10), "the caret where it was");
+    }
+
+    /// An open library script follows its file on the watch's cadence while
+    /// the window is up, without the palette being opened.
+    /// flip: `scripts_ui` not calling `follow_library_disk` when the watch is
+    /// due → fails at "the pane follows the file".
+    #[test]
+    fn an_open_library_script_follows_its_file_on_the_watch() {
+        let (dir, mut app) = open_on_library("watch", "a");
+        let ctx = app.egui_ctx.clone();
+        let at = |app: &mut MastikApp, time: f64| {
+            let mut frame = eframe::Frame::_new_kittest();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1320.0, 820.0),
+                )),
+                time: Some(time),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+        };
+        at(&mut app, 1.0);
+        at(&mut app, 1.1);
+        std::fs::write(dir.join("Grid.luau"), "b").unwrap();
+        at(&mut app, 2.0);
+        assert_eq!(app.scripts.buffer, "a", "fixture: not due yet");
+        at(&mut app, 2.0 + crate::library::disk::WATCH_EVERY);
+        assert_eq!(app.scripts.buffer, "b", "the pane follows the file");
+        assert_eq!(
+            app.session.status().text,
+            "Reloaded “Grid”: it changed on disk"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Run on an open library script whose file changed outside runs the file
+    /// and shows it in the pane first.
+    /// flip: `start_script_run` not calling `follow_library_disk` → fails at
+    /// "the pane shows what ran".
+    #[test]
+    fn run_shows_a_library_scripts_file_as_it_runs_it() {
+        let (dir, mut app) = open_on_library("run-reread", "print(\"a\")");
+        std::fs::write(dir.join("Grid.luau"), "print(\"b\")").unwrap();
+        app.start_script_run(Which::Library("Grid".into()));
+        assert_eq!(
+            app.scripts.buffer, "print(\"b\")",
+            "the pane shows what ran"
+        );
+        let run = app.scripts.output.last().expect("the script ran");
+        assert_eq!(run.lines.first().map(|l| l.0.as_str()), Some("b"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The step-back record a closing word leaves is dropped when another
