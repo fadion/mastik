@@ -117,7 +117,10 @@ pub(crate) fn file(doc: &Document, r: &ImageRef) -> Option<Vec<u8>> {
     if !needs_bake(r, entry.format) {
         return Some(bytes.to_vec());
     }
-    let mut img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    // The canvas's decode, so a picture's colour profile is converted before the
+    // PNG, which carries none, is written.
+    let data = mastik_render::images::decode(bytes, entry.format).ok()?;
+    let mut img = image::RgbaImage::from_raw(data.width, data.height, data.data.data().to_vec())?;
     // Mirror first, then the clockwise quarter turns, as `ImageOrient` reads.
     if r.orient.mirrored {
         img = image::imageops::flip_horizontal(&img);
@@ -170,6 +173,52 @@ mod tests {
         assert_eq!(
             layer(&doc, &brush, size).err().as_deref(),
             Some("a picture with colour adjustments")
+        );
+    }
+
+    /// A mirrored Display P3 picture is written as the PNG the canvas draws: its
+    /// colour converted to sRGB, since the PNG carries no profile.
+    /// flip: `file` decoding with `image::load_from_memory` → fails at the colour.
+    #[test]
+    fn a_baked_picture_is_converted_from_its_profile() {
+        let mut bytes = Vec::new();
+        {
+            let mut info = png::Info::with_size(1, 1);
+            info.color_type = png::ColorType::Rgb;
+            info.bit_depth = png::BitDepth::Eight;
+            let p3 = moxcms::ColorProfile::new_display_p3().encode().unwrap();
+            info.icc_profile = Some(p3.into());
+            let enc = png::Encoder::with_info(&mut bytes, info).unwrap();
+            enc.write_header()
+                .unwrap()
+                .write_image_data(&[204, 77, 51])
+                .unwrap();
+        }
+        let id = ImageId("p3".into());
+        let mut doc = Document::new(mastik_core::IdSource::new(1).mint());
+        doc.apply(&Transaction(vec![Operation::AddImage {
+            id: id.clone(),
+            entry: ImageEntry {
+                source: ImageSource::Embedded(bytes.into()),
+                format: ImageFormat::Png,
+                width: 1,
+                height: 1,
+            },
+        }]))
+        .unwrap();
+        let mut r = ImageRef::new(id);
+        r.orient.mirrored = true;
+        let out = file(&doc, &r).expect("baked");
+        let px = image::load_from_memory(&out)
+            .unwrap()
+            .into_rgba8()
+            .into_raw();
+        assert!(
+            px[..3]
+                .iter()
+                .zip([221u8, 64, 37])
+                .all(|(a, b)| a.abs_diff(b) <= 2),
+            "{px:?}"
         );
     }
 }
