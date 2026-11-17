@@ -2,7 +2,7 @@
 //!
 //! An envelope maps the selection's world box onto a new shape: four corners
 //! dragged freely (a perspective map, so straight lines stay straight), or one of
-//! three presets, *Arc*, *Flag* and *Bulge*, each set by one bend. Every outline
+//! the [`Preset`]s, each set by one bend. Every outline
 //! under the selection is taken into world space, carried through the map and
 //! refitted with cubics that follow it within [`TOLERANCE`]; text is outlined and
 //! shapes become paths. Nothing stays live.
@@ -19,7 +19,7 @@ pub const TOLERANCE: f64 = 0.05;
 /// How many times a curve is halved at most while refitting it.
 const MAX_DEPTH: u32 = 12;
 
-/// The three envelopes set by one bend.
+/// The envelopes set by one bend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
     /// The box bent round a circle: its middle rises and its sides lean in, as
@@ -29,6 +29,32 @@ pub enum Preset {
     Flag,
     /// The box swells from its middle; a negative bend pinches it.
     Bulge,
+    /// Two waves along the box, both edges moving together.
+    Wave,
+    /// The far side lifts on a ramp that steepens along the box.
+    Rise,
+    /// The sides pinched in at mid-height; a negative bend widens them.
+    Squeeze,
+    /// The middle of each edge swells and the swell falls off fast, so the
+    /// corners barely move.
+    Fisheye,
+    /// The box turned about its centre, most at the centre and not at all at
+    /// the corners.
+    Twist,
+}
+
+impl Preset {
+    /// Every preset, in the warp bar's order.
+    pub const ALL: [Preset; 8] = [
+        Preset::Arc,
+        Preset::Flag,
+        Preset::Bulge,
+        Preset::Wave,
+        Preset::Rise,
+        Preset::Squeeze,
+        Preset::Fisheye,
+        Preset::Twist,
+    ];
 }
 
 /// The shape the box is mapped onto.
@@ -218,8 +244,9 @@ impl Warp {
         self.path(&crate::kurbo::Shape::to_path(&self.bounds, 0.1))
     }
 
-    /// Where a preset's one handle sits: the warped top of the bend, or of the
-    /// wave's first crest; the left edge's when vertical.
+    /// Where a preset's one handle sits: the warped top of the bend, of the
+    /// wave's first crest or of the rise's far corner, or the middle of a
+    /// squeeze's left side; transposed when vertical.
     pub fn handle(&self) -> Option<Point> {
         let Envelope::Preset {
             preset, vertical, ..
@@ -227,7 +254,7 @@ impl Warp {
         else {
             return None;
         };
-        Some(self.map(rest_handle(self.bounds, preset, vertical)))
+        Some(self.map(rest_handle(self.bounds, preset, vertical).0))
     }
 
     /// The bend that puts the handle as far out as `pointer` is, along the bend's
@@ -240,9 +267,8 @@ impl Warp {
         else {
             return None;
         };
-        let rest = rest_handle(self.bounds, preset, vertical);
-        // Outward from the box: up for a horizontal bend, left for a vertical one.
-        let out = |p: Point| if vertical { rest.x - p.x } else { rest.y - p.y };
+        let (rest, way) = rest_handle(self.bounds, preset, vertical);
+        let out = |p: Point| (p - rest).dot(way);
         let at = |bend: f64| {
             let w = Warp {
                 bounds: self.bounds,
@@ -303,23 +329,49 @@ pub fn max_bend(bounds: Rect, preset: Preset, vertical: bool) -> f64 {
     (2.0 * w / (std::f64::consts::PI * h) * 0.999).min(1.0)
 }
 
-/// The handle's place on the unbent box.
-fn rest_handle(b: Rect, preset: Preset, vertical: bool) -> Point {
-    let c = b.center();
-    let along = match preset {
-        Preset::Flag => -0.25,
-        Preset::Arc | Preset::Bulge => 0.0,
+/// The handle's place on the unbent box, and the way a positive bend moves it.
+fn rest_handle(b: Rect, preset: Preset, vertical: bool) -> (Point, Vec2) {
+    // Along and across the bend, as fractions of the box from its centre, and
+    // the way out in the same frame: up, but inward for a squeeze's side and
+    // sideways for a twist's top.
+    let ((along, across), (ax, ay)) = match preset {
+        Preset::Arc | Preset::Bulge | Preset::Fisheye => ((0.0, -0.5), (0.0, -1.0)),
+        Preset::Flag => ((-0.25, -0.5), (0.0, -1.0)),
+        Preset::Wave => ((-0.375, -0.5), (0.0, -1.0)),
+        Preset::Rise => ((0.5, -0.5), (0.0, -1.0)),
+        Preset::Squeeze => ((-0.5, 0.0), (1.0, 0.0)),
+        Preset::Twist => ((0.0, -0.5), (1.0, 0.0)),
     };
+    let c = b.center();
     match vertical {
-        false => Point::new(c.x + along * b.width(), b.y0),
-        true => Point::new(b.x0, c.y + along * b.height()),
+        false => (
+            Point::new(c.x + along * b.width(), c.y + across * b.height()),
+            Vec2::new(ax, ay),
+        ),
+        true => (
+            Point::new(c.x + across * b.width(), c.y + along * b.height()),
+            Vec2::new(ay, ax),
+        ),
     }
 }
+
+/// How far along an edge a fisheye's swell reaches, as the square of the
+/// fraction of the edge where it has fallen to 1/e: the middle of an edge
+/// moves and a corner barely does.
+const FISHEYE_REACH: f64 = 0.05;
+
+/// A fisheye's swell of the two edges the bend runs along, as a bulge's.
+const FISHEYE_ACROSS: f64 = 1.0;
+
+/// A fisheye's swell of the other two edges: half, which also keeps a strong
+/// negative bend from folding where the two swells cross.
+const FISHEYE_ALONG: f64 = 0.5;
 
 /// A preset bent along the width, about the box's centre: `(x, y)` from the
 /// centre of a `w` by `h` box.
 fn bent(preset: Preset, bend: f64, x: f64, y: f64, w: f64, h: f64) -> (f64, f64) {
     let u = x / w.max(1e-12);
+    let v = y / h.max(1e-12);
     match preset {
         Preset::Arc => {
             let theta = bend * std::f64::consts::PI;
@@ -340,6 +392,34 @@ fn bent(preset: Preset, bend: f64, x: f64, y: f64, w: f64, h: f64) -> (f64, f64)
             (x, y - bend * h / 2.0 * wave)
         }
         Preset::Bulge => (x, y * (1.0 + bend * (1.0 - 4.0 * u * u))),
+        Preset::Wave => {
+            let wave = (2.0 * std::f64::consts::TAU * (u + 0.5)).sin();
+            (x, y - bend * h / 2.0 * wave)
+        }
+        Preset::Rise => {
+            let t = u + 0.5;
+            (x, y - bend * h * t * t)
+        }
+        Preset::Squeeze => (x * (1.0 - bend * (1.0 - 4.0 * v * v)), y),
+        Preset::Fisheye => {
+            // A bulge whose swell falls off fast from each edge's middle.
+            let (gu, gv) = (
+                (-u * u / FISHEYE_REACH).exp(),
+                (-v * v / FISHEYE_REACH).exp(),
+            );
+            (
+                x * (1.0 + bend * FISHEYE_ALONG * gv),
+                y * (1.0 + bend * FISHEYE_ACROSS * gu),
+            )
+        }
+        Preset::Twist => {
+            // Turned about the centre, the radius kept, so it never folds; the
+            // turn eases from a quarter at the centre to none at the corners.
+            let reach = (w * w + h * h).max(1e-24) / 4.0;
+            let fall = (1.0 - (x * x + y * y) / reach).max(0.0);
+            let (s, c) = (bend * std::f64::consts::FRAC_PI_2 * fall * fall).sin_cos();
+            (x * c - y * s, x * s + y * c)
+        }
     }
 }
 
@@ -678,7 +758,7 @@ mod tests {
     #[test]
     fn nothing_bent_moves_nothing() {
         let mut warps = vec![Warp::square(b())];
-        for p in [Preset::Arc, Preset::Flag, Preset::Bulge] {
+        for p in Preset::ALL {
             warps.push(preset(p, 0.0, false));
             warps.push(preset(p, 0.0, true));
         }
@@ -747,7 +827,7 @@ mod tests {
                 Point::new(110.0, 120.0),
             ]),
         }];
-        for p in [Preset::Arc, Preset::Flag, Preset::Bulge] {
+        for p in Preset::ALL {
             for vertical in [false, true] {
                 let max = max_bend(b(), p, vertical);
                 warps.push(preset(p, 0.8 * max, vertical));
@@ -834,7 +914,7 @@ mod tests {
     /// back from where the handle went.
     #[test]
     fn every_handle_finds_its_bend_back() {
-        for p in [Preset::Arc, Preset::Flag, Preset::Bulge] {
+        for p in Preset::ALL {
             for vertical in [false, true] {
                 for bend in [-0.5, -0.1, 0.2, 0.55] {
                     let bend = bend * max_bend(b(), p, vertical);
@@ -861,6 +941,111 @@ mod tests {
         let q1 = Point::new(b().x0 + b().width() / 4.0, c.y);
         let q3 = Point::new(b().x0 + 3.0 * b().width() / 4.0, c.y);
         assert!(flag.map(q1).y < c.y - 1.0 && flag.map(q3).y > c.y + 1.0);
+    }
+
+    /// Each of the later presets moves the box its own way: a wave crests twice,
+    /// a rise lifts only its far side, a squeeze pinches only the sides' middles,
+    /// a fisheye swells an edge's middle and barely moves a corner, a twist turns
+    /// the centre clockwise and leaves the corners. Vertical runs each across the
+    /// height.
+    #[test]
+    fn the_later_presets_bend_their_own_way() {
+        let (r, c) = (b(), b().center());
+        let (w, h) = (r.width(), r.height());
+        let at = |u: f64, v: f64| Point::new(c.x + u * w, c.y + v * h);
+        let lift = |p: Preset, bend: f64, q: Point| q.y - preset(p, bend, false).map(q).y;
+
+        // Up at the first and fifth eighths, down at the third and seventh.
+        for (u, up) in [
+            (-0.375, true),
+            (-0.125, false),
+            (0.125, true),
+            (0.375, false),
+        ] {
+            let l = lift(Preset::Wave, 0.5, at(u, 0.0));
+            assert!(if up { l > 1.0 } else { l < -1.0 }, "wave at {u}: {l}");
+        }
+        let top = lift(Preset::Wave, 0.5, at(-0.375, -0.5));
+        assert!((top - lift(Preset::Wave, 0.5, at(-0.375, 0.5))).abs() < 1e-9);
+
+        assert!(lift(Preset::Rise, 0.5, at(-0.5, 0.0)).abs() < 1e-9);
+        let (mid, far) = (
+            lift(Preset::Rise, 0.5, at(0.0, 0.0)),
+            lift(Preset::Rise, 0.5, at(0.5, 0.0)),
+        );
+        assert!(
+            far > 2.0 * mid && mid > 1.0,
+            "a ramp that steepens: {mid} {far}"
+        );
+
+        let squeeze = |bend| preset(Preset::Squeeze, bend, false);
+        assert!(squeeze(0.5).map(at(-0.5, 0.0)).x > r.x0 + 1.0, "pinched in");
+        assert!(squeeze(-0.5).map(at(-0.5, 0.0)).x < r.x0 - 1.0, "widened");
+        assert!(squeeze(0.5).map(at(0.5, 0.5)).distance(at(0.5, 0.5)) < 1e-9);
+        assert!(squeeze(0.5).map(at(0.0, -0.5)).distance(at(0.0, -0.5)) < 1e-9);
+
+        let eye = preset(Preset::Fisheye, 0.8, false);
+        let swell = r.y0 - eye.map(at(0.0, -0.5)).y;
+        let corner = eye.map(at(-0.5, -0.5)).distance(at(-0.5, -0.5));
+        assert!(swell > 4.0 * corner && corner > 0.0, "{swell} {corner}");
+        let bulge = r.y0 - preset(Preset::Bulge, 0.8, false).map(at(-0.25, -0.5)).y;
+        let eye_quarter = r.y0 - eye.map(at(-0.25, -0.5)).y;
+        assert!(
+            eye_quarter < bulge / 2.0,
+            "only the middle: {eye_quarter} {bulge}"
+        );
+
+        let twist = preset(Preset::Twist, 0.5, false);
+        assert!(twist.map(at(0.0, -0.5)).x > c.x + 1.0, "the top goes right");
+        assert!(
+            twist.map(at(0.0, 0.5)).x < c.x - 1.0,
+            "the bottom goes left"
+        );
+        for q in corners(r) {
+            assert!(twist.map(q).distance(q) < 1e-9);
+        }
+        let near = at(0.05, 0.0);
+        let (turn_in, turn_out) = (
+            (twist.map(near) - c).atan2() - (near - c).atan2(),
+            (twist.map(at(0.0, -0.5)) - c).atan2() - (at(0.0, -0.5) - c).atan2(),
+        );
+        assert!(turn_in > turn_out && turn_out > 0.0, "{turn_in} {turn_out}");
+
+        // Vertical: the squeeze pinches the top and bottom; the rise pushes the
+        // bottom edge's far end left.
+        let vertical = |p| preset(p, 0.5, true);
+        assert!(vertical(Preset::Squeeze).map(at(0.0, -0.5)).y > r.y0 + 1.0);
+        assert!(vertical(Preset::Rise).map(at(0.0, 0.5)).x < c.x - 1.0);
+    }
+
+    /// No preset but the arc turns the box over itself anywhere across the bend's
+    /// range, so `max_bend` is 1 for each.
+    ///
+    /// flip: `FISHEYE_ALONG` at 1.0 → fails at "folds".
+    #[test]
+    fn no_preset_but_the_arc_folds() {
+        for p in Preset::ALL {
+            if p == Preset::Arc {
+                continue;
+            }
+            for vertical in [false, true] {
+                assert_eq!(max_bend(b(), p, vertical), 1.0);
+                for bend in [-0.95, -0.5, 0.5, 0.95] {
+                    let w = preset(p, bend, vertical);
+                    assert!(!w.folds());
+                    for i in 0..=24 {
+                        for j in 0..=24 {
+                            let q = Point::new(
+                                b().x0 + b().width() * f64::from(i) / 24.0,
+                                b().y0 + b().height() * f64::from(j) / 24.0,
+                            );
+                            let (dx, dy) = w.jacobian(q);
+                            assert!(dx.cross(dy) > 0.0, "{p:?} {vertical} {bend} folds at {q:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// A group of a rect and a path: the rect is replaced by a path that keeps

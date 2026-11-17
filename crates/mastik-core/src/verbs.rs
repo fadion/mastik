@@ -2522,7 +2522,9 @@ pub static VERBS: &[Verb] = &[
             ),
             opt(
                 "preset",
-                ParamKind::Choice(&["arc", "flag", "bulge"]),
+                ParamKind::Choice(&[
+                    "arc", "flag", "bulge", "wave", "rise", "squeeze", "fisheye", "twist",
+                ]),
                 "the envelope, set by `bend`",
             ),
             opt(
@@ -2573,7 +2575,12 @@ pub static VERBS: &[Verb] = &[
                         preset: match word {
                             "arc" => Preset::Arc,
                             "flag" => Preset::Flag,
-                            _ => Preset::Bulge,
+                            "bulge" => Preset::Bulge,
+                            "wave" => Preset::Wave,
+                            "rise" => Preset::Rise,
+                            "squeeze" => Preset::Squeeze,
+                            "fisheye" => Preset::Fisheye,
+                            _ => Preset::Twist,
                         },
                         bend,
                         vertical: a.bool("vertical").unwrap_or(false),
