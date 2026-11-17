@@ -152,15 +152,22 @@ Part of §9.4.
 ### Curves tab (`panels::image_curves`)
 
 - **One master curve for R, G and B**, since the pipeline holds one table. The graph is the body's
-  full width and as tall as the body allows after the In/Out row, up to square; its ground is a
+  full width and as tall as the body allows after the input strip and the In/Out row, up to square; its ground is a
   `color::field()` rounded rect.
 - Behind the curve: the picture's **luminance histogram** (`mastik_render::luminance_histogram`,
   square-root heights in faint ink, cached per picture in the context), quarter lines in
   `color::divider()`, and the straight line dashed.
 - **The ends are the tone rows.** The black end's square sits at (black point, fade) and the white
-  end's at (1 − white point, 1); each has a tick on the bottom edge under its input. Dragging the
-  black end writes black point and fade, dragging the white end writes white point: the same numbers
-  the Adjustments rows show. An end stops `MIN_GAP` short of the other.
+  end's at (1 − white point, 1). Dragging the black end writes black point and fade, dragging the
+  white end writes white point: the same numbers the Adjustments rows show. An end stops `MIN_GAP`
+  short of the other.
+- **The input strip** sits under the graph: a black-to-white ramp spanning the graph's input axis,
+  corners masked as the gradient stop bar's are, and under it a triangle pointing up at each end's
+  input, filled and edged as that end's square (the accent while held). A triangle slides its end
+  across only, so the black end keeps its fade; the cursor is `ResizeHorizontal`, as on a gradient
+  stop. A press takes the end nearest across within `HIT_R`; a click or a drag takes that end, so In
+  and Out follow it. Each triangle's tooltip is its row's hint. The strip adds to the body's height,
+  so the graph stays square when the body has room.
 - **Inner points** (round): a click on the graph adds one where the curve already is, so nothing
   changes until it is moved (up to eight; a click on an end's side or beside a point adds none). A
   press that drags adds and moves in one step. A drag moves a point between its neighbours and

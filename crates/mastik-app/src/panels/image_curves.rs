@@ -3,7 +3,8 @@
 //!
 //! The curve's ends are the black point, white point and fade amounts the
 //! Adjustments tab shows as rows, so both controls write the same three numbers.
-//! Its inner points are `ImageAdjust::curve`, stored between those ends.
+//! The input strip under the graph slides the same two ends across only. Its
+//! inner points are `ImageAdjust::curve`, stored between those ends.
 
 use super::inspector::menu_action;
 use super::paint::{self, PaintSlot};
@@ -11,7 +12,7 @@ use crate::app::MastikApp;
 use crate::theme::{self, color, icon};
 use crate::ui::{self, Prefix, Scrub};
 use eframe::egui;
-use mastik_core::{Brush, CURVE_POINTS, ImageAdjust, ImageId, ImageRef, NodeId};
+use mastik_core::{Adjustment, Brush, CURVE_POINTS, ImageAdjust, ImageId, ImageRef, NodeId};
 use mastik_render::HISTOGRAM_BINS;
 use std::sync::Arc;
 
@@ -42,8 +43,14 @@ const HIT_R: f32 = 7.0;
 const END_SIDE: f32 = 7.0;
 /// An inner point's radius.
 const POINT_R: f32 = 3.5;
-/// The tick on the graph's bottom edge under each end's input.
-const TICK_H: f32 = 4.0;
+/// The input strip's ramp, black to white under the graph's input axis.
+const RAMP_H: f32 = 6.0;
+/// An input triangle's base, across.
+const TRI_W: f32 = 9.0;
+/// An input triangle's height; its tip touches the ramp's bottom edge.
+const TRI_H: f32 = 7.0;
+/// The input strip: the ramp, a pixel of air, a triangle and its edge's overhang.
+const STRIP_H: f32 = RAMP_H + 1.0 + TRI_H + 1.0;
 /// How far past the graph's edge a dragged inner point goes before it is removed.
 const OFF_GRAPH: f32 = 16.0;
 /// The least input gap a handle keeps from its neighbours, so points stay in
@@ -96,6 +103,25 @@ fn hit(a: &ImageAdjust, plot: egui::Rect, pos: egui::Pos2) -> Option<Handle> {
         .filter(|(_, d)| *d <= HIT_R)
         .min_by(|x, y| x.1.total_cmp(&y.1))
         .map(|(h, _)| h)
+}
+
+/// The end whose triangle on the input strip is nearest `x` across, within
+/// [`HIT_R`]: the strip has one row, so only the distance across counts.
+fn strip_hit(a: &ImageAdjust, plot: egui::Rect, x: f32) -> Option<Handle> {
+    let (black, white) = a.curve_ends();
+    [(Handle::Black, black), (Handle::White, white)]
+        .into_iter()
+        .map(|(h, p)| (h, (to_screen(plot, p).x - x).abs()))
+        .filter(|(_, d)| *d <= HIT_R)
+        .min_by(|p, q| p.1.total_cmp(&q.1))
+        .map(|(h, _)| h)
+}
+
+/// `base` with end `h` slid to input `x` on the input strip: across only, so the
+/// black end keeps its fade.
+fn slid(base: &ImageAdjust, h: Handle, x: f32) -> ImageAdjust {
+    let y = position(base, h).map_or(0.0, |p| p[1]);
+    moved(base, h, [x, y], false)
 }
 
 /// `a` with a point added on the curve at input `x`, and its index, or [`None`]
@@ -172,9 +198,10 @@ fn straightened(a: &ImageAdjust) -> ImageAdjust {
 }
 
 impl MastikApp {
-    /// The Curves tab's body: the graph, the held handle's In and Out, and
-    /// *Reset curve*. `body_h` is the height above the reset row, the same as the
-    /// Adjustments tab's scrolled body, so the card keeps one height.
+    /// The Curves tab's body: the graph, the input strip, the held handle's In
+    /// and Out, and *Reset curve*. `body_h` is the height above the reset row,
+    /// the same as the Adjustments tab's scrolled body, so the card keeps one
+    /// height.
     pub(super) fn image_curves_tab(
         &mut self,
         ui: &mut egui::Ui,
@@ -195,9 +222,13 @@ impl MastikApp {
             .filter(|h| position(&a, *h).is_some());
         let inner = ui.available_width();
         let gap = ui.spacing().item_spacing.y;
-        let graph_h = (body_h - gap - ui::CONTROL_H).min(inner).max(GRAPH_MIN_H);
+        let graph_h = (body_h - 2.0 * gap - STRIP_H - ui::CONTROL_H)
+            .min(inner)
+            .max(GRAPH_MIN_H);
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(inner, graph_h), egui::Sense::click_and_drag());
+        let (strip, strip_resp) =
+            ui.allocate_exact_size(egui::vec2(inner, STRIP_H), egui::Sense::click_and_drag());
         let plot = rect.shrink(GRAPH_PAD);
 
         // A press that moves holds what it began on, or adds a point there.
@@ -258,7 +289,49 @@ impl MastikApp {
                 }
             }
         }
-        if drag.is_some() {
+        // The input strip: a press on a triangle holds that end and slides it
+        // across; a click takes it, so In and Out follow it.
+        if strip_resp.drag_started() {
+            let origin = ctx
+                .input(|i| i.pointer.press_origin())
+                .or(strip_resp.interact_pointer_pos());
+            drag = origin
+                .and_then(|o| strip_hit(&a, plot, o.x))
+                .map(|handle| Drag { handle, base: a });
+            if let Some(d) = drag {
+                pick = Some(d.handle);
+            }
+        }
+        if let Some(d) = drag
+            && (strip_resp.dragged() || strip_resp.drag_stopped())
+        {
+            if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
+                live = slid(&d.base, d.handle, from_screen(plot, pos)[0]);
+            }
+            self.valve_slot(
+                &strip_resp,
+                id,
+                slot,
+                paint::map_image(brush, |r| r.adjust = live),
+            );
+            if strip_resp.drag_stopped() {
+                drag = None;
+            }
+        }
+        if strip_resp.clicked()
+            && let Some(h) = strip_resp
+                .interact_pointer_pos()
+                .and_then(|p| strip_hit(&a, plot, p.x))
+        {
+            pick = Some(h);
+        }
+        let on_strip = strip_resp
+            .hover_pos()
+            .and_then(|p| strip_hit(&live, plot, p.x));
+        if (drag.is_some() && strip_resp.dragged()) || (drag.is_none() && on_strip.is_some()) {
+            // Across only, as a gradient's stop slides on its bar.
+            ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        } else if drag.is_some() {
             ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
         } else if resp
             .hover_pos()
@@ -274,7 +347,14 @@ impl MastikApp {
             pick,
             self.image_histogram(&ctx, &img.id).as_deref(),
         );
+        paint_strip(ui, strip, plot, &live, pick);
         resp.on_hover_text(GRAPH_TIP);
+        if let Some(h) = on_strip {
+            strip_resp.on_hover_text(match h {
+                Handle::White => Adjustment::WhitePoint.hint(),
+                _ => Adjustment::BlackPoint.hint(),
+            });
+        }
 
         // The held handle's In and Out, so arrows step it and a typed value lands
         // exactly. Dimmed with the reason when nothing is held.
@@ -326,7 +406,7 @@ impl MastikApp {
                 }
             }
         });
-        let used = graph_h + gap + ui::CONTROL_H;
+        let used = graph_h + gap + STRIP_H + gap + ui::CONTROL_H;
         if body_h > used {
             ui.add_space(body_h - used);
         }
@@ -375,9 +455,60 @@ impl MastikApp {
     }
 }
 
+/// A handle's fill: the accent while it is held, the card's ground otherwise.
+fn handle_fill(pick: Option<Handle>, h: Handle) -> egui::Color32 {
+    if pick == Some(h) {
+        color::accent_400()
+    } else {
+        color::card()
+    }
+}
+
+/// Every handle's edge, on the graph and on the input strip.
+fn handle_edge() -> egui::Stroke {
+    egui::Stroke::new(1.5, theme::text::strong())
+}
+
+/// The input strip: a black-to-white ramp spanning the graph's input axis, and
+/// under it a triangle pointing up at each end's input, drawn as the graph
+/// draws that end.
+fn paint_strip(
+    ui: &egui::Ui,
+    strip: egui::Rect,
+    plot: egui::Rect,
+    a: &ImageAdjust,
+    pick: Option<Handle>,
+) {
+    // A triangle at either end reaches past the plot to within half a pixel of
+    // the strip's side, and its edge a little further.
+    let p = ui.painter_at(strip.expand2(egui::vec2(1.0, 0.0)));
+    let ramp = egui::Rect::from_min_max(
+        egui::pos2(plot.left(), strip.top()),
+        egui::pos2(plot.right(), strip.top() + RAMP_H),
+    );
+    ui::paint_ramp(
+        &p,
+        ramp,
+        &[(0.0, egui::Color32::BLACK), (1.0, egui::Color32::WHITE)],
+    );
+    ui::mask_corners(&p, ramp, 2.0, color::card());
+    let (black, white) = a.curve_ends();
+    for (h, end) in [(Handle::Black, black), (Handle::White, white)] {
+        let tip = egui::pos2(to_screen(plot, end).x, ramp.bottom() + 1.0);
+        p.add(egui::Shape::convex_polygon(
+            vec![
+                tip,
+                tip + egui::vec2(TRI_W / 2.0, TRI_H),
+                tip + egui::vec2(-TRI_W / 2.0, TRI_H),
+            ],
+            handle_fill(pick, h),
+            handle_edge(),
+        ));
+    }
+}
+
 /// The graph: its ground, the histogram, quarter lines, the straight line dashed
-/// behind the curve, the curve, the ends' ticks and every handle, the held one
-/// in the accent.
+/// behind the curve, the curve and every handle, the held one in the accent.
 fn paint_graph(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -431,25 +562,10 @@ fn paint_graph(
         line,
         egui::Stroke::new(1.5, theme::text::strong()),
     ));
-    let (black, white) = a.curve_ends();
-    for x in [black[0], white[0]] {
-        let at = to_screen(plot, [x, 0.0]).x;
-        p.line_segment(
-            [
-                egui::pos2(at, rect.bottom()),
-                egui::pos2(at, rect.bottom() - TICK_H),
-            ],
-            egui::Stroke::new(1.0, theme::text::muted()),
-        );
-    }
-    let edge = egui::Stroke::new(1.5, theme::text::strong());
     for (h, at) in handles(a) {
         let c = to_screen(plot, at);
-        let fill = if pick == Some(h) {
-            color::accent_400()
-        } else {
-            color::card()
-        };
+        let fill = handle_fill(pick, h);
+        let edge = handle_edge();
         match h {
             Handle::Inner(_) => {
                 p.circle(c, POINT_R, fill, edge);
@@ -666,6 +782,91 @@ mod card_tests {
         let [x, _] = adjust.curve_shown(adjust.curve.as_slice()[0]);
         assert!((x - 0.5).abs() < 0.02, "where the click was: {x}");
     }
+
+    /// The graph stays square with the input strip under it, and a diagonal drag
+    /// on the strip's black triangle writes black point alone, as one step.
+    ///
+    /// flip: the strip's drag calling `moved` with the pointer's whole position
+    /// instead of `slid` → fails at "fade untouched".
+    #[test]
+    fn dragging_the_black_triangle_writes_black_point_only() {
+        let ctx = egui::Context::default();
+        let (mut app, rect) = editing(&ctx);
+        card_h(&mut app, &ctx, rect, ImageCard::Curves);
+        let out = frame(&mut app, &ctx, Vec::new());
+        let inner = ui::menu_inner_w(crate::app::POPOVER_W, ui::POPOVER_PAD);
+        let graph = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Rect(r)
+                    if (r.rect.width() - inner).abs() < 0.5 && r.rect.height() >= GRAPH_MIN_H =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("the graph is drawn");
+        assert!(
+            (graph.height() - inner).abs() < 0.5,
+            "the strip did not take the graph's height: {} against {inner}",
+            graph.height()
+        );
+        // Found by shape: the triangles are the only three-cornered paths.
+        let black = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Path(path) if path.points.len() == 3 => {
+                    Some(egui::Rect::from_points(&path.points))
+                }
+                _ => None,
+            })
+            .min_by(|p, q| p.center().x.total_cmp(&q.center().x))
+            .expect("the triangles are drawn");
+        assert!(
+            black.top() > graph.bottom()
+                && (black.center().x - (graph.left() + GRAPH_PAD)).abs() < 1.0,
+            "fixture: the black triangle under the graph's left end, {black:?}"
+        );
+        let at = black.center();
+        let to = at + egui::vec2(inner * 0.2, -30.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let steps_before = app.session.history.undo_depth();
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut app, &ctx, vec![button(at, true)]);
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(at + (to - at) * 0.5)],
+        );
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(to)]);
+        frame(&mut app, &ctx, vec![button(to, false)]);
+        frame(&mut app, &ctx, Vec::new());
+        let fill = &app.session.doc.get(rect).unwrap().paint().fills;
+        let adjust = fill
+            .iter()
+            .find_map(|f| paint::image_of(f.brush.drawn()).map(|r| r.adjust))
+            .expect("still a picture");
+        let plot_w = graph.width() - 2.0 * GRAPH_PAD;
+        let want = (to.x - (graph.left() + GRAPH_PAD)) / plot_w;
+        assert!(
+            (adjust.black_point - want).abs() < 0.02,
+            "black point where the drag ended: {} against {want}",
+            adjust.black_point
+        );
+        assert_eq!(adjust.fade, 0.0, "fade untouched");
+        assert_eq!(
+            app.session.history.undo_depth(),
+            steps_before + 1,
+            "the drag is one step"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -691,6 +892,45 @@ mod tests {
             a.white_point
         );
         assert_eq!(a.fade, 0.0, "the white end has no output to move");
+    }
+
+    /// The input strip slides an end across only: the black end keeps its fade
+    /// and the white end its white, and a slide stops short of the other end.
+    /// flip: `slid` passing output 0 → fails at "fade kept".
+    #[test]
+    fn sliding_an_end_moves_it_across_only() {
+        let a = ImageAdjust {
+            fade: 0.3,
+            white_point: 0.2,
+            ..ImageAdjust::NEUTRAL
+        };
+        let b = slid(&a, Handle::Black, 0.25);
+        assert!((b.black_point - 0.25).abs() < 1e-6, "{}", b.black_point);
+        assert!((b.fade - 0.3).abs() < 1e-6, "fade kept, got {}", b.fade);
+        let w = slid(&a, Handle::White, 0.6);
+        assert!((w.white_point - 0.4).abs() < 1e-6, "{}", w.white_point);
+        let far = slid(&a, Handle::Black, 0.95);
+        assert!(
+            far.black_point <= 0.8 - MIN_GAP + 1e-6,
+            "{}",
+            far.black_point
+        );
+    }
+
+    /// A press on the strip takes the end nearest across within reach, whatever
+    /// its height, and none far from both.
+    #[test]
+    fn a_strip_press_takes_the_nearest_end_across() {
+        let a = ImageAdjust {
+            black_point: 0.1,
+            fade: 0.5,
+            white_point: 0.3,
+            ..ImageAdjust::NEUTRAL
+        };
+        let x = |v| to_screen(plot(), [v, 0.0]).x;
+        assert_eq!(strip_hit(&a, plot(), x(0.1) + 3.0), Some(Handle::Black));
+        assert_eq!(strip_hit(&a, plot(), x(0.7) - 3.0), Some(Handle::White));
+        assert_eq!(strip_hit(&a, plot(), x(0.4)), None);
     }
 
     /// An end is held short of the other end, so a drag never crosses them.
