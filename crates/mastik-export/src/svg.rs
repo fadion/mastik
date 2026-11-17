@@ -1148,9 +1148,12 @@ fn gradient_def(name: &str, brush: &mastik_core::GradientBrush, frame: Option<Re
     };
     // Nothing clamps a descending ramp on load; the canvas clamps via
     // `color::brush_to_backend`, so clamp here too or a browser draws a flat fill.
-    let mut ramp = g.stops.clone();
-    mastik_core::image::make_stops_monotonic(&mut ramp);
+    // SVG 1.1 mixes in sRGB, so an Oklab ramp goes as the dense stops that draw it,
+    // as the canvas does.
+    let mut ramp = g.clone();
+    mastik_core::image::mix_in_srgb(&mut ramp);
     let stops: String = ramp
+        .stops
         .iter()
         .map(|s| {
             let c = s.color.to_alpha_color::<mastik_core::peniko::color::Srgb>();

@@ -37,7 +37,7 @@ Read the file for the exact wording before relying on one.
 | `kits.md` | 5.3e | Kits: shared component libraries |
 | `styles-variables.md` | 5.3f | Variables, collections and modes (a collection picked by width, width queries), scope, bindings, styles, design tokens import and the linked tokens file |
 | `text.md` | 5.4, 5.4a | The text node and fonts, spell check |
-| `images.md` | 5.5a | Images |
+| `images.md` | 5.5a | Images; the brush, gradient stops, ends and mixing |
 | `io.md` | 5.11, 5.11a | Save format, schema migration, clipboard envelope, the library block |
 | **Render, export, MCP** | | |
 | `render.md` | 6.1–6.3 | The render boundary, `RenderOverrides`, backends |

@@ -103,10 +103,11 @@ pub fn brush_to_backend(
         // A gradient carries its own transform: identity for authored ones, a
         // squash for an imported ellipse (§15 D412). Stop offsets are made
         // monotonic here (§15 D455) because neither backend normalises and a
-        // descending ramp disappears into its first stop's colour.
+        // descending ramp disappears into its first stop's colour. A ramp mixed in
+        // Oklab is restated as sRGB stops, since vello's GPU ramp only mixes in sRGB.
         mastik_core::Brush::Gradient(g) => {
             let mut ramp = g.gradient.clone();
-            mastik_core::image::make_stops_monotonic(&mut ramp.stops);
+            mastik_core::image::mix_in_srgb(&mut ramp);
             // The ramp's opacity is multiplied into the stops here (§15 D767), since
             // `peniko::Gradient` has no alpha field; stored as a multiplier, it
             // stays reversible.
@@ -230,6 +231,29 @@ pub fn straight_rgba8_from_premul(premul: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An Oklab ramp reaches both backends as sRGB stops, since vello's GPU ramp
+    /// mixes only in sRGB. flip: `mix_in_srgb` back to `make_stops_monotonic` in
+    /// `brush_to_backend` → fails at the space assertion.
+    #[test]
+    fn an_oklab_ramp_reaches_the_backends_as_srgb_stops() {
+        use peniko::color::{AlphaColor, ColorSpaceTag, Srgb};
+        let mut g = peniko::Gradient::new_linear((0.0, 0.0), (1.0, 0.0)).with_stops([
+            (0.0, AlphaColor::<Srgb>::new([1.0, 0.0, 0.0, 1.0])),
+            (1.0, AlphaColor::<Srgb>::new([0.0, 0.0, 1.0, 1.0])),
+        ]);
+        g.interpolation_cs = ColorSpaceTag::Oklab;
+        let brush = mastik_core::Brush::Gradient(g.into());
+        let Some((Brush::Gradient(out), _)) = brush_to_backend(
+            &brush,
+            &crate::images::ImageStore::default(),
+            Resolution::Source,
+        ) else {
+            panic!("a gradient resolves to a gradient");
+        };
+        assert_eq!(out.interpolation_cs, ColorSpaceTag::Srgb);
+        assert!(out.stops.len() > 2, "the ramp was restated, not relabelled");
+    }
 
     /// The image arm of the brush conversion resolves through the store and a
     /// missing one paints nothing. The arm is the GPU path's alone (`cpu.rs` reads

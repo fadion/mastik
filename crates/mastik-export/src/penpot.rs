@@ -735,8 +735,10 @@ impl Writer<'_> {
         if g.gradient.extend != Extend::Pad {
             self.approximate("Repeating and reflected gradients, drawn padded");
         }
-        let stops: Vec<Value> = g
-            .gradient
+        // Penpot mixes in sRGB, so an Oklab ramp goes as the dense stops that draw it.
+        let mut ramp = g.gradient.clone();
+        mastik_core::image::mix_in_srgb(&mut ramp);
+        let stops: Vec<Value> = ramp
             .stops
             .iter()
             .map(|s| {

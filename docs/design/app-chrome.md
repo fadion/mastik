@@ -40,6 +40,7 @@ How `mastik-app` draws its window and panels: the toolkit choice, the shared wid
   - *Hover:* `hover()` fill, `color::text()` ink, the hairline unchanged.
   - *Open* (a dropdown whose list is up): the hover face with an `accent_700()` hairline, which ties the list to its field.
   - *On* (latched: a toggle, a flip, Overlay): `accent_900()`, `accent_700()` hairline, `accent_200()` ink; `accent_800()` under the pointer.
+  - *Set* (`FieldButton::Set`, not at its default): the resting face with the `accent_700()` hairline, for a button whose collapsed row or closed menu holds something off its default, so closing it hides no setting: the stroke's sides selector, the export settings button, the gradient's *Ends and mixing*. Open, the same button is *On*.
   - *Primary* (a surface's one main action: a dialog's confirm, *New file*, *Publish*): `accent()` fill and hairline, `accent_ink()` ink, `accent_400()` under the pointer. On is a state; Primary is an action, so they look different.
   - *Danger:* `danger_900()`, `danger_700()`, `danger_200()`; it stays quieter than Primary, so a destructive confirm is never the loudest button.
   - *Disabled:* `FieldButton::Disabled` keeps the resting ground with `text::disabled()` ink and no hover; a control disabled through its `Ui` (`ui::disable_unless`) fades whole, ground included, at egui's disabled opacity. Either is the Disabled state.

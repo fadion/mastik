@@ -5,7 +5,7 @@
 
 use crate::svg::fmt;
 use mastik_core::kurbo::{Affine, Size, Vec2};
-use mastik_core::peniko::{Color, ColorStop, Extend, Gradient, GradientKind};
+use mastik_core::peniko::{Color, ColorStop, Extend, GradientKind};
 use mastik_core::{Brush, GradientBrush};
 
 /// `12px`, `0` for zero.
@@ -41,19 +41,23 @@ pub(crate) fn background_layer(brush: &Brush, size: Size) -> Option<String> {
 
 /// A gradient brush as a CSS gradient on a `size` box, or `None`.
 ///
-/// Reflect has no CSS form, and only sRGB interpolation is CSS's default for
-/// these colours; anything else goes to SVG.
+/// CSS has no reflect, so a reflected ramp is written as a repeating one twice as
+/// long, the second half mirrored. A ramp mixed in Oklab writes `in oklab`; one
+/// mixed in any other space but sRGB goes to SVG.
 pub(crate) fn gradient(brush: &GradientBrush, size: Size) -> Option<String> {
+    use mastik_core::peniko::color::ColorSpaceTag;
     let g = &brush.gradient;
-    if g.extend == Extend::Reflect || g.interpolation_cs != Gradient::default().interpolation_cs {
-        return None;
-    }
+    let mixing = match g.interpolation_cs {
+        ColorSpaceTag::Srgb => "",
+        ColorSpaceTag::Oklab => " in oklab",
+        _ => return None,
+    };
     let mut stops: Vec<ColorStop> = g.stops.iter().copied().collect();
     if stops.is_empty() {
         return None;
     }
     mastik_core::image::make_stops_monotonic(&mut stops);
-    let repeat = g.extend == Extend::Repeat;
+    let repeat = g.extend != Extend::Pad;
     if repeat {
         // A repeating CSS gradient repeats from its first stop to its last, where
         // the model repeats the whole 0..1 ramp: pin both ends.
@@ -74,6 +78,17 @@ pub(crate) fn gradient(brush: &GradientBrush, size: Size) -> Option<String> {
                 ..last
             });
         }
+    }
+    if g.extend == Extend::Reflect {
+        let back: Vec<ColorStop> = stops
+            .iter()
+            .rev()
+            .map(|s| ColorStop {
+                offset: 2.0 - s.offset,
+                ..*s
+            })
+            .collect();
+        stops.extend(back);
     }
     let prefix = if repeat { "repeating-" } else { "" };
     let ramp = |at: &dyn Fn(f64) -> String| -> String {
@@ -117,7 +132,7 @@ pub(crate) fn gradient(brush: &GradientBrush, size: Size) -> Option<String> {
             let s_dot = start.dot(u);
             let at = |o: f64| pct(((o - base) / norm - s_dot) / l);
             Some(format!(
-                "{prefix}linear-gradient({}deg, {})",
+                "{prefix}linear-gradient({}deg{mixing}, {})",
                 fmt(angle),
                 ramp(&at)
             ))
@@ -135,7 +150,7 @@ pub(crate) fn gradient(brush: &GradientBrush, size: Size) -> Option<String> {
             let centre = brush.transform * p.end_center;
             let at = |o: f64| pct((r0 + o * (r1 - r0)) / r1);
             Some(format!(
-                "{prefix}radial-gradient({} {} at {} {}, {})",
+                "{prefix}radial-gradient({} {} at {} {}{mixing}, {})",
                 px(r1 * a),
                 px(r1 * d),
                 px(centre.x),
@@ -162,7 +177,7 @@ pub(crate) fn gradient(brush: &GradientBrush, size: Size) -> Option<String> {
             // rotates the start into the transform (`sweep_from_zero`).
             let at = |o: f64| format!("{}deg", fmt((o * (e - s)).to_degrees()));
             Some(format!(
-                "conic-gradient(from {}deg at {} {}, {})",
+                "conic-gradient(from {}deg at {} {}{mixing}, {})",
                 fmt((turn + s).to_degrees() + 90.0),
                 px(centre.x),
                 px(centre.y),
@@ -211,7 +226,7 @@ mod tests {
     use super::*;
     use mastik_core::kurbo::Point;
     use mastik_core::peniko::{
-        LinearGradientPosition, RadialGradientPosition, SweepGradientPosition,
+        Gradient, LinearGradientPosition, RadialGradientPosition, SweepGradientPosition,
     };
 
     fn two_stop(kind: GradientKind) -> GradientBrush {
@@ -300,5 +315,44 @@ mod tests {
             gradient(&g, Size::new(40.0, 40.0)).unwrap(),
             "conic-gradient(from 180deg at 20px 20px, #000000 0deg, #ffffff 360deg)"
         );
+    }
+
+    /// Repeat is a repeating gradient; reflect is one twice as long with its second
+    /// half mirrored, since CSS has no reflect. flip: dropping the mirrored stops in
+    /// `gradient` → fails at the reflect assertion.
+    #[test]
+    fn repeat_and_reflect_are_repeating_gradients() {
+        let mut g = two_stop(GradientKind::Linear(LinearGradientPosition {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(50.0, 0.0),
+        }));
+        g.gradient.extend = Extend::Repeat;
+        assert_eq!(
+            gradient(&g, Size::new(200.0, 100.0)).unwrap(),
+            "repeating-linear-gradient(90deg, #000000 0%, #ffffff 25%)"
+        );
+        g.gradient.extend = Extend::Reflect;
+        assert_eq!(
+            gradient(&g, Size::new(200.0, 100.0)).unwrap(),
+            "repeating-linear-gradient(90deg, #000000 0%, #ffffff 25%, #ffffff 25%, #000000 50%)"
+        );
+    }
+
+    /// An Oklab ramp names its mixing space in every kind; one mixed in another
+    /// space goes to the next tier.
+    #[test]
+    fn an_oklab_ramp_says_so() {
+        use mastik_core::peniko::color::ColorSpaceTag;
+        let mut g = two_stop(GradientKind::Linear(LinearGradientPosition {
+            start: Point::new(0.0, 0.0),
+            end: Point::new(200.0, 0.0),
+        }));
+        g.gradient.interpolation_cs = ColorSpaceTag::Oklab;
+        assert_eq!(
+            gradient(&g, Size::new(200.0, 100.0)).unwrap(),
+            "linear-gradient(90deg in oklab, #000000 0%, #ffffff 100%)"
+        );
+        g.gradient.interpolation_cs = ColorSpaceTag::Hsl;
+        assert!(gradient(&g, Size::new(200.0, 100.0)).is_none());
     }
 }

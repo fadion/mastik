@@ -21,7 +21,8 @@
 use mastik_core::Brush;
 use mastik_core::NodeId;
 use mastik_core::kurbo::{Affine, Point, Size, Vec2};
-use mastik_core::peniko::{Color, Gradient, GradientKind};
+use mastik_core::peniko::color::ColorSpaceTag;
+use mastik_core::peniko::{Color, Extend, Gradient, GradientKind};
 
 /// Which of a node's two paint lists a row belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -844,6 +845,58 @@ pub fn reverse_stops(brush: &Brush) -> Brush {
         .map(|(off, c)| (1.0 - off, c))
         .collect();
     with_stops(brush, stops)
+}
+
+/// What a gradient draws beyond its ends; [`Extend::Pad`] for any other brush.
+pub fn ends_of(brush: &Brush) -> Extend {
+    match brush {
+        Brush::Gradient(g) => g.gradient.extend,
+        _ => Extend::Pad,
+    }
+}
+
+/// `brush` drawing `extend` beyond its ends; any other brush unchanged.
+pub fn with_ends(brush: &Brush, extend: Extend) -> Brush {
+    let mut out = brush.clone();
+    if let Brush::Gradient(g) = &mut out {
+        g.gradient.extend = extend;
+    }
+    out
+}
+
+/// Whether a gradient mixes its colours in Oklab rather than sRGB.
+pub fn smooth_of(brush: &Brush) -> bool {
+    matches!(brush, Brush::Gradient(g) if g.gradient.interpolation_cs == ColorSpaceTag::Oklab)
+}
+
+/// `brush` mixing in Oklab when `smooth`, in sRGB when not; any other brush
+/// unchanged.
+pub fn with_smooth(brush: &Brush, smooth: bool) -> Brush {
+    let mut out = brush.clone();
+    if let Brush::Gradient(g) = &mut out {
+        g.gradient.interpolation_cs = match smooth {
+            true => ColorSpaceTag::Oklab,
+            false => ColorSpaceTag::Srgb,
+        };
+    }
+    out
+}
+
+/// The stops as they are drawn: a ramp mixed in Oklab restated as the sRGB
+/// stops the canvas paints ([`mastik_core::image::mix_in_srgb`]), for a chip that
+/// mixes linearly as egui does. [`stops_of`] for every other brush.
+pub fn drawn_stops_of(brush: &Brush) -> Vec<(f32, Color)> {
+    match brush {
+        Brush::Gradient(g) if g.gradient.interpolation_cs != ColorSpaceTag::Srgb => {
+            let mut ramp = g.gradient.clone();
+            mastik_core::image::mix_in_srgb(&mut ramp);
+            ramp.stops
+                .iter()
+                .map(|s| (s.offset, s.color.to_alpha_color()))
+                .collect()
+        }
+        _ => stops_of(brush),
+    }
 }
 
 // --- radial geometry -------------------------------------------------------

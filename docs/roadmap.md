@@ -27,12 +27,6 @@ The design and its open questions are in `prototyping.md`.
 
 Items run cheapest first.
 
-- **Repeat and reflect for gradients.** `peniko::Gradient::extend` is in the model, both backends
-  draw it and the SVG writer already emits `spreadMethod` (`svg::gradient_def`); nothing in the app
-  sets it. A switch in the gradient picker. CSS has no reflect, which `code::css` already reports.
-- **A better angular gradient in SVG.** SVG 1.1 has no sweep, so `svg::gradient_def` writes a
-  radial and reports it. Write it as wedges each filled with a linear gradient, or a raster `<image>`
-  when the stops are many. Exporter only.
 - **More warp presets.** Wave, Rise, Squeeze, Fisheye and Twist beside Arc, Flag and Bulge
   (`warp::Preset`): each is one map function into the existing refit, and the result stays baked
   paths.
@@ -47,13 +41,6 @@ Items run cheapest first.
 - **Baked path filters.** *Roughen*, *Zig-zag* and *Pucker / Bloat* in the path bar's Clean up
   card, built as *Simplify* and *Offset* are: flatten, displace, refit. They give the hand-drawn and
   organic edge most illustration asks for.
-- **Oklab per-gradient switch.** A *Smooth (Oklab)* switch in the gradient picker, off by default:
-  CSS, Figma, Sketch and Penpot interpolate in sRGB, and imports must keep drawing as they did, so a
-  gradient written before it loads as sRGB. `vello_cpu` honours `Gradient::interpolation_cs` but
-  vello's GPU ramp (`vello_encoding::ramp_cache`) always mixes in sRGB, so the canvas and the PNG
-  would disagree; the render boundary expands an Oklab gradient into dense sRGB stops for both
-  backends. SVG 1.1 and the Penpot and Sketch writers take the same dense stops; CSS writes
-  `linear-gradient(in oklab, …)`.
 - **Honour an imported picture's colour profile.** `mastik_render::images::decode` reads no ICC
   profile, so a Display P3 phone photo or an Adobe RGB JPEG draws as if its numbers were sRGB,
   desaturated on the canvas and in every export. Convert to sRGB at decode with the profile `image`

@@ -27,11 +27,17 @@ The model's brush is `peniko::Brush<ImageBrush<ImageRef>, GradientBrush>`, alias
 
 ### Gradient stops
 
-Stop offsets ascend: `image::make_stops_monotonic` clamps each offset up to the running maximum (SVG's rule). A descending ramp otherwise draws as a flat fill of the first stop. It is applied at four independent doors: `svg_in::Gradients::collect`, `color::brush_to_backend`, `mastik_export::svg::gradient_def` (on a copy), and the gradient chips (`ui::paint_ramp`), all sharing `image::monotonic_offset`. It is a clamp, not a sort (`[0,0.8,0.2,1]` clamps to `[0,0.8,0.8,1]`); `panels::paint::with_stops` sorts, because dragging a handle past a neighbour means "put it there". Every gradient read — a load, a paste, an MCP call — is clamped too: `GradientBrush` deserializes through `GradientBrushWire`, so a stored ramp is already the picture the renderers draw.
+Stop offsets ascend: `image::make_stops_monotonic` clamps each offset up to the running maximum (SVG's rule). A descending ramp otherwise draws as a flat fill of the first stop. It is applied at four independent doors: `svg_in::Gradients::collect`, `color::brush_to_backend` and `mastik_export::svg::gradient_def` (both on a copy, through `image::mix_in_srgb`), and the gradient chips (`ui::paint_ramp`), all sharing `image::monotonic_offset`. It is a clamp, not a sort (`[0,0.8,0.2,1]` clamps to `[0,0.8,0.8,1]`); `panels::paint::with_stops` sorts, because dragging a handle past a neighbour means "put it there". Every gradient read — a load, a paste, an MCP call — is clamped too: `GradientBrush` deserializes through `GradientBrushWire`, so a stored ramp is already the picture the renderers draw.
 
 A stop's alpha is clamped in `svg_in::stop_of` (import) and `panels::paint::alpha_of` (readout); nothing clamps on load.
 
 **A ramp's opacity is a field on `GradientBrush`** (a multiplier beside the stops), not a rewrite of stops (scaling is not invertible through zero). It is folded in at `color::brush_to_backend` and written as `fill-opacity` by `svg::paint_attr`; `picker::ramp` folds it into chips; the stop bar uses `picker::stop_colours` (the named exception, so the handles are not dimmed). The field is `#[serde(default)]`, so `build::brush_is_finite` asks `valid_opacity` to refuse finite out-of-range values. For pictures, chips read `panels::paint::image_brush_alpha` (and `image_alpha`) and the layers row's `picture_of` must carry the sampler.
+
+### Gradient ends and mixing
+
+What a gradient draws past its ends is `peniko::Gradient::extend` (Pad, Repeat, Reflect), and the space it mixes its stops in is `interpolation_cs`. Both sit in `GradientBrush`'s flattened `peniko::Gradient`, so neither moved the save format, and a gradient saved without them loads as Pad in sRGB. The app offers sRGB and Oklab (*Smooth*), sRGB by default: CSS, Figma, Sketch and Penpot mix in sRGB, and an imported gradient must draw as it did. A sweep goes all the way round, so its ends are not offered.
+
+`image::mix_in_srgb` restates a ramp mixed in any space but sRGB as sRGB stops and sets its space to sRGB, making the stops monotonic first. Each span between two stops is halved while the straight sRGB line across a piece misses the true mix, premultiplied, by more than half an 8-bit level at any of three probes, at most eight times (`MIX_TOLERANCE`, `MIX_MAX_DEPTH`); a mix outside the sRGB gamut is clamped, and a hard stop stays hard. It is the one restatement for every reader that mixes only in sRGB: both backends (`color::brush_to_backend`, §6.1), the SVG, Penpot and Sketch writers, and the picker's chips and stop bar (`panels::paint::drawn_stops_of`). CSS alone writes the space (§7).
 
 ### Framing
 
@@ -140,6 +146,7 @@ The table is written last, sorted by id, one entry per record, embedded bytes as
 - `pixels` vs `get`: `get` is the decode, `pixels` is what the fill shows. Use `pixels` for painting, `get` for `has_image`.
 - Canvas (Atlas) and export (Source) intentionally draw at different resolutions.
 - Stop monotonicity has four independent doors; a new gradient reader needs the rule too, and gradient opacity must be folded in by any new chip.
+- `brush_to_backend` restates an Oklab ramp for the CPU backend too, though `vello_cpu` mixes in Oklab itself: skipping it there makes the PNG differ from the GPU canvas. A new writer to an sRGB-only format calls `image::mix_in_srgb` as well. Pinned by `color.rs · an_oklab_ramp_reaches_the_backends_as_srgb_stops`.
 - Adjustment out-of-range values are refused, not clamped; a NaN matrix is a backend divergence.
 - A crop is normalized to the *oriented* picture; flips must carry the rectangle through `ImageRef::reoriented`.
 - A helper returning half a brush (e.g. `picture_of` dropping the sampler) loses the alpha everywhere.

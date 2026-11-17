@@ -59,7 +59,9 @@ use std::collections::BTreeMap;
 /// - **25** `Geometry::Text` gained `letter_spacing`, absent at none.
 /// - **26** `PaintSummary::Image` gained `curve`, the tone curve's inner points;
 ///   `adjust` names each amount by its key in the file (`white_point`).
-pub const SNAPSHOT_VERSION: u32 = 26;
+/// - **27** `PaintSummary::Gradient` gained `extend` and `smooth`, absent at pad
+///   and sRGB.
+pub const SNAPSHOT_VERSION: u32 = 27;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -629,6 +631,12 @@ pub enum PaintSummary {
         /// without it a faded gradient and an opaque one read identically.
         opacity: f32,
         stops: Vec<GradientStopSummary>,
+        /// What it draws beyond its ends, `repeat` | `reflect`; absent for pad.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extend: Option<String>,
+        /// Whether it mixes its colours in Oklab rather than sRGB; absent when not.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        smooth: bool,
     },
     /// A picture, named by the id that keys the document's image table — its
     /// content hash, so it also says when two fills are the same file.
@@ -1414,6 +1422,12 @@ fn paint_summary(doc: &Document, brush: &Brush) -> PaintSummary {
             }
             .to_string(),
             opacity: g.opacity,
+            extend: match g.gradient.extend {
+                mastik_core::peniko::Extend::Pad => None,
+                mastik_core::peniko::Extend::Repeat => Some("repeat".to_string()),
+                mastik_core::peniko::Extend::Reflect => Some("reflect".to_string()),
+            },
+            smooth: g.gradient.interpolation_cs == mastik_core::peniko::color::ColorSpaceTag::Oklab,
             stops: g
                 .gradient
                 .stops

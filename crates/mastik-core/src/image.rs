@@ -1756,6 +1756,95 @@ pub fn monotonic_offset(hi: &mut f32, offset: f32) -> f32 {
     *hi
 }
 
+/// How far [`mix_in_srgb`]'s sRGB line may stray from the true mix at a probe
+/// before the piece is halved: half an 8-bit level, so the whole ramp stays
+/// within one (`mixing_in_srgb_stays_within_a_level`).
+const MIX_TOLERANCE: f32 = 0.5 / 255.0;
+
+/// How many times [`mix_in_srgb`] may halve one span: at most 256 pieces, which
+/// only a span crossing the gamut's edge needs.
+const MIX_MAX_DEPTH: u32 = 8;
+
+/// `g` restated as sRGB stops close enough together that mixing them in sRGB draws
+/// the ramp its own space mixes, and its space set to sRGB. Its stops are made
+/// monotonic first. Unchanged but for that when it already mixes in sRGB.
+///
+/// For every reader that only mixes in sRGB: vello's GPU ramp, SVG 1.1 and the
+/// design-file writers. Doing it for the CPU backend too keeps the PNG and the canvas
+/// one picture.
+pub fn mix_in_srgb(g: &mut peniko::Gradient) {
+    use peniko::color::{ColorSpaceTag, DynamicColor};
+    make_stops_monotonic(&mut g.stops);
+    if g.interpolation_cs == ColorSpaceTag::Srgb {
+        return;
+    }
+    let premultiplied =
+        g.interpolation_alpha_space == peniko::InterpolationAlphaSpace::Premultiplied;
+    let in_srgb = |c: DynamicColor| {
+        let mut c = c.convert(ColorSpaceTag::Srgb);
+        // A mix of two sRGB colours can leave the sRGB gamut in Oklab.
+        for v in &mut c.components {
+            *v = v.clamp(0.0, 1.0);
+        }
+        c
+    };
+    // Both renderers mix sRGB stops premultiplied, so the error is measured there.
+    let pre = |c: DynamicColor| {
+        c.to_alpha_color::<peniko::color::Srgb>()
+            .premultiply()
+            .components
+    };
+    let mut out: Vec<peniko::ColorStop> = Vec::new();
+    for pair in g.stops.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let (cs, hue) = (g.interpolation_cs, g.hue_direction);
+        let mix: Box<dyn Fn(f32) -> DynamicColor> = if premultiplied {
+            let m = a.color.interpolate(b.color, cs, hue);
+            Box::new(move |t| in_srgb(m.eval(t)))
+        } else {
+            let m = a.color.interpolate_unpremultiplied(b.color, cs, hue);
+            Box::new(move |t| in_srgb(m.eval(t)))
+        };
+        out.push(peniko::ColorStop {
+            offset: a.offset,
+            color: mix(0.0),
+        });
+        // A hard stop (two at one offset) needs its two ends, not pieces between.
+        if b.offset <= a.offset {
+            continue;
+        }
+        // Halve a piece while the straight sRGB line across it misses the mix at
+        // any of three probes; the pieces come out in order, left first.
+        let mut todo = vec![(0.0f32, 1.0f32, 0u32)];
+        while let Some((t0, t1, depth)) = todo.pop() {
+            let (c0, c1) = (pre(mix(t0)), pre(mix(t1)));
+            let off = (1..4).any(|k| {
+                let u = k as f32 / 4.0;
+                let want = pre(mix(t0 + (t1 - t0) * u));
+                (0..4).any(|ch| (c0[ch] + (c1[ch] - c0[ch]) * u - want[ch]).abs() > MIX_TOLERANCE)
+            });
+            if off && depth < MIX_MAX_DEPTH {
+                let mid = (t0 + t1) / 2.0;
+                todo.push((mid, t1, depth + 1));
+                todo.push((t0, mid, depth + 1));
+            } else if t1 < 1.0 {
+                out.push(peniko::ColorStop {
+                    offset: a.offset + (b.offset - a.offset) * t1,
+                    color: mix(t1),
+                });
+            }
+        }
+    }
+    if let Some(last) = g.stops.last() {
+        out.push(peniko::ColorStop {
+            offset: last.offset,
+            color: in_srgb(last.color),
+        });
+    }
+    g.stops = out.as_slice().into();
+    g.interpolation_cs = ColorSpaceTag::Srgb;
+}
+
 impl From<peniko::Gradient> for GradientBrush {
     /// A gradient authored in the shape's own space, which is every gradient the
     /// app itself makes.
@@ -1780,6 +1869,103 @@ pub fn image_brush(id: ImageId) -> Brush {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A two-stop ramp from `a` to `b`, mixed in `cs`.
+    fn ramp_in(a: [f32; 4], b: [f32; 4], cs: peniko::color::ColorSpaceTag) -> peniko::Gradient {
+        use peniko::color::{AlphaColor, Srgb};
+        let mut g = peniko::Gradient::new_linear((0.0, 0.0), (1.0, 0.0)).with_stops([
+            (0.0, AlphaColor::<Srgb>::new(a)),
+            (1.0, AlphaColor::<Srgb>::new(b)),
+        ]);
+        g.interpolation_cs = cs;
+        g
+    }
+
+    /// The sRGB stops [`mix_in_srgb`] writes, mixed linearly as every sRGB reader
+    /// does, stay within one 8-bit level of the true Oklab mix everywhere on the
+    /// widest spans. flip: `MIX_MAX_DEPTH` at 3 → fails at the level bound.
+    #[test]
+    fn mixing_in_srgb_stays_within_a_level() {
+        use peniko::color::{ColorSpaceTag, HueDirection, Srgb};
+        let spans = [
+            ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]),
+            ([0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]),
+            ([1.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]),
+            ([0.0, 1.0, 0.0, 1.0], [1.0, 0.0, 1.0, 0.5]),
+        ];
+        for (a, b) in spans {
+            let source = ramp_in(a, b, ColorSpaceTag::Oklab);
+            let mut flat = source.clone();
+            mix_in_srgb(&mut flat);
+            assert_eq!(flat.interpolation_cs, ColorSpaceTag::Srgb);
+            assert!(flat.stops.len() > 2, "{a:?} → {b:?} was not cut");
+            let truth = source.stops[0].color.interpolate(
+                source.stops[1].color,
+                ColorSpaceTag::Oklab,
+                HueDirection::default(),
+            );
+            let mut worst = 0.0f32;
+            for k in 0..=400 {
+                let t = k as f32 / 400.0;
+                let i = flat
+                    .stops
+                    .windows(2)
+                    .position(|w| t <= w[1].offset)
+                    .unwrap();
+                let (p, q) = (flat.stops[i], flat.stops[i + 1]);
+                let u = (t - p.offset) / (q.offset - p.offset);
+                // Premultiplied, as both renderers mix.
+                let pre = |c: peniko::color::DynamicColor| {
+                    c.to_alpha_color::<Srgb>().premultiply().components
+                };
+                let (pc, qc) = (pre(p.color), pre(q.color));
+                let want = pre(truth.eval(t).convert(ColorSpaceTag::Srgb));
+                for ch in 0..4 {
+                    let got = pc[ch] + (qc[ch] - pc[ch]) * u;
+                    worst = worst.max((got - want[ch].clamp(0.0, 1.0)).abs());
+                }
+            }
+            assert!(
+                worst < 1.0 / 255.0,
+                "{a:?} → {b:?} strays {:.2} levels",
+                worst * 255.0
+            );
+        }
+    }
+
+    /// An sRGB ramp passes through [`mix_in_srgb`] with its stops as they were, and
+    /// a hard stop in an Oklab ramp stays hard.
+    #[test]
+    fn mixing_in_srgb_keeps_srgb_ramps_and_hard_stops() {
+        use peniko::color::{AlphaColor, ColorSpaceTag, Srgb};
+        let mut plain = ramp_in(
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            ColorSpaceTag::Srgb,
+        );
+        let before = plain.clone();
+        mix_in_srgb(&mut plain);
+        assert_eq!(plain, before);
+
+        let red = AlphaColor::<Srgb>::new([1.0, 0.0, 0.0, 1.0]);
+        let blue = AlphaColor::<Srgb>::new([0.0, 0.0, 1.0, 1.0]);
+        let mut hard = peniko::Gradient::new_linear((0.0, 0.0), (1.0, 0.0)).with_stops([
+            (0.0, red),
+            (0.5, red),
+            (0.5, blue),
+            (1.0, blue),
+        ]);
+        hard.interpolation_cs = ColorSpaceTag::Oklab;
+        mix_in_srgb(&mut hard);
+        let at_half: Vec<_> = hard.stops.iter().filter(|s| s.offset == 0.5).collect();
+        assert_eq!(at_half.len(), 2, "both sides of the hard stop are kept");
+        let rgb = |s: &peniko::ColorStop| {
+            let c = s.color.to_alpha_color::<Srgb>().to_rgba8();
+            [c.r, c.g, c.b]
+        };
+        assert_eq!(rgb(at_half[0]), [255, 0, 0]);
+        assert_eq!(rgb(at_half[1]), [0, 0, 255]);
+    }
 
     /// A box shows the whole picture at its own shape under Fill or Fit, under
     /// Crop only uncut, never under Tile, and a turned picture's shape is the

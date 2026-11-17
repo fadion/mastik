@@ -284,7 +284,11 @@ fn gradients_are_described_not_just_flagged() {
             kind,
             opacity,
             stops,
+            extend,
+            smooth,
         } => {
+            assert_eq!(*extend, None, "an untouched gradient pads");
+            assert!(!smooth, "an untouched gradient mixes in sRGB");
             assert_eq!(kind, "linear");
             assert_eq!(stops.len(), 2);
             assert_eq!(stops[0].color, "#ff0000");

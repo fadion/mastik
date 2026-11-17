@@ -30,7 +30,7 @@ use eframe::egui::emath::GuiRounding as _;
 use mastik_core::Brush;
 use mastik_core::NodeId;
 use mastik_core::kurbo::Size;
-use mastik_core::peniko::Color;
+use mastik_core::peniko::{Color, Extend};
 /// The open picker. Dropped when the target stops existing or the user closes it.
 pub struct Picker {
     pub node: NodeId,
@@ -308,6 +308,11 @@ const WINDOW_NAME: &str = "colour-picker";
 /// The layer the picker draws into.
 pub(crate) fn layer_id() -> egui::Id {
     egui::Id::new(WINDOW_NAME)
+}
+
+/// The gradient's *Ends and mixing* menu; one picker is open at a time.
+fn ends_menu_id() -> egui::Id {
+    egui::Id::new("gradient-ends")
 }
 
 /// The picker's window, minus its position and its contents.
@@ -703,7 +708,7 @@ impl MastikApp {
         close
     }
     // --- gradient geometry -------------------------------------------------
-    /// Kind chip, angle field, and the two stop-order controls.
+    /// Kind chip, angle field, the two stop-order controls and the ends button.
     fn linear_controls(
         &mut self,
         ui: &mut egui::Ui,
@@ -718,7 +723,7 @@ impl MastikApp {
             // The two buttons are square, the size of the inspector's per-corner
             // radius button; the angle takes what is left after the chip.
             let unit = ui::CONTROL_H;
-            let col = ui.available_width() - 2.0 * (unit + 7.0);
+            let col = ui.available_width() - 3.0 * (unit + 7.0);
             let mut deg = paint::linear_angle(brush).unwrap_or(0.0);
             // `paint::linear_angle` ends `rem_euclid(360.0)`, so the range never
             // meets a stored value it would have to clamp.
@@ -747,10 +752,82 @@ impl MastikApp {
                 let next = paint::reverse_stops(brush);
                 self.write_slot(node, slot, next);
             }
+            self.ends_button(ui, node, slot, brush);
         });
     }
-    /// Kind chip, the start-angle field, and *Reverse the stops*. The centre is
-    /// dragged on the canvas.
+    /// The geometry row's last button: what the gradient draws beyond its ends
+    /// and whether it mixes in Oklab, in one menu that stays open so the canvas
+    /// shows each pick. On while open; `Set` while either is off its default.
+    fn ends_button(&mut self, ui: &mut egui::Ui, node: NodeId, slot: PaintSlot, brush: &Brush) {
+        const ENDS: [(Extend, &str); 3] = [
+            (Extend::Pad, "Pad"),
+            (Extend::Repeat, "Repeat"),
+            (Extend::Reflect, "Reflect"),
+        ];
+        const SMOOTH: &str = "Smooth (Oklab)";
+        let id = ends_menu_id();
+        let open = egui::Popup::is_id_open(ui.ctx(), id);
+        let (ends, smooth) = (paint::ends_of(brush), paint::smooth_of(brush));
+        let state = match (open, ends != Extend::Pad || smooth) {
+            (true, _) => ui::FieldButton::On,
+            (false, true) => ui::FieldButton::Set,
+            (false, false) => ui::FieldButton::Off,
+        };
+        let resp = ui::field_button(ui, icon::SLIDERS_HORIZONTAL, ui::CONTROL_H, state)
+            .on_hover_text("Ends and mixing");
+        // A sweep goes all the way round, so only its mixing applies.
+        let has_ends = paint::kind_of(brush) != PaintKind::Sweep;
+        let labels = [ENDS[0].1, ENDS[1].1, ENDS[2].1, SMOOTH];
+        let w = ui::menu_check_width(ui.ctx(), &labels, ui::MENU_PAD, 120.0);
+        let mut picked_ends = None;
+        let mut picked_smooth = None;
+        egui::Popup::new(id, ui.ctx().clone(), resp.rect, ui.layer_id())
+            .kind(egui::PopupKind::Menu)
+            .layout(egui::Layout::top_down_justified(egui::Align::Min))
+            .style(egui::containers::menu::menu_style)
+            .open_memory(resp.clicked().then_some(egui::SetOpenCommand::Toggle))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .align(egui::RectAlign::BOTTOM_END)
+            .gap(ui::MENU_GAP)
+            .show(|ui| {
+                ui::popup_rows(ui);
+                ui.set_width(ui::menu_inner_w(w, ui::MENU_PAD));
+                ui::menu_eyebrow(ui, "Beyond the ends");
+                for (extend, label) in ENDS {
+                    let row = ui::MenuRow::new("", label)
+                        .checked(ends == extend)
+                        .enabled(has_ends);
+                    let r = ui::menu_row(ui, row, ui::MENU_ROW_H);
+                    if !has_ends {
+                        r.on_hover_text("A sweep goes all the way round, so it has no ends");
+                    } else if r.clicked() {
+                        picked_ends = Some(extend);
+                    }
+                }
+                ui::menu_sep(ui);
+                if ui::menu_check_response(ui, SMOOTH, smooth, ui::MENU_ROW_H)
+                    .on_hover_text(
+                        "Mixes the colours as the eye sees them, so a ramp between two hues \
+                         stays bright through the middle. CSS, Figma and Sketch mix in sRGB.",
+                    )
+                    .clicked()
+                {
+                    picked_smooth = Some(!smooth);
+                }
+            });
+        if let Some(extend) = picked_ends.filter(|e| *e != ends) {
+            self.session
+                .name_step("Gradient ends", icon::SLIDERS_HORIZONTAL);
+            self.write_slot(node, slot, paint::with_ends(brush, extend));
+        }
+        if let Some(on) = picked_smooth {
+            self.session
+                .name_step("Gradient mixing", icon::SLIDERS_HORIZONTAL);
+            self.write_slot(node, slot, paint::with_smooth(brush, on));
+        }
+    }
+    /// Kind chip, the start-angle field, *Reverse the stops* and the ends button.
+    /// The centre is dragged on the canvas.
     fn sweep_controls(
         &mut self,
         ui: &mut egui::Ui,
@@ -763,7 +840,7 @@ impl MastikApp {
             ui.spacing_mut().item_spacing.x = 7.0;
             self.kind_chip(ui, node, slot, brush, box_size);
             let unit = ui::CONTROL_H;
-            let col = ui.available_width() - (unit + 7.0);
+            let col = ui.available_width() - 2.0 * (unit + 7.0);
             let (centre, start) =
                 paint::sweep_geom(brush).unwrap_or((mastik_core::kurbo::Point::ZERO, 0.0));
             let mut deg = start;
@@ -787,10 +864,11 @@ impl MastikApp {
                 let next = paint::reverse_stops(brush);
                 self.write_slot(node, slot, next);
             }
+            self.ends_button(ui, node, slot, brush);
         });
     }
-    /// Kind chip, plus CX/CY fields. The centre and the radii are dragged on the
-    /// canvas.
+    /// Kind chip, CX/CY fields and the ends button. The centre and the radii are
+    /// dragged on the canvas.
     fn radial_controls(
         &mut self,
         ui: &mut egui::Ui,
@@ -803,10 +881,10 @@ impl MastikApp {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 7.0;
             self.kind_chip(ui, node, slot, brush, box_size);
-            // Split what is left after the chip, allowing for the one gap
-            // between the two fields — the row's own `item_spacing`, so the pair
-            // finishes flush with the right margin.
-            let fw = (ui.available_width() - 7.0) / 2.0;
+            // Split what is left after the chip and the ends button, allowing for
+            // the gaps — the row's own `item_spacing`, so the row finishes flush
+            // with the right margin.
+            let fw = (ui.available_width() - 7.0 - (ui::CONTROL_H + 7.0)) / 2.0;
             for (label, value, is_x) in [("CX", cx0, true), ("CY", cy0, false)] {
                 let mut pct = value * 100.0;
                 // A radial centre is `paint::radial_centre`'s `c.x / w` and is not
@@ -832,6 +910,7 @@ impl MastikApp {
                 };
                 self.valve_slot(&resp, node, slot, next);
             }
+            self.ends_button(ui, node, slot, brush);
         });
     }
     /// The kind button: a field button holding the gradient's thumbnail. A click
@@ -1961,8 +2040,9 @@ pub(super) fn ramp(brush: &Brush) -> Vec<(f32, egui::Color32)> {
         .collect()
 }
 
-/// The stops as they are **stored**, with no ramp opacity folded in — for the one
-/// surface that is editing those stops rather than showing the paint.
+/// The stops as they are drawn (an Oklab ramp restated in sRGB,
+/// [`paint::drawn_stops_of`]) with no ramp opacity folded in — for the one surface
+/// that is editing those stops rather than showing the paint.
 ///
 /// 🚨 **[`ramp`] folds `GradientBrush::opacity` in and this does not, deliberately.**
 /// The callers that are *chips* (the picker's preview, the inspector's paint row,
@@ -1971,7 +2051,7 @@ pub(super) fn ramp(brush: &Brush) -> Vec<(f32, egui::Color32)> {
 /// very handles being dragged. The common case is the default, so a new chip gets
 /// it right by doing nothing.
 pub(super) fn stop_colours(brush: &Brush) -> Vec<(f32, egui::Color32)> {
-    paint::stops_of(brush)
+    paint::drawn_stops_of(brush)
         .into_iter()
         .map(|(off, c)| (off, color_to_egui(c)))
         .collect()
@@ -3407,6 +3487,113 @@ mod radial_centre_tests {
              `5.0` here means the range bounds nothing and deleting the clamp gave \
              the keystroke a free run at the document"
         );
+    }
+
+    /// Where each text galley of the frame sits, in paint order.
+    fn placed(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, egui::Rect)> {
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events,
+                ..Default::default()
+            },
+            |ui| app.picker_ui(ui.ctx()),
+        );
+        out.shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::epaint::Shape::Text(t) => Some((
+                    t.galley.text().to_owned(),
+                    t.galley.rect.translate(t.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Click the text or glyph `label` and let three frames settle.
+    fn click_row(ctx: &egui::Context, app: &mut MastikApp, label: &str) {
+        let drawn = placed(ctx, app, Vec::new());
+        let at = drawn
+            .iter()
+            .find(|(t, _)| t == label)
+            .unwrap_or_else(|| panic!("no `{label}` row: {drawn:?}"))
+            .1
+            .center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let _ = placed(ctx, app, vec![egui::Event::PointerMoved(at), button(true)]);
+        let _ = placed(ctx, app, vec![button(false)]);
+        for _ in 0..3 {
+            let _ = placed(ctx, app, Vec::new());
+        }
+    }
+
+    fn fill(app: &MastikApp, id: NodeId) -> Brush {
+        app.session.doc.get(id).expect("node").paint().fills[0]
+            .brush
+            .literal()
+            .cloned()
+            .expect("the fixture's fill is literal")
+    }
+
+    /// The ends menu writes Repeat as *Gradient ends* and Smooth as *Gradient
+    /// mixing*, one undo step each, and stays open between the two picks.
+    /// flip: `ends_button` calling `ui.close()` on a pick → fails at "still open".
+    #[test]
+    fn the_ends_menu_writes_ends_and_mixing_as_their_own_steps() {
+        let ctx = egui::Context::default();
+        let (mut app, a) = radial_rect(&ctx, 0.5);
+        for _ in 0..3 {
+            let _ = placed(&ctx, &mut app, Vec::new());
+        }
+        click_row(&ctx, &mut app, icon::SLIDERS_HORIZONTAL);
+        click_row(&ctx, &mut app, "Repeat");
+        assert_eq!(paint::ends_of(&fill(&app, a)), Extend::Repeat);
+        let step = app.session.history.done().last().expect("a step");
+        assert_eq!(step.note.label, "Gradient ends");
+
+        let drawn = placed(&ctx, &mut app, Vec::new());
+        assert!(
+            drawn.iter().any(|(t, _)| t == "Smooth (Oklab)"),
+            "the menu is still open after a pick: {drawn:?}"
+        );
+        click_row(&ctx, &mut app, "Smooth (Oklab)");
+        assert!(paint::smooth_of(&fill(&app, a)));
+        assert_eq!(paint::ends_of(&fill(&app, a)), Extend::Repeat, "kept");
+        let step = app.session.history.done().last().expect("a step");
+        assert_eq!(step.note.label, "Gradient mixing");
+        assert_eq!(app.session.history.undo_depth(), 2);
+    }
+
+    /// A sweep's ends rows are shown and do nothing: it has no ends.
+    #[test]
+    fn a_sweeps_ends_rows_are_disabled() {
+        let ctx = egui::Context::default();
+        let (mut app, a) = radial_rect(&ctx, 0.5);
+        let sweep = paint::convert(&fill(&app, a), PaintKind::Sweep, BOX);
+        app.write_slot(a, PaintSlot::Fill(0), sweep);
+        let depth = app.session.history.undo_depth();
+        for _ in 0..3 {
+            let _ = placed(&ctx, &mut app, Vec::new());
+        }
+        click_row(&ctx, &mut app, icon::SLIDERS_HORIZONTAL);
+        click_row(&ctx, &mut app, "Reflect");
+        assert_eq!(
+            paint::kind_of(&fill(&app, a)),
+            PaintKind::Sweep,
+            "the fixture"
+        );
+        assert_eq!(paint::ends_of(&fill(&app, a)), Extend::Pad);
+        assert_eq!(app.session.history.undo_depth(), depth, "no step spent");
     }
 }
 

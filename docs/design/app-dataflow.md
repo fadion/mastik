@@ -79,9 +79,17 @@ and picking one converts the paint, stops kept and geometry reframed on the box.
 
 | Kind | Row after the chip |
 | --- | --- |
-| Linear | angle field, *Flip 180°*, *Reverse the stops* |
-| Radial | CX and CY fields |
-| Angular (`PaintKind::Sweep`) | start-angle field, *Reverse the stops* |
+| Linear | angle field, *Flip 180°*, *Reverse the stops*, ends button |
+| Radial | CX and CY fields, ends button |
+| Angular (`PaintKind::Sweep`) | start-angle field, *Reverse the stops*, ends button |
+
+The ends button (`picker::ends_button`, `icon::SLIDERS_HORIZONTAL`, *Ends and mixing*) closes every
+row, taking its width from the angle or centre fields, so the face keeps its height. It is On while
+its menu is open and Set while the gradient repeats, reflects or mixes in Oklab. The menu has the
+eyebrow *Beyond the ends* over three ticked rows, *Pad*, *Repeat*, *Reflect*, then a separator and
+the check *Smooth (Oklab)* (§5.5a, *Gradient ends and mixing*); it stays open after a pick so the
+canvas shows each one. On a sweep the three ends rows are disabled, *A sweep goes all the way
+round, so it has no ends*. The undo steps are *Gradient ends* and *Gradient mixing*.
 
 Ends, centres and radii are dragged on the canvas, not in the picker (`tools.md`, gradient handles).
 The stop bar follows the row; the selected stop (`Picker::stop`) is shared with the canvas's dots.
