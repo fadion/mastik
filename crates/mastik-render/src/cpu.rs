@@ -518,6 +518,19 @@ impl ScenePainter for CpuPainter<'_> {
         );
     }
 
+    /// The enclosing target pixel for pixel, the box `push_luminance_mask_layer`
+    /// sizes its buffer to.
+    fn fill_cover(&mut self) {
+        let (w, h) = match self.fx.last() {
+            Some(f) => f.size,
+            None => (self.root.width(), self.root.height()),
+        };
+        let ctx = self.ctx();
+        ctx.set_transform(Affine::IDENTITY);
+        ctx.set_paint(BackendBrush::Solid(Color::WHITE));
+        ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
+    }
+
     fn push_erase_layer(&mut self) {
         self.opened_ordinary();
         self.ctx().push_layer(

@@ -324,6 +324,18 @@ impl ScenePainter for GpuScenePainter<'_> {
             .push_luminance_mask_layer(Fill::NonZero, 1.0, at, unbounded.as_ref());
     }
 
+    /// The target's own pixel box, as [`layer_shape`] substitutes for no clip.
+    fn fill_cover(&mut self) {
+        let cover = self.limit.inflate(1.0, 1.0);
+        self.scene().fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            mastik_core::peniko::Color::WHITE,
+            None,
+            &cover,
+        );
+    }
+
     fn push_erase_layer(&mut self) {
         self.opened_ordinary();
         let (at, unbounded) = layer_shape(self.limit, self.base, Affine::IDENTITY, None);

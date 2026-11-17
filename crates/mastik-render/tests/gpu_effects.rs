@@ -679,6 +679,99 @@ fn both_backends_draw_the_same_luminance_mask() {
     );
 }
 
+/// An 80-unit red square at 10 under an inverted mid-grey 40-unit mask at 30,
+/// masking in `mode`.
+fn inverted_mask_fixture(mode: mastik_core::MaskMode) -> (Document, Resolved) {
+    let mut ids = IdSource::new(1);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let (mask, square) = (ids.mint(), ids.mint());
+    let mut ops = Vec::new();
+    for (id, at, side, color) in [
+        (mask, 30.0, 40.0, Color::from_rgba8(128, 128, 128, 255)),
+        (square, 10.0, 80.0, Color::from_rgba8(220, 30, 40, 255)),
+    ] {
+        ops.push(Operation::CreateNode {
+            id,
+            parent: root,
+            index: usize::from(id == square),
+            kind: NodeKind::Rect {
+                size: Size::new(side, side),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((at, at))),
+            name: None,
+        });
+        ops.push(Operation::SetFills {
+            id,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Solid(color).into(),
+                visible: true,
+            }]),
+        });
+    }
+    ops.push(Operation::SetMask {
+        id: mask,
+        mask: true,
+    });
+    ops.push(Operation::SetMaskMode { id: mask, mode });
+    ops.push(Operation::SetMaskInverted {
+        id: mask,
+        inverted: true,
+    });
+    doc.apply(&Transaction(ops)).unwrap();
+    let res = Resolved::rebuild(&doc);
+    (doc, res)
+}
+
+/// An inverted mask draws the same on both backends in every mode: the square
+/// survives whole outside the mask, and inside it shape erases, alpha erases (the
+/// grey is opaque) and luminance leaves the grey's complement. The inverted
+/// luminance arrangement (an erase layer over a cover cut by a luminance mask) is
+/// the one built from two backend-specific parts.
+/// flip: `GpuScenePainter::fill_cover` drawing nothing → fails at "Luminance:
+/// inside the mask alpha is 127".
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn both_backends_draw_the_same_inverted_mask() {
+    let Some(mut g) = gpu() else {
+        return;
+    };
+    use mastik_core::MaskMode;
+    for (mode, inside) in [
+        (MaskMode::Shape, 0u8),
+        (MaskMode::Alpha, 0),
+        (MaskMode::Luminance, 127),
+    ] {
+        let (doc, res) = inverted_mask_fixture(mode);
+        let gpu_px = render_gpu(&mut g, &doc, &res);
+        let cpu_px = render_cpu(&doc, &res);
+        let ring = at(&gpu_px, 20, 20);
+        assert!(
+            ring.0 > 200 && ring.3 == 255,
+            "{mode:?}: outside the mask the square is whole: {ring:?}"
+        );
+        let mid = at(&gpu_px, 50, 50);
+        assert!(
+            mid.3.abs_diff(inside) <= 2,
+            "{mode:?}: inside the mask alpha is {inside}: {mid:?}"
+        );
+        assert_eq!(at(&gpu_px, 5, 5).3, 0, "{mode:?}: past the square, nothing");
+        let worst = gpu_px
+            .iter()
+            .zip(&cpu_px)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            worst <= 2,
+            "{mode:?}: the backends disagree by {worst}: gpu {mid:?} vs cpu {:?}",
+            at(&cpu_px, 50, 50)
+        );
+    }
+}
+
 /// A shadow and an opacity together: the pairing that panicked the CPU backend
 /// (§15 D338). The GPU painter counts ordinary layers for the same reason.
 #[test]

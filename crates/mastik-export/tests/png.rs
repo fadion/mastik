@@ -2053,6 +2053,11 @@ fn an_alpha_mask_fades_what_it_masks_and_reads_only_its_alpha() {
 /// The red square under a 40×40 mask of `color` in `mode`, rendered on the CPU:
 /// the pixels inside the mask and outside it.
 fn under_mask(color: Color, mode: mastik_core::MaskMode) -> ([u8; 4], [u8; 4]) {
+    under_mask_by(color, mode, false)
+}
+
+/// `under_mask`, the mask inverted when `inverted` is.
+fn under_mask_by(color: Color, mode: mastik_core::MaskMode, inverted: bool) -> ([u8; 4], [u8; 4]) {
     let (mut doc, _res) = red_square_doc();
     let ab = doc.get(doc.first_page()).unwrap().children()[0];
     let square = doc.get(ab).unwrap().children()[0];
@@ -2083,6 +2088,7 @@ fn under_mask(color: Color, mode: mastik_core::MaskMode) -> ([u8; 4], [u8; 4]) {
             mask: true,
         },
         Operation::SetMaskMode { id: mask, mode },
+        Operation::SetMaskInverted { id: mask, inverted },
     ]))
     .unwrap();
     assert_eq!(doc.get(ab).unwrap().children(), &[mask, square]);
@@ -2124,6 +2130,42 @@ fn a_luminance_mask_reads_brightness_times_alpha() {
     );
     let (alpha, _) = under_mask(blue, Alpha);
     assert!((alpha[3] as i32 - 128).abs() <= 2, "the control: {alpha:?}");
+}
+
+/// An inverted mask keeps the complement in every mode: outside it the square is
+/// whole, and inside it what the mask would have kept is what it removes — all of
+/// it under a shape, the half-transparent blue's alpha under alpha, and its
+/// brightness under luminance (white removes everything).
+///
+/// flip: `push_ink_mask`'s inverted luminance arm made the plain luminance one
+/// → fails at "Luminance: outside the mask the square is whole".
+#[test]
+fn an_inverted_mask_keeps_what_lies_outside_it_in_every_mode() {
+    use mastik_core::MaskMode::{Alpha, Luminance, Shape};
+    let blue = Color::from_rgba8(0, 0, 255, 128);
+    let white = Color::from_rgba8(255, 255, 255, 255);
+    for mode in [Shape, Alpha, Luminance] {
+        let (_, outside) = under_mask_by(blue, mode, true);
+        assert!(
+            outside[3] == 255 && outside[0] > 200,
+            "{mode:?}: outside the mask the square is whole: {outside:?}"
+        );
+    }
+    let (shape, _) = under_mask_by(blue, Shape, true);
+    assert_eq!(shape[3], 0, "shape: inside the outline nothing is left");
+    let (alpha, _) = under_mask_by(blue, Alpha, true);
+    assert!(
+        (alpha[3] as i32 - 127).abs() <= 2 && alpha[0] > 200,
+        "alpha: the blue's alpha is removed, not its colour: {alpha:?}"
+    );
+    let (lum, _) = under_mask_by(blue, Luminance, true);
+    // 255 − 0.0721 × 128 ≈ 246.
+    assert!(
+        (lum[3] as i32 - 246).abs() <= 2 && lum[0] > 200,
+        "luminance: blue removes only its brightness: {lum:?}"
+    );
+    let (gone, _) = under_mask_by(white, Luminance, true);
+    assert!(gone[3] <= 2, "luminance: white removes it all: {gone:?}");
 }
 
 /// **A gradient on railed type is one gradient across the whole node, not one
