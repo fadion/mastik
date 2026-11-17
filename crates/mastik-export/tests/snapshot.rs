@@ -89,6 +89,7 @@ fn a_field_is_written_only_away_from_its_default() {
                 id,
                 mode: MaskMode::Alpha,
             },
+            Operation::SetMaskInverted { id, inverted: true },
         ]))
         .expect("the rect away from every default");
     f.res = Resolved::rebuild(&f.doc);
@@ -110,6 +111,7 @@ fn a_field_is_written_only_away_from_its_default() {
     assert_eq!(rect["opacity"], 0.5);
     assert_eq!(rect["mask"], true);
     assert_eq!(rect["mask_mode"], "Alpha");
+    assert_eq!(rect["mask_inverted"], true);
     let text = entry(f.text);
     for key in [
         "visible",
@@ -118,6 +120,7 @@ fn a_field_is_written_only_away_from_its_default() {
         "opacity",
         "mask",
         "mask_mode",
+        "mask_inverted",
         "clip",
         "fills",
         "strokes",

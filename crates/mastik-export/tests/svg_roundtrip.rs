@@ -612,6 +612,61 @@ fn an_ink_mask_round_trips_its_mode() {
     }
 }
 
+/// An inverted shape mask comes back as the luminance mask its white cover and
+/// black outline spell, which draws the same. An inverted ink mask comes back an
+/// alpha mask the right way out, the import reading no filter; the SVG report
+/// says so.
+#[test]
+fn an_inverted_shape_mask_comes_back_as_the_luminance_mask_it_was_written_as() {
+    use mastik_core::MaskMode;
+    for mode in [MaskMode::Shape, MaskMode::Alpha, MaskMode::Luminance] {
+        let mut f = common::fixture();
+        let mut ids = IdSource::new(0x1C1D);
+        let mask = ids.mint();
+        f.doc
+            .apply(&Transaction(vec![
+                Operation::CreateNode {
+                    id: mask,
+                    parent: f.artboard,
+                    index: 0,
+                    kind: NodeKind::Rect {
+                        size: Size::new(60.0, 60.0),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: None,
+                    name: None,
+                },
+                Operation::SetMask {
+                    id: mask,
+                    mask: true,
+                },
+                Operation::SetMaskMode { id: mask, mode },
+                Operation::SetMaskInverted {
+                    id: mask,
+                    inverted: true,
+                },
+            ]))
+            .unwrap();
+        let res = Resolved::rebuild(&f.doc);
+        let out = mastik_export::svg::svg(&f.doc, &res, f.doc.first_page(), None);
+        let (back, all) = reimport(&out);
+        // The artboard's own clip comes back as a shape mask too; it is not ours.
+        let masks: Vec<(MaskMode, usize)> = all
+            .iter()
+            .filter_map(|id| back.get(*id))
+            .filter(|n| n.mask() && n.mask_mode() != MaskMode::Shape)
+            .map(|n| (n.mask_mode(), n.children().len()))
+            .collect();
+        let expected = match mode {
+            // The white cover and the black outline.
+            MaskMode::Shape => (MaskMode::Luminance, 2),
+            _ => (MaskMode::Alpha, 1),
+        };
+        assert_eq!(masks, vec![expected], "{mode:?}:\n{out}");
+    }
+}
+
 /// Text comes back as text with its baseline where the writer put it; a paragraph
 /// comes back as lines, since the writer emits one `<text>` per line and nothing
 /// in the markup says they were one node. The picture closes; the structure does not.

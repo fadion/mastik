@@ -326,6 +326,11 @@ fn approximations(
                 );
             }
         }
+        // The SVG writes an inverted ink mask through a filter, which the
+        // conversion rasterizes as it does an effect's.
+        if node.mask() && node.mask_inverted() && node.mask_mode() != mastik_core::MaskMode::Shape {
+            note("an inverted alpha or luminance mask, drawn as pixels");
+        }
         // `usvg` draws a decoration from the font's own line: its colour,
         // thickness, style, offset and skip-ink are not carried.
         if text == ExportText::Live

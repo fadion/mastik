@@ -534,6 +534,10 @@ impl Writer<'_> {
         l["isLocked"] = json!(node.locked());
         if node.mask() && doc.shown(id) {
             l["hasClippingMask"] = json!(true);
+            // Sketch has no inverse of a mask.
+            if node.mask_inverted() {
+                self.approximate("Inverted masks, as masks the right way out");
+            }
             match node.mask_mode() {
                 // Sketch draws an outline mask's paint and effects; Mastik's
                 // paints nothing.

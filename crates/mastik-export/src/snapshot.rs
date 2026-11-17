@@ -60,7 +60,7 @@ use std::collections::BTreeMap;
 /// - **26** `PaintSummary::Image` gained `curve`, the tone curve's inner points;
 ///   `adjust` names each amount by its key in the file (`white_point`).
 /// - **27** `PaintSummary::Gradient` gained `extend` and `smooth`, absent at pad
-///   and sRGB.
+///   and sRGB; `NodeSnapshot::mask_inverted`, on an inverted mask only.
 pub const SNAPSHOT_VERSION: u32 = 27;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -161,6 +161,9 @@ pub struct NodeSnapshot {
     /// because the type is `Deserialize` too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_mode: Option<String>,
+    /// Whether the mask keeps what lies outside it instead, on a mask only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mask_inverted: bool,
     /// Where the node's transforms turn and mirror about, in its local space, or
     /// absent while it sits on the centre of its box. Reported as the resolved
     /// point, not the model's fraction-or-point enum.
@@ -840,6 +843,7 @@ fn node_snapshot(
         clip: node.clip(),
         mask: node.mask(),
         mask_mode: node.mask().then(|| node.mask_mode().label().to_string()),
+        mask_inverted: node.mask() && node.mask_inverted(),
         pivot: node.pivot().map(|p| {
             let local = mastik_core::local_box(doc, res, id).unwrap_or_default();
             let at = mastik_core::geometry::pivot_point(Some(p), local);

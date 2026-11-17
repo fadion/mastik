@@ -4709,6 +4709,101 @@ fn a_hidden_mask_leaves_the_run_unwrapped_in_both_modes() {
     }
 }
 
+/// The fixture's artboard with an inverted ellipse mask under its layers, in
+/// `mode`, exported with its report; and the mask's id as the writer spells it.
+fn inverted_mask_export(mode: mastik_core::MaskMode) -> (mastik_export::svg::Export, String) {
+    use mastik_core::kurbo::{Affine, Size};
+    use mastik_core::{IdSource, NodeKind, Resolved};
+    let mut f = common::fixture();
+    let mask = IdSource::new(0x1A7E).mint();
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: mask,
+                parent: f.artboard,
+                index: 0,
+                kind: NodeKind::Ellipse {
+                    size: Size::new(64.0, 48.0),
+                    arc: mastik_core::EllipseArc::default(),
+                },
+                transform: Some(Affine::translate((7.0, 9.0))),
+                name: None,
+            },
+            Operation::SetMask {
+                id: mask,
+                mask: true,
+            },
+            Operation::SetMaskMode { id: mask, mode },
+            Operation::SetMaskInverted {
+                id: mask,
+                inverted: true,
+            },
+        ]))
+        .unwrap();
+    let res = Resolved::rebuild(&f.doc);
+    let out = mastik_export::svg::svg_of_reported(&f.doc, &res, &[f.artboard]);
+    (out, mask.to_wire().replace(':', "_"))
+}
+
+/// An inverted mask is a `<mask>` covering the run in every mode, never a
+/// `<clipPath>`: a shape one a white cover with the outline painted black, an
+/// ink one the layer's markup through a filter that floods white and takes the
+/// ink out — by alpha, or by brightness weighed by alpha. The ink modes are
+/// reported, since the import reads no filter inside a mask.
+/// flip: the writer's inverted shape arm removed → fails at "Shape: a mask, its
+/// region".
+#[test]
+fn an_inverted_mask_exports_as_a_mask_covering_the_run() {
+    use mastik_core::MaskMode;
+    for mode in [MaskMode::Shape, MaskMode::Alpha, MaskMode::Luminance] {
+        let (out, wire) = inverted_mask_export(mode);
+        let svg = &out.svg;
+        assert!(
+            svg.contains(&format!(r#"<mask id="mask-{wire}" maskUnits="userSpaceOnUse" x="-40" y="-30" width="480" height="360""#)),
+            "{mode:?}: a mask, its region the artboard's box inflated a tenth:\n{svg}"
+        );
+        assert!(
+            svg.contains(&format!(r#"<g mask="url(#mask-{wire})">"#))
+                && !svg.contains(&format!(r#"<clipPath id="mask-{wire}">"#)),
+            "{mode:?}: the run is wrapped in it, and no clip:\n{svg}"
+        );
+        let filtered = svg.contains(&format!(r#"<g filter="url(#mask-{wire}-out)">"#));
+        assert_eq!(
+            filtered,
+            mode != MaskMode::Shape,
+            "{mode:?}: a filter only for ink"
+        );
+        assert_eq!(
+            out.round_trip.iter().any(|s| s.contains("inverted")),
+            mode != MaskMode::Shape,
+            "{mode:?}: reported only for ink: {:?}",
+            out.round_trip
+        );
+    }
+    let (shape, _) = inverted_mask_export(MaskMode::Shape);
+    assert!(
+        shape.svg.contains(r##"style="mask-type:luminance"><rect x="-40" y="-30" width="480" height="360" fill="#fff"/><path d="##)
+            && shape.svg.contains(r##"fill="#000"/></mask>"##),
+        "Shape: a mask of a white cover and the outline in black:\n{}",
+        shape.svg
+    );
+    let (alpha, _) = inverted_mask_export(MaskMode::Alpha);
+    assert!(
+        alpha.svg.contains(
+            r##"<feFlood flood-color="#fff"/><feComposite in2="SourceGraphic" operator="out"/>"##
+        ) && !alpha.svg.contains("luminanceToAlpha"),
+        "Alpha: white less the ink's alpha:\n{}",
+        alpha.svg
+    );
+    let (lum, _) = inverted_mask_export(MaskMode::Luminance);
+    assert!(
+        lum.svg.contains(r#"type="luminanceToAlpha"/><feComposite in2="SourceGraphic" operator="in" result="ink"/>"#)
+            && lum.svg.contains(r#"<feComposite in2="ink" operator="out"/>"#),
+        "Luminance: white less the ink's brightness times its alpha:\n{}",
+        lum.svg
+    );
+}
+
 /// The fixture's text node restyled, and its export with text as outlines.
 fn outlined(style: mastik_core::TextStyle, strokes: Vec<mastik_core::Stroke>) -> String {
     use mastik_core::{ExportText, Resolved};

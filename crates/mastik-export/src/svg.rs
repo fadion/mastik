@@ -494,6 +494,17 @@ fn ink_in(res: &Resolved, ink_of: NodeId, frame: NodeId, outer: Affine) -> Optio
     Some((outer * world.inverse()).transform_rect_bbox(ink))
 }
 
+/// `r` as the ` x y width height` attributes of a region or a `<rect>`.
+fn region_attrs(r: Rect) -> String {
+    format!(
+        r#" x="{}" y="{}" width="{}" height="{}""#,
+        fmt(r.x0),
+        fmt(r.y0),
+        fmt(r.width()),
+        fmt(r.height()),
+    )
+}
+
 /// How far outside the layer this stack's inner shadows must be able to look.
 /// `EffectKind::escape` is `ZERO` for one, but an inner shadow is cast from
 /// everything outside the layer and SVG makes results outside the region
@@ -1651,7 +1662,29 @@ fn emit_node(
                 child_depth = content_depth;
             }
             let mid = format!("mask-{}", child.to_wire().replace(':', "_"));
+            // An inverted mask's `<mask>` covers the run: this node's own ink,
+            // inflated as an ink mask's region is.
+            let run_region = || {
+                ink_in(res, id, id, Affine::IDENTITY)
+                    .map(|r| region_attrs(r.inflate(r.width() * 0.1, r.height() * 0.1)))
+            };
             match child_node.mask_mode() {
+                // Inverted, a shape mask is a white cover with the outline painted
+                // black, read by luminance: the run survives outside the outline.
+                MaskMode::Shape if child_node.mask_inverted() => {
+                    if let Some(path) = res.mask_path(doc, *child)
+                        && let Some(region) = run_region()
+                    {
+                        let _ = writeln!(
+                            out,
+                            r##"{content_pad}<mask id="{mid}" maskUnits="userSpaceOnUse"{region} style="mask-type:luminance"><rect{region} fill="#fff"/><path d="{}" fill="#000"/></mask>"##,
+                            path_d(&path),
+                        );
+                        let _ = writeln!(out, r#"{content_pad}<g mask="url(#{mid})">"#);
+                        masked = true;
+                        child_depth = content_depth + 1;
+                    }
+                }
                 // A shape mask is a `<clipPath>`: a hard region, no compositing.
                 MaskMode::Shape => {
                     // [`Resolved::mask_path`]'s `None` masks nothing (a hidden
@@ -1674,6 +1707,50 @@ fn emit_node(
                 // for better support; for alpha it is load-bearing (SVG defaults
                 // to luminance). An ink-less mask erases the run, as on the canvas.
                 //
+                // Inverted, the layer's markup goes through a filter that floods
+                // white and takes the ink out of it (by alpha, or by brightness
+                // times alpha), read as an alpha mask covering the run.
+                mode @ (MaskMode::Alpha | MaskMode::Luminance)
+                    if doc.shown(*child) && child_node.mask_inverted() =>
+                {
+                    let Some(region) = run_region() else {
+                        continue;
+                    };
+                    // `luminanceToAlpha` reads unpremultiplied colour, so the
+                    // result is taken `in` the source to weigh it by alpha.
+                    let (ink, taken) = match mode {
+                        MaskMode::Luminance => (
+                            r#"<feColorMatrix in="SourceGraphic" type="luminanceToAlpha"/><feComposite in2="SourceGraphic" operator="in" result="ink"/>"#,
+                            "ink",
+                        ),
+                        _ => ("", "SourceGraphic"),
+                    };
+                    let _ = writeln!(
+                        out,
+                        r##"{content_pad}<filter id="{mid}-out" filterUnits="userSpaceOnUse"{region} color-interpolation-filters="sRGB">{ink}<feFlood flood-color="#fff"/><feComposite in2="{taken}" operator="out"/></filter>"##,
+                    );
+                    let _ = writeln!(
+                        out,
+                        r#"{content_pad}<mask id="{mid}" maskUnits="userSpaceOnUse"{region} style="mask-type:alpha"><g filter="url(#{mid}-out)">"#,
+                    );
+                    emit_node(
+                        out,
+                        doc,
+                        res,
+                        *child,
+                        Affine::IDENTITY,
+                        defs,
+                        content_depth + 1,
+                        report,
+                    );
+                    let _ = writeln!(out, "{content_pad}</g></mask>");
+                    let _ = writeln!(out, r#"{content_pad}<g mask="url(#{mid})">"#);
+                    report.round_trip(
+                        "an inverted alpha or luminance mask, which this app reads back the right way out",
+                    );
+                    masked = true;
+                    child_depth = content_depth + 1;
+                }
                 // The `doc.shown` guard: a hidden mask would leave an empty `<mask>`
                 // and erase the whole run.
                 mode @ (MaskMode::Alpha | MaskMode::Luminance) if doc.shown(*child) => {
@@ -1685,20 +1762,10 @@ fn emit_node(
                     // `<mask>`'s default is relative to the viewport and erases
                     // everything outside it.
                     let region = ink_in(res, *child, id, Affine::IDENTITY);
-                    let region = match region {
-                        // No ink erases the run anywhere; no region is needed.
-                        None => String::new(),
-                        Some(r) => {
-                            let r = r.inflate(r.width() * 0.1, r.height() * 0.1);
-                            format!(
-                                r#" x="{}" y="{}" width="{}" height="{}""#,
-                                fmt(r.x0),
-                                fmt(r.y0),
-                                fmt(r.width()),
-                                fmt(r.height()),
-                            )
-                        }
-                    };
+                    // No ink erases the run anywhere; no region is needed.
+                    let region = region.map_or_else(String::new, |r| {
+                        region_attrs(r.inflate(r.width() * 0.1, r.height() * 0.1))
+                    });
                     let _ = writeln!(
                         out,
                         r#"{content_pad}<mask id="{mid}" maskUnits="userSpaceOnUse"{region} style="mask-type:{mask_type}">"#,
