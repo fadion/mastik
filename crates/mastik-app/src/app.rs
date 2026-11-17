@@ -1202,7 +1202,7 @@ pub struct MastikApp {
     pub(crate) chart_read: Option<crate::chart_import::ChartRead>,
     /// The find and replace box, kept while closed so it reopens as it was left.
     pub(crate) find: crate::find::FindBox,
-    /// The Colour review card, at the palette's place (`colour_review.rs`).
+    /// The Colour review card, where the dialog cards open (`colour_review.rs`).
     pub(crate) colour_review: crate::colour_review::ColourReview,
     /// *Repeat around origin…*'s card (`crate::repeat`).
     pub(crate) repeat: crate::repeat::RepeatCard,

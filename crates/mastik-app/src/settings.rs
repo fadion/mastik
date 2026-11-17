@@ -1436,7 +1436,7 @@ pub(crate) enum CardHold {
 }
 
 /// The frame every card over the canvas wears: [`card_frame`]'s ground without
-/// its margin, `w` wide, hung from [`ui::canvas_popup_area`], with `Tab` held
+/// its margin, `w` wide, opened at [`ui::canvas_dialog_area`], with `Tab` held
 /// inside and no spacing between rows. `body` lays the rows, [`card_head`] first.
 /// Returns whether a [`CardHold::Modal`] card's backdrop was clicked.
 pub(crate) fn canvas_card(

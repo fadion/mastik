@@ -1066,11 +1066,10 @@ pub const CANVAS_POPUP_TOP: f32 = 56.0;
 /// The most a [`canvas_popup_area`]'s scrolling list stands before it scrolls.
 pub const CANVAS_POPUP_LIST_H: f32 = 372.0;
 
-/// The place every popup over the canvas hangs from — the command palette, batch
-/// rename, tokens import, Colour review: centred on [`card_lane`] (the canvas
-/// short of the inspector) or else on `canvas`, [`CANVAS_POPUP_TOP`] under the
-/// canvas's top edge, then `moved` by [`card_drag`]. A modal passes it to
-/// `Modal::area`; a card that leaves the canvas live shows it directly.
+/// Where the command palette hangs: centred on [`card_lane`] (the canvas short
+/// of the inspector) or else on `canvas`, [`CANVAS_POPUP_TOP`] under the
+/// canvas's top edge, then `moved` by [`card_drag`]. The dialog cards open at
+/// [`canvas_dialog_area`] instead.
 pub fn canvas_popup_area(
     ctx: &egui::Context,
     id: egui::Id,
@@ -1090,9 +1089,9 @@ pub fn canvas_popup_area(
 
 /// The place every dialog card over the canvas opens — batch rename, tokens
 /// import, Colour review and the other tool cards: centred across [`card_lane`]
-/// (or else `canvas`), at [`dialog_top`], then `moved` by [`card_drag`]. Bars
-/// and search cards a person keeps working past (the command palette, Find)
-/// hang from [`canvas_popup_area`] instead.
+/// (or else `canvas`), at [`dialog_top`], then `moved` by [`card_drag`]. The
+/// command palette, which a person keeps working past, hangs from
+/// [`canvas_popup_area`] instead.
 pub fn canvas_dialog_area(
     ctx: &egui::Context,
     id: egui::Id,
@@ -1263,8 +1262,8 @@ fn keep_inside(rect: egui::Rect, delta: egui::Vec2, bound: egui::Rect) -> egui::
     )
 }
 
-/// The most height a [`canvas_popup_area`]'s card may take: down to
-/// [`CANVAS_POPUP_TOP`] short of the canvas's bottom edge.
+/// The most height a [`canvas_dialog_area`]'s card may take: the canvas's
+/// height short of [`CANVAS_POPUP_TOP`] at either end.
 pub fn canvas_popup_room(canvas: egui::Rect) -> f32 {
     (canvas.height() - 2.0 * CANVAS_POPUP_TOP).max(160.0)
 }
