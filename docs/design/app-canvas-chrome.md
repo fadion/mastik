@@ -202,8 +202,9 @@ stack.
   than the layer's own height, or one badge row for a shorter layer; past that, or past the
   canvas's bottom, it is not drawn, and a failure keeps its outline. A top-level frame narrower
   on screen than `SUMMARY_W` (200pt) shows one badge on its name tag's row instead of its
-  layers' badges: *N failing* in red, else *All N pass* (hidden with *Show passing* off). A click
-  on it zooms to the frame. Badges are painted in the canvas panel's own layer
+  layers' badges: *N failing* in red, else *All N pass* (hidden with *Show passing* off), above
+  the frame's corner when it has no tag, and pulled onto the canvas while any of the frame is
+  on it, so a frame cut by an edge still shows its verdict. A click on it zooms to the frame. Badges are painted in the canvas panel's own layer
   after `canvas_ui`, so every floating card covers them.
 
   | Mark | Badge |

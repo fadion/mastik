@@ -651,18 +651,19 @@ impl MastikApp {
                 6.0 + 11.0 + 4.0 + galley.size().x + 6.0,
                 crate::ui::BADGE_FIELD_H,
             );
-            // On the name tag's row, after it; above the corner when there is none.
-            let min = match self.frame_label(ui, top, canvas, self.canvas_ppp.max(0.01)) {
-                Some((tag, _)) => egui::pos2(tag.right() + 6.0, tag.center().y - size.y / 2.0),
-                None => {
-                    let frame = self.to_screen_rect(world);
-                    egui::pos2(frame.left(), frame.top() - BADGE_LIFT - size.y)
-                }
-            };
-            let r = egui::Rect::from_min_size(min, size);
-            if !r.intersects(canvas) {
+            let frame = self.to_screen_rect(world);
+            if !frame.intersects(canvas) {
                 continue;
             }
+            // On the name tag's row, after it; above the corner when there is none,
+            // pulled onto the canvas as a layer's badge is, so a frame cut by the
+            // canvas's top or left edge still shows its verdict.
+            let min = match self.frame_label(ui, top, canvas, self.canvas_ppp.max(0.01)) {
+                Some((tag, _)) => egui::pos2(tag.right() + 6.0, tag.center().y - size.y / 2.0),
+                None => egui::pos2(frame.left(), frame.top() - BADGE_LIFT - size.y),
+            };
+            let min = min.max(canvas.min + egui::vec2(2.0, 2.0));
+            let r = egui::Rect::from_min_size(min, size);
             #[cfg(test)]
             seen.push((top, r));
             let resp = ui
@@ -2643,6 +2644,42 @@ mod tests {
         assert!(
             seen.iter().any(|(id, _)| *id == f.card),
             "the cut-off failure is summarised: {seen:?}"
+        );
+    }
+
+    /// A far frame cut by the canvas's top edge, its corner and name tag above
+    /// it, still shows its summary, pulled down onto the canvas.
+    /// flip: `contrast_badges` dropping a summary whose rect misses the canvas
+    /// instead of clamping it → fails at "summarised on the canvas".
+    #[test]
+    fn a_far_frame_cut_by_the_canvas_top_keeps_its_summary() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.prefs.contrast.show_passing = false;
+        f.app.toggle_contrast();
+        settle(&ctx, &mut f.app);
+        f.app
+            .zoom_to(Some(Rect::new(-3000.0, -3000.0, 3300.0, 3200.0)));
+        frame(&ctx, &mut f.app, Vec::new());
+        // Pan so the canvas's top edge cuts the card between the title (y 20)
+        // and the failing caption (y 120).
+        use mastik_core::kurbo::Point;
+        let (canvas, ppp) = (f.app.canvas_rect, f.app.canvas_ppp);
+        let y = |w: f64| f.app.to_screen(Point::new(0.0, w), canvas, ppp).y;
+        let scale = f64::from(y(100.0) - y(0.0)) / 100.0;
+        f.app.session.camera.center.y += f64::from(y(80.0) - canvas.top()) / scale;
+        frame(&ctx, &mut f.app, Vec::new());
+        let (canvas, ppp) = (f.app.canvas_rect, f.app.canvas_ppp);
+        let at = |w: f64| f.app.to_screen(Point::new(0.0, w), canvas, ppp).y;
+        assert!(
+            at(0.0) < canvas.top() && at(120.0) > canvas.top(),
+            "fixture: the edge cuts the card"
+        );
+        let seen = f.app.contrast.as_ref().unwrap().badges_seen.clone();
+        let summary = seen.iter().find(|(id, _)| *id == f.card);
+        assert!(
+            summary.is_some_and(|(_, r)| canvas.contains_rect(*r)),
+            "summarised on the canvas: {seen:?}"
         );
     }
 }
