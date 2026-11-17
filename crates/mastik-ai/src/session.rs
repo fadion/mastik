@@ -218,6 +218,14 @@ struct Inner {
     state: Mutex<State>,
 }
 
+/// A session's grant: the MCP tools it allows and the system prompt that says
+/// so.
+#[derive(Clone, Debug)]
+struct Access {
+    allowed: Vec<String>,
+    system: String,
+}
+
 #[derive(Default)]
 struct State {
     turn: u64,
@@ -230,6 +238,13 @@ struct State {
     owes_system: bool,
     prepared: Option<Result<(), Refusal>>,
     registration: Option<crate::antigravity::Registration>,
+    /// The grant given since the session started ([`Session::set_access`]),
+    /// which every later turn's command line takes; `None` while it holds the
+    /// one it started with.
+    access: Option<Access>,
+    /// The files and the persistent process still hold the grant before
+    /// `access`: the next turn brings them to it before it runs.
+    access_owed: bool,
     /// The persistent process, or this turn's child.
     child: Option<Arc<Mutex<Child>>>,
     stdin: Option<Arc<Mutex<ChildStdin>>>,
@@ -293,11 +308,34 @@ impl Session {
         // A persistent session's argv is fixed: refuse it now rather than at
         // the first turn. Built first, so a refusal's drop removes the folder.
         if h.is_persistent() {
+            let argv = session.inner.session_argv(&session.inner.lock(), None);
             session
                 .inner
-                .check_argv(&session.inner.session_argv(None))?;
+                .check_argv(&argv, &session.inner.base.system)?;
         }
         Ok(session)
+    }
+
+    /// Change the session's grant to `allowed_tools`, with `system_prompt` the
+    /// system prompt that states it, keeping the conversation. Every later
+    /// turn's command line takes it, and the next turn first rewrites the files
+    /// that hold it and starts a persistent harness's process again, resuming
+    /// its conversation by id. A turn running now finishes under the old grant.
+    ///
+    /// Answers `false`, changing nothing, when the conversation cannot be kept:
+    /// a persistent harness whose process has not named it, so starting the
+    /// process again would start a new one.
+    pub fn set_access(&mut self, allowed_tools: Vec<String>, system_prompt: String) -> bool {
+        let mut st = self.inner.lock();
+        if self.inner.harness.is_persistent() && st.stdin.is_some() && st.resume.is_none() {
+            return false;
+        }
+        st.access = Some(Access {
+            allowed: allowed_tools,
+            system: system_prompt,
+        });
+        st.access_owed = true;
+        true
     }
 
     /// Send one turn. Refused while one is running, or when its command line
@@ -314,12 +352,12 @@ impl Session {
         let mut st = inner.lock();
         // Per-turn: the argv is known now, so its length is checked now.
         let per_turn = (!inner.harness.is_persistent()).then(|| {
-            let spec = inner.turn_spec(&turn.text, st.resume.clone(), st.turn + 1, &images);
+            let spec = inner.turn_spec(&st, &turn.text, st.resume.clone(), st.turn + 1, &images);
             let args = inner.with_prefix(harness::turn_args(inner.harness, &spec));
             (spec, args)
         });
         if let Some((_, args)) = &per_turn {
-            inner.check_argv(args)?;
+            inner.check_argv(args, inner.system(&st))?;
         }
         st.turn += 1;
         st.started = Some(Instant::now());
@@ -626,9 +664,38 @@ impl Inner {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The spec of one turn.
+    /// The tools allowed now: the grant given since, else the session's own.
+    fn allowed<'a>(&'a self, st: &'a State) -> &'a [String] {
+        st.access
+            .as_ref()
+            .map_or(&self.base.allowed_tools, |a| &a.allowed)
+    }
+
+    /// The system prompt now: the grant's, else the session's own.
+    fn system<'a>(&'a self, st: &'a State) -> &'a str {
+        st.access.as_ref().map_or(&self.base.system, |a| &a.system)
+    }
+
+    /// The session's spec under the grant it holds now.
+    fn granted_spec(&self, st: &State) -> TurnSpec {
+        let mut spec = self.base.clone();
+        if let Some(a) = &st.access {
+            spec.allowed_tools.clone_from(&a.allowed);
+            spec.system.clone_from(&a.system);
+            if self.harness == Harness::Codex {
+                spec.mcp_overrides =
+                    harness::codex_mcp_overrides(&self.mcp_exe, &self.mcp_args, &a.allowed);
+            }
+        }
+        spec
+    }
+
+    /// The spec of one turn. Its images are written into the working folder,
+    /// where Copilot's path check and OpenCode's external-folder rule find them
+    /// inside the workspace.
     fn turn_spec(
         &self,
+        st: &State,
         text: &str,
         resume: Option<String>,
         turn: u64,
@@ -638,7 +705,7 @@ impl Inner {
             .iter()
             .enumerate()
             .filter_map(|(i, png)| {
-                let p = self.run_folder.join(format!("turn-{turn}-{i}.png"));
+                let p = self.cwd.join(format!("mastik-turn-{turn}-{i}.png"));
                 std::fs::write(&p, png).ok()?;
                 Some(p.to_string_lossy().into_owned())
             })
@@ -647,16 +714,78 @@ impl Inner {
             prompt: text.to_string(),
             resume,
             images,
-            ..self.base.clone()
+            ..self.granted_spec(st)
         }
     }
 
-    fn session_argv(&self, resume: Option<String>) -> Vec<String> {
+    fn session_argv(&self, st: &State, resume: Option<String>) -> Vec<String> {
         let spec = TurnSpec {
             resume,
-            ..self.base.clone()
+            ..self.granted_spec(st)
         };
         self.with_prefix(harness::session_args(self.harness, &spec, self.claude))
+    }
+
+    /// Bring what holds the grant outside the command line to the one
+    /// [`Session::set_access`] gave: Claude Code's system-prompt file, Cursor's
+    /// permissions, OpenCode's configuration (read back again before the turn),
+    /// Antigravity's rules. A persistent process still running under the old
+    /// grant is ended, so the turn starts it again resuming its conversation.
+    /// A failure leaves it owed, and refuses the turn.
+    fn take_access(&self) -> Result<(), Refusal> {
+        let mut st = self.lock();
+        if !st.access_owed {
+            return Ok(());
+        }
+        let Some(access) = st.access.clone() else {
+            st.access_owed = false;
+            return Ok(());
+        };
+        let write = |p: &Path, text: String| {
+            std::fs::write(p, text)
+                .map_err(|e| Refusal::ConfigNotWritten(format!("{}: {e}", p.display())))
+        };
+        match self.harness {
+            Harness::Claude => {
+                if let Some(file) = &self.base.system_file {
+                    write(Path::new(file), access.system.clone())?;
+                }
+            }
+            Harness::Cursor => write(
+                &self.cwd.join(".cursor").join("cli.json"),
+                harness::cursor_permissions_json(&access.allowed),
+            )?,
+            Harness::OpenCode => {
+                write(
+                    &self
+                        .run_folder
+                        .join("opencode-config")
+                        .join("opencode")
+                        .join("opencode.json"),
+                    harness::opencode_config_json(&self.mcp_exe, &self.mcp_args, &access.allowed),
+                )?;
+                st.prepared = None;
+            }
+            // Not yet registered: the registration grants what is allowed now.
+            Harness::Antigravity => {
+                if let Some(reg) = &st.registration {
+                    reg.regrant(&access.allowed)
+                        .map_err(Refusal::ConfigNotWritten)?;
+                }
+            }
+            Harness::Codex | Harness::Copilot | Harness::DeepSeek => {}
+        }
+        // A new generation first, so the ended process's reader leaves this
+        // turn alone.
+        if let Some(child) = st.child.take() {
+            st.stdin = None;
+            st.generation += 1;
+            if let Ok(mut c) = child.lock() {
+                self.tracker.kill(&mut c);
+            }
+        }
+        st.access_owed = false;
+        Ok(())
     }
 
     fn with_prefix(&self, args: Vec<String>) -> Vec<String> {
@@ -668,7 +797,9 @@ impl Inner {
     /// Refuse a command line the platform will not take, before spawning: the
     /// OS's own error afterwards names neither cause. On Windows it is measured
     /// as std will quote it, against `cmd.exe`'s shorter limit behind a shim.
-    fn check_argv(&self, args: &[String]) -> Result<(), Refusal> {
+    /// `system` is the system prompt the session holds now, named as the cause
+    /// when it is what made the line long.
+    fn check_argv(&self, args: &[String], system: &str) -> Result<(), Refusal> {
         let program = launch(self.harness, &self.program).program;
         let ext = program
             .extension()
@@ -687,7 +818,7 @@ impl Inner {
             units(&program.to_string_lossy()) + args.iter().map(|a| units(a)).sum::<usize>();
         if total > limit {
             let longest = args.iter().max_by_key(|a| a.len());
-            let system = self.base.system.trim();
+            let system = system.trim();
             // The system prompt is the cause when it is most of the longest
             // argument (Claude Code's flag, where it has no file form).
             let what = match longest {
@@ -780,15 +911,17 @@ impl Inner {
     }
 
     /// Register Mastik's server with Antigravity for this session. A failed
-    /// attempt withdraws what it wrote, so another can follow.
+    /// attempt withdraws what it wrote, so another can follow. It grants what
+    /// the session allows now.
     fn register_antigravity(&self) -> Result<(), Refusal> {
+        let allowed = self.allowed(&self.lock()).to_vec();
         crate::antigravity::Registration::install(
             launch(self.harness, &self.program),
             &self.program,
             &self.run_root,
             &self.mcp_exe,
             &self.mcp_args,
-            &self.base.allowed_tools,
+            &allowed,
         )
         .map(|reg| self.lock().registration = Some(reg))
         .map_err(Refusal::ConfigNotWritten)
@@ -914,10 +1047,14 @@ impl Inner {
     fn run_turn(self: Arc<Self>, turn: u64, spec: TurnSpec, args: Vec<String>) {
         // The last turn's child is reaped; *Stop* during setup must not reach it.
         self.lock().child = None;
-        let refused = self.prepare().and_then(|_| match self.harness {
-            Harness::DeepSeek => self.dsh_check(),
-            _ => Ok(()),
-        });
+        // The grant first: OpenCode's configuration rewritten is read back.
+        let refused = self
+            .take_access()
+            .and_then(|_| self.prepare())
+            .and_then(|_| match self.harness {
+                Harness::DeepSeek => self.dsh_check(),
+                _ => Ok(()),
+            });
         if let Err(r) = refused {
             return self.finish(turn, Event::Refused(r));
         }
@@ -1045,7 +1182,7 @@ impl Inner {
     /// One turn on a persistent harness: start the process if there is none,
     /// then write the turn to it. Its reader thread does the rest.
     fn send_persistent(self: Arc<Self>, turn: u64, text: String, images: Vec<Vec<u8>>) {
-        if let Err(r) = self.prepare() {
+        if let Err(r) = self.take_access().and_then(|_| self.prepare()) {
             return self.finish(turn, Event::Refused(r));
         }
         let (stdin, text) = {
@@ -1055,8 +1192,8 @@ impl Inner {
                 return self.finish(turn, Event::Stopped);
             }
             if st.stdin.is_none() {
-                let args = self.session_argv(st.resume.clone());
-                if let Err(r) = self.check_argv(&args) {
+                let args = self.session_argv(&st, st.resume.clone());
+                if let Err(r) = self.check_argv(&args, self.system(&st)) {
                     drop(st);
                     return self.finish(turn, Event::Refused(r));
                 }
@@ -1076,10 +1213,11 @@ impl Inner {
                 std::thread::spawn(move || me.read_persistent(generation, child, out, err));
             }
             // The system prompt rides the conversation's first turn, once.
-            let text = match st.owes_system && !self.base.system.trim().is_empty() {
+            let system = self.system(&st).to_owned();
+            let text = match st.owes_system && !system.trim().is_empty() {
                 true => {
                     st.owes_system = false;
-                    harness::prefixed_prompt(&self.base.system, &text)
+                    harness::prefixed_prompt(&system, &text)
                 }
                 false => text,
             };
@@ -1111,9 +1249,15 @@ impl Inner {
     ) {
         let stderr = collect(err, STDERR_KEPT);
         let mut reader = Reader::new(self.harness);
+        // A process a new grant ended (`take_access`) is no longer the
+        // session's: nothing it says reaches the turn its successor serves.
+        let current = |me: &Self| me.lock().generation == generation;
         if let Some(out) = out {
             for line in lossy_lines(out) {
                 let turn = self.lock().turn;
+                if !current(&self) {
+                    continue;
+                }
                 if self.in_flight.load(Ordering::Acquire) {
                     self.read_line(turn, &mut reader, &line);
                 } else if let Some(Parsed::Session(id)) = reader
@@ -1127,17 +1271,18 @@ impl Inner {
             }
         }
         let code = wait_bounded(&self.tracker, &child, EXIT_GRACE);
-        let turn = {
+        let (turn, current) = {
             let mut st = self.lock();
-            if st.generation == generation {
+            let current = st.generation == generation;
+            if current {
                 st.child = None;
                 st.stdin = None;
                 // A respawn opens a new conversation unless it can resume one.
                 st.owes_system |= self.harness.system_in_first_turn() && st.resume.is_none();
             }
-            st.turn
+            (st.turn, current)
         };
-        if self.in_flight.load(Ordering::Acquire) {
+        if current && self.in_flight.load(Ordering::Acquire) {
             let ev = self.exited(code, &reader.plain, &stderr.join().unwrap_or_default());
             self.finish(turn, ev);
         }
@@ -1595,7 +1740,9 @@ mod tests {
             "opencode-flaky" | "opencode-leaky" => {
                 let _ = std::io::stdin().read_to_string(&mut String::new());
             }
-            "claude" => {
+            // Claude Code's stream; `claude-argv` answers with its command line
+            // after the text.
+            "claude" | "claude-argv" => {
                 for line in std::io::stdin().lock().lines() {
                     let Ok(line) = line else { break };
                     let v: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -1606,6 +1753,11 @@ mod tests {
                                 .pointer("/message/content/0/text")
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("");
+                            let argv = format!("{text} | {}", args.join(" "));
+                            let text = match mode.as_str() {
+                                "claude-argv" => argv.as_str(),
+                                _ => text,
+                            };
                             say(&serde_json::json!({"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":text}}}).to_string());
                             if !text.contains("slow") {
                                 say(r#"{"type":"result","is_error":false,"duration_ms":7}"#);
@@ -1808,7 +1960,7 @@ mod tests {
         assert_eq!(quoted_len(r"a b\", false), 8);
         assert_eq!(quoted_len("5%", true), 12);
         let (s, root) = fake_session(Harness::Codex, "codex");
-        let r = s.inner.check_argv(&["\"".repeat(20_000)]);
+        let r = s.inner.check_argv(&["\"".repeat(20_000)], "sys");
         assert!(
             matches!(
                 r,
@@ -1959,6 +2111,152 @@ mod tests {
         let evs = until_idle(&mut s);
         assert_eq!(evs.last(), Some(&Event::Stopped), "{evs:?}");
         assert!(stopped.elapsed() < EXIT_GRACE);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The text of a turn's replies, joined.
+    fn said(evs: &[Event]) -> String {
+        evs.iter()
+            .filter_map(|e| match e {
+                Event::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A new grant on Claude Code starts its process again on the next turn,
+    /// resuming the conversation with the new tools allowed and the new system
+    /// prompt in its file; the ended process's exit reaches no turn.
+    ///
+    /// flip: `take_access` not ending the process → fails at `--resume`, the
+    /// turn answered by the old process; `read_persistent` reporting an ended
+    /// generation's exit → fails there too, the turn ended before it ran.
+    #[test]
+    fn a_new_grant_restarts_claude_code_resuming_its_conversation() {
+        let (mut s, root) = fake_session(Harness::Claude, "claude-argv");
+        let turn = |s: &mut Session, text: &str| {
+            s.send(Turn {
+                text: text.into(),
+                images: Vec::new(),
+            })
+            .unwrap();
+            until_idle(s)
+        };
+        let pid = |s: &Session| {
+            s.inner
+                .lock()
+                .child
+                .as_ref()
+                .map(|c| c.lock().unwrap().id())
+        };
+        let evs = turn(&mut s, "one");
+        assert!(!said(&evs).contains("--resume"), "{evs:?}");
+        let first = pid(&s);
+        assert!(s.set_access(vec!["get_node".into(), "set_name".into()], "sys two".into()));
+        let evs = turn(&mut s, "two");
+        let text = said(&evs);
+        assert_ne!(pid(&s), first, "a new process");
+        assert!(text.contains("--resume s-1"), "{text}");
+        assert!(text.contains("mcp__mastik__set_name"), "{text}");
+        assert!(
+            matches!(
+                evs.last(),
+                Some(Event::Done {
+                    is_error: false,
+                    ..
+                })
+            ),
+            "the turn ended as done: {evs:?}"
+        );
+        let file = s.inner.base.system_file.clone().expect("a system file");
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "sys two");
+        // Taken once: the turn after keeps the process.
+        let kept = pid(&s);
+        turn(&mut s, "three");
+        assert_eq!(pid(&s), kept);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A persistent harness whose running process has not named its
+    /// conversation cannot take a new grant without losing it: refused, and
+    /// nothing is owed.
+    /// flip: `set_access` without its persistent check → fails at "refused".
+    #[test]
+    fn an_unnamed_persistent_conversation_refuses_a_new_grant() {
+        let (mut s, root) = fake_session(Harness::Antigravity, "agy");
+        s.inner.lock().prepared = Some(Ok(()));
+        s.send(Turn {
+            text: "unnamed".into(),
+            images: Vec::new(),
+        })
+        .unwrap();
+        until_idle(&mut s);
+        assert!(s.inner.lock().stdin.is_some(), "fixture: the process runs");
+        assert!(
+            !s.set_access(vec!["set_name".into()], "sys".into()),
+            "refused"
+        );
+        assert!(!s.inner.lock().access_owed);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A per-turn harness keeps its conversation across a new grant, and the
+    /// next turn's command line carries the new tools.
+    /// flip: `granted_spec` leaving Codex's overrides at the old grant → fails
+    /// at the approval.
+    #[test]
+    fn a_new_grant_keeps_a_per_turn_conversation() {
+        let (mut s, root) = fake_session(Harness::Codex, "codex");
+        s.send(Turn::default()).unwrap();
+        until_idle(&mut s);
+        assert!(s.set_access(vec!["get_node".into(), "set_name".into()], "sys".into()));
+        let spec = s.inner.turn_spec(&s.inner.lock(), "", None, 9, &[]);
+        assert!(
+            spec.mcp_overrides
+                .iter()
+                .any(|o| o.contains("set_name={approval_mode=\"approve\"}")),
+            "{:?}",
+            spec.mcp_overrides
+        );
+        s.send(Turn {
+            text: "more".into(),
+            images: Vec::new(),
+        })
+        .unwrap();
+        let evs = until_idle(&mut s);
+        assert!(said(&evs).starts_with("again"), "resumed: {evs:?}");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A new grant rewrites the files that hold it before the next turn:
+    /// Cursor's permissions, OpenCode's configuration, which is read back
+    /// again.
+    /// flip: `take_access` skipping Cursor's file → fails at its tool.
+    #[test]
+    fn a_new_grant_rewrites_the_files_that_hold_it() {
+        let (mut s, root) = fake_session(Harness::Cursor, "codex");
+        assert!(s.set_access(vec!["set_name".into()], "sys".into()));
+        s.inner.take_access().unwrap();
+        let cli = std::fs::read_to_string(s.inner.cwd.join(".cursor").join("cli.json")).unwrap();
+        assert!(cli.contains("set_name"), "{cli}");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (mut s, root) = fake_session(Harness::OpenCode, "opencode-flaky");
+        s.inner.lock().prepared = Some(Ok(()));
+        assert!(s.set_access(vec!["set_name".into()], "sys".into()));
+        s.inner.take_access().unwrap();
+        let cfg = s
+            .inner
+            .run_folder
+            .join("opencode-config/opencode/opencode.json");
+        let cfg = std::fs::read_to_string(cfg).unwrap();
+        assert!(cfg.contains("set_name"), "{cfg}");
+        assert!(s.inner.lock().prepared.is_none(), "read back again");
         drop(s);
         let _ = std::fs::remove_dir_all(&root);
     }

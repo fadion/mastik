@@ -161,17 +161,15 @@ impl Harness {
             .unwrap_or_default()
     }
 
-    /// Whether a turn's images reach the agent. Only Claude Code (content
-    /// blocks) and Codex (`--image`, on `exec` and `exec resume` alike) were
-    /// measured to take them.
+    /// Whether a turn's images reach the agent: Claude Code as content blocks,
+    /// Codex (`--image`, on `exec` and `exec resume` alike), Copilot
+    /// (`--attachment`) and OpenCode (`--file`) as files. Claude Code's and
+    /// Codex's were measured; Copilot's and OpenCode's are their `--help`
+    /// pages' own options. The rest have no way in for an image.
     pub fn takes_images(self) -> bool {
         match self {
-            Harness::Claude | Harness::Codex => true,
-            Harness::Antigravity
-            | Harness::OpenCode
-            | Harness::Copilot
-            | Harness::Cursor
-            | Harness::DeepSeek => false,
+            Harness::Claude | Harness::Codex | Harness::Copilot | Harness::OpenCode => true,
+            Harness::Antigravity | Harness::Cursor | Harness::DeepSeek => false,
         }
     }
 
@@ -553,7 +551,8 @@ pub(crate) struct TurnSpec {
     pub isolate_config: bool,
     /// The bare tool names this chat's access level grants.
     pub allowed_tools: Vec<String>,
-    /// Image files for Codex's `--image`.
+    /// Image files for Codex's `--image`, Copilot's `--attachment` and
+    /// OpenCode's `--file`.
     pub images: Vec<String>,
 }
 
@@ -756,6 +755,10 @@ pub(crate) fn turn_args(h: Harness, spec: &TurnSpec) -> Vec<String> {
             if !effort.is_empty() {
                 a.extend(["--variant".into(), effort.into()]);
             }
+            // An array option: joined with `=`, so it takes no later word.
+            for img in &spec.images {
+                a.push(format!("--file={img}"));
+            }
             if let Some(id) = resume {
                 a.extend(["--session".into(), id.into()]);
             }
@@ -783,6 +786,9 @@ pub(crate) fn turn_args(h: Harness, spec: &TurnSpec) -> Vec<String> {
             }
             if !model.is_empty() {
                 a.extend(["--model".into(), model.into()]);
+            }
+            for img in &spec.images {
+                a.push(format!("--attachment={img}"));
             }
             // `--resume`, not `--session-id`: the second silently starts a fresh
             // session when the id is unknown.
@@ -1909,5 +1915,31 @@ mod tests {
             agy,
             "{\"event\":\"user\",\"message\":{\"content\":\"hi\"}}\n"
         );
+    }
+
+    /// Every per-turn harness that takes images names each file on its
+    /// command line, in its own option; one that does not takes none.
+    /// flip: Copilot's arm without its `--attachment` loop → fails at Copilot.
+    #[test]
+    fn a_per_turn_harness_that_takes_images_names_its_files() {
+        let spec = TurnSpec {
+            images: vec!["a.png".into(), "b.png".into()],
+            ..TurnSpec::default()
+        };
+        let named = |h: Harness, flag: &str| {
+            let args = turn_args(h, &spec);
+            ["a.png", "b.png"]
+                .iter()
+                .all(|f| args.contains(&format!("{flag}={f}")))
+        };
+        assert!(named(Harness::Codex, "--image"), "Codex");
+        assert!(named(Harness::Copilot, "--attachment"), "Copilot");
+        assert!(named(Harness::OpenCode, "--file"), "OpenCode");
+        for h in Harness::ALL {
+            let any = turn_args(h, &spec).iter().any(|a| a.contains("a.png"));
+            if !h.is_persistent() {
+                assert_eq!(any, h.takes_images(), "{h:?}");
+            }
+        }
     }
 }

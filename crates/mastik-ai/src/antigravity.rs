@@ -340,6 +340,19 @@ impl Registration {
         }
         Ok(reg)
     }
+
+    /// Grant exactly `allowed` under this session's name in place of what it
+    /// held, for an access level changed during the session. `Err` says why, in
+    /// a clause.
+    pub(crate) fn regrant(&self, allowed: &[String]) -> Result<(), String> {
+        let rules = antigravity_allow_rules(&self.server, allowed);
+        match edit_settings(&self.run_root, true, |cur| {
+            antigravity_settings_with_only(cur, &self.server, &rules)
+        }) {
+            true => Ok(()),
+            false => Err("its settings file could not be given the new tool rules".into()),
+        }
+    }
 }
 
 impl Drop for Registration {
