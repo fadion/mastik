@@ -4560,33 +4560,11 @@ fn one_picture_on_many_shapes_is_written_once() {
     );
 }
 
-/// **A sweep gradient's approximated radius is measured off the shape**, and off
-/// the *far* corner of it, so the last stop reaches the whole drawing wherever
-/// the centre sits (§15 D647).
-///
-/// A sweep has no SVG 1.1 equivalent and is written as a `<radialGradient>`; a
-/// sweep's payload is a centre and two angles and carries no radius at all, so
-/// the number has to be invented. It used to be the literal `50` — which is a
-/// 50-unit blob at the centre of a 1 000-unit shape with the last stop flooding
-/// everything else, and an overflow in the other direction on a 10-unit one.
-///
-/// **Two centres in one test, and that is the point of it.** Both are on the
-/// same 1 000 x 600 rect:
-///
-/// - centred at `(500, 300)`, the box's own middle, where the answer is half the
-///   diagonal, `583.1`;
-/// - centred at `(0, 0)`, a corner, where it is the whole diagonal, `1166.2`.
-///
-/// The obvious implementation — half the frame's diagonal — is right for the first
-/// and short by a factor of two for the second, which is the case a sweep is most
-/// often put in.
-///
-/// ⚠️ **Flip run.** Predicted failing assertion: the corner one. Restoring the
-/// `r="50"` literal fails **both**, at `50` against 583.1 and 1166.2 — so the
-/// first assertion has teeth on the old behaviour and only the second has teeth
-/// on the plausible wrong version. Replacing the corner walk with
-/// `frame.diagonal_len() / 2.0` leaves the centred case green at 583.1 and fails
-/// the corner one at 583.1 against 1166.2, which is the flip that matters.
+/// **A sweep's wedges reach the shape's far corner** from the centre, wherever
+/// the centre sits: half the diagonal (583.1) from the middle of a 1 000 × 600
+/// rect, the whole diagonal (1166.2) from a corner. The wedges' pattern is a
+/// square of side twice their reach, which is that radius and a hair more.
+/// flip: `sweep_radius` as `frame.diagonal_len() / 2.0` → fails at the corner one.
 #[test]
 fn a_sweep_gradients_radius_is_the_shapes_and_is_measured_from_its_centre() {
     use mastik_core::Brush;
@@ -4594,8 +4572,8 @@ fn a_sweep_gradients_radius_is_the_shapes_and_is_measured_from_its_centre() {
     use mastik_core::peniko::{Color, Gradient};
     use mastik_core::{Fill, GeometryPatch};
 
-    // The `r="…"` of the one `<radialGradient>` a sweep at `centre` produces on a
-    // 1 000 x 600 rect.
+    // Half the width of the one wedge `<pattern>` a sweep at `centre` produces on
+    // a 1 000 x 600 rect.
     let radius_for = |centre: Point| -> f64 {
         let mut f = common::fixture();
         let gradient = Gradient::new_sweep(centre, 0.0, std::f32::consts::TAU).with_stops([
@@ -4620,16 +4598,15 @@ fn a_sweep_gradients_radius_is_the_shapes_and_is_measured_from_its_centre() {
         let res = Resolved::rebuild(&f.doc);
         let out = svg(&f.doc, &res, f.doc.first_page(), None);
 
-        // The fixture, before the number: a sweep really does reach the file as a
-        // radial approximation, and exactly one of them.
+        // The fixture, before the number: one pattern of wedges for the one sweep.
         assert_eq!(
-            out.matches("<radialGradient").count(),
+            out.matches("<pattern").count(),
             1,
-            "the fixture: one radial approximation for the one sweep: {out}"
+            "the fixture: one wedge pattern for the one sweep: {out}"
         );
-        let tail = out.split(r#"<radialGradient"#).nth(1).unwrap();
-        let r = tail.split(r#" r=""#).nth(1).unwrap();
-        r.split('"').next().unwrap().parse::<f64>().unwrap()
+        let tail = out.split("<pattern").nth(1).unwrap();
+        let w = tail.split(r#" width=""#).nth(1).unwrap();
+        w.split('"').next().unwrap().parse::<f64>().unwrap() / 2.0
     };
 
     let centred = radius_for(Point::new(500.0, 300.0));
@@ -4637,13 +4614,12 @@ fn a_sweep_gradients_radius_is_the_shapes_and_is_measured_from_its_centre() {
 
     // Half the diagonal, because from the middle every corner is that far.
     assert!(
-        (centred - 583.095).abs() < 0.5,
+        (583.095..583.095 * 1.02).contains(&centred),
         "a sweep at the box's middle reaches its corners at half the diagonal, got {centred}"
     );
-    // The whole diagonal, because the far corner is a whole diagonal away — the
-    // half-diagonal answer would draw the last stop's flood across most of it.
+    // The whole diagonal, because the far corner is a whole diagonal away.
     assert!(
-        (cornered - 1166.19).abs() < 0.5,
+        (1166.19..1166.19 * 1.02).contains(&cornered),
         "a sweep at a corner has to reach the opposite one, got {cornered}"
     );
 }

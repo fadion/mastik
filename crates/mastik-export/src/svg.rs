@@ -1104,7 +1104,7 @@ fn with_image_clip(
     let _ = writeln!(out, "{pad}</g>");
 }
 
-/// The radius the sweep-to-radial approximation is written at: far enough from
+/// The radius a sweep's wedges ([`sweep_def`]) must reach: far enough from
 /// `center` that the last stop reaches every corner of `frame` (the largest of the
 /// four corner distances, since half the diagonal is wrong off-centre).
 ///
@@ -1193,15 +1193,176 @@ fn gradient_def(name: &str, brush: &mastik_core::GradientBrush, frame: Option<Re
             fmt(p.start_center.x),
             fmt(p.start_center.y),
         ),
-        // No SVG 1.1 sweep: a radial reaching the farthest corner. The `50` is
-        // unobservable: no box, or a singular transform, paints nothing.
-        GradientKind::Sweep(p) => format!(
-            "    <radialGradient id=\"{name}\" gradientUnits=\"userSpaceOnUse\"{spread}{xform} cx=\"{}\" cy=\"{}\" r=\"{}\">\n{stops}    </radialGradient>\n",
-            fmt(p.center.x),
-            fmt(p.center.y),
-            fmt(sweep_radius(p.center, frame, brush.transform).unwrap_or(50.0)),
-        ),
+        GradientKind::Sweep(p) => sweep_def(name, brush, &ramp, p, frame),
     }
+}
+
+/// The widest turn one wedge of [`sweep_def`] spans, so the straight ramp across
+/// each reads as the turn.
+const WEDGE_MAX: f64 = std::f64::consts::TAU / 72.0;
+
+/// How far a wedge reaches under the next, so anti-aliased edges leave no seam.
+const WEDGE_OVERLAP: f64 = WEDGE_MAX / 8.0;
+
+/// A sweep, which SVG 1.1 lacks, as a `<pattern>` of wedges round the centre,
+/// each filled with a linear gradient from the colour at its first edge to the
+/// colour at its last. Edges fall on every stop and on every turn the ramp
+/// repeats, so hard stops stay hard. `ramp` is the gradient mixed into sRGB stops.
+///
+/// The wedges reach the farthest corner of `frame` ([`sweep_radius`]); with no box
+/// or a singular transform nothing paints, so the `50` is unobservable.
+fn sweep_def(
+    name: &str,
+    brush: &mastik_core::GradientBrush,
+    ramp: &mastik_core::peniko::Gradient,
+    p: &mastik_core::peniko::SweepGradientPosition,
+    frame: Option<Rect>,
+) -> String {
+    use std::f64::consts::TAU;
+    let stops: Vec<(f64, [f32; 4])> = ramp
+        .stops
+        .iter()
+        .map(|s| {
+            let c = s.color.to_alpha_color::<mastik_core::peniko::color::Srgb>();
+            (f64::from(s.offset), c.premultiply().components)
+        })
+        .collect();
+    let span = f64::from(p.end_angle - p.start_angle);
+    // The ramp parameter a turn `a` past the start reads, after `extend`.
+    let t_at = |a: f64| {
+        let t = if span > 1e-9 { a / span } else { 0.0 };
+        match ramp.extend {
+            Extend::Pad => t.clamp(0.0, 1.0),
+            Extend::Repeat => t.rem_euclid(1.0),
+            Extend::Reflect => 1.0 - (t.rem_euclid(2.0) - 1.0).abs(),
+        }
+    };
+    // Premultiplied, as the renderers mix, between the stops either side of `t`.
+    let colour = |t: f64| -> [f32; 4] {
+        let Some(first) = stops.first() else {
+            return [0.0; 4];
+        };
+        let last = stops[stops.len() - 1];
+        if t <= first.0 {
+            return first.1;
+        }
+        if t >= last.0 {
+            return last.1;
+        }
+        let i = stops.windows(2).position(|w| t <= w[1].0).unwrap_or(0);
+        let ((t0, c0), (t1, c1)) = (stops[i], stops[i + 1]);
+        let u = if t1 > t0 {
+            ((t - t0) / (t1 - t0)) as f32
+        } else {
+            1.0
+        };
+        std::array::from_fn(|k| c0[k] + (c1[k] - c0[k]) * u)
+    };
+    // Every turn a stop sits at, or the ramp ends or turns back at.
+    let mut edges = vec![0.0, TAU];
+    if span > 1e-9 {
+        let mut k = 0.0;
+        while k * span < TAU && edges.len() < 4096 {
+            edges.extend(
+                stops
+                    .iter()
+                    .map(|(o, _)| {
+                        (k + if ramp.extend == Extend::Reflect && k % 2.0 == 1.0 {
+                            1.0 - o
+                        } else {
+                            *o
+                        }) * span
+                    })
+                    .filter(|a| *a > 0.0 && *a < TAU),
+            );
+            if ramp.extend == Extend::Pad {
+                break;
+            }
+            k += 1.0;
+        }
+    }
+    edges.sort_by(f64::total_cmp);
+    edges.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    let mut wedges = Vec::new();
+    for w in edges.windows(2) {
+        // Less a hair, so an f32 angle a rounding past a whole count adds no sliver.
+        let pieces = ((w[1] - w[0]) / WEDGE_MAX - 1e-4).ceil().max(1.0);
+        let step = (w[1] - w[0]) / pieces;
+        wedges.extend(
+            (0..pieces as usize).map(|i| (w[0] + step * i as f64, w[0] + step * (i + 1) as f64)),
+        );
+    }
+    let r = sweep_radius(p.center, frame, brush.transform).unwrap_or(50.0);
+    // Far enough that a wedge's straight outer edge stays past the circle.
+    let reach = r / ((WEDGE_MAX + WEDGE_OVERLAP) / 2.0).cos() * 1.01;
+    let (cx, cy, start) = (p.center.x, p.center.y, f64::from(p.start_angle));
+    let at = |a: f64| {
+        (
+            cx + reach * (start + a).cos(),
+            cy + reach * (start + a).sin(),
+        )
+    };
+    let stop = |offset: &str, c: [f32; 4]| {
+        let c = mastik_core::peniko::color::PremulColor::<mastik_core::peniko::color::Srgb>::new(c)
+            .un_premultiply()
+            .to_rgba8();
+        format!(
+            "      <stop offset=\"{offset}\" stop-color=\"#{:02x}{:02x}{:02x}\"{}/>\n",
+            c.r,
+            c.g,
+            c.b,
+            alpha_attr("stop-opacity", c.a),
+        )
+    };
+    let mut out = String::new();
+    let mut paths = String::new();
+    // An edge's colour is read just inside the wedge, so a hard stop on it keeps
+    // both its sides.
+    const INSIDE: f64 = 1e-9;
+    for (i, &(a0, a1)) in wedges.iter().enumerate() {
+        let ((x0, y0), (x1, y1)) = (at(a0), at(a1));
+        let _ = write!(
+            out,
+            "    <linearGradient id=\"{name}-w{i}\" gradientUnits=\"userSpaceOnUse\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\">\n{}{}    </linearGradient>\n",
+            fmt(x0),
+            fmt(y0),
+            fmt(x1),
+            fmt(y1),
+            stop("0", colour(t_at(a0 + INSIDE))),
+            stop("1", colour(t_at(a1 - INSIDE))),
+        );
+        // The last wedge meets the first at the sweep's seam and does not reach past it.
+        let end = if i + 1 < wedges.len() {
+            a1 + WEDGE_OVERLAP
+        } else {
+            a1
+        };
+        let (x2, y2) = at(end);
+        let _ = writeln!(
+            paths,
+            "      <path d=\"M{} {}L{} {}L{} {}Z\" fill=\"url(#{name}-w{i})\"/>",
+            fmt(cx),
+            fmt(cy),
+            fmt(x0),
+            fmt(y0),
+            fmt(x2),
+            fmt(y2),
+        );
+    }
+    let xform = if brush.transform == Affine::IDENTITY {
+        String::new()
+    } else {
+        let [a, b, c, d, e, f] = fmt_matrix(brush.transform);
+        format!(r#" patternTransform="matrix({a} {b} {c} {d} {e} {f})""#)
+    };
+    // A tile's content counts from the tile's corner; the `viewBox` puts it back in
+    // the gradient's own space.
+    let (x, y, side) = (fmt(cx - reach), fmt(cy - reach), fmt(reach * 2.0));
+    let _ = write!(
+        out,
+        "    <pattern id=\"{name}\" patternUnits=\"userSpaceOnUse\"{xform} x=\"{x}\" y=\"{y}\" width=\"{side}\" height=\"{side}\" viewBox=\"{x} {y} {side} {side}\">\n{paths}    </pattern>\n",
+    );
+    out
 }
 
 /// Every way this writer is about to say something inexactly about `node`.
@@ -1218,7 +1379,8 @@ fn report_node(
     outlined: bool,
     report: &mut Report,
 ) {
-    // `gradient_def` writes a sweep as a radial rather than dropping the paint.
+    // `gradient_def` writes a sweep as a pattern of wedges, which no reader takes
+    // back as one gradient and which blends towards the centre.
     let sweep = |brush: &Brush| {
         matches!(
             brush,
@@ -1233,7 +1395,7 @@ fn report_node(
             .chain(visible_strokes(node.paint()).map(|(_, s)| s.brush.drawn()))
     };
     if brushes().any(sweep) {
-        report.approximate("a sweep gradient, written as a radial one");
+        report.approximate("a sweep gradient, written as wedges of linear ones");
     }
     if brushes().any(picture) {
         // Not "approximated": the picture lands where the document puts it; only
@@ -3168,6 +3330,99 @@ mod def_count_tests {
              handful per insert and a scan compares every id already collected, so \
              a count near N²/2 = {} is the square coming back",
             (N * N / 2)
+        );
+    }
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::*;
+    use mastik_core::GradientBrush;
+    use mastik_core::kurbo::Point;
+    use mastik_core::peniko::{Gradient, SweepGradientPosition};
+
+    /// A full-turn sweep from `stops`, centred in a 100 × 100 box.
+    fn sweep(stops: &[(f32, Color)], extend: Extend) -> String {
+        let mut g = Gradient::new_sweep(Point::new(50.0, 50.0), 0.0, std::f32::consts::TAU)
+            .with_stops(stops);
+        g.extend = extend;
+        let brush: GradientBrush = g.into();
+        let GradientKind::Sweep(p) = brush.gradient.kind else {
+            unreachable!()
+        };
+        sweep_def(
+            "g",
+            &brush,
+            &brush.gradient,
+            &SweepGradientPosition { ..p },
+            Some(Rect::new(0.0, 0.0, 100.0, 100.0)),
+        )
+    }
+
+    /// The value of the attribute `name` in the tag `tag` starts.
+    fn attr(tag: &str, name: &str) -> String {
+        let at = tag.find(&format!(" {name}=\"")).expect("the attribute") + name.len() + 3;
+        tag[at..].split('"').next().unwrap().to_owned()
+    }
+
+    /// The stop colours of wedge `i`, `[first, last]`, as written.
+    fn wedge(svg: &str, i: usize) -> [String; 2] {
+        let at = svg
+            .find(&format!("id=\"g-w{i}\""))
+            .expect("the wedge is written");
+        let mut colours = svg[at..].match_indices("stop-color=\"").map(|(k, m)| {
+            let s = at + k + m.len();
+            svg[s..s + 7].to_owned()
+        });
+        [colours.next().unwrap(), colours.next().unwrap()]
+    }
+
+    /// A red-to-blue sweep starts red, ends blue and passes the canvas's mix half
+    /// way round, in wedges no wider than `WEDGE_MAX`, inside one pattern.
+    #[test]
+    fn a_sweep_is_written_as_wedges_round_its_turn() {
+        let svg = sweep(
+            &[
+                (0.0, Color::from_rgb8(255, 0, 0)),
+                (1.0, Color::from_rgb8(0, 0, 255)),
+            ],
+            Extend::Pad,
+        );
+        let n = svg.matches("<linearGradient").count();
+        assert_eq!(n, 72, "a full turn in 5° wedges");
+        // A tile's content counts from its corner; without this the wedges' centre
+        // lands at the box's corner plus the centre.
+        let tile = svg.split("<pattern").nth(1).expect("a pattern");
+        let (x, y) = (attr(tile, "x"), attr(tile, "y"));
+        let side = attr(tile, "width");
+        assert_eq!(attr(tile, "viewBox"), format!("{x} {y} {side} {side}"));
+        assert_eq!(svg.matches("<pattern id=\"g\"").count(), 1);
+        assert_eq!(wedge(&svg, 0)[0], "#ff0000");
+        assert_eq!(wedge(&svg, n - 1)[1], "#0000ff");
+        // Half way the premultiplied mix of the two, which sRGB stops write as #800080.
+        assert_eq!(wedge(&svg, n / 2)[0], "#800080");
+    }
+
+    /// A hard stop half way round falls on a wedge edge, its two sides in the two
+    /// wedges. flip: `INSIDE` at 0 → fails at "the far side".
+    #[test]
+    fn a_hard_stop_keeps_both_sides() {
+        let (red, blue) = (Color::from_rgb8(255, 0, 0), Color::from_rgb8(0, 0, 255));
+        let svg = sweep(
+            &[(0.0, red), (0.5, red), (0.5, blue), (1.0, blue)],
+            Extend::Pad,
+        );
+        let n = svg.matches("<linearGradient").count();
+        assert_eq!(n, 72, "the stop's edge adds no sliver");
+        let half = n / 2;
+        assert_eq!(
+            wedge(&svg, half - 1),
+            ["#ff0000".to_owned(), "#ff0000".to_owned()]
+        );
+        assert_eq!(
+            wedge(&svg, half),
+            ["#0000ff".to_owned(), "#0000ff".to_owned()],
+            "the far side"
         );
     }
 }

@@ -167,7 +167,7 @@ fn every_reported_approximation_is_visible_in_the_markup() {
         out.approximated
     );
     assert!(
-        out.svg.contains("<radialGradient"),
+        out.svg.contains("-w0\""),
         "…and the thing it was approximated *as* is in the file"
     );
 
@@ -236,7 +236,7 @@ fn a_lossless_write_with_a_lossy_re_import_is_reported_separately() {
 ///
 /// **Flipped**: moving `report_node` above `emit_node`'s visibility guard — which
 /// is the same mistake spelled in the place it is most tempting — fails here and
-/// **nowhere else**, at `["a sweep gradient, written as a radial one"] / []`. Note
+/// **nowhere else**, at `["a sweep gradient, written as wedges of linear ones"] / []`. Note
 /// that `an_invisible_shadow_is_not_reported` stays green under it: that test's
 /// node is visible and only its *effect* is not, so the two pin different rules
 /// rather than one twice.
