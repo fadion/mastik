@@ -121,20 +121,6 @@ Items run cheapest first.
   values where a variable or style fits, near-duplicate colours, inconsistent radii and low
   contrast. The same checks feed *Design system health* and `mastik check`.
 
-## Now · Command bar and scripting
-
-Items run cheapest first.
-
-- **Seeded randomness.** `math.random` and `math.randomseed` are withheld (`run.rs`) to keep a run
-  deterministic. A `random(seed)` generator keeps it so: the same seed draws the same values. With
-  repeat, warp and blend, it opens scatter, jitter and generated patterns.
-- **More writable properties.** Fourteen are writable (`props.rs`), and `fill` and `stroke` read
-  nil for anything but one solid paint. Add effects, gradients, text style and layout properties,
-  and paint lists as tables.
-- **A stop key, and scripts off the UI thread.** A run holds the UI thread for up to its 1 s budget
-  with no progress and no stop (`command-mode.md` §8). Run it on a worker against the document as
-  it stood, with `Escape` stopping it and the result committed as one step.
-
 ## Now · Image editing
 
 Make the image-editing card feel complete without turning Mastik into a photo editor
