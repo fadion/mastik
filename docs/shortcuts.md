@@ -556,7 +556,8 @@ code rather than editing this sentence:
 
 focus mode → a bindable field's menu / `--` list / mode menu → a style card's menu, picker, name
 or edit (`escape_styles`) → an armed eyedropper (`disarm_dropper`: a picker's pick button, else the
-rail tool, which hands back to the tool it was armed from) → the detached colour picker → the
+rail tool, which hands back to the tool it was armed from) → an open menu of the colour picker's
+(the gradient's *Ends and mixing*), which closes itself → the detached colour picker → the
 insert picker (`kit_picker`) or the assets browser (`asset_panel`) → the
 variables browser (inner rungs first) → a text session → the find box → batch rename (its open
 order list first) → the Clean up box → the Fill with content box (an open kind list first) → colour review (its own

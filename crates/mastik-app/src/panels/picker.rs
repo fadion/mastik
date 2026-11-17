@@ -3574,6 +3574,41 @@ mod radial_centre_tests {
         assert_eq!(app.session.history.undo_depth(), 2);
     }
 
+    /// The first `Escape` over the ends menu closes the menu and keeps the picker;
+    /// the second closes the picker.
+    /// flip: dropping `escape`'s open-popup rung above the picker's → fails at "the picker stays".
+    #[test]
+    fn escape_closes_the_ends_menu_before_the_picker() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = radial_rect(&ctx, 0.5);
+        for _ in 0..3 {
+            let _ = placed(&ctx, &mut app, Vec::new());
+        }
+        click_row(&ctx, &mut app, icon::SLIDERS_HORIZONTAL);
+        assert!(
+            egui::Popup::is_id_open(&ctx, ends_menu_id()),
+            "fixture: the menu is open"
+        );
+
+        let escape = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        app.escape(&ctx);
+        let _ = placed(&ctx, &mut app, vec![escape]);
+        assert!(app.picker.is_some(), "the picker stays");
+        assert!(
+            !egui::Popup::is_id_open(&ctx, ends_menu_id()),
+            "the menu closed"
+        );
+
+        app.escape(&ctx);
+        assert!(app.picker.is_none(), "the next press closes the picker");
+    }
+
     /// A sweep's ends rows are shown and do nothing: it has no ends.
     #[test]
     fn a_sweeps_ends_rows_are_disabled() {

@@ -275,7 +275,7 @@ and the second leaves focus mode.
 - the context menu's arm at the top of the frame returns;
 - the top-bar dropdowns have a `dispatch` arm on `Action::Escape if open_menu != TopMenu::None`;
 - the three modals are gated out of `input::resolve` and answer `should_close()`;
-- the colour picker is a rung of `escape`'s `else if` chain, which pays out one rung (an armed pick button is the rung above it);
+- the colour picker is a rung of `escape`'s `else if` chain, which pays out one rung (an armed pick button is the rung above it, and an open menu of the picker's, such as the gradient's *Ends and mixing*, the rung between: that press closes only the menu, the next the picker);
 - the five inspector and Export popovers: an empty-bodied arm in `update`, gated by `a_popover_owns_escape`; they close themselves later in the frame.
 
 That gate is for `Escape` only, and counts only popovers actually drawn: each open popover's handler

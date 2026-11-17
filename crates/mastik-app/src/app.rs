@@ -3360,6 +3360,9 @@ impl MastikApp {
             // A style card's menu, its picker, a new style's name, a style edit — one a press.
         } else if self.disarm_dropper() {
             // Above the picker it may be picking for.
+        } else if self.picker.is_some() && egui::Popup::is_any_open(ctx) {
+            // A menu of the picker's (the gradient's ends) takes this press and
+            // closes itself; the picker goes on the next.
         } else if self.picker.take().is_some() {
         } else if self.kit_picker.take().is_some()
             || self.asset_panel.take().is_some()
