@@ -588,7 +588,7 @@ impl ScenePainter for CpuPainter<'_> {
         let clipped = mastik_core::effect::buffer_box_within(
             device,
             limit,
-            mastik_core::effect::stack_escape(effects),
+            mastik_core::effect::buffer_escape(effects),
             s0,
             self.root.width() as f64 * self.root.height() as f64,
         );
