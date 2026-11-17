@@ -458,12 +458,6 @@ impl MastikApp {
                             0 => b.on_hover_text("Every point shapes the path"),
                             _ => b.on_hover_text("Take out the points the shape doesn't need"),
                         };
-                        // Always shown, whatever the count, so the card keeps its height.
-                        caption(
-                            ui,
-                            "Points along a straight line, doubled points, and points that \
-                             split one curve in two. The shape stays exactly as it is.",
-                        );
                         row(Row::Remove, None, b);
                     });
 

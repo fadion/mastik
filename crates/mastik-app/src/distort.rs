@@ -10,7 +10,7 @@
 
 use crate::app::MastikApp;
 use crate::theme::{self, icon};
-use crate::ui::{self, FieldButton, Prefix, Scrub, Suffix};
+use crate::ui::{self, FieldButton, Prefix, Scrub};
 use eframe::egui;
 use mastik_core::distort::Filter;
 use mastik_core::kurbo::Point;
@@ -234,11 +234,6 @@ impl MastikApp {
                     // Two fields share what the button leaves.
                     let half = egui::vec2((w - bw - ui::CARD_COL_GAP * 2.0) / 2.0, ui::CONTROL_H);
                     let whole = egui::vec2(w - bw - ui::CARD_COL_GAP, ui::CONTROL_H);
-                    let px = Some(Suffix {
-                        text: "px",
-                        clickable: false,
-                        tooltip: "",
-                    });
                     // A row is shown while its button is hovered or focused, or a
                     // field of its scrubbed or typed in.
                     let mut row = |which: Row, fields: &[&egui::Response], b: egui::Response| {
@@ -255,27 +250,26 @@ impl MastikApp {
                     ui::labelled(ui, "Roughen", |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                            let (size, _) = ui::value_field_suffixed(
+                            let size = ui::value_field(
                                 ui,
                                 half,
-                                Prefix::Text("Size"),
-                                px,
+                                Prefix::Icon(icon::AMPLITUDE),
                                 &mut n.rough_size,
                                 Scrub::fine(0.1, 1).range(0.0..=200.0),
                                 |d| d.custom_formatter(ui::number(1)),
-                            );
-                            let size = size.on_hover_text("The furthest a point moves");
+                            )
+                            .on_hover_text("Size: the furthest a point moves");
                             let detail = ui::value_field(
                                 ui,
                                 half,
-                                Prefix::Text("Detail"),
+                                Prefix::Icon(icon::POINTS_ALONG),
                                 &mut n.detail,
                                 Scrub::whole(0.5).range(0.0..=100.0),
                                 |d| d.custom_formatter(|v, _| format!("{v:.0}%")),
                             )
                             .on_hover_text(
-                                "How many points it adds before moving them — 0 moves only \
-                                 the points there are",
+                                "Detail: how many points it adds before moving them — 0 moves \
+                                 only the points there are",
                             );
                             let b = ui::label_button(ui, "Apply", button, FieldButton::Off)
                                 .on_hover_text("Each Apply roughens differently");
@@ -286,25 +280,24 @@ impl MastikApp {
                     ui::labelled(ui, "Zig-zag", |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                            let (size, _) = ui::value_field_suffixed(
+                            let size = ui::value_field(
                                 ui,
                                 half,
-                                Prefix::Text("Size"),
-                                px,
+                                Prefix::Icon(icon::AMPLITUDE),
                                 &mut n.zig_size,
                                 Scrub::fine(0.1, 1).range(0.0..=200.0),
                                 |d| d.custom_formatter(ui::number(1)),
-                            );
-                            let size = size.on_hover_text("A ridge's height, crest to trough");
+                            )
+                            .on_hover_text("Size: a ridge's height, crest to trough");
                             let ridges = ui::value_field(
                                 ui,
                                 half,
-                                Prefix::Text("Ridges"),
+                                Prefix::Icon(icon::RIDGES),
                                 &mut n.ridges,
                                 Scrub::whole(0.1).range(1.0..=100.0),
                                 |d| d.custom_formatter(ui::number(0)),
                             )
-                            .on_hover_text("How many ridges each segment gets");
+                            .on_hover_text("Ridges: how many each segment gets");
                             let b = ui::label_button(ui, "Apply", button, FieldButton::Off);
                             row(Row::ZigZag, &[&size, &ridges], b);
                         });

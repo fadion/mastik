@@ -338,8 +338,7 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
   of one width: *Simplify* (accuracy in px, from `SIMPLIFY_MIN_ACCURACY` to 20, *Apply*, with
   *64 points → 9* under it, which keeps the last count while a refit is in flight and says
   *Fitting…* only after `FIT_PATIENCE`), *Remove redundant points* (*9 points can go* or *Nothing to
-  remove*, *Remove*, with a standing caption naming the three kinds it takes and that the shape stays
-  exactly as it is), *Add points* (a bare count, 2–16, its tooltip saying it is the pieces each segment is
+  remove*, *Remove*), *Add points* (a bare count, 2–16, its tooltip saying it is the pieces each segment is
   cut into, *Add*) and *Smooth selected* (an amount in percent,
   *Smooth*, with *Acts on the 4 selected points* under it). A row's result shows on the canvas
   through the gesture preview while its button is hovered or focused or its field scrubbed or
@@ -363,10 +362,12 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
     fresh smooth ones, along the line between its neighbours, a third of the shorter leg long.
 - **The Distort card** (`crate::distort`, `mastik_core::distort`) is its own card rather than
   Clean up rows, since Clean up makes a path tidier and these make it rougher. Built as Clean up's
-  and hung the same way: `popover_head` *Distort*; *Roughen* (Size px, Detail %), *Zig-zag* (Size
-  px, Ridges) and *Pucker / Bloat* (Amount −100 to +100 % on a signed metered field), each with
+  and hung the same way: `popover_head` *Distort*; *Roughen* (Size, Detail %), *Zig-zag* (Size,
+  Ridges) and *Pucker / Bloat* (Amount −100 to +100 % on a signed metered field), each with
   *Apply*; a rule; *New points* (*Corner* · *Smooth*); and a caption, *Acts on the whole path.
-  Select points to distort only between them.* or *Acts between the 4 selected points*. A row
+  Select points to distort only between them.* or *Acts between the 4 selected points*. Size is a
+  bare number under `icon::AMPLITUDE`, Detail wears `icon::POINTS_ALONG` and Ridges `icon::RIDGES`;
+  each tooltip leads with the field's name (*Size: …*). A row
   previews as Clean up's do, the points it would add drawn as hollow dots in the selection blue
   (`distort_adding`). Each *Apply* is one undo step: *Roughen*, *Zig-zag*, or *Pucker* below zero
   and *Bloat* otherwise. Its numbers are kept while it is closed (`distort_numbers`), a

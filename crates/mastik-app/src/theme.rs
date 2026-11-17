@@ -1312,6 +1312,14 @@ pub mod icon {
     /// *Around a centre* while drawing, and a radial path's badge: three petals
     /// turned about the centre. Not [`REPEAT_AROUND`]'s ticks about a pivot.
     pub const RADIAL_SYMMETRY: &str = "\u{f078}";
+    /// How far a distorted edge moves, Roughen's and Zig-zag's *Size*: a
+    /// zig-zag beside a bar measuring its height.
+    pub const AMPLITUDE: &str = "\u{f079}";
+    /// How many points a distort adds, Roughen's *Detail*: three anchors along a
+    /// segment.
+    pub const POINTS_ALONG: &str = "\u{f07a}";
+    /// How many ridges Zig-zag draws on a segment: a run of three.
+    pub const RIDGES: &str = "\u{f07b}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1627,6 +1635,9 @@ pub mod icon {
         ("repeat-line", REPEAT_LINE),
         ("repeat-grid", REPEAT_GRID),
         ("radial-symmetry", RADIAL_SYMMETRY),
+        ("amplitude", AMPLITUDE),
+        ("points-along", POINTS_ALONG),
+        ("ridges", RIDGES),
     ];
 }
 
