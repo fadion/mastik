@@ -207,6 +207,12 @@ pub static TOOLS: &[Tool] = &[
                 false,
                 "The longest side in pixels at most, up to 4096; 1600 when absent. A page is never drawn above 1×, a layer or a region above 2×.",
             ),
+            param(
+                "since",
+                ParamKind::Index,
+                false,
+                "A `rev` you were given: draw the page as it was then and as it is now, two images over what changed since (or `id`'s box, or `region`).",
+            ),
         ],
     },
     Tool {
@@ -354,6 +360,36 @@ pub static TOOLS: &[Tool] = &[
                 ParamKind::Node,
                 false,
                 "The page when no `ids`; the person's page when absent.",
+            ),
+        ],
+    },
+    Tool {
+        name: "review",
+        doc: "Design checks past `check_layout`, each with its layers, a code, a line and what fits `instead`: `overlap`, `busy_ground` (text on a busy ground), `rhythm` and `off_scale` (gaps), `raw_value` and `raw_style` (a variable's or style's value written raw), `near_duplicate_colours`, `radius` and `low_contrast`",
+        params: &[
+            param(
+                "ids",
+                ParamKind::Nodes,
+                false,
+                "Only the layers in and under these; else a page.",
+            ),
+            param(
+                "page",
+                ParamKind::Node,
+                false,
+                "The page when no `ids`; the person's page when absent.",
+            ),
+            param(
+                "step",
+                ParamKind::Number,
+                false,
+                "The spacing scale's step; 4 when absent.",
+            ),
+            param(
+                "level",
+                ParamKind::Choice(&["aa", "aaa", "apca"]),
+                false,
+                "The contrast standard; `aa` when absent.",
             ),
         ],
     },
@@ -1022,8 +1058,8 @@ mod tests {
     /// budget.
     #[test]
     fn the_tool_list_stays_within_its_budget() {
-        const CORE_BUDGET: usize = 26_450;
-        const ALL_BUDGET: usize = 106_700;
+        const CORE_BUDGET: usize = 27_500;
+        const ALL_BUDGET: usize = 107_700;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

@@ -26,6 +26,11 @@ pub(super) struct Shown {
     /// The layers changed or removed since the look before by anyone but this
     /// client, so `base_rev` does not count the client's own steps against it.
     others: Vec<String>,
+    /// The step on top of the history then, and the whole document's
+    /// [`fingerprint`]: what `export_png`'s `since` rebuilds that document from
+    /// and holds it to, kept for every look since a whole snapshot is not.
+    top: Option<u64>,
+    print: u64,
 }
 
 /// A layer as a connection saw it.
@@ -47,9 +52,9 @@ const CHANGED_LISTED: usize = 50;
 /// What changed between two looks at a document.
 #[derive(Default)]
 pub(super) struct Delta {
-    added: Vec<String>,
-    changed: Vec<String>,
-    removed: Vec<String>,
+    pub(super) added: Vec<String>,
+    pub(super) changed: Vec<String>,
+    pub(super) removed: Vec<String>,
 }
 
 impl Delta {
@@ -181,6 +186,35 @@ impl std::io::Write for HashWriter<'_> {
     }
 }
 
+/// The whole document's fingerprint, from every layer's: the same for the same
+/// layers in whatever order a map holds them.
+pub(super) fn fingerprint(layers: &HashMap<String, Layer>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    layers.iter().fold(0u64, |acc, (id, l)| {
+        let mut h = std::hash::DefaultHasher::new();
+        id.hash(&mut h);
+        l.hash.hash(&mut h);
+        acc.wrapping_add(h.finish())
+    })
+}
+
+/// Every layer's fingerprint in a document no session holds.
+pub(super) fn layers_of_doc(
+    doc: &mastik_core::Document,
+    res: &mastik_core::Resolved,
+) -> HashMap<String, Layer> {
+    layers(&mastik_export::snapshot(doc, res))
+}
+
+/// The step on top of the history and the document's fingerprint at the
+/// connection's look at `rev`, while it is among the looks it keeps.
+pub(super) fn look_at(conn: &Connection, rev: u64) -> Option<(Option<u64>, u64)> {
+    conn.shown
+        .iter()
+        .find(|s| s.rev == rev)
+        .map(|s| (s.top, s.print))
+}
+
 /// Every layer's fingerprint: its snapshot entry, hashed.
 fn layers(snapshot: &mastik_export::Snapshot) -> HashMap<String, Layer> {
     use std::hash::Hasher as _;
@@ -237,20 +271,24 @@ pub(super) fn layers_of(s: &EditorSession) -> Rc<HashMap<String, Layer>> {
 }
 
 /// Remember a look at `rev`, with the layers `others` changed or removed since
-/// the look before.
+/// the look before and `top`, the step on top of the history.
 pub(super) fn remember(
     conn: &mut Connection,
     rev: u64,
     layers: Rc<HashMap<String, Layer>>,
     others: Vec<String>,
+    top: Option<u64>,
 ) {
     if conn.shown.back().is_some_and(|s| s.rev == rev) {
         return;
     }
+    let print = fingerprint(&layers);
     conn.shown.push_back(Shown {
         rev,
         layers: Some(layers),
         others,
+        top,
+        print,
     });
     if let Some(old) = conn.shown.len().checked_sub(KEPT + 1) {
         conn.shown[old].layers = None;
@@ -282,7 +320,7 @@ pub(super) fn catch_up(conn: &mut Connection, session: &EditorSession) -> Option
         }
         None => (None, Vec::new()),
     };
-    remember(conn, rev, now, others);
+    remember(conn, rev, now, others, session.history.current());
     report
 }
 

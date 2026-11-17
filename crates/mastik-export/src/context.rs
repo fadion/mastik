@@ -145,7 +145,7 @@ pub fn own_box(doc: &Document, res: &Resolved, id: NodeId) -> Option<Rect> {
 
 /// The layers under `root` that can be seen, `root` first, in document order:
 /// a hidden layer's subtree and a mask, which draws nothing, are passed over.
-fn shown_under(doc: &Document, root: NodeId) -> Vec<NodeId> {
+pub(crate) fn shown_under(doc: &Document, root: NodeId) -> Vec<NodeId> {
     let mut out = Vec::new();
     let mut stack = vec![root];
     while let Some(id) = stack.pop() {

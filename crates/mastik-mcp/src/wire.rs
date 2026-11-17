@@ -38,8 +38,9 @@ Reads give boxes in world coordinates as [x, y, w, h]; writes place a layer in i
 coordinates, its box's left and top as `x`, `y` (or `at` in `set`). To add to a page: \
 `get_outline`, then `design_context` on the frame for its styles, sections and gaps, then one \
 `insert_subtree` whose layers take a sample's look with `like`, then `export_png` with a \
-`region` and `check_layout`. Edit layers with `set`; run several writes as one step with \
-`batch`. Values take short forms: a colour as \"#rrggbb\" or \"#rrggbbaa\", a fill or stroke as \
+`region` (and `since` your first `rev`, to see what you changed), `check_layout` and `review`. \
+Edit layers with `set`; run several writes as one step with `batch`, or between \
+`group_steps` begin and end. Values take short forms: a colour as \"#rrggbb\" or \"#rrggbbaa\", a fill or stroke as \
 a colour, a length as \"22px\", enum words in any case, a text's sizing and a stroke's width \
 left out. A refusal names the path of the value refused and the form to write.";
 

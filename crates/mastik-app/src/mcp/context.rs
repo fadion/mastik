@@ -1,36 +1,59 @@
-//! The reads an agent takes before adding to a page (§8.4, Phase 1):
-//! `design_context`, what the layers under a frame or page already use, and
-//! `check_layout`, the placement mistakes a render would otherwise show. Both
-//! are answered by `mastik_export::context`; this reads their arguments.
+//! The reads an agent takes before adding to a page and after (§8.4, Phase 1):
+//! `design_context`, what the layers under a frame or page already use;
+//! `check_layout`, the placement mistakes a render would otherwise show; and
+//! `review`, the design checks past those. They are answered by
+//! `mastik_export::context` and `mastik_export::review`; this reads their
+//! arguments.
 
 use super::{Answer, node, nodes};
 use crate::session::EditorSession;
 use serde_json::Value;
 
 /// The tools this module answers.
-pub(super) const TOOLS: [&str; 2] = ["design_context", "check_layout"];
+pub(super) const TOOLS: [&str; 3] = ["design_context", "check_layout", "review"];
 
 /// Answer `tool` on `s`.
 pub(super) fn run(s: &EditorSession, tool: &str, args: &Value) -> Result<Answer, String> {
     let (doc, res) = (&s.doc, &s.resolved);
+    // `ids`' outermost layers, else a page: what the checks cover.
+    let roots = || -> Result<Vec<mastik_core::NodeId>, String> {
+        Ok(match nodes(args, "ids")? {
+            Some(ids) => {
+                if let Some(gone) = ids.iter().find(|i| doc.get(**i).is_none()) {
+                    return Err(format!("no layer `{}`", gone.to_wire()));
+                }
+                mastik_core::build::outermost(doc, &ids)
+            }
+            None => vec![super::page_of(s, node(args, "page")?)?],
+        })
+    };
     match tool {
         "design_context" => {
             let asked = node(args, "id")?.unwrap_or(s.page);
             mastik_export::context::design_context(doc, res, asked).map(Answer::Json)
         }
-        "check_layout" => {
-            let roots = match nodes(args, "ids")? {
-                Some(ids) => {
-                    if let Some(gone) = ids.iter().find(|i| doc.get(**i).is_none()) {
-                        return Err(format!("no layer `{}`", gone.to_wire()));
-                    }
-                    mastik_core::build::outermost(doc, &ids)
-                }
-                None => vec![super::page_of(s, node(args, "page")?)?],
+        "check_layout" => Ok(Answer::Json(mastik_export::context::check_layout(
+            doc,
+            res,
+            &roots()?,
+        ))),
+        "review" => {
+            use mastik_export::contrast::Level;
+            use mastik_export::review::{Options, Scope, review, to_json};
+            let level = match args.get("level").and_then(Value::as_str) {
+                None | Some("aa") => Level::Aa,
+                Some("aaa") => Level::Aaa,
+                Some("apca") => Level::Apca,
+                Some(other) => return Err(format!("`level` is aa, aaa or apca, not `{other}`")),
             };
-            Ok(Answer::Json(mastik_export::context::check_layout(
-                doc, res, &roots,
-            )))
+            let step = match args.get("step").and_then(Value::as_f64) {
+                None => Options::default().step,
+                Some(s) if s > 0.0 => s,
+                Some(_) => return Err("`step` is a length above zero".into()),
+            };
+            let scope = Scope::new(doc, res, &roots()?);
+            let found = review(&scope, Options { step, level });
+            Ok(Answer::Json(to_json(&scope, &found)))
         }
         tool => Err(format!("no tool `{tool}`")),
     }
@@ -159,5 +182,32 @@ mod tests {
             panic!("json")
         };
         assert_eq!(ctx["root"]["name"], json!("Card"));
+    }
+
+    /// `review` hands the page to `mastik_export::review` with the step and
+    /// level it was given, and refuses a step of zero.
+    ///
+    /// flip: the `review` arm ignoring `step` → fails at "a gap of 15 is on a
+    /// 5-unit scale".
+    #[test]
+    fn review_reads_its_arguments() {
+        let s = with(json!({ "kind": frame(300.0, 100.0), "name": "Row",
+            "display": { "Flex": { "direction": "Row", "gap": 15 } } }));
+        let found = |args: Value| {
+            let Answer::Json(v) = run(&s, "review", &args).unwrap() else {
+                panic!("json")
+            };
+            v["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["code"] == "off_scale")
+        };
+        assert!(found(json!({})), "15 is off the 4-unit scale");
+        assert!(
+            !found(json!({ "step": 5 })),
+            "a gap of 15 is on a 5-unit scale"
+        );
+        assert!(run(&s, "review", &json!({ "step": 0 })).is_err());
     }
 }

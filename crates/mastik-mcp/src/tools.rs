@@ -3,7 +3,7 @@
 
 /// Phase 1 — read/export, ship first (§8.4), in the order §8.4 gives it so a
 /// reordering shows as a diff.
-pub const PHASE_1: [&str; 26] = [
+pub const PHASE_1: [&str; 27] = [
     "use_document",
     "get_document",
     "get_node",
@@ -29,6 +29,7 @@ pub const PHASE_1: [&str; 26] = [
     "review_colours",
     "design_context",
     "check_layout",
+    "review",
     "describe_tools",
 ];
 
@@ -222,7 +223,7 @@ pub const ASSISTANT: [&str; 1] = ["propose_edit"];
 /// The tools `tools/list` names by default (§8.4, *Core*): what nearly every
 /// task uses. Every other tool still answers by name, through `call`, or listed
 /// with `mastik mcp-proxy --tools all`; a short list is read on every turn.
-pub const CORE: [&str; 42] = [
+pub const CORE: [&str; 43] = [
     "use_document",
     "list_documents",
     "get_selection",
@@ -233,6 +234,7 @@ pub const CORE: [&str; 42] = [
     "get_tree",
     "design_context",
     "check_layout",
+    "review",
     "export_png",
     "list_components",
     "list_variables",

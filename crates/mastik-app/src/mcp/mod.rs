@@ -11,6 +11,7 @@ mod actions;
 mod agent_log;
 mod context;
 mod describe;
+mod diff;
 pub(crate) mod endpoint;
 mod group;
 mod inspect;
@@ -412,7 +413,8 @@ impl Engine {
                     } else {
                         conn.document = Some(path.clone());
                         conn.shown.clear();
-                        remember(conn, rev, layers_of(session), Vec::new());
+                        let top = session.history.current();
+                        remember(conn, rev, layers_of(session), Vec::new(), top);
                     }
                     let pages: Vec<Value> = snap
                         .pages
@@ -580,7 +582,7 @@ impl Engine {
             let now = layers_of(session);
             let own =
                 last_layers(conn).map(|(then, from)| delta(then, &now).to_json(&now, then, from));
-            remember(conn, after, now, Vec::new());
+            remember(conn, after, now, Vec::new(), session.history.current());
             if matches!(call.tool.as_str(), "undo" | "redo")
                 && let (Some(own), Some(Value::Object(map))) = (own, output.structured.as_mut())
             {
@@ -833,10 +835,10 @@ const NARROWER: &str =
 /// A read's answer, refused past [`ANSWER_BUDGET`] with the narrower call that
 /// tool takes. Every read passes here, behind any budget it applies itself;
 /// `run_exports` carries binary files under its own, and an image is bounded by
-/// its pixels.
+/// its pixels, `export_png`'s two included.
 fn read_fits(tool: &str, answer: Answer) -> Result<Answer, String> {
     use mastik_mcp::schema::{Class, class};
-    if class(tool) != Class::Read || tool == "run_exports" {
+    if class(tool) != Class::Read || matches!(tool, "run_exports" | "export_png") {
         return Ok(answer);
     }
     let size = match &answer {
@@ -1167,6 +1169,9 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
                 "export one layer with `id`, or look with `export_png`",
             )?;
             json(json!({ "svg": svg }))
+        }
+        "export_png" if index(args, "since").is_some() => {
+            diff::export_png_since(conn, s, args, index(args, "since").unwrap_or_default())
         }
         "export_png" => {
             let id = node(args, "id")?;
