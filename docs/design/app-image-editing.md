@@ -44,15 +44,40 @@ Part of §9.4.
 
 - **Framing modes** Fill / Fit / Crop / Tile — an override: Crop is what handles and pan do; the others
   re-frame inside the box the crop left and hide the ghost. The crop rectangle survives.
-- **Asset** eyebrow over the **weight readout**, two fixed lines whatever they say
-  (`pictures::Weight::lines`): format, pixels and stored size (*JPEG · 6000 × 4000 · 4.8 MB*), then
-  how small it is drawn and on how many layers (*Drawn at 1/8 of its pixels · on 3 layers*, or
-  *Drawn at 1:1 · on this layer only*). "Drawn at" is the **largest** drawn size across every layer
-  showing the picture (`MastikApp::picture_weight`: world × framing, units per source pixel), so a
-  picture drawn small in one place and full size in another is not flagged, and the zoom plays no
-  part. The second line turns `color::warn()` under a quarter of its pixels across
-  (`pictures::HEAVY_BELOW`). A picture whose bytes are not here reads *Missing · 2400 × 1600 when
-  saved* (*Missing* with no entry at all).
+- **Aspect** eyebrow under Mode: a `ComboBox` of `CropShape` (*Free*, *Original*, *1:1*, *4:3*,
+  *3:2*, *16:9*) and a `ui::field_button` (`icon::ARROWS_CLOCKWISE`, the reverse glyph) that swaps a
+  two-sided ratio to portrait, its tooltip naming the shape it swaps to; dimmed with a reason for
+  Free, Original and 1:1. The shape is **card state, not the document's** (`MastikApp::crop_aspect`,
+  a `CropAspect` keyed by the picture, so a new picture starts Free): a crop's shape is already its
+  box. *Original* reads the oriented picture, so it follows a turn. Picking one
+  (`MastikApp::shape_crop`) reshapes the window at once to the largest box of that shape inside the
+  box and the picture (`edit::crop_shaped`), about the box's centre, the picture held still and the
+  mode forced to Crop: one undo step, *Crop*, as a handle drag is. Re-picking the shape in force
+  reshapes again.
+- **Orient** eyebrow over four `ui::field_button_sized`s splitting the row, the Transform card's
+  quarters row in its order and glyphs: turn counter-clockwise (`icon::ROTATE_LEFT`), turn clockwise
+  (`icon::ROTATE_RIGHT`), mirror left to right (`icon::FLIP_HORIZONTAL`), mirror top to bottom
+  (`icon::FLIP_VERTICAL`). Actions, never lit; each tooltip says it moves the picture in its frame,
+  not the layer. `MastikApp::turn_picture` writes `OrientOp::Turn`, once clockwise and three times
+  counter-clockwise (the model's one turn), which carries the crop. When the box showed the
+  whole picture at its own shape (`ImageRef::frames_whole_picture`: Fill or Fit, or Crop uncut, at
+  the oriented aspect within 1%) the box turns too, width and height swapped about its centre
+  (`edit::reshape_box`); any other box is a framing someone chose and stays. One undo step, *Turn
+  picture*.
+- **Scale** (`icon::RESIZE`) and **Tile** (`icon::IMAGE_TILE`) half-width fields, percent of source
+  pixels (`1.0` = one unit per source pixel); each read by one mode and **dimmed, not hidden**,
+  otherwise.
+  - Scale is the crop zoom (no gesture can scale the picture). Floor `ImageRef::cover_scale`; ceiling
+    `floor.max(10_000.0)` — the one inspector bound from the document. Writes via `image::crop_scaled`
+    (uniform about the window centre); readout seeded from `cover_crop` outside Crop. Scrubs in
+    hundredths (multiplicative); Tile in whole units.
+- Then five actions in one run, the readout they act on below them.
+- *Reset crop* puts the picture back as it was placed (`MastikApp::crop_reset_tx`): the framing
+  fields at their defaults (mode, crop, tile scale, orientation; the adjustments are another tab's
+  and stay), the card's Aspect back to Free, and the box set to the whole picture where it is drawn
+  now, at its own shape, so nothing is cut or stretched and the picture does not move (under Tile,
+  which draws no single picture, the box keeps its centre and width). One undo step, *Reset crop*.
+  Dimmed with *The picture is shown whole, as it was placed*.
 - Then *Replace…* (pick one file, embed it, **keep the framing** — the repair for a
   missing picture) and *Replace and reset* (framing fields to defaults, adjustments kept). Both decline
   for a selection slot and run after the `Area` closure (the dialog is modal); the card stays behind
@@ -84,32 +109,15 @@ Part of §9.4.
     mode to Crop first*. Status *Cropped Hero photo to 2400 × 1800 — 4.8 MB to 1.1 MB*. Linked-source entries (*Embed/Link*, *Relink…*) are not built — no linking is authored.
   A replacement drops the layer's photo credit (`credit::dropped_by_replace`, in `replace_image_with`),
   since the photo it credited is gone; an icon's credit stays.
-- **Aspect** eyebrow under Mode: a `ComboBox` of `CropShape` (*Free*, *Original*, *1:1*, *4:3*,
-  *3:2*, *16:9*) and a `ui::field_button` (`icon::ARROWS_CLOCKWISE`, the reverse glyph) that swaps a
-  two-sided ratio to portrait, its tooltip naming the shape it swaps to; dimmed with a reason for
-  Free, Original and 1:1. The shape is **card state, not the document's** (`MastikApp::crop_aspect`,
-  a `CropAspect` keyed by the picture, so a new picture starts Free): a crop's shape is already its
-  box. *Original* reads the oriented picture, so it follows a turn. Picking one
-  (`MastikApp::shape_crop`) reshapes the window at once to the largest box of that shape inside the
-  box and the picture (`edit::crop_shaped`), about the box's centre, the picture held still and the
-  mode forced to Crop: one undo step, *Crop*, as a handle drag is. Re-picking the shape in force
-  reshapes again.
-- **Orient** eyebrow over three `ui::label_button`s, *Horizontal*, *Vertical* and *Turn 90°* —
-  actions, never lit; words, since on a symmetric shape the two flips look the same. The turn is
-  clockwise only (four presses come back round) and is the picture's, not the layer's Rotate 90°.
-  `MastikApp::turn_picture` writes `OrientOp::Turn`, which carries the crop. When the box showed the
-  whole picture at its own shape (`ImageRef::frames_whole_picture`: Fill or Fit, or Crop uncut, at
-  the oriented aspect within 1%) the box turns too, width and height swapped about its centre
-  (`edit::reshape_box`); any other box is a framing someone chose and stays. One undo step, *Turn
-  picture*.
-- **Scale** (`icon::RESIZE`) and **Tile** (`icon::IMAGE_TILE`) half-width fields, percent of source
-  pixels (`1.0` = one unit per source pixel); each read by one mode and **dimmed, not hidden**,
-  otherwise.
-  - Scale is the crop zoom (no gesture can scale the picture). Floor `ImageRef::cover_scale`; ceiling
-    `floor.max(10_000.0)` — the one inspector bound from the document. Writes via `image::crop_scaled`
-    (uniform about the window centre); readout seeded from `cover_crop` outside Crop. Scrubs in
-    hundredths (multiplicative); Tile in whole units.
-- *Reset crop* restores `whole_crop()`'s sentinel.
+- **Asset** eyebrow, last, over the **weight readout**, two fixed lines whatever they say
+  (`pictures::Weight::lines`): format, pixels and stored size (*JPEG · 6000 × 4000 · 4.8 MB*), then
+  how small it is drawn and on how many layers (*Drawn at 1/8 of its pixels · on 3 layers*, or
+  *Drawn at 1:1 · on this layer only*). "Drawn at" is the **largest** drawn size across every layer
+  showing the picture (`MastikApp::picture_weight`: world × framing, units per source pixel), so a
+  picture drawn small in one place and full size in another is not flagged, and the zoom plays no
+  part. The second line turns `color::warn()` under a quarter of its pixels across
+  (`pictures::HEAVY_BELOW`). A picture whose bytes are not here reads *Missing · 2400 × 1600 when
+  saved* (*Missing* with no entry at all).
 - Actions go through `inspector::menu_action`, which shadows a dimmed row with an explicit
   `Sense::empty()` claimant so its tooltip still shows.
 - Not here: *Original size* (resizes the node; it is `context-menus.md` §5.7's row), *Export

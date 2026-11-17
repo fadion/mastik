@@ -6379,11 +6379,8 @@ pub fn field_button_marked(
     (resp, reset)
 }
 
-/// [`field_button_sized`] with a **word** in it instead of a glyph.
-///
-/// For controls that must not be mistaken for an icon button elsewhere: the image
-/// popover's mirror buttons flip the picture where the Transform panel's flip the
-/// layer, and only words tell them apart.
+/// [`field_button_sized`] with a **word** in it instead of a glyph, for an act
+/// no glyph names: *Apply*, *Undo*, *Merge*.
 pub fn label_button(
     ui: &mut egui::Ui,
     text: &str,

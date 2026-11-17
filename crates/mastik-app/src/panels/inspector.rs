@@ -166,7 +166,7 @@ fn image_body_h_id() -> egui::Id {
 /// measured: the Settings tab's own, held to it by
 /// `every_tab_keeps_the_settings_tabs_height`, since a card opened on another tab
 /// could never grow back to it.
-pub(super) const IMAGE_BODY_FALLBACK_H: f32 = 386.0;
+pub(super) const IMAGE_BODY_FALLBACK_H: f32 = 383.0;
 
 /// The Transform card's marks — `MastikApp::transform_marks`.
 #[derive(Default)]
@@ -9067,30 +9067,51 @@ impl MastikApp {
                                 }
                             });
                         });
-                        // Words, not the flip glyphs: these act on the picture, not the
-                        // layer. Actions, not toggles, since `ImageOrient` composes.
-                        let mut turn = false;
+                        // The Transform card's row and glyphs, in its order; the
+                        // tooltips say these move the picture, not the layer. Actions,
+                        // not toggles, since `ImageOrient` composes.
+                        let mut turn = None;
                         ui.scope(|ui| {
                             ui.spacing_mut().item_spacing.y = 5.0;
                             ui.label(ui::eyebrow("Orient"));
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                                let bw = egui::vec2((inner - 2.0 * ui::CARD_COL_GAP) / 3.0, CELL);
-                                for (label, op, tip) in [
+                                let bw = egui::vec2((inner - 3.0 * ui::CARD_COL_GAP) / 4.0, CELL);
+                                for (glyph, clockwise, tip) in [
                                     (
-                                        "Horizontal",
-                                        OrientOp::FlipH,
-                                        "Mirror the picture in its frame, left to right — \
-                                     the layer itself does not move",
+                                        icon::ROTATE_LEFT,
+                                        false,
+                                        "Turn the picture a quarter counter-clockwise in its \
+                                         frame",
                                     ),
                                     (
-                                        "Vertical",
-                                        OrientOp::FlipV,
-                                        "Mirror the picture in its frame, top to bottom — \
-                                     the layer itself does not move",
+                                        icon::ROTATE_RIGHT,
+                                        true,
+                                        "Turn the picture a quarter clockwise in its frame",
                                     ),
                                 ] {
-                                    if ui::label_button(ui, label, bw, ui::FieldButton::Off)
+                                    if ui::field_button_sized(ui, glyph, bw, ui::FieldButton::Off)
+                                        .on_hover_text(tip)
+                                        .clicked()
+                                    {
+                                        turn = Some(clockwise);
+                                    }
+                                }
+                                for (glyph, op, tip) in [
+                                    (
+                                        icon::FLIP_HORIZONTAL,
+                                        OrientOp::FlipH,
+                                        "Mirror the picture in its frame, left to right — \
+                                         the layer itself does not move",
+                                    ),
+                                    (
+                                        icon::FLIP_VERTICAL,
+                                        OrientOp::FlipV,
+                                        "Mirror the picture in its frame, top to bottom — \
+                                         the layer itself does not move",
+                                    ),
+                                ] {
+                                    if ui::field_button_sized(ui, glyph, bw, ui::FieldButton::Off)
                                         .on_hover_text(tip)
                                         .clicked()
                                     {
@@ -9102,16 +9123,10 @@ impl MastikApp {
                                         );
                                     }
                                 }
-                                // Clockwise only: four presses come back round.
-                                turn = ui::label_button(ui, "Turn 90°", bw, ui::FieldButton::Off)
-                                    .on_hover_text(
-                                        "Turn the picture a quarter clockwise in its frame",
-                                    )
-                                    .clicked();
                             });
                         });
-                        if turn {
-                            self.turn_picture(id, slot, brush);
+                        if let Some(clockwise) = turn {
+                            self.turn_picture(id, slot, brush, clockwise);
                         }
 
                         // Scale for Crop, Tile for Tile: one measurement (local units
@@ -9220,35 +9235,109 @@ impl MastikApp {
                             self.valve_slot(&resp.on_hover_text(hint), id, slot, edit);
                         }
 
-                        // Restores the `whole_crop` sentinel ("never cropped"), so the next
-                        // entry into Crop seeds cover.
-                        let cropped = img.crop != mastik_core::whole_crop();
+                        // The five actions together, then the readout they act on.
+                        // *Embed*/*Link* and *Relink…* are absent, not dead: they wait
+                        // on a linked source nothing can author.
+                        let weight = self.picture_weight(&img.id);
+                        let reset = self.crop_reset_tx(id, slot, brush);
+                        let shaped = self.crop_aspect.for_picture(&img.id).0 != CropShape::Free;
                         ui.scope(|ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
                             if menu_action(
                                 ui,
-                                cropped,
+                                reset.is_some() || shaped,
                                 icon::ARROW_COUNTER_CLOCKWISE,
                                 "Reset crop",
                                 &|on| {
                                     if on {
-                                        "Show the whole picture again".into()
+                                        "Show the whole picture again, as it was placed".into()
                                     } else {
-                                        "This picture has not been cropped".into()
+                                        "The picture is shown whole, as it was placed".into()
                                     }
                                 },
                             ) {
-                                self.write_slot(
-                                    id,
-                                    slot,
-                                    paint::map_image(brush, |r| r.crop = mastik_core::whole_crop()),
-                                );
+                                self.crop_aspect = CropAspect::default();
+                                if let Some(tx) = reset.clone() {
+                                    self.session.name_step("Reset crop", icon::CROP);
+                                    self.commit_edit(tx);
+                                }
+                            }
+                            // Also the repair for a missing picture's placeholder.
+                            if menu_action(ui, !replace_scoped, icon::SWAP, "Replace…", &|on| {
+                                if on {
+                                    "Pick a file to show here, keeping the framing".into()
+                                } else {
+                                    "Replacing works on one layer at a time".into()
+                                }
+                            }) {
+                                replace = Some(true);
+                            }
+                            // The framing dropped, for a picture of another shape;
+                            // the adjustments are kept (`replace_image_action`).
+                            if menu_action(
+                                ui,
+                                !replace_scoped,
+                                icon::BROOM,
+                                "Replace and reset",
+                                &|on| {
+                                    if on {
+                                        "Pick a file and show all of it, \
+                                             dropping the crop and the mode"
+                                            .into()
+                                    } else {
+                                        "Replacing works on one layer at a time".into()
+                                    }
+                                },
+                            ) {
+                                replace = Some(false);
+                            }
+                            // The two that rewrite a picture's bytes: each its own
+                            // undo step, run only from here.
+                            const MISSING: &str =
+                                "The picture's pixels are missing — replace it first";
+                            let missing = !weight.embedded;
+                            if menu_action(
+                                ui,
+                                !missing && !replace_scoped,
+                                icon::CORNERS_IN,
+                                "Reduce picture…",
+                                &|on| match (on, missing) {
+                                    (true, _) => "Make the picture smaller in the file, \
+                                                      on every layer that uses it"
+                                        .into(),
+                                    (false, true) => MISSING.into(),
+                                    (false, false) => {
+                                        "Reducing works on one layer at a time".into()
+                                    }
+                                },
+                            ) {
+                                reduce = true;
+                            }
+                            let uncut = img.crop == mastik_core::whole_crop();
+                            let why_not = if missing {
+                                Some(MISSING)
+                            } else if uncut {
+                                Some("This picture has not been cropped")
+                            } else if img.fit != mastik_core::ImageFit::Crop {
+                                Some(
+                                    "Only Crop keeps part of the picture — switch the \
+                                         mode to Crop first",
+                                )
+                            } else {
+                                None
+                            };
+                            if menu_action(ui, why_not.is_none(), icon::CROP, "Apply crop", &|on| {
+                                match (on, why_not) {
+                                    (true, _) | (_, None) => "Keep only the pixels inside \
+                                                                  the crop — undo brings the \
+                                                                  rest back"
+                                        .into(),
+                                    (false, Some(why)) => why.into(),
+                                }
+                            }) {
+                                apply_crop = true;
                             }
                         });
-
-                        // *Embed*/*Link* and *Relink…* are absent, not dead: they wait on
-                        // a linked source nothing can author.
-                        let weight = self.picture_weight(&img.id);
                         ui.scope(|ui| {
                             ui.spacing_mut().item_spacing.y = 5.0;
                             ui.label(ui::eyebrow("Asset"));
@@ -9280,94 +9369,6 @@ impl MastikApp {
                                     "How heavy the picture is in the file, and how small it \
                                      is drawn",
                                 );
-                            ui.scope(|ui| {
-                                ui.spacing_mut().item_spacing.y = 2.0;
-                                // Also the repair for a missing picture's placeholder.
-                                if menu_action(
-                                    ui,
-                                    !replace_scoped,
-                                    icon::SWAP,
-                                    "Replace…",
-                                    &|on| {
-                                        if on {
-                                            "Pick a file to show here, keeping the framing".into()
-                                        } else {
-                                            "Replacing works on one layer at a time".into()
-                                        }
-                                    },
-                                ) {
-                                    replace = Some(true);
-                                }
-                                // The framing dropped, for a picture of another shape;
-                                // the adjustments are kept (`replace_image_action`).
-                                if menu_action(
-                                    ui,
-                                    !replace_scoped,
-                                    icon::BROOM,
-                                    "Replace and reset",
-                                    &|on| {
-                                        if on {
-                                            "Pick a file and show all of it, \
-                                             dropping the crop and the mode"
-                                                .into()
-                                        } else {
-                                            "Replacing works on one layer at a time".into()
-                                        }
-                                    },
-                                ) {
-                                    replace = Some(false);
-                                }
-                                // The two that rewrite a picture's bytes: each its own
-                                // undo step, run only from here.
-                                const MISSING: &str =
-                                    "The picture's pixels are missing — replace it first";
-                                let missing = !weight.embedded;
-                                if menu_action(
-                                    ui,
-                                    !missing && !replace_scoped,
-                                    icon::CORNERS_IN,
-                                    "Reduce picture…",
-                                    &|on| match (on, missing) {
-                                        (true, _) => "Make the picture smaller in the file, \
-                                                      on every layer that uses it"
-                                            .into(),
-                                        (false, true) => MISSING.into(),
-                                        (false, false) => {
-                                            "Reducing works on one layer at a time".into()
-                                        }
-                                    },
-                                ) {
-                                    reduce = true;
-                                }
-                                let uncut = img.crop == mastik_core::whole_crop();
-                                let why_not = if missing {
-                                    Some(MISSING)
-                                } else if uncut {
-                                    Some("This picture has not been cropped")
-                                } else if img.fit != mastik_core::ImageFit::Crop {
-                                    Some(
-                                        "Only Crop keeps part of the picture — switch the \
-                                         mode to Crop first",
-                                    )
-                                } else {
-                                    None
-                                };
-                                if menu_action(
-                                    ui,
-                                    why_not.is_none(),
-                                    icon::CROP,
-                                    "Apply crop",
-                                    &|on| match (on, why_not) {
-                                        (true, _) | (_, None) => "Keep only the pixels inside \
-                                                                  the crop — undo brings the \
-                                                                  rest back"
-                                            .into(),
-                                        (false, Some(why)) => why.into(),
-                                    },
-                                ) {
-                                    apply_crop = true;
-                                }
-                            });
                         });
                     }
                     if card == ImageCard::Settings {
@@ -9599,14 +9600,26 @@ impl MastikApp {
         self.commit_edit(tx);
     }
 
-    /// Turn `id`'s picture a quarter clockwise in its frame, as one undo step.
+    /// Turn `id`'s picture a quarter in its frame, clockwise or not, as one undo
+    /// step. Counter-clockwise is three clockwise quarters, the one turn the model has.
     ///
     /// A box that showed the whole picture at its own shape turns with it, its
     /// width and height swapped about its centre: the sideways photo just placed.
     /// Any other box is a framing someone chose, so it stays and the picture
     /// re-frames inside it, as a replacement does.
-    pub(crate) fn turn_picture(&mut self, id: NodeId, slot: PaintSlot, brush: &Brush) {
-        let turned = paint::map_image(brush, |r| *r = r.reoriented(OrientOp::Turn));
+    pub(crate) fn turn_picture(
+        &mut self,
+        id: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        clockwise: bool,
+    ) {
+        let quarters = if clockwise { 1 } else { 3 };
+        let turned = paint::map_image(brush, |r| {
+            for _ in 0..quarters {
+                *r = r.reoriented(OrientOp::Turn);
+            }
+        });
         let mut tx = Transaction::default();
         if let Some((frame, w, h)) = self.crop_seed(id, slot, brush)
             && paint::image_of(brush).is_some_and(|r| r.frames_whole_picture(frame, w, h))
@@ -9620,6 +9633,59 @@ impl MastikApp {
         tx.0.extend(self.slot_transaction(id, slot, turned).0);
         self.session.name_step("Turn picture", icon::IMAGE);
         self.commit_edit(tx);
+    }
+
+    /// *Reset crop*'s transaction: the picture back as it was placed, or `None`
+    /// when it already is. The framing fields go to their defaults (mode, crop,
+    /// tile scale, orientation); the adjustments are another tab's and stay. The
+    /// box becomes the whole picture where it is drawn now, at its own shape, so
+    /// nothing is cut or stretched and the picture does not jump; under Tile,
+    /// which draws no one picture, the box keeps its centre and width.
+    pub(crate) fn crop_reset_tx(
+        &self,
+        id: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+    ) -> Option<Transaction> {
+        let img = paint::image_of(brush)?;
+        let placed = mastik_core::ImageRef {
+            adjust: img.adjust,
+            ..mastik_core::ImageRef::new(img.id.clone())
+        };
+        let mut tx = Transaction::default();
+        if let Some((frame, w, h)) = self.crop_seed(id, slot, brush) {
+            let drawn = match img.fit {
+                mastik_core::ImageFit::Tile => None,
+                _ => img.picture_box(frame, w, h),
+            };
+            let (centre, scale) = match drawn {
+                Some(b) => (b.center(), b.width() / img.oriented_size(w, h).0),
+                None => (frame.center(), frame.width() / f64::from(w)),
+            };
+            let to = mastik_core::kurbo::Rect::from_center_size(
+                centre,
+                Size::new(f64::from(w) * scale, f64::from(h) * scale),
+            );
+            let moved = [
+                to.x0 - frame.x0,
+                to.y0 - frame.y0,
+                to.x1 - frame.x1,
+                to.y1 - frame.y1,
+            ]
+            .iter()
+            .any(|d| d.abs() > 1e-6);
+            if scale.is_finite() && scale > 0.0 && moved {
+                tx = tools::reshape_box(&self.session.doc, &self.session.resolved, id, to);
+            }
+        }
+        if tx.0.is_empty() && *img == placed {
+            return None;
+        }
+        tx.0.extend(
+            self.slot_transaction(id, slot, paint::map_image(brush, |r| *r = placed.clone()))
+                .0,
+        );
+        Some(tx)
     }
 
     /// Hold `id`'s crop window to `ratio` (width over height): the largest box of
@@ -23906,18 +23972,48 @@ mod mixed_spread_tests {
         let brush = mastik_core::image_brush(image);
 
         let (_, centre) = size_and_centre(&app, wide);
-        app.turn_picture(wide, PaintSlot::Fill(0), &brush);
+        app.turn_picture(wide, PaintSlot::Fill(0), &brush, true);
         let (size, after) = size_and_centre(&app, wide);
         assert_eq!(size, Size::new(30.0, 40.0), "the box turns");
         assert!((after - centre).hypot() < 1e-9, "about its centre");
+        let orient =
+            |app: &MastikApp| match app.session.doc.get(wide).expect("the layer").paint().fills[0]
+                .brush
+                .literal()
+            {
+                Some(mastik_core::Brush::Image(img)) => img.image.orient,
+                other => panic!("an image fill, not {other:?}"),
+            };
+        let clockwise = orient(&app);
         app.session.undo();
         assert_eq!(
             size_and_centre(&app, wide).0,
             Size::new(40.0, 30.0),
             "one undo step takes back the box and the picture together"
         );
+        // flip: `turn_picture` ignoring `clockwise` → fails at "the other way".
+        app.turn_picture(wide, PaintSlot::Fill(0), &brush, false);
+        assert_eq!(size_and_centre(&app, wide).0, Size::new(30.0, 40.0));
+        assert_ne!(
+            orient(&app),
+            clockwise,
+            "counter-clockwise turns the other way"
+        );
+        let now = app.session.doc.get(wide).expect("the layer").paint().fills[0]
+            .brush
+            .literal()
+            .cloned()
+            .expect("lit");
+        app.turn_picture(wide, PaintSlot::Fill(0), &now, true);
+        assert_eq!(
+            orient(&app),
+            mastik_core::ImageOrient::IDENTITY,
+            "and a clockwise quarter brings it back"
+        );
+        app.session.undo();
+        app.session.undo();
 
-        app.turn_picture(cut, PaintSlot::Fill(0), &brush);
+        app.turn_picture(cut, PaintSlot::Fill(0), &brush, true);
         assert_eq!(
             size_and_centre(&app, cut).0,
             Size::new(60.0, 30.0),
@@ -24101,6 +24197,117 @@ mod slot_decision_tests {
             (target.min_x(), target.max_x()),
             (0.0, 420.0),
             "the union of the operands, not the box of a key inside one of them"
+        );
+    }
+
+    /// *Reset crop* puts a cropped, turned picture back as placed: its framing at
+    /// the defaults with the adjustments kept, the box the whole picture where it
+    /// was drawn at its own shape, and the Aspect back to Free; one undo step.
+    /// flip: `crop_reset_tx` keeping the box → fails at "the box is the whole
+    /// picture".
+    #[test]
+    fn reset_crop_puts_the_picture_back_as_placed() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let mut ids = mastik_core::IdSource::new(0x5E7);
+        let root = ids.mint();
+        let mut doc = mastik_core::Document::new(root);
+        let id = ids.mint();
+        let image = mastik_core::ImageId("reset".into());
+        let mut picture = mastik_core::ImageRef::new(image.clone());
+        picture.adjust.exposure = 0.3;
+        let placed = picture.clone();
+        picture = picture.reoriented(OrientOp::Turn);
+        picture.fit = mastik_core::ImageFit::Crop;
+        // Turned, the picture is 100 × 200: a 50 × 50 window onto it, unstretched.
+        picture.crop = mastik_core::kurbo::Rect::new(0.25, 0.5, 0.75, 0.75);
+        doc.apply(&Transaction(vec![
+            Operation::AddImage {
+                id: image.clone(),
+                entry: mastik_core::ImageEntry {
+                    source: mastik_core::ImageSource::Embedded(vec![0u8; 16].into()),
+                    format: mastik_core::ImageFormat::Png,
+                    width: 200,
+                    height: 100,
+                },
+            },
+            Operation::CreateNode {
+                id,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size: Size::new(50.0, 50.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetFills {
+                id,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: paint::map_image(&mastik_core::image_brush(image.clone()), |r| {
+                        *r = picture.clone()
+                    })
+                    .into(),
+                    visible: true,
+                }]),
+            },
+        ]))
+        .expect("a cropped picture");
+        app.session.adopt_document(doc, None);
+        app.crop_aspect = CropAspect {
+            picture: Some(image.clone()),
+            shape: CropShape::Square,
+            portrait: false,
+        };
+        let brush = |app: &MastikApp| {
+            app.session.doc.get(id).expect("the layer").paint().fills[0]
+                .brush
+                .literal()
+                .cloned()
+                .expect("lit")
+        };
+        let before = brush(&app);
+        let drawn = paint::image_of(&before)
+            .and_then(|r| {
+                r.picture_box(
+                    mastik_core::kurbo::Rect::new(0.0, 0.0, 50.0, 50.0),
+                    200,
+                    100,
+                )
+            })
+            .expect("drawn");
+        let depth = app.session.history.undo_depth();
+        let tx = app
+            .crop_reset_tx(id, PaintSlot::Fill(0), &before)
+            .expect("something to reset");
+        app.crop_aspect = CropAspect::default();
+        app.commit_edit(tx);
+
+        let after = brush(&app);
+        assert_eq!(
+            paint::image_of(&after),
+            Some(&placed),
+            "framing reset, adjustments kept"
+        );
+        let b = mastik_core::local_box(&app.session.doc, &app.session.resolved, id).expect("a box");
+        let w = app.session.resolved.world_transform(id).expect("placed");
+        let world = w.transform_rect_bbox(b);
+        assert!(
+            (world.size().width / world.size().height - 2.0).abs() < 1e-6,
+            "the box is the whole picture at its own shape: {world:?}"
+        );
+        assert!(
+            (world.center() - drawn.center()).hypot() < 1e-6
+                && (world.width() - drawn.height()).abs() < 1e-6,
+            "where it was drawn, unturned: {world:?} against {drawn:?}"
+        );
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+        assert!(
+            app.crop_reset_tx(id, PaintSlot::Fill(0), &after).is_none(),
+            "and then there is nothing left to reset"
         );
     }
 
