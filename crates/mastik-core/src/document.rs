@@ -52,9 +52,10 @@ pub struct Document {
     vault: Option<NodeId>,
     /// The ruler guides placed on this document (`crate::guide`).
     ///
-    /// Unordered — guides have no z and no operation refers to one by position —
-    /// so `apply` appends and IO sorts by id for byte-stable output (invariant 9).
-    /// A `Vec` because every reader wants all of them and a document has a handful.
+    /// Kept sorted by id: guides have no z and no operation refers to one by
+    /// position, so the id is the one order that undoing a removal restores
+    /// exactly. A `Vec` because every reader wants all of them and a document has
+    /// a handful.
     guides: Vec<Guide>,
     /// The images this document carries, keyed by the id a fill refers to
     /// (`crate::image`).
@@ -379,7 +380,7 @@ impl Document {
         self.tokens_link = link.map(std::sync::Arc::new);
     }
 
-    /// Every ruler guide on the document, in no particular order.
+    /// Every ruler guide on the document, in id order.
     pub fn guides(&self) -> &[Guide] {
         &self.guides
     }
@@ -388,7 +389,7 @@ impl Document {
         self.guides.iter().find(|g| g.id == id)
     }
 
-    /// The guides scoped to `owner`, in no particular order.
+    /// The guides scoped to `owner`, in id order.
     ///
     /// The reverse of [`Guide::owner`], so a caller cannot read a `None` owner as
     /// "owned by nothing in particular" when it means "owned by the canvas".
@@ -1388,6 +1389,8 @@ impl Document {
         meta: DocumentMeta,
         published: Option<crate::kit::Published>,
     ) -> Self {
+        let mut guides = guides;
+        guides.sort_by_key(|g| g.id);
         Self {
             schema_version,
             nodes: NodeTable::new(nodes),
@@ -3488,7 +3491,8 @@ impl Document {
             return Err(OpError::NonFinite);
         }
         self.check_guide_owner(guide.owner)?;
-        self.guides.push(guide);
+        let at = self.guides.partition_point(|g| g.id < guide.id);
+        self.guides.insert(at, guide);
         Ok(Operation::RemoveGuide { id: guide.id })
     }
 

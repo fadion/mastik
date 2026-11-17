@@ -827,7 +827,8 @@ impl DocumentDto {
         let mut nodes: Vec<NodeDto> = doc.nodes_iter().map(NodeDto::from_node).collect();
         // Stable order: sort by (actor, seq) via the parsed id.
         nodes.sort_by_key(|n| NodeId::from_wire(&n.id).expect("wire form we just produced"));
-        let mut guides: Vec<GuideDto> = doc
+        // Already in id order (`Document::guides`), so the file's order holds.
+        let guides: Vec<GuideDto> = doc
             .guides()
             .iter()
             .map(|g| GuideDto {
@@ -838,9 +839,6 @@ impl DocumentDto {
                 owner: g.owner.to_wire(),
             })
             .collect();
-        // The in-memory list is append-ordered, so it depends on the order the
-        // guides were drawn and on what has been undone. Sort as the nodes are.
-        guides.sort_by_key(|g| GuideId::from_wire(&g.id).expect("wire form we just produced"));
         let mut images: Vec<ImageDto> = doc
             .images()
             .map(|(id, entry)| ImageDto::from_entry(id, entry))

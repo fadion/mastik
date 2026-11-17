@@ -1474,6 +1474,37 @@ fn undoing_a_frame_delete_restores_its_guides() {
     );
 }
 
+/// Undoing a guide's removal puts it back where it stood in the list, so the
+/// document after the undo equals the one before the removal.
+///
+/// flip: `op_add_guide` appending instead of inserting in id order → fails at
+/// the `assert_eq!` on the list.
+#[test]
+fn undoing_a_guide_removal_keeps_the_guide_order() {
+    let (mut doc, mut ids, _, _) = framed();
+    let page = doc.first_page();
+    let guides: Vec<Guide> = [10.0, 20.0, 30.0]
+        .into_iter()
+        .map(|p| guide_at(&mut ids, page, GuideAxis::Horizontal, p))
+        .collect();
+    let adds = guides
+        .iter()
+        .map(|&guide| Operation::AddGuide { guide })
+        .collect();
+    doc.apply(&Transaction(adds)).unwrap();
+    let before = doc.guides().to_vec();
+    assert_eq!(before, guides, "the fixture starts with the three in order");
+
+    let mut hist = History::new();
+    hist.commit(
+        &mut doc,
+        Transaction(vec![Operation::RemoveGuide { id: guides[0].id }]),
+    )
+    .unwrap();
+    hist.undo(&mut doc).unwrap();
+    assert_eq!(doc.guides(), before.as_slice());
+}
+
 // --- the image table (§5.5a) ------------------------------------------------
 
 fn jpeg_bytes() -> Vec<u8> {

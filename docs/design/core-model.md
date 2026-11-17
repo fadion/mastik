@@ -192,7 +192,7 @@ pub struct Document {
     nodes: FxHashMap<NodeId, Node>,
     pages: Vec<Page>,                   // in order; never empty
     vault: Option<NodeId>,              // another parentless Root, never a page: vendored kit mains — §5.3e
-    guides: Vec<Guide>,                 // ruler guides; unordered
+    guides: Vec<Guide>,                 // ruler guides; kept in id order, so an undone removal restores the list exactly
     published: Option<Arc<kit::Published>>, // a kit's last publish, frozen; outside undo — §5.3e
     laid_widths: LaidWidths,            // querying frames' laid-out widths; derived, never saved or compared
 }

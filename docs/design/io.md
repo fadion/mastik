@@ -19,7 +19,7 @@ The native `.mastik` file format (JSON, versioned DTO), its integrity checks, th
 
 ### save and load
 
-- `save` emits nodes **sorted by NodeId** with stable field order, so re-saves are byte-identical (invariant 9). Guides are sorted by id too (the in-memory list is unordered, §5.5).
+- `save` emits nodes **sorted by NodeId** with stable field order, so re-saves are byte-identical (invariant 9). Guides are in id order too, the order the in-memory list keeps (§5.5).
 - `load` reads `schema_version`, runs the `migrate.rs` chain, builds the `Document`, then verifies tree integrity.
 - A current file skips the chain: `load` deserializes it straight into `DocumentDto`, without the `serde_json::Value` the migrations work on, which on a large file was most of the load. Any file that path refuses or that is not at the current version goes through `load_migrating`, the chain, and its answer stands — so the fast path only ever adds speed. The two give the same document (`a_current_file_loads_the_same_by_either_path`); a duplicate key is where they part, refused by a struct and resolved to the last by a `Value`.
 - The version is compared in the header's own denomination (`u64`) and never narrowed: casting to `u32` first let 2³³ truncate to 0 and open. `IoError::UnsupportedVersion` carries a `u64` so a reintroduced cast does not compile.
