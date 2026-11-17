@@ -8919,7 +8919,9 @@ impl MastikApp {
     /// itself says it.
     /// *View ▸ Show messages* hides the message, never the mode. Drawn in focus
     /// mode too (its Escape hint). Truncated so it never runs under the inspector.
-    /// The library draws it too (`library`), at its body's corner, with no mode.
+    /// The library draws it too (`library`), at its body's corner, with no mode,
+    /// the message wrapped across the body rather than truncated: nothing there
+    /// can be hovered, and a failure must be readable whole.
     ///
     /// While exports run it also says so ([`Self::exporting`]) with *Cancel*, and
     /// answers whether that was clicked. **Interactable only then**: the rest of the
@@ -8960,7 +8962,11 @@ impl MastikApp {
                 hold - age - STATUS_FADE
             }));
         }
-        let max_w = (canvas.width() * 0.6).min(560.0);
+        let max_w = if library {
+            (canvas.width() - 2.0 * crate::ui::SCREEN_MARGIN).min(560.0)
+        } else {
+            (canvas.width() * 0.6).min(560.0)
+        };
         // Beside the minimap, which holds the corner.
         let beside = if library {
             0.0
@@ -8999,16 +9005,16 @@ impl MastikApp {
                                 );
                             }
                             if message {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(crate::input::keys(&status.text))
-                                            .size(crate::ui::SMALL_PT)
-                                            .color(
-                                                status_color(status).gamma_multiply(message_fade),
-                                            ),
-                                    )
-                                    .truncate(),
+                                let label = egui::Label::new(
+                                    egui::RichText::new(crate::input::keys(&status.text))
+                                        .size(crate::ui::SMALL_PT)
+                                        .color(status_color(status).gamma_multiply(message_fade)),
                                 );
+                                ui.add(if library {
+                                    label.wrap()
+                                } else {
+                                    label.truncate()
+                                });
                             }
                             if let Some(exporting) = &exporting {
                                 ui.label(

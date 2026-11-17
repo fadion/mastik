@@ -8846,6 +8846,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// On a narrow window a library failure is painted whole, wrapped, since
+    /// nothing on the library screen can be hovered to read the rest.
+    /// flip: `status_bar` truncating the library's message → fails at "painted
+    /// whole".
+    #[test]
+    fn a_library_failure_reads_whole_on_a_narrow_window() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "narrow");
+        let text = "Couldn't move “Quarterly report” to the trash: Access is denied.";
+        app.session.fail(text);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let mut painted = None;
+        for _ in 0..4 {
+            let full = ctx.run_ui(input.clone(), |ui| app.dashboard_ui(ui));
+            painted = full.shapes.iter().find_map(|cs| match &cs.shape {
+                egui::Shape::Text(t) if t.galley.text() == text => Some(t.galley.clone()),
+                _ => None,
+            });
+        }
+        let galley = painted.expect("the failure is painted");
+        assert!(!galley.elided, "painted whole");
+        assert!(galley.rows.len() > 1, "wrapped, being too long for one row");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// `Ctrl+N` files a new document in the project in front of you: the nav on the
     /// dashboard, the open document's project in the editor. Asserted by where the
     /// file landed on disk.
