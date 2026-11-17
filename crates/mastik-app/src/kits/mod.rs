@@ -71,6 +71,26 @@ impl DocExport {
     fn after_sep(self) -> bool {
         matches!(self, DocExport::Frames | DocExport::Tokens)
     }
+
+    /// Why the row cannot run, shown dimmed with it; `None` when it can.
+    /// `page_frames` is whether the page in front has a frame to export, and
+    /// `any_exports` whether *Export all* would take a layer. *Frames, all
+    /// pages…* is never dimmed, as on the canvas menu: it reads every page and
+    /// says so itself when none has a frame.
+    pub(crate) fn refusal(self, page_frames: bool, any_exports: bool) -> Option<&'static str> {
+        match self {
+            DocExport::Pdf | DocExport::Frames => {
+                (!page_frames).then_some("No frames on the canvas")
+            }
+            DocExport::Layers => {
+                (!any_exports).then_some("No layer in this document has export settings")
+            }
+            DocExport::FramesAllPages
+            | DocExport::Penpot
+            | DocExport::Sketch
+            | DocExport::Tokens => None,
+        }
+    }
 }
 
 /// *Make this a kit*'s tooltip, in the menu and the palette alike.
@@ -250,17 +270,14 @@ impl MastikApp {
         });
     }
 
-    /// The document menu's *Export ▸* list beside `row`: the whole document's
-    /// exports, each also in the palette. A row that cannot run is dimmed with
-    /// its reason; *Frames, all pages…* shows only when there is more than one page.
+    /// The document menu's *Export ▸* list beside `row`: the document's exports,
+    /// each also in the palette. A row that cannot run is dimmed with its reason
+    /// ([`DocExport::refusal`]); *Frames, all pages…* shows only when there is
+    /// more than one page.
     fn document_export_flyout(&mut self, ctx: &egui::Context, row: egui::Rect) {
         const H: f32 = crate::ui::MENU_ROW_H;
-        let no_frames = self
-            .exported_frames()
-            .is_empty()
-            .then_some("No frames on the canvas");
-        let no_exports = (!self.document_exports_anything())
-            .then_some("No layer in this document has export settings");
+        let page_frames = !self.exported_frames().is_empty();
+        let any_exports = self.document_exports_anything();
         let pages = self.session.doc.pages().len() > 1;
         let rows: Vec<DocExport> = DocExport::ALL
             .into_iter()
@@ -278,11 +295,7 @@ impl MastikApp {
                     if r.after_sep() {
                         crate::ui::menu_sep(ui);
                     }
-                    let why = match r {
-                        DocExport::Pdf | DocExport::Frames | DocExport::FramesAllPages => no_frames,
-                        DocExport::Layers => no_exports,
-                        _ => None,
-                    };
+                    let why = r.refusal(page_frames, any_exports);
                     let style = crate::ui::MenuRow::new("", r.label()).enabled(why.is_none());
                     let resp = crate::ui::menu_row(ui, style, H);
                     if let Some(why) = why {
@@ -738,4 +751,36 @@ pub(crate) fn kit_tag(ui: &mut egui::Ui) {
         ink,
     );
     resp.on_hover_text("This document is a kit: other documents can use what it publishes");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DocExport;
+
+    /// With no frame on the page in front, the current-page frame rows dim and
+    /// *Frames, all pages…* stays live, since another page may hold frames.
+    ///
+    /// flip: `DocExport::refusal` giving `FramesAllPages` the frame rows' reason →
+    /// fails at "all pages stays live".
+    #[test]
+    fn the_export_rows_dim_for_their_own_reasons() {
+        assert_eq!(
+            DocExport::FramesAllPages.refusal(false, false),
+            None,
+            "all pages stays live"
+        );
+        for r in [DocExport::Pdf, DocExport::Frames] {
+            assert_eq!(
+                r.refusal(false, true),
+                Some("No frames on the canvas"),
+                "{r:?}"
+            );
+            assert_eq!(r.refusal(true, false), None, "{r:?}");
+        }
+        assert!(DocExport::Layers.refusal(true, false).is_some());
+        assert_eq!(DocExport::Layers.refusal(false, true), None);
+        for r in [DocExport::Penpot, DocExport::Sketch, DocExport::Tokens] {
+            assert_eq!(r.refusal(false, false), None, "{r:?}");
+        }
+    }
 }

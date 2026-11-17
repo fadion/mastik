@@ -2510,18 +2510,20 @@ impl MastikApp {
         }
     }
 
-    /// Whether anything in the document is set up to export — what dims *Export
-    /// all* on the canvas menu.
+    /// Whether *Export all* would take anything — what dims it on the canvas menu,
+    /// the inspector and the document menu's *Export ▸*.
     ///
-    /// Stops at the first one, unlike [`Self::exportable_layers`]: the menu asks
-    /// every frame it is open.
+    /// Asks [`mastik_core::build::exported_in_bulk`], as
+    /// [`Self::exportable_layers`] does, so a hidden slice's settings do not light
+    /// a row that then refuses. Stops at the first one: the menu asks every frame.
     pub(crate) fn document_exports_anything(&self) -> bool {
-        let mut stack: Vec<NodeId> = self.session.doc.gathered_pages().collect();
+        let doc = &self.session.doc;
+        let mut stack: Vec<NodeId> = doc.gathered_pages().collect();
         while let Some(id) = stack.pop() {
-            let Some(node) = self.session.doc.get(id) else {
+            let Some(node) = doc.get(id) else {
                 continue;
             };
-            if !node.exports().is_empty() {
+            if mastik_core::build::exported_in_bulk(doc, id) {
                 return true;
             }
             stack.extend(node.children().iter().copied());
@@ -4568,6 +4570,49 @@ mod export_all_scope_tests {
             "and both are planned as their own file: {names:?}"
         );
         assert_ne!(names[0], names[1], "under distinct names: {names:?}");
+    }
+
+    /// Export settings on a hidden slice alone leave *Export all* dimmed: the dim
+    /// and the action ask the same question.
+    ///
+    /// flip: `document_exports_anything` testing `exports().is_empty()` again →
+    /// fails at "the row is dimmed".
+    #[test]
+    fn a_hidden_slices_settings_do_not_light_export_all() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = crate::app::MastikApp::headless(&ctx);
+        let parent = app.session.doc.first_page();
+        let slice = app.session.ids.mint();
+        let png = mastik_core::keyed_by_position([ExportSpec::new(
+            ExportFormat::Png,
+            ExportScale::Times(1.0),
+        )]);
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::CreateNode {
+                id: slice,
+                parent,
+                index: 0,
+                kind: mastik_core::NodeKind::Slice {
+                    size: mastik_core::kurbo::Size::new(40.0, 40.0),
+                },
+                transform: None,
+                name: Some("Hidden".into()),
+            },
+            mastik_core::Operation::SetExports {
+                id: slice,
+                exports: png,
+            },
+            mastik_core::Operation::SetVisible {
+                id: slice,
+                visible: false,
+            },
+        ])));
+        assert!(
+            app.exportable_layers().is_empty(),
+            "fixture: the action takes nothing"
+        );
+        assert!(!app.document_exports_anything(), "the row is dimmed");
     }
 
     /// Document order among siblings comes from the sort, not from the walk (§15
