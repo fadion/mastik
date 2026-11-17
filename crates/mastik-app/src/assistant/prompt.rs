@@ -372,6 +372,25 @@ fn clip(text: &str, n: usize) -> String {
 mod tests {
     use super::*;
 
+    /// A `/ai` label line carries the label and the wire id and nothing else, so
+    /// no document text reaches the lines after the `<mastik-turn>` block.
+    ///
+    /// flip: `bar_labels` writing anything more per label (a layer's name) →
+    /// fails at "label and id only".
+    #[test]
+    fn a_bar_label_line_carries_only_the_label_and_id() {
+        let got = bar_labels(&[("FJ", "1a:2".into()), ("K", "1a:9".into())]);
+        let lines: Vec<&str> = got.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2, "{got:?}");
+        for (line, (label, id)) in lines.iter().zip([("FJ", "1a:2"), ("K", "1a:9")]) {
+            let rest = line.replace(&format!("`{label}`"), "").replace(id, "");
+            assert_eq!(
+                rest, " is the layer ; the script reads it as  too.",
+                "label and id only: {line:?}"
+            );
+        }
+    }
+
     fn look(layers: &[(&str, &str, u64)], rev: u64) -> Look {
         Look {
             rev,
