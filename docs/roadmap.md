@@ -27,11 +27,9 @@ The design and its open questions are in `prototyping.md`.
 
 Items run cheapest first.
 
-- **Honour an imported picture's colour profile.** `mastik_render::images::decode` reads no ICC
-  profile, so a Display P3 phone photo or an Adobe RGB JPEG draws as if its numbers were sRGB,
-  desaturated on the canvas and in every export. Convert to sRGB at decode with the profile `image`
-  exposes and a pure-Rust colour engine (`moxcms`); the stored bytes stay the original. Check it
-  against a real P3 photo first.
+- **Check the colour-profile conversion against real photos.** `images::decode` converts an RGB
+  profile to sRGB (`to_srgb`), tested only on synthetic Display P3 fixtures. Import a real P3 phone
+  photo and an Adobe RGB JPEG and compare the canvas, a PNG export and the SVG export in a browser.
 - **The assets browser through MCP.** `search_assets` (icons or photos, several queries at once,
   set and variant optional; icons by name, aliases and licence, photos with alt text, credit and a
   small thumbnail as image content) and `place_asset` (at a point, a size, or filling layers),
