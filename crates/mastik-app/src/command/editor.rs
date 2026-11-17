@@ -174,7 +174,8 @@ pub(crate) struct Scripts {
     /// The last press on the code: when (`ctx` time) and where, to tell a
     /// double-click's second press as it lands.
     last_press: Option<(f64, egui::Pos2)>,
-    /// The line a closing word just stepped back, until the next letter typed.
+    /// The line a closing word just stepped back, until the next letter typed,
+    /// any other edit, or another text shown in the pane.
     stepped: Option<code_keys::Stepped>,
     /// The open library script's text as last read from or written to its
     /// file: a file that no longer reads so was changed outside Mastik.
@@ -865,6 +866,8 @@ impl MastikApp {
         if changed {
             let s = &mut self.scripts;
             s.buffer = text;
+            // The step-back record holds byte offsets into the text as it was.
+            s.stepped = None;
             // Written, not typed: the completion list does not open on it.
             s.suggest.seen = s.buffer.clone();
             put_selection(ctx, code_id, &s.buffer, sel);
@@ -1262,6 +1265,11 @@ impl MastikApp {
                     let marks = super::script_help::Help::marks(&problems, caret, bad);
                     let out = ui::code_editor(ui, code_id, &mut s.buffer, &inks, &marks, editable);
                     edited |= out.response.changed();
+                    // A paste or an undo moves the text under the step-back
+                    // record's offsets.
+                    if out.response.changed() && !typed {
+                        s.stepped = None;
+                    }
                     // A block's closing word steps back as its last letter is
                     // typed, and steps in again when it grows into a longer name.
                     if typed
@@ -4258,6 +4266,34 @@ mod tests {
             app.scripts.buffer, "xy\nends",
             "the other script's line is left alone"
         );
+    }
+
+    /// The step-back record is dropped by any edit other than a typed letter:
+    /// one the editing keys make, and one the text edit makes itself.
+    /// flip: `script_keys` keeping `stepped` on its edits → fails at "Enter
+    /// drops it"; the code pane keeping it on an untyped change → fails at "a
+    /// paste drops it".
+    #[test]
+    fn an_edit_other_than_typing_drops_the_step_back() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = typing_at_end("do\n  ");
+        for c in ["e", "n", "d"] {
+            type_code(&ctx, &mut app, c);
+        }
+        assert!(app.scripts.stepped.is_some(), "fixture: the record is held");
+        press(&ctx, &mut app, egui::Key::Enter);
+        assert!(app.scripts.stepped.is_none(), "Enter drops it");
+
+        let (ctx, mut app) = typing_at_end("do\n  ");
+        for c in ["e", "n", "d"] {
+            type_code(&ctx, &mut app, c);
+        }
+        assert!(app.scripts.stepped.is_some(), "fixture: the record is held");
+        let none = egui::Modifiers::NONE;
+        pass(&ctx, &mut app, vec![egui::Event::Paste("x".into())], none);
+        pass(&ctx, &mut app, Vec::new(), none);
+        assert_eq!(app.scripts.buffer, "do\nendx", "fixture: pasted");
+        assert!(app.scripts.stepped.is_none(), "a paste drops it");
     }
 
     /// Showing another script drops the galleys and inks the code pane kept
