@@ -130,6 +130,10 @@ Ideas worth weighing, not yet decided or scheduled.
 - **A centroid snap during a move.** A layer's visual centre (`mastik_core::centroid`) as a source
   in `snap_rect` while the Align card's visual-centre toggle is on. Worth weighing only once the
   toggle has seen use.
+- **Reading a sharpen back from SVG.** The export writes a sharpen as `feGaussianBlur` plus an
+  arithmetic `feComposite` (k2 = 1 + a, k3 = −a), and `svg_in` does not recognise the pair, so a
+  Mastik SVG re-imported loses it. Worth it only if that round trip matters; matching the pattern
+  risks misreading other tools' filters, so it would key on the exact coefficients.
 - **Background removal by a model.** The feature designers expect of an image card, but it brings
   a model and a native runtime, so it is a project of its own. The model must be MIT or Apache
   licensed: BiRefNet's lite variant (about 1024 px input, good on hair) cuts out a subject in one
