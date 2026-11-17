@@ -625,8 +625,7 @@ pub struct EditorSession {
     /// The last move, rotation, scale or skew a commit made, which *Transform
     /// again* applies once more (`crate::again`). Kept across selection changes.
     pub last_transform: Option<crate::again::Again>,
-    /// *Repeat around origin…* makes linked copies in this document rather than
-    /// plain ones.
+    /// *Repeat…* makes linked copies in this document rather than plain ones.
     pub repeat_linked: bool,
     /// The pen's and the pencil's mirror in this document (`crate::mirror`).
     pub mirror: crate::mirror::Mirror,

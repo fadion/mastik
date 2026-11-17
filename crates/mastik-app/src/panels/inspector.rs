@@ -3733,7 +3733,7 @@ impl MastikApp {
         self.commit_edit(Transaction(ops));
     }
     /// The Transform card's five buttons — two quarter turns, the two mirrors, then
-    /// *Repeat around origin…*, lit while its card is up.
+    /// *Repeat…*, lit while its card is up.
     ///
     /// One row for both cards, scoped by [`TurnScope`].
     ///
@@ -3799,13 +3799,7 @@ impl MastikApp {
                 (None, true) => ui::FieldButton::On,
                 (None, false) => ui::FieldButton::Off,
             };
-            let tip = match (app.repeat_refusal(), scope) {
-                (Some(why), _) => why,
-                (None, TurnScope::Node(_)) => "Repeat around origin…",
-                (None, TurnScope::Selection) => {
-                    "Repeat around origin… — the selection turns as one arrangement about its centre"
-                }
-            };
+            let tip = app.repeat_refusal().unwrap_or("Repeat…");
             if ui::field_button_sized(ui, icon::REPEAT_AROUND, bw, state)
                 .on_hover_text(tip)
                 .clicked()

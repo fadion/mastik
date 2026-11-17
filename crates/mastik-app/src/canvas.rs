@@ -10573,6 +10573,7 @@ impl MastikApp {
         self.draw_grid_tracks(painter, rect, ppp);
         self.draw_spacing_bands(painter, rect, ppp);
         self.draw_loose_spacing(painter, rect, ppp);
+        self.draw_repeat_gaps(painter, rect, ppp);
         self.draw_shape_handles(painter, rect, ppp);
         self.draw_warp(painter, rect, ppp);
 

@@ -483,7 +483,7 @@ menu and §8's keys walk and run its rows (`read_nav` into `Scripts::menu_nav`).
 - **Select same…, Select matching layers and Select inverse** — palette-only verbs (`app-selection.md`).
 - **Rotate 90°** — the inspector's quarter-turn buttons (`inspector::rotate_selection_quarter`) and
   the palette.
-- **Transform again, Repeat around origin…** — palette verbs; the second is also the Transform
+- **Transform again, Repeat around origin…, Repeat in a line…, Repeat in a grid…** — palette verbs; the Repeat card is also the Transform
   card's fifth button (`design/tools.md`).
 - **Keep proportions** — the inspector's chain link; a modifier, not a verb.
 - **Corner radius, side count, star ratio** — numbers belong to the inspector.

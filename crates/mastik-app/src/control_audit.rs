@@ -1482,17 +1482,23 @@ fn sweep_on(theme: Theme) {
     });
     assert_eq!(app.colour_review.groups_shown(), 1, "a group unfolded");
     check("colour review", app, found);
-    // *Repeat around origin…* on the box: its segments, fields, switches and foot.
-    let mut app = with_a_rect(&ctx);
-    let found = opened(&ctx, &mut app, |_, a| {
-        let first = a.session.doc.first_page();
-        let id = a.session.doc.get(first).unwrap().children()[0];
-        a.session.selection.set_one(id);
-        a.open_repeat();
-        // The card raises the pivot handle, whose origin chips are not the card's.
-        a.show_pivot = false;
-    });
-    check("repeat around origin", app, found);
+    // *Repeat…* on the box, each way: its segments, fields, switches and foot.
+    for (way, name) in [
+        (mastik_core::repeat::Way::Around, "repeat around origin"),
+        (mastik_core::repeat::Way::Line, "repeat in a line"),
+        (mastik_core::repeat::Way::Grid, "repeat in a grid"),
+    ] {
+        let mut app = with_a_rect(&ctx);
+        let found = opened(&ctx, &mut app, |_, a| {
+            let first = a.session.doc.first_page();
+            let id = a.session.doc.get(first).unwrap().children()[0];
+            a.session.selection.set_one(id);
+            a.open_repeat_on(way);
+            // The card raises the pivot handle, whose origin chips are not the card's.
+            a.show_pivot = false;
+        });
+        check(name, app, found);
+    }
     // *Blend shapes…* between the box and a second one: its field, switches,
     // dropdown and foot.
     // Selected before the card opens, so the layers rows' lit ground is not the card's.

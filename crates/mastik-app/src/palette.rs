@@ -12,6 +12,7 @@ use crate::menu::{self, Door, Group, Item, Kind, Target};
 use crate::theme::{self, color, icon};
 use crate::tools::Tool;
 use eframe::egui;
+use mastik_core::repeat::Way;
 use mastik_core::{NodeId, build};
 use std::ops::Range;
 
@@ -765,10 +766,12 @@ impl MastikApp {
             transform_again.label = format!("Transform again: {}", a.label());
         }
         push(&mut out, transform_again);
-        push(
-            &mut out,
-            Cmd::verb(Item::RepeatAround, self.repeat_refusal()),
-        );
+        for way in [Way::Around, Way::Line, Way::Grid] {
+            push(
+                &mut out,
+                Cmd::verb(Item::Repeat(way), self.repeat_refusal_for(way)),
+            );
+        }
         for same in crate::input::Same::ALL {
             push(
                 &mut out,

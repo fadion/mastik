@@ -64,7 +64,7 @@ and `2x` buttons filling the row.
 - **Named rows.** Because the row comes and goes, every row from it downwards is drawn through `inspector::transform_row` and identified by name; positional ids would renumber and lose half-typed `DragValue` state.
 
 **Rotation and skew** share a row at X/Y widths. Below, five equal buttons (`ui::field_button_sized`):
-turn 90° counter-clockwise, turn 90° clockwise, flip H, flip V, *Repeat around origin…*. The last
+turn 90° counter-clockwise, turn 90° clockwise, flip H, flip V, *Repeat…* (`REPEAT_AROUND`). The last
 opens and closes the Repeat card (`tools.md`), On while it is up and Disabled with
 `repeat_refusal`'s reason as its tooltip.
 

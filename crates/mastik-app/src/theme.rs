@@ -1303,6 +1303,12 @@ pub mod icon {
     pub const WARP_FISHEYE: &str = "\u{f072}";
     /// The warp bar's *Twist*: a box turned more at its middle than its corners.
     pub const WARP_TWIST: &str = "\u{f073}";
+    /// *Repeat in a line…*: three cards in a row, the first filled as the
+    /// original.
+    pub const REPEAT_LINE: &str = "\u{f075}";
+    /// *Repeat in a grid…*: four tiles in two rows, the top-left filled as the
+    /// original.
+    pub const REPEAT_GRID: &str = "\u{f076}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1615,6 +1621,8 @@ pub mod icon {
         ("warp-squeeze", WARP_SQUEEZE),
         ("warp-fisheye", WARP_FISHEYE),
         ("warp-twist", WARP_TWIST),
+        ("repeat-line", REPEAT_LINE),
+        ("repeat-grid", REPEAT_GRID),
     ];
 }
 

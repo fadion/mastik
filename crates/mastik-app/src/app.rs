@@ -184,9 +184,9 @@ pub(crate) struct InFlight {
     /// The batch rename box's numbering as it was when a From, Step or Pad scrub
     /// began, for the same reasons as [`Self::settings_scrub`].
     pub(crate) rename_scrub: Option<mastik_core::rename::Numbering>,
-    /// *Repeat around origin…*'s count and step as they were when a scrub of either
-    /// began, for the same reasons as [`Self::settings_scrub`].
-    pub(crate) repeat_scrub: Option<(f64, f64)>,
+    /// The Repeat card's numbers as they were when a scrub of one began, for the
+    /// same reasons as [`Self::settings_scrub`].
+    pub(crate) repeat_scrub: Option<crate::repeat::Numbers>,
     /// *Blend shapes…*'s step count as it was when its scrub began, likewise.
     pub(crate) blend_scrub: Option<f64>,
     /// The warp card's bend as it was when its scrub began, likewise.
@@ -292,7 +292,7 @@ mod in_flight_tests {
             (
                 "repeat_scrub",
                 InFlight {
-                    repeat_scrub: Some((12.0, 30.0)),
+                    repeat_scrub: Some(crate::repeat::Numbers::default()),
                     ..Default::default()
                 },
             ),
@@ -1227,7 +1227,7 @@ pub struct MastikApp {
     pub(crate) find: crate::find::FindBox,
     /// The Colour review card, where the dialog cards open (`colour_review.rs`).
     pub(crate) colour_review: crate::colour_review::ColourReview,
-    /// *Repeat around origin…*'s card (`crate::repeat`).
+    /// The Repeat card (`crate::repeat`).
     pub(crate) repeat: crate::repeat::RepeatCard,
     /// *Blend shapes…*'s card (`crate::blend`).
     pub(crate) blend: crate::blend::BlendCard,
@@ -2813,7 +2813,7 @@ impl MastikApp {
                 self.rotate_selection_quarter(if clockwise { turn } else { -turn });
             }
             Action::TransformAgain => self.transform_again(),
-            Action::RepeatAround => self.open_repeat(),
+            Action::Repeat(way) => self.open_repeat_on(way),
             Action::Copy => {
                 self.copy_selection(ctx);
             }
@@ -3296,8 +3296,8 @@ impl MastikApp {
             b.s.numbering = n;
         }
         // And the Repeat and Blend cards' numbers; their previews rebuild from them.
-        if let Some((count, step)) = self.in_flight.repeat_scrub.take() {
-            self.repeat.restore_scrub(count, step);
+        if let Some(numbers) = self.in_flight.repeat_scrub.take() {
+            self.repeat.restore_scrub(numbers);
         }
         if let Some(steps) = self.in_flight.blend_scrub.take() {
             self.blend.restore_scrub(steps);
@@ -9597,7 +9597,7 @@ impl MastikApp {
     }
 
     /// The `Area` a card that works on the Transform card's origin opens in
-    /// (*Repeat around origin…*, *Blend shapes…*): the popover lane, level with the
+    /// (*Repeat…*, *Blend shapes…*): the popover lane, level with the
     /// Transform card, or with the inspector's top while no Transform card is drawn.
     pub(crate) fn transform_popover_area(&self, ctx: &egui::Context, id: egui::Id) -> egui::Area {
         let screen = ctx.input(|i| i.content_rect());

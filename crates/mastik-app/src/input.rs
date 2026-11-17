@@ -320,8 +320,8 @@ pub enum Action {
     /// *Transform again* (`crate::again`). Unbound: Ctrl+Alt+D is AltGr+D, which
     /// types a letter on several European layouts.
     TransformAgain,
-    /// Open *Repeat around origin…* (`crate::repeat`). Unbound.
-    RepeatAround,
+    /// Open the Repeat card on one way (`crate::repeat`). Unbound.
+    Repeat(mastik_core::repeat::Way),
     /// Move the selection by a world-space delta (arrow keys).
     Nudge(Vec2),
     /// Grow or shrink the selection's box by this many points on each axis —

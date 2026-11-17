@@ -2,7 +2,7 @@
 
 The v1 tool set, the tool rail and how canvas gestures behave: the wheel, the canvas cursors, cancelling, context menus and their
 chrome, selection chrome, multi-selection transforms, the Scale tool, skew, snapping during
-resize, drop outlines, the transform origin (pivot), *Transform again*, *Repeat around origin* and
+resize, drop outlines, the transform origin (pivot), *Transform again*, *Repeat* and
 *Warp*.
 
 ## 9.4 v1 tools
@@ -32,7 +32,7 @@ resize, drop outlines, the transform origin (pivot), *Transform again*, *Repeat 
   - **The card**: while on, the two centre buttons are `ui::icon_button_lit`, with the tooltips *Align visual centres* and *Align visual middles*. The toggle's tooltip reads *Centre by visual weight — align centres on the ink, not the box* while off and *Centre by the box again* while on; while the node tool edits points it is dimmed (*Points align by position*) and keeps its state.
   - **The canvas** marks each outermost selected layer but the key with a 12pt `color::accent()` diamond on a 1pt `color::on_accent()` rim at its visual centre, over the selection boxes and under the handles (`canvas::paint_visual_centre`), while the toggle is on, selection chrome shows, the mode is Normal and nothing is moving the selection: a drag or a field's scrub hides them (`visual_marks_shown`), since they are weighed on the committed document. `MastikApp::visual_marks` keeps them by document revision, selection and key layer. Past `canvas::VISUAL_MARKS_MAX` (100) layers to weigh, counting each outermost layer and every layer under one weighed by its ink (a frame and a text are weighed by their box), none are weighed or drawn: weighing unions all that ink on the UI thread, a selected group of 1,000 circles costing what 1,000 selected ones do, and that many diamonds are a field nobody reads. `align_centres_by_weight_while_the_toggle_is_on` and `a_key_layer_is_the_target_and_not_marked` pin the routing and the key, `the_marks_stop_past_the_layers_they_would_weigh` the cap.
 - **Flip** H/V across the selection's centreline, or about a single layer's pivot where one is placed; **quarter turns** either way. **Z-order** one step or all the way (`Ctrl`+`[`/`]`).
-- **Transform again** (the last move, rotation, scale or skew once more) and **Repeat around origin…** (copies turned about the pivot), below.
+- **Transform again** (the last move, rotation, scale or skew once more) and **Repeat…** (copies turned about the pivot, stepped along a line or tiled in a grid), below.
 - **Warp…**: an envelope round the selection, dragged by its corners or bent by one of eight presets (*Arc*, *Flag*, *Bulge*, *Wave*, *Rise*, *Squeeze*, *Fisheye*, *Twist*), baked into plain paths (below).
 - **Snapping**: alignment, equal-gap (gaps quoted on the canvas), baselines, the pixel grid. **Guides and view**: rulers and guides (`Shift`+`R`), View and Snap menus, focus mode.
 - **Eyedropper** (`I`, or a picker's pick button): picks a colour off any pixel in the window, chrome included, onto the selection or into one picker slot (below).
@@ -575,7 +575,7 @@ is armed over one layer, sharing `badge_placement`; a shape being drawn takes th
 
 **What reads the pivot.** `Handles::pivot` is the node's origin for one selection, the union centre
 for several. Readers: `Drag::Rotate`; the inspector's skew field (rebuilds about it); the rotation
-field (composes about it); quarter turns; *Transform again*; *Repeat around origin* over one layer;
+field (composes about it); quarter turns; *Transform again*; *Repeat*'s ring over one layer;
 `build::flip`, only when a pivot has been placed (D55). Canvas skew and Alt-resize deliberately do
 not, each having its own fixed point (D55, D60).
 
@@ -607,31 +607,48 @@ delta. Each application is one undo step, *Transform again*; the status says *Ro
   *Skew 10°*). With nothing learnt it is dim with *Move, rotate or scale something first*; with
   nothing selected, *Select a layer first*.
 
-### Repeat around origin (`repeat.rs`, `mastik_core::repeat`)
+### Repeat (`repeat.rs`, `mastik_core::repeat`)
 
-Copies of the selection turned step by step about one point, committed grouped with the originals.
+Copies of the selection turned step by step about one point, stepped along a line or tiled in a
+grid, committed grouped with the originals. The three ways are `repeat::Pattern`'s `Ring`, `Line` and
+`Grid`; every count includes the original and runs from 2 to `repeat::MAX_COUNT`.
 
-- **The ring** (`repeat::Ring { count, step, turn }`). The count includes the original (12 is a clock
-  face), from 2 to `repeat::MAX_COUNT`. `Ring::full` divides a full turn by the count. With *turn*
-  off the copies keep their orientation and travel round: the selection box's centre is what the
-  rotation carries.
-- **The point.** One layer turns about its pivot (`pivot_world`). Several layers have no shared
-  origin, so they turn as one arrangement about their box's centre (`repeat::centre`).
+- **The ring** (`repeat::Ring { count, step, turn }`): 12 is a clock face. `Ring::full` divides a full
+  turn by the count. With *turn* off the copies keep their orientation and travel round: the
+  selection box's centre is what the rotation carries. One layer turns about its pivot
+  (`pivot_world`); several have no shared origin, so they turn as one arrangement about their box's
+  centre (`repeat::centre`).
+- **The line** (`repeat::Line { count, gap, down }`) steps each copy across, or down, by the
+  selection's world box plus `gap`: the gap is between boxes, not origins, and a negative one
+  overlaps. **The grid** (`repeat::Grid { cols, rows, gap: [across, down] }`) tiles row by row from
+  the original at the top left, cols × rows at least 2. Both start at the parent auto layout's gaps
+  where it has any, else `repeat::DEFAULT_GAP` (16) (`repeat::starting_gap`), and the card keeps them
+  for the session.
 - **The result** (`Place::Group`, through `build::group`, so the layers must share a parent): a group
-  named *‹top layer› × ‹count›*, the originals first in the layers list and the copies below them in
-  order round the ring. Copies are captured subtrees settled with `component::settle_copy`, so a
-  main's copies land as its instances. The group is selected; the status says *Made 11 copies around
-  the origin*. One undo step, *Repeat*.
-- **Refusals** (`repeat_refusal`): nothing selected (*Select a layer first*), *This layer is
-  locked*, *A group containing this layer is locked*, *Repeat takes layers that share one parent*,
-  and *Repeat can't work inside an auto layout* (`repeat::in_layout`, which core's `repeat` and
-  `linked` refuse too): in a flex or grid parent the ring's group, or the preview's copies, would
-  be laid out as items, moving the original and its siblings, as the shape builder and the knife
-  refuse such a layer. The same holds through plain groups or booleans between the layer and such
-  a parent (`container::lays_out_above`): the ring would grow the group the layout places. The card closes when the selection comes to be refused.
-- **Doors.** The palette (`Item::RepeatAround`, group Transform, `icon::REPEAT_AROUND`, unbound) and
-  the Transform card's fifth button (`inspector.md`), On while the card is up. A layer menu carries
-  no Transform rows, so the card is the door.
+  named *‹top layer› × ‹count›* (a grid *‹top layer› ‹cols› × ‹rows›*), the originals first in the
+  layers list and the copies below them in order. Copies are captured subtrees settled with
+  `component::settle_copy`, so a main's copies land as its instances. The group is selected; the
+  status says *Made 11 copies around the origin*, *Made 3 copies in a line*, *Made 11 copies in a
+  grid*. One undo step, *Repeat*.
+- **In an auto layout** (`repeat::layout_refusal`). A ring is refused, *Repeat can't work inside an
+  auto layout*: the layout would move its group or the preview's copies, and the original's siblings
+  with them. Where the layers are the frame's own items (`repeat::flow_parent`) a line goes in as its
+  items instead, right after the last original, with no group, the layout spacing them; the originals
+  and copies are selected. A grid does the same in a grid frame, each copy's grid lines and area
+  cleared so it flows into the next free cell, and is refused in a flex one, *Auto layout places these
+  in one line*. Through plain groups or booleans between the layer and such a parent
+  (`container::lays_out_above`) every way is refused: it would grow the group the layout places.
+- **Refusals** (`repeat_refusal_for(way)`; `repeat_refusal` is the line's, which goes wherever any
+  way goes): nothing selected (*Select a layer first*), *This layer is locked*, *A group containing
+  this layer is locked*, *Repeat takes layers that share one parent*, and the auto layout's above.
+  The card falls back to a line when the selection comes to refuse its way, and closes when it
+  refuses that too.
+- **Doors.** The palette's *Repeat around origin…*, *Repeat in a line…* and *Repeat in a grid…*
+  (`Item::Repeat(Way)`, group Transform, `icon::REPEAT_AROUND`, `REPEAT_LINE`, `REPEAT_GRID`,
+  unbound), each opening the card on its way, and the Transform card's fifth button (`inspector.md`,
+  tooltip *Repeat…*), On while the card is up, which opens it on the way last used (`RepeatCard::way`)
+  where the selection takes it, else on a line. A layer menu carries no Transform rows, so the card is
+  the door.
 
 **The card** is an inspector-lane popover: an `Order::Foreground` `Area` from
 `MastikApp::transform_popover_area`, placed by `popover_anchor` level with the top of the inspector's
@@ -641,33 +658,47 @@ rows at `ui::POPOVER_SECTION_GAP`. It is no modal and has no click-away: the can
 because the pivot decides the ring and must stay draggable. It holds the lane alone: opening it
 closes the inspector's popovers (`close_inspector_popovers`) and the Blend shapes card
 (`app-booleans.md`), and an inspector popover opened after it closes it (`inspector_popover_open`).
-Find and Colour review are left open. If the pivot handle is down and one layer is selected, opening
-raises it (`show_pivot`); closing or committing puts it back down only if the card raised it
-(`RepeatCard::raised_pivot`).
+Find and Colour review are left open. If the pivot handle is down and one layer is selected, lighting
+*Around* (on opening or on the strip) raises it (`show_pivot`); leaving *Around*, closing or
+committing puts it back down only if the card raised it (`RepeatCard::raised_pivot`).
 
-- **Rows.** Head `ui::popover_head` *Repeat around origin*; *Full turn · Fixed angle*; *Count*
-  (`icon::COPY_SIMPLE`) beside *Step* (`icon::ROTATION`), the step disabled showing 360/count under
-  *Full turn* and editable under *Fixed angle*, which starts from the full turn's step; the switch
-  *Turn the copies with the step*; the switch *Link the copies* with a caption under it at
-  `ui::SECTION_LABEL_GAP`, always two rows tall and cut with an ellipsis past them, so the card keeps
-  its height as the switch and the selection change the words; foot `settings::footer_row`, *Cancel* then primary *Repeat*. Its settings
-  outlive a close, so it reopens on the ring last made.
+- **Rows.** Head `ui::popover_head` *Repeat*; the strip *Around · Line · Grid* (`ui::segmented_tipped`,
+  a way the selection refuses dimmed with its reason). Then the way's rows, which always take the
+  tallest way's height, *Around*'s (`body_height`), so the footer stays put and the popup never has to
+  grow:
+  - *Around*: *Full turn · Fixed angle*; *Count* (`icon::COPY_SIMPLE`) beside *Step*
+    (`icon::ROTATION`), the step disabled showing 360/count under *Full turn* and editable under
+    *Fixed angle*, which starts from the full turn's step; the switch *Turn the copies with the step*.
+  - *Line*: *Across · Down*; *Count* (`COPY_SIMPLE`) beside *Gap* (`ARROWS_OUT_LINE_HORIZONTAL`, or
+    `_VERTICAL` down). Among an auto layout's items the direction and the gap are disabled, *The
+    frame's auto layout spaces the copies*.
+  - *Grid*: *Columns* (`COLUMNS`) beside *Rows* (`ROWS`), the auto layout card's glyphs; *Gap across*
+    beside *Gap down*. `Alt` while one gap moves moves the other by as much, as a padding pair does.
+
+  Then the switch *Link the copies* with a caption under it at `ui::SECTION_LABEL_GAP`, always two
+  rows tall and cut with an ellipsis past them, so the card keeps its height as the switch and the
+  selection change the words; foot `settings::footer_row`, *Cancel* then primary *Repeat*. Its
+  settings outlive a close, so it reopens on the way and the numbers last used.
 - **Keys.** `Enter` repeats (`dispatch` hands `Action::Enter` to the card while it is open); `Escape`
   cancels, the rung after the Credits card. The card closes when another document comes to the front.
-- **A right-click cancels a scrub** of *Count* or *Step* wherever the pointer is: `InFlight::repeat_scrub`
-  holds both as they were, armed while a field is dragged, put back by `cancel_gesture` and cleared at
-  the frame's end once no button is down, as `settings_scrub` is.
+- **A right-click cancels a scrub** of any of its numbers wherever the pointer is:
+  `InFlight::repeat_scrub` holds them as they were (`repeat::Numbers`), armed while a field is dragged,
+  put back by `cancel_gesture` and cleared at the frame's end once no button is down, as
+  `settings_scrub` is.
 - **The preview** is `Place::Beside`: the copies in each original's own parent at 45% of its opacity,
-  since a preview must not reparent what is on the canvas. It is minted from a copy of the id
-  counter, so it spends no ids; rebuilt when the revision, selection, pivot or ring changes; and put
-  back after another gesture's preview cleared it. A canvas drag owns the preview while it lasts.
+  since a preview must not reparent what is on the canvas; among an auto layout's items, the faded
+  copies where the commit puts them. It is minted from a copy of the id counter, so it spends no ids;
+  rebuilt when the revision, selection, pivot or pattern changes; and put back after another
+  gesture's preview cleared it. A canvas drag owns the preview while it lasts. While a gap field
+  holds the keyboard or is scrubbed, `draw_repeat_gaps` marks that gap between the original's box and
+  the next copy's, once each way, as the spacing handles' strong band with *Gap 16* beside it.
 - **Linked** makes the original a component first — in place for a frame or group, else wrapped in a
   group named after the layer and made the main (not *Create component*'s frame: the wrapper only
-  carries the link, and a frame would add a clip and a fill), so the ring group reads *‹layer› ×
+  carries the link, and a frame would add a clip and a fill), so the group reads *‹layer› ×
   ‹count›* — then repeats that main, so the copies are its instances (`repeat::linked`, the
   `repeat` verb's `linked`). Both halves are built on a scratch copy of the document and commit as
-  one *Repeat* step; the status says *Made Tick a
-  component and 11 linked copies around the origin*. Off is the default, and the choice is kept per
+  one *Repeat* step; the status says *Made Tick a component and 11 linked copies around the origin*
+  (*in a line*, *in a grid*). Off is the default, and the choice is kept per
   document in memory (`Session::repeat_linked`). Where it cannot apply the switch is disabled, its
   reason both tooltip and caption: several layers, off, *Linked copies repeat one layer at a time*;
   a main or an instance root, on, *Copies of a component are linked already*; otherwise off, with

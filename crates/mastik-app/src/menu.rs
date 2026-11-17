@@ -20,6 +20,7 @@
 //! maintainer.
 
 use crate::theme::icon;
+use mastik_core::repeat::Way;
 use mastik_core::{BoolOp, GuideId, NodeId, NodeKind, build};
 
 use crate::input::ViewSwitch;
@@ -517,9 +518,9 @@ pub enum Item {
     /// *Transform again*: the last move, rotation, scale or skew once more
     /// (`crate::again`). The palette's row names the step.
     TransformAgain,
-    /// *Repeat around origin…*: the card that turns copies about the transform
-    /// origin (`crate::repeat`).
-    RepeatAround,
+    /// *Repeat around origin…*, *Repeat in a line…*, *Repeat in a grid…*: the
+    /// Repeat card opened on that way (`crate::repeat`).
+    Repeat(mastik_core::repeat::Way),
     /// *Select same fill* and its siblings (`MastikApp::select_same`).
     SelectSame(crate::input::Same),
     /// *Select matching layers* (`MastikApp::select_matching`).
@@ -1299,9 +1300,21 @@ impl Item {
                 None,
                 Group::Transform,
             ),
-            Item::RepeatAround => s(
+            Item::Repeat(Way::Around) => s(
                 "Repeat around origin…",
                 icon::REPEAT_AROUND,
+                None,
+                Group::Transform,
+            ),
+            Item::Repeat(Way::Line) => s(
+                "Repeat in a line…",
+                icon::REPEAT_LINE,
+                None,
+                Group::Transform,
+            ),
+            Item::Repeat(Way::Grid) => s(
+                "Repeat in a grid…",
+                icon::REPEAT_GRID,
                 None,
                 Group::Transform,
             ),
@@ -1445,7 +1458,11 @@ impl Item {
             ],
             Item::TraceImage => &["vectorize", "vectorise", "bitmap", "raster", "autotrace"],
             Item::TransformAgain => &["repeat", "again", "redo", "step"],
-            Item::RepeatAround => &["radial", "rotate", "copies", "ring", "circular", "array"],
+            Item::Repeat(Way::Around) => {
+                &["radial", "rotate", "copies", "ring", "circular", "array"]
+            }
+            Item::Repeat(Way::Line) => &["step", "copies", "row", "column", "array", "duplicate"],
+            Item::Repeat(Way::Grid) => &["tile", "copies", "rows", "columns", "array", "matrix"],
             Item::Restack(_) => &["order", "arrange", "z"],
             Item::Cheatsheet => &["shortcuts", "keys", "keymap", "help"],
             Item::Present => &["play", "slideshow", "presentation", "fullscreen"],
@@ -1592,7 +1609,7 @@ impl Item {
             Item::ColourReview => Action::ColourReview,
             Item::RotateQuarter(clockwise) => Action::RotateQuarter(clockwise),
             Item::TransformAgain => Action::TransformAgain,
-            Item::RepeatAround => Action::RepeatAround,
+            Item::Repeat(way) => Action::Repeat(way),
             Item::SelectSame(same) => Action::SelectSame(same),
             Item::SelectMatching => Action::SelectMatching,
             Item::SelectInverse => Action::SelectInverse,
@@ -3997,7 +4014,7 @@ impl MastikApp {
             | Item::ColourReview
             | Item::RotateQuarter(_)
             | Item::TransformAgain
-            | Item::RepeatAround
+            | Item::Repeat(_)
             | Item::SelectSame(_)
             | Item::SelectMatching
             | Item::SelectInverse
@@ -7517,7 +7534,9 @@ mod accel_spelling_tests {
             Item::Tool(Tool::Knife),
             Item::Tool(Tool::Arc),
             Item::TransformAgain,
-            Item::RepeatAround,
+            Item::Repeat(Way::Around),
+            Item::Repeat(Way::Line),
+            Item::Repeat(Way::Grid),
         ];
         for item in Item::ALL.iter().chain(&switches).chain(&tools) {
             if *item == Item::ReplaceText || fixture.iter().any(|(f, ..)| f == item) {
