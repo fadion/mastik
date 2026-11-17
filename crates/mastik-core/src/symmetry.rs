@@ -1,29 +1,51 @@
-//! A mirrored path: a `NodeKind::Path` that says which of its own axes it is
-//! symmetric about, so point editing can keep it so.
+//! A symmetric path: a `NodeKind::Path` that says which of its own axes it is
+//! mirrored about, or how many copies of it turn about a centre, so point
+//! editing can keep it so.
 //!
-//! The axes' positions are not stored. A shape symmetric about a vertical line
-//! has its points' bounds centred on that line, so the axis is the centre of the
-//! path's control box ([`centre`]) and cannot drift from the points. The flags
-//! are kept only while they hold ([`kept`]): any write that leaves the path
-//! asymmetric drops them, and one that moves or scales it carries them along.
+//! The whole outline is stored, every copy as real points; the rule only says
+//! which symmetry the points have. Its place is not stored. A shape symmetric
+//! about a vertical line has its points' bounds centred on that line, so the axis
+//! is the centre of the path's control box ([`centre`]); a shape that turns onto
+//! itself about a point has its anchors' mean there ([`radial_centre`]). Neither
+//! can drift from the points. The rule is kept only while it holds ([`kept`]):
+//! any write that leaves the path asymmetric drops it, and one that moves or
+//! scales it carries it along.
 
 use crate::edit::{PenAnchor, PenSubpath};
 use crate::geometry::anchor_runs;
 use kurbo::{Affine, BezPath, PathSeg, Point, Vec2};
 use serde::{Deserialize, Serialize};
 
-/// Which of a path's own axes it is mirrored across: the vertical line through
-/// its centre, the horizontal one, or both.
+/// The fewest copies a radial path turns: two would be a half turn, which reads
+/// as a mirror.
+pub const MIN_COPIES: u8 = 3;
+/// The most copies a radial path turns.
+pub const MAX_COPIES: u8 = 12;
+
+/// Which symmetry a path has: mirrored across the vertical line through its
+/// centre, the horizontal one or both, or `copies` turned about a centre, each
+/// mirrored too when `reflect`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PathMirror {
     #[serde(default, skip_serializing_if = "is_false")]
     pub vertical: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub horizontal: bool,
+    /// How many copies turn about the centre, the drawn one counted: 0 for none,
+    /// else [`MIN_COPIES`] to [`MAX_COPIES`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub copies: u8,
+    /// Under `copies`, each copy mirrored across a line through the centre too.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reflect: bool,
 }
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
 }
 
 impl PathMirror {
@@ -31,11 +53,27 @@ impl PathMirror {
     pub const NONE: Self = Self {
         vertical: false,
         horizontal: false,
+        copies: 0,
+        reflect: false,
     };
 
-    /// Whether the path is mirrored across neither axis.
+    /// `copies` turned about a centre, each mirrored too when `reflect`.
+    pub fn around(copies: u8, reflect: bool) -> Self {
+        Self {
+            copies,
+            reflect,
+            ..Self::NONE
+        }
+    }
+
+    /// Whether the path has no symmetry to keep.
     pub fn is_none(&self) -> bool {
-        !self.vertical && !self.horizontal
+        !self.vertical && !self.horizontal && self.copies == 0
+    }
+
+    /// Whether copies turn about a centre.
+    pub fn is_radial(&self) -> bool {
+        self.copies > 0
     }
 }
 
@@ -44,16 +82,47 @@ pub fn centre(path: &BezPath) -> Point {
     path.control_box().center()
 }
 
-/// `mirror` less any axis `path` is no longer symmetric about, with `radii`
-/// (indexed as `NodeKind::Path::corner_radii`) mirrored too.
+/// Where a radial path's copies turn about, in its own space: the mean of its
+/// anchors, which a turn of the set onto itself leaves where it is.
+pub fn radial_centre(path: &BezPath) -> Point {
+    let (sum, n) = anchor_runs(path)
+        .iter()
+        .flat_map(|r| r.points.iter())
+        .fold((Vec2::ZERO, 0.0), |(s, n), p| (s + p.to_vec2(), n + 1.0));
+    if n == 0.0 {
+        return centre(path);
+    }
+    (sum / n).to_point()
+}
+
+/// The point `mirror`'s symmetry is about, in the path's own space.
+pub fn origin(path: &BezPath, mirror: PathMirror) -> Point {
+    match mirror.is_radial() {
+        true => radial_centre(path),
+        false => centre(path),
+    }
+}
+
+/// `mirror` less any symmetry `path` no longer has, with `radii` (indexed as
+/// `NodeKind::Path::corner_radii`) carried by it too.
 pub fn kept(path: &BezPath, radii: &[f64], mirror: PathMirror) -> PathMirror {
     if mirror.is_none() {
         return mirror;
     }
     let c = centre(path);
+    let radial = (MIN_COPIES..=MAX_COPIES).contains(&mirror.copies) && {
+        let o = radial_centre(path);
+        holds(
+            path,
+            radii,
+            turn_about(o, std::f64::consts::TAU / f64::from(mirror.copies)),
+        )
+    };
     PathMirror {
-        vertical: mirror.vertical && holds(path, radii, true, c.x),
-        horizontal: mirror.horizontal && holds(path, radii, false, c.y),
+        vertical: mirror.vertical && holds(path, radii, reflection(true, c.x)),
+        horizontal: mirror.horizontal && holds(path, radii, reflection(false, c.y)),
+        copies: if radial { mirror.copies } else { 0 },
+        reflect: radial && mirror.reflect && reflection_axis(path, radii).is_some(),
     }
 }
 
@@ -65,9 +134,50 @@ pub fn reflect(p: Point, vertical: bool, c: f64) -> Point {
     }
 }
 
-/// Whether every segment of `path` has its reflection in the path, either way
-/// round, and every anchor's radius is its image's.
-fn holds(path: &BezPath, radii: &[f64], vertical: bool, c: f64) -> bool {
+/// The reflection across the vertical line `x = c` or the horizontal `y = c`.
+fn reflection(vertical: bool, c: f64) -> Affine {
+    match vertical {
+        true => Affine::new([-1.0, 0.0, 0.0, 1.0, 2.0 * c, 0.0]),
+        false => Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 2.0 * c]),
+    }
+}
+
+/// A turn by `angle` about `c`.
+pub fn turn_about(c: Point, angle: f64) -> Affine {
+    Affine::translate(c.to_vec2()) * Affine::rotate(angle) * Affine::translate(-c.to_vec2())
+}
+
+/// The reflection across the line through `c` at `angle` from the x axis.
+pub fn reflect_through(c: Point, angle: f64) -> Affine {
+    let (s, k) = (2.0 * angle).sin_cos();
+    Affine::translate(c.to_vec2())
+        * Affine::new([k, s, s, -k, 0.0, 0.0])
+        * Affine::translate(-c.to_vec2())
+}
+
+/// The angle of a line through a radial path's centre it is mirrored across,
+/// if it is: found by pairing its first anchor off the centre with each anchor
+/// as far out, since a reflection carries that anchor onto one of them.
+pub fn reflection_axis(path: &BezPath, radii: &[f64]) -> Option<f64> {
+    let c = radial_centre(path);
+    let b = path.control_box();
+    let tol = 1e-6 * (1.0 + b.width().max(b.height()));
+    let anchors: Vec<Point> = anchor_runs(path)
+        .iter()
+        .flat_map(|r| r.points.clone())
+        .collect();
+    let a0 = *anchors.iter().find(|p| (**p - c).hypot() > tol)?;
+    let (r0, t0) = ((a0 - c).hypot(), (a0 - c).atan2());
+    anchors
+        .iter()
+        .filter(|p| ((**p - c).hypot() - r0).abs() <= tol)
+        .map(|p| (t0 + (*p - c).atan2()) / 2.0)
+        .find(|angle| holds(path, radii, reflect_through(c, *angle)))
+}
+
+/// Whether every segment of `path` has its image under `map` in the path,
+/// either way round, and every anchor's radius is its image's.
+fn holds(path: &BezPath, radii: &[f64], map: Affine) -> bool {
     let b = path.control_box();
     let tol = 1e-6 * (1.0 + b.width().max(b.height()));
     let runs = anchor_runs(path);
@@ -77,7 +187,7 @@ fn holds(path: &BezPath, radii: &[f64], vertical: bool, c: f64) -> bool {
         .collect();
     let images: Vec<Vec<Point>> = segs
         .iter()
-        .map(|s| s.iter().map(|p| reflect(*p, vertical, c)).collect())
+        .map(|s| s.iter().map(|p| map * *p).collect())
         .collect();
     if !matches_all(&segs, &images, tol, |a, b| same_seg(a, b, tol)) {
         return false;
@@ -94,10 +204,7 @@ fn holds(path: &BezPath, radii: &[f64], vertical: bool, c: f64) -> bool {
             k += 1;
         }
     }
-    let mirrored: Vec<Vec<Point>> = anchors
-        .iter()
-        .map(|a| vec![reflect(a[0], vertical, c), a[1]])
-        .collect();
+    let mirrored: Vec<Vec<Point>> = anchors.iter().map(|a| vec![map * a[0], a[1]]).collect();
     matches_all(&anchors, &mirrored, tol, |a, b| {
         (a[0] - b[0]).hypot() <= tol && (a[1].x - b[1].x).abs() <= tol
     })
@@ -197,6 +304,18 @@ pub fn partners(
     c: f64,
     tol: f64,
 ) -> Vec<Option<(usize, bool)>> {
+    partners_by(subs, |p| reflect(p, vertical, c), true, tol)
+}
+
+/// [`partners`] under any isometry `map`, an `involution` (a reflection) pairing
+/// anchors both ways: each anchor's image by flat index, and whether the run
+/// passes it the other way round.
+pub fn partners_by(
+    subs: &[PenSubpath],
+    map: impl Fn(Point) -> Point,
+    involution: bool,
+    tol: f64,
+) -> Vec<Option<(usize, bool)>> {
     let flat: Vec<&PenAnchor> = subs.iter().flat_map(|s| &s.anchors).collect();
     // Each anchor's neighbours along its run, by flat index.
     let mut prev = Vec::with_capacity(flat.len());
@@ -224,7 +343,7 @@ pub fn partners(
     let near = |p: Point, q: Point| (p - q).hypot() <= tol;
     let fits = |x: Option<usize>, y: Option<usize>| match (x, y) {
         (None, None) => 1,
-        (Some(x), Some(y)) => usize::from(near(reflect(flat[x].at, vertical, c), flat[y].at)),
+        (Some(x), Some(y)) => usize::from(near(map(flat[x].at), flat[y].at)),
         _ => 0,
     };
     let score = |a: usize, b: usize| {
@@ -235,18 +354,21 @@ pub fn partners(
     // Anchors by x, so the ones at an image's place are a short range.
     let mut by_x: Vec<usize> = (0..flat.len()).collect();
     by_x.sort_by(|&p, &q| flat[p].at.x.total_cmp(&flat[q].at.x).then(p.cmp(&q)));
+    // `at[a]` is a's image; `taken[b]` that b is already some anchor's. A
+    // reflection pairs both ways at once; a turn only carries a forward.
     let mut at: Vec<Option<usize>> = vec![None; flat.len()];
+    let mut taken = vec![false; flat.len()];
     for a in 0..flat.len() {
         if at[a].is_some() {
             continue;
         }
-        let want = reflect(flat[a].at, vertical, c);
+        let want = map(flat[a].at);
         let lo = by_x.partition_point(|&j| flat[j].at.x < want.x - tol);
         let mut here: Vec<usize> = by_x[lo..]
             .iter()
             .copied()
             .take_while(|&j| flat[j].at.x <= want.x + tol)
-            .filter(|&b| at[b].is_none() && near(flat[b].at, want))
+            .filter(|&b| !taken[b] && near(flat[b].at, want))
             .collect();
         here.sort_unstable();
         let mut best: Option<(usize, usize)> = None;
@@ -261,7 +383,11 @@ pub fn partners(
         }
         if let Some((b, _)) = best {
             at[a] = Some(b);
-            at[b] = Some(a);
+            taken[b] = true;
+            if involution {
+                at[b] = Some(a);
+                taken[a] = true;
+            }
         }
     }
     (0..flat.len())
@@ -303,6 +429,9 @@ pub fn symmetric_edit(
     mirror: PathMirror,
     at: Point,
 ) {
+    if mirror.is_radial() {
+        return radial_edit(base, edited, mirror, false);
+    }
     let shape = |s: &[PenSubpath]| s.iter().map(|s| s.anchors.len()).collect::<Vec<_>>();
     if shape(base) != shape(edited) {
         return;
@@ -387,6 +516,9 @@ fn one_map(base: &[PenAnchor], edited: &[PenAnchor], tol: f64) -> bool {
 /// was: [`symmetric_edit`]'s rule without its exceptions, for a caller that changed
 /// every anchor on purpose and wants each pair's first anchor to decide.
 pub fn remirror(base: &[PenSubpath], edited: &mut [PenSubpath], mirror: PathMirror, at: Point) {
+    if mirror.is_radial() {
+        return radial_edit(base, edited, mirror, true);
+    }
     let shape = |s: &[PenSubpath]| s.iter().map(|s| s.anchors.len()).collect::<Vec<_>>();
     if shape(base) != shape(edited) {
         return;
@@ -485,6 +617,160 @@ fn on_axis(
     a
 }
 
+// --- a radial path under point editing --------------------------------------
+
+/// Every map but the identity that carries a radial path onto itself, about its
+/// centre: the turns, and the reflections when each copy is mirrored, each with
+/// whether it reverses the run. Empty when the path's rule no longer holds.
+fn radial_group(subs: &[PenSubpath], mirror: PathMirror) -> Vec<(Affine, bool)> {
+    let path = crate::edit::pen_path(subs);
+    let radii = crate::edit::pen_radii(subs);
+    let n = mirror.copies;
+    if kept(&path, &radii, mirror).copies != n {
+        return Vec::new();
+    }
+    let c = radial_centre(&path);
+    let step = std::f64::consts::TAU / f64::from(n);
+    let mut out: Vec<(Affine, bool)> = (1..n)
+        .map(|k| (turn_about(c, step * f64::from(k)), false))
+        .collect();
+    if mirror.reflect
+        && let Some(axis) = reflection_axis(&path, &radii)
+    {
+        out.extend((0..n).map(|k| (reflect_through(c, axis + step * f64::from(k) / 2.0), true)));
+    }
+    out
+}
+
+/// `a` carried by `map`, whose linear part turns its handles; `swap` when the run
+/// passes the image the other way round.
+fn carried(a: &PenAnchor, map: Affine, swap: bool) -> PenAnchor {
+    let lin = |v: Vec2| {
+        let [m0, m1, m2, m3, _, _] = map.as_coeffs();
+        Vec2::new(m0 * v.x + m2 * v.y, m1 * v.x + m3 * v.y)
+    };
+    let (out, back) = match swap {
+        true => (lin(a.back), lin(a.out)),
+        false => (lin(a.out), lin(a.back)),
+    };
+    PenAnchor {
+        at: map * a.at,
+        out,
+        back,
+        radius: a.radius,
+    }
+}
+
+/// [`symmetric_edit`] and [`remirror`] for a radial path: each orbit of anchors
+/// made one again, the first anchor in order that the edit changed deciding the
+/// rest. An anchor a turn holds still is on the centre and is held there; one a
+/// reflection holds still is on its line and slides along it. `force` skips the
+/// cases [`symmetric_edit`] leaves alone.
+fn radial_edit(base: &[PenSubpath], edited: &mut [PenSubpath], mirror: PathMirror, force: bool) {
+    let shape = |s: &[PenSubpath]| s.iter().map(|s| s.anchors.len()).collect::<Vec<_>>();
+    if shape(base) != shape(edited) {
+        return;
+    }
+    let group = radial_group(base, mirror);
+    if group.is_empty() {
+        return;
+    }
+    let c = radial_centre(&crate::edit::pen_path(base));
+    let size = base
+        .iter()
+        .flat_map(|s| &s.anchors)
+        .map(|a| (a.at - c).hypot())
+        .fold(0.0, f64::max);
+    let tol = 1e-6 * (1.0 + size);
+    let pairs: Vec<Vec<Option<(usize, bool)>>> = group
+        .iter()
+        .map(|(map, reverses)| partners_by(base, |p| *map * p, *reverses, tol))
+        .collect();
+    let flat_base: Vec<PenAnchor> = base.iter().flat_map(|s| s.anchors.clone()).collect();
+    let mut flat: Vec<PenAnchor> = edited.iter().flat_map(|s| s.anchors.clone()).collect();
+    let moved: Vec<bool> = flat_base
+        .iter()
+        .zip(&flat)
+        .map(|(a, b)| changed(a, b, tol))
+        .collect();
+    if !force {
+        if moved.iter().all(|m| *m) || one_map(&flat_base, &flat, tol) {
+            return;
+        }
+        let together = pairs.iter().all(|p| {
+            p.iter()
+                .enumerate()
+                .all(|(a, q)| q.is_none_or(|(q, _)| moved[a] == moved[q]))
+        });
+        let path = crate::edit::pen_path(edited);
+        if together && kept(&path, &crate::edit::pen_radii(edited), mirror) == mirror {
+            return;
+        }
+    }
+    let mut done = vec![false; flat.len()];
+    for a in 0..flat.len() {
+        if done[a] {
+            continue;
+        }
+        let orbit = |a: usize| pairs.iter().filter_map(move |p| p[a].map(|(q, _)| q));
+        // The first changed anchor of the orbit decides it.
+        let src = std::iter::once(a)
+            .chain(orbit(a))
+            .filter(|j| moved[*j])
+            .min();
+        done[a] = true;
+        for q in orbit(a) {
+            done[q] = true;
+        }
+        let Some(src) = src else { continue };
+        let now = flat[src];
+        let mut held = now;
+        for ((map, reverses), p) in group.iter().zip(&pairs) {
+            if let Some((q, swap)) = p[src]
+                && q == src
+            {
+                held = match reverses {
+                    false => PenAnchor { at: c, ..held },
+                    true => along_line(&flat_base[src], &held, *map, c, swap, tol),
+                };
+            }
+        }
+        flat[src] = held;
+        for ((map, _), p) in group.iter().zip(&pairs) {
+            if let Some((q, swap)) = p[src]
+                && q != src
+            {
+                flat[q] = carried(&held, *map, swap);
+            }
+        }
+    }
+    let mut it = flat.into_iter();
+    for sub in edited.iter_mut() {
+        for a in &mut sub.anchors {
+            *a = it.next().expect("one anchor per anchor");
+        }
+    }
+}
+
+/// An anchor on the line a reflection `map` holds still, after an edit: turned so
+/// the line stands vertical through `c`, held to it by [`on_axis`], turned back.
+fn along_line(
+    was: &PenAnchor,
+    now: &PenAnchor,
+    map: Affine,
+    c: Point,
+    swap: bool,
+    tol: f64,
+) -> PenAnchor {
+    // The line's angle is half the reflection's: its matrix is [cos 2t, sin 2t; ...].
+    let [m0, m1, ..] = map.as_coeffs();
+    let angle = m1.atan2(m0) / 2.0;
+    let upright = turn_about(c, std::f64::consts::FRAC_PI_2 - angle);
+    let there = |a: &PenAnchor| carried(a, upright, false);
+    let held = on_axis(&there(was), &there(now), true, c.x, swap, tol);
+    carried(&held, upright.inverse(), false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,6 +778,7 @@ mod tests {
     const BOTH: PathMirror = PathMirror {
         vertical: true,
         horizontal: true,
+        ..PathMirror::NONE
     };
 
     /// A heart-ish closed run, symmetric about x = 50 only.
@@ -509,13 +796,7 @@ mod tests {
     /// The heart keeps its vertical axis and loses the horizontal one it never had.
     #[test]
     fn a_symmetric_path_keeps_the_axis_it_is_symmetric_about() {
-        assert_eq!(
-            kept(&heart(), &[], BOTH),
-            PathMirror {
-                vertical: true,
-                horizontal: false
-            }
-        );
+        assert_eq!(kept(&heart(), &[], BOTH), VERTICAL);
     }
 
     /// Moving one anchor off its image's place drops the axis.
@@ -547,7 +828,7 @@ mod tests {
 
     const VERTICAL: PathMirror = PathMirror {
         vertical: true,
-        horizontal: false,
+        ..PathMirror::NONE
     };
 
     /// An open run of corners through `points`.
@@ -761,6 +1042,101 @@ mod tests {
         let want = edited.clone();
         symmetric_edit(&base, &mut edited, BOTH, Point::ZERO);
         assert_eq!(edited, want, "both axes: scaled as asked");
+    }
+
+    /// A five-pointed star about (100, 50): outer points at radius 40, inner at
+    /// 16, from straight up, clockwise.
+    fn star() -> Vec<PenSubpath> {
+        let c = Point::new(100.0, 50.0);
+        let pts: Vec<(f64, f64)> = (0..10)
+            .map(|k| {
+                let r = if k % 2 == 0 { 40.0 } else { 16.0 };
+                let t = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * f64::from(k) / 5.0;
+                (c.x + r * t.cos(), c.y + r * t.sin())
+            })
+            .collect();
+        let mut s = run(&pts);
+        s.closed = true;
+        vec![s]
+    }
+
+    const FIVE: PathMirror = PathMirror {
+        copies: 5,
+        reflect: true,
+        ..PathMirror::NONE
+    };
+
+    /// A star keeps five copies and their mirrors about its anchors' mean; a
+    /// pinwheel, turned but not mirrored, keeps the copies only; a moved point
+    /// drops both, and a count the shape does not turn by is dropped.
+    #[test]
+    fn a_star_keeps_its_copies_and_a_moved_point_drops_them() {
+        let path = crate::edit::pen_path(&star());
+        let c = radial_centre(&path);
+        assert!((c - Point::new(100.0, 50.0)).hypot() < 1e-9, "{c:?}");
+        assert_eq!(kept(&path, &[], FIVE), FIVE);
+        assert_eq!(kept(&path, &[], PathMirror::around(4, false)).copies, 0);
+
+        let mut pinwheel = star();
+        for (k, a) in pinwheel[0].anchors.iter_mut().enumerate() {
+            if k % 2 == 1 {
+                a.at = turn_about(Point::new(100.0, 50.0), 0.2) * a.at;
+            }
+        }
+        let path = crate::edit::pen_path(&pinwheel);
+        assert_eq!(kept(&path, &[], FIVE), PathMirror::around(5, false));
+
+        let mut moved = star();
+        moved[0].anchors[2].at.x += 3.0;
+        assert!(kept(&crate::edit::pen_path(&moved), &[], FIVE).is_none());
+    }
+
+    /// Dragging one outer point of the star takes the four others round with it,
+    /// turned, and their mirrors: the star stays a five-fold star.
+    ///
+    /// flip: `symmetric_edit` without its radial arm → fails at "turned".
+    #[test]
+    fn a_moved_point_of_a_star_turns_its_copies_with_it() {
+        let base = star();
+        let mut edited = base.clone();
+        // The top point, straight up from the centre, pulled further out.
+        edited[0].anchors[0].at = Point::new(100.0, 0.0);
+        symmetric_edit(&base, &mut edited, FIVE, Point::ZERO);
+        let c = Point::new(100.0, 50.0);
+        let want = turn_about(c, std::f64::consts::TAU / 5.0) * Point::new(100.0, 0.0);
+        assert!((edited[0].anchors[2].at - want).hypot() < 1e-6, "turned");
+        let path = crate::edit::pen_path(&edited);
+        assert_eq!(kept(&path, &[], FIVE), FIVE);
+    }
+
+    /// An outer point sits on a mirror line through the centre: dragged sideways
+    /// it slides along that line instead, and every copy follows.
+    #[test]
+    fn a_point_on_a_mirror_line_slides_along_it() {
+        let base = star();
+        let mut edited = base.clone();
+        edited[0].anchors[0].at = Point::new(104.0, 4.0);
+        symmetric_edit(&base, &mut edited, FIVE, Point::ZERO);
+        assert!(
+            (edited[0].anchors[0].at - Point::new(100.0, 4.0)).hypot() < 1e-6,
+            "{:?}",
+            edited[0].anchors[0].at
+        );
+        let path = crate::edit::pen_path(&edited);
+        assert_eq!(kept(&path, &[], FIVE), FIVE);
+    }
+
+    /// The rule's two new keys are left out of a save while unset, so a mirrored
+    /// or plain path saves as it did, and read back when set.
+    #[test]
+    fn the_radial_keys_save_only_when_set() {
+        assert_eq!(
+            serde_json::to_string(&VERTICAL).unwrap(),
+            r#"{"vertical":true}"#
+        );
+        let five = serde_json::to_string(&FIVE).unwrap();
+        assert_eq!(five, r#"{"copies":5,"reflect":true}"#);
+        assert_eq!(serde_json::from_str::<PathMirror>(&five).unwrap(), FIVE);
     }
 
     /// Both axes: one moved anchor takes all three images with it.

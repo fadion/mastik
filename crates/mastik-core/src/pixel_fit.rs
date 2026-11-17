@@ -381,8 +381,11 @@ fn fit_path(
             } else {
                 mirror.horizontal
             },
+            ..mirror
         };
-        let at = crate::symmetry::centre(&pen_path(&base));
+        // A radial path's centre is where its anchors' mean is, which a pixel
+        // grid does not move; the fitted anchor of each orbit turns to the rest.
+        let at = crate::symmetry::origin(&pen_path(&base), mirror);
         let half = |v: f64| (v * 2.0).round() / 2.0;
         let to = match only {
             Some(_) => at,
@@ -749,7 +752,7 @@ mod tests {
                         corner_smoothing: 0.0,
                         mirror: PathMirror {
                             vertical: true,
-                            horizontal: false,
+                            ..PathMirror::NONE
                         },
                     },
                     transform: None,
@@ -939,7 +942,7 @@ mod tests {
                     corner_smoothing: 0.0,
                     mirror: PathMirror {
                         vertical: true,
-                        horizontal: false,
+                        ..PathMirror::NONE
                     },
                 },
                 transform: None,

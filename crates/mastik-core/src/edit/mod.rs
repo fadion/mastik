@@ -3804,7 +3804,7 @@ pub fn rewrite_points(
         let mut base = base.to_vec();
         map_subpaths(&mut base, to_local);
         map_subpaths(&mut subpaths, to_local);
-        let at = crate::symmetry::centre(&pen_path(&base));
+        let at = crate::symmetry::origin(&pen_path(&base), *mirror);
         crate::symmetry::symmetric_edit(&base, &mut subpaths, *mirror, at);
         map_subpaths(&mut subpaths, world);
     }

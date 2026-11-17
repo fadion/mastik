@@ -209,7 +209,7 @@ fn a_mirrored_paths_axes_round_trip_and_a_plain_path_writes_none() {
     };
     let vertical = mastik_core::symmetry::PathMirror {
         vertical: true,
-        horizontal: false,
+        ..mastik_core::symmetry::PathMirror::NONE
     };
     doc.apply(&Transaction(vec![
         Operation::CreateNode {
