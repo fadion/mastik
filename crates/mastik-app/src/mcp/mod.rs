@@ -531,7 +531,8 @@ impl Engine {
             // The call's own edit is not news to the caller; an undo's or redo's
             // layers are, since it did not choose them.
             let now = layers_of(session);
-            let own = last_layers(conn).map(|then| delta(then, &now).to_json(&now, then));
+            let own =
+                last_layers(conn).map(|(then, from)| delta(then, &now).to_json(&now, then, from));
             remember(conn, after, now, Vec::new());
             if matches!(call.tool.as_str(), "undo" | "redo")
                 && let (Some(own), Some(Value::Object(map))) = (own, output.structured.as_mut())
@@ -848,6 +849,18 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
     let args = &call.args;
     let json = |v: Value| Ok(Answer::Json(v));
     match call.tool.as_str() {
+        "get_document" if args.get("brief") == Some(&json!(true)) => {
+            let since = index(args, "since").ok_or(
+                "`brief` lists what changed since a revision: pass `since`, a `rev` you were given",
+            )?;
+            let answer = revisions::since_brief(conn, since, s)?;
+            within_budget(
+                &answer.to_string(),
+                "What changed",
+                "read the sections `left_out.in` names with `get_outline`",
+            )?;
+            json(answer)
+        }
         "get_document" => {
             let snap = snapshot_of(s);
             if let Some(since) = since(conn, args, s, Scope::Document)? {

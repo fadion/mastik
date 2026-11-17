@@ -39,9 +39,10 @@ pub(super) struct Layer {
 
 /// The most layers one list of a `changed` report names. One deletion of a
 /// frame lists every layer in it, which buried the answer it rode on; past
-/// this, the report counts the rest and names the top-level layers they sit
-/// in, which an agent reads again.
-const CHANGED_LISTED: usize = 20;
+/// this, the report counts the rest, names the top-level layers they sit in,
+/// and names the read that lists every one (`get_document` with `since` and
+/// `brief`).
+const CHANGED_LISTED: usize = 50;
 
 /// What changed between two looks at a document.
 #[derive(Default)]
@@ -56,25 +57,32 @@ impl Delta {
         self.added.is_empty() && self.changed.is_empty() && self.removed.is_empty()
     }
 
+    /// Each id with the name it has (or, removed, had), every one: what
+    /// `get_document` with `since` and `brief` answers.
+    fn to_json_whole(&self, now: &HashMap<String, Layer>, then: &HashMap<String, Layer>) -> Value {
+        json!({
+            "added": named(&self.added, now, usize::MAX),
+            "changed": named(&self.changed, now, usize::MAX),
+            "removed": named(&self.removed, then, usize::MAX),
+        })
+    }
+
     /// Each id with the name it has (or, removed, had), at most [`CHANGED_LISTED`] a
-    /// list. Past that, `left_out` counts the rest of each list and names, in
-    /// `in`, the top-level layers holding them (at most [`CHANGED_LISTED`] too).
+    /// list. Past that, `left_out` counts the rest of each list, names in `in` the
+    /// top-level layers holding them (at most [`CHANGED_LISTED`] too), and in
+    /// `read_all` the call that lists every one since `from`, the revision the
+    /// report runs from.
     pub(super) fn to_json(
         &self,
         now: &HashMap<String, Layer>,
         then: &HashMap<String, Layer>,
+        from: u64,
     ) -> Value {
         let name = |l: &Layer| json!(l.name);
-        let named = |ids: &[String], from: &HashMap<String, Layer>| -> Vec<Value> {
-            ids.iter()
-                .take(CHANGED_LISTED)
-                .map(|id| json!({ "id": id, "name": from.get(id).map_or(json!(""), name) }))
-                .collect()
-        };
         let mut report = json!({
-            "added": named(&self.added, now),
-            "changed": named(&self.changed, now),
-            "removed": named(&self.removed, then),
+            "added": named(&self.added, now, CHANGED_LISTED),
+            "changed": named(&self.changed, now, CHANGED_LISTED),
+            "removed": named(&self.removed, then, CHANGED_LISTED),
         });
         let past = |ids: &[String]| ids.len().saturating_sub(CHANGED_LISTED);
         if [&self.added, &self.changed, &self.removed]
@@ -112,9 +120,18 @@ impl Delta {
             "changed": past(&self.changed),
             "removed": past(&self.removed),
             "in": sections,
+            "read_all": { "tool": "get_document", "args": { "since": from, "brief": true } },
         });
         report
     }
+}
+
+/// The first `most` of `ids`, each with its name in `from`.
+fn named(ids: &[String], from: &HashMap<String, Layer>, most: usize) -> Vec<Value> {
+    ids.iter()
+        .take(most)
+        .map(|id| json!({ "id": id, "name": from.get(id).map_or("", |l| l.name.as_str()) }))
+        .collect()
 }
 
 /// The layer of `from` that holds `id` (or is it) directly under a page.
@@ -243,9 +260,11 @@ pub(super) fn remember(
     }
 }
 
-/// The fingerprints of the connection's last look.
-pub(super) fn last_layers(conn: &Connection) -> Option<&HashMap<String, Layer>> {
-    conn.shown.back().and_then(|s| s.layers.as_deref())
+/// The fingerprints of the connection's last look, and its revision.
+pub(super) fn last_layers(conn: &Connection) -> Option<(&HashMap<String, Layer>, u64)> {
+    conn.shown
+        .back()
+        .and_then(|s| Some((s.layers.as_deref()?, s.rev)))
 }
 
 /// What changed since the connection's last look, and remember this one.
@@ -256,9 +275,9 @@ pub(super) fn catch_up(conn: &mut Connection, session: &EditorSession) -> Option
     }
     let now = layers_of(session);
     let (report, others) = match last_layers(conn) {
-        Some(last) => {
+        Some((last, from)) => {
             let d = delta(last, &now);
-            let report = (!d.is_empty()).then(|| d.to_json(&now, last));
+            let report = (!d.is_empty()).then(|| d.to_json(&now, last, from));
             (report, d.changed.into_iter().chain(d.removed).collect())
         }
         None => (None, Vec::new()),
@@ -378,6 +397,39 @@ pub(super) fn since(
     Ok(Some(
         json!({ "since": since, "nodes": fresh, "removed": removed }),
     ))
+}
+
+/// `get_document`'s `since` with `brief`: every layer added, changed and removed
+/// since that revision, by id and name, however many; `unchanged` when nothing
+/// moved. Refused for a revision whose layers the connection no longer keeps,
+/// since nothing can be diffed against it.
+pub(super) fn since_brief(
+    conn: &Connection,
+    since: u64,
+    s: &EditorSession,
+) -> Result<Value, String> {
+    if since == s.revision() {
+        return Ok(json!({ "unchanged": true }));
+    }
+    let then = conn
+        .shown
+        .iter()
+        .find(|x| x.rev == since)
+        .and_then(|x| x.layers.as_ref())
+        .ok_or_else(|| {
+            format!(
+                "`since` {since} is older than this connection keeps whole: read again with \
+                 `get_outline` or `find_nodes`"
+            )
+        })?;
+    let now = layers_of(s);
+    let d = delta(then, &now);
+    if d.is_empty() {
+        return Ok(json!({ "unchanged": true }));
+    }
+    let mut answer = d.to_json_whole(&now, then);
+    answer["since"] = json!(since);
+    Ok(answer)
 }
 
 /// Refuse a write whose layers changed after `base`.
@@ -550,6 +602,48 @@ mod tests {
             !changed.to_string().contains(&copy),
             "the sibling is unchanged"
         );
+
+        // flip: `Delta::to_json_whole` naming at most `CHANGED_LISTED` → fails at
+        // "every layer".
+        let read_all = changed["left_out"]["read_all"].clone();
+        assert_eq!(read_all["tool"], "get_document");
+        let all = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "get_document",
+            read_all["args"].clone(),
+        );
+        let all = ok(&all);
+        assert_eq!(
+            all["removed"].as_array().map(Vec::len),
+            Some(held),
+            "every layer: {all}"
+        );
+        assert_eq!(all["changed"], page);
+    }
+
+    /// `brief` needs `since`, and a revision the connection no longer keeps is
+    /// refused rather than answered as nothing changed.
+    #[test]
+    fn a_brief_read_needs_a_revision_it_can_diff() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "get_document",
+            json!({ "brief": true }),
+        );
+        assert!(out.is_error, "no `since`");
+        let args = json!({ "since": 1, "brief": true });
+        let out = call(&mut engine, &mut docs, 1, "get_document", args);
+        assert!(out.is_error, "a revision never shown");
+        let rev = ok(&call(&mut engine, &mut docs, 1, "get_selection", json!({})))["rev"].clone();
+        let args = json!({ "since": rev, "brief": true });
+        let out = call(&mut engine, &mut docs, 1, "get_document", args);
+        assert_eq!(ok(&out)["unchanged"], true);
     }
 
     /// A write whose layer changed after its `base_rev` is refused naming it; one

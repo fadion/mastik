@@ -51,8 +51,16 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "get_document",
-        doc: "The whole document's snapshot: pages and every layer with world transforms, bounds, geometry and paints. Large; prefer `find_nodes` and `get_node` for one part of a page.",
-        params: &[SINCE],
+        doc: "The whole document's snapshot: pages and every layer with world transforms, bounds, geometry and paints. Large; prefer `find_nodes` and `get_node` for one part of a page. With `since` and `brief`, every layer added, changed and removed since, by id and name: the rest of a `changed` cut short.",
+        params: &[
+            SINCE,
+            param(
+                "brief",
+                ParamKind::Bool,
+                false,
+                "With `since`: ids and names only, every one.",
+            ),
+        ],
     },
     Tool {
         name: "get_node",
@@ -993,7 +1001,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 25_900;
-        const ALL_BUDGET: usize = 101_700;
+        const ALL_BUDGET: usize = 101_900;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,
