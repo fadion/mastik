@@ -511,6 +511,82 @@ fn a_verb_argument_is_bounded() {
     assert_eq!(h.commits, 3, "nothing past the fixture was committed");
 }
 
+/// A table repeating one long string or one collection is small in Lua, so a
+/// verb's arguments are charged each string's bytes and each collection's layers
+/// before the host copies them.
+/// flip: `to_json` charging a string no bytes → fails at "more than 16 MB";
+/// charging a collection one value → fails at "more than 100000 values".
+#[test]
+fn a_repeated_argument_is_bounded() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let strings = "set_name { name = table.create(1000, string.rep(\"x\", 1e5)) }";
+    let err = run_script(&mut h, &e, strings).unwrap_err();
+    assert!(err.message.contains("more than 16 MB"), "{}", err.message);
+    let layers = "set_name { name = table.create(40000, sel) }";
+    let err = run_script(&mut h, &e, layers).unwrap_err();
+    assert!(
+        err.message.contains("more than 100000 values"),
+        "{}",
+        err.message
+    );
+    assert_eq!(h.commits, 3, "nothing past the fixture was committed");
+}
+
+/// A verb of one layer hands its arguments to the host once per layer, and a
+/// property write once per layer, so the bytes bound counts them per layer.
+/// flip: `call_verb` not multiplying its arguments' bytes by its layers → fails
+/// at the call form; `write` not multiplying its text's → at the property form.
+#[test]
+fn a_long_argument_over_many_layers_is_bounded() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    for src in [
+        "set_name(string.rep(\"x\", 1e7))",
+        "sel.name = string.rep(\"x\", 1e7)",
+    ] {
+        let err = run_script(&mut h, &e, src).unwrap_err();
+        assert!(
+            err.message.contains("more than 16 MB"),
+            "{src}: {}",
+            err.message
+        );
+    }
+    assert_eq!(h.commits, 3, "nothing past the fixture was committed");
+    run_script(
+        &mut h,
+        &env(&ids[..1], &labels),
+        "set_name(string.rep(\"x\", 1e7))",
+    )
+    .expect("one layer takes it");
+    assert_eq!(h.doc.get(ids[0]).unwrap().name().len(), 10_000_000);
+}
+
+/// A verb run once per layer, and a property written to each, read the clock
+/// between layers, so a slow host over a large selection stops near the budget.
+/// flip: `call_verb` not reading the clock between its runs → fails at the call
+/// form's count; `write` not reading it → fails at the property form's.
+#[test]
+fn a_verb_over_many_layers_is_timed_per_layer() {
+    let mut h = TestHost::new();
+    let page = h.page;
+    let many: Vec<NodeId> = (0..80)
+        .map(|i| h.rect(page, &format!("R{i}"), 0.0, 0.0, 10.0, 10.0))
+        .collect();
+    let labels = FxHashMap::default();
+    let e = env(&many, &labels);
+    h.slow = std::time::Duration::from_millis(30);
+    for src in ["set_name(\"x\")", "sel.name = \"x\""] {
+        let before = h.verbs;
+        let err = run_script(&mut h, &e, src).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Budget, "{src}: {}", err.message);
+        let called = h.verbs - before;
+        assert!(called < 45, "{src}: {called} verbs ran past the 1 s budget");
+    }
+}
+
 /// The header reads the documented example, and a bad line is an error on it.
 #[test]
 fn the_header_reads_inputs() {
@@ -1205,6 +1281,28 @@ fn printing_too_much_stops_the_run() {
     assert_eq!(out.printed.len(), 10_000, "the cap's own count is kept");
     let err = run_script(&mut h, &e, "for i = 1, 10001 do print(i) end").map(|o| o.printed.len());
     assert!(err.is_err(), "the line cap: {err:?}");
+}
+
+/// `print` builds its line against the room left under `PRINT_CAP`, so many long
+/// arguments stop the run before a line past the cap is built.
+/// flip: the `print` callback building every argument before the cap is checked
+/// → fails at the longest line built.
+#[test]
+fn print_stops_before_building_past_the_cap() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    crate::run::PRINT_BUILT.set(0);
+    let src = "local s = string.rep('x', 1e5) print(table.unpack(table.create(100, s)))";
+    let err = run_script(&mut h, &e, src).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Budget);
+    assert_eq!(
+        err.message,
+        "Stopped after printing more than 10,000 lines or 1 MB"
+    );
+    let built = crate::run::PRINT_BUILT.get();
+    assert!(built > 0, "the probe saw the line");
+    assert!(built <= 1 << 20, "a line of {built} bytes was built");
 }
 
 /// Luau's wording for a read-only table and for runaway recursion is said in the

@@ -607,10 +607,85 @@ const PRINT_LINES: usize = 10_000;
 /// Why a run stopped printing.
 const PRINTED_TOO_MUCH: &str = "Stopped after printing more than 10,000 lines or 1 MB";
 
-/// The most values one verb call's arguments may hold. A table that shares a
+#[cfg(test)]
+thread_local! {
+    /// The longest line `print` has built on this thread, for the test of its cap.
+    pub(crate) static PRINT_BUILT: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The most values one verb call's arguments may hold, a collection counting
+/// one per layer. A table that shares a
 /// subtable at each level is small in Lua but a tree as JSON, built in the host's
 /// memory where no interrupt or memory limit reaches.
 const ARG_VALUES_MAX: usize = 100_000;
+
+/// The most string bytes one verb call hands the host, counted once for each
+/// layer a verb of one layer runs on: Lua shares a string by reference, and the
+/// host copies it at every reference.
+const ARG_BYTES_MAX: usize = 16 << 20;
+
+/// What one verb call's arguments may still hold, spent before each value is built.
+struct ArgBudget {
+    values: usize,
+    bytes: usize,
+}
+
+impl ArgBudget {
+    fn new() -> Self {
+        Self {
+            values: ARG_VALUES_MAX,
+            bytes: ARG_BYTES_MAX,
+        }
+    }
+
+    /// Spend `n` values.
+    fn values(&mut self, n: usize) -> Result<(), String> {
+        self.values = self.values.checked_sub(n).ok_or_else(|| {
+            format!(
+                "the arguments hold more than {ARG_VALUES_MAX} values (does a table repeat itself?)"
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Spend `n` bytes of strings.
+    fn bytes(&mut self, n: usize) -> Result<(), String> {
+        self.bytes = self.bytes.checked_sub(n).ok_or_else(|| {
+            format!(
+                "the arguments hold more than {} MB (does a table repeat a string?)",
+                ARG_BYTES_MAX >> 20
+            )
+        })?;
+        Ok(())
+    }
+
+    /// The bytes spent so far.
+    fn spent(&self) -> usize {
+        ARG_BYTES_MAX - self.bytes
+    }
+}
+
+/// Why `bytes` handed to each of `layers` layers is refused, `None` within
+/// [`ARG_BYTES_MAX`].
+fn per_layer_refusal(bytes: usize, layers: usize) -> Option<String> {
+    (bytes.saturating_mul(layers) > ARG_BYTES_MAX).then(|| {
+        format!(
+            "once for each of {layers} layers, the arguments hold more than {} MB",
+            ARG_BYTES_MAX >> 20
+        )
+    })
+}
+
+/// A spent budget, stopping the run as the interrupt does.
+fn out_of_budget(message: String) -> mlua::Error {
+    mlua::Error::external(Raised {
+        kind: ErrorKind::Budget,
+        message,
+        line: None,
+        ident: None,
+        fix: None,
+    })
+}
 
 /// What the host and the run accumulate.
 struct State<'h> {
@@ -624,9 +699,24 @@ struct State<'h> {
     /// Set by each host call, which may be slow: the interrupt then reads the
     /// clock at once rather than at its next 256th step.
     hosted: Rc<Cell<bool>>,
+    /// When the run started and how long it may take, read between the host
+    /// calls one Lua call makes for each layer, where no interrupt fires.
+    start: Instant,
+    time: Duration,
 }
 
 impl State<'_> {
+    /// Stop with the time budget's error once the run has spent it.
+    fn on_time(&self) -> mlua::Result<()> {
+        if self.start.elapsed() > self.time {
+            return Err(out_of_budget(format!(
+                "Stopped after {}",
+                duration(self.time)
+            )));
+        }
+        Ok(())
+    }
+
     /// Commit `tx` unless it is empty.
     fn commit(&mut self, tx: mastik_core::Transaction) -> Result<(), String> {
         if tx.0.is_empty() {
@@ -651,10 +741,10 @@ impl State<'_> {
     fn apply(
         &mut self,
         name: &str,
-        args: serde_json::Value,
+        args: &serde_json::Value,
     ) -> Result<(Vec<NodeId>, Option<String>), String> {
         self.hosted.set(true);
-        let done = self.host.verb(name, &args)?;
+        let done = self.host.verb(name, args)?;
         self.commit(done.tx)?;
         if let Some(said) = done.said
             && !self.say(said)
@@ -767,13 +857,7 @@ pub(crate) fn run(
             None
         };
         match over {
-            Some(message) => Err(mlua::Error::external(Raised {
-                kind: ErrorKind::Budget,
-                message,
-                line: None,
-                ident: None,
-                fix: None,
-            })),
+            Some(message) => Err(out_of_budget(message)),
             None => Ok(VmState::Continue),
         }
     });
@@ -787,6 +871,8 @@ pub(crate) fn run(
         created: Vec::new(),
         selection: None,
         hosted,
+        start,
+        time: budget.time,
     });
     let outer = &state;
     let value = lua
@@ -863,8 +949,28 @@ pub(crate) fn run(
                 call_verb(lua, state, env, &name, args.collect())
             })?;
             let print = scope.create_function(move |lua, args: MultiValue| {
-                let line: Vec<String> = args.iter().map(|v| printed(lua, state, v)).collect();
-                if state.borrow_mut().say(line.join("\t")) {
+                // Built against the room left, a string measured before it is copied.
+                let room = PRINT_CAP.saturating_sub(state.borrow().printed_bytes);
+                let mut line = String::new();
+                let mut fits = true;
+                for (i, v) in args.iter().enumerate() {
+                    let tab = usize::from(i > 0);
+                    let len = match v {
+                        Value::String(s) => s.as_bytes().len(),
+                        _ => 0,
+                    };
+                    if line.len() + tab + len >= room {
+                        fits = false;
+                        break;
+                    }
+                    if i > 0 {
+                        line.push('\t');
+                    }
+                    line.push_str(&printed(lua, state, v));
+                    #[cfg(test)]
+                    PRINT_BUILT.set(PRINT_BUILT.get().max(line.len()));
+                }
+                if fits && state.borrow_mut().say(line) {
                     return Ok(());
                 }
                 Err(mlua::Error::external(Raised {
@@ -1182,13 +1288,19 @@ pub(crate) fn coll(lua: &Lua, ids: &[NodeId]) -> mlua::Result<Table> {
     Ok(t)
 }
 
-/// The layers of collection `t`, `None` for any other table.
-fn layers_of(lua: &Lua, t: &Table) -> mlua::Result<Option<Vec<NodeId>>> {
+/// `f` over the layers of collection `t`, lent rather than copied; `None` for
+/// any other table.
+fn with_layers<R>(lua: &Lua, t: &Table, f: impl FnOnce(&[NodeId]) -> R) -> mlua::Result<Option<R>> {
     let registry: Table = lua.named_registry_value(IDS)?;
     match registry.raw_get::<Value>(t)? {
-        Value::UserData(ud) => Ok(Some(ud.borrow::<Vec<NodeId>>()?.clone())),
+        Value::UserData(ud) => Ok(Some(f(&ud.borrow::<Vec<NodeId>>()?))),
         _ => Ok(None),
     }
+}
+
+/// The layers of collection `t`, `None` for any other table.
+fn layers_of(lua: &Lua, t: &Table) -> mlua::Result<Option<Vec<NodeId>>> {
+    with_layers(lua, t, <[NodeId]>::to_vec)
 }
 
 /// The layers of collection `t`; raises for any other table.
@@ -1389,6 +1501,7 @@ fn write(
             match prop {
                 "x" | "y" => {
                     for id in ids {
+                        st.on_time()?;
                         if let Some(why) = mastik_core::build::laid_out_refusal(st.host.doc(), *id)
                         {
                             return Err(fail(why));
@@ -1411,6 +1524,7 @@ fn write(
                 }
                 "width" | "height" => {
                     for id in ids {
+                        st.on_time()?;
                         let size = {
                             let (doc, res) = (st.host.doc(), st.host.resolved());
                             mastik_core::query::local_box(doc, res, *id).map(|b| b.size())
@@ -1428,13 +1542,14 @@ fn write(
                         };
                         st.apply(
                             "set_size",
-                            json!({ "node": id.to_wire(), "width": w, "height": h }),
+                            &json!({ "node": id.to_wire(), "width": w, "height": h }),
                         )
                         .map_err(fail)?;
                     }
                 }
                 "rotation" => {
                     for id in ids {
+                        st.on_time()?;
                         let tx = {
                             let (doc, res) = (st.host.doc(), st.host.resolved());
                             mastik_core::edit::turned_to(doc, res, *id, n.to_radians())
@@ -1445,14 +1560,15 @@ fn write(
                     }
                 }
                 "opacity" => {
-                    st.apply("set_opacity", json!({ "nodes": wires, "opacity": n }))
+                    st.apply("set_opacity", &json!({ "nodes": wires, "opacity": n }))
                         .map_err(fail)?;
                 }
                 "corner_radius" => {
                     for id in ids {
+                        st.on_time()?;
                         st.apply(
                             "set_geometry",
-                            json!({ "node": id.to_wire(), "geometry": { "CornerRadius": n } }),
+                            &json!({ "node": id.to_wire(), "geometry": { "CornerRadius": n } }),
                         )
                         .map_err(fail)?;
                     }
@@ -1467,7 +1583,7 @@ fn write(
                 _ => return Err(wrong()),
             };
             if prop == "fill" {
-                st.apply("set_fills", json!({ "nodes": wires, "fills": paint }))
+                st.apply("set_fills", &json!({ "nodes": wires, "fills": paint }))
                     .map_err(fail)?;
                 // A text draws in its style's colour over its fills, so new fills clear it.
                 let coloured: Vec<serde_json::Value> =
@@ -1478,12 +1594,12 @@ fn write(
                 if !coloured.is_empty() {
                     st.apply(
                         "set_text_style",
-                        json!({ "nodes": coloured, "style": { "color": null } }),
+                        &json!({ "nodes": coloured, "style": { "color": null } }),
                     )
                     .map_err(fail)?;
                 }
             } else {
-                st.apply("set_strokes", json!({ "nodes": wires, "strokes": paint }))
+                st.apply("set_strokes", &json!({ "nodes": wires, "strokes": paint }))
                     .map_err(fail)?;
             }
         }
@@ -1497,18 +1613,24 @@ fn write(
             };
             match prop {
                 "name" | "text" => {
+                    if let Some(why) = per_layer_refusal(text.len(), ids.len()) {
+                        return Err(fail(format!("`.{prop}`: {why}")));
+                    }
                     let verb = if prop == "name" {
                         "set_name"
                     } else {
                         "set_text"
                     };
+                    // One argument, its layer swapped for each, rather than a copy per layer.
+                    let mut args = json!({ "node": null, prop: text });
                     for id in ids {
-                        st.apply(verb, json!({ "node": id.to_wire(), prop: text }))
-                            .map_err(fail)?;
+                        st.on_time()?;
+                        args["node"] = json!(id.to_wire());
+                        st.apply(verb, &args).map_err(fail)?;
                     }
                 }
                 "blend" => {
-                    st.apply("set_blend", json!({ "nodes": wires, "blend": text }))
+                    st.apply("set_blend", &json!({ "nodes": wires, "blend": text }))
                         .map_err(fail)?;
                 }
                 _ => return Err(no_property(lua, prop)),
@@ -1523,7 +1645,7 @@ fn write(
             } else {
                 "set_locked"
             };
-            st.apply(verb, json!({ "nodes": wires, prop: b }))
+            st.apply(verb, &json!({ "nodes": wires, prop: b }))
                 .map_err(fail)?;
         }
         PropType::Layers => return Err(raise(lua, format!("`.{prop}` is read-only"))),
@@ -1564,6 +1686,7 @@ fn write_percent(
     }
     let mut st = state.borrow_mut();
     for id in ids {
+        st.on_time()?;
         let item = {
             let doc = st.host.doc();
             let Some(node) = doc.get(*id) else {
@@ -1597,7 +1720,7 @@ fn write_percent(
         let item = serde_json::to_value(item).map_err(|e| raise(lua, e.to_string()))?;
         st.apply(
             "set_layout_item",
-            json!({ "nodes": [id.to_wire()], "item": item }),
+            &json!({ "nodes": [id.to_wire()], "item": item }),
         )
         .map_err(|why| raise(lua, why))?;
     }
@@ -1698,11 +1821,11 @@ fn call_verb(
     let mut map = Map::new();
     let mut given: Option<Vec<NodeId>> = None;
     let named_form = match args.as_slice() {
-        [Value::Table(t)] => layers_of(lua, t)?.is_none(),
+        [Value::Table(t)] => with_layers(lua, t, |_| ())?.is_none(),
         _ => false,
     };
     let fail = |why: String| raise(lua, format!("`{name}`: {why}"));
-    let mut budget = ARG_VALUES_MAX;
+    let mut budget = ArgBudget::new();
     if named_form {
         let Some(Value::Table(t)) = args.first() else {
             unreachable!("the named form is one table");
@@ -1750,8 +1873,9 @@ fn call_verb(
             );
         }
     }
-    // The subject, from the collection given or the selection.
-    let mut runs: Vec<Map<String, serde_json::Value>> = vec![map.clone()];
+    // The subject, from the collection given or the selection. A verb of one layer
+    // runs once for each, on one argument map with its layer swapped in each time.
+    let mut each: Option<(&str, Vec<NodeId>)> = None;
     if let Some(i) = subject {
         let p = &verb.params[i];
         if !map.contains_key(p.name) {
@@ -1759,7 +1883,7 @@ fn call_verb(
             if ids.is_empty() {
                 if p.kind == ParamKind::Node && p.name == "parent" {
                     let page = state.borrow().host.page();
-                    runs[0].insert(p.name.into(), json!(page.to_wire()));
+                    map.insert(p.name.into(), json!(page.to_wire()));
                 } else if p.required {
                     return Err(raise(
                         lua,
@@ -1768,26 +1892,28 @@ fn call_verb(
                 }
             } else if p.kind == ParamKind::Nodes {
                 let wires: Vec<String> = ids.iter().map(|id| id.to_wire()).collect();
-                runs[0].insert(p.name.into(), json!(wires));
+                map.insert(p.name.into(), json!(wires));
             } else {
-                // A verb of one layer runs once for each.
-                runs = ids
-                    .iter()
-                    .map(|id| {
-                        let mut m = map.clone();
-                        m.insert(p.name.into(), json!(id.to_wire()));
-                        m
-                    })
-                    .collect();
+                if let Some(why) = per_layer_refusal(budget.spent(), ids.len()) {
+                    return Err(fail(why));
+                }
+                each = Some((p.name, ids));
             }
         }
     }
+    let mut args = serde_json::Value::Object(map);
+    let runs = each.as_ref().map_or(1, |(_, ids)| ids.len());
     let mut created = Vec::new();
     let mut made = None;
-    for args in runs {
+    for run in 0..runs {
+        // The host calls follow one another in Rust, where no interrupt fires.
+        state.borrow().on_time()?;
+        if let Some((key, ids)) = &each {
+            args[*key] = json!(ids[run].to_wire());
+        }
         let (c, m) = state
             .borrow_mut()
-            .apply(name, serde_json::Value::Object(args))
+            .apply(name, &args)
             .map_err(|why| raise(lua, why))?;
         created.extend(c);
         made = made.or(m);
@@ -1807,24 +1933,20 @@ fn call_verb(
 
 /// A Lua value as a verb's JSON argument of `kind`: a collection as its wire
 /// forms, a leap label given for a layer as its layer, a table as a list or an object.
-/// Each value spends one of `budget`, shared across the call's arguments.
+/// Each value spends one of `budget`'s values, a collection one per layer and a
+/// string its bytes, shared across the call's arguments and spent before the copy.
 fn to_json(
     lua: &Lua,
     v: &Value,
     kind: Option<ParamKind>,
     env: &crate::Env<'_>,
     depth: usize,
-    budget: &mut usize,
+    budget: &mut ArgBudget,
 ) -> Result<serde_json::Value, String> {
     if depth > 32 {
         return Err("a table nests too deep (is it inside itself?)".into());
     }
-    let Some(left) = budget.checked_sub(1) else {
-        return Err(format!(
-            "the arguments hold more than {ARG_VALUES_MAX} values (does a table repeat itself?)"
-        ));
-    };
-    *budget = left;
+    budget.values(1)?;
     let lua_err = |e: mlua::Error| e.to_string();
     Ok(match v {
         Value::Nil => serde_json::Value::Null,
@@ -1843,6 +1965,7 @@ fn to_json(
             }
         }
         Value::String(s) => {
+            budget.bytes(s.as_bytes().len())?;
             let s = s.to_str().map_err(lua_err)?.to_owned();
             let layer = matches!(kind, Some(ParamKind::Node | ParamKind::Nodes));
             let s = match env.labels.get(&s) {
@@ -1856,8 +1979,12 @@ fn to_json(
             }
         }
         Value::Table(t) => {
-            if let Some(ids) = layers_of(lua, t).map_err(lua_err)? {
-                let wires: Vec<String> = ids.iter().map(|id| id.to_wire()).collect();
+            let wires = with_layers(lua, t, |ids| {
+                budget.values(ids.len())?;
+                Ok::<_, String>(ids.iter().map(|id| id.to_wire()).collect::<Vec<_>>())
+            });
+            if let Some(wires) = wires.map_err(lua_err)? {
+                let wires = wires?;
                 return match (kind, wires.as_slice()) {
                     (Some(ParamKind::Node), [one]) => Ok(json!(one)),
                     (Some(ParamKind::Node), _) => Err(format!(
@@ -1883,7 +2010,10 @@ fn to_json(
                 for pair in t.clone().pairs::<Value, Value>() {
                     let (k, item) = pair.map_err(lua_err)?;
                     let key = match &k {
-                        Value::String(s) => s.to_str().map_err(lua_err)?.to_owned(),
+                        Value::String(s) => {
+                            budget.bytes(s.as_bytes().len())?;
+                            s.to_str().map_err(lua_err)?.to_owned()
+                        }
                         Value::Number(_) | Value::Integer(_) => {
                             format_number(number(&k).unwrap_or(0.0))
                         }

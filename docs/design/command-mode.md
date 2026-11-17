@@ -192,9 +192,15 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
   is read every 256th, and at once after a verb or commit, which may be slow) and
   `set_memory_limit` above what the fresh state holds. Printed output lives outside Lua's memory,
   so a run may print at most 10,000 lines (`PRINT_LINES`) and 1 MB (`PRINT_CAP`, each line counted
-  one byte more, so empty lines count too). A verb's arguments are built as JSON there too, walked
-  in Rust where no interrupt fires, so one call's arguments hold at most 100,000 values
-  (`ARG_VALUES_MAX`): a table that shares a subtable at every level is refused, not expanded. The
+  one byte more, so empty lines count too); `print` builds its line against the room left and
+  measures each string before copying it. A verb's arguments are built as JSON there too, walked
+  in Rust where no interrupt fires, and Lua shares a string or a table by reference where the host
+  copies it at every one. So one call's arguments hold at most 100,000 values (`ARG_VALUES_MAX`,
+  a collection counting each of its layers) and 16 MB of strings (`ARG_BYTES_MAX`), both spent
+  before each copy: a table that shares a subtable at every level, or repeats a long string or a
+  collection, is refused, not expanded. A verb of one layer, or a `.name`/`.text` write, hands its
+  argument to the host once per layer, so its bytes count once per layer; and the clock is read
+  between those per-layer host calls, which no interrupt separates. The
   editor's output pane lays out only the rows in view, and cuts a printed line past 2,000
   characters:
 
