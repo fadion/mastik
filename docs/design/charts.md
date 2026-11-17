@@ -586,8 +586,8 @@ render overrides minting each chart's ghost ids past the others'.
 
 ### The data window (`chart_data.rs`)
 
-A canvas card as Clean up's (`settings::canvas_card` with `CardHold::Open`, hung from
-`ui::canvas_popup_area`), so the canvas stays live under it and the chart redraws as cells are
+A canvas card as Clean up's (`settings::movable_canvas_card` with `CardHold::Open`, at
+`ui::canvas_dialog_area`), so the canvas stays live under it and the chart redraws as cells are
 committed. 640 wide (the canvas's width less 32 when narrower, never under 320); the grid is a
 fixed 240 tall and scrolls inside, so the card keeps one size (egui popups shrink but never grow
 back). Rows inset `CANVAS_CARD_PAD`, 10 apart. One at a time, on one chart: it stays on its chart

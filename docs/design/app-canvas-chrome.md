@@ -562,10 +562,12 @@ modal that opens closes the palette. App actions only; typed syntax belongs to t
   the project (or *Unfiled*) and edit age, *Open* first when a tab holds it; the footer says *Recent
   first* or *Best match first*. Enter or a click opens it through `begin_open` in a tab of its own,
   or brings its tab forward. The plain palette lists no documents.
-- **Verbs with no other door.** *Export as HTML… / React… / Vue…*, one row per `code::Target`, dim
-  with nothing selected, aliases *code*, *html*, *react*, *vue*, *zip*. *Export as Penpot file…*
-  and *Export as Sketch file…*, one row per `EditableFormat`, never dim since each writes the
-  whole document, aliases *penpot* or *sketch* and *lunacy*, and *editable*, *save as*. *Show ‹card›*: the cards the
+- **Export rows.** *Export as HTML… / React… / Vue…*, one row per `code::Target`, dim
+  with nothing selected, aliases *code*, *html*, *react*, *vue*, *zip* (also the layer menu's
+  *Export ▸*). *Export as Penpot file…* and *Export as Sketch file…*, one row per
+  `EditableFormat`, never dim since each writes the whole document, aliases *penpot* or *sketch*
+  and *lunacy*, and *editable*, *save as* (also the document menu's *Export ▸*).
+- **Verbs with no other door.** *Show ‹card›*: the cards the
   inspector drew last frame (`cards_shown`) are live; cards drawn earlier this session but not now
   (`cards_seen`) are dim, *Not shown for this selection*; in focus mode all are dim. Running one
   sets `reveal_card`, and `panel_full` opens that card, scrolls it to the top and focuses its first
@@ -615,8 +617,8 @@ worded for the scope that plan was made for (`Plan::scope`).
   and *Rename* with one, as `Ctrl+R` does; a `CURSOR_TEXT` button in the
   Layers header between collapse-all and search (*Batch rename (Ctrl+Shift+R)*); the cheatsheet's
   Layer section.
-- **Placement and keys.** The palette's place, 520 wide, centred on the card lane, its top
-  56pt below the canvas's top, movable by its title row: an open card (`CardHold::Open`), not a modal, so the canvas keeps
+- **Placement and keys.** Where the dialog cards open (`ui::canvas_dialog_area`, `app-chrome.md`
+  *Shared rules*), 520 wide, movable by its title row: an open card (`CardHold::Open`), not a modal, so the canvas keeps
   its input and the layers can be selected, edited and panned under it, as with Find and Colour
   review. Opening it closes the palette, the context menu, the top-bar menu, the colour picker and
   the other cards over the canvas's top (Find, Colour review, Clean up, Fill with content); opening any of those
@@ -1186,8 +1188,8 @@ colour, one undo step each. The rule is `mastik_core::color_review`.
   the target's colour in every mode, and binds every raw member's users, the target's included;
   with every use on a locked layer it writes nothing, the variable included.
 - **Doors and place.** *Tools ▸ Colour review…*, after *Simulate vision* and never ticked,
-  and the palette (`Item::ColourReview`, unbound). It hangs at the palette's place
-  (`ui::canvas_popup_area`), 420 wide, movable by its title row, on the settings card's ground (`settings::card_frame`), but is
+  and the palette (`Item::ColourReview`, unbound). It opens where the dialog cards do
+  (`ui::canvas_dialog_area`), 420 wide, movable by its title row, on the settings card's ground (`settings::card_frame`), but is
   no modal: nothing blocks the canvas and a click there leaves it open. It is at most
   `ui::canvas_popup_room` tall, its list scrolling past `ui::CANVAS_POPUP_LIST_H`; title, controls
   and foot stay put. One card over the canvas's top shows at a time: opening it, Find, batch
