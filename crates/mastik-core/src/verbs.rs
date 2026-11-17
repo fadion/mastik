@@ -500,6 +500,8 @@ fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
         "[LayoutGrid]" => reads!(Vec<crate::layout::LayoutGrid>),
         "[Guide]" => reads!(Vec<GuideIn>),
         "Quad" => reads!([[f64; 2]; 4]),
+        "RepeatLine" => reads!(crate::repeat::Line),
+        "RepeatGrid" => reads!(crate::repeat::Grid),
         "ChartTable" => reads!(crate::chart::Table),
         "[Name]" => reads!(Vec<String>),
         // Patches, whose nulls reset what they name (`patched`): read without
@@ -1212,6 +1214,8 @@ pub fn example(model: &str) -> Option<Value> {
             { "axis": "horizontal", "position": 80, "color": "#0a84ff" },
         ]),
         "Quad" => serde_json::json!([[0, 0], [200, -20], [200, 120], [0, 100]]),
+        "RepeatLine" => serde_json::json!({ "count": 4, "gap": 8, "down": true }),
+        "RepeatGrid" => serde_json::json!({ "cols": 3, "rows": 2, "gap": [8, 8] }),
         "ChartTable" => json(&crate::chart::Chart::sample(crate::chart::ChartKind::Column).table),
         "ChartMapping" => {
             json(&crate::chart::Chart::sample(crate::chart::ChartKind::Column).mapping)
@@ -2629,57 +2633,85 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "repeat",
-        doc: "Repeat layers round a point into a new group, as spokes or a ring; answers the group",
+        doc: "Repeat layers into a new group, round a point (`count`), in a line or in a grid; answers the group, or in an auto layout the layers and copies",
         params: &[
             req("nodes", NODES, "the layers to repeat, sharing a parent"),
-            req(
-                "count",
-                INDEX,
-                "how many in all, the originals counted: 2 to 360",
+            opt("count", INDEX, "a ring of 2 to 360, originals counted"),
+            opt(
+                "line",
+                ParamKind::Model("RepeatLine"),
+                "count as a ring's; gap between boxes, 16 unless given",
+            ),
+            opt(
+                "grid",
+                ParamKind::Model("RepeatGrid"),
+                "gap [across, down] between boxes",
             ),
             opt(
                 "angle",
                 ParamKind::Number,
-                "degrees from one to the next, clockwise; a full turn split evenly unless given",
+                "a ring's step in degrees, clockwise; a full turn split evenly unless given",
             ),
             opt(
                 "turn",
                 BOOL,
-                "whether each copy turns with its step, as spokes do; true unless given",
+                "whether a ring's copies turn with their step; true unless given",
             ),
             opt(
                 "x",
                 ParamKind::Number,
-                "the point repeated round, across the page; the layers' centre unless given",
+                "the ring's centre across; the layers' centre unless given",
             ),
-            opt(
-                "y",
-                ParamKind::Number,
-                "the point repeated round, down the page",
-            ),
+            opt("y", ParamKind::Number, "the ring's centre down"),
             opt(
                 "linked",
                 BOOL,
-                "make the one layer a component first, so its copies are instances; false unless given",
+                "make the one layer a component first, its copies instances",
             ),
         ],
         run: |ctx, a| {
+            use crate::repeat::Pattern;
             let nodes = build::outermost(ctx.doc, &a.nodes("nodes")?);
-            let count = a.index("count").unwrap_or(0);
-            if !(2..=crate::repeat::MAX_COUNT).contains(&count) {
-                return Err(a.invalid("count", "expected 2 to 360"));
+            let given = [a.get("count"), a.get("line"), a.get("grid")];
+            if given.iter().flatten().count() != 1 {
+                return Err(a.invalid("count", "give one of `count`, `line` or `grid`"));
             }
-            let mut ring = crate::repeat::Ring::full(count, a.bool("turn").unwrap_or(true));
-            if let Some(deg) = a.number("angle") {
-                ring.step = deg.to_radians();
+            let pattern = if a.get("line").is_some() {
+                let line: crate::repeat::Line = a.model("line")?;
+                if !(2..=crate::repeat::MAX_COUNT).contains(&line.count) || !line.gap.is_finite() {
+                    return Err(a.invalid("line", "expected a count of 2 to 360 and a finite gap"));
+                }
+                Pattern::Line(line)
+            } else if a.get("grid").is_some() {
+                let grid: crate::repeat::Grid = a.model("grid")?;
+                let pattern = Pattern::Grid(grid);
+                if !pattern.is_valid() || grid.gap.iter().any(|g| !g.is_finite()) {
+                    return Err(
+                        a.invalid("grid", "expected cols × rows of 2 to 360 and finite gaps")
+                    );
+                }
+                pattern
+            } else {
+                let count = a.index("count").unwrap_or(0);
+                if !(2..=crate::repeat::MAX_COUNT).contains(&count) {
+                    return Err(a.invalid("count", "expected 2 to 360"));
+                }
+                let mut ring = crate::repeat::Ring::full(count, a.bool("turn").unwrap_or(true));
+                if let Some(deg) = a.number("angle") {
+                    ring.step = deg.to_radians();
+                }
+                let centre = crate::repeat::centre(ctx.res, &nodes)
+                    .ok_or(VerbError::Nothing("the layers have no bounds"))?;
+                let pivot = kurbo::Point::new(
+                    a.number("x").unwrap_or(centre.x),
+                    a.number("y").unwrap_or(centre.y),
+                );
+                Pattern::Ring { ring, pivot }
+            };
+            if let Some(why) = crate::repeat::layout_refusal(ctx.doc, &nodes, pattern.way()) {
+                return Err(VerbError::Nothing(why));
             }
-            let centre = crate::repeat::centre(ctx.res, &nodes)
-                .ok_or(VerbError::Nothing("the layers have no bounds"))?;
-            let pivot = kurbo::Point::new(
-                a.number("x").unwrap_or(centre.x),
-                a.number("y").unwrap_or(centre.y),
-            );
-            let (tx, group) = if a.bool("linked").unwrap_or(false) {
+            let (tx, picked) = if a.bool("linked").unwrap_or(false) {
                 use crate::repeat::NotLinked;
                 match crate::repeat::why_not_linked(ctx.doc, &nodes) {
                     Some(NotLinked::Several) => {
@@ -2691,19 +2723,18 @@ pub static VERBS: &[Verb] = &[
                     Some(NotLinked::Not(why)) => return Err(a.invalid("linked", not_main(why))),
                     None => {}
                 }
-                crate::repeat::linked(ctx.doc, ctx.res, ctx.ids, nodes[0], pivot, ring)?
+                crate::repeat::linked(ctx.doc, ctx.res, ctx.ids, nodes[0], pattern)?
             } else {
                 crate::repeat::repeat(
                     ctx.doc,
                     ctx.res,
                     ctx.ids,
                     &nodes,
-                    pivot,
-                    ring,
+                    pattern,
                     crate::repeat::Place::Group,
                 )?
             };
-            Ok(Done::made(tx, group.into_iter().collect()))
+            Ok(Done::made(tx, picked))
         },
     },
     Verb {

@@ -813,7 +813,8 @@ fn model_type(model: &str) -> Option<&'static str> {
         | "[Guide]" | "[Hex]" | "[LayoutGrid]" | "[Name]" | "[Node]" | "[ParaAttr]"
         | "[Stroke]" => Some("array"),
         "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "KitModeMap" | "DtcgFile"
-        | "BlockStyle" | "ParagraphStyle" | "TextStyle" | "LayoutItem" => Some("object"),
+        | "BlockStyle" | "ParagraphStyle" | "TextStyle" | "LayoutItem" | "RepeatLine"
+        | "RepeatGrid" => Some("object"),
         _ => None,
     }
 }
@@ -994,6 +995,8 @@ mod tests {
             "Steps",
             "Region",
             "Quad",
+            "RepeatLine",
+            "RepeatGrid",
             "[Guide]",
             "[LayoutGrid]",
             "[Fill]",
@@ -1059,7 +1062,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 107_900;
+        const ALL_BUDGET: usize = 108_200;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

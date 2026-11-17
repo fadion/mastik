@@ -1307,6 +1307,51 @@ fn a_linked_repeat_makes_instances() {
     }
 }
 
+/// `repeat` takes a `line` or a `grid` in place of a ring's `count`: a line of
+/// three across 5 apart box to box, a 2 × 2 grid named for its size; both at
+/// once is refused.
+#[test]
+fn a_repeat_steps_a_line_or_tiles_a_grid() {
+    let (mut doc, mut ids, page) = blank();
+    let r = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": rect(10.0, 10.0), "name": "Tile" }),
+    )[0];
+    let line = run(
+        &mut doc,
+        &mut ids,
+        "repeat",
+        json!({ "nodes": [r.to_wire()], "line": { "count": 3, "gap": 5 } }),
+    )[0];
+    assert_eq!(doc.get(line).unwrap().name(), "Tile × 3");
+    let res = Resolved::rebuild(&doc);
+    assert_eq!(res.world_bounds(line).unwrap().width(), 40.0);
+
+    let grid = run(
+        &mut doc,
+        &mut ids,
+        "repeat",
+        json!({ "nodes": [r.to_wire()], "grid": { "cols": 2, "rows": 2, "gap": [4, 6] } }),
+    )[0];
+    assert_eq!(doc.get(grid).unwrap().name(), "Tile 2 × 2");
+    let res = Resolved::rebuild(&doc);
+    let b = res.world_bounds(grid).unwrap();
+    assert_eq!((b.width(), b.height()), (24.0, 26.0));
+
+    let both = answer(
+        &doc,
+        &mut ids,
+        "repeat",
+        json!({ "nodes": [r.to_wire()], "count": 3, "grid": { "cols": 2, "rows": 2 } }),
+    );
+    assert!(
+        matches!(both, Err(VerbError::Invalid { param: "count", .. })),
+        "{both:?}"
+    );
+}
+
 /// `set_size` sizes any kind: a rectangle's size, a group by its box (its child
 /// scaled with it).
 ///
