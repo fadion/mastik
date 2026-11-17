@@ -656,10 +656,11 @@ impl Writer<'_> {
                         EffectKind::InnerShadow(s) => (s, true),
                         EffectKind::LayerBlur { .. }
                         | EffectKind::BackgroundBlur { .. }
+                        | EffectKind::Sharpen { .. }
                         | EffectKind::Filters(_) => {
                             return left_out(
                                 &mut self.notes,
-                                "a blur or a colour filter has no DTCG type",
+                                "a blur, a sharpen or a colour filter has no DTCG type",
                             );
                         }
                     };

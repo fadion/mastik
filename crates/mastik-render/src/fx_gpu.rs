@@ -42,6 +42,7 @@ enum Pass {
     Over,
     Coarsen,
     Upsample,
+    Sharpen,
 }
 
 impl Pass {
@@ -60,10 +61,11 @@ impl Pass {
             Self::Over => "over",
             Self::Coarsen => "coarsen",
             Self::Upsample => "upsample",
+            Self::Sharpen => "sharpen",
         }
     }
 
-    const ALL: [Pass; 12] = [
+    const ALL: [Pass; 13] = [
         Self::Premul,
         Self::Unpremul,
         Self::Copy,
@@ -76,6 +78,7 @@ impl Pass {
         Self::Over,
         Self::Coarsen,
         Self::Upsample,
+        Self::Sharpen,
     ];
 }
 
@@ -105,6 +108,8 @@ struct Params {
     /// Where this dispatch's kernel starts in the batch's one kernel buffer, in
     /// `f32`s. Read by `Pass::Blur` alone.
     k_off: u32,
+    /// A sharpen's amount. Read by `Pass::Sharpen` alone.
+    amount: f32,
 }
 
 impl Params {
@@ -139,9 +144,10 @@ impl Params {
         // offset 136: dst_origin: vec2<i32>
         put(136, self.dst_origin.0.to_le_bytes());
         put(140, self.dst_origin.1.to_le_bytes());
-        // offset 144: k_off: u32, then 12 bytes of padding to the struct's
-        // 16-byte alignment.
+        // offset 144: k_off: u32; 148: amount: f32, then 8 bytes of padding to
+        // the struct's 16-byte alignment.
         put(144, self.k_off.to_le_bytes());
+        put(148, self.amount.to_le_bytes());
         b
     }
 }
@@ -875,6 +881,25 @@ impl Runner<'_> {
                 EffectKind::LayerBlur { radius } if *radius > 0.0 => {
                     let (sx, sy) = effects::device_sigma(*radius, scale.0, scale.1);
                     run.blur(&mut cur, &mut alt, sx, sy);
+                }
+                EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
+                    // The layer kept aside in `O0`, free until the shadows'
+                    // stage, while its copy is blurred in place.
+                    run.slot(Pass::Copy, cur, cur, O0, Params::default());
+                    let (sx, sy) = effects::device_sigma(*radius, scale.0, scale.1);
+                    // `effects::sharpen`'s choice of grid.
+                    let k = mastik_core::effect::shadow_downscale(f64::from(sx.max(sy)));
+                    if k > 1 {
+                        run.blur_coarse(&mut cur, &mut alt, sx / k as f32, sy / k as f32, k);
+                    } else {
+                        run.blur(&mut cur, &mut alt, sx, sy);
+                    }
+                    let p = Params {
+                        amount: *amount as f32,
+                        ..Default::default()
+                    };
+                    run.slot(Pass::Sharpen, O0, cur, alt, p);
+                    std::mem::swap(&mut cur, &mut alt);
                 }
                 _ => {}
             }

@@ -1561,6 +1561,8 @@ impl Walk<'_> {
                 EffectKind::DropShadow(s) if s.spread == 0.0 => shadows += 1,
                 EffectKind::DropShadow(_) => return Some("a shadow with spread".into()),
                 EffectKind::InnerShadow(_) => return Some("an inner shadow".into()),
+                // CSS `filter` has no unsharp mask.
+                EffectKind::Sharpen { .. } => return Some("a sharpen".into()),
                 EffectKind::Filters(_) => return Some("colour filters".into()),
             }
         }

@@ -52,6 +52,8 @@ struct Params {
     // Where this dispatch's kernel starts in `kernel`: one buffer holds every
     // kernel a batch uses, so a blur names its own stretch of it.
     k_off: u32,
+    // A sharpen's amount, 1.0 for 100%. Appended, for the reason on `src_size`.
+    amount: f32,
 };
 
 @group(0) @binding(0) var src_a: texture_2d<f32>;
@@ -162,6 +164,19 @@ fn blur(@builtin(global_invocation_id) gid: vec3<u32>) {
         acc = acc + load_a_edge(c + step * (t - p.radius)) * kernel[p.k_off + u32(t)];
     }
     textureStore(dst, c, q(acc));
+}
+
+// `effects::sharpen`'s unsharp mask: `src_a` the layer, `src_b` its blur. The
+// clamp is SVG's arithmetic `feComposite`'s, alpha to 0..1 and then each colour
+// to the alpha, so a bright edge's overshoot rings as the exported file's does.
+@compute @workgroup_size(8, 8)
+fn sharpen(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let c = vec2<i32>(gid.xy);
+    if (!inside(c)) { return; }
+    let o = load_a(c);
+    let v = o + p.amount * (o - textureLoad(src_b, c, 0));
+    let a = clamp(v.a, 0.0, 1.0);
+    textureStore(dst, c, q(vec4<f32>(clamp(v.rgb, vec3<f32>(0.0), vec3<f32>(a)), a)));
 }
 
 // `effects::coarsen`: one thread per `radius`×`radius` block, averaging it into

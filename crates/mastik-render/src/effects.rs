@@ -544,6 +544,43 @@ fn for_row_bands(
 /// The multiply-adds from which a pass is split across threads.
 const THREADED_COST: usize = 1 << 22;
 
+/// An unsharp mask over `s`, in place: `original + amount × (original − blur)`
+/// per premultiplied channel, the blur at `sigma_x`/`sigma_y`.
+///
+/// Clamped as SVG's arithmetic `feComposite` is: alpha to `0..=1`, then each
+/// colour to `0..=alpha`, so an edge's overshoot stays a valid premultiplied
+/// pixel and rings alike in the three writers. `fx.wgsl`'s `sharpen` repeats it.
+///
+/// The blurred copy is only subtracted, so past the budget it is taken on a
+/// coarse grid as a shadow's silhouette is (`effect::shadow_downscale`), which
+/// bounds the cost at any zoom; the GPU makes the same choice.
+pub fn sharpen(s: &mut Surface<'_>, amount: f32, sigma_x: f32, sigma_y: f32) {
+    let mut blurred = s.px.to_vec();
+    let mut b = Surface::new(&mut blurred, s.w, s.h);
+    let k = mastik_core::effect::shadow_downscale(f64::from(sigma_x.max(sigma_y))) as usize;
+    if k > 1 {
+        blur_coarse(&mut b, sigma_x / k as f32, sigma_y / k as f32, k);
+    } else {
+        blur(&mut b, sigma_x, sigma_y);
+    }
+    for (o, b) in
+        s.px.as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(blurred.as_chunks::<4>().0)
+    {
+        let v: [f32; 4] = std::array::from_fn(|c| {
+            let o = f32::from(o[c]) / 255.0;
+            o + amount * (o - f32::from(b[c]) / 255.0)
+        });
+        let a = v[3].clamp(0.0, 1.0);
+        for c in 0..3 {
+            o[c] = (v[c].clamp(0.0, a) * 255.0 + 0.5) as u8;
+        }
+        o[3] = (a * 255.0 + 0.5) as u8;
+    }
+}
+
 /// The device-space deviations a blur of `radius` document units needs, given the
 /// scale the surface was rasterized at.
 ///
@@ -560,8 +597,8 @@ pub fn device_sigma(radius: f64, scale_x: f64, scale_y: f64) -> (f32, f32) {
 /// `scale` is device pixels per document unit along each axis.
 ///
 /// **The statement of §6.4's two stages**, which the SVG writer (`svg::effect_def`)
-/// and the bounds (`effect::stack_escape`) follow: `Filters` and `LayerBlur`
-/// transform the layer's own appearance in list order, then every shadow is cast
+/// and the bounds (`effect::stack_escape`) follow: `Filters`, `LayerBlur` and
+/// `Sharpen` transform the layer's own appearance in list order, then every shadow is cast
 /// from *that* and merged behind or in front. Not one fold: an inner shadow after
 /// a drop shadow would take its silhouette from the layer plus the shadow. Reorder
 /// the stages and both followers must move too; nothing fails if only one does.
@@ -583,6 +620,10 @@ fn run_keeping(s: &mut Surface<'_>, effects: &[Keyed<Effect>], scale: (f64, f64)
             EffectKind::LayerBlur { radius } if *radius > 0.0 => {
                 let (sx, sy) = device_sigma(*radius, scale.0, scale.1);
                 blur(s, sx, sy);
+            }
+            EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
+                let (sx, sy) = device_sigma(*radius, scale.0, scale.1);
+                sharpen(s, *amount as f32, sx, sy);
             }
             _ => {}
         }
@@ -818,6 +859,7 @@ pub fn any_ink(effects: &[Keyed<Effect>]) -> bool {
                     s.color.components[3] > 0.0
                 }
                 EffectKind::LayerBlur { radius } => *radius > 0.0,
+                EffectKind::Sharpen { amount, radius } => *amount > 0.0 && *radius > 0.0,
                 EffectKind::BackgroundBlur { .. } => false,
                 EffectKind::Filters(f) => !f.is_neutral(),
             }
@@ -833,6 +875,50 @@ mod tests {
 
     fn solid(w: usize, h: usize, rgba: [u8; 4]) -> Vec<u8> {
         rgba.iter().copied().cycle().take(w * h * 4).collect()
+    }
+
+    /// A sharpen leaves a flat field alone, pushes the two sides of an edge
+    /// apart, and keeps every pixel validly premultiplied (colour within alpha)
+    /// where a half-transparent red meets opaque blue and the mask overshoots.
+    ///
+    /// flip: `sharpen` clamping colour to `0..=1` instead of `0..=alpha` → fails
+    /// at the premultiplied assertion.
+    #[test]
+    fn a_sharpen_parts_an_edge_and_stays_premultiplied() {
+        let (w, h) = (24, 3);
+        // Left half a mid grey, right half a darker one, both opaque.
+        let mut px: Vec<u8> = (0..w * h)
+            .flat_map(|i| match i % w < w / 2 {
+                true => [160, 160, 160, 255],
+                false => [80, 80, 80, 255],
+            })
+            .collect();
+        let mut s = Surface::new(&mut px, w, h);
+        sharpen(&mut s, 1.0, 1.5, 0.0);
+        let at = |px: &[u8], x: usize| px[(w + x) * 4];
+        // Out of the kernel's reach (5) of the step and of the buffer's edge.
+        assert_eq!(at(&px, 6), 160, "a flat field is left alone");
+        assert_eq!(at(&px, w - 7), 80);
+        assert!(
+            at(&px, w / 2 - 1) > 160,
+            "the light side brightens at the edge"
+        );
+        assert!(at(&px, w / 2) < 80, "and the dark side darkens");
+
+        let mut px: Vec<u8> = (0..w * h)
+            .flat_map(|i| match i % w < w / 2 {
+                true => [128, 0, 0, 128],
+                false => [0, 0, 255, 255],
+            })
+            .collect();
+        let mut s = Surface::new(&mut px, w, h);
+        sharpen(&mut s, 2.0, 2.0, 2.0);
+        for p in px.as_chunks::<4>().0 {
+            assert!(
+                p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3],
+                "colour past its alpha is no premultiplied pixel: {p:?}"
+            );
+        }
     }
 
     /// A neutral row composes to the identity, guarding the hand-typed coefficients.

@@ -1056,6 +1056,7 @@ impl Writer<'_> {
                 EffectKind::LayerBlur { .. } | EffectKind::BackgroundBlur { .. } => {
                     self.approximate("A second blur, left out");
                 }
+                EffectKind::Sharpen { .. } => self.approximate("Sharpen, left out"),
                 EffectKind::Filters(_) => self.approximate("Colour filters, left out"),
             }
         }

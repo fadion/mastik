@@ -292,6 +292,9 @@ pub fn design_context(doc: &Document, res: &Resolved, asked: NodeId) -> Result<V
                     "colour": hex(sh.color),
                 }),
                 E::LayerBlur { radius } => json!({ "kind": "layer_blur", "blur": r2(*radius) }),
+                E::Sharpen { amount, radius } => {
+                    json!({ "kind": "sharpen", "amount": r2(*amount), "blur": r2(*radius) })
+                }
                 E::BackgroundBlur { radius } => {
                     json!({ "kind": "background_blur", "blur": r2(*radius) })
                 }

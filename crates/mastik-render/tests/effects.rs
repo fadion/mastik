@@ -30,6 +30,12 @@ fn render(effects: Vec<Effect>) -> (Vec<u8>, usize) {
 /// The same page with the shape's kind chosen — for the one test that needs a
 /// layer whose **bounding box is not its coverage**.
 fn render_kind(kind: NodeKind, effects: Vec<Effect>) -> (Vec<u8>, usize) {
+    render_in(kind, effects, 100)
+}
+
+/// `render_kind` onto a page cut to `width` pixels from its left edge, which
+/// can cut the layer at the target's edge.
+fn render_in(kind: NodeKind, effects: Vec<Effect>, width: u32) -> (Vec<u8>, usize) {
     let mut ids = IdSource::new(1);
     let root = ids.mint();
     let mut doc = Document::new(root);
@@ -58,8 +64,8 @@ fn render_kind(kind: NodeKind, effects: Vec<Effect>) -> (Vec<u8>, usize) {
     .unwrap();
     let res = Resolved::rebuild(&doc);
     let vp = Viewport {
-        view: Rect::new(0.0, 0.0, 100.0, 100.0),
-        pixel_size: (100, 100),
+        view: Rect::new(0.0, 0.0, f64::from(width), 100.0),
+        pixel_size: (width, 100),
     };
     let (px, w, _) = VelloCpuRenderer::new().render_to_rgba(
         &doc,
@@ -155,6 +161,65 @@ fn a_layer_blur_spreads_the_layer_past_its_own_edge() {
     );
     let centre = at(&px, w, 50, 50).3;
     assert_eq!(centre, 255, "and the middle is still solid: {centre}");
+}
+
+/// The square greyed by a `Filters` row and then sharpened: what the PNG export
+/// draws for a sharpen.
+fn grey_sharpened(width: u32) -> (Vec<u8>, usize) {
+    render_in(
+        NodeKind::Rect {
+            size: Size::new(40.0, 40.0),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        },
+        vec![
+            Effect::new(EffectKind::Filters(Filters {
+                brightness: 0.5,
+                ..Filters::default()
+            })),
+            Effect::new(EffectKind::Sharpen {
+                amount: 1.0,
+                radius: 4.0,
+            }),
+        ],
+        width,
+    )
+}
+
+/// **A sharpen brightens a grey square's rim and leaves its middle and the page
+/// alone**: against transparency the mask overshoots inward, and its negative
+/// side clamps to nothing outside, so the layer's extent is unchanged.
+///
+/// flip: dropping `effects::run`'s `Sharpen` arm → fails at the rim assertion.
+#[test]
+fn a_sharpen_crisps_the_layers_edge_without_growing_it() {
+    let (px, w) = grey_sharpened(100);
+    let centre = at(&px, w, 50, 50);
+    assert!(
+        (100..=160).contains(&centre.0),
+        "the fixture is a mid grey: {centre:?}"
+    );
+    let rim = at(&px, w, 30, 50);
+    assert!(
+        rim.0 > centre.0 + 20 && rim.3 == 255,
+        "the rim is brighter than the middle: {rim:?} against {centre:?}"
+    );
+    assert_eq!(at(&px, w, 28, 50).3, 0, "and nothing lands outside");
+}
+
+/// **A sharpen cut by the target's edge draws no rim there**: its buffer reads
+/// past the target by the blur's reach (`effect::buffer_escape`), so the pixel
+/// at the cut is the middle's grey, not an edge's overshoot.
+///
+/// flip: `CpuPainter::push_effect_layer` clipping with `stack_escape` →
+/// fails at the cut assertion.
+#[test]
+fn a_sharpen_cut_by_the_target_draws_no_rim_at_the_cut() {
+    let (px, w) = grey_sharpened(50);
+    assert_eq!(w, 50, "the target ends inside the square (30..70)");
+    let middle = at(&px, w, 40, 50);
+    let cut = at(&px, w, 49, 50);
+    assert_eq!(cut, middle, "the last column is the middle's grey");
 }
 
 /// A `Filters` row is per-pixel, so it must change the layer and move nothing.

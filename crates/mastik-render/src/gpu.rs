@@ -193,7 +193,7 @@ fn layer_shape<'a>(
 
 /// Whether an effect buffer of `effects` at device `scale`, downscaled by `k`, is
 /// filtered on a grid coarser than its pixels: a downscaled buffer, or a shadow
-/// blurred over blocks (`effect::shadow_downscale`). That grid is anchored at the
+/// or a sharpen blurred over blocks (`effect::shadow_downscale`). That grid is anchored at the
 /// buffer's corner, so a buffer cut by the target sits on a grid that moves with
 /// the target.
 fn coarse(effects: &[mastik_core::Keyed<mastik_core::Effect>], scale: (f64, f64), k: f64) -> bool {
@@ -202,6 +202,11 @@ fn coarse(effects: &[mastik_core::Keyed<mastik_core::Effect>], scale: (f64, f64)
         || effects.iter().filter(|e| e.visible).any(|e| match &e.kind {
             EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
                 let (sx, sy) = crate::effects::device_sigma(s.blur, scale.0 / k, scale.1 / k);
+                mastik_core::effect::shadow_downscale(f64::from(sx.max(sy))) > 1
+            }
+            // `effects::sharpen` blurs its copy on the same coarse grid.
+            EffectKind::Sharpen { radius, .. } => {
+                let (sx, sy) = crate::effects::device_sigma(*radius, scale.0 / k, scale.1 / k);
                 mastik_core::effect::shadow_downscale(f64::from(sx.max(sy))) > 1
             }
             _ => false,
@@ -375,7 +380,7 @@ impl ScenePainter for GpuScenePainter<'_> {
             (m[2] * m[2] + m[3] * m[3]).sqrt(),
         );
         // The target grown by the escape, not the bare target (§15 D342).
-        let escape = mastik_core::effect::stack_escape(effects);
+        let escape = mastik_core::effect::buffer_escape(effects);
         let clipped =
             mastik_core::effect::buffer_box_within(device, self.limit, escape, scale, self.budget);
         let (x0, y0) = (clipped.x0.floor(), clipped.y0.floor());

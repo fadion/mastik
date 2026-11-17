@@ -2335,7 +2335,8 @@ fn drawn_too_large(painted: &Painted<'_>, leaf: bool, world: Affine) -> bool {
 /// A matrix is affine, so it commutes with the convex mix of inks inside the
 /// layer, and the shadows are cast from alpha it never changes. What breaks that
 /// is refused: a container (its children are not its inks), a non-solid ink, a
-/// layer blur (its mixing happens before or after the filter in list order), and
+/// layer blur or a sharpen (its mixing happens before or after the filter in list
+/// order, and a sharpen's clamp does not commute with it), and
 /// a clamp on any ink while the layer holds more than one colour.
 fn folded_filters(
     stack: &[mastik_core::Keyed<Effect>],
@@ -2350,9 +2351,14 @@ fn folded_filters(
             _ => None,
         })
         .collect();
-    let blurs = stack
-        .iter()
-        .any(|e| e.visible && matches!(e.kind, EffectKind::LayerBlur { radius } if radius > 0.0));
+    let blurs = stack.iter().any(|e| {
+        e.visible
+            && match e.kind {
+                EffectKind::LayerBlur { radius } => radius > 0.0,
+                EffectKind::Sharpen { amount, radius } => amount > 0.0 && radius > 0.0,
+                _ => false,
+            }
+    });
     let container = matches!(
         painted.kind,
         NodeKind::Group | NodeKind::Root | NodeKind::Artboard { .. }
@@ -2451,9 +2457,9 @@ fn detail_effects(
             EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
                 s.offset.hypot() + reach(s.blur) + s.spread.abs()
             }
-            EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => {
-                reach(*radius)
-            }
+            EffectKind::LayerBlur { radius }
+            | EffectKind::BackgroundBlur { radius }
+            | EffectKind::Sharpen { radius, .. } => reach(*radius),
             EffectKind::Filters(_) => return false,
         };
         local * stretch < 1.0

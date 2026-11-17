@@ -18,6 +18,7 @@ pub enum EffectKind {
     DropShadow(Shadow),
     InnerShadow(Shadow),
     LayerBlur { radius: f64 },      // the RADIUS as typed, not the deviation
+    Sharpen { amount: f64, radius: f64 },  // unsharp mask; amount 0..=MAX_SHARPEN (2.0), radius a blur's
     BackgroundBlur { radius: f64 }, // blurs what lies behind, inside the outline; same units
     Filters(Filters),
 }
@@ -39,12 +40,14 @@ pub const BLUR_CUTOFF: f64 = 3.0;      // deviations worth rasterizing (vello_co
 pub fn deviation(radius: f64) -> f64;  // what the three writers take
 pub fn reach(radius: f64) -> f64;      // what bounds and culling use
 pub fn stack_escape(effects: &[Effect]) -> Insets;
+pub fn buffer_escape(effects: &[Effect]) -> Insets;          // stack_escape + where a sharpen reads
 pub fn backdrop_radius(effects: &[Effect]) -> Option<f64>;   // visible background blurs as one
 pub fn escaped(bounds: Rect, escape: Insets, world: Affine) -> Rect;   // local escape -> world box
 ```
 
-- **Five effects**: drop shadow, inner shadow, layer blur, background blur and colour filters. All but the background blur draw alike on the canvas, the raster export and the SVG writer; SVG cannot express a backdrop, so the SVG writer leaves a background blur out and reports it (§7). A layer's own blend mode composites outside its effect layer, so its shadows blend with it (§5.3, §6.2).
+- **Six effects**: drop shadow, inner shadow, layer blur, sharpen, background blur and colour filters. All but the background blur draw alike on the canvas, the raster export and the SVG writer; SVG cannot express a backdrop, so the SVG writer leaves a background blur out and reports it (§7). A layer's own blend mode composites outside its effect layer, so its shadows blend with it (§5.3, §6.2).
 - **A background blur shows what lies behind the layer, blurred, inside its outline** (`scene::paint_backdrop`, §6.2). It is no pass over the layer's own pixels, and is drawn behind everything the layer draws, so its place in the list changes nothing. Its radius is a layer blur's, in the same units, bound through the same slot, carried by `retyped` and held to the same cap. Several visible ones compose into one radius, `backdrop_radius` = `sqrt(r1^2 + r2^2)`, since blurs in sequence convolve. A mask draws none, nor does any layer inside a mask group: their ink is drawn into the mask layer, where a backdrop would become mask, so `paint_node_pass` skips them (the walk counts the ink masks it is inside) and `spread_through_backdrops` skips any glass with a mask among its ancestors.
+- **A sharpen is an unsharp mask over the layer's own drawing**: `original + amount × (original − blur)` per premultiplied channel, clamped as SVG's arithmetic `feComposite` clamps (alpha to 0–1, then each colour to the alpha), a pass of stage 1 beside the layer blur whose passes it reuses (§6.4). An effect rather than a picture's adjustment, since it reads neighbouring pixels, so it works on any layer. Amount is 0–200% (`MAX_SHARPEN`, refused past it by `Document::apply` and clamped on load with the radius); the radius is a layer blur's, in the same units, bound through the blur slot (the amount binds nothing). It shares nothing with the blurs on a retype: its radius is a pixel or two where a blur's is a dozen, so it starts on `DEFAULT_SHARPEN_RADIUS` (1.5) at 60%. Where the layer is transparent the mask is negative and clamps to nothing, so it escapes `ZERO`; but its blur reads past the pixel it draws, so an effect layer's buffer is clipped with `buffer_escape` (the stack's escape grown by each visible sharpen's reach), or a layer cut by the target would draw a bright rim along the cut.
 - **A shadow carries its own blend mode**, so a Multiply shadow darkens a coloured ground: a drop shadow blends with what lies under the layer, an inner one with the layer and what shows through it. A Normal container isolates its children, not its shadows; a layer in any other mode composites its shadows by that mode, so the layer's mode wins over the shadow's. One of the sixteen modes, never Pass through (a shadow is no container): `build::effect_is_finite` refuses it at both doors and the loader's `effect::clamp_blur` reads it as Normal. `EffectKind::retyped` carries it between drop and inner. The canvas draws such a stack in passes (§6.2); the SVG writer cannot (§7).
 - **`visible` sits beside the payload** (as on `Fill`) so hiding a shadow does not throw away its tuned numbers.
 - **A shadow's opacity is its colour's alpha**, with no second field. The rule is "one door": `paint::alpha_of` / `with_alpha` are the single pair that read and write a brush's alpha. (A gradient fill's opacity is its own field because scaling stops is not invertible through zero, §15 D767.)
@@ -54,7 +57,7 @@ pub fn escaped(bounds: Rect, escape: Insets, world: Affine) -> Rect;   // local 
   - `escape` is where ink *lands*, not where passes must be *evaluated*. An inner shadow is cast from everything outside the layer, so its silhouette needs `blur + |spread| + |offset|` out. Both renderers get that free (outside the buffer reads as no layer); the SVG writer pads the filter region (§7), because outside a filter region every primitive is transparent black. Do not "fix" `escape` towards the pad: it would break every bound in §5.9.
 - **`stack_escape` is a union taken per stage of what §6.4 composes.** Stage 1 is one isotropic reach from the convolved deviation of all visible `LayerBlur`s (`sigma = sqrt(s1^2 + s2^2)`); stage 2 is each shadow's escape grown by stage 1 on every side; the answer is the union. Composition is done in deviations and turned into a reach once (squaring reaches instead agrees only while `BLUR_CUTOFF` is constant).
 - **`escaped` splits a local escape into an offset and a radius** rather than transforming four corners. A blur's reach is a disc; the rotated AABB of a square is up to sqrt(2) too big. The radius becomes the exact half-extents of the mapped ellipse (row Euclidean norm, not absolute row sum). It never shrinks a box.
-- **Variables**: a shadow's X, Y, blur, spread and a blur's radius bind to number variables (§5.3f, §15 D1074), bindings in the item (`vars`) and the bound number's literal 0. Every reader (ink bounds, scene walk, ghost, SVG writer, snapshot) takes the stack through `Document::resolved_effects`, never `Node::effects` bare.
+- **Variables**: a shadow's X, Y, blur, spread and a blur's or a sharpen's radius bind to number variables (§5.3f, §15 D1074), bindings in the item (`vars`) and the bound number's literal 0. Every reader (ink bounds, scene walk, ghost, SVG writer, snapshot) takes the stack through `Document::resolved_effects`, never `Node::effects` bare.
 - Written by `Operation::SetEffects` (§5.7), cached into `Resolved::ink_bounds` (§5.9), drawn through `ScenePainter::push_effect_layer` (or `push_shadow_layer`, §6.2) by the passes below, a background blur by `scene::paint_backdrop`, exported as one `<filter>` per node (§7), saved as additive `NodeDto::effects` (§5.11), authored in the inspector's Effects card (§9.4).
 
 ## 6.4 The effect passes (`effects.rs`)
@@ -74,7 +77,7 @@ Two conventions:
 
 ### Staging
 
-`run` is two stages, and the SVG writer is arranged the same way. `Filters` and `LayerBlur` transform the layer's own appearance in list order; then every shadow is cast from *that* result and merged behind or over it. An inner shadow after a drop shadow must not take its silhouette from layer-plus-shadow. `effect::stack_escape` is the same decision for bounds: reordering the stages here means changing it too, and nothing fails if only one moves. A background blur is no stage: `run` and `fx_gpu` skip it and `any_ink` answers `false` for it, so a stack holding only one pushes no effect layer. Its backdrop is blurred by an effect layer of its own carrying a layer blur (§6.2).
+`run` is two stages, and the SVG writer is arranged the same way. `Filters`, `LayerBlur` and `Sharpen` transform the layer's own appearance in list order; then every shadow is cast from *that* result and merged behind or over it. An inner shadow after a drop shadow must not take its silhouette from layer-plus-shadow. `effect::stack_escape` is the same decision for bounds: reordering the stages here means changing it too, and nothing fails if only one moves. A background blur is no stage: `run` and `fx_gpu` skip it and `any_ink` answers `false` for it, so a stack holding only one pushes no effect layer. Its backdrop is blurred by an effect layer of its own carrying a layer blur (§6.2).
 
 `run_shadows` is `run` with the layer left out: the output starts empty instead of as the graphic, so only the shadows cast remain. It draws a blending shadow's own pass (§6.2); the GPU spells it `layer = false` (`FxFrame`, `EffectJob`, `fx_gpu::Item`), starting `out` with a zero `Tint` instead of a `Copy` of the graphic.
 
@@ -95,13 +98,17 @@ The silhouette both shadow kinds are cast from is the graphic's own alpha. `255 
 - `coarsen` dispatches one thread per block, so total work is one read per source pixel only while `k <= min(w, h)`; both loops stop at the source edge, not the block edge, and the divisor stays `k^2` (transparent-off-edge).
 - Caps: `effect::MAX_SHADOW_BLOCK` = 4096 and `effect::MAX_KERNEL_RADIUS` = 512, asked in `effects::kernel_radius` (the one function both blurs use). A document can hold an absurd deviation (`stdDeviation="1e30"` imports without report); unbounded, it hangs the cover worker and anything that joins it (library settings Save). `MAX_SHADOW_BLOCK` is now a correctness cap (`k as i32` would wrap negative and draw no shadow).
 
+### Sharpen
+
+`effects::sharpen` keeps the layer, blurs a copy through the layer blur's own passes, and combines the two per pixel with the clamp SVG's arithmetic `feComposite` applies (alpha to 0–1, colour to the alpha); `fx.wgsl`'s `sharpen` entry does the same over `src_a` (the layer, kept in the `O0` scratch slot, free until stage 2) and `src_b` (its blur), the amount in `Params::amount`. The clamp must be in all three writers: left at 1, a colour past its alpha survives into any later pass that mixes premultiplied pixels and rings differently. The blurred copy is only subtracted, so past the budget it is taken on the coarse grid by `effect::shadow_downscale`'s answer, as a shadow's silhouette is; it never licenses `buffer_downscale`, since the output stays sharp. The SVG writer emits `feGaussianBlur` (`result="fx{n}b"`) and `feComposite operator="arithmetic"` with `k2 = 1 + a`, `k3 = −a`. CSS has no unsharp mask: `css_blocker` sends the layer to inline SVG (*a sharpen*), which carries the filter. Penpot, Sketch and DTCG leave it out and report it.
+
 ### Tests
 
-CPU pixel tests in `mastik-render/tests/effects.rs` (shadow colour/position, alpha falloff, blur past the layer edge, filters change colour not extent, spread, inner shadow within the ink and on all four edges at (0,0), no-ink stack equals no stack). The SVG suite reads the filter graph. Neither would notice if only the other were right.
+CPU pixel tests in `mastik-render/tests/effects.rs` (shadow colour/position, alpha falloff, blur past the layer edge, filters change colour not extent, spread, inner shadow within the ink and on all four edges at (0,0), a sharpen's rim and no rim where the target cuts it, no-ink stack equals no stack). The SVG suite reads the filter graph. Neither would notice if only the other were right.
 
 ## Traps
 
-- `escape` (where ink lands) and the evaluation extent (where passes run) differ for inner shadows; do not unify them.
+- `escape` (where ink lands) and the evaluation extent (where passes run) differ for inner shadows and sharpens; do not unify them. A sharpen's reading reach is `buffer_escape`, for the buffer only, never the ink bounds.
 - `stack_escape` and the staging in `run` are one decision in two places.
 - Compositing order of the complement: any new pass between silhouette and tint must commute with `255 - v`.
 - Do not store the blur deviation; store the radius.

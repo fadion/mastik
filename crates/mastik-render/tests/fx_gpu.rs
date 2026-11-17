@@ -229,8 +229,8 @@ fn readback(g: &Gpu, tex: &wgpu::Texture) -> Vec<u8> {
 }
 
 /// What the CPU backend would produce for the same stack, in straight alpha.
-fn reference(effects_list: &[Keyed<Effect>]) -> Vec<u8> {
-    let mut buf = premultiply(&fixture());
+fn reference(src: &[u8], effects_list: &[Keyed<Effect>]) -> Vec<u8> {
+    let mut buf = premultiply(src);
     let mut s = Surface::new(&mut buf, W as usize, H as usize);
     effects::run(&mut s, effects_list, SCALE);
     unpremultiply(&buf)
@@ -289,16 +289,33 @@ fn compare(name: &str, got: &[u8], want: &[u8], tolerance: u8) {
 const TOLERANCE: u8 = 1;
 
 fn check(name: &str, list: Vec<Effect>) {
+    check_on(name, list, &fixture());
+}
+
+/// `check` over straight-alpha `px` in place of the disc.
+fn check_on(name: &str, list: Vec<Effect>, px: &[u8]) {
     let Some(g) = gpu() else {
         eprintln!("no GPU adapter; skipping {name}");
         return;
     };
     let list = keyed_by_position(list);
-    let src = upload(&g, &fixture());
+    let src = upload(&g, px);
     let out = fx_gpu::run(&g.device, &g.queue, &g.fx, &src, whole(), &list, SCALE)
         .expect("the stack has ink, so it produces a texture");
     let got = readback(&g, &out);
-    compare(name, &got, &reference(&list), TOLERANCE);
+    compare(name, &got, &reference(px, &list), TOLERANCE);
+}
+
+/// The disc's left half recoloured blue: an edge between two hues, where an
+/// unsharp mask overshoots a colour past its own alpha.
+fn two_hue_fixture() -> Vec<u8> {
+    let mut px = fixture();
+    for (i, p) in px.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        if (i as u32 % W) < W * 2 / 5 {
+            p[..3].copy_from_slice(&[q(0.1), q(0.2), q(0.9)]);
+        }
+    }
+    px
 }
 
 fn shadow(dx: f64, dy: f64, blur: f64, spread: f64, rgba: [u8; 4]) -> Shadow {
@@ -331,6 +348,59 @@ fn a_layer_blur_matches_the_reference() {
     check(
         "layer blur",
         vec![Effect::new(EffectKind::LayerBlur { radius: 9.0 })],
+    );
+}
+
+/// The unsharp mask, at an amount whose overshoot clamps both ways, after a
+/// filter so it reads the stack's running result, over an edge between two hues.
+///
+/// flip: `fx.wgsl`'s `sharpen` clamping colour to 1 rather than to the alpha →
+/// fails at the comparison where the two hues meet. Over the one-hue disc, or
+/// with no pass after the sharpen, the flip does not bite: colour never passes
+/// alpha there, and unpremultiplying clamps the excess away.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_sharpen_matches_the_reference() {
+    check_on(
+        "sharpen",
+        vec![
+            Effect::new(EffectKind::Filters(Filters {
+                brightness: 0.8,
+                ..Filters::default()
+            })),
+            Effect::new(EffectKind::Sharpen {
+                amount: 1.6,
+                radius: 3.0,
+            }),
+            // Mixes the premultiplied result, where a colour left past its
+            // alpha shows; unpremultiplying alone would clamp it away.
+            Effect::new(EffectKind::LayerBlur { radius: 2.0 }),
+        ],
+        &two_hue_fixture(),
+    );
+}
+
+/// A sharpen whose blur is past the budget takes it on the coarse grid, on both
+/// backends alike.
+///
+/// flip: the GPU blurring at full size where the CPU coarsens → stays green, a
+/// coverage gap: on a buffer this small a blur this wide is near flat on either
+/// grid. This pins that the coarse passes agree, not that both choose them.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_resampled_sharpen_matches_the_reference() {
+    let sigma = effects::device_sigma(100.0, SCALE.0, SCALE.1).0;
+    assert!(
+        mastik_core::effect::shadow_downscale(f64::from(sigma)) > 1,
+        "the fixture must reach the coarse grid"
+    );
+    check_on(
+        "resampled sharpen",
+        vec![Effect::new(EffectKind::Sharpen {
+            amount: 2.0,
+            radius: 100.0,
+        })],
+        &two_hue_fixture(),
     );
 }
 

@@ -1281,6 +1281,10 @@ pub mod icon {
     /// [`TRASH`] with three sweep lines beside it, so it stays in the delete
     /// family and is not read as removing the one selected.
     pub const TRASH_ALL: &str = "\u{f06d}";
+    /// The **sharpen** effect's row glyph: a cut gem, crisp facets, so it does
+    /// not borrow [`LAYER_BLUR`]'s soft dots for their opposite or read as
+    /// [`DIAMOND`]'s plain rhombus.
+    pub const SHARPEN: &str = "\u{f06e}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1585,6 +1589,7 @@ pub mod icon {
         ("file-code", FILE_CODE),
         ("scope-frame", SCOPE_FRAME),
         ("trash-all", TRASH_ALL),
+        ("sharpen", SHARPEN),
     ];
 }
 
