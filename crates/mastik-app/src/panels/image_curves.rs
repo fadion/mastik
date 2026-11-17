@@ -585,6 +585,14 @@ mod card_tests {
                 .is_some(),
             "the Settings tab's body is measured where it is drawn, not guessed"
         );
+        let body = ctx
+            .data(|d| d.get_temp::<f32>(egui::Id::new("image-card-body-h")))
+            .unwrap_or_default();
+        assert!(
+            (body - super::super::inspector::IMAGE_BODY_FALLBACK_H).abs() < 0.5,
+            "the fallback a card opened on another tab keeps is the Settings body, {body}: \
+             a popup can shrink but never grow back"
+        );
         let first = card_h(&mut app, &ctx, rect, ImageCard::Adjustments);
         assert!(
             (first - settings).abs() < 0.5,

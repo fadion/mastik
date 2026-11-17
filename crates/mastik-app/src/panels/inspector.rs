@@ -114,8 +114,8 @@ const MISSING_FONT_GAP: f32 = ui::CARD_ROW_GAP;
 /// separate jobs, and stacking them makes the card too tall.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum ImageCard {
-    /// How the picture sits in its frame: the mode, the mirrors, the tile scale,
-    /// the rectangle's own actions, and the asset.
+    /// How the picture sits in its frame: the mode, the crop's shape, the
+    /// orientation, the scale, the rectangle's own actions, and the asset.
     #[default]
     Settings,
     /// The per-pixel adjustments, in `AdjustSection`'s three folds.
@@ -163,8 +163,10 @@ fn image_body_h_id() -> egui::Id {
 }
 
 /// The body height every tab keeps until the Settings tab has been drawn once and
-/// measured: the Settings tab's height in Fill mode when this was written.
-const IMAGE_BODY_FALLBACK_H: f32 = 245.0;
+/// measured: the Settings tab's own, held to it by
+/// `every_tab_keeps_the_settings_tabs_height`, since a card opened on another tab
+/// could never grow back to it.
+pub(super) const IMAGE_BODY_FALLBACK_H: f32 = 386.0;
 
 /// The Transform card's marks — `MastikApp::transform_marks`.
 #[derive(Default)]

@@ -32,8 +32,9 @@ Part of §9.4.
   `canvas::edited_image`'s answer.
 - **The card keeps one height: the Settings tab's.** The Settings body's height is measured where it
   is drawn and remembered in the context (`image_body_h_id`; `IMAGE_BODY_FALLBACK_H` until it has been
-  drawn once). The other tabs' bodies stop one reset row short of it, so their reset rows sit where
-  Settings' last row ends. Nothing grows the popup, which egui could not shrink back.
+  drawn once; a test holds the constant to the measured body, since a card opened on another tab
+  keeps it). The other tabs' bodies stop one reset row short of it, so their reset rows sit where
+  Settings' last row ends. Nothing grows the popup: an egui popup can shrink but never grow back.
 - **The tab strip is the header**: a three-cell `ui::segmented` (Settings, Adjustments, Curves) with `ImageCard::title` labels, then
   `ui::TABS_CLOSE_GAP` and `ui::close_button`, as the colour picker's header reads; the ✕ leaves the
   mode (`choose_tool(Tool::Select)`), keeping the crop made. Controls are `CELL` = 26; both tracks (this and Settings' mode strip) ask for `TRACK_CELL`,

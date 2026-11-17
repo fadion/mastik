@@ -100,35 +100,6 @@ Items run cheapest first.
   ends with the app, needs no account and never leaves the network. Waits on the player
   (*Now · Prototyping*).
 
-## Now · Image editing
-
-Make the image-editing card feel complete without turning Mastik into a photo editor
-(`design/app-image-editing.md`, `design/images.md`). The bound is that the canvas, the PNG export
-and the SVG export all draw the same thing. An adjustment must stay a colour matrix plus a tone
-table (`AdjustPipeline`), a neighbourhood filter goes in the effect stack with an SVG filter to
-match, and only an explicit action changes a picture's stored bytes.
-
-- **Quarter turn.** A *Rotate 90°* beside the Settings tab's two mirrors. `OrientOp::Turn` is
-  built and carries the crop, but nothing writes it, so four of the eight orientations cannot be
-  reached. A photo shot sideways is the commonest repair.
-- **Crop aspect.** Presets in the card (Free, Original, 1:1, 4:3, 3:2, 16:9) and Shift on the crop
-  handles holding the ratio, as Shift does on a resize (`edit::crop_resized`). A crop is usually
-  made for a slot of known shape.
-- **Black point, white point, fade.** Three more `Adjustment`s, each only a different tone table,
-  so the SVG writer needs no new primitive. Fade (lifted blacks) is the muted look duotone almost
-  covers.
-- **Purge unused images, and what each picture weighs.** Every picture is embedded and nothing
-  collects the table (`Document::images`), so a file grows with no way to see why. The op exists
-  (`Operation::RemoveImage`); the command and a size readout in the card do not.
-- **Sharpen.** An unsharp mask (original + k·(original − blur)) in the effect stack, reusing the
-  blur passes in `fx.wgsl`; SVG writes it as `feGaussianBlur` plus an arithmetic `feComposite`.
-- **Reduce the picture, apply the crop.** Explicit, destructive actions with their own undo step:
-  re-encode at a chosen size or quality, or keep only the cropped pixels. A large photograph
-  placed as a thumbnail is what makes files heavy. They are the exception to "the original goes
-  out", so they never run on their own.
-- **Curves.** An editor for the tone table `AdjustPipeline` already holds. A real piece of chrome,
-  so it follows black and white point and is taken up only if those see use.
-
 ## Later · Platform and dependencies
 
 - **egui 0.36** is blocked by vello requiring wgpu 29 (check — last asked 2026-09-03). Re-derive
