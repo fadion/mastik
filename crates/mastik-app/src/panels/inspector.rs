@@ -8863,6 +8863,8 @@ impl MastikApp {
         // `Some(keep_framing)`, deferred past the card: each opens a modal file
         // dialog, which mid-`show` would block with the popover half-painted.
         let mut replace: Option<bool> = None;
+        // Deferred too: Reduce opens a card, and Apply crop starts a worker.
+        let (mut reduce, mut apply_crop) = (false, false);
         // Unreachable while the guard above requires `PaintSlot::Fill`; kept so a
         // future multi-selection entry cannot replace three pictures with one file.
         let replace_scoped = matches!(
@@ -9198,9 +9200,38 @@ impl MastikApp {
 
                         // *Embed*/*Link* and *Relink…* are absent, not dead: they wait on
                         // a linked source nothing can author.
+                        let weight = self.picture_weight(&img.id);
                         ui.scope(|ui| {
                             ui.spacing_mut().item_spacing.y = 5.0;
                             ui.label(ui::eyebrow("Asset"));
+                            // Two lines whatever they say, so the card keeps its height.
+                            let (first, second, heavy) = weight.lines();
+                            let readout = ui
+                                .vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    let line = |ui: &mut egui::Ui, text: String, ink| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(text)
+                                                    .size(ui::SMALL_PT)
+                                                    .color(ink),
+                                            )
+                                            .truncate(),
+                                        );
+                                    };
+                                    line(ui, first, theme::text::muted());
+                                    let ink = match heavy {
+                                        true => theme::color::warn(),
+                                        false => theme::text::faint(),
+                                    };
+                                    line(ui, second, ink);
+                                })
+                                .response;
+                            ui.interact(readout.rect, ui.id().with("weight"), egui::Sense::hover())
+                                .on_hover_text(
+                                    "How heavy the picture is in the file, and how small it \
+                                     is drawn",
+                                );
                             ui.scope(|ui| {
                                 ui.spacing_mut().item_spacing.y = 2.0;
                                 // Also the repair for a missing picture's placeholder.
@@ -9237,6 +9268,56 @@ impl MastikApp {
                                     },
                                 ) {
                                     replace = Some(false);
+                                }
+                                // The two that rewrite a picture's bytes: each its own
+                                // undo step, run only from here.
+                                const MISSING: &str =
+                                    "The picture's pixels are missing — replace it first";
+                                let missing = !weight.embedded;
+                                if menu_action(
+                                    ui,
+                                    !missing && !replace_scoped,
+                                    icon::CORNERS_IN,
+                                    "Reduce picture…",
+                                    &|on| match (on, missing) {
+                                        (true, _) => "Make the picture smaller in the file, \
+                                                      on every layer that uses it"
+                                            .into(),
+                                        (false, true) => MISSING.into(),
+                                        (false, false) => {
+                                            "Reducing works on one layer at a time".into()
+                                        }
+                                    },
+                                ) {
+                                    reduce = true;
+                                }
+                                let uncut = img.crop == mastik_core::whole_crop();
+                                let why_not = if missing {
+                                    Some(MISSING)
+                                } else if uncut {
+                                    Some("This picture has not been cropped")
+                                } else if img.fit != mastik_core::ImageFit::Crop {
+                                    Some(
+                                        "Only Crop keeps part of the picture — switch the \
+                                         mode to Crop first",
+                                    )
+                                } else {
+                                    None
+                                };
+                                if menu_action(
+                                    ui,
+                                    why_not.is_none(),
+                                    icon::CROP,
+                                    "Apply crop",
+                                    &|on| match (on, why_not) {
+                                        (true, _) | (_, None) => "Keep only the pixels inside \
+                                                                  the crop — undo brings the \
+                                                                  rest back"
+                                            .into(),
+                                        (false, Some(why)) => why.into(),
+                                    },
+                                ) {
+                                    apply_crop = true;
                                 }
                             });
                         });
@@ -9367,6 +9448,12 @@ impl MastikApp {
         }
         if let Some(keep_framing) = replace {
             self.replace_image_action(id, slot, keep_framing);
+        }
+        if reduce {
+            self.open_reduce(id, img.id.clone());
+        }
+        if apply_crop {
+            self.apply_crop(id, index);
         }
         // The ✕ leaves the mode as `Enter` does; the crop made stays made.
         if close {

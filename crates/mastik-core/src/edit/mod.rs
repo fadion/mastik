@@ -2080,6 +2080,79 @@ pub fn reshape_box(doc: &Document, res: &Resolved, id: NodeId, to: Rect) -> Tran
 /// matches what [`resize_layer`] writes.
 const MIN_CROP: f64 = 1.0;
 
+/// The writes that make every layer and style showing the picture `from` show
+/// `to` instead, framing and adjustments kept: what *Reduce picture…* commits,
+/// since a reduce that left the other layers on the original would not make
+/// the file any smaller.
+pub fn repoint_image(doc: &Document, from: &crate::ImageId, to: &crate::ImageId) -> Vec<Operation> {
+    let swap = |b: &mut crate::BrushSource| match b.literal_mut() {
+        Some(Brush::Image(img)) if img.image.id == *from => {
+            img.image.id = to.clone();
+            true
+        }
+        _ => false,
+    };
+    let mut ops = Vec::new();
+    for id in doc.node_ids() {
+        let Some(node) = doc.get(id) else { continue };
+        let mut fills = node.paint().fills.clone();
+        if fills
+            .iter_mut()
+            .fold(false, |a, f| swap(&mut f.value.brush) | a)
+        {
+            ops.push(Operation::SetFills { id, fills });
+        }
+        let mut strokes = node.paint().strokes.clone();
+        if strokes
+            .iter_mut()
+            .fold(false, |a, s| swap(&mut s.value.brush) | a)
+        {
+            ops.push(Operation::SetStrokes { id, strokes });
+        }
+    }
+    for style in doc.styles().iter() {
+        let mut value = style.value.clone();
+        let changed = match &mut value {
+            crate::style::StyleValue::Fills(f) => f
+                .iter_mut()
+                .fold(false, |a, f| swap(&mut f.value.brush) | a),
+            crate::style::StyleValue::Strokes(s) => s
+                .iter_mut()
+                .fold(false, |a, s| swap(&mut s.value.brush) | a),
+            _ => false,
+        };
+        if changed {
+            ops.push(Operation::SetStyleValue {
+                id: style.id,
+                value,
+            });
+        }
+    }
+    ops
+}
+
+/// The rectangle of source pixels `img`'s crop shows, as `(x, y, width, height)`
+/// in the stored picture's own pixel space: the crop is kept in the oriented
+/// picture's space, so it is mapped back through the orientation. What *Apply
+/// crop* cuts, leaving the orientation to go on applying. Rounded outward to
+/// whole pixels and held inside the picture; `None` for an empty cut.
+pub fn crop_source_px(
+    img: &crate::ImageRef,
+    width: u32,
+    height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let (w, h) = (f64::from(width), f64::from(height));
+    let (ow, oh) = img.orient.oriented_size(w, h);
+    let c = img.crop;
+    let shown = Rect::new(c.x0 * ow, c.y0 * oh, c.x1 * ow, c.y1 * oh);
+    let source = img.orient.affine(w, h).inverse().transform_rect_bbox(shown);
+    let x0 = source.x0.floor().clamp(0.0, w);
+    let y0 = source.y0.floor().clamp(0.0, h);
+    let x1 = source.x1.ceil().clamp(0.0, w);
+    let y1 = source.y1.ceil().clamp(0.0, h);
+    (x1 > x0 && y1 > y0).then_some((x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32))
+}
+
 /// Which fill of `paint` image editing acts on: the first visible image
 /// ([`crate::Paint::image_fill`], shared with `build::mask_target`).
 pub fn croppable_fill(paint: &crate::Paint) -> Option<usize> {

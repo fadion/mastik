@@ -39,10 +39,44 @@ Part of §9.4.
 
 - **Framing modes** Fill / Fit / Crop / Tile — an override: Crop is what handles and pan do; the others
   re-frame inside the box the crop left and hide the ghost. The crop rectangle survives.
-- **Asset** eyebrow over *Replace…* (pick one file, embed it, **keep the framing** — the repair for a
+- **Asset** eyebrow over the **weight readout**, two fixed lines whatever they say
+  (`pictures::Weight::lines`): format, pixels and stored size (*JPEG · 6000 × 4000 · 4.8 MB*), then
+  how small it is drawn and on how many layers (*Drawn at 1/8 of its pixels · on 3 layers*, or
+  *Drawn at 1:1 · on this layer only*). "Drawn at" is the **largest** drawn size across every layer
+  showing the picture (`MastikApp::picture_weight`: world × framing, units per source pixel), so a
+  picture drawn small in one place and full size in another is not flagged, and the zoom plays no
+  part. The second line turns `color::warn()` under a quarter of its pixels across
+  (`pictures::HEAVY_BELOW`). A picture whose bytes are not here reads *Missing · 2400 × 1600 when
+  saved* (*Missing* with no entry at all).
+- Then *Replace…* (pick one file, embed it, **keep the framing** — the repair for a
   missing picture) and *Replace and reset* (framing fields to defaults, adjustments kept). Both decline
   for a selection slot and run after the `Area` closure (the dialog is modal); the card stays behind
-  the dialog. Linked-source entries (*Embed/Link*, *Relink…*) are not built — no linking is authored.
+  the dialog.
+- Then the two actions that **rewrite a picture's bytes** — the only exceptions to "the original
+  goes out", each its own undo step, run only from here, neither asking for confirmation (undo
+  brings back every byte; the tooltips state the cost). Both dim with *The picture's pixels are
+  missing — replace it first*. Each commits through `MastikApp::rewrite_tx`: the new entry is
+  added, and the old one is removed in the same step once nothing names it (`io::unused_images`
+  on the document as it would stand), so the file gets lighter at once.
+  - *Reduce picture…* (`icon::CORNERS_IN`) opens a modal canvas card (`MastikApp::reduce_ui`, the
+    Trace card's pattern): **Size** offered as multiples of the largest drawn size (1×, 2×, 3× as
+    drawn, each only while smaller than the original, then *Original*, which only re-encodes;
+    `pictures::reduce_sizes`; 2× by default), never upscaling; **Format** JPEG or PNG (a picture
+    with transparency offers PNG only); **Quality** (`icon::GAUGE`, 85) dimmed with its reason for
+    PNG. *Now* and *After, about* sizes; the after figure is **measured**, encoded on a worker as
+    the settings move, one encode at a time, and *Reduce* waits for it. It acts on the picture, not
+    the layer: every layer and style showing it moves onto the smaller one (`edit::repoint_image`),
+    since a reduce leaving the original for the others would not shrink the file. Crops,
+    orientations and adjustments keep their meaning (the crop is in fractions). Status *Reduced
+    Hero photo — 4.8 MB to 0.6 MB*.
+  - *Apply crop* (`icon::CROP`) keeps only the pixels inside the window, cut in the picture's own
+    pixel space (`edit::crop_source_px`, through the orientation) so the mirrors, the turn and the
+    adjustments stay live; afterwards the picture is exactly the box, its crop whole and its mode
+    Fill. This layer gets a new entry; others showing the original keep it. Decoded and encoded on
+    a worker (`MastikApp::apply_crop`), landed by `poll_pictures` only on the document it was asked
+    of. A JPEG is re-encoded at quality 92, anything else as PNG. Dimmed with *This picture has not
+    been cropped* (the whole-crop sentinel), then *Only Crop keeps part of the picture — switch the
+    mode to Crop first*. Status *Cropped Hero photo to 2400 × 1800 — 4.8 MB to 1.1 MB*. Linked-source entries (*Embed/Link*, *Relink…*) are not built — no linking is authored.
   A replacement drops the layer's photo credit (`credit::dropped_by_replace`, in `replace_image_with`),
   since the photo it credited is gone; an icon's credit stays.
 - **Aspect** eyebrow under Mode: a `ComboBox` of `CropShape` (*Free*, *Original*, *1:1*, *4:3*,

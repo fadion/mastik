@@ -97,6 +97,108 @@ fn a_held_crop_keeps_its_shape_from_every_handle() {
     );
 }
 
+/// The pixels a crop cuts are found in the stored picture's own space, through
+/// its orientation, and rounded outward.
+/// flip: `crop_source_px` skipping the inverse orientation → fails at "turned".
+#[test]
+fn a_crop_cuts_the_stored_pixels_through_the_orientation() {
+    let img = crate::ImageRef {
+        crop: Rect::new(0.0, 0.0, 1.0, 0.5),
+        ..crate::ImageRef::new(crate::ImageId("p".into()))
+    };
+    assert_eq!(
+        crop_source_px(&img, 4, 2),
+        Some((0, 0, 4, 1)),
+        "the control"
+    );
+    let turned = img.reoriented(crate::OrientOp::Turn);
+    let turned = crate::ImageRef {
+        crop: Rect::new(0.0, 0.0, 0.5, 1.0),
+        ..turned
+    };
+    // A 4 × 2 picture turned clockwise is 2 × 4; its left half is the source's
+    // bottom row.
+    assert_eq!(crop_source_px(&turned, 4, 2), Some((0, 1, 4, 1)), "turned");
+    let sliver = crate::ImageRef {
+        crop: Rect::new(0.3, 0.3, 0.31, 0.31),
+        ..img
+    };
+    assert_eq!(
+        crop_source_px(&sliver, 4, 2),
+        Some((1, 0, 1, 1)),
+        "rounded outward"
+    );
+}
+
+/// `repoint_image` moves every fill and stroke showing one picture onto
+/// another, framing kept, and touches nothing else.
+#[test]
+fn repoint_image_moves_every_layer_onto_the_new_picture() {
+    use crate::{Fill, Stroke, image_brush};
+    let mut ids = crate::IdSource::new(0x2E9);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let (a, b) = (ids.mint(), ids.mint());
+    let (old, new, other) = (
+        crate::ImageId("old".into()),
+        crate::ImageId("new".into()),
+        crate::ImageId("other".into()),
+    );
+    let mut framed = image_brush(old.clone());
+    if let Brush::Image(i) = &mut framed {
+        i.image.fit = crate::ImageFit::Tile;
+    }
+    let rect = || NodeKind::Rect {
+        size: Size::new(10.0, 10.0),
+        corner_radii: RoundedRectRadii::default(),
+        corner_smoothing: 0.0,
+    };
+    let mut ops = Vec::new();
+    for (i, id) in [a, b].into_iter().enumerate() {
+        ops.push(Operation::CreateNode {
+            id,
+            parent: root,
+            index: i,
+            kind: rect(),
+            transform: None,
+            name: None,
+        });
+    }
+    ops.push(Operation::SetFills {
+        id: a,
+        fills: crate::keyed_by_position([Fill {
+            brush: framed.into(),
+            visible: true,
+        }]),
+    });
+    ops.push(Operation::SetFills {
+        id: b,
+        fills: crate::keyed_by_position([Fill {
+            brush: image_brush(other.clone()).into(),
+            visible: true,
+        }]),
+    });
+    ops.push(Operation::SetStrokes {
+        id: b,
+        strokes: crate::keyed_by_position([Stroke {
+            brush: image_brush(old.clone()).into(),
+            ..Stroke::default()
+        }]),
+    });
+    doc.apply(&Transaction(ops)).expect("two layers");
+    let tx = Transaction(repoint_image(&doc, &old, &new));
+    assert_eq!(tx.0.len(), 2, "a's fills and b's strokes, not b's fills");
+    doc.apply(&tx).expect("applies");
+    let Some(Brush::Image(i)) = doc.get(a).unwrap().paint().fills[0].brush.literal() else {
+        panic!("a picture");
+    };
+    assert_eq!(
+        (&i.image.id, i.image.fit),
+        (&new, crate::ImageFit::Tile),
+        "framing kept"
+    );
+}
+
 /// Picking a shape takes the largest box of it inside the window and the picture,
 /// about the window's centre.
 #[test]

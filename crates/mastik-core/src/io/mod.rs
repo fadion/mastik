@@ -74,6 +74,44 @@ pub fn save(doc: &Document) -> Result<Vec<u8>, IoError> {
     Ok(bytes)
 }
 
+/// The pictures in `doc`'s table that nothing can draw, sorted: no layer on any
+/// page (hidden, locked, a main, the vault), no override, style or other value
+/// names them. Undo alone keeps such a picture in the table.
+///
+/// A reference is any string in the saved form equal to the picture's id, as the
+/// merge reads one: ids are content hashes, so nothing else collides with one.
+/// The published copy keeps a table of its own and is not read.
+pub fn unused_images(doc: &Document) -> Vec<crate::ImageId> {
+    if doc.image_count() == 0 {
+        return Vec::new();
+    }
+    let mut dto = schema::DocumentDto::from_document_with(doc, false);
+    dto.published = None;
+    let Ok(value) = serde_json::to_value(&dto) else {
+        return Vec::new();
+    };
+    let mut named = std::collections::HashSet::new();
+    strings_in(&value, &mut named);
+    let mut out: Vec<crate::ImageId> = doc
+        .images()
+        .filter(|(id, _)| !named.contains(id.0.as_str()))
+        .map(|(id, _)| id.clone())
+        .collect();
+    out.sort();
+    out
+}
+
+fn strings_in<'v>(v: &'v serde_json::Value, out: &mut std::collections::HashSet<&'v str>) {
+    match v {
+        serde_json::Value::String(s) => {
+            out.insert(s);
+        }
+        serde_json::Value::Array(l) => l.iter().for_each(|x| strings_in(x, out)),
+        serde_json::Value::Object(m) => m.values().for_each(|x| strings_in(x, out)),
+        _ => {}
+    }
+}
+
 /// Parse native bytes: read `schema_version`, migrate to current, then build
 /// and verify the document.
 ///

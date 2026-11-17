@@ -840,6 +840,9 @@ impl MastikApp {
         push(&mut out, Cmd::verb(Item::ColourReview, None));
         push(&mut out, Cmd::verb(Item::BatchRename, None));
         push(&mut out, Cmd::verb(Item::CleanUp, None));
+        let purge =
+            (self.unused_pictures().0.is_empty()).then_some(crate::pictures::ALL_PICTURES_USED);
+        push(&mut out, Cmd::verb(Item::RemoveUnusedImages, purge));
         push(&mut out, Cmd::verb(Item::FillContent, None));
         push(&mut out, Cmd::verb(Item::FindText, None));
         push(&mut out, Cmd::verb(Item::ReplaceText, None));

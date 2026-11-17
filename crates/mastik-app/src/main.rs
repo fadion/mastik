@@ -146,6 +146,7 @@ mod palette;
 mod panels;
 mod path_bar;
 mod pencil;
+mod pictures;
 mod pixel_fit;
 mod prefs;
 mod present;

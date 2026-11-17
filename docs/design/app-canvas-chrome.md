@@ -378,7 +378,17 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   - a hairline, then the bulk edits, each opening its box: *Find and replace…* (`Ctrl+F`,
     `Action::FindText { replace: false }`), *Batch rename…* (`Ctrl+Shift+R`; dimmed with
     `private::DECLINE_RENAME` in private mode), *Clean up…* (no chord) and *Fill with content…* (no
-    chord; never dimmed: with nothing to fill the box opens and says what to select).
+    chord; never dimmed: with nothing to fill the box opens and says what to select);
+  - last, *Remove unused pictures* (`Action::RemoveUnusedImages`), which acts at once: with the
+    size it would free in the chord's slot, dimmed with *Every picture is in use* when there is
+    nothing to take (`pictures::ALL_PICTURES_USED`, the palette's reason too). A command and not a
+    Clean up rule, since pictures belong to the document, not to a scope of layers. Unused means
+    nothing can draw it (`io::unused_images`: no string anywhere in the saved form names its id,
+    so hidden and locked layers, mains, overrides and styles all count); a picture only undo
+    refers to is unused. One undo step, *Remove unused pictures*; the status says *Removed 4 unused
+    pictures — 12.3 MB*. Save does not do this silently: a picture removed between a layer's
+    delete and its undo would be gone from the file. The answer is read once per document change
+    (`MastikApp::unused_pictures`).
 
   Every row is a bare `ui::menu_row` (an empty glyph, never checked), its label at the row's own
   inset: nothing in the menu ticks, and a check that is on says so in its own bar over the canvas.

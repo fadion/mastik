@@ -677,6 +677,8 @@ selects its layer, `Shift` + a label adds it; a label is two letters, the first 
 - **Check contrast** — a Tools menu row and a palette verb (`Action::CheckContrast`), no chord.
 - **Simulate vision** — a Tools menu row and a palette verb (`Action::SimulateVision`), no chord.
 - **Clean up…** — a Tools menu row and a palette verb (`Action::CleanUp`), no chord.
+- **Remove unused pictures** — a Tools menu row and a palette verb
+  (`Action::RemoveUnusedImages`), no chord.
 - **Fill with content…** — a Tools menu row, a palette verb and a text layer's menu row
   (`Action::FillContent`), no chord.
 - **Go to document…** — the palette alone (`Item::GoToDocument`), no chord and no `Action`: it turns

@@ -871,6 +871,13 @@ pub struct MastikApp {
     /// The shape image editing holds the crop to, kept across entries and Free
     /// again on a new picture (`CropAspect::for_picture`).
     pub(crate) crop_aspect: crate::panels::CropAspect,
+    /// The pictures nothing draws, read once per document change
+    /// (`MastikApp::unused_pictures`); a cell, since the palette asks through `&self`.
+    pub(crate) unused_cache: std::cell::RefCell<crate::pictures::Unused>,
+    /// *Apply crop* on its worker (`MastikApp::poll_pictures` lands it).
+    pub(crate) picture_job: Option<crate::pictures::PictureJob>,
+    /// *Reduce picture…*'s card, while it is open.
+    pub(crate) reduce: Option<crate::pictures::ReduceCard>,
     /// The strokes whose sides selector row is showing. The only thing deciding whether
     /// the row shows; a collapsed row still declares its setting through
     /// [`crate::ui::FieldButton::Set`], so losing this never loses a setting.
@@ -1286,10 +1293,11 @@ enum ToolsRow {
     BatchRename,
     CleanUp,
     FillContent,
+    RemoveUnusedImages,
 }
 
 impl ToolsRow {
-    const ALL: [ToolsRow; 8] = [
+    const ALL: [ToolsRow; 9] = [
         ToolsRow::Scripts,
         ToolsRow::CheckContrast,
         ToolsRow::SimulateVision,
@@ -1298,6 +1306,7 @@ impl ToolsRow {
         ToolsRow::BatchRename,
         ToolsRow::CleanUp,
         ToolsRow::FillContent,
+        ToolsRow::RemoveUnusedImages,
     ];
 
     /// Every label a row can wear, with its chord, for the menu's width: a check
@@ -1310,6 +1319,8 @@ impl ToolsRow {
             .chain([
                 (crate::contrast::STOP_CONTRAST, None),
                 (crate::vision::STOP_VISION, None),
+                // The size it would free sits in the chord's slot.
+                (ToolsRow::RemoveUnusedImages.label(), Some("999.9 MB")),
             ])
             .collect()
     }
@@ -1327,6 +1338,7 @@ impl ToolsRow {
             ToolsRow::BatchRename => Item::BatchRename.spec().label,
             ToolsRow::CleanUp => Item::CleanUp.spec().label,
             ToolsRow::FillContent => Item::FillContent.spec().label,
+            ToolsRow::RemoveUnusedImages => Item::RemoveUnusedImages.spec().label,
         }
     }
 
@@ -2010,6 +2022,9 @@ impl MastikApp {
             effect_menu: None,
             image_tab: ImageCard::default(),
             crop_aspect: Default::default(),
+            unused_cache: Default::default(),
+            picture_job: None,
+            reduce: None,
             stroke_sides_open: Vec::new(),
             prefs,
             settings: None,
@@ -2498,6 +2513,7 @@ impl MastikApp {
         self.watch_chart_links(&ctx);
         self.poll_chart_read();
         self.poll_imports();
+        self.poll_pictures();
         // Before the bar and the canvas's next frame read the envelope.
         self.tend_warp();
         if !self.focus {
@@ -2543,6 +2559,7 @@ impl MastikApp {
         self.chart_import_ui(&ctx, canvas);
         self.chart_data_ui(&ctx, canvas);
         self.trace_ui(&ctx, canvas);
+        self.reduce_ui(&ctx, canvas);
         // Unguarded too: in focus mode it keeps to the canvas's own corner.
         self.find_ui(&ctx);
         self.colour_review_ui(&ctx);
@@ -2872,6 +2889,7 @@ impl MastikApp {
             Action::Rename => self.rename_selection(ctx),
             Action::BatchRename => self.open_batch_rename(ctx, None),
             Action::CleanUp => self.open_clean_up(),
+            Action::RemoveUnusedImages => self.remove_unused_images(),
             Action::FillContent => self.open_fill_content(),
             Action::FindText { replace } => self.open_find(replace),
             Action::Flip(axis) => self.flip(axis),
@@ -8559,6 +8577,8 @@ impl MastikApp {
     /// over the canvas. A pick closes the menu before it acts.
     fn tools_menu(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let (unused, freed) = self.unused_pictures();
+        let freed = crate::settings::human_bytes(freed);
         for row in ToolsRow::ALL {
             if row == ToolsRow::FindReplace {
                 crate::ui::menu_sep(ui);
@@ -8567,7 +8587,14 @@ impl MastikApp {
                 ToolsRow::BatchRename => {
                     crate::private::on().then_some(crate::private::DECLINE_RENAME)
                 }
+                ToolsRow::RemoveUnusedImages => unused
+                    .is_empty()
+                    .then_some(crate::pictures::ALL_PICTURES_USED),
                 _ => None,
+            };
+            let accel = match row {
+                ToolsRow::RemoveUnusedImages if !unused.is_empty() => Some(freed.as_str()),
+                _ => row.accel(),
             };
             // A check that is on is named by what the click does, as the palette names it.
             let label = match row {
@@ -8578,7 +8605,7 @@ impl MastikApp {
                 _ => row.label(),
             };
             let style = crate::ui::MenuRow::new("", label)
-                .accel(row.accel())
+                .accel(accel)
                 .enabled(dim.is_none());
             let resp = crate::ui::menu_row(ui, style, crate::ui::MENU_ROW_H);
             if let Some(why) = dim {
@@ -8601,6 +8628,9 @@ impl MastikApp {
                 ToolsRow::CleanUp => self.dispatch(&ctx, crate::input::Action::CleanUp),
                 ToolsRow::FillContent => {
                     self.dispatch(&ctx, crate::input::Action::FillContent);
+                }
+                ToolsRow::RemoveUnusedImages => {
+                    self.dispatch(&ctx, crate::input::Action::RemoveUnusedImages);
                 }
             }
         }
@@ -8656,6 +8686,7 @@ impl MastikApp {
             || self.tokens_import.is_some()
             || self.chart_import.is_some()
             || self.trace.is_some()
+            || self.reduce.is_some()
             || self.scripts.modal_up()
     }
 

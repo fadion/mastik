@@ -308,6 +308,9 @@ pub enum Action {
     /// *Clean up…*, unbound: the box that takes away what draws nothing
     /// (`crate::clean_up_box`).
     CleanUp,
+    /// *Remove unused pictures*, unbound: takes every picture nothing draws out of
+    /// the document's table, one undo step (`io::unused_images`).
+    RemoveUnusedImages,
     /// *Fill with content…*, unbound: the box that fills text layers with
     /// realistic values (`crate::fill_box`).
     FillContent,

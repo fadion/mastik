@@ -824,6 +824,13 @@ pub(crate) mod image_entry {
 impl DocumentDto {
     /// Project a document to its DTO, nodes sorted by id (deterministic bytes).
     pub(crate) fn from_document(doc: &Document) -> Self {
+        Self::from_document_with(doc, true)
+    }
+
+    /// [`Self::from_document`], leaving the image table empty when `images` is
+    /// false: encoding every picture as base64 is most of a save's work, and a
+    /// reader of the references alone does not need it.
+    pub(crate) fn from_document_with(doc: &Document, images: bool) -> Self {
         let mut nodes: Vec<NodeDto> = doc.nodes_iter().map(NodeDto::from_node).collect();
         // Stable order: sort by (actor, seq) via the parsed id.
         nodes.sort_by_key(|n| NodeId::from_wire(&n.id).expect("wire form we just produced"));
@@ -841,6 +848,7 @@ impl DocumentDto {
             .collect();
         let mut images: Vec<ImageDto> = doc
             .images()
+            .filter(|_| images)
             .map(|(id, entry)| ImageDto::from_entry(id, entry))
             .collect();
         // A `FxHashMap` has no order, so this sort is invariant 9 for the table.

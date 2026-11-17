@@ -4359,3 +4359,57 @@ fn a_blur_past_the_cap_loads_at_the_cap_and_its_delete_undoes() {
         .expect("re-inserted outside a history step");
     assert!(doc.contains(r));
 }
+
+/// A picture is unused only when nothing names it: a hidden fill still draws
+/// its picture, and one no layer names is kept by undo alone.
+/// flip: `unused_images` reading the image table's own ids as references →
+/// fails at "the orphan".
+#[test]
+fn only_a_picture_nothing_names_is_unused() {
+    let mut ids = IdSource::new(0x0B5E);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let entry = || ImageEntry {
+        source: ImageSource::Embedded(vec![0u8; 8].into()),
+        format: ImageFormat::Png,
+        width: 2,
+        height: 2,
+    };
+    let (shown, hidden, orphan) = (
+        ImageId("sha256:a".into()),
+        ImageId("sha256:b".into()),
+        ImageId("sha256:c".into()),
+    );
+    let mut ops = Vec::new();
+    for pic in [&shown, &hidden, &orphan] {
+        ops.push(Operation::AddImage {
+            id: pic.clone(),
+            entry: entry(),
+        });
+    }
+    for (i, (pic, visible)) in [(&shown, true), (&hidden, false)].into_iter().enumerate() {
+        let id = ids.mint();
+        ops.push(Operation::CreateNode {
+            id,
+            parent: root,
+            index: i,
+            kind: NodeKind::Rect {
+                size: Size::new(10.0, 10.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        });
+        ops.push(Operation::SetFills {
+            id,
+            fills: keyed_by_position([Fill {
+                brush: image_brush(pic.clone()).into(),
+                visible,
+            }]),
+        });
+    }
+    doc.apply(&Transaction(ops))
+        .expect("three pictures, two layers");
+    assert_eq!(io::unused_images(&doc), vec![orphan], "the orphan");
+}

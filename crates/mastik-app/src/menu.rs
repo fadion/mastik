@@ -354,6 +354,8 @@ pub enum Item {
     BatchRename,
     /// `Action::CleanUp`: the box that takes away what draws nothing.
     CleanUp,
+    /// `Action::RemoveUnusedImages`: drops the pictures nothing draws.
+    RemoveUnusedImages,
     /// `Action::FillContent`: the box that fills text layers with realistic values.
     FillContent,
     /// `Action::FindText`: find, or find and replace, in text layers' text.
@@ -724,6 +726,7 @@ impl Item {
         Item::Rename,
         Item::BatchRename,
         Item::CleanUp,
+        Item::RemoveUnusedImages,
         Item::FillContent,
         Item::FindText,
         Item::ReplaceText,
@@ -1015,6 +1018,12 @@ impl Item {
             Item::Rename => s("Rename", icon::CURSOR_TEXT, None, Group::State),
             Item::BatchRename => s("Batch rename…", icon::CURSOR_TEXT, None, Group::State),
             Item::CleanUp => s("Clean up…", icon::MAGIC_WAND, None, Group::State),
+            Item::RemoveUnusedImages => s(
+                "Remove unused pictures",
+                icon::TRASH_ALL,
+                None,
+                Group::State,
+            ),
             Item::FillContent => s("Fill with content…", icon::FILL_CONTENT, None, Group::Text),
             Item::FindText => s("Find in text…", icon::MAGNIFYING_GLASS, None, Group::State),
             Item::ReplaceText => s(
@@ -1461,6 +1470,7 @@ impl Item {
             ],
             Item::BatchRename => &["find", "replace", "number", "bulk"],
             Item::CleanUp => &["tidy", "unused", "hidden", "empty"],
+            Item::RemoveUnusedImages => &["purge", "images", "photos", "size", "weight"],
             Item::FillContent => &[
                 "lorem",
                 "placeholder",
@@ -1531,6 +1541,7 @@ impl Item {
             Item::Rename => Action::Rename,
             Item::BatchRename => Action::BatchRename,
             Item::CleanUp => Action::CleanUp,
+            Item::RemoveUnusedImages => Action::RemoveUnusedImages,
             Item::FillContent => Action::FillContent,
             Item::FindText => Action::FindText { replace: false },
             Item::ReplaceText => Action::FindText { replace: true },
@@ -3745,6 +3756,7 @@ impl MastikApp {
             Item::Rename => self.dispatch(ctx, Action::Rename),
             Item::BatchRename => self.dispatch(ctx, Action::BatchRename),
             Item::CleanUp => self.dispatch(ctx, Action::CleanUp),
+            Item::RemoveUnusedImages => self.dispatch(ctx, Action::RemoveUnusedImages),
             Item::FillContent => self.dispatch(ctx, Action::FillContent),
             Item::FindText => self.dispatch(ctx, Action::FindText { replace: false }),
             Item::ReplaceText => self.dispatch(ctx, Action::FindText { replace: true }),
