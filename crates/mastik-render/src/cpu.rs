@@ -227,7 +227,8 @@ struct CpuPainter<'a> {
     /// Decoded images, keyed by the id a fill refers to.
     images: &'a ImageStore,
     /// `ImageSource`s built this render — see [`CpuPainter::image_source`].
-    image_memo: FxHashMap<(ImageId, [u32; 19]), (ImageSource, Affine)>,
+    image_memo:
+        FxHashMap<(ImageId, [u32; mastik_core::ImageAdjust::KEY_LEN]), (ImageSource, Affine)>,
     /// The page. Drawing goes here whenever no effect layer is open.
     root: &'a mut RenderContext,
     /// One frame per open effect layer, innermost last — see

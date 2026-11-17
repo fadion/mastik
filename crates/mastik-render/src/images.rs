@@ -209,7 +209,7 @@ impl Derived {
 /// Bitwise comparison is safe because the neutral value never reaches this:
 /// [`ImageAdjust::pipeline`] answers `None` for it, resolving `-0.0` vs `0.0`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-struct AdjustKey([u32; 19]);
+struct AdjustKey([u32; ImageAdjust::KEY_LEN]);
 
 impl AdjustKey {
     fn of(a: &ImageAdjust) -> Self {
@@ -246,7 +246,7 @@ impl ThumbKey {
             // drawing two textures that never hit.
             adjust: match r.adjust.pipeline() {
                 Some(_) => AdjustKey::of(&r.adjust),
-                None => AdjustKey([0; 19]),
+                None => AdjustKey([0; ImageAdjust::KEY_LEN]),
             },
             orient: (r.orient.quarters(), r.orient.mirrored),
             crop: [r.crop.x0, r.crop.y0, r.crop.x1, r.crop.y1].map(f64::to_bits),
@@ -984,6 +984,42 @@ fn adjusted_data(src: &ImageData, pipeline: &AdjustPipeline) -> ImageData {
     }
 }
 
+/// How many even bins [`luminance_histogram`] counts into.
+pub const HISTOGRAM_BINS: usize = 64;
+
+/// The most pixels [`luminance_histogram`] reads; a larger picture is read on a
+/// stride, which a histogram drawn a few hundred points wide cannot tell apart.
+const HISTOGRAM_READS: u64 = 1 << 16;
+
+/// How `src`'s tones spread, for the Curves graph: its pixels counted by
+/// luminance (SVG's coefficients, as the adjustments use) into
+/// [`HISTOGRAM_BINS`] bins, dark to light. Fully transparent pixels are not
+/// counted; a buffer that is not straight RGBA8 counts nothing.
+pub fn luminance_histogram(src: &ImageData) -> [u32; HISTOGRAM_BINS] {
+    let mut bins = [0u32; HISTOGRAM_BINS];
+    let (w, h) = (src.width as usize, src.height as usize);
+    let bytes = src.data.data();
+    if src.format != PenikoFormat::Rgba8 || bytes.len() < w * h * 4 {
+        return bins;
+    }
+    let total = (w as u64) * (h as u64);
+    let step = ((total as f64 / HISTOGRAM_READS as f64).sqrt().ceil() as usize).max(1);
+    let [lr, lg, lb] = mastik_core::LUMINANCE;
+    for y in (0..h).step_by(step) {
+        for x in (0..w).step_by(step) {
+            let i = (y * w + x) * 4;
+            let px = &bytes[i..i + 4];
+            if px[3] == 0 {
+                continue;
+            }
+            let l = (lr * f32::from(px[0]) + lg * f32::from(px[1]) + lb * f32::from(px[2])) / 255.0;
+            let bin = ((l * HISTOGRAM_BINS as f32) as usize).min(HISTOGRAM_BINS - 1);
+            bins[bin] += 1;
+        }
+    }
+    bins
+}
+
 /// `src` reduced by the largest whole factor that still leaves its long edge at
 /// or above `edge`, with the map from the reduced grid back onto the source's —
 /// or [`None`] when no such factor exists, which is every picture under twice
@@ -1164,6 +1200,44 @@ fn un_orient(ox: u32, oy: u32, bw: u32, bh: u32, q: u8, mirrored: bool) -> (u32,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `w`×`h` straight RGBA8 buffer of one pixel repeated.
+    fn filled(w: u32, h: u32, px: [u8; 4]) -> ImageData {
+        ImageData {
+            data: Blob::new(Arc::new(px.repeat((w * h) as usize))),
+            format: PenikoFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: w,
+            height: h,
+        }
+    }
+
+    /// The histogram puts black in the first bin and white in the last, skips
+    /// clear pixels, and reads a large picture on a stride.
+    ///
+    /// flip: dropping the `px[3] == 0` skip in `luminance_histogram` → fails at
+    /// "a clear pixel is not a tone".
+    #[test]
+    fn the_histogram_counts_tones_dark_to_light() {
+        let mut bytes = vec![0, 0, 0, 255, 255, 255, 255, 255, 200, 200, 200, 0];
+        bytes.extend([128, 128, 128, 255]);
+        let picture = ImageData {
+            data: Blob::new(Arc::new(bytes)),
+            ..filled(4, 1, [0; 4])
+        };
+        let bins = luminance_histogram(&picture);
+        assert_eq!(bins[0], 1, "black is the darkest bin");
+        assert_eq!(bins[HISTOGRAM_BINS - 1], 1, "white is the lightest bin");
+        assert_eq!(bins[HISTOGRAM_BINS / 2], 1, "mid-grey sits in the middle");
+        assert_eq!(bins.iter().sum::<u32>(), 3, "a clear pixel is not a tone");
+
+        let big = luminance_histogram(&filled(2000, 1500, [90, 90, 90, 255]));
+        let read: u64 = big.iter().map(|b| u64::from(*b)).sum();
+        assert!(
+            read > 0 && read <= HISTOGRAM_READS,
+            "a large picture is read on a stride, not whole: {read} reads"
+        );
+    }
 
     /// Pins `atlas_downscale` to the device measurements: 8192×64 fits and 8193×64
     /// does not, two 4500×3000 photographs fit at factor 1 and three do not. Both

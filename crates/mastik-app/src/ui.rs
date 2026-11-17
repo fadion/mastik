@@ -1647,7 +1647,11 @@ pub fn fold_head(ui: &mut egui::Ui, label: &str, open: bool) -> (egui::Response,
 /// box as that header's are, then a hairline out to the card's edge as Settings'
 /// section rule. The whole row is one press target, and the caret and eyebrow
 /// brighten while it is hovered.
-pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool) -> egui::Response {
+///
+/// A `count` above zero is drawn after the eyebrow as a card header's overrides
+/// are ([`override_count`]): how many things the fold holds that are not at rest,
+/// so a folded section is never silently changed.
+pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool, count: usize) -> egui::Response {
     let (glyph, word) = fold_galleys(ui, label, open);
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), FOLD_HEAD_H),
@@ -1657,10 +1661,13 @@ pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool) -> egui::Response {
     let ppp = ui.ctx().pixels_per_point();
     let top = |h: f32| ((rect.center().y - h / 2.0) * ppp).round() / ppp;
     let word_x = rect.left() + glyph.size().x + FOLD_WORD_GAP;
-    let rule_x = word_x + word.size().x + CARD_COL_GAP;
+    let mut rule_x = word_x + word.size().x + CARD_COL_GAP;
     let p = ui.painter();
     p.galley(egui::pos2(rect.left(), top(glyph.size().y)), glyph, ink);
     p.galley(egui::pos2(word_x, top(word.size().y)), word, ink);
+    if count > 0 {
+        rule_x = override_count(p, rule_x, rect.center().y, count) + CARD_COL_GAP;
+    }
     if rule_x < rect.right() {
         let y = hairline_in_column(rect.center().y, ppp, 1.0);
         p.line_segment(
@@ -2186,14 +2193,7 @@ pub fn section_head_full(
                 }
             }
         } else {
-            override_dot(p, egui::pos2(slot.left() + 2.0, slot.center().y));
-            p.text(
-                egui::pos2(slot.left() + 8.0, slot.center().y),
-                egui::Align2::LEFT_CENTER,
-                o.count.to_string(),
-                egui::FontId::proportional(CAPTION_PT),
-                theme::text::muted(),
-            );
+            override_count(p, slot.left(), slot.center().y, o.count);
         }
     }
     clicks
@@ -2204,6 +2204,21 @@ pub fn section_head_full(
 /// because the accent means selected.
 pub fn override_dot(p: &egui::Painter, at: egui::Pos2) {
     p.circle_filled(at, 2.0, theme::text::muted());
+}
+
+/// An [`override_dot`] and `count` beside it, as a card header shows its
+/// overrides and a [`fold_rule`] what its fold holds, from `left` and centred on
+/// `mid_y`. Answers the right edge of the number.
+pub fn override_count(p: &egui::Painter, left: f32, mid_y: f32, count: usize) -> f32 {
+    override_dot(p, egui::pos2(left + 2.0, mid_y));
+    p.text(
+        egui::pos2(left + 8.0, mid_y),
+        egui::Align2::LEFT_CENTER,
+        count.to_string(),
+        egui::FontId::proportional(CAPTION_PT),
+        theme::text::muted(),
+    )
+    .right()
 }
 
 /// Which row of a [`reset_push_menu`] was picked.

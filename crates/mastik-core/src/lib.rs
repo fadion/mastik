@@ -135,10 +135,11 @@ pub use history::{
 };
 pub use id::{IdSource, NodeId, with_short_ids};
 pub use image::{
-    AdjustPipeline, Adjustment, Brush, DUOTONE_DARK, DUOTONE_LIGHT, DuotoneEnd, Framing,
-    GradientBrush, ImageAdjust, ImageBrush, ImageEntry, ImageFit, ImageFormat, ImageId,
-    ImageOrient, ImageRef, ImageSource, Missing, OrientOp, TONE_STEPS, crop_clamped, crop_panned,
-    crop_reframed, crop_scaled, image_brush, missing_placeholder, transfer, whole_crop,
+    AdjustPipeline, AdjustSection, Adjustment, Brush, CURVE_POINTS, CurvePoints, DUOTONE_DARK,
+    DUOTONE_LIGHT, DuotoneEnd, Framing, GradientBrush, ImageAdjust, ImageBrush, ImageEntry,
+    ImageFit, ImageFormat, ImageId, ImageOrient, ImageRef, ImageSource, LUMINANCE, Missing,
+    OrientOp, TONE_STEPS, crop_clamped, crop_panned, crop_reframed, crop_scaled, image_brush,
+    missing_placeholder, transfer, whole_crop,
 };
 pub use item::{ItemId, Keyed, keyed_by_position, same_values};
 pub use layout::{

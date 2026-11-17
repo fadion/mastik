@@ -57,7 +57,9 @@ use std::collections::BTreeMap;
 ///   effects and `pivot` are at four places.
 /// - **24** `world_bounds` is `[x, y, w, h]`, not its two corners.
 /// - **25** `Geometry::Text` gained `letter_spacing`, absent at none.
-pub const SNAPSHOT_VERSION: u32 = 25;
+/// - **26** `PaintSummary::Image` gained `curve`, the tone curve's inner points;
+///   `adjust` names each amount by its key in the file (`white_point`).
+pub const SNAPSHOT_VERSION: u32 = 26;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -650,6 +652,11 @@ pub enum PaintSummary {
         /// `duotone` above zero; absent otherwise, since they then draw nothing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duotone: Option<[String; 2]>,
+        /// The tone curve's inner points as the file holds them, `[x, y]` between
+        /// the curve's ends (black point and fade, white point); absent when the
+        /// curve is a straight line.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        curve: Vec<[f32; 2]>,
     },
 }
 
@@ -1436,12 +1443,13 @@ fn paint_summary(doc: &Document, brush: &Brush) -> PaintSummary {
             adjust: mastik_core::Adjustment::ALL
                 .iter()
                 .filter(|k| k.of(&img.image.adjust) != 0.0)
-                .map(|k| (k.label().to_ascii_lowercase(), k.of(&img.image.adjust)))
+                .map(|k| (k.key().to_string(), k.of(&img.image.adjust)))
                 .collect(),
             duotone: (img.image.adjust.duotone != 0.0).then(|| {
                 let a = &img.image.adjust;
                 [hex(a.duotone_dark).0, hex(a.duotone_light).0]
             }),
+            curve: img.image.adjust.curve.as_slice().to_vec(),
         },
     }
 }

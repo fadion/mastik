@@ -421,11 +421,14 @@ impl MastikApp {
                 !self.session.selection.contains(node)
                     || self.shared_grids(&self.frame_subjects()).is_none()
             }
-            // A duotone end's row lives on the image card's Adjustments tab, so the
-            // picker goes with the card or the tab.
+            // A duotone end's row lives in the image card's Looks fold, so the
+            // picker goes with the card, the tab or the fold.
             PaintSlot::Duotone(i, _) => {
                 self.edited_image() != Some((node, i))
                     || self.image_tab != super::ImageCard::Adjustments
+                    || self
+                        .collapsed_panels
+                        .contains(super::image_fold_key(mastik_core::AdjustSection::Looks))
             }
             // A variable's cell belongs to the browser, not to the selection: it
             // goes when the browser, the variable or its mode does.

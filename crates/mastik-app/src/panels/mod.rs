@@ -13,6 +13,7 @@ pub(crate) mod credit;
 pub(crate) mod dashboard;
 mod export;
 pub(crate) mod history;
+mod image_curves;
 pub(crate) mod import_files;
 mod inspector;
 pub(crate) mod layers;
@@ -37,7 +38,9 @@ pub(crate) use export::{
 /// What an SVG export could not say exactly, worded once for every surface that
 /// reports it — the export card and *Copy as SVG* (§15 D780).
 pub(crate) use export::{exportable_layers_of, fidelity_clauses};
-pub(crate) use inspector::{CropAspect, ImageCard, MultiField, interacting};
+pub(crate) use inspector::{
+    CropAspect, IMAGE_FOLDED, ImageCard, MultiField, image_fold_key, interacting,
+};
 pub use layers::LayerDrag;
 /// The kind icon shared by the tree and the inspector header.
 pub(crate) use layers::node_icon as layers_icon;

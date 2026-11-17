@@ -154,30 +154,21 @@ pub fn effect_is_finite(effect: &crate::Effect) -> bool {
 
 /// The numbers an [`crate::ImageRef`] carries, which are not peniko's.
 ///
-/// Crop, tile scale and the adjustment sliders, so checking `peniko::Brush` alone
-/// stops one level short. The second guard behind `image::usable_span`.
+/// Crop, tile scale, the adjustment sliders and the curve's points, so checking
+/// `peniko::Brush` alone stops one level short. The second guard behind
+/// `image::usable_span`.
 fn image_ref_is_finite(r: &crate::ImageRef) -> bool {
     let a = &r.adjust;
     [r.crop.x0, r.crop.y0, r.crop.x1, r.crop.y1, r.tile_scale]
         .iter()
         .all(|f| f.is_finite())
-        && [
-            a.exposure,
-            a.contrast,
-            a.saturation,
-            a.temperature,
-            a.tint,
-            a.highlights,
-            a.shadows,
-            a.hue,
-            a.greyscale,
-            a.invert,
-            a.duotone,
-        ]
-        .iter()
-        .chain(a.duotone_dark.components.iter())
-        .chain(a.duotone_light.components.iter())
-        .all(|f| f.is_finite())
+        && crate::Adjustment::ALL
+            .iter()
+            .map(|k| k.of(a))
+            .chain(a.duotone_dark.components)
+            .chain(a.duotone_light.components)
+            .chain(a.curve.as_slice().iter().flatten().copied())
+            .all(f32::is_finite)
 }
 
 /// The coordinates a gradient's own kind carries. Exhaustive with no wildcard, so

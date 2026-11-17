@@ -1229,6 +1229,40 @@ fn sweep_on(theme: Theme) {
         a.type_menu = Some(crate::app::TypeTab::Character)
     });
     check("type popover", app, found);
+    // Image editing's card on the tabs that are its own grounds: every adjustment
+    // fold open, and the Curves graph with its fields.
+    for (name, tab) in [
+        ("image adjustments", crate::panels::ImageCard::Adjustments),
+        ("image curves", crate::panels::ImageCard::Curves),
+    ] {
+        let mut app = with_a_rect(&ctx);
+        let id = app.session.selection.ids()[0];
+        app.session
+            .try_commit(Transaction(vec![Operation::SetFills {
+                id,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: mastik_core::image_brush(mastik_core::ImageId("a-photo".into())).into(),
+                    visible: true,
+                }]),
+            }]))
+            .expect("a picture fill");
+        for key in crate::panels::IMAGE_FOLDED {
+            app.collapsed_panels.remove(key);
+        }
+        let found = opened(&ctx, &mut app, |_, a| {
+            a.image_tab = tab;
+            a.tool = crate::tools::Tool::ImageEdit;
+        });
+        // The card's own grounds: the mode's canvas pill opens with it.
+        let card = ctx
+            .memory(|m| m.area_rect(egui::Id::new(("image-edit", id))))
+            .expect("the image card is open");
+        let found = found
+            .into_iter()
+            .filter(|g| card.contains(g.rect.center()))
+            .collect();
+        check(name, app, found);
+    }
     // Every tab, since each shows only its own rows; named by the tab itself, so
     // a new tab cannot go unaudited.
     for tab in crate::settings::SettingsTab::ALL {
