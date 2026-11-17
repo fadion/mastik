@@ -19,6 +19,10 @@ repository.workspace = true
 [dependencies]
 mastik-core = { path = "../mastik-core" }
 image.workspace = true
+# Converts a picture carrying an ICC profile to sRGB at decode (`images::decode`).
+# Already in this crate's tree through `image`, with the same default features,
+# so naming it adds nothing to the closure. BSD-3-Clause OR Apache-2.0.
+moxcms = "0.8.1"
 kurbo.workspace = true
 rustc-hash.workspace = true
 peniko.workspace = true

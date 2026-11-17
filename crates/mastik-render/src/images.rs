@@ -888,6 +888,10 @@ fn signature_is_accepted(bytes: &[u8]) -> bool {
 /// D600): cargo unifies features, so dependencies such as `arboard` add a decoder
 /// per platform and a mislabelled file would draw on one and not another; see
 /// [`signature_is_accepted`].
+///
+/// A picture carrying an ICC profile is converted to sRGB here ([`to_srgb`]), so
+/// every reader of decoded pixels sees the same colours; the stored bytes stay
+/// the original.
 pub fn decode(bytes: &[u8], format: ImageFormat) -> Result<ImageData, DecodeError> {
     let hinted = match format {
         ImageFormat::Png => image::ImageFormat::Png,
@@ -900,8 +904,8 @@ pub fn decode(bytes: &[u8], format: ImageFormat) -> Result<ImageData, DecodeErro
     if !signature_is_accepted(bytes) {
         return Err(DecodeError::Corrupt);
     }
-    let decoded = image::load_from_memory(bytes)
-        .or_else(|_| image::load_from_memory_with_format(bytes, hinted))
+    let (decoded, icc) = read(bytes, None)
+        .or_else(|_| read(bytes, Some(hinted)))
         .map_err(|_| DecodeError::Corrupt)?;
     let (width, height) = (decoded.width(), decoded.height());
     if width > MAX_EDGE || height > MAX_EDGE {
@@ -920,7 +924,10 @@ pub fn decode(bytes: &[u8], format: ImageFormat) -> Result<ImageData, DecodeErro
             bytes,
         });
     }
-    let rgba = decoded.into_rgba8().into_raw();
+    let rgba = match icc.as_deref().and_then(to_srgb) {
+        Some(convert) => convert.apply(decoded),
+        None => decoded.into_rgba8().into_raw(),
+    };
     Ok(ImageData {
         data: Blob::new(Arc::new(rgba)),
         format: PenikoFormat::Rgba8,
@@ -929,6 +936,110 @@ pub fn decode(bytes: &[u8], format: ImageFormat) -> Result<ImageData, DecodeErro
         width,
         height,
     })
+}
+
+/// `bytes` decoded as `format`, or as their signature says when `None`, with the
+/// ICC profile they carry. `load_from_memory`'s two steps, keeping the profile.
+fn read(
+    bytes: &[u8],
+    format: Option<image::ImageFormat>,
+) -> image::ImageResult<(image::DynamicImage, Option<Vec<u8>>)> {
+    use image::ImageDecoder;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes));
+    match format {
+        Some(f) => reader.set_format(f),
+        None => reader = reader.with_guessed_format()?,
+    }
+    let mut decoder = reader.into_decoder()?;
+    // A profile that cannot be read is no profile: the pixels are taken as sRGB.
+    let icc = decoder.icc_profile().ok().flatten();
+    Ok((image::DynamicImage::from_decoder(decoder)?, icc))
+}
+
+/// A conversion from a picture's own RGB profile to sRGB.
+struct ToSrgb {
+    eight: Arc<moxcms::Transform8BitExecutor>,
+    sixteen: Arc<moxcms::Transform16BitExecutor>,
+}
+
+/// The conversion `icc` asks for, or `None` to take the pixels as they are: a
+/// profile that does not parse, is not RGB, or draws sRGB already (every level
+/// of a coarse probe within one of itself), so an sRGB-tagged picture decodes
+/// as an untagged one does.
+fn to_srgb(icc: &[u8]) -> Option<ToSrgb> {
+    use moxcms::{ColorProfile, DataColorSpace, Layout, TransformOptions};
+    let from = ColorProfile::new_from_slice(icc).ok()?;
+    if from.color_space != DataColorSpace::Rgb {
+        return None;
+    }
+    let srgb = ColorProfile::new_srgb();
+    let options = TransformOptions::default();
+    let eight = from
+        .create_transform_8bit(Layout::Rgba, &srgb, Layout::Rgba, options)
+        .ok()?;
+    let probe: Vec<u8> = (0..17u32 * 17 * 17)
+        .flat_map(|i| {
+            let level = |k: u32| (k * 255 / 16) as u8;
+            [level(i % 17), level(i / 17 % 17), level(i / 289), 255]
+        })
+        .collect();
+    let mut out = vec![0u8; probe.len()];
+    eight.transform(&probe, &mut out).ok()?;
+    if probe.iter().zip(&out).all(|(a, b)| a.abs_diff(*b) <= 1) {
+        return None;
+    }
+    let sixteen = from
+        .create_transform_16bit(Layout::Rgba, &srgb, Layout::Rgba, options)
+        .ok()?;
+    Some(ToSrgb { eight, sixteen })
+}
+
+impl ToSrgb {
+    /// `image` as straight-alpha sRGB RGBA8, alpha untouched. A 16-bit picture
+    /// is converted at 16 bits a row at a time, so no wide copy of the whole is
+    /// made past `MAX_DECODED_BYTES`' guard, and only then rounded to 8. Should
+    /// the engine refuse, the pixels go through unconverted.
+    fn apply(&self, image: image::DynamicImage) -> Vec<u8> {
+        use image::DynamicImage as D;
+        let width = image.width() as usize;
+        // Each 16-bit layout's samples per pixel, and how one widens to RGBA.
+        let wide: Option<(&[u16], usize)> = match &image {
+            D::ImageRgba16(b) => Some((b.as_raw(), 4)),
+            D::ImageRgb16(b) => Some((b.as_raw(), 3)),
+            D::ImageLumaA16(b) => Some((b.as_raw(), 2)),
+            D::ImageLuma16(b) => Some((b.as_raw(), 1)),
+            _ => None,
+        };
+        if let Some((samples, n)) = wide {
+            let mut out = Vec::with_capacity(samples.len() / n * 4);
+            let (mut src, mut row) = (vec![0u16; width * 4], vec![0u16; width * 4]);
+            for line in samples.chunks(width * n) {
+                for (px, s) in src.chunks_mut(4).zip(line.chunks(n)) {
+                    let (g, a) = (s[0], *s.last().unwrap_or(&u16::MAX));
+                    px.copy_from_slice(&match n {
+                        4 => [s[0], s[1], s[2], s[3]],
+                        3 => [s[0], s[1], s[2], u16::MAX],
+                        2 => [g, g, g, a],
+                        _ => [g, g, g, u16::MAX],
+                    });
+                }
+                if self.sixteen.transform(&src, &mut row).is_err() {
+                    row.copy_from_slice(&src);
+                }
+                out.extend(row.iter().map(|v| ((u32::from(*v) + 128) / 257) as u8));
+            }
+            return out;
+        }
+        // A row at a time back into the buffer, so the picture is held once.
+        let mut rgba = image.into_rgba8().into_raw();
+        let mut row = vec![0u8; width * 4];
+        for line in rgba.chunks_mut(width * 4) {
+            if self.eight.transform(line, &mut row).is_ok() {
+                line.copy_from_slice(&row);
+            }
+        }
+        rgba
+    }
 }
 
 /// One over an 8-bit channel's full scale, in the fixed point [`AdjustLut`]
@@ -1402,6 +1513,93 @@ mod tests {
             fits_by_shelf(&[(4096, 100), (4096, 8000)], ATLAS_EDGE),
             "the control: with two pictures the order cannot matter"
         );
+    }
+
+    /// A 1×1 PNG of `rgba` (fractions), 8 or 16 bits deep, carrying `icc`.
+    fn tagged_png(rgba: [f64; 4], sixteen: bool, icc: Option<Vec<u8>>) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut info = png::Info::with_size(1, 1);
+            info.color_type = png::ColorType::Rgba;
+            info.icc_profile = icc.map(std::borrow::Cow::Owned);
+            let data: Vec<u8> = match sixteen {
+                true => {
+                    info.bit_depth = png::BitDepth::Sixteen;
+                    rgba.iter()
+                        .flat_map(|v| ((v * 65535.0).round() as u16).to_be_bytes())
+                        .collect()
+                }
+                false => {
+                    info.bit_depth = png::BitDepth::Eight;
+                    rgba.iter().map(|v| (v * 255.0).round() as u8).collect()
+                }
+            };
+            let enc = png::Encoder::with_info(&mut out, info).unwrap();
+            enc.write_header().unwrap().write_image_data(&data).unwrap();
+        }
+        out
+    }
+
+    /// The one pixel of a decoded 1×1 picture.
+    fn pixel(bytes: &[u8]) -> [u8; 4] {
+        let d = decode(bytes, ImageFormat::Png).expect("decodes");
+        d.data.data()[..4].try_into().unwrap()
+    }
+
+    fn p3() -> Vec<u8> {
+        moxcms::ColorProfile::new_display_p3().encode().unwrap()
+    }
+
+    /// A Display P3 picture is converted to sRGB at decode, 8 and 16 bits deep,
+    /// alpha untouched: P3 (0.8, 0.3, 0.2) is sRGB (221, 64, 37) by the
+    /// published P3-to-sRGB matrix, where taken as sRGB it would stay (204, 77, 51).
+    /// flip: `decode` ignoring the profile `read` returns → fails at "8 bits";
+    /// `ToSrgb::apply` skipping its 16-bit transform → fails at "16 bits".
+    #[test]
+    fn a_display_p3_picture_decodes_to_its_srgb_colour() {
+        let want = [221u8, 64, 37];
+        for sixteen in [false, true] {
+            let px = pixel(&tagged_png([0.8, 0.3, 0.2, 0.5], sixteen, Some(p3())));
+            let label = if sixteen { "16 bits" } else { "8 bits" };
+            assert!(
+                px[..3].iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 2),
+                "{label}: {px:?} against {want:?}"
+            );
+            assert_eq!(px[3], 128, "{label}: alpha untouched");
+        }
+    }
+
+    /// An untagged picture, an sRGB-tagged one and one whose profile is garbage
+    /// all decode byte for byte as `image` alone decodes the untagged one: the
+    /// fast path converts nothing, and a bad profile never fails the decode.
+    /// flip: `to_srgb` without its identity probe passes — the engine maps its
+    /// own sRGB onto itself exactly, so the probe's tolerance for a camera's sRGB
+    /// profile one level off is not covered here.
+    #[test]
+    fn untagged_srgb_tagged_and_malformed_profiles_decode_unconverted() {
+        let colour = [0.8, 0.3, 0.2, 0.5];
+        let untagged = tagged_png(colour, false, None);
+        let before = image::load_from_memory(&untagged)
+            .unwrap()
+            .into_rgba8()
+            .into_raw();
+        assert_eq!(pixel(&untagged).to_vec(), before, "untagged");
+        let srgb = moxcms::ColorProfile::new_srgb().encode().unwrap();
+        assert_eq!(
+            pixel(&tagged_png(colour, false, Some(srgb))).to_vec(),
+            before,
+            "sRGB-tagged"
+        );
+        let garbage = b"not an icc profile at all".to_vec();
+        assert_eq!(
+            pixel(&tagged_png(colour, false, Some(garbage))).to_vec(),
+            before,
+            "malformed"
+        );
+        // The 2×2 fixture every other decode test reads is untouched too.
+        let d = decode(&png_2x2(), ImageFormat::Png).unwrap();
+        let raw = image::load_from_memory(&png_2x2()).unwrap().into_rgba8();
+        assert_eq!(d.data.data(), raw.as_raw().as_slice());
     }
 
     /// A 2×2 PNG: red, green / blue, transparent, with known pixels.
