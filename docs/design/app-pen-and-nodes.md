@@ -186,7 +186,10 @@ at a time: `mirror::Axes` is *Off*, *Vertical*, *Horizontal*, *Both* or *Centre*
   pills, is a 14 pt accent disc ringed and dotted in the handle white (`color::POINT`), tooltip *Drag
   to move the centre · double-click to put it back*, wearing the move cursor (`mirror::Grip::Centre`);
   it claims its pointer, moves, puts back on a right-click and resets on a double-click as a pill
-  does. The run's copies show at 45% as the mirrored half does. While the node tool edits a radial
+  does. Under the pen, a click on it (no drag) puts the next anchor exactly on the centre
+  (`pen_press_exact`), the grip shows *On centre* while hovered, and its double-click finishes the
+  run as the pen's does anywhere; its tooltip then reads *Click to put a point on the centre · drag
+  to move the centre*. The run's copies show at 45% as the mirrored half does. While the node tool edits a radial
   path, its own lines run from its centre to a little past its box's farthest corner, from one of
   its mirror lines (`symmetry::reflection_axis`) or else from its first anchor off the centre, with
   no grip; a path saved with `reflect` adds a dotted mirror line (1 on, 4 off) halfway between each

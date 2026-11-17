@@ -1141,7 +1141,9 @@ impl MastikApp {
 
     /// The switch's centre while drawing around it: a dashed slice line from the
     /// centre to the edge of `span` (screen) per copy, and the centre's grip.
-    /// Dragging the grip moves the centre; a double-click puts it back.
+    /// Dragging the grip moves the centre. Under the pen a click puts a point on
+    /// the centre and a double-click finishes the run, as anywhere else on the
+    /// canvas; otherwise a double-click puts the centre back.
     #[allow(clippy::too_many_arguments)]
     fn centre_chrome(
         &mut self,
@@ -1186,6 +1188,14 @@ impl MastikApp {
         painter.circle_filled(c, 1.5, color::POINT);
         let hit = egui::Rect::from_center_size(c, egui::vec2(CENTRE_GRIP, CENTRE_GRIP)).expand(3.0);
         self.mirror_grips.pills.push((Grip::Centre, hit));
+        // The pen places on a click; Ctrl holding the run's points places none.
+        let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+        let pen = (self.tool == crate::tools::Tool::Pen || self.pen.is_some())
+            && !self.pen_holds_points(ctrl);
+        let tip = match pen {
+            true => "Click to put a point on the centre · drag to move the centre",
+            false => "Drag to move the centre · double-click to put it back",
+        };
         let resp = ui
             .interact(
                 hit,
@@ -1193,13 +1203,30 @@ impl MastikApp {
                 egui::Sense::click_and_drag(),
             )
             .on_hover_cursor(egui::CursorIcon::Move)
-            .on_hover_text("Drag to move the centre · double-click to put it back");
+            .on_hover_text(tip);
         if primary_grab(ui, &resp) {
             self.mirror_grips.held = Some(Grip::Centre);
             self.mirror_grips.from = Some(from.unwrap_or(self.mirror().at));
         }
         if ui::double_clicked(ui, &resp) {
-            self.mirror_mut().at = None;
+            if pen {
+                // The pen's double-click: its second click planted a duplicate.
+                if let Some(run) = self.pen.as_mut()
+                    && run.anchors.len() > 1
+                {
+                    run.anchors.pop();
+                }
+                self.finish_pen(false);
+            } else {
+                self.mirror_mut().at = None;
+            }
+        } else if pen && resp.clicked_by(egui::PointerButton::Primary) {
+            let centre = frame.to_world * frame.at;
+            self.pen_press_exact(centre, false, Some(centre));
+            // The press is already released, so no handle is being pulled.
+            if let Some(run) = self.pen.as_mut() {
+                run.shaping = false;
+            }
         } else if resp.dragged_by(egui::PointerButton::Primary)
             && let Some(p) = resp.interact_pointer_pos()
         {
@@ -1289,6 +1316,15 @@ impl MastikApp {
             });
             let name = if centre { "On centre" } else { "On axis" };
             crate::canvas::draw_snap_target(painter, at, name, false);
+        } else if (self.tool == crate::tools::Tool::Pen || self.pen.is_some())
+            && !self.pen_holds_points(ctrl)
+            && self.mirror_grips.held.is_none()
+            && self.mirror_grip(ui.ctx().pointer_hover_pos()) == Some(Grip::Centre)
+            && let Some(f) = self.mirror_frame(None).filter(|f| f.axes == Axes::Centre)
+        {
+            // The pen's click on the centre's grip puts its point there.
+            let at = self.to_screen(f.to_world * f.at, rect, ppp);
+            crate::canvas::draw_snap_target(painter, at, "On centre", false);
         }
     }
 
@@ -2429,6 +2465,57 @@ mod tests {
         assert!(
             (moved.x - 130.0).abs() < 0.5,
             "the left button moves it: {moved:?}"
+        );
+    }
+
+    /// Under the pen a click on the centre's grip plants an anchor exactly on the
+    /// centre and leaves the centre where it is; a drag still moves it.
+    ///
+    /// flip: `centre_chrome` without its click arm → fails at "a point on the centre".
+    #[test]
+    fn a_pen_click_on_the_centre_grip_places_a_point_there() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = mirroring_pen(&ctx);
+        app.session.mirror.axes = Axes::Centre;
+        canvas_frame(&ctx, &mut app, Vec::new());
+        // Off the centre by a few points, still on the grip.
+        let c = pill(&app).center() + egui::vec2(4.0, -3.0);
+        hover(&ctx, &mut app, c);
+        canvas_frame(&ctx, &mut app, vec![primary(c, true)]);
+        canvas_frame(&ctx, &mut app, vec![primary(c, false)]);
+        let anchors: Vec<Point> = app
+            .pen
+            .as_ref()
+            .map(|p| p.anchors.iter().map(|a| a.at).collect())
+            .unwrap_or_default();
+        assert_eq!(anchors, [Point::new(100.0, 0.0)], "a point on the centre");
+        assert!(!app.pen.as_ref().unwrap().shaping, "no handle pulled");
+        assert_eq!(
+            app.session.mirror.at,
+            Some(Point::new(100.0, 0.0)),
+            "the centre stays"
+        );
+
+        // Past the double-click delay, so the drag's press is a new click.
+        for _ in 0..10 {
+            canvas_frame(&ctx, &mut app, Vec::new());
+        }
+        let c = pill(&app).center();
+        hover(&ctx, &mut app, c);
+        canvas_frame(&ctx, &mut app, vec![primary(c, true)]);
+        let mut at = c;
+        for i in 1..=3 {
+            at = c + egui::vec2(10.0 * i as f32, 0.0);
+            canvas_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        }
+        canvas_frame(&ctx, &mut app, vec![primary(at, false)]);
+        let moved = app.session.mirror.at.expect("dragged");
+        assert!((moved.x - 130.0).abs() < 0.5, "a drag moves it: {moved:?}");
+        assert_eq!(
+            app.pen.as_ref().map(|p| p.anchors.len()),
+            Some(1),
+            "and places nothing"
         );
     }
 

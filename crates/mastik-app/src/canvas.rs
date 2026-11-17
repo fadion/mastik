@@ -5361,12 +5361,18 @@ impl MastikApp {
     }
 
     fn pen_press(&mut self, world: Point, shift: bool) {
+        self.pen_press_exact(world, shift, None);
+    }
+
+    /// [`Self::pen_press`], the anchor landing on `exact` unsnapped when it is
+    /// given: a click on the mirror's centre grip puts the point on the centre.
+    pub(crate) fn pen_press_exact(&mut self, world: Point, shift: bool, exact: Option<Point>) {
         if self.pen.is_none() {
             if self.pen_resume(world) {
                 return;
             }
             self.pin_mirror_axes(world);
-            let at = self.pen_point(world, shift).0;
+            let at = exact.unwrap_or_else(|| self.pen_point(world, shift).0);
             let (parent, parent_world) = self.draw_target(at);
             self.pen = Some(PenState {
                 parent,
@@ -5385,7 +5391,7 @@ impl MastikApp {
             return;
         }
         // Snapped before the close test, so a press closes only where the preview showed.
-        let at = self.pen_point(world, shift).0;
+        let at = exact.unwrap_or_else(|| self.pen_point(world, shift).0);
         let points_per_world = self.points_per_world();
         let Some(pen) = self.pen.as_mut() else {
             return;
