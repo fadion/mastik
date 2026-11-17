@@ -8885,9 +8885,6 @@ impl MastikApp {
                 ui::menu_frame(ui::POPOVER_PAD).show(ui, |ui| {
                     let inner = ui::menu_inner_w(MENU_W, ui::POPOVER_PAD);
                     ui.set_width(inner);
-                    if locked {
-                        super::styles::lock(ui);
-                    }
                     // Before the first control: egui spaces past a widget by the
                     // pitch in effect when it is placed.
                     ui.spacing_mut().item_spacing.y = IMAGE_CARD_GAP;
@@ -8913,6 +8910,11 @@ impl MastikApp {
                             }
                         });
                     });
+                    // Below the strip: switching tabs and leaving the mode write
+                    // nothing, so a styled fill locks only the controls that do.
+                    if locked {
+                        super::styles::lock(ui);
+                    }
 
                     if card == ImageCard::Settings {
                         // Leaving Crop re-frames the picture in the box the crop left;
@@ -25665,6 +25667,20 @@ mod image_card_tests {
     /// flip: `image_edit_card` not acting on `close` → fails at "the ✕ leaves".
     #[test]
     fn the_image_cards_close_button_leaves_the_mode() {
+        close_leaves_the_mode(false);
+    }
+
+    /// Under a styled fill the card is read-only, but its ✕ still leaves.
+    /// flip: `image_edit_card` calling `styles::lock` before the tab strip →
+    /// fails at "the ✕ leaves".
+    #[test]
+    fn the_image_cards_close_button_leaves_under_a_styled_fill() {
+        close_leaves_the_mode(true);
+    }
+
+    /// Opens the card on a picture, its fill bound to a style when `styled`, and
+    /// clicks the ✕ beside the tabs.
+    fn close_leaves_the_mode(styled: bool) {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx);
         let _ = ctx.run_ui(Default::default(), |_| {});
@@ -25696,6 +25712,28 @@ mod image_card_tests {
         ]))
         .unwrap();
         app.session.adopt_document(doc, None);
+        if styled {
+            let style = app.session.ids.mint_style();
+            let fills = app.session.doc.get(rect).unwrap().paint().fills.clone();
+            assert!(app.session.commit(Transaction(vec![
+                Operation::AddStyle {
+                    style: mastik_core::style::Style {
+                        id: style,
+                        name: "photo".into(),
+                        value: mastik_core::style::StyleValue::Fills(fills),
+                        origin: None,
+                        forked: None,
+                        description: String::new(),
+                    },
+                },
+                Operation::SetFillStyle {
+                    id: rect,
+                    style: Some(style),
+                },
+            ])));
+            // The styled card shows its read-only rows only when unfolded.
+            app.style_open.insert(mastik_core::style::StyleSlot::Fills);
+        }
         app.session.selection.set_one(rect);
         app.tool = crate::tools::Tool::ImageEdit;
         assert_eq!(app.edited_image(), Some((rect, 0)), "fixture: editing");
