@@ -90,7 +90,7 @@ Items run cheapest first.
   variables and styles against raw values, detached instances, unused styles, variables and
   components, near-duplicate colours, and kits waiting on updates. Most of the readings exist
   (colour review, clean up, `kits_waiting`); the card and the coverage count do not. Its checks are
-  the ones the MCP review (*Now · MCP*) runs.
+  `mastik_export::review`'s, the ones MCP's `review` and `mastik check review` run.
 - **Noise and grain.** A noise fill, and a grain effect over a layer. `non-goals.md` declined noise
   as one generator written three times to agree to the pixel; SVG's `feTurbulence` is specified to
   the algorithm, so porting that one algorithm to WGSL and the CPU backend makes the SVG writer the
@@ -99,27 +99,6 @@ Items run cheapest first.
   shows a QR code; a phone on the same network plays the page and follows edits. Not hosting: it
   ends with the app, needs no account and never leaves the network. Waits on the player
   (*Now · Prototyping*).
-
-## Now · MCP
-
-Items run cheapest first.
-
-- **Raise or page the `changed` cap.** `changed` names at most 20 layers a list
-  (`mcp::revisions::CHANGED_LISTED`), so an agent reads a partial picture after a large edit. Raise
-  it, or let a call ask for the rest by revision.
-- **`group_steps`.** A begin and end call around several writes so one agent request is one undo
-  step without packing everything into one `batch`; an unclosed group closes at the turn's end or
-  the client's disconnect.
-- **Expose guides, layout grids, page background, Warp and Trace image.** Each is a door the app
-  has and the MCP surface leaves out (`design/mcp.md`).
-- **Make `get_tree` a faithful round trip.** `verbs::tree` writes the writable `Tree` but leaves
-  out styles, modes, component links, pivot and bindings for size, corners and type, so an agent
-  that copies and changes a part flattens it. The tree should insert back as what it read.
-- **Let the agent review its own visual output.** An `export_png` diff against a revision, so an
-  agent sees what its last steps changed, and a `review` read running the checks `check_layout`
-  skips (overlaps, text over a busy ground, spacing off a rhythm) beside off-scale spacing, raw
-  values where a variable or style fits, near-duplicate colours, inconsistent radii and low
-  contrast. The same checks feed *Design system health* and `mastik check`.
 
 ## Now · Image editing
 
