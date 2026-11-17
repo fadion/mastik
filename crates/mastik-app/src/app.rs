@@ -9220,9 +9220,9 @@ impl MastikApp {
                             bottom: 9,
                         })
                         .show(ui, |ui| {
-                            // A stable id, so opening the search can focus it before it is built.
                             let field = egui::Id::new("layer-search");
                             let searching = self.layer_filter.is_some();
+                            let mut opened = false;
                             ui.horizontal(|ui| {
                                 if crate::ui::fold_head(ui, "Layers", !folded).0.clicked() {
                                     if private {
@@ -9255,7 +9255,7 @@ impl MastikApp {
                                                 self.layer_filter = None;
                                             } else {
                                                 self.layer_filter = Some(String::new());
-                                                ui.ctx().memory_mut(|m| m.request_focus(field));
+                                                opened = true;
                                             }
                                         }
                                         // Batch rename, finding what the search shows.
@@ -9305,13 +9305,18 @@ impl MastikApp {
 
                             if !folded && let Some(filter) = &mut self.layer_filter {
                                 ui.add_space(4.0);
-                                crate::ui::search_box(
+                                let search = crate::ui::search_box(
                                     ui,
                                     egui::vec2(ui.available_width(), crate::ui::CONTROL_H),
                                     filter,
                                     "Name…",
                                     field,
                                 );
+                                // Asked after the field is drawn: the click that opened
+                                // it is a click outside it, which takes focus away.
+                                if opened {
+                                    search.request_focus();
+                                }
                                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                                     self.layer_filter = None;
                                 }
@@ -11911,6 +11916,60 @@ mod layers_width_tests {
         assert_eq!(
             after.noninteractive.bg_stroke,
             before.noninteractive.bg_stroke,
+        );
+    }
+
+    /// A click on the Layers header's magnifier opens the search with its field
+    /// focused, ready to type.
+    /// flip: `layers_panel` not asking focus after the field is drawn → fails at
+    /// "focused".
+    #[test]
+    fn the_layer_search_opens_focused() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let mut app = MastikApp::headless(&ctx);
+        let mut frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1200.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.layers_panel(ui),
+            )
+        };
+        frame(&mut app, vec![]);
+        let out = frame(&mut app, vec![]);
+        let glass = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == icon::MAGNIFYING_GLASS => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("the header draws its magnifier");
+        frame(&mut app, vec![egui::Event::PointerMoved(glass)]);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: glass,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![button(true)]);
+        frame(&mut app, vec![button(false)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        assert!(app.layer_filter.is_some(), "the fixture: the search opened");
+        assert!(
+            ctx.memory(|m| m.has_focus(egui::Id::new("layer-search"))),
+            "focused"
         );
     }
 }

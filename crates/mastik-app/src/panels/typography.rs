@@ -1363,13 +1363,20 @@ impl MastikApp {
     pub(crate) fn family_list(&mut self, ui: &mut egui::Ui, current: &str) -> Option<String> {
         let mut chosen = None;
         let width = ui.available_width();
-        ui::search_box(
+        // Asked once a pass: it counts the passes it is asked in.
+        let opened = just_opened(ui);
+        let search = ui::search_box(
             ui,
             egui::vec2(width, ui::CONTROL_H),
             &mut self.font_filter,
             "Search fonts",
             ui.make_persistent_id("family-search"),
         );
+        // Opened ready to type. Asked after the field is drawn: the click that
+        // opened the list is a click outside it, which takes focus away.
+        if opened {
+            search.request_focus();
+        }
         let total = self.fonts.match_count(&self.font_filter);
         // One height whatever the search matches: egui's popup can shrink but
         // never grows back, so a list that once matched little would stay short.
@@ -1377,9 +1384,7 @@ impl MastikApp {
             .auto_shrink([false, false])
             .max_height(FAMILY_LIST_H)
             .min_scrolled_height(FAMILY_LIST_H);
-        if just_opened(ui)
-            && let Some(i) = self.fonts.match_position(&self.font_filter, current)
-        {
+        if opened && let Some(i) = self.fonts.match_position(&self.font_filter, current) {
             let pitch = FAMILY_ROW_H + ui.spacing().item_spacing.y;
             area = area.vertical_scroll_offset(centred_row_offset(i, pitch));
         }
@@ -9844,6 +9849,54 @@ mod family_list_scroll_tests {
         );
         assert_eq!(height(&mut app, "Family 007"), full, "matching one");
         assert_eq!(height(&mut app, "zzz"), full, "matching nothing");
+    }
+
+    /// A click that opens a family dropdown leaves its search focused, so typing
+    /// goes straight into it.
+    /// flip: `family_list` not asking focus on the pass it opens → fails at "typed
+    /// into the search".
+    #[test]
+    fn a_family_dropdown_opens_with_its_search_focused() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let names: Vec<String> = (0..20).map(|i| format!("Family {i:03}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        app.fonts.list_for_test(&names);
+        let mut combo = egui::Rect::NOTHING;
+        let mut frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                combo = app
+                    .family_dropdown(ui, "probe-family", egui::vec2(200.0, 26.0), "Inter", "")
+                    .1
+                    .rect;
+            });
+            combo
+        };
+        let at = frame(&mut app, vec![]).center();
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![button(true)]);
+        frame(&mut app, vec![button(false)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        frame(&mut app, vec![egui::Event::Text("Fam".into())]);
+        frame(&mut app, vec![]);
+        assert_eq!(app.font_filter, "Fam", "typed into the search");
     }
 }
 
