@@ -67,10 +67,12 @@ unmaintained = "workspace"
 # when no release of the crate pulling it in is patched.
 #
 # The `zip` entries below are held at 8.x by `velopack` 1.2, which requires
-# `zip` ^8.6; the only `velopack` on zip 9 is a pre-release. All four are faults
-# of `ZipArchive::extract` / `ZipStreamReader::extract`, which neither Mastik
-# (the `.sketch` import and the export archive read and write entry by entry) nor
-# `velopack` (its bundle copies entries out through `by_index`) calls. The
+# `zip` ^8.6; the only `velopack` on zip 9 is a pre-release. Each is unreachable
+# here: most are faults of `ZipArchive::extract` / `ZipStreamReader`, which
+# neither Mastik (the `.sketch` import and the export archive read and write entry
+# by entry) nor `velopack` (its bundle copies entries out through `by_index`)
+# calls, and the rest live behind the `aes-crypto` and `legacy-zip` features,
+# which neither enables. The
 # workspace's own `zip` stays on 8.x beside it: on 9 it would compile a second
 # copy and leave these advisories in the tree all the same. Drop them when
 # `velopack` moves to zip 9, and move the workspace's `zip` with it.
@@ -79,6 +81,10 @@ ignore = [
     { id = "RUSTSEC-2026-0368", reason = "zip <9 symlink escape in ZipArchive::extract, which nothing in the tree calls" },
     { id = "RUSTSEC-2026-0369", reason = "zip <9 permissions through symlinks in extract(), which nothing in the tree calls" },
     { id = "RUSTSEC-2026-0429", reason = "zip <9 abort on a large symlink entry in ZipArchive::extract, which nothing in the tree calls" },
+    { id = "RUSTSEC-2026-0545", reason = "zip <9 unchecked AES authentication code, behind the aes-crypto feature, which nothing in the tree enables" },
+    { id = "RUSTSEC-2026-0546", reason = "zip <9 chained-symlink escape in ZipArchive::extract, which nothing in the tree calls" },
+    { id = "RUSTSEC-2026-0547", reason = "zip <9 unbounded preallocation in the legacy decoders, behind the legacy-zip feature, which nothing in the tree enables" },
+    { id = "RUSTSEC-2026-0548", reason = "zip <9 local-header names trusted by ZipStreamReader, which nothing in the tree uses" },
 ]
 
 [bans]
