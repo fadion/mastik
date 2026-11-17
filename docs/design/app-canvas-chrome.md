@@ -344,7 +344,9 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   (24) tall, in `ui::menu_frame`. The accent tick sits in the glyph column and keeps it when off;
   "off" also dims the label. View and Snap are 160pt or their widest row; Tools is its widest row
   (`ui::menu_check_accel_width`: the label column `ui::MENU_LABEL_X`, or a bare row's 8pt inset
-  for Tools, the label and any chord, then 8pt).
+  for Tools, the label and any chord, then 8pt). Each opens with its left edge 8pt out from its
+  icon's, or, where that would reach the window's edge, its right edge 8pt out from the icon's
+  (`ui::dropdown_place`), never nearer the window's edge than `ui::SCREEN_MARGIN`.
 - **View** reads in three groups between separators, so each kind of row is found in one place:
   - what the canvas draws, `ViewSwitch::VIEW_CANVAS`: *Show rulers*, *Show guides*, *Lock guides*,
     *Show grid*, *Show layout grid*, then the things hung on the selection: *Show dimension
@@ -377,9 +379,10 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
     *Colour review…*, opening its card;
   - a hairline, then the bulk edits, each opening its box: *Find and replace…* (`Ctrl+F`,
     `Action::FindText { replace: false }`), *Batch rename…* (`Ctrl+Shift+R`; dimmed with
-    `private::DECLINE_RENAME` in private mode), *Clean up…* (no chord) and *Fill with content…* (no
-    chord; never dimmed: with nothing to fill the box opens and says what to select);
-  - last, *Remove unused pictures* (`Action::RemoveUnusedImages`), which acts at once: with the
+    `private::DECLINE_RENAME` in private mode) and *Fill with content…* (no chord; never dimmed:
+    with nothing to fill the box opens and says what to select);
+  - a hairline, then the two that clean the file up: *Clean up…* (no chord), opening its box, and
+    *Remove unused pictures* (`Action::RemoveUnusedImages`), which acts at once: with the
     size it would free in the chord's slot, dimmed with *Every picture is in use* when there is
     nothing to take (`pictures::ALL_PICTURES_USED`, the palette's reason too). A command and not a
     Clean up rule, since pictures belong to the document, not to a scope of layers. Unused means
@@ -807,7 +810,7 @@ a `Finding` with `kept: Some(Kept)` and its reason.
 - **Commit**: one undo step *Clean up* with `MAGIC_WAND`; the status line says *Cleaned up N items ·
   Ctrl+Z to undo*; the selection keeps only what still exists. The switches are saved to
   `prefs.clean_up` (`CleanUpPrefs { on: rule keys, skip_locked }`) when it runs.
-- **Doors.** *Tools ▸ Clean up…* (after *Batch rename…*) and the palette (`Item::CleanUp`, aliases
+- **Doors.** *Tools ▸ Clean up…* (first of the menu's last section) and the palette (`Item::CleanUp`, aliases
   *tidy*, *unused*, *hidden*, *empty*); `Action::CleanUp` has no chord.
 
 ## Fill with content (`fill_box.rs`, `mastik_core::content_fill`)
@@ -984,7 +987,7 @@ ImageSink>)` is the edit.
   Locale, records, example emails and avatars are saved to `prefs.fill_content`
   (`FillContentPrefs`); the styles picked on rows become the next box's default style only when
   they all agree.
-- **Doors.** *Tools ▸ Fill with content…* (after *Clean up…*); the palette (`Item::FillContent` in
+- **Doors.** *Tools ▸ Fill with content…* (after *Batch rename…*); the palette (`Item::FillContent` in
   the Text group, aliases *lorem*, *placeholder*, *fake*, *sample*, *dummy*, *names*, *data*); the
   text layers' context menu, after the sizing rows. None is dimmed for an empty or unfillable
   selection: the box opens and says what to select. `Action::FillContent` has no

@@ -1291,8 +1291,8 @@ enum ToolsRow {
     ColourReview,
     FindReplace,
     BatchRename,
-    CleanUp,
     FillContent,
+    CleanUp,
     RemoveUnusedImages,
 }
 
@@ -1304,8 +1304,8 @@ impl ToolsRow {
         ToolsRow::ColourReview,
         ToolsRow::FindReplace,
         ToolsRow::BatchRename,
-        ToolsRow::CleanUp,
         ToolsRow::FillContent,
+        ToolsRow::CleanUp,
         ToolsRow::RemoveUnusedImages,
     ];
 
@@ -8485,11 +8485,6 @@ impl MastikApp {
                 ctx.data_mut(|d| d.remove::<egui::Rect>(flyout_at));
                 continue;
             }
-            // Left-aligned under the icon.
-            let anchor = egui::pos2(
-                head.rect.left() - 8.0,
-                head.rect.bottom() + crate::ui::MENU_GAP,
-            );
             // 160, or wider when a label (and its chord) needs it.
             let rows: Vec<(&str, Option<&str>)> = match which {
                 TopMenu::View => ViewSwitch::VIEW_CANVAS
@@ -8510,6 +8505,15 @@ impl MastikApp {
             let floor = if tools { 0.0 } else { MENU_W };
             let width =
                 crate::ui::menu_check_accel_width(&ctx, &rows, !tools, crate::ui::MENU_PAD, floor);
+            // Left edges together, 8 out from the icon, or right edges where the
+            // menu would reach the window's edge; `SCREEN_MARGIN` in from it either
+            // way. Only the width matters: the bar is at the top.
+            let anchor = crate::ui::dropdown_place(
+                &ctx,
+                head.rect.expand2(egui::vec2(8.0, 0.0)),
+                egui::vec2(width, 0.0),
+                crate::ui::MENU_GAP,
+            );
             self.dropdown(&ctx, id, anchor, width, &head, |app, ui| {
                 if which == TopMenu::Tools {
                     app.tools_menu(ui);
@@ -8573,7 +8577,8 @@ impl MastikApp {
     }
 
     /// The **Tools** dropdown's rows: *Scripts…*, the checks, which change nothing,
-    /// then a hairline and the bulk edits, each opening its box with its chord beside it.
+    /// then a hairline and the bulk edits, each opening its box with its chord beside it,
+    /// then a hairline and the two that clean the file up.
     /// Bare rows with no tick column: a check that is on says so in its own bar
     /// over the canvas. A pick closes the menu before it acts.
     fn tools_menu(&mut self, ui: &mut egui::Ui) {
@@ -8581,7 +8586,7 @@ impl MastikApp {
         let (unused, freed) = self.unused_pictures();
         let freed = crate::settings::human_bytes(freed);
         for row in ToolsRow::ALL {
-            if row == ToolsRow::FindReplace {
+            if matches!(row, ToolsRow::FindReplace | ToolsRow::CleanUp) {
                 crate::ui::menu_sep(ui);
             }
             let dim = match row {
@@ -16004,12 +16009,14 @@ mod library_wiring_tests {
         }
     }
 
-    /// The Tools menu holds its five rows bare, each chord inside the card, a
-    /// pick closes it and acts, and View holds none of its rows.
+    /// The Tools menu holds its rows bare, each chord inside the card, the clean-up
+    /// pair last under a hairline, a margin from the window's edge; a pick closes
+    /// it and acts, and View holds none of its rows.
     ///
     /// flip: `tools_menu` not clearing `open_menu` on a pick → fails at "and closes
     /// the menu"; its rows given `.checked(false)` → fails at "starts at the row's
-    /// inset".
+    /// inset"; the top bar anchoring its menus without `dropdown_place` → fails at
+    /// "keeps its margin".
     #[test]
     fn the_tools_menu_holds_the_checks_and_bulk_edits() {
         use super::ToolsRow;
@@ -16052,6 +16059,10 @@ mod library_wiring_tests {
         let card = ctx
             .memory(|m| m.area_rect(egui::Id::new("tools-menu")))
             .expect("the Tools menu's area");
+        assert!(
+            card.right() <= 1200.0 - crate::ui::SCREEN_MARGIN + 0.5,
+            "the menu keeps its margin from the window's edge: {card:?}"
+        );
         let right = card.right() - crate::ui::MENU_PAD - crate::ui::MENU_BORDER;
         // Bare rows: no tick column before the labels.
         let inset = card.left() + crate::ui::MENU_BORDER + crate::ui::MENU_PAD + 8.0;
@@ -16070,6 +16081,17 @@ mod library_wiring_tests {
                 assert!(chord.left() > at.right(), "{accel} clear of its label");
             }
         }
+        // The two clean-up rows close the menu, a hairline above them.
+        let top = |row: ToolsRow| text(&shapes, row.label()).expect("a row").top();
+        let pitch = top(ToolsRow::FillContent) - top(ToolsRow::BatchRename);
+        assert!(
+            top(ToolsRow::CleanUp) - top(ToolsRow::FillContent) > pitch + 1.0,
+            "a hairline before Clean up"
+        );
+        assert_eq!(
+            ToolsRow::ALL[ToolsRow::ALL.len() - 2..],
+            [ToolsRow::CleanUp, ToolsRow::RemoveUnusedImages]
+        );
 
         let contrast = text(&shapes, ToolsRow::CheckContrast.label())
             .expect("Check contrast")
