@@ -30,11 +30,6 @@ Items run cheapest first.
 - **More warp presets.** Wave, Rise, Squeeze, Fisheye and Twist beside Arc, Flag and Bulge
   (`warp::Preset`): each is one map function into the existing refit, and the result stays baked
   paths.
-- **Inverted mask.** A flag beside `MaskMode` that shows the masked run everywhere except inside the
-  mask. Alpha and luminance compose `DestOut` where they compose `DestIn` (`scene::push_ink_mask`,
-  each backend's `push_mask_layer`); a shape mask clips to the run's ink box less the outline, even-odd. SVG writes a
-  `<mask>` of a white rect with the shape painted black; CSS writes `mask-composite: exclude`.
-  Hit-testing and `ink_bounds` follow the inversion: the run is hit outside the shape.
 - **Linear and grid repeat.** `Line` and `Grid` beside the ring in *Repeat around origin*
   (`mastik_core::repeat`, `Ring`, `Place`), reusing its group and linked-copy placement:
   step-and-repeat, with copies optionally linked as instances.
