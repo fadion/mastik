@@ -66,6 +66,29 @@ impl Settings {
     }
 }
 
+/// A picture layer rendered for a trace: its pixels, and where they lie.
+#[derive(Clone, Debug)]
+pub struct Shot {
+    /// Straight-alpha RGBA8, row by row.
+    pub rgba: Vec<u8>,
+    pub width: usize,
+    pub height: usize,
+    /// The world box the raster covers, at `scale` pixels a unit.
+    pub frame: crate::kurbo::Rect,
+    pub scale: f64,
+}
+
+impl Shot {
+    /// The pixels as a [`Bitmap`].
+    pub fn bitmap(&self) -> Bitmap<'_> {
+        Bitmap {
+            rgba: &self.rgba,
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
 /// Straight-alpha RGBA8 pixels, row by row.
 #[derive(Clone, Copy, Debug)]
 pub struct Bitmap<'a> {

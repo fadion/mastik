@@ -7,7 +7,8 @@
 //! folded in; and it leaves out what a new one has (shown, 1px wide, mitre join,
 //! butt cap, no dashes). A text kind's `style` leaves out what
 //! [`TextStyle::default`](crate::TextStyle) has, and its `sizing` is `Auto` unless
-//! given; a star's points and inner ratio are 5 and 0.382 unless given.
+//! given; a star's points and inner ratio are 5 and 0.382 unless given. A layout
+//! grid leaves out what a new grid on its axis has.
 //!
 //! What `get_node` and CSS write is taken too: a length as `"22px"`, `"1.2em"`,
 //! `"120%"` or `"auto"`; a sizing as `{"type": "AutoHeight", "width": w}`; a fill as
@@ -384,6 +385,7 @@ fn loosen_in(key: &str, v: &mut Value, errs: &mut Vec<String>) {
                     "fills" => loosen_paint(item, false, errs),
                     "strokes" => loosen_paint(item, true, errs),
                     "effects" => loosen_effect(item, errs),
+                    "grids" => loosen_grid(item),
                     _ => {}
                 }
                 loosen_in("", item, errs);
@@ -482,6 +484,60 @@ fn loosen_text_style(text: &mut Map<String, Value>) {
     }
 }
 
+/// The axis a layout grid's `axis` names, in any case and either number; the
+/// columns when it names none.
+fn grid_axis(map: &Map<String, Value>) -> crate::layout::GridAxis {
+    use crate::layout::GridAxis;
+    match map
+        .get("axis")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase)
+    {
+        Some(word) if word.starts_with("row") => GridAxis::Rows,
+        _ => GridAxis::Columns,
+    }
+}
+
+/// A new grid on `axis`, in the shape [`tighten`] writes, colour as hex.
+fn grid_default(axis: crate::layout::GridAxis) -> Map<String, Value> {
+    let mut v = serde_json::to_value(crate::layout::LayoutGrid::new(axis)).unwrap_or_default();
+    tighten("", &mut v);
+    match v {
+        Value::Object(map) => map,
+        _ => Map::new(),
+    }
+}
+
+/// A layout grid given in part, completed with what a new grid on its axis has.
+fn loosen_grid(item: &mut Value) {
+    let Value::Object(map) = item else {
+        return;
+    };
+    let axis = grid_axis(map);
+    for (k, d) in grid_default(axis) {
+        match k.as_str() {
+            "axis" => {
+                map.insert(k, d);
+            }
+            _ => {
+                map.entry(k).or_insert(d);
+            }
+        }
+    }
+}
+
+/// A layout grid with the fields a new one on its axis has left out.
+fn tighten_grid(item: &mut Value) {
+    let Value::Object(map) = item else {
+        return;
+    };
+    for (k, d) in grid_default(grid_axis(map)) {
+        if k != "axis" && map.get(&k) == Some(&d) {
+            map.remove(&k);
+        }
+    }
+}
+
 /// A text style given in part, completed with the default style's fields that
 /// every style must have.
 fn complete_style(style: &mut Map<String, Value>) {
@@ -507,6 +563,7 @@ pub(crate) fn tighten(key: &str, v: &mut Value) {
                 match key {
                     "fills" => tighten_paint(item, false),
                     "strokes" => tighten_paint(item, true),
+                    "grids" => tighten_grid(item),
                     _ => {}
                 }
             }

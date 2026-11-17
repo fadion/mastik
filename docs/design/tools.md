@@ -708,7 +708,8 @@ centre.
   radii baked, mirror cleared); any other leaf, shapes and text (outlined) alike, is replaced through
   `build::replace_with_path` (`app-booleans.md`), keeping its look, name and place. A replaced
   selected layer is replaced in the selection by its path. One undo step, *Warp* (`icon::WARP`); the
-  status says *Warped*. An envelope left square commits nothing.
+  status says *Warped*. An envelope left square commits nothing. An agent's door is the `warp` verb
+  (`mcp.md`), the same commit over a preset and bend or the four corners it is given.
 - **The preview** (`warp::preview`) cannot be the commit, since a render preview refuses
   `DeleteNode`: a path takes its warped outline, and every other shown leaf is hidden
   (`SetVisible false`) under a stand-in path directly above it, wearing its look

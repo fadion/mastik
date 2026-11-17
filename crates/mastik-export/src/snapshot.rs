@@ -93,6 +93,10 @@ pub struct PageSnapshot {
     pub draft: bool,
     /// The mode the page's frames read in unless they set their own, by mode id.
     pub mode: Option<String>,
+    /// The ruler guides across the page, in world space, in the shape
+    /// `set_guides` takes; absent when it has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<serde_json::Value>,
 }
 
 /// One layer. A field absent from the JSON is at its default: `false`, `true`
@@ -219,6 +223,14 @@ pub struct NodeSnapshot {
     /// otherwise; absent where it is drawn as authored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub specified: Option<Specified>,
+    /// A frame's layout grids in the shape `set_layout_grids` takes, absent
+    /// when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grids: Option<serde_json::Value>,
+    /// The ruler guides scoped to this frame in the shape `set_guides` takes,
+    /// each with its id; absent when it has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guides: Vec<serde_json::Value>,
 }
 
 impl NodeSnapshot {
@@ -704,6 +716,7 @@ pub fn snapshot(doc: &Document, res: &Resolved) -> Snapshot {
                 .get(p.id)
                 .and_then(|n| n.modes().first().copied())
                 .map(|m| m.0.to_wire()),
+            guides: mastik_core::verbs::guides_value(doc, p.id),
         })
         .collect();
     Snapshot {
@@ -868,6 +881,12 @@ fn node_snapshot(
         modes: node.modes().iter().map(|m| m.0.to_wire()).collect(),
         component: component_summary(doc, node),
         specified: specified(doc, res, node),
+        grids: (!node.grids().is_empty()).then(|| mastik_core::verbs::grids_value(node.grids())),
+        guides: match doc.is_page(id) {
+            // A page's guides are its page entry's.
+            true => Vec::new(),
+            false => mastik_core::verbs::guides_value(doc, id),
+        },
     }
 }
 

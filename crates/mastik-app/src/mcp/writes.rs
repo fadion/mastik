@@ -403,30 +403,90 @@ mod tests {
         assert!(moved < 0.06, "moves nothing: {moved}");
     }
 
+    /// `bytes` in base64, as `add_image` takes a file.
+    fn base64(bytes: &[u8]) -> String {
+        const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b = [
+                chunk[0],
+                *chunk.get(1).unwrap_or(&0),
+                *chunk.get(2).unwrap_or(&0),
+            ];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            for i in 0..4 {
+                match i <= chunk.len() {
+                    true => out.push(ABC[(n >> (18 - 6 * i)) as usize & 63] as char),
+                    false => out.push('='),
+                }
+            }
+        }
+        out
+    }
+
+    /// `trace_image` renders the picture through the host and places a *Trace*
+    /// group just above it, the picture kept.
+    ///
+    /// flip: `Pictures` without its `shoot` → fails at the call's `ok`.
+    #[test]
+    fn trace_image_traces_a_picture_through_the_host() {
+        let mut picture = image::RgbaImage::from_pixel(24, 24, image::Rgba([255, 255, 255, 255]));
+        for x in 6..18 {
+            for y in 6..18 {
+                picture.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+            }
+        }
+        let mut png = Vec::new();
+        picture
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "add_image",
+            json!({ "bytes": base64(&png) }),
+        );
+        let image = ok(&out)["image"].as_str().unwrap().to_owned();
+        let page = docs.session.doc.first_page().to_wire();
+        let example = mastik_core::verbs::example("[Fill]").unwrap()[1].to_string();
+        let fill: Value =
+            serde_json::from_str(&example.replace("<add_image's id>", &image)).unwrap();
+        let tree = json!({ "kind": { "Rect": { "size": { "width": 96, "height": 96 } } },
+            "name": "Logo", "fills": [fill] });
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "insert_subtree",
+            json!({ "parent": page, "tree": tree }),
+        );
+        let logo = ok(&out)["created"][0].as_str().unwrap().to_owned();
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "trace_image",
+            json!({ "node": logo }),
+        );
+        let group = ok(&out)["created"][0].as_str().unwrap().to_owned();
+        let s = &docs.session;
+        let g = s.doc.get(NodeId::from_wire(&group).unwrap()).unwrap();
+        assert_eq!(g.name(), mastik_core::trace::GROUP_NAME);
+        assert!(!g.children().is_empty(), "paths traced");
+        assert!(
+            s.doc.get(NodeId::from_wire(&logo).unwrap()).is_some(),
+            "kept"
+        );
+    }
+
     /// `add_image` answers the picture's own size beside its id.
     ///
     /// flip: `write` leaving out `pixel_size` → fails at the size.
     #[test]
     fn add_image_answers_the_pictures_pixel_size() {
-        fn base64(bytes: &[u8]) -> String {
-            const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-            let mut out = String::new();
-            for chunk in bytes.chunks(3) {
-                let b = [
-                    chunk[0],
-                    *chunk.get(1).unwrap_or(&0),
-                    *chunk.get(2).unwrap_or(&0),
-                ];
-                let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-                for i in 0..4 {
-                    match i <= chunk.len() {
-                        true => out.push(ABC[(n >> (18 - 6 * i)) as usize & 63] as char),
-                        false => out.push('='),
-                    }
-                }
-            }
-            out
-        }
         let mut png = Vec::new();
         image::RgbaImage::new(3, 2)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)

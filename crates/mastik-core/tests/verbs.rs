@@ -6145,3 +6145,180 @@ fn import_svg_says_what_it_approximated() {
     let said = done.said.unwrap_or_default();
     assert!(said.contains("Approximated"), "approximated: {said}");
 }
+
+/// `set_layout_grids` completes a grid given in part from a new grid on its
+/// axis, `grids_value` reads it back in that short form, and a layer that is no
+/// frame is refused.
+/// flip: `loose::loosen_grid` leaving the fields out → fails at the commit.
+#[test]
+fn layout_grids_are_written_short_and_read_back() {
+    let (mut doc, mut ids, page) = blank();
+    let f = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(400.0, 300.0) }),
+    )[0];
+    let grids = json!([
+        { "axis": "columns", "count": 4, "gutter": 24, "color": "#ff000033" },
+        { "axis": "Rows" },
+    ]);
+    run(
+        &mut doc,
+        &mut ids,
+        "set_layout_grids",
+        json!({ "nodes": [f.to_wire()], "grids": grids }),
+    );
+    let stored = doc.get(f).unwrap().grids();
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[0].value.count, 4);
+    assert_eq!(
+        stored[1].value,
+        mastik_core::layout::LayoutGrid::new(mastik_core::layout::GridAxis::Rows)
+    );
+    let read = verbs::grids_value(stored);
+    assert_eq!(
+        read,
+        json!([
+            { "axis": "Columns", "count": 4, "gutter": 24.0, "color": "#ff000033" },
+            { "axis": "Rows" },
+        ])
+    );
+    let r = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": rect(10.0, 10.0) }),
+    )[0];
+    let args = json!({ "nodes": [r.to_wire()], "grids": [] });
+    assert_eq!(
+        refused_param(&doc, &mut ids, "set_layout_grids", args),
+        "nodes"
+    );
+}
+
+/// `set_guides` keeps a listed guide by its id and moves it, adds one with no
+/// id, removes the unlisted, and refuses an id that is none of the owner's.
+/// flip: `guide_ops` adding a guide for every entry → fails at `run`'s "undo
+/// restores", the re-added guides landing in another order.
+#[test]
+fn set_guides_keeps_adds_and_removes() {
+    let (mut doc, mut ids, page) = blank();
+    let guides = json!([
+        { "axis": "vertical", "position": 100 },
+        { "axis": "horizontal", "position": 40 },
+    ]);
+    let args = json!({ "owner": page.to_wire(), "guides": guides });
+    run(&mut doc, &mut ids, "set_guides", args);
+    assert_eq!(doc.guides().len(), 2);
+    let read = verbs::guides_value(&doc, page);
+    let vertical = read
+        .iter()
+        .find(|g| g["axis"] == "vertical")
+        .unwrap()
+        .clone();
+    let mut kept = vertical.clone();
+    kept["position"] = json!(120);
+    kept["color"] = json!("#0a84ff");
+    let added = json!({ "axis": "horizontal", "position": 10 });
+    let args = json!({ "owner": page.to_wire(), "guides": [kept, added] });
+    run(&mut doc, &mut ids, "set_guides", args);
+    assert_eq!(doc.guides().len(), 2);
+    let id = vertical["id"].as_str().unwrap();
+    let g = doc
+        .guides()
+        .iter()
+        .find(|g| g.id.to_wire() == id)
+        .expect("kept");
+    assert_eq!(g.position, 120.0);
+    assert!(g.color.is_some());
+    assert!(doc.guides().iter().any(|g| g.position == 10.0));
+    assert!(!doc.guides().iter().any(|g| g.position == 40.0), "removed");
+
+    let stranger = json!([{ "id": "7e5b:999", "axis": "vertical", "position": 1 }]);
+    let args = json!({ "owner": page.to_wire(), "guides": stranger });
+    assert_eq!(refused_param(&doc, &mut ids, "set_guides", args), "guides");
+    let args = json!({ "owner": page.to_wire(), "guides": verbs::guides_value(&doc, page) });
+    assert!(
+        matches!(
+            answer(&doc, &mut ids, "set_guides", args),
+            Err(VerbError::Nothing(_))
+        ),
+        "the same list writes nothing"
+    );
+}
+
+/// `set_canvas_colour` sets a page's ground opaque and clears it without one.
+#[test]
+fn set_canvas_colour_sets_and_clears_the_ground() {
+    let (mut doc, mut ids, page) = blank();
+    let args = json!({ "page": page.to_wire(), "colour": "#10203080" });
+    run(&mut doc, &mut ids, "set_canvas_colour", args);
+    let ground = doc.own_ground(page).expect("set");
+    assert_eq!(
+        ground.to_rgba8().to_u8_array(),
+        [0x10, 0x20, 0x30, 0xff],
+        "opaque"
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_canvas_colour",
+        json!({ "page": page.to_wire() }),
+    );
+    assert!(doc.own_ground(page).is_none(), "cleared");
+}
+
+/// `warp` bakes an arc into a rectangle, answering the path that replaced it,
+/// and refuses an arc bent past folding and an envelope that moves nothing.
+/// flip: `warp` without its `folds` check → fails at "folds".
+#[test]
+fn warp_bends_layers_into_paths() {
+    let (mut doc, mut ids, page) = blank();
+    let r = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": rect(200.0, 40.0) }),
+    )[0];
+    let flat = json!({ "nodes": [r.to_wire()], "preset": "arc", "bend": 0 });
+    assert!(matches!(
+        answer(&doc, &mut ids, "warp", flat),
+        Err(VerbError::Nothing(_))
+    ));
+    let folds =
+        json!({ "nodes": [r.to_wire()], "corners": [[0, 0], [200, 40], [200, 0], [0, 40]] });
+    assert!(
+        matches!(
+            answer(&doc, &mut ids, "warp", folds),
+            Err(VerbError::Nothing(_))
+        ),
+        "folds"
+    );
+    let args = json!({ "nodes": [r.to_wire()], "preset": "arc", "bend": 0.3 });
+    let made = run(&mut doc, &mut ids, "warp", args);
+    assert_eq!(made.len(), 1, "the path that replaced the rectangle");
+    assert!(doc.get(r).is_none());
+    assert!(matches!(
+        doc.get(made[0]).unwrap().kind(),
+        NodeKind::Path { .. }
+    ));
+}
+
+/// `trace_image` without a host that renders is refused, saying why.
+#[test]
+fn trace_image_needs_a_renderer() {
+    let (mut doc, mut ids, page) = blank();
+    let r = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": rect(20.0, 20.0) }),
+    )[0];
+    let args = json!({ "node": r.to_wire() });
+    assert_eq!(
+        refused_param(&doc, &mut ids, "trace_image", args),
+        "node",
+        "no picture"
+    );
+}

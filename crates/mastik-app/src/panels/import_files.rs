@@ -619,7 +619,7 @@ impl mastik_core::foreign::Archive for Zip<'_> {
 }
 
 /// Pictures inside another tool's file, or a script's `add_image`, hashed and sized
-/// as a placed one is.
+/// as a placed one is; and a picture layer rendered for an agent's `trace_image`.
 pub(crate) struct Pictures;
 
 impl mastik_core::svg_in::ImageSink for Pictures {
@@ -641,6 +641,15 @@ impl mastik_core::svg_in::ImageSink for Pictures {
     ) -> Option<(mastik_core::ImageId, mastik_core::ImageEntry)> {
         let png = crate::canvas::art_png(width, height, art)?;
         self.place(png, mastik_core::ImageFormat::Png)
+    }
+
+    fn shoot(
+        &mut self,
+        doc: &mastik_core::Document,
+        res: &mastik_core::Resolved,
+        id: mastik_core::NodeId,
+    ) -> Option<mastik_core::trace::Shot> {
+        crate::trace::shoot(doc, res, id)
     }
 }
 

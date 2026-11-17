@@ -29,6 +29,7 @@ const SET_PROPS: &[(&str, &str, bool, &str)] = &[
     ("display", "set_display", true, "display"),
     ("item", "set_layout_item", true, "item"),
     ("insets", "set_insets", true, "insets"),
+    ("grids", "set_layout_grids", true, "grids"),
     ("element", "set_element", false, "element"),
     ("link", "set_link", false, "href"),
     ("transform", "set_transform", false, "transform"),

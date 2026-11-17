@@ -410,7 +410,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "set",
-        doc: "Set properties of layers in one undo step, each as its own setter takes it: name, visible, locked, opacity, blend, clip, fills, strokes, effects, exports, display, item, insets, text, text_style, paragraph, block, transform, geometry, element, link, size {width, height}, at [x, y] (its box's left and top in its parent), rotation (degrees), corner_radius, fill, stroke; x, y, width or height alone keeps the rest. Style part of a text with `style_text`.",
+        doc: "Set properties of layers in one undo step, each as its own setter takes it: name, visible, locked, opacity, blend, clip, fills, strokes, effects, exports, display, item, insets, grids, text, text_style, paragraph, block, transform, geometry, element, link, size {width, height}, at [x, y] (its box's left and top in its parent), rotation (degrees), corner_radius, fill, stroke; x, y, width or height alone keeps the rest. Style part of a text with `style_text`.",
         params: &[
             param("nodes", ParamKind::Nodes, true, "The layers."),
             param(
@@ -773,8 +773,9 @@ fn entry(name: &str, doc: &str, params: &[Param], extra: Option<Param>) -> Value
 /// always allowed beside it, since a model may arrive as JSON text.
 fn model_type(model: &str) -> Option<&'static str> {
     match model {
-        "Steps" | "Region" | "[CharAttr]" | "[Effect]" | "[ExportSpec]" | "[Fill]" | "[Hex]"
-        | "[Name]" | "[Node]" | "[ParaAttr]" | "[Stroke]" => Some("array"),
+        "Steps" | "Region" | "Quad" | "[CharAttr]" | "[Effect]" | "[ExportSpec]" | "[Fill]"
+        | "[Guide]" | "[Hex]" | "[LayoutGrid]" | "[Name]" | "[Node]" | "[ParaAttr]"
+        | "[Stroke]" => Some("array"),
         "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "KitModeMap" | "DtcgFile"
         | "BlockStyle" | "ParagraphStyle" | "TextStyle" | "LayoutItem" => Some("object"),
         _ => None,
@@ -956,6 +957,9 @@ mod tests {
         let typed = [
             "Steps",
             "Region",
+            "Quad",
+            "[Guide]",
+            "[LayoutGrid]",
             "[Fill]",
             "[Stroke]",
             "[Effect]",
@@ -1019,7 +1023,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 26_450;
-        const ALL_BUDGET: usize = 102_450;
+        const ALL_BUDGET: usize = 106_700;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

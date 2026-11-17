@@ -56,7 +56,7 @@ Phase 1 — read/export (ship first):
 Phase 2 — write (1:1 with operations/composites):
 `create_node`, `create_text(parent, text, x?, y?, width?)`, `insert_subtree`, `import_svg(parent, svg, x?, y?, name?)`, `delete_node`,
 `reparent`, `reorder`, `arrange(nodes, move)`, `group(nodes)`, `frame(nodes)`, `ungroup(nodes)`, `convert_container(node)`, `boolean(nodes, op)`, `flatten(nodes)`,
-`outline_shape(node)`, `outline_stroke(node)`, `outline_text(node)`, `divide(nodes)`, `blend_shapes(nodes, steps?, paint?, reverse?)`,
+`outline_shape(node)`, `outline_stroke(node)`, `outline_text(node)`, `divide(nodes)`, `blend_shapes(nodes, steps?, paint?, reverse?)`, `warp(nodes, preset?, bend?, vertical?, corners?)`,
 `duplicate(nodes, dx?, dy?)`, `join_paths(node, other)`, `repeat(nodes, count, angle?, turn?)`, `align(nodes, edge)`,
 `distribute(nodes, axis)`, `tidy_up(nodes)`, `slice(nodes)`, `set_transform`, `set_pivot`, `set_geometry`,
 `set_point(node, point, subpath?, x?, y?, in_x?, in_y?, out_x?, out_y?, radius?)`, `set_size(node, width, height)`, `fit_to_content(node)`, `pixel_fit(nodes)`, `set_name`, `set_visible`,
@@ -64,10 +64,10 @@ Phase 2 — write (1:1 with operations/composites):
 `set_link(node, href)`, `set_text`, `replace_text(find, replace, nodes?, …)`, `replace_font(from, to)`, `set_text_style(nodes, style, spans?)`,
 `set_text_spans`, `set_paragraph_style(nodes, paragraph)`, `set_block_style(nodes, block)`, `style_text(node, attrs, start?, end?)`,
 `style_paragraphs(node, attrs, start?, end?)`, `set_fills(nodes, fills)`, `set_strokes(nodes, strokes)`,
-`set_effects(nodes, effects)`, `merge_colours(colours, into, nodes?)`, `add_image(bytes) -> ImageId`, `replace_image(node, image, index?)`, `fix_contrast(nodes, level?, colour?, variable?)`, `clean_up(nodes?, hidden_paint?, covered_fills?, hidden_layers?, empty_layers?, one_layer_groups?, guides?, skip_locked?)`, `fill_content(nodes, locale?, kind?, records?, avatars?, seed?, example_emails?)`, `set_display(nodes, display?)`, `set_layout_item(nodes, item)`, `set_insets(nodes, insets)`,
+`set_effects(nodes, effects)`, `merge_colours(colours, into, nodes?)`, `add_image(bytes) -> ImageId`, `replace_image(node, image, index?)`, `trace_image(node, colours?, threshold?, detail?, corners?, speck?, keep?)`, `fix_contrast(nodes, level?, colour?, variable?)`, `clean_up(nodes?, hidden_paint?, covered_fills?, hidden_layers?, empty_layers?, one_layer_groups?, guides?, skip_locked?)`, `fill_content(nodes, locale?, kind?, records?, avatars?, seed?, example_emails?)`, `set_display(nodes, display?)`, `set_layout_item(nodes, item)`, `set_insets(nodes, insets)`, `set_layout_grids(nodes, grids)`,
 `insert_chart(parent, kind, table?, mapping?, x?, y?, width?, height?)`, `set_chart(node, kind?, mapping?, options?)`, `set_chart_data(node, table)`, `flatten_chart(nodes)`,
 `set_exports(nodes, exports)`, `add_page(name?, index?)`, `duplicate_page(page)`, `delete_page(page)`,
-`move_page(page, index)`, `set_page_draft(page, draft)`, `undo()`, `redo()`, `set_selection(ids)`, `batch(steps)`, `group_steps(action, name?)`, `set(nodes, props)`, `run_script(source, nodes?, layers?)`, `call(tool, args?)`.
+`move_page(page, index)`, `set_page_draft(page, draft)`, `set_canvas_colour(page, colour?)`, `set_guides(owner, guides)`, `undo()`, `redo()`, `set_selection(ids)`, `batch(steps)`, `group_steps(action, name?)`, `set(nodes, props)`, `run_script(source, nodes?, layers?)`, `call(tool, args?)`.
 
 Phase 3 — components, variables and styles (through the verbs, never the raw ops):
 `make_component(nodes)`, `duplicate_as_component(node)`, `create_instance(main, parent, x?, y?)`, `detach_instance(nodes)`,
@@ -144,6 +144,8 @@ Which of this is built: the wire, the proxy, `serve`, the window as a host (`mcp
 - `replace_text` without `nodes` searches every page but drafts, since no page is in view to stand for the person's. `reparent` into the layer's own parent counts its place without it, so with no `index` it goes on top.
 - Colours travel as `#rrggbbaa` between the reads and `merge_colours`: `review_colours` writes them, `merge_colours` takes them back. An `into` a variable carries binds the raw paints to that variable, as Colour review's default target does.
 - A verb refuses a kit's vendored component (`Document::in_vault`), which a kit instance's `component.main` names: the person can never select one, and an edit there would change every instance until the kit's next update undid it. Reading one is fine, and `create_instance` and `swap_instance` may name it as `main`. `run_script` is held to the same by Command Mode's host, which refuses any commit that would change a vendored layer.
+- The canvas chrome a person lines work up against is the agent's too. `set_layout_grids(nodes, grids)` writes frames' whole grid lists as the *Layout grid* card does, a grid given in part completed from a new grid on its `axis` (`loose`'s `grids`), refused on a layer that is not a frame. `set_guides(owner, guides)` writes a frame's or a page's whole guide list: a guide listed with its `id` is kept, moved and recoloured in place, one without is added, an unlisted one is removed, and an id that is none of the owner's guides, or one of another axis, is refused rather than read as a new guide. `set_canvas_colour(page, colour?)` sets the page's ground, opaque, or clears it to the viewer's default as the inspector's reset does. The snapshot reads them back in the shapes these take: a frame's `grids` and `guides`, a page's `guides` and `ground`.
+- `warp(nodes, preset?, bend?, vertical?, corners?)` is *Warp*'s commit (`mastik_core::warp`): an *Arc*, *Flag* or *Bulge* bent by `bend` (−1 to 1), or the selection's world box's corners moved to `corners`, baked into paths; it refuses as the card does (`warp::Refusal::says`), an envelope that turns over itself, and one that moves nothing, and answers the paths that replaced layers that were not paths. `trace_image(node, …)` is *Trace image*'s commit: the picture rendered as shown through the host (`ImageSink::shoot`, the card's own render), traced with the card's settings (`colours` for a colour trace, else black and white at `threshold`; `speck` in units), placed as a *Trace* group just above the picture, the picture kept unless `keep` is false. A caller with no renderer, a script, is refused.
 - `set_selection` takes layers of the page the person is on, never the page itself, and does not switch the page: a selection never spans pages (`Selection::retain_existing`), and the agent does not move the person's view.
 - Writes name layers `node` and `nodes`, as their verbs do; the reads, `set_selection` and `make_local` name them `id` and `ids`. The phase lists above give the main parameters, not every one; `tools/list` is the full signature.
 
@@ -222,7 +224,7 @@ The raw kit ops (`OpenVault`, `CloseVault`, `SetOrigin`, a `SetKitModes` rewriti
 
 #### Not exposed, on purpose
 
-Guides, layout grids, a page's ground, the fill rule and the proportions lock (visual only, irrelevant to an agent; §15 D1095, D1096). Paragraph spans travel inside `style_paragraphs`. *Warp* and *Trace image*, cards whose settings are tuned by eye on the canvas. Restoring a version, which replaces the document outside undo, and linking a tokens or chart data file, which watches a path on the person's disk: both stay with the person.
+The fill rule and the proportions lock (visual only, irrelevant to an agent; §15 D1095, D1096). Paragraph spans travel inside `style_paragraphs`. Restoring a version, which replaces the document outside undo, and linking a tokens or chart data file, which watches a path on the person's disk: both stay with the person.
 
 ## Traps
 

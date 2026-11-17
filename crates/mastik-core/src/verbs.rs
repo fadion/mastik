@@ -497,6 +497,9 @@ fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
         "[ExportSpec]" => reads!(Vec<ExportSpec>),
         "[Fill]" => reads!(Vec<Fill>),
         "[Stroke]" => reads!(Vec<Stroke>),
+        "[LayoutGrid]" => reads!(Vec<crate::layout::LayoutGrid>),
+        "[Guide]" => reads!(Vec<GuideIn>),
+        "Quad" => reads!([[f64; 2]; 4]),
         "ChartTable" => reads!(crate::chart::Table),
         "[Name]" => reads!(Vec<String>),
         // Patches, whose nulls reset what they name (`patched`): read without
@@ -1199,6 +1202,15 @@ pub fn example(model: &str) -> Option<Value> {
         )]),
         "[Fill]" => json(&vec![fill, image_fill]),
         "[Stroke]" => json(&vec![Stroke::default()]),
+        "[LayoutGrid]" => serde_json::json!([
+            { "axis": "Columns", "count": 4, "gutter": 24, "margin": 32 },
+            { "axis": "Rows", "count": 8, "align": "Start", "size": 64, "visible": false },
+        ]),
+        "[Guide]" => serde_json::json!([
+            { "axis": "vertical", "position": 160 },
+            { "axis": "horizontal", "position": 80, "color": "#0a84ff" },
+        ]),
+        "Quad" => serde_json::json!([[0, 0], [200, -20], [200, 120], [0, 100]]),
         "ChartTable" => json(&crate::chart::Chart::sample(crate::chart::ChartKind::Column).table),
         "ChartMapping" => {
             json(&crate::chart::Chart::sample(crate::chart::ChartKind::Column).mapping)
@@ -1225,6 +1237,7 @@ fn model_key<'a>(model: &str, param: &'a str) -> &'a str {
         "[Fill]" => "fills",
         "[Stroke]" => "strokes",
         "[Effect]" => "effects",
+        "[LayoutGrid]" => "grids",
         _ => param,
     }
 }
@@ -2487,6 +2500,98 @@ pub static VERBS: &[Verb] = &[
             let (tx, group) = crate::blend::blend(ctx.doc, ctx.res, ctx.ids, &nodes, blend)
                 .map_err(|r| VerbError::Nothing(r.says()))?;
             Ok(Done::made(tx, vec![group]))
+        },
+    },
+    Verb {
+        name: "warp",
+        doc: "Bend layers through an envelope over their box and bake them into paths: a preset bent by `bend`, or the box's corners moved to `corners`; answers the paths that replaced layers",
+        params: &[
+            req(
+                "nodes",
+                NODES,
+                "the layers; groups are opened, frames and pictures refused",
+            ),
+            opt(
+                "preset",
+                ParamKind::Choice(&["arc", "flag", "bulge"]),
+                "the envelope, set by `bend`",
+            ),
+            opt(
+                "bend",
+                ParamKind::Number,
+                "how far the preset bends, -1 to 1; 0.5 unless given",
+            ),
+            opt(
+                "vertical",
+                BOOL,
+                "bend along the box's height rather than its width",
+            ),
+            opt(
+                "corners",
+                ParamKind::Model("Quad"),
+                "where the box's corners go, [[x, y] × 4] in world space, top-left first and clockwise; in place of `preset`",
+            ),
+        ],
+        run: |ctx, a| {
+            use crate::warp::{Envelope, Preset, Warp};
+            let nodes = a.layers(ctx.doc, "nodes")?;
+            let bounds = crate::warp::subjects(ctx.doc, &nodes)
+                .and_then(|_| {
+                    crate::warp::bounds(ctx.doc, ctx.res, &nodes)
+                        .ok_or(crate::warp::Refusal::Nothing)
+                })
+                .map_err(|r| VerbError::Nothing(r.says()))?;
+            let envelope = match (a.choice("preset"), a.get("corners")) {
+                (Some(_), Some(_)) => {
+                    return Err(a.invalid("corners", "give `preset` or `corners`, not both"));
+                }
+                (None, None) => {
+                    return Err(a.invalid("preset", "give `preset` and `bend`, or `corners`"));
+                }
+                (None, Some(_)) => {
+                    let quad: [[f64; 2]; 4] = a.model("corners")?;
+                    if quad.iter().flatten().any(|n| !n.is_finite()) {
+                        return Err(a.invalid("corners", "each corner is two numbers"));
+                    }
+                    Envelope::Free(quad.map(|[x, y]| kurbo::Point::new(x, y)))
+                }
+                (Some(word), None) => {
+                    let bend = a.number("bend").unwrap_or(0.5);
+                    if !(-1.0..=1.0).contains(&bend) {
+                        return Err(a.invalid("bend", "expected -1 to 1"));
+                    }
+                    Envelope::Preset {
+                        preset: match word {
+                            "arc" => Preset::Arc,
+                            "flag" => Preset::Flag,
+                            _ => Preset::Bulge,
+                        },
+                        bend,
+                        vertical: a.bool("vertical").unwrap_or(false),
+                    }
+                }
+            };
+            let warp = Warp { bounds, envelope };
+            if warp.folds() {
+                return Err(VerbError::Nothing(
+                    "The envelope turns over itself: bend it less, or keep the corners in their turn",
+                ));
+            }
+            if warp.is_identity() {
+                return Err(VerbError::Nothing("The envelope moves nothing"));
+            }
+            let (tx, _) = crate::warp::warp(ctx.doc, ctx.res, ctx.ids, &nodes, &warp)
+                .map_err(|r| VerbError::Nothing(r.says()))?;
+            // The paths standing in for the layers that were not paths.
+            let replaced =
+                tx.0.iter()
+                    .filter_map(|op| match op {
+                        Operation::CreateNode { id, .. } => Some(*id),
+                        Operation::InsertSubtree { nodes, .. } => nodes.first().map(|n| n.id()),
+                        _ => None,
+                    })
+                    .collect();
+            Ok(Done::made(tx, replaced))
         },
     },
     Verb {
@@ -4353,6 +4458,61 @@ pub static VERBS: &[Verb] = &[
             }]))
         },
     },
+    Verb {
+        name: "set_canvas_colour",
+        doc: "Set the colour behind and around a page's frames, or clear it to the viewer's default",
+        params: &[
+            req("page", NODE, "the page"),
+            opt(
+                "colour",
+                ParamKind::Model("Color"),
+                "the colour, opaque; the viewer's default unless given",
+            ),
+        ],
+        run: |ctx, a| {
+            let page = a.node("page")?;
+            if !ctx.doc.is_page(page) {
+                return Err(a.invalid("page", "not a page"));
+            }
+            // Nothing lies behind the canvas for an alpha to show.
+            let ground = a
+                .model_opt::<peniko::Color>("colour")?
+                .map(|c| c.with_alpha(1.0));
+            Ok(Done::ops(vec![Operation::SetPageGround {
+                id: page,
+                ground,
+            }]))
+        },
+    },
+    Verb {
+        name: "set_guides",
+        doc: "Replace the ruler guides of a frame or a page: a listed guide with an `id` keeps it, one without is added, and an unlisted one is removed",
+        params: &[
+            req(
+                "owner",
+                NODE,
+                "the frame the guides are scoped to, or the page they run across",
+            ),
+            req(
+                "guides",
+                ParamKind::Model("[Guide]"),
+                "every guide it keeps; an empty list removes them all",
+            ),
+        ],
+        run: |ctx, a| {
+            let owner = a.node("owner")?;
+            let is_frame =
+                node(ctx, owner).is_ok_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }));
+            if !ctx.doc.is_page(owner) && !is_frame {
+                return Err(a.invalid("owner", "guides belong to a frame or a page"));
+            }
+            let wanted = a.model::<Vec<GuideIn>>("guides")?;
+            nothing_if_empty(
+                Transaction(guide_ops(ctx, a, owner, &wanted)?),
+                "Those are its guides already",
+            )
+        },
+    },
     // --- placement and geometry -------------------------------------------
     Verb {
         name: "set_transform",
@@ -5342,6 +5502,96 @@ pub static VERBS: &[Verb] = &[
         },
     },
     Verb {
+        name: "trace_image",
+        doc: "Trace a picture layer as shown into filled paths, in a Trace group just above it; answers the group",
+        params: &[
+            req("node", NODE, "the picture layer"),
+            opt(
+                "colours",
+                INDEX,
+                "trace in this many colours, 2 to 16; black and white unless given",
+            ),
+            opt(
+                "threshold",
+                ParamKind::Number,
+                "in black and white, how dark a pixel turns black, 0 to 1; 0.5 unless given",
+            ),
+            opt(
+                "detail",
+                ParamKind::Number,
+                "how closely the curves follow the pixels, 0 to 1; 0.6 unless given",
+            ),
+            opt(
+                "corners",
+                ParamKind::Number,
+                "how readily a turn stays a corner, 0 to 1; 0.5 unless given",
+            ),
+            opt(
+                "speck",
+                ParamKind::Number,
+                "regions smaller than this many units across merge into their surroundings; 4 unless given",
+            ),
+            opt(
+                "keep",
+                BOOL,
+                "keep the picture under the trace; true unless given",
+            ),
+        ],
+        run: |ctx, a| {
+            use crate::trace::{Mode, Settings};
+            let id = a.layer(ctx.doc, "node")?;
+            if node(ctx, id)?.paint().image_fill().is_none() {
+                return Err(a.invalid("node", "not a picture: only a layer showing one traces"));
+            }
+            if let Some(why) = crate::trace::refusal(ctx.doc, id) {
+                return Err(VerbError::Nothing(why));
+            }
+            let unit = |name: &'static str, default: f64| match a.number(name) {
+                Some(n) if !(0.0..=1.0).contains(&n) => Err(a.invalid(name, "expected 0 to 1")),
+                n => Ok(n.unwrap_or(default)),
+            };
+            let defaults = Settings::default();
+            let mode = match a.index("colours") {
+                Some(n) if !(2..=crate::trace::MAX_COLOURS).contains(&n) => {
+                    return Err(a.invalid("colours", "expected 2 to 16"));
+                }
+                Some(count) => Mode::Colours { count },
+                None => Mode::BlackAndWhite {
+                    threshold: unit("threshold", 0.5)?,
+                },
+            };
+            let speck = a.number("speck").unwrap_or(defaults.speck);
+            if speck < 0.0 {
+                return Err(a.invalid("speck", "expected 0 or more"));
+            }
+            let shot = ctx
+                .images
+                .as_mut()
+                .and_then(|sink| sink.shoot(ctx.doc, ctx.res, id))
+                .ok_or(VerbError::Nothing(
+                    "this caller cannot render the picture to trace it",
+                ))?;
+            // `speck` is in units; the trace counts it in the raster's pixels.
+            let settings = Settings {
+                mode,
+                detail: unit("detail", defaults.detail)?,
+                corners: unit("corners", defaults.corners)?,
+                speck: speck * shot.scale,
+            };
+            let traced =
+                crate::trace::trace(&crate::trace::label(shot.bitmap(), &settings), &settings);
+            let keep = a.bool("keep").unwrap_or(true);
+            let (tx, group) = crate::trace::place(
+                ctx.doc, ctx.res, ctx.ids, id, &traced, shot.frame, shot.scale, keep,
+            )
+            .map_err(VerbError::Nothing)?;
+            Ok(Done::made(tx, vec![group]).saying(format!(
+                "Traced into {}",
+                plural(traced.paths(), "path", "paths")
+            )))
+        },
+    },
+    Verb {
         name: "fix_contrast",
         doc: "Give layers whose contrast fails the nearest colour that passes, or a colour or variable you name",
         params: &[
@@ -5636,6 +5886,33 @@ pub static VERBS: &[Verb] = &[
             each(ctx.doc, a, |id| Operation::SetInsets { id, insets })
         },
     },
+    Verb {
+        name: "set_layout_grids",
+        doc: "Replace frames' layout grids, the columns and rows drawn over them to line work up against",
+        params: &[
+            req("nodes", NODES, "the frames"),
+            req(
+                "grids",
+                ParamKind::Model("[LayoutGrid]"),
+                "every grid, each from its `axis` with the rest as a new one has unless given; an empty list removes them",
+            ),
+        ],
+        run: |ctx, a| {
+            let grids = a.model::<Vec<crate::layout::LayoutGrid>>("grids")?;
+            let mut ops = Vec::new();
+            let mut fresh = PastTheEnd::default();
+            for id in existing_layers(ctx, a)? {
+                let n = node(ctx, id)?;
+                if !matches!(n.kind(), NodeKind::Artboard { .. }) {
+                    return Err(a.invalid("nodes", "a layout grid is a frame's"));
+                }
+                let own = n.grids().to_vec();
+                let grids = rekey_by_position(&own, grids.clone(), &mut fresh, ctx.ids);
+                ops.push(Operation::SetLayoutGrids { id, grids });
+            }
+            Ok(Done::ops(ops))
+        },
+    },
     // --- charts -------------------------------------------------------------
     Verb {
         name: "insert_chart",
@@ -5886,6 +6163,108 @@ fn patched<T: serde::Serialize + serde::de::DeserializeOwned + Default>(
     serde_json::from_value(v).map_err(|e| a.invalid(param, e))
 }
 
+/// One ruler guide as `set_guides` and a tree take it and the snapshot reads it:
+/// its axis, its position in its owner's space (world space for a page's), its
+/// colour when it has its own, and, to keep a guide that is there, its id.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GuideIn {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub axis: crate::guide::GuideAxis,
+    pub position: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<peniko::Color>,
+}
+
+impl GuideIn {
+    /// `g` as a caller reads it.
+    pub fn of(g: &crate::guide::Guide) -> Self {
+        Self {
+            id: Some(g.id.to_wire()),
+            axis: g.axis,
+            position: g.position,
+            color: g.color,
+        }
+    }
+}
+
+/// The ops that leave `owner` with the guides `wanted`: a guide whose `id` it
+/// holds moved and recoloured in place, one with none added with a minted id,
+/// and the ones not listed removed. An id that names none of the owner's guides,
+/// or one of another axis, is refused rather than read as a new guide.
+fn guide_ops(
+    ctx: &mut Ctx<'_>,
+    a: &Args<'_>,
+    owner: NodeId,
+    wanted: &[GuideIn],
+) -> Result<Vec<Operation>, VerbError> {
+    use crate::guide::{Guide, GuideId};
+    let have: Vec<Guide> = ctx
+        .doc
+        .guides()
+        .iter()
+        .filter(|g| g.owner == owner)
+        .copied()
+        .collect();
+    let mut kept = Vec::new();
+    let mut adds = Vec::new();
+    let mut edits = Vec::new();
+    for w in wanted {
+        if !w.position.is_finite() {
+            return Err(a.invalid("guides", "a position is a number"));
+        }
+        let Some(wire) = &w.id else {
+            let id = GuideId(ctx.ids.mint());
+            adds.push(Operation::AddGuide {
+                guide: Guide {
+                    id,
+                    axis: w.axis,
+                    position: w.position,
+                    color: w.color,
+                    owner,
+                },
+            });
+            continue;
+        };
+        let g = GuideId::from_wire(wire)
+            .and_then(|id| have.iter().find(|g| g.id == id))
+            .ok_or_else(|| {
+                a.invalid(
+                    "guides",
+                    format!("`{wire}` is none of its guides; leave `id` out to add one"),
+                )
+            })?;
+        if g.axis != w.axis {
+            return Err(a.invalid(
+                "guides",
+                format!("`{wire}` keeps its axis; leave `id` out to add a guide on the other"),
+            ));
+        }
+        kept.push(g.id);
+        if g.position != w.position {
+            edits.push(Operation::SetGuidePosition {
+                id: g.id,
+                position: w.position,
+            });
+        }
+        if g.color != w.color {
+            edits.push(Operation::SetGuideColor {
+                id: g.id,
+                color: w.color,
+            });
+        }
+    }
+    let mut ops: Vec<Operation> = have
+        .iter()
+        .filter(|g| !kept.contains(&g.id))
+        .map(|g| Operation::RemoveGuide { id: g.id })
+        .collect();
+    ops.extend(edits);
+    ops.extend(adds);
+    Ok(ops)
+}
+
 /// One layer of `insert_subtree`'s tree: what `create_node` takes, the properties
 /// the single-layer verbs set, each in the same form, and the layers inside it.
 /// Ids are minted as it is created, so a caller never writes one.
@@ -6118,6 +6497,28 @@ pub fn tree(doc: &Document, id: NodeId) -> Option<Value> {
 /// the short forms the writes take, as [`tree`] writes a layer.
 pub fn shorten(v: &mut Value) {
     loose::tighten("", v);
+}
+
+/// A frame's layout grids as `set_layout_grids` takes them, in the short forms.
+pub fn grids_value(grids: &[Keyed<crate::layout::LayoutGrid>]) -> Value {
+    let mut v = serde_json::to_value(grids.iter().map(|k| &k.value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    loose::tighten("grids", &mut v);
+    v
+}
+
+/// The ruler guides `owner` holds as `set_guides` takes them, each with its id,
+/// colours as hex; empty for none.
+pub fn guides_value(doc: &Document, owner: NodeId) -> Vec<Value> {
+    doc.guides()
+        .iter()
+        .filter(|g| g.owner == owner)
+        .map(|g| {
+            let mut v = serde_json::to_value(GuideIn::of(g)).unwrap_or_default();
+            loose::tighten("", &mut v);
+            v
+        })
+        .collect()
 }
 
 /// Fill in a tree's `like`s: a layer with `"like": "<id>"` takes that layer's

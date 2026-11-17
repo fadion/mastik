@@ -14,7 +14,7 @@ use crate::ui::{self, FieldButton, Prefix, Scrub, Suffix};
 use eframe::egui;
 use mastik_core::NodeId;
 use mastik_core::kurbo::{Affine, Rect};
-use mastik_core::trace::{self, Mode, Settings, Traced};
+use mastik_core::trace::{self, Mode, Settings, Shot, Traced};
 use std::sync::Arc;
 
 /// The card's width: room for the preview beside the settings column.
@@ -38,16 +38,6 @@ const PAD: f32 = crate::settings::CANVAS_CARD_PAD;
 const MAX_SIDE: f64 = 1200.0;
 /// The most a small picture is enlarged to trace it.
 const MAX_SCALE: f64 = 4.0;
-
-/// The picture, rendered as shown, and where it lies.
-struct Shot {
-    rgba: Vec<u8>,
-    width: usize,
-    height: usize,
-    /// The world box the raster covers, at `scale` pixels a unit.
-    frame: Rect,
-    scale: f64,
-}
 
 /// What one trace made: the paths, and them drawn as the canvas will draw them.
 struct Made {
@@ -213,12 +203,7 @@ impl TraceCard {
 
 /// One trace of the shot.
 fn traced_of(shot: &Shot, s: &Settings) -> Traced {
-    let bitmap = trace::Bitmap {
-        rgba: &shot.rgba,
-        width: shot.width,
-        height: shot.height,
-    };
-    trace::trace(&trace::label(bitmap, s), s)
+    trace::trace(&trace::label(shot.bitmap(), s), s)
 }
 
 /// One trace of the shot, and it drawn for the preview.
@@ -391,8 +376,12 @@ impl MastikApp {
 }
 
 /// The picture layer rendered as shown, at a scale that keeps its longer side
-/// near [`MAX_SIDE`] pixels.
-fn shoot(doc: &mastik_core::Document, res: &mastik_core::Resolved, id: NodeId) -> Option<Shot> {
+/// near [`MAX_SIDE`] pixels: what the card and an agent's `trace_image` trace.
+pub(crate) fn shoot(
+    doc: &mastik_core::Document,
+    res: &mastik_core::Resolved,
+    id: NodeId,
+) -> Option<Shot> {
     let frame = mastik_export::extent(res, &[id])?;
     let long = frame.width().max(frame.height());
     if long <= 0.0 {

@@ -121,6 +121,19 @@ pub trait ImageSink {
         let _ = (width, height, art);
         None
     }
+
+    /// The picture layer `id` rendered as it is drawn, crop and adjustments
+    /// included: what *Trace image* traces. `None` by default, for a host with
+    /// no renderer, which refuses the trace.
+    fn shoot(
+        &mut self,
+        doc: &crate::Document,
+        res: &crate::Resolved,
+        id: crate::NodeId,
+    ) -> Option<crate::trace::Shot> {
+        let _ = (doc, res, id);
+        None
+    }
 }
 
 /// The four characters XML (and CSS `white-space: normal`) calls whitespace.
