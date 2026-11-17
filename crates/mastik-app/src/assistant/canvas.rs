@@ -79,6 +79,7 @@ impl MastikApp {
             && !self.focus
             && self.text.is_none()
             && self.edited_path().is_none()
+            && self.edited_image().is_none()
             && matches!(self.drag, Drag::None)
             && ctx.dragged_id().is_none()
             && !self.session.has_gesture_preview()
@@ -411,6 +412,39 @@ pub(crate) mod tests {
             "a lit button's click detaches"
         );
         assert!(buttons(&ctx, &app).is_empty(), "the switch is off");
+    }
+
+    /// Image editing hides the ask button, as editing a path does: the crop's
+    /// handles and Done pill are the layer's chrome while it lasts.
+    /// flip: `ask_live` without its `edited_image` guard → fails at "no button
+    /// while the picture is edited".
+    #[test]
+    fn image_editing_hides_the_ask_button() {
+        use mastik_core::{Operation, Transaction};
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let id = crate::palette::tests::add_rect(&mut app);
+        app.session
+            .try_commit(Transaction(vec![Operation::SetFills {
+                id,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: mastik_core::image_brush(mastik_core::ImageId("a-photo".into())).into(),
+                    visible: true,
+                }]),
+            }]))
+            .expect("a picture fill");
+        app.session.selection.set_one(id);
+        app.prefs.assistant.agent = "claude".into();
+        app.canvas_rect =
+            egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(1600.0, 1200.0));
+        app.canvas_px = (1600, 1200);
+        assert_eq!(buttons(&ctx, &app).len(), 1, "fixture: the button shows");
+        app.tool = crate::tools::Tool::ImageEdit;
+        assert!(app.edited_image().is_some(), "fixture: editing the picture");
+        assert!(
+            buttons(&ctx, &app).is_empty(),
+            "no button while the picture is edited"
+        );
     }
 
     /// A frame named `name`, 400×300 at the origin, as the last child of

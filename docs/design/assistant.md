@@ -371,8 +371,8 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   sparkle and its chip's number, whatever *Show ask assistant* says. It shows while the panel is
   open or the layer is selected, on its own page; the selection's button gives way to it once every
   selected layer is attached. A click on it detaches the layer: the button is a toggle.
-- **The ask buttons, the scope button among them, hide** while the selection is dragged, resized or rotated, while text or a path
-  is edited, in Present, focus and private mode, and while the assistant is *Off*. They pass the
+- **The ask buttons, the scope button among them, hide** while the selection is dragged, resized or rotated, while text, a path
+  or a picture is edited, in Present, focus and private mode, and while the assistant is *Off*. They pass the
   wheel and a pinch to the canvas beneath, as its other overlays do.
 - **A chip is a reference, not a copy** (`ui::layer_chip`): the layer's id, name, kind and size go
   with the question, and the agent reads the rest through the tools, and a picture of it goes too
