@@ -33,7 +33,9 @@ pub enum Preset {
     Wave,
     /// The far side lifts on a ramp that steepens along the box.
     Rise,
-    /// The sides pinched in at mid-height; a negative bend widens them.
+    /// The sides pinched in at mid-height while the top and bottom bow out at
+    /// mid-width half as far, so the box keeps roughly its area; a negative
+    /// bend does the opposite.
     Squeeze,
     /// The middle of each edge swells and the swell falls off fast, so the
     /// corners barely move.
@@ -400,7 +402,10 @@ fn bent(preset: Preset, bend: f64, x: f64, y: f64, w: f64, h: f64) -> (f64, f64)
             let t = u + 0.5;
             (x, y - bend * h * t * t)
         }
-        Preset::Squeeze => (x * (1.0 - bend * (1.0 - 4.0 * v * v)), y),
+        Preset::Squeeze => (
+            x * (1.0 - bend * (1.0 - 4.0 * v * v)),
+            y * (1.0 + bend / 2.0 * (1.0 - 4.0 * u * u)),
+        ),
         Preset::Fisheye => {
             // A bulge whose swell falls off fast from each edge's middle.
             let (gu, gv) = (
@@ -944,10 +949,12 @@ mod tests {
     }
 
     /// Each of the later presets moves the box its own way: a wave crests twice,
-    /// a rise lifts only its far side, a squeeze pinches only the sides' middles,
-    /// a fisheye swells an edge's middle and barely moves a corner, a twist turns
-    /// the centre clockwise and leaves the corners. Vertical runs each across the
-    /// height.
+    /// a rise lifts only its far side, a squeeze pinches the sides and bows the
+    /// top out half as far, a fisheye swells an edge's middle and barely moves a
+    /// corner, a twist turns the centre clockwise and leaves the corners.
+    ///
+    /// flip: Squeeze leaving `y` alone (a vertical bulge the other way) → fails
+    /// at "the top bows out half as far".
     #[test]
     fn the_later_presets_bend_their_own_way() {
         let (r, c) = (b(), b().center());
@@ -982,7 +989,23 @@ mod tests {
         assert!(squeeze(0.5).map(at(-0.5, 0.0)).x > r.x0 + 1.0, "pinched in");
         assert!(squeeze(-0.5).map(at(-0.5, 0.0)).x < r.x0 - 1.0, "widened");
         assert!(squeeze(0.5).map(at(0.5, 0.5)).distance(at(0.5, 0.5)) < 1e-9);
-        assert!(squeeze(0.5).map(at(0.0, -0.5)).distance(at(0.0, -0.5)) < 1e-9);
+        let (side, top) = (
+            squeeze(0.5).map(at(-0.5, 0.0)).x - r.x0,
+            r.y0 - squeeze(0.5).map(at(0.0, -0.5)).y,
+        );
+        assert!(
+            (top / h - side / w / 2.0).abs() < 1e-9,
+            "the top bows out half as far: {side} {top}"
+        );
+        // Not a vertical bulge the other way, which leaves the top and bottom be.
+        let bulge = preset(Preset::Bulge, -0.5, true);
+        assert!(
+            squeeze(0.5)
+                .map(at(0.0, -0.5))
+                .distance(bulge.map(at(0.0, -0.5)))
+                > 1.0,
+            "not a vertical bulge"
+        );
 
         let eye = preset(Preset::Fisheye, 0.8, false);
         let swell = r.y0 - eye.map(at(0.0, -0.5)).y;
@@ -1011,10 +1034,11 @@ mod tests {
         );
         assert!(turn_in > turn_out && turn_out > 0.0, "{turn_in} {turn_out}");
 
-        // Vertical: the squeeze pinches the top and bottom; the rise pushes the
-        // bottom edge's far end left.
+        // Vertical: the squeeze pinches the top and bottom and bows the sides
+        // out; the rise pushes the bottom edge's far end left.
         let vertical = |p| preset(p, 0.5, true);
         assert!(vertical(Preset::Squeeze).map(at(0.0, -0.5)).y > r.y0 + 1.0);
+        assert!(vertical(Preset::Squeeze).map(at(-0.5, 0.0)).x < r.x0 - 1.0);
         assert!(vertical(Preset::Rise).map(at(0.0, 0.5)).x < c.x - 1.0);
     }
 

@@ -692,7 +692,7 @@ centre.
   | Bulge | y·(1 + bend·(1 − 4u²)) about the centre; a negative bend pinches |
   | Wave | two waves along the box, amplitude bend·h/2, both edges moving together |
   | Rise | y − bend·h·(u + ½)²: the near side stays and the far side lifts on a ramp that steepens |
-  | Squeeze | x·(1 − bend·(1 − 4v²)): the sides pinched in at mid-height; a negative bend widens them |
+  | Squeeze | x·(1 − bend·(1 − 4v²)) and y·(1 + bend/2·(1 − 4u²)): the sides pinched in at mid-height while the top and bottom bow out half as far, so the box keeps roughly its area; a negative bend does the opposite |
   | Fisheye | y·(1 + bend·e^(−u²/0.05)) and x·(1 + bend/2·e^(−v²/0.05)): the middle of each edge swells, the corners barely move, the sides across the bend half as much |
   | Twist | turned about the centre by bend·90°·(1 − r²/R²)², R the half-diagonal: most at the centre, none at the corners; the radius is kept, so it never folds |
 
