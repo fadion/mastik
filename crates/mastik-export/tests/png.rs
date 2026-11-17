@@ -689,6 +689,52 @@ fn a_dotted_stroke_rasterizes_as_dots_not_a_line() {
     );
 }
 
+/// A round-capped dotted stroke draws round dots, centred and inside (the
+/// fixture's rect fills its artboard, which clips an outside stroke).
+/// flip: `resolved_dashes` passing a round cap's zero-length dash through →
+/// fails at "drew nothing".
+#[test]
+fn a_round_dotted_stroke_rasterizes_as_dots() {
+    use mastik_core::kurbo::Cap;
+    use mastik_core::{Operation, Resolved, Stroke, Transaction};
+
+    for align in [StrokeAlign::Inside, StrokeAlign::Center] {
+        let (mut doc, _) = red_square_doc();
+        let ab = doc.get(doc.first_page()).unwrap().children()[0];
+        let rect = doc.get(ab).unwrap().children()[0];
+        doc.apply(&Transaction(vec![Operation::SetStrokes {
+            id: rect,
+            strokes: keyed_by_position([Stroke {
+                brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)).into(),
+                width: 4.0,
+                align,
+                dashes: vec![0.0, 12.0],
+                cap: Cap::Round,
+                ..Default::default()
+            }]),
+        }]))
+        .unwrap();
+        let res = Resolved::rebuild(&doc);
+        let (rgba, w, _) = VelloCpuRenderer::new().render_to_rgba(
+            &doc,
+            &res,
+            &viewport(),
+            &mastik_render::ImageStore::new(),
+            doc.first_page(),
+        );
+        let w = w as usize;
+        // Every row the stroke can reach, so the band is found whatever the alignment.
+        let ink = (0..100)
+            .flat_map(|y| (5..95).map(move |x| (y, x)))
+            .filter(|(y, x)| {
+                let p = (y * w + x) * 4;
+                rgba[p] < 60 && rgba[p + 1] < 60
+            })
+            .count();
+        assert!(ink > 0, "{align:?}: the round dotted stroke drew nothing");
+    }
+}
+
 /// A text node with `content` and `style`, on a white 100×100 artboard.
 fn decorated_doc(content: &str, style: mastik_core::TextStyle) -> (Document, Resolved) {
     use mastik_core::node::TextSizing;

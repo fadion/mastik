@@ -1816,12 +1816,13 @@ fn the_dash_style_does_not_depend_on_the_stroke_width() {
     );
 }
 
-/// A zero-length dash draws **nothing** with a butt or square cap, so the dots
-/// would vanish. The substitution is a square dot one width long with the gap
+/// A zero-length dash draws **nothing** under any cap, so the dots would vanish.
+/// The substitution is a square dot one width long under a butt or square cap,
+/// and a hair of a dash its round caps make a dot of under a round one, the gap
 /// shortened to match, which keeps the *period* and so keeps the spacing field
 /// meaning centre-to-centre under all three caps.
 #[test]
-fn a_dotted_stroke_survives_a_cap_that_cannot_draw_a_zero_length_dash() {
+fn a_dotted_stroke_survives_every_cap() {
     use mastik_core::Stroke;
     use mastik_core::geometry::{local_path, resolved_dashes};
     use mastik_core::kurbo::Cap;
@@ -1833,14 +1834,11 @@ fn a_dotted_stroke_survives_a_cap_that_cannot_draw_a_zero_length_dash() {
         cap,
         ..Default::default()
     };
-    // Round can draw a dot of no length at all, and keeps one.
-    assert_eq!(
-        resolved_dashes(&dotted(Cap::Round), 2.0, &path),
-        vec![0.0, 6.0]
-    );
-    for cap in [Cap::Butt, Cap::Square] {
+    let hair = 2.0 * mastik_core::geometry::ROUND_DOT_LENGTH;
+    for (cap, dot) in [(Cap::Butt, 2.0), (Cap::Square, 2.0), (Cap::Round, hair)] {
         let got = resolved_dashes(&dotted(cap), 2.0, &path);
-        assert_eq!(got, vec![2.0, 4.0], "{cap:?}");
+        assert!(got[0] > 0.0, "{cap:?}: a dash of no length draws nothing");
+        assert_eq!(got, vec![dot, 6.0 - dot], "{cap:?}");
         let period: f64 = got.iter().sum();
         assert!(
             (period - 6.0).abs() < 1e-9,

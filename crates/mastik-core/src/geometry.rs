@@ -1261,6 +1261,11 @@ fn append_arc(path: &mut BezPath, arc: &Arc) {
     }
 }
 
+/// A round dot's dash length, as a fraction of the stroke's width: long enough
+/// that no stroker drops it, short enough that its two round caps read as one
+/// round dot.
+pub const ROUND_DOT_LENGTH: f64 = 0.01;
+
 /// The dash pattern a backend should draw `stroke` with along `path`, at the
 /// `width` actually being laid down (which is the stroke's own except on a
 /// `Custom` side).
@@ -1268,9 +1273,11 @@ fn append_arc(path: &mut BezPath, arc: &Arc) {
 /// Two things the model leaves until here, because both need numbers it does not
 /// carry (§5.3):
 ///
-/// - **A dot is a zero-length dash**, which draws nothing under `Cap::Butt` or
-///   `Cap::Square`. Those get a square dot one width long, with the gap shortened
-///   so the **period is preserved**.
+/// - **A dot is a zero-length dash**, which draws nothing under any cap: the
+///   strokers drop a segment with no length before capping it. `Cap::Butt` and
+///   `Cap::Square` get a square dot one width long, `Cap::Round` a dash
+///   [`ROUND_DOT_LENGTH`] of the width long that its caps round into a dot, the
+///   gap shortened in both so the **period is preserved**.
 /// - **Fit to corners** scales the pattern so a whole number of periods spans the
 ///   outline, which needs the path's length.
 pub fn resolved_dashes(stroke: &Stroke, width: f64, path: &BezPath) -> Vec<f64> {
@@ -1280,11 +1287,14 @@ pub fn resolved_dashes(stroke: &Stroke, width: f64, path: &BezPath) -> Vec<f64> 
     let mut pattern = stroke.dashes.clone();
     if let [length, gap] = pattern.as_mut_slice()
         && *length <= 0.0
-        && stroke.cap != Cap::Round
     {
         let period = *gap;
-        *length = width.min(period);
-        *gap = (period - width).max(0.0);
+        let dot = match stroke.cap {
+            Cap::Round => width * ROUND_DOT_LENGTH,
+            _ => width,
+        };
+        *length = dot.min(period);
+        *gap = (period - dot).max(0.0);
     }
     if stroke.dash_fit {
         pattern = fitted_dashes(&pattern, path.perimeter(TOLERANCE));
