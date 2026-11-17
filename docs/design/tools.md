@@ -33,7 +33,7 @@ resize, drop outlines, the transform origin (pivot), *Transform again*, *Repeat 
   - **The canvas** marks each outermost selected layer but the key with a 12pt `color::accent()` diamond on a 1pt `color::on_accent()` rim at its visual centre, over the selection boxes and under the handles (`canvas::paint_visual_centre`), while the toggle is on, selection chrome shows, the mode is Normal and nothing is moving the selection: a drag or a field's scrub hides them (`visual_marks_shown`), since they are weighed on the committed document. `MastikApp::visual_marks` keeps them by document revision, selection and key layer. Past `canvas::VISUAL_MARKS_MAX` (100) layers to weigh, counting each outermost layer and every layer under one weighed by its ink (a frame and a text are weighed by their box), none are weighed or drawn: weighing unions all that ink on the UI thread, a selected group of 1,000 circles costing what 1,000 selected ones do, and that many diamonds are a field nobody reads. `align_centres_by_weight_while_the_toggle_is_on` and `a_key_layer_is_the_target_and_not_marked` pin the routing and the key, `the_marks_stop_past_the_layers_they_would_weigh` the cap.
 - **Flip** H/V across the selection's centreline, or about a single layer's pivot where one is placed; **quarter turns** either way. **Z-order** one step or all the way (`Ctrl`+`[`/`]`).
 - **Transform again** (the last move, rotation, scale or skew once more) and **Repeat around origin…** (copies turned about the pivot), below.
-- **Warp…**: an envelope round the selection, dragged by its corners or bent by an *Arc*, *Flag* or *Bulge* preset, baked into plain paths (below).
+- **Warp…**: an envelope round the selection, dragged by its corners or bent by one of eight presets (*Arc*, *Flag*, *Bulge*, *Wave*, *Rise*, *Squeeze*, *Fisheye*, *Twist*), baked into plain paths (below).
 - **Snapping**: alignment, equal-gap (gaps quoted on the canvas), baselines, the pixel grid. **Guides and view**: rulers and guides (`Shift`+`R`), View and Snap menus, focus mode.
 - **Eyedropper** (`I`, or a picker's pick button): picks a colour off any pixel in the window, chrome included, onto the selection or into one picker slot (below).
 - **Paint editing**: stacked fills and strokes (§6.3), solid or linear, radial or angular gradient, in a detached picker with the gradient's handles on the canvas; stroke options, per-corner radius and corner smoothing, polygon sides, star points and ratio, a polygon's or star's radius, an ellipse's start, sweep and ratio, a spiral's turns, an arc's sweep, opacity, artboard background. Bulk editing covers a multi-selection's transform, opacity, radius, fill and stroke list, Group Colors.
@@ -690,6 +690,15 @@ centre.
   | Arc | the box bent round a circle; the centreline keeps its length and its ends stay level, the top of the bend rises. It folds once the circle's radius falls to half the box's height across the bend, so `max_bend` is min(1, 2w/(πh)) |
   | Flag | one wave along the box, amplitude bend·h/2, up at the first quarter and down at the third |
   | Bulge | y·(1 + bend·(1 − 4u²)) about the centre; a negative bend pinches |
+  | Wave | two waves along the box, amplitude bend·h/2, both edges moving together |
+  | Rise | y − bend·h·(u + ½)²: the near side stays and the far side lifts on a ramp that steepens |
+  | Squeeze | x·(1 − bend·(1 − 4v²)): the sides pinched in at mid-height; a negative bend widens them |
+  | Fisheye | y·(1 + bend·e^(−u²/0.05)) and x·(1 + bend/2·e^(−v²/0.05)): the middle of each edge swells, the corners barely move, the sides across the bend half as much |
+  | Twist | turned about the centre by bend·90°·(1 − r²/R²)², R the half-diagonal: most at the centre, none at the corners; the radius is kept, so it never folds |
+
+  u and v are x/w and y/h about the centre, across the box the bend runs along. Vertical runs the
+  same map across the height, so it is the horizontal one mirrored about the diagonal: a vertical
+  twist turns the other way. Only *Arc* can fold.
 
 - **Refit.** Each outline is carried through the map in world space and refitted with cubics whose
   handles are the original handles carried by the map's derivative, halved until the fit is within
@@ -723,13 +732,16 @@ centre.
 
 - **Doors.** The layer menu's Structure row *Warp…* (`Item::Warp`, glyph `WARP`, `context-menus.md`
   §4) and the palette (keywords *distort*, *envelope*, *arc*,
-  *flag*, *bulge*, *bend*, *perspective*). No chord. Opening arms Select if a non-selecting tool was
+  *flag*, *bulge*, *wave*, *rise*, *squeeze*, *fisheye*, *twist*, *bend*, *perspective*). No chord. Opening arms Select if a non-selecting tool was
   armed, and closes the inspector's popovers and the Repeat and Blend cards.
 - **The canvas.** The session owns every press an armed pan does not (`normal_mode_input`), so the
   selection cannot change under it; `editing_in_place` hides the selection chrome. `canvas::draw_warp`
   draws the outline in `SELECT`; mesh lines at thirds in `SELECT_DIM` while a handle is held or the
   pointer is inside; under *Free distort* the four corners, under a preset one handle at the warped
-  top of the bend (the left edge when vertical, the flag's first crest). Every handle is a round dot
+  top of the bend (the left edge when vertical; the first crest of a flag or a wave, a rise's far
+  corner, the middle of a squeeze's near side). The bend follows the handle along the way a
+  positive bend moves it: outward, inward for a squeeze, sideways for a twist (`bend_toward`).
+  Every handle is a round dot
   in the shape dots' look (`shape_handles::DOT_R`), and the one in the hand inverts as a dragged
   shape dot does; the envelope is pulled by points, not by the selection's resize squares. While
   the bend handle is dragged a *Bend 40%* pill sits beside the pointer (`spacing::paint_label`).
@@ -746,8 +758,9 @@ centre.
   Escape to cancel*; on picking a preset *Warping: drag the handle to bend it; Enter to finish,
   Escape to cancel*.
 - **The warp bar** takes the path bar's place (`path_bar::warp_bar`, `app-pen-and-nodes.md`): *Free
-  distort*, *Arc*, *Flag* and *Bulge* as one choice (`WARP_FREE`, `WARP_ARC`, `WARP_FLAG`,
-  `WARP_BULGE`); a rule; *Reset the envelope* (`ARROW_COUNTER_CLOCKWISE`, dimmed *The envelope is
+  distort* and the eight presets in `Preset::ALL`'s order, *Arc*, *Flag*, *Bulge*, *Wave*, *Rise*,
+  *Squeeze*, *Fisheye*, *Twist*, as one choice with no rule between them, each tooltip its name
+  (`WARP_FREE` and `WARP_` plus the preset's name); a rule; *Reset the envelope* (`ARROW_COUNTER_CLOCKWISE`, dimmed *The envelope is
   already square*); a rule; *Done* (`Enter`). A preset hangs a card beside the bar as *Offset* does
   (`warp_card`): one label, *Bend*, as the Offset card has one (the lit bar button names the
   preset), over a value field in percent (−100 to 100) wearing the preset's glyph, and *Horizontal ·

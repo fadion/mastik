@@ -279,7 +279,7 @@ impl MastikApp {
         }
     }
 
-    /// The warp bar, in the path bar's place while an envelope is open: the four
+    /// The warp bar, in the path bar's place while an envelope is open: the
     /// envelopes as one choice, the way back to square, and the way out. A preset
     /// hangs its card beside it, as *Offset*'s does.
     fn warp_bar(&mut self, ctx: &egui::Context) {
@@ -298,6 +298,11 @@ impl MastikApp {
             shape(icon::WARP_ARC, "Arc", Some(Preset::Arc)),
             shape(icon::WARP_FLAG, "Flag", Some(Preset::Flag)),
             shape(icon::WARP_BULGE, "Bulge", Some(Preset::Bulge)),
+            shape(icon::WARP_WAVE, "Wave", Some(Preset::Wave)),
+            shape(icon::WARP_RISE, "Rise", Some(Preset::Rise)),
+            shape(icon::WARP_SQUEEZE, "Squeeze", Some(Preset::Squeeze)),
+            shape(icon::WARP_FISHEYE, "Fisheye", Some(Preset::Fisheye)),
+            shape(icon::WARP_TWIST, "Twist", Some(Preset::Twist)),
             E::Sep,
             E::Btn {
                 glyph: icon::ARROW_COUNTER_CLOCKWISE,
@@ -343,6 +348,11 @@ impl MastikApp {
             Preset::Arc => icon::WARP_ARC,
             Preset::Flag => icon::WARP_FLAG,
             Preset::Bulge => icon::WARP_BULGE,
+            Preset::Wave => icon::WARP_WAVE,
+            Preset::Rise => icon::WARP_RISE,
+            Preset::Squeeze => icon::WARP_SQUEEZE,
+            Preset::Fisheye => icon::WARP_FISHEYE,
+            Preset::Twist => icon::WARP_TWIST,
         };
         let at = egui::pos2(bar.right() + GAP, button.top());
         let mut pct = bend * 100.0;

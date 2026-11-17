@@ -1291,6 +1291,18 @@ pub mod icon {
     /// *Invert* in the Mask card: [`MASK`]'s fill swapped, a solid square with a
     /// round window, so what shows is what lies outside the mask.
     pub const MASK_INVERT: &str = "\u{f074}";
+    /// The warp bar's *Wave*: a band with two waves through it, where *Flag*
+    /// has one.
+    pub const WARP_WAVE: &str = "\u{f06f}";
+    /// The warp bar's *Rise*: a band whose far end lifts on a curve.
+    pub const WARP_RISE: &str = "\u{f070}";
+    /// The warp bar's *Squeeze*: a box whose sides pinch in at mid-height.
+    pub const WARP_SQUEEZE: &str = "\u{f071}";
+    /// The warp bar's *Fisheye*: a box whose four edges swell only in their
+    /// middles.
+    pub const WARP_FISHEYE: &str = "\u{f072}";
+    /// The warp bar's *Twist*: a box turned more at its middle than its corners.
+    pub const WARP_TWIST: &str = "\u{f073}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1598,6 +1610,11 @@ pub mod icon {
         ("trash-all", TRASH_ALL),
         ("sharpen", SHARPEN),
         ("mask-invert", MASK_INVERT),
+        ("warp-wave", WARP_WAVE),
+        ("warp-rise", WARP_RISE),
+        ("warp-squeeze", WARP_SQUEEZE),
+        ("warp-fisheye", WARP_FISHEYE),
+        ("warp-twist", WARP_TWIST),
     ];
 }
 
