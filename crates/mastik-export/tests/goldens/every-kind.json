@@ -753,11 +753,17 @@
         },
         {
           "id": "0:3",
+          "kind": "Sharpen",
+          "blur": 1.5,
+          "amount": 0.6
+        },
+        {
+          "id": "0:4",
           "kind": "BackgroundBlur",
           "blur": 5.0
         },
         {
-          "id": "0:4",
+          "id": "0:5",
           "kind": "Filters",
           "brightness": 1.1,
           "contrast": 0.9,

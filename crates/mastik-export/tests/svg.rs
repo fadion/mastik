@@ -3575,6 +3575,75 @@ fn shadow(blur: f64, dy: f64) -> Shadow {
     }
 }
 
+/// A sharpen is the renderers' unsharp mask: a blur at the radius's deviation,
+/// then an arithmetic `feComposite` of the layer at `1 + a` and the blur at `−a`,
+/// in stage one, so a shadow after it is cast from the sharpened layer; it grows
+/// no box. CSS has no unsharp mask, so code export writes the layer as inline
+/// SVG, which carries the filter, and says why.
+///
+/// flip: `k3` written as `+a` → fails at the composite assertion.
+#[test]
+fn a_sharpen_is_a_blur_and_an_arithmetic_composite() {
+    let out = with_effects(vec![
+        Effect::new(EffectKind::Sharpen {
+            amount: 0.6,
+            radius: 3.0,
+        }),
+        Effect::new(EffectKind::DropShadow(shadow(0.0, 4.0))),
+    ]);
+    assert!(
+        out.contains(r#"<feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="fx0b"/>"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            r#"<feComposite in="SourceGraphic" in2="fx0b" operator="arithmetic" k1="0" k2="1.6" k3="-0.6" k4="0" result="fx0"/>"#
+        ),
+        "{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.contains("<feColorMatrix") && l.contains("in=\"fx0\"")),
+        "the shadow's silhouette is the sharpened layer's:\n{out}"
+    );
+
+    let view = |svg: &str| {
+        svg.split("viewBox=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .map(str::to_string)
+    };
+    let alone = with_effects(vec![Effect::new(EffectKind::Sharpen {
+        amount: 2.0,
+        radius: 40.0,
+    })]);
+    assert_eq!(
+        view(&alone),
+        view(&with_effects(vec![])),
+        "no ink lands outside"
+    );
+
+    let mut f = common::fixture();
+    f.doc
+        .apply(&Transaction(vec![Operation::SetEffects {
+            id: f.rect,
+            effects: keyed_by_position([Effect::new(EffectKind::Sharpen {
+                amount: 0.6,
+                radius: 1.5,
+            })]),
+        }]))
+        .unwrap();
+    f.res = Resolved::rebuild(&f.doc);
+    let code = mastik_export::code::html::html_of(&f.doc, &f.res, &[f.artboard]);
+    assert!(
+        code.positioned
+            .iter()
+            .any(|s| s.ends_with("a sharpen, written as inline SVG")),
+        "{:?}",
+        code.positioned
+    );
+}
+
 /// A shadow's blend mode cannot reach what lies beneath a `<filter>`'s element,
 /// so the file draws it Normal and says so; code export, whose `drop-shadow()`
 /// has no mode either, draws the layer as a picture and says why; and the

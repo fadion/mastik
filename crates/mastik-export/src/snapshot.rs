@@ -359,8 +359,8 @@ pub struct SeriesSummary {
 pub struct EffectSummary {
     /// The effect's item id, which `bind_variable` names an effect's number by.
     pub id: mastik_core::ItemId,
-    /// `"DropShadow"`, `"InnerShadow"`, `"LayerBlur"`, `"BackgroundBlur"` or
-    /// `"Filters"`.
+    /// `"DropShadow"`, `"InnerShadow"`, `"LayerBlur"`, `"Sharpen"`,
+    /// `"BackgroundBlur"` or `"Filters"`.
     pub kind: String,
     /// Shadows only: offset, blur radius, spread, and the colour whose alpha is
     /// the shadow's opacity.
@@ -388,6 +388,9 @@ pub struct EffectSummary {
     pub saturation: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hue: Option<f64>,
+    /// `Sharpen` only: 1.0 is 100%. Its radius is `blur`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f64>,
 }
 
 /// A node's kind-specific geometry, as drawn. Lengths and coordinates are at
@@ -1133,6 +1136,7 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
         contrast: None,
         saturation: None,
         hue: None,
+        amount: None,
     };
     match &e.kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
@@ -1153,6 +1157,11 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
         EffectKind::LayerBlur { radius } => EffectSummary {
             blur: Some(round4(*radius)),
             ..base("LayerBlur")
+        },
+        EffectKind::Sharpen { amount, radius } => EffectSummary {
+            amount: Some(round4(*amount)),
+            blur: Some(round4(*radius)),
+            ..base("Sharpen")
         },
         EffectKind::BackgroundBlur { radius } => EffectSummary {
             blur: Some(round4(*radius)),

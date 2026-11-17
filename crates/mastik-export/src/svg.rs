@@ -556,6 +556,23 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
                 );
                 graphic = r;
             }
+            // `effects::sharpen`'s unsharp mask: `k2·layer + k3·blur`, which
+            // `feComposite` clamps as the renderers do.
+            EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
+                let _ = writeln!(
+                    out,
+                    "      <feGaussianBlur in=\"{graphic}\" stdDeviation=\"{}\" result=\"{r}b\"/>",
+                    fmt(mastik_core::effect::deviation(*radius)),
+                );
+                let _ = writeln!(
+                    out,
+                    "      <feComposite in=\"{graphic}\" in2=\"{r}b\" operator=\"arithmetic\" \
+                     k1=\"0\" k2=\"{}\" k3=\"{}\" k4=\"0\" result=\"{r}\"/>",
+                    fmt(1.0 + amount),
+                    fmt(-amount),
+                );
+                graphic = r;
+            }
             _ => {}
         }
     }
