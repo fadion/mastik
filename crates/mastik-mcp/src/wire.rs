@@ -141,16 +141,21 @@ pub enum Line {
     /// A line, its newline included when it had one, in the buffer.
     Read,
     /// A line past [`MAX_LINE`], read through its newline and dropped but for
-    /// its first [`LINE_HEAD`] bytes, which are in the buffer.
+    /// its first [`LINE_HEAD`] bytes and then its last [`LINE_TAIL`], which are
+    /// in the buffer.
     TooLong,
 }
 
-/// How much of a line past the limit is kept: enough to hold a request's `id`,
-/// which comes before its `params`.
+/// How much of a line past the limit is kept from its start: enough to hold a
+/// request's `id` when it comes before its `params`.
 pub const LINE_HEAD: usize = 4096;
 
+/// How much of a line past the limit is kept from its end: enough to hold a
+/// request's `id` when it comes last, as the TypeScript SDK writes it.
+pub const LINE_TAIL: usize = 1024;
+
 /// Read one line into `bytes` (cleared first), at most `max` bytes of it: a
-/// longer one is read on to its newline, keeping only its head.
+/// longer one is read on to its newline, keeping only its head and its tail.
 pub fn read_line(
     read: &mut impl BufRead,
     bytes: &mut Vec<u8>,
@@ -175,9 +180,11 @@ pub fn read_line(
             bytes.extend_from_slice(&chunk[..take]);
         } else {
             over = true;
-            bytes.truncate(LINE_HEAD);
-            let room = LINE_HEAD - bytes.len();
-            bytes.extend_from_slice(&chunk[..take.min(room)]);
+            bytes.extend_from_slice(&chunk[..take]);
+            // The middle goes, past the head and short of the tail.
+            if bytes.len() > LINE_HEAD + LINE_TAIL {
+                bytes.drain(LINE_HEAD..bytes.len() - LINE_TAIL);
+            }
         }
         read.consume(take);
         if done {
@@ -202,31 +209,56 @@ fn uri_path(name: &str) -> String {
     out
 }
 
-/// The answer to a line past [`MAX_LINE`] whose first bytes are `head`: under
-/// the request's own id when the head holds it, so the client is not left
-/// waiting on its call.
-pub fn too_long(head: &[u8]) -> Value {
+/// The answer to a line past [`MAX_LINE`] of which `kept` holds what
+/// [`read_line`] kept, its head and then its tail: under the request's own id
+/// when either holds it, so the client is not left waiting on its call.
+pub fn too_long(kept: &[u8]) -> Value {
     let message = format!("line too long: a request is at most {} MB", MAX_LINE >> 20);
-    failure(head_id(head), -32600, &message)
+    let (head, tail) = kept.split_at(kept.len().min(LINE_HEAD));
+    let id = head_id(head);
+    let id = if id.is_null() { tail_id(tail) } else { id };
+    failure(id, -32600, &message)
+}
+
+/// The `id` value at the start of `text`, after its `:`; null when it is no
+/// number or string. With it, the text left after the value.
+fn id_value(text: &str) -> (Value, &str) {
+    let Some(rest) = text.trim_start().strip_prefix(':') else {
+        return (Value::Null, text);
+    };
+    let rest = rest.trim_start();
+    let mut values = serde_json::Deserializer::from_str(rest).into_iter::<Value>();
+    match values.next() {
+        Some(Ok(id @ (Value::Number(_) | Value::String(_)))) => (id, &rest[values.byte_offset()..]),
+        _ => (Value::Null, text),
+    }
 }
 
 /// The `id` a request's head names before its `params`, else null.
 fn head_id(head: &[u8]) -> Value {
     let text = String::from_utf8_lossy(head);
     let before = text.find("\"params\"").map_or(&text[..], |at| &text[..at]);
-    let Some(at) = before.find("\"id\"") else {
-        return Value::Null;
-    };
-    let Some(rest) = before[at + 4..].trim_start().strip_prefix(':') else {
-        return Value::Null;
-    };
-    match serde_json::Deserializer::from_str(rest.trim_start())
-        .into_iter::<Value>()
-        .next()
-    {
-        Some(Ok(id @ (Value::Number(_) | Value::String(_)))) => id,
-        _ => Value::Null,
+    match before.find("\"id\"") {
+        Some(at) => id_value(&before[at + 4..]).0,
+        None => Value::Null,
     }
+}
+
+/// The `id` a request's tail names as its last member, else null: a key after a
+/// comma whose value only the object's closing brace follows, so an `id`
+/// closing an object nested in `params` (two braces after it) is not taken.
+fn tail_id(tail: &[u8]) -> Value {
+    let text = String::from_utf8_lossy(tail);
+    for (at, _) in text.rmatch_indices("\"id\"") {
+        if !text[..at].trim_end().ends_with(',') {
+            continue;
+        }
+        let (id, after) = id_value(&text[at + 4..]);
+        if !id.is_null() && after.trim() == "}" {
+            return id;
+        }
+    }
+    Value::Null
 }
 
 /// Answer requests read from `read` on `write` until the reader ends.
@@ -559,15 +591,17 @@ mod tests {
         assert_eq!(handler.0, 0, "dropped unrun");
     }
 
-    /// A line past the cap is read through its newline, only its head kept,
-    /// and answered as too long; the next line reads whole, across the
-    /// reader's chunks.
+    /// A line past the cap is read through its newline, only its head and its
+    /// tail kept, and answered as too long; the next line reads whole, across
+    /// the reader's chunks.
     ///
     /// flip: `read_line` keeping a line past `max` → fails at "too long".
     #[test]
     fn a_line_past_the_cap_is_dropped_and_the_next_is_read() {
-        let long = "x".repeat(LINE_HEAD + 50);
-        let input = format!("{long}\nshort\nend");
+        let head = "h".repeat(LINE_HEAD);
+        let tail = format!("{}\n", "t".repeat(LINE_TAIL - 1));
+        let long = format!("{head}{}{tail}", "m".repeat(5000));
+        let input = format!("{long}short\nend");
         let mut read = std::io::BufReader::with_capacity(8, input.as_bytes());
         let mut bytes = Vec::new();
         assert_eq!(
@@ -575,7 +609,8 @@ mod tests {
             Line::TooLong,
             "too long"
         );
-        assert_eq!(bytes, long.as_bytes()[..LINE_HEAD], "its head");
+        let kept = format!("{head}{tail}");
+        assert!(bytes == kept.as_bytes(), "its head and tail");
         assert_eq!(read_line(&mut read, &mut bytes, 20).unwrap(), Line::Read);
         assert_eq!(bytes, b"short\n");
         assert_eq!(read_line(&mut read, &mut bytes, 20).unwrap(), Line::Read);
@@ -595,6 +630,35 @@ mod tests {
         assert_eq!(too_long(named)["id"], json!("a-1"));
         let inner = br#"{"jsonrpc":"2.0","method":"tools/call","params":{"id":9,"#;
         assert_eq!(too_long(inner)["id"], Value::Null, "an id in params");
+    }
+
+    /// A client that writes `id` last, after `params` (the TypeScript SDK), is
+    /// answered under it too, from the line's kept tail; an `id` closing an
+    /// object inside `params` is not taken for it.
+    ///
+    /// flip: `too_long` reading only the head → fails at "its id after params";
+    /// `tail_id` taking an id any brace follows → fails at "an id in params".
+    #[test]
+    fn a_too_long_request_with_its_id_last_is_answered_under_it() {
+        let line = |end: &str| {
+            format!(
+                r#"{{"method":"tools/call","params":{{"name":"add_image","arguments":{{"data":"{}"}}{end}"#,
+                "A".repeat(LINE_HEAD + 3000)
+            ) + "\n"
+        };
+        let read = |line: String| {
+            let mut bytes = Vec::new();
+            let got = read_line(&mut line.as_bytes(), &mut bytes, 64).unwrap();
+            assert_eq!(got, Line::TooLong);
+            too_long(&bytes)["id"].clone()
+        };
+        assert_eq!(
+            read(line(r#"},"jsonrpc":"2.0","id":12}"#)),
+            json!(12),
+            "its id after params"
+        );
+        assert_eq!(read(line(r#"}, "id" : "b-2" }"#)), json!("b-2"));
+        assert_eq!(read(line(r#","id":9}}"#)), Value::Null, "an id in params");
     }
 
     /// An image answer travels as base64 with its media type.
