@@ -2278,10 +2278,11 @@ impl MastikApp {
         let ctx = ui.ctx();
         // A mirror axis's pill, which covers the canvas, and its drag wherever it goes.
         let grip = ctx.pointer_hover_pos().filter(|_| resp.contains_pointer());
-        if let Some(vertical) = self.mirror_grip(grip) {
-            ctx.set_cursor_icon(match vertical {
-                true => egui::CursorIcon::ResizeHorizontal,
-                false => egui::CursorIcon::ResizeVertical,
+        if let Some(grip) = self.mirror_grip(grip) {
+            ctx.set_cursor_icon(match grip {
+                crate::mirror::Grip::Axis(true) => egui::CursorIcon::ResizeHorizontal,
+                crate::mirror::Grip::Axis(false) => egui::CursorIcon::ResizeVertical,
+                crate::mirror::Grip::Centre => egui::CursorIcon::Move,
             });
             ctx.set_cursor_image(None);
             return;
@@ -7370,8 +7371,7 @@ impl MastikApp {
                 if let Some(frame) =
                     self.mirror_frame(run.first().and_then(|s| s.anchors.first()).map(|a| a.at))
                 {
-                    let (mirror, dropped) =
-                        crate::mirror::local_mirror(frame.axes, pen.parent_world);
+                    let (mirror, dropped) = crate::mirror::local_mirror(&frame, pen.parent_world);
                     crate::mirror::mark_mirrored(&mut tx, mirror);
                     saved_plain = dropped;
                 }
@@ -12431,7 +12431,10 @@ pub(crate) fn size_badge_marks(doc: &mastik_core::Document, ids: &[NodeId]) -> V
     if let NodeKind::Path { mirror, .. } = node.kind()
         && !mirror.is_none()
     {
-        marks.push(icon::FLIP_HORIZONTAL);
+        marks.push(match mirror.is_radial() {
+            true => icon::RADIAL_SYMMETRY,
+            false => icon::FLIP_HORIZONTAL,
+        });
     }
     marks
 }

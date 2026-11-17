@@ -226,7 +226,7 @@ impl MastikApp {
                 // Saved mirrored, so point editing keeps it so.
                 if let Some(frame) = self.mirror_frame(near) {
                     let (mirror, dropped) =
-                        crate::mirror::local_mirror(frame.axes, stroke.parent_world);
+                        crate::mirror::local_mirror(&frame, stroke.parent_world);
                     crate::mirror::mark_mirrored(&mut tx, mirror);
                     if dropped {
                         self.session.info(crate::mirror::SAVED_PLAIN);
@@ -459,6 +459,7 @@ mod tests {
         app.session.mirror = crate::mirror::Mirror {
             axes: crate::mirror::Axes::Vertical,
             at: Some(Point::new(300.0, 150.0)),
+            ..Default::default()
         };
         let trail = wave();
         app.pencil_press(trail[0]);

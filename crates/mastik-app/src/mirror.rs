@@ -8,6 +8,9 @@
 //! then the horizontal one over what that made, so a quarter drawn from axis to
 //! axis closes into a whole.
 //!
+//! *Around a centre* turns copies of the run about a point instead, each mirrored
+//! too if asked ([`radial`]); copies whose ends meet are welded.
+//!
 //! A path drawn mirrored is saved mirrored (`mastik_core::symmetry`), and point
 //! editing keeps it so ([`mastik_core::symmetry::symmetric_edit`]), its axis points
 //! locked to the axes;
@@ -15,14 +18,15 @@
 
 use crate::app::MastikApp;
 use crate::preview::{PenSubpath, PointRef};
-use crate::theme::color;
+use crate::theme::{color, icon};
 use crate::ui;
 use eframe::egui;
-use mastik_core::kurbo::{Affine, Point};
-use mastik_core::symmetry::{PathMirror, partners};
+use mastik_core::kurbo::{Affine, BezPath, Point};
+use mastik_core::symmetry::{PathMirror, partners_by};
 use mastik_core::{NodeId, NodeKind, Operation, Transaction};
 
-/// Which axes the pen and the pencil mirror across.
+/// The symmetry the pen and the pencil draw with: mirrored across one axis or
+/// both, or copies turned about a centre.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Axes {
     #[default]
@@ -30,11 +34,19 @@ pub(crate) enum Axes {
     Vertical,
     Horizontal,
     Both,
+    /// Copies turned about a centre ([`Mirror::copies`], [`Mirror::reflect`]).
+    Centre,
 }
 
 impl Axes {
     /// The flyout's rows, in order.
-    pub(crate) const ALL: [Axes; 4] = [Axes::Off, Axes::Vertical, Axes::Horizontal, Axes::Both];
+    pub(crate) const ALL: [Axes; 5] = [
+        Axes::Off,
+        Axes::Vertical,
+        Axes::Horizontal,
+        Axes::Both,
+        Axes::Centre,
+    ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -42,6 +54,7 @@ impl Axes {
             Axes::Vertical => "Vertical axis",
             Axes::Horizontal => "Horizontal axis",
             Axes::Both => "Both axes",
+            Axes::Centre => "Around a centre",
         }
     }
 
@@ -54,36 +67,70 @@ impl Axes {
     }
 }
 
+/// How many copies a centre starts with.
+const START_COPIES: u8 = 6;
+
 /// The document's mirror: the axes, and where they cross once dragged there.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Mirror {
     pub(crate) axes: Axes,
-    /// `None` until an axis is dragged: the middle of the frame being drawn in,
-    /// or of the view on open canvas.
+    /// `None` until an axis or the centre is dragged: the middle of the frame
+    /// being drawn in, or of the view on open canvas.
     pub(crate) at: Option<Point>,
+    /// Under [`Axes::Centre`], how many copies turn about it, the drawn one
+    /// counted; kept while another choice is ticked.
+    pub(crate) copies: u8,
+    /// Under [`Axes::Centre`], each copy mirrored too.
+    pub(crate) reflect: bool,
 }
 
-/// The axes a new run is mirrored across, in the space they are axis-aligned
-/// in: the world for the drawing switch, a mirrored path's own space for its axes.
+impl Default for Mirror {
+    fn default() -> Self {
+        Self {
+            axes: Axes::Off,
+            at: None,
+            copies: START_COPIES,
+            reflect: false,
+        }
+    }
+}
+
+/// The symmetry a new run is drawn with, in the space its axes are
+/// axis-aligned in: the world for the drawing switch, a symmetric path's own
+/// space for its own.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Frame {
     pub(crate) axes: Axes,
-    /// Where the axes cross, in this frame's space.
+    /// Where the axes cross, or the centre, in this frame's space.
     pub(crate) at: Point,
     pub(crate) to_world: Affine,
-    /// A mirrored path's own axes, which are where its points put them and so
-    /// have no grab pill.
+    /// A symmetric path's own, which is where its points put it and so has no
+    /// grab.
     pub(crate) own: bool,
+    /// Under [`Axes::Centre`], the copies and whether each is mirrored.
+    pub(crate) copies: u8,
+    pub(crate) reflect: bool,
+    /// Under [`Axes::Centre`], the angle of the first slice line from the centre:
+    /// straight up for the switch; a mirror line of a path's own.
+    pub(crate) phase: f64,
 }
 
-/// The axes' grab pills as last painted, which a press on leaves to them: the pen,
-/// the pencil and the *On axis* chip stay out of a pill and its drag.
+/// What a mirror grab moves: one axis, `true` for the vertical, or the centre.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Grip {
+    Axis(bool),
+    Centre,
+}
+
+/// The axes' grab pills, or the centre's grip, as last painted, which a press on
+/// leaves to them: the pen, the pencil and the *On axis* chip stay out of a grip
+/// and its drag.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Grips {
-    /// Each pill's hit rect in screen pt, and whether it moves the vertical axis.
-    pub(crate) pills: Vec<(bool, egui::Rect)>,
-    /// The axis a pill drag is moving, while one is: `true` for the vertical.
-    pub(crate) held: Option<bool>,
+    /// Each grip's hit rect in screen pt, and what it moves.
+    pub(crate) pills: Vec<(Grip, egui::Rect)>,
+    /// What a grip drag is moving, while one is.
+    pub(crate) held: Option<Grip>,
     /// Where the axes were when the held pill was pressed, which a right-click
     /// puts back (`MastikApp::cancel_gesture`). Kept across frames while held.
     pub(crate) from: Option<Option<Point>>,
@@ -108,11 +155,23 @@ pub(crate) fn mark_mirrored(tx: &mut Transaction, mirror: PathMirror) {
 pub(crate) const SAVED_PLAIN: &str =
     "Mirrored, saved as a plain path: the frame is turned, so point edits will not mirror";
 
-/// The switch's world `axes` as the path's own, in a parent placed by
+/// The symmetry `frame` drew with as the path's own, in a parent placed by
 /// `parent_world`: a world axis that lies along a local one (the parent turned by
-/// a quarter turn or none) is kept as that axis. `true` beside it when an axis
-/// could not be kept, a parent turned some other way, for the status to say.
-pub(crate) fn local_mirror(axes: Axes, parent_world: Affine) -> (PathMirror, bool) {
+/// a quarter turn or none) is kept as that axis, and a centre's copies wherever
+/// the parent keeps angles (turned, mirrored or scaled evenly). `true` beside it
+/// when the rule could not be kept, for the status to say.
+pub(crate) fn local_mirror(frame: &Frame, parent_world: Affine) -> (PathMirror, bool) {
+    let axes = frame.axes;
+    if axes == Axes::Centre {
+        let [a, b, c, d, _, _] = parent_world.as_coeffs();
+        let (u, v) = (a.hypot(b), c.hypot(d));
+        let tilt = 1e-6 * u.max(v);
+        let even = (u - v).abs() <= tilt && (a * c + b * d).abs() <= tilt * u.max(v);
+        return match even {
+            true => (PathMirror::around(frame.copies, frame.reflect), false),
+            false => (PathMirror::NONE, true),
+        };
+    }
     let inv = parent_world.inverse();
     let mut out = PathMirror::NONE;
     let mut dropped = false;
@@ -266,6 +325,201 @@ fn across(mut s: PenSubpath, vertical: bool, c: f64, tol: f64) -> Vec<PenSubpath
     }
 }
 
+/// The lines a centre's copies are cut along, as angles from it: one slice line
+/// per copy from `frame.phase`, and under `reflect` a mirror line halfway
+/// between each pair, the second of each pair returned.
+pub(crate) fn slice_lines(frame: &Frame) -> Vec<(f64, bool)> {
+    let n = frame.copies.max(mastik_core::symmetry::MIN_COPIES);
+    let step = std::f64::consts::TAU / f64::from(n);
+    let mut out: Vec<(f64, bool)> = (0..n)
+        .map(|k| (frame.phase + step * f64::from(k), false))
+        .collect();
+    if frame.reflect {
+        out.extend((0..n).map(|k| (frame.phase + step * (f64::from(k) + 0.5), true)));
+    }
+    out
+}
+
+/// `p` pulled onto `frame`'s centre or one of its lines within `tol`, and what it
+/// landed on: `Some(true)` for the centre, `Some(false)` for a line.
+pub(crate) fn snap_radial(p: Point, frame: &Frame, tol: f64) -> (Point, Option<bool>) {
+    let c = frame.at;
+    if (p - c).hypot() <= tol {
+        return (c, Some(true));
+    }
+    for (angle, _) in slice_lines(frame) {
+        let d = mastik_core::kurbo::Vec2::new(angle.cos(), angle.sin());
+        let t = (p - c).dot(d);
+        if t > 0.0 && d.cross(p - c).abs() <= tol {
+            return (c + d * t, Some(false));
+        }
+    }
+    (p, None)
+}
+
+/// `drawn` and its copies turned about `frame`'s centre, each mirrored too under
+/// `reflect` (across the line halfway through the first slice, then turned),
+/// an open run's ends within `tol` of the centre or a line pulled onto it. Copies
+/// whose ends meet are welded into one run, and a run whose ends meet closes, so
+/// a petal drawn from line to line closes and a ring drawn from slice to slice
+/// comes round whole.
+pub(crate) fn radial(mut drawn: PenSubpath, frame: &Frame, tol: f64) -> Vec<PenSubpath> {
+    use mastik_core::symmetry::{reflect_through, turn_about};
+    let c = frame.at;
+    let n = frame.copies.max(mastik_core::symmetry::MIN_COPIES);
+    let step = std::f64::consts::TAU / f64::from(n);
+    let len = drawn.anchors.len();
+    if !drawn.closed && len >= 2 {
+        for i in [0, len - 1] {
+            drawn.anchors[i].at = snap_radial(drawn.anchors[i].at, frame, tol).0;
+        }
+    }
+    let size = drawn
+        .anchors
+        .iter()
+        .map(|a| (a.at - c).hypot())
+        .fold(0.0, f64::max);
+    let exact = 1e-6 * (1.0 + size);
+    let carry = |s: &PenSubpath, map: Affine| {
+        let mut one = [s.clone()];
+        crate::tools::map_subpaths(&mut one, map);
+        let [m] = one;
+        m
+    };
+    let mut base = vec![drawn.clone()];
+    if frame.reflect {
+        // A reflection turns the winding, so the image runs backwards to wind
+        // with the run, as the mirror's does.
+        let mut image = carry(&drawn, reflect_through(c, frame.phase + step / 2.0));
+        image.reverse();
+        base.push(image);
+    }
+    let mut pieces: Vec<PenSubpath> = Vec::new();
+    for k in 0..n {
+        let turn = turn_about(c, step * f64::from(k));
+        for b in &base {
+            let piece = carry(b, turn);
+            // A closed run that is already its own copy comes once.
+            let twin = |q: &PenSubpath| {
+                q.closed
+                    && q.anchors.len() == piece.anchors.len()
+                    && piece
+                        .anchors
+                        .iter()
+                        .all(|a| q.anchors.iter().any(|b| (a.at - b.at).hypot() <= exact))
+            };
+            if !(piece.closed && pieces.iter().any(twin)) {
+                pieces.push(piece);
+            }
+        }
+    }
+    weld(pieces, exact)
+}
+
+/// Open runs whose ends meet within `exact` joined into one, either way round,
+/// the join keeping the arriving handle of one and the leaving handle of the
+/// other. A run whose two ends meet is closed first, and again after each join,
+/// so petals that share the centre close one by one rather than chaining.
+fn weld(mut pieces: Vec<PenSubpath>, exact: f64) -> Vec<PenSubpath> {
+    let meet = |a: Point, b: Point| (a - b).hypot() <= exact;
+    let close = |s: &mut PenSubpath| {
+        let n = s.anchors.len();
+        if !s.closed && n > 2 && meet(s.anchors[0].at, s.anchors[n - 1].at) {
+            let tail = s.anchors.pop().expect("more than two");
+            s.anchors[0].back = tail.back;
+            s.closed = true;
+        }
+    };
+    pieces.iter_mut().for_each(close);
+    let first = |s: &PenSubpath| s.anchors.first().map(|a| a.at);
+    let last = |s: &PenSubpath| s.anchors.last().map(|a| a.at);
+    let join = |mut a: PenSubpath, b: PenSubpath| {
+        if let (Some(end), Some(start)) = (a.anchors.last_mut(), b.anchors.first()) {
+            end.out = start.out;
+        }
+        a.anchors.extend_from_slice(&b.anchors[1..]);
+        a
+    };
+    'again: loop {
+        for i in 0..pieces.len() {
+            for j in 0..pieces.len() {
+                let (a, b) = (&pieces[i], &pieces[j]);
+                if i == j || a.closed || b.closed || a.anchors.len() < 2 || b.anchors.len() < 2 {
+                    continue;
+                }
+                let (Some(a0), Some(a1), Some(b0), Some(b1)) =
+                    (first(a), last(a), first(b), last(b))
+                else {
+                    continue;
+                };
+                // Only where two ends meet: where more do (copies drawn from the
+                // centre), any pairing is a guess, and each copy closes on its own.
+                let ends_at = |p: Point| {
+                    pieces
+                        .iter()
+                        .filter(|s| !s.closed && s.anchors.len() >= 2)
+                        .flat_map(|s| [first(s), last(s)])
+                        .flatten()
+                        .filter(|q| meet(*q, p))
+                        .count()
+                };
+                let way = if meet(a1, b0) && ends_at(a1) == 2 {
+                    0
+                } else if meet(a1, b1) && ends_at(a1) == 2 {
+                    1
+                } else if meet(a0, b0) && ends_at(a0) == 2 {
+                    2
+                } else {
+                    continue;
+                };
+                let (hi, lo) = (i.max(j), i.min(j));
+                let one = pieces.remove(hi);
+                let other = pieces.remove(lo);
+                let (mut a, mut b) = if i > j { (one, other) } else { (other, one) };
+                match way {
+                    1 => b.reverse(),
+                    2 => a.reverse(),
+                    _ => {}
+                }
+                let mut joined = join(a, b);
+                close(&mut joined);
+                pieces.push(joined);
+                continue 'again;
+            }
+        }
+        break;
+    }
+    pieces
+}
+
+/// The maps that carry a symmetric path onto itself, about `at` (its
+/// [`mastik_core::symmetry::origin`]), each with whether it is its own inverse:
+/// the reflection across each axis it is mirrored on, or a centre's turns and,
+/// when each copy is mirrored, its reflections. Applied one after another over a
+/// growing set, they reach every image.
+fn symmetry_maps(path: &BezPath, radii: &[f64], m: PathMirror, at: Point) -> Vec<(Affine, bool)> {
+    use mastik_core::symmetry::{reflect_through, reflection_axis, turn_about};
+    if !m.is_radial() {
+        return [(true, at.x, m.vertical), (false, at.y, m.horizontal)]
+            .into_iter()
+            .filter(|(_, _, on)| *on)
+            .map(|(vertical, c, _)| (reflection(vertical, c), true))
+            .collect();
+    }
+    let step = std::f64::consts::TAU / f64::from(m.copies);
+    let mut out: Vec<(Affine, bool)> = (1..m.copies)
+        .map(|k| (turn_about(at, step * f64::from(k)), false))
+        .collect();
+    if m.reflect
+        && let Some(axis) = reflection_axis(path, radii)
+    {
+        out.extend(
+            (0..m.copies).map(|k| (reflect_through(at, axis + step * f64::from(k) / 2.0), true)),
+        );
+    }
+    out
+}
+
 /// How near an axis, in screen pt, an end is taken as on it.
 pub(crate) const ON_AXIS_PT: f64 = 8.0;
 
@@ -274,6 +528,9 @@ const OWN_AXIS_OVERHANG: f64 = 16.0;
 
 /// The grab pill at an axis's end, in screen pt.
 const PILL: egui::Vec2 = egui::vec2(16.0, 10.0);
+
+/// The centre's grip across, in screen pt.
+const CENTRE_GRIP: f32 = 14.0;
 
 impl MastikApp {
     /// The switch the next new run follows: inside a path edit that edit's own,
@@ -348,14 +605,14 @@ impl MastikApp {
 
     /// The axis whose pill claims the pointer at `screen`, or whose pill is being
     /// dragged: `true` for the vertical. `screen` is `None` off the canvas.
-    pub(crate) fn mirror_grip(&self, screen: Option<egui::Pos2>) -> Option<bool> {
+    pub(crate) fn mirror_grip(&self, screen: Option<egui::Pos2>) -> Option<Grip> {
         self.mirror_grips.held.or_else(|| {
             let p = screen?;
             self.mirror_grips
                 .pills
                 .iter()
                 .find(|(_, r)| r.contains(p))
-                .map(|(vertical, _)| *vertical)
+                .map(|(grip, _)| *grip)
         })
     }
 
@@ -391,7 +648,30 @@ impl MastikApp {
             return None;
         }
         let world = self.session.resolved.world_transform(id)?;
-        Some((*mirror, mastik_core::symmetry::centre(path), world))
+        Some((*mirror, mastik_core::symmetry::origin(path, *mirror), world))
+    }
+
+    /// A radial path's own first slice line, as an angle from its centre: a line
+    /// it is mirrored across, or the way to its first anchor off the centre.
+    fn own_phase(&self, id: NodeId, c: Point) -> f64 {
+        let s = &self.session;
+        let Some(NodeKind::Path {
+            path, corner_radii, ..
+        }) = s.resolved.used_kind(&s.doc, id)
+        else {
+            return -std::f64::consts::FRAC_PI_2;
+        };
+        mastik_core::symmetry::reflection_axis(path, corner_radii)
+            .or_else(|| {
+                let b = path.control_box();
+                let tol = 1e-6 * (1.0 + b.width().max(b.height()));
+                mastik_core::geometry::anchor_runs(path)
+                    .iter()
+                    .flat_map(|r| r.points.clone())
+                    .find(|p| (*p - c).hypot() > tol)
+                    .map(|p| (p - c).atan2())
+            })
+            .unwrap_or(-std::f64::consts::FRAC_PI_2)
     }
 
     /// The mirror a new run follows, if any: inside a mirrored path the node tool
@@ -406,10 +686,13 @@ impl MastikApp {
             },
             None => self.edited_path(),
         };
-        if let Some((m, at, to_world)) = editing.and_then(|id| self.path_mirror(id)) {
-            let axes = match (m.vertical, m.horizontal) {
-                (true, true) => Axes::Both,
-                (true, false) => Axes::Vertical,
+        if let Some(id) = editing
+            && let Some((m, at, to_world)) = self.path_mirror(id)
+        {
+            let axes = match (m.is_radial(), m.vertical, m.horizontal) {
+                (true, ..) => Axes::Centre,
+                (_, true, true) => Axes::Both,
+                (_, true, false) => Axes::Vertical,
                 _ => Axes::Horizontal,
             };
             return Some(Frame {
@@ -417,17 +700,24 @@ impl MastikApp {
                 at,
                 to_world,
                 own: true,
+                copies: m.copies,
+                reflect: m.reflect,
+                phase: self.own_phase(id, at),
             });
         }
         // The node tool shows the switch's axes only once its pen is armed.
         if self.pen.is_none() && self.tool == crate::tools::Tool::Node && !self.pen_bias {
             return None;
         }
+        let m = self.mirror();
         self.mirror_axes(near).map(|(axes, at)| Frame {
             axes,
             at,
             to_world: Affine::IDENTITY,
             own: false,
+            copies: m.copies,
+            reflect: m.reflect,
+            phase: -std::f64::consts::FRAC_PI_2,
         })
     }
 
@@ -448,7 +738,10 @@ impl MastikApp {
         let mut local = [drawn];
         crate::tools::map_subpaths(&mut local, frame.to_world.inverse());
         let [local] = local;
-        let mut subs = mirrored(local, frame.axes, frame.at, tol);
+        let mut subs = match frame.axes {
+            Axes::Centre => radial(local, &frame, tol),
+            axes => mirrored(local, axes, frame.at, tol),
+        };
         crate::tools::map_subpaths(&mut subs, frame.to_world);
         subs
     }
@@ -462,6 +755,10 @@ impl MastikApp {
         let tol = self.axis_tol(&frame);
         let (axes, at) = (frame.axes, frame.at);
         let local = frame.to_world.inverse() * p;
+        if axes == Axes::Centre {
+            let (q, on) = snap_radial(local, &frame, tol);
+            return (frame.to_world * q, on.is_some());
+        }
         let mut q = local;
         let mut on = false;
         if axes.vertical() && (local.x - at.x).abs() <= tol {
@@ -522,14 +819,8 @@ impl MastikApp {
         // the one point there.
         const MIDDLE: f64 = 0.02;
         let mut segs: Vec<(PointRef, f64)> = vec![(at, t)];
-        for (vertical, cv, on) in [
-            (true, c.x, mirror.vertical),
-            (false, c.y, mirror.horizontal),
-        ] {
-            if !on {
-                continue;
-            }
-            let pairs = partners(&subs, vertical, cv, tol);
+        for (map, involution) in symmetry_maps(path, corner_radii, mirror, c) {
+            let pairs = partners_by(&subs, |p| map * p, involution, tol);
             for (seg, t) in segs.clone() {
                 let Some((start, end)) = crate::tools::segment_ends(&subs, seg) else {
                     continue;
@@ -605,14 +896,8 @@ impl MastikApp {
             .flat_map(|(s, sub)| (0..sub.anchors.len()).map(move |i| (s, i)))
             .collect();
         let tol = 1e-6 * (1.0 + path.control_box().width().max(path.control_box().height()));
-        for (vertical, c, on) in [
-            (true, at.x, mirror.vertical),
-            (false, at.y, mirror.horizontal),
-        ] {
-            if !on {
-                continue;
-            }
-            let pairs = partners(&subs, vertical, c, tol);
+        for (map, involution) in symmetry_maps(path, corner_radii, mirror, at) {
+            let pairs = partners_by(&subs, |p| map * p, involution, tol);
             for p in out.clone() {
                 let Some(k) = refs.iter().position(|r| *r == p) else {
                     continue;
@@ -627,14 +912,31 @@ impl MastikApp {
         out
     }
 
+    /// The glyph the path bar's symmetry button wears: the mirror's, or a
+    /// centre's petals under *Around a centre*.
+    pub(crate) fn symmetry_glyph(&self) -> &'static str {
+        match self.mirror().axes {
+            Axes::Centre => icon::RADIAL_SYMMETRY,
+            _ => icon::FLIP_HORIZONTAL,
+        }
+    }
+
     /// The words the status line keeps while the pen or the pencil mirrors.
     pub(crate) fn mirror_status(&self) -> Option<String> {
-        let axes = self.mirror().axes;
+        let m = self.mirror();
+        let axes = m.axes;
         let across = match axes {
             Axes::Off => return None,
             Axes::Vertical => "the vertical axis",
             Axes::Horizontal => "the horizontal axis",
             Axes::Both => "both axes",
+            Axes::Centre => {
+                let mirrored = if m.reflect { ", each mirrored" } else { "" };
+                return Some(format!(
+                    "Repeating {} copies around the centre{mirrored} · draw from one line to the next to close the shape",
+                    m.copies
+                ));
+            }
         };
         let close = match axes {
             Axes::Both => "draw from one axis to the other to close the shape",
@@ -704,6 +1006,11 @@ impl MastikApp {
             .map(|b| self.world_rect_to_screen(b, rect, ppp))
             .unwrap_or_else(|| self.canvas_inner(rect));
         let at_s = self.to_screen(at, rect, ppp);
+        if axes == Axes::Centre {
+            self.centre_chrome(ui, painter, rect, ppp, &mirror, span, from);
+            self.mirrored_run_chrome(ui, painter, rect, ppp, hover);
+            return;
+        }
         let mut pills = Vec::new();
         if axes.vertical() {
             let x = at_s.x;
@@ -736,7 +1043,7 @@ impl MastikApp {
             painter.rect_filled(r, egui::CornerRadius::same(3), ink);
             let id = ui.id().with(("mirror-axis", vertical));
             let hit = r.expand(3.0);
-            self.mirror_grips.pills.push((vertical, hit));
+            self.mirror_grips.pills.push((Grip::Axis(vertical), hit));
             let resp = ui
                 .interact(hit, id, egui::Sense::click_and_drag())
                 .on_hover_cursor(match vertical {
@@ -745,7 +1052,7 @@ impl MastikApp {
                 })
                 .on_hover_text("Drag to move the axis · double-click to put it back");
             if resp.dragged() || resp.is_pointer_button_down_on() {
-                self.mirror_grips.held = Some(vertical);
+                self.mirror_grips.held = Some(Grip::Axis(vertical));
                 self.mirror_grips.from = Some(from.unwrap_or(self.mirror().at));
             }
             if ui::double_clicked(ui, &resp) {
@@ -796,6 +1103,27 @@ impl MastikApp {
         };
         let ends =
             |a: Point, b: Point| [a, b].map(|p| self.to_screen(mirror.to_world * p, rect, ppp));
+        if mirror.axes == Axes::Centre {
+            // Each line from the centre to the farthest corner of the box, and past.
+            let c = mirror.at;
+            let reach = [
+                Point::new(b.x0, b.y0),
+                Point::new(b.x1, b.y0),
+                Point::new(b.x0, b.y1),
+                Point::new(b.x1, b.y1),
+            ]
+            .iter()
+            .map(|p| (*p - c).hypot())
+            .fold(0.0, f64::max)
+                + over;
+            for (angle, mid) in slice_lines(mirror) {
+                let d = mastik_core::kurbo::Vec2::new(angle.cos(), angle.sin());
+                let [a, z] = ends(c, c + d * reach);
+                let (on, off) = if mid { (1.0, 4.0) } else { (6.0, 4.0) };
+                painter.extend(egui::Shape::dashed_line(&[a, z], line, on, off));
+            }
+            return;
+        }
         if mirror.axes.vertical() {
             let x = mirror.at.x;
             let [a, z] = ends(Point::new(x, b.y0 - over), Point::new(x, b.y1 + over));
@@ -805,6 +1133,75 @@ impl MastikApp {
             let y = mirror.at.y;
             let [a, z] = ends(Point::new(b.x0 - over, y), Point::new(b.x1 + over, y));
             painter.extend(egui::Shape::dashed_line(&[a, z], line, 6.0, 4.0));
+        }
+    }
+
+    /// The switch's centre while drawing around it: a dashed slice line from the
+    /// centre to the edge of `span` (screen) per copy, a dotted mirror line
+    /// halfway between each pair when each copy is mirrored, and the centre's
+    /// grip. Dragging the grip moves the centre; a double-click puts it back.
+    #[allow(clippy::too_many_arguments)]
+    fn centre_chrome(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        ppp: f32,
+        frame: &Frame,
+        span: egui::Rect,
+        from: Option<Option<Point>>,
+    ) {
+        let ink = color::accent_400();
+        let line = egui::Stroke::new(1.0, ink);
+        let c = self.to_screen(frame.at, rect, ppp);
+        for (angle, mid) in slice_lines(frame) {
+            let d = egui::vec2(angle.cos() as f32, angle.sin() as f32);
+            // Where the ray leaves `span`: the nearest of the sides it heads for.
+            let side = |p: f32, v: f32, lo: f32, hi: f32| match v {
+                v if v > 1e-6 => (hi - p) / v,
+                v if v < -1e-6 => (lo - p) / v,
+                _ => f32::INFINITY,
+            };
+            let t = side(c.x, d.x, span.left(), span.right()).min(side(
+                c.y,
+                d.y,
+                span.top(),
+                span.bottom(),
+            ));
+            if !t.is_finite() || t <= 0.0 {
+                continue;
+            }
+            let (on, off) = if mid { (1.0, 4.0) } else { (6.0, 4.0) };
+            painter.extend(egui::Shape::dashed_line(&[c, c + d * t], line, on, off));
+        }
+        // The grip: an accent disc ringed and dotted in the canvas's handle white.
+        painter.circle(
+            c,
+            CENTRE_GRIP / 2.0,
+            color::accent(),
+            egui::Stroke::new(1.5, color::POINT),
+        );
+        painter.circle_filled(c, 1.5, color::POINT);
+        let hit = egui::Rect::from_center_size(c, egui::vec2(CENTRE_GRIP, CENTRE_GRIP)).expand(3.0);
+        self.mirror_grips.pills.push((Grip::Centre, hit));
+        let resp = ui
+            .interact(
+                hit,
+                ui.id().with("mirror-centre"),
+                egui::Sense::click_and_drag(),
+            )
+            .on_hover_cursor(egui::CursorIcon::Move)
+            .on_hover_text("Drag to move the centre · double-click to put it back");
+        if resp.dragged() || resp.is_pointer_button_down_on() {
+            self.mirror_grips.held = Some(Grip::Centre);
+            self.mirror_grips.from = Some(from.unwrap_or(self.mirror().at));
+        }
+        if ui::double_clicked(ui, &resp) {
+            self.mirror_mut().at = None;
+        } else if resp.dragged()
+            && let Some(p) = resp.interact_pointer_pos()
+        {
+            self.mirror_mut().at = Some(self.to_world(p, rect, ppp));
         }
     }
 
@@ -884,7 +1281,12 @@ impl MastikApp {
                 && !(self.pen_bias && ctrl);
         if placing && let Some(on) = hover.and_then(|w| self.lands_on_axis(w, shift)) {
             let at = self.to_screen(on, rect, ppp);
-            crate::canvas::draw_snap_target(painter, at, "On axis", false);
+            let centre = self.mirror_frame(Some(on)).is_some_and(|f| {
+                f.axes == Axes::Centre
+                    && (f.to_world * f.at - on).hypot() <= 1e-9 * (1.0 + on.to_vec2().hypot())
+            });
+            let name = if centre { "On centre" } else { "On axis" };
+            crate::canvas::draw_snap_target(painter, at, name, false);
         }
     }
 
@@ -905,30 +1307,90 @@ impl MastikApp {
     /// the View menu's rows, and *Reset axis*.
     pub(crate) fn mirror_flyout(&mut self, ctx: &egui::Context, button: egui::Rect) {
         let id = egui::Id::new("mirror-flyout");
-        let current = self.mirror().axes;
+        let m = self.mirror();
+        let current = m.axes;
+        let centre = current == Axes::Centre;
         let mut pick = None;
         let mut reset = false;
+        let mut copies = f64::from(m.copies);
+        let mut flip_reflect = false;
+        // The five choices, the copies field (a labelled control, about two rows),
+        // the mirror check and *Reset*.
+        let rows = Axes::ALL.len() + 2 + 1 + 1;
         let card = ui::flyout(id, button, 200.0)
             .order(egui::Order::Foreground)
-            .show(ctx, (Axes::ALL.len() + 1, 1), |ui| {
+            .show(ctx, (rows, 1), |ui| {
                 for axes in Axes::ALL {
                     if ui::menu_check(ui, axes.label(), axes == current, ui::MENU_ROW_H) {
                         pick = Some(axes);
                     }
                 }
+                // Under *Around a centre*, indented to its label; disabled under
+                // the others, so the flyout keeps one height.
+                ui.horizontal(|ui| {
+                    ui.add_space(ui::MENU_LABEL_X);
+                    ui.vertical(|ui| {
+                        ui::disable_unless(ui, centre, |ui| {
+                            ui::labelled(ui, "Copies", |ui| {
+                                let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
+                                ui::value_field(
+                                    ui,
+                                    size,
+                                    ui::Prefix::Icon(icon::RADIAL_SYMMETRY),
+                                    &mut copies,
+                                    ui::Scrub::whole(0.1).range(
+                                        f64::from(mastik_core::symmetry::MIN_COPIES)
+                                            ..=f64::from(mastik_core::symmetry::MAX_COPIES),
+                                    ),
+                                    |d| d.custom_formatter(ui::number(0)),
+                                )
+                                .on_hover_text(
+                                    "How many copies turn about the centre, the drawn one counted",
+                                )
+                                .on_disabled_hover_text("Pick Around a centre to set its copies");
+                            });
+                        });
+                        let row = ui::MenuRow {
+                            enabled: centre,
+                            ..ui::MenuRow::new("", "Mirror each copy").checked(m.reflect)
+                        };
+                        let resp = ui::menu_row(ui, row, ui::MENU_ROW_H);
+                        let resp = match centre {
+                            true => resp,
+                            false => {
+                                resp.on_hover_text("Pick Around a centre to mirror its copies")
+                            }
+                        };
+                        flip_reflect = centre && resp.clicked();
+                    });
+                });
                 ui::menu_sep(ui);
                 let placed = self.mirror().at.is_some();
+                let (word, put) = match centre {
+                    true => ("Reset centre", "The centre is where it starts"),
+                    false => ("Reset axis", "The axis is where it starts"),
+                };
                 let row = ui::MenuRow {
                     enabled: placed,
-                    ..ui::MenuRow::new("", "Reset axis")
+                    ..ui::MenuRow::new("", word)
                 };
                 let resp = ui::menu_row(ui, row, ui::MENU_ROW_H);
                 let resp = match placed {
                     true => resp,
-                    false => resp.on_hover_text("The axis is where it starts"),
+                    false => resp.on_hover_text(put),
                 };
                 reset = placed && resp.clicked();
             });
+        let copies = (copies.round() as u8).clamp(
+            mastik_core::symmetry::MIN_COPIES,
+            mastik_core::symmetry::MAX_COPIES,
+        );
+        if centre && copies != m.copies {
+            self.mirror_mut().copies = copies;
+        }
+        if flip_reflect {
+            self.mirror_mut().reflect = !m.reflect;
+        }
         if let Some(axes) = pick {
             self.mirror_mut().axes = axes;
             self.mirror_open = false;
@@ -1107,6 +1569,7 @@ mod tests {
         app.session.mirror = Mirror {
             axes: Axes::Vertical,
             at: Some(Point::new(100.0, 0.0)),
+            ..Mirror::default()
         };
         app
     }
@@ -1177,6 +1640,81 @@ mod tests {
         assert_eq!(app.mirror_axes(None).map(|(_, at)| at), Some(was));
     }
 
+    /// Around a centre, five copies each mirrored: a run from the centre to the
+    /// first slice line lands as one path of five closed kites, saved as turning
+    /// five times and mirrored; dragging one anchor of one kite under the node
+    /// tool moves the same anchor of every kite, so the rule still holds.
+    ///
+    /// flip: `local_mirror` answering `NONE` for a centre → fails at "saved
+    /// around"; `symmetric_edit` without its radial arm → fails at "still five".
+    #[test]
+    fn the_pen_lands_a_radial_run_that_point_editing_keeps() {
+        let ctx = egui::Context::default();
+        let mut app = mirroring_pen(&ctx);
+        app.session.mirror = Mirror {
+            axes: Axes::Centre,
+            at: Some(Point::new(100.0, 100.0)),
+            copies: 5,
+            reflect: true,
+        };
+        let page = app.session.page;
+        app.pen = Some(crate::preview::PenState {
+            parent: page,
+            parent_world: Affine::IDENTITY,
+            anchors: [(100.0, 100.0), (112.0, 70.0), (100.0, 40.0)]
+                .map(|(x, y)| PenAnchor::corner(Point::new(x, y)))
+                .to_vec(),
+            shaping: false,
+            editing: None,
+        });
+        app.finish_pen(false);
+        let id = app.session.selection.single().expect("the path");
+        let around = PathMirror::around(5, true);
+        assert_eq!(mirror_of(&app, id), around, "saved around");
+        let Some(NodeKind::Path { path, .. }) = app.session.doc.get(id).map(|n| n.kind()) else {
+            panic!("a path");
+        };
+        let base = crate::tools::pen_anchors(path, &[]);
+        assert_eq!(base.len(), 5, "five kites");
+        assert!(base.iter().all(|s| s.closed));
+
+        let world = app.session.resolved.world_transform(id).unwrap();
+        let mut edited = base.clone();
+        edited[0].anchors[1].at += mastik_core::kurbo::Vec2::new(6.0, -3.0);
+        let tx = app.rewrite_points(id, world, &base, edited);
+        assert!(app.commit_edit(tx));
+        assert_eq!(mirror_of(&app, id), around, "still five");
+    }
+
+    /// The flyout is one height whichever choice is ticked, the centre's rows
+    /// standing disabled under the others; the bar's button wears the petals
+    /// under a centre.
+    ///
+    /// flip: `mirror_flyout` drawing the centre's rows only under a centre →
+    /// fails at "one height".
+    #[test]
+    fn the_flyout_keeps_one_height_and_the_button_its_glyph() {
+        use crate::repeat::tests::pass;
+        let ctx = egui::Context::default();
+        let mut app = mirroring_pen(&ctx);
+        app.mirror_open = true;
+        let height = |app: &mut MastikApp| {
+            for _ in 0..4 {
+                let _ = pass(&ctx, app, Vec::new());
+            }
+            ctx.memory(|m| m.area_rect(egui::Id::new("mirror-flyout")))
+                .expect("the flyout is up")
+                .height()
+        };
+        app.session.mirror.axes = Axes::Off;
+        let off = height(&mut app);
+        assert_eq!(app.symmetry_glyph(), icon::FLIP_HORIZONTAL);
+        app.session.mirror.axes = Axes::Centre;
+        let centre = height(&mut app);
+        assert!((off - centre).abs() < 0.5, "one height: {off} vs {centre}");
+        assert_eq!(app.symmetry_glyph(), icon::RADIAL_SYMMETRY);
+    }
+
     /// The pen's finish goes through the mirror: a run from the axis and back to it
     /// lands as one closed path, in one step.
     ///
@@ -1193,6 +1731,7 @@ mod tests {
         app.session.mirror = Mirror {
             axes: Axes::Vertical,
             at: Some(Point::new(100.0, 0.0)),
+            ..Mirror::default()
         };
         let page = app.session.page;
         app.pen = Some(crate::preview::PenState {
@@ -1238,6 +1777,7 @@ mod tests {
         app.session.mirror = Mirror {
             axes: Axes::Vertical,
             at: Some(Point::new(100.0, 0.0)),
+            ..Mirror::default()
         };
         let page = app.session.page;
         app.pen = Some(crate::preview::PenState {
@@ -1524,15 +2064,75 @@ mod tests {
     #[test]
     fn world_axes_are_saved_as_the_parents_own() {
         let quarter = Affine::rotate(std::f64::consts::FRAC_PI_2);
-        let (m, dropped) = local_mirror(Axes::Vertical, quarter);
+        let (m, dropped) = local_mirror(&switch(Axes::Vertical), quarter);
         assert!(
             m.horizontal && !m.vertical && !dropped,
             "a quarter turn: {m:?}"
         );
-        let (m, dropped) = local_mirror(Axes::Vertical, Affine::rotate(30f64.to_radians()));
+        let (m, dropped) =
+            local_mirror(&switch(Axes::Vertical), Affine::rotate(30f64.to_radians()));
         assert!(m.is_none() && dropped);
-        let (m, dropped) = local_mirror(Axes::Both, Affine::translate((5.0, 5.0)));
+        let (m, dropped) = local_mirror(&switch(Axes::Both), Affine::translate((5.0, 5.0)));
         assert!(m.vertical && m.horizontal && !dropped);
+    }
+
+    /// The switch's frame drawing with `axes`, six copies under a centre.
+    fn switch(axes: Axes) -> Frame {
+        Frame {
+            axes,
+            at: Point::ZERO,
+            to_world: Affine::IDENTITY,
+            own: false,
+            copies: 6,
+            reflect: false,
+            phase: -std::f64::consts::FRAC_PI_2,
+        }
+    }
+
+    /// A centre's copies are saved wherever the parent keeps angles, turned any
+    /// way or scaled evenly, and dropped, said, in a parent stretched one way.
+    /// flip: `local_mirror` treating a centre as axes → fails at "turned 30°".
+    #[test]
+    fn a_centre_is_kept_in_a_turned_parent_and_dropped_in_a_stretched_one() {
+        let centre = switch(Axes::Centre);
+        let turned = Affine::rotate(30f64.to_radians()) * Affine::scale(2.0);
+        let (m, dropped) = local_mirror(&centre, turned);
+        assert_eq!(m, PathMirror::around(6, false), "turned 30°");
+        assert!(!dropped);
+        let (m, dropped) = local_mirror(&centre, Affine::scale_non_uniform(2.0, 1.0));
+        assert!(m.is_none() && dropped);
+    }
+
+    /// A petal drawn from the centre out and back to it, under six copies each
+    /// mirrored, lands as six closed petals; drawn from one slice line to the
+    /// next at one radius, as one closed ring; with neither end on a line, as six
+    /// open runs. An end within reach of a line is pulled onto it.
+    ///
+    /// flip: `radial` without its `weld` → fails at "each closed at the centre".
+    #[test]
+    fn a_centre_repeats_the_run_and_welds_where_ends_meet() {
+        let mut frame = switch(Axes::Centre);
+        frame.at = Point::new(100.0, 100.0);
+        let petal = run(&[(100.0, 100.0), (110.0, 60.0), (100.5, 99.6)]);
+        let got = radial(petal, &frame, 1.0);
+        assert_eq!(got.len(), 6, "six petals");
+        assert!(got.iter().all(|s| s.closed), "each closed at the centre");
+
+        let mut mirrored = frame;
+        mirrored.reflect = true;
+        // From the first slice line (straight up) to its mirror line, 30° on.
+        let half = std::f64::consts::FRAC_PI_6;
+        let end = Point::new(100.0 + 50.0 * half.sin(), 100.0 - 50.0 * half.cos());
+        let arc = run(&[(100.0, 50.0), (110.0, 52.0), (end.x, end.y)]);
+        let got = radial(arc, &mirrored, 1.0);
+        assert_eq!(got.len(), 1, "one ring");
+        assert!(got[0].closed);
+        assert_eq!(got[0].anchors.len(), 24);
+
+        let loose = run(&[(120.0, 60.0), (130.0, 70.0)]);
+        let got = radial(loose, &frame, 1.0);
+        assert_eq!(got.len(), 6);
+        assert!(got.iter().all(|s| !s.closed));
     }
 
     /// The axes cross in the frame the run landed in at its first press, though
@@ -1564,6 +2164,7 @@ mod tests {
         app.session.mirror = Mirror {
             axes: Axes::Vertical,
             at: None,
+            ..Mirror::default()
         };
         app.pen = Some(crate::preview::PenState {
             parent: a,

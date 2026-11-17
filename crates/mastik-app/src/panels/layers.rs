@@ -531,6 +531,9 @@ const BADGE_MASK: f32 = 10.0;
 /// word's height at 100%, 150% and 200%, and the nearer device row at 125%.
 const BADGE_MIRROR: f32 = 11.0;
 
+/// Type size for a radial path's `radial-symmetry`, measured the same way.
+const BADGE_RADIAL: f32 = 11.0;
+
 /// Whether `node` is the shape a `Subtract` cuts into — its base operand, the
 /// one thing about a boolean the tree shows without saying (§15 D244). Operand
 /// order is child order (§15 D113) and only `Subtract` reads it, so the base is
@@ -1856,6 +1859,11 @@ impl MastikApp {
                     "{} × {}",
                     size.width as i64, size.height as i64
                 ))),
+                NodeKind::Path { mirror, .. }
+                    if mirror.is_radial() && !subtract_base(doc, node) =>
+                {
+                    Some(RowBadge::Icon(icon::RADIAL_SYMMETRY, BADGE_RADIAL))
+                }
                 NodeKind::Path { mirror, .. } if !mirror.is_none() && !subtract_base(doc, node) => {
                     Some(RowBadge::Icon(icon::FLIP_HORIZONTAL, BADGE_MIRROR))
                 }
@@ -1872,6 +1880,9 @@ impl MastikApp {
             }
             Some(RowBadge::Icon(g, _)) if *g == icon::DIAMOND => Some("The subtraction's base"),
             Some(RowBadge::Icon(g, _)) if *g == icon::FLIP_HORIZONTAL => Some("Mirrored path"),
+            Some(RowBadge::Icon(g, _)) if *g == icon::RADIAL_SYMMETRY => {
+                Some("Path repeated around a centre")
+            }
             _ => None,
         };
         // (node borrow ends here — safe to mutate self below)
@@ -3621,6 +3632,7 @@ mod badge_ink_tests {
                 ("property-bound", icon::PROPERTY_BOUND, BADGE_BOUND, 0.51),
                 ("mask", icon::MASK, BADGE_MASK, 0.51),
                 ("flip-horizontal", icon::FLIP_HORIZONTAL, BADGE_MIRROR, 0.81),
+                ("radial-symmetry", icon::RADIAL_SYMMETRY, BADGE_RADIAL, 0.81),
             ] {
                 let glyph = ink_height(&ctx, badge, theme::icon_font(size));
                 assert!(

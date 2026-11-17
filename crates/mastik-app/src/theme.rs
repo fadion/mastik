@@ -1309,6 +1309,9 @@ pub mod icon {
     /// *Repeat in a grid…*: four tiles in two rows, the top-left filled as the
     /// original.
     pub const REPEAT_GRID: &str = "\u{f076}";
+    /// *Around a centre* while drawing, and a radial path's badge: three petals
+    /// turned about the centre. Not [`REPEAT_AROUND`]'s ticks about a pivot.
+    pub const RADIAL_SYMMETRY: &str = "\u{f078}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1623,6 +1626,7 @@ pub mod icon {
         ("warp-twist", WARP_TWIST),
         ("repeat-line", REPEAT_LINE),
         ("repeat-grid", REPEAT_GRID),
+        ("radial-symmetry", RADIAL_SYMMETRY),
     ];
 }
 

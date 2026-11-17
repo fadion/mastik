@@ -412,8 +412,8 @@ impl MastikApp {
         let on = self.mirror().axes != crate::mirror::Axes::Off;
         let bar = [
             E::Btn {
-                glyph: icon::FLIP_HORIZONTAL,
-                tip: "Mirror while drawing",
+                glyph: self.symmetry_glyph(),
+                tip: "Symmetry while drawing",
                 dimmed: "",
                 active: on || self.mirror_open,
                 enabled: true,
@@ -504,11 +504,11 @@ impl MastikApp {
                 verb: Verb::Pen,
             },
             E::Btn {
-                glyph: icon::FLIP_HORIZONTAL,
-                tip: "Mirror while drawing",
+                glyph: self.symmetry_glyph(),
+                tip: "Symmetry while drawing",
                 dimmed: match own_axes {
-                    true => "A new run follows this path's own mirror axes",
-                    false => "Pick the pen to mirror what it draws",
+                    true => "A new run follows this path's own symmetry",
+                    false => "Pick the pen to draw with symmetry",
                 },
                 active: self.pen_bias && !own_axes && (mirroring || self.mirror_open),
                 enabled: self.pen_bias && !own_axes,
