@@ -42,6 +42,120 @@ fn a_crop_handle_holds_the_opposite_edges_and_stops_at_the_picture() {
     );
 }
 
+/// A crop held to a shape keeps it from a corner and from a side, and the
+/// picture's edge wins over the pointer without breaking the shape.
+/// flip: `crop_resized_held` delegating to `crop_resized` → fails at "a corner".
+#[test]
+fn a_held_crop_keeps_its_shape_from_every_handle() {
+    let frame = Rect::new(0.0, 0.0, 100.0, 100.0);
+    let limit = Rect::new(-50.0, -50.0, 300.0, 150.0);
+    let close = |a: Rect, b: Rect| {
+        [a.x0 - b.x0, a.y0 - b.y0, a.x1 - b.x1, a.y1 - b.y1]
+            .iter()
+            .all(|d| d.abs() < 1e-9)
+    };
+
+    let corner = crop_resized_held(
+        frame,
+        Handle::BottomRight,
+        Point::new(80.0, 30.0),
+        limit,
+        2.0,
+    );
+    assert!(
+        close(corner, Rect::new(0.0, 0.0, 80.0, 40.0)),
+        "a corner holds the far corner and follows the larger reach: {corner:?}"
+    );
+    let side = crop_resized_held(frame, Handle::Right, Point::new(120.0, 999.0), limit, 2.0);
+    assert!(
+        close(side, Rect::new(0.0, 20.0, 120.0, 80.0)),
+        "a side grows the other axis about the middle: {side:?}"
+    );
+    let top = crop_resized_held(frame, Handle::Top, Point::new(0.0, -20.0), limit, 0.5);
+    assert!(
+        close(top, Rect::new(20.0, -20.0, 80.0, 100.0)),
+        "a top handle moves its edge and centres the width: {top:?}"
+    );
+    // The picture's top is the box's own, 50 above the middle, so the height
+    // stops at 100 and the width at 200 well short of the room on the right.
+    let tight = Rect::new(-50.0, 0.0, 300.0, 150.0);
+    let stopped = crop_resized_held(frame, Handle::Right, Point::new(999.0, 0.0), tight, 2.0);
+    assert!(
+        close(stopped, Rect::new(0.0, 0.0, 200.0, 100.0)),
+        "the room about the middle caps the width through the shape: {stopped:?}"
+    );
+    assert_eq!(
+        crop_resized_held(
+            frame,
+            Handle::Right,
+            Point::new(120.0, 0.0),
+            limit,
+            f64::NAN
+        ),
+        crop_resized(frame, Handle::Right, Point::new(120.0, 0.0), limit),
+        "a shape that is no number leaves the drag free"
+    );
+}
+
+/// Picking a shape takes the largest box of it inside the window and the picture,
+/// about the window's centre.
+#[test]
+fn a_picked_shape_is_the_largest_box_of_it_about_the_centre() {
+    let frame = Rect::new(0.0, 0.0, 300.0, 200.0);
+    assert_eq!(
+        crop_shaped(frame, frame.inflate(10.0, 10.0), 1.0),
+        Some(Rect::new(50.0, 0.0, 250.0, 200.0))
+    );
+    // A picture letterboxed inside the box limits the window to its own rows.
+    let letterboxed = Rect::new(0.0, 50.0, 300.0, 150.0);
+    assert_eq!(
+        crop_shaped(frame, letterboxed, 1.0),
+        Some(Rect::new(100.0, 50.0, 200.0, 150.0))
+    );
+    assert_eq!(
+        crop_shaped(frame, Rect::new(400.0, 0.0, 500.0, 10.0), 1.0),
+        None
+    );
+}
+
+/// `reshape_box` puts the box exactly where it was asked, with no edge held:
+/// the turn's swap about the centre and a side drag held to a shape. The
+/// fixture is square, so the swap is the control.
+/// flip: `reshape_box` dropping its closing move → fails at the second box.
+#[test]
+fn reshape_box_lands_the_box_where_it_was_asked() {
+    let (doc, res, rect) = artboard_with_rect();
+    let frame = crate::local_box(&doc, &res, rect).expect("a box");
+    let world = res.world_transform(rect).expect("a transform");
+    let c = frame.center();
+    for to in [
+        Rect::from_center_size(c, Size::new(frame.height(), frame.width())),
+        Rect::new(frame.x0, c.y - 7.0, frame.x1 + 13.0, c.y + 7.0),
+    ] {
+        let tx = reshape_box(&doc, &res, rect, to);
+        let mut after = doc.clone();
+        after.apply(&tx).expect("the reshape applies");
+        let res_after = Resolved::rebuild(&after);
+        let local = crate::local_box(&after, &res_after, rect).expect("a box after");
+        let got = res_after
+            .world_transform(rect)
+            .expect("a transform after")
+            .transform_rect_bbox(local);
+        let want = world.transform_rect_bbox(to);
+        assert!(
+            [
+                got.x0 - want.x0,
+                got.y0 - want.y0,
+                got.x1 - want.x1,
+                got.y1 - want.y1
+            ]
+            .iter()
+            .all(|d| d.abs() < 1e-6),
+            "asked for {want:?} in world space, got {got:?}"
+        );
+    }
+}
+
 /// The cropped fill is the first visible image; hidden images and solids are skipped.
 #[test]
 fn the_cropped_fill_is_the_first_visible_image() {

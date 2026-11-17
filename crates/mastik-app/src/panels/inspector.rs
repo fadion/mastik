@@ -8951,14 +8951,81 @@ impl MastikApp {
                                 );
                             }
                         });
-                        // Words, not the flip glyphs: these mirror the picture, not the
-                        // layer. Actions, not toggles, since `ImageOrient` composes.
+                        // The crop window's shape: card state, Free on a new picture.
+                        let (shape, portrait) = self.crop_aspect.for_picture(&img.id);
                         ui.scope(|ui| {
                             ui.spacing_mut().item_spacing.y = 5.0;
-                            ui.label(ui::eyebrow("Mirror"));
+                            ui.label(ui::eyebrow("Aspect"));
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                                let bw = egui::vec2((inner - ui::CARD_COL_GAP) / 2.0, CELL);
+                                let mut picked: Option<(CropShape, bool)> = None;
+                                ui.scope(|ui| {
+                                    ui.spacing_mut().interact_size.y = CELL;
+                                    ui.spacing_mut().button_padding.y = 0.0;
+                                    egui::ComboBox::from_id_salt(("crop-shape", id))
+                                        .icon(ui::combo_chevron)
+                                        .width(inner - CELL - ui::CARD_COL_GAP)
+                                        .selected_text(ui::combo_text(&shape.label(portrait)))
+                                        .show_ui(ui, |ui| {
+                                            ui::menu_rows(ui);
+                                            for s in CropShape::ALL {
+                                                // Re-picking reshapes again: the box may
+                                                // have been dragged off the shape since.
+                                                if ui
+                                                    .selectable_label(s == shape, s.label(portrait))
+                                                    .clicked()
+                                                {
+                                                    picked = Some((s, portrait));
+                                                }
+                                            }
+                                        })
+                                        .response
+                                        .on_hover_text(
+                                            "Crop to a shape — Shift on a handle holds the \
+                                             shape too",
+                                        );
+                                });
+                                let turns = shape.turns();
+                                let swap = ui::field_button(
+                                    ui,
+                                    icon::ARROWS_CLOCKWISE,
+                                    CELL,
+                                    ui::FieldButton::enabled_if(turns),
+                                )
+                                .on_hover_text(
+                                    match (turns, portrait) {
+                                        (false, _) => "Only a shape with two different sides turns",
+                                        (true, false) => "Portrait",
+                                        (true, true) => "Landscape",
+                                    },
+                                );
+                                if swap.clicked() && turns {
+                                    picked = Some((shape, !portrait));
+                                }
+                                if let Some((s, p)) = picked {
+                                    self.crop_aspect = CropAspect {
+                                        picture: Some(img.id.clone()),
+                                        shape: s,
+                                        portrait: p,
+                                    };
+                                    let picture = self
+                                        .image_pixels(slot, brush)
+                                        .map(|(w, h)| img.oriented_size(w, h));
+                                    if let Some(r) = picture.and_then(|pic| s.ratio(p, pic)) {
+                                        self.shape_crop(id, slot, brush, r);
+                                    }
+                                }
+                            });
+                        });
+                        // Words, not the flip glyphs: these act on the picture, not the
+                        // layer. Actions, not toggles, since `ImageOrient` composes.
+                        let mut turn = false;
+                        ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.y = 5.0;
+                            ui.label(ui::eyebrow("Orient"));
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                                let bw = egui::vec2((inner - 2.0 * ui::CARD_COL_GAP) / 3.0, CELL);
                                 for (label, op, tip) in [
                                     (
                                         "Horizontal",
@@ -8985,8 +9052,17 @@ impl MastikApp {
                                         );
                                     }
                                 }
+                                // Clockwise only: four presses come back round.
+                                turn = ui::label_button(ui, "Turn 90°", bw, ui::FieldButton::Off)
+                                    .on_hover_text(
+                                        "Turn the picture a quarter clockwise in its frame",
+                                    )
+                                    .clicked();
                             });
                         });
+                        if turn {
+                            self.turn_picture(id, slot, brush);
+                        }
 
                         // Scale for Crop, Tile for Tile: one measurement (local units
                         // per source pixel), read by one mode each. Dimmed rather
@@ -9319,6 +9395,57 @@ impl MastikApp {
     pub(crate) fn resize_to_original(&mut self, id: NodeId, w: f64, h: f64) {
         let size = Size::new(w, h);
         let tx = tools::resize_to(&self.session.doc, &self.session.resolved, id, size);
+        self.commit_edit(tx);
+    }
+
+    /// Turn `id`'s picture a quarter clockwise in its frame, as one undo step.
+    ///
+    /// A box that showed the whole picture at its own shape turns with it, its
+    /// width and height swapped about its centre: the sideways photo just placed.
+    /// Any other box is a framing someone chose, so it stays and the picture
+    /// re-frames inside it, as a replacement does.
+    pub(crate) fn turn_picture(&mut self, id: NodeId, slot: PaintSlot, brush: &Brush) {
+        let turned = paint::map_image(brush, |r| *r = r.reoriented(OrientOp::Turn));
+        let mut tx = Transaction::default();
+        if let Some((frame, w, h)) = self.crop_seed(id, slot, brush)
+            && paint::image_of(brush).is_some_and(|r| r.frames_whole_picture(frame, w, h))
+        {
+            let to = mastik_core::kurbo::Rect::from_center_size(
+                frame.center(),
+                Size::new(frame.height(), frame.width()),
+            );
+            tx = tools::reshape_box(&self.session.doc, &self.session.resolved, id, to);
+        }
+        tx.0.extend(self.slot_transaction(id, slot, turned).0);
+        self.session.name_step("Turn picture", icon::IMAGE);
+        self.commit_edit(tx);
+    }
+
+    /// Hold `id`'s crop window to `ratio` (width over height): the largest box of
+    /// that shape inside the one shown, about its centre, with the picture left
+    /// where it is and the mode forced to Crop. One undo step, as a crop drag is,
+    /// and named as one.
+    pub(crate) fn shape_crop(&mut self, id: NodeId, slot: PaintSlot, brush: &Brush, ratio: f64) {
+        let Some(seed) = self.crop_seed(id, slot, brush) else {
+            return;
+        };
+        let (frame, w, h) = seed;
+        // Seeded as the Mode strip seeds Crop, so nothing moves before the reshape.
+        let seeded = paint::with_fit(brush, mastik_core::ImageFit::Crop, Some(seed));
+        let Some(img) = paint::image_of(&seeded) else {
+            return;
+        };
+        let Some(next) = img
+            .picture_box(frame, w, h)
+            .and_then(|limit| tools::crop_shaped(frame, limit, ratio))
+        else {
+            return;
+        };
+        let crop = mastik_core::crop_reframed(img.crop, frame, next);
+        let shaped = paint::map_image(&seeded, |r| r.crop = crop);
+        let mut tx = tools::reshape_box(&self.session.doc, &self.session.resolved, id, next);
+        tx.0.extend(self.slot_transaction(id, slot, shaped).0);
+        self.session.name_step("Crop", icon::CROP);
         self.commit_edit(tx);
     }
 
@@ -12346,6 +12473,95 @@ fn fit_label(f: mastik_core::ImageFit) -> &'static str {
         mastik_core::ImageFit::Fit => "Fit",
         mastik_core::ImageFit::Crop => "Crop",
         mastik_core::ImageFit::Tile => "Tile",
+    }
+}
+
+/// The shape image editing holds the crop window to, picked in the card's Aspect
+/// row. Card state, not the document's: a crop's shape is already its box, so a
+/// stored ratio could only disagree with it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CropShape {
+    #[default]
+    Free,
+    /// The picture's own shape, after its orientation.
+    Original,
+    Square,
+    FourThree,
+    ThreeTwo,
+    SixteenNine,
+}
+
+impl CropShape {
+    /// The dropdown's order.
+    pub(crate) const ALL: [CropShape; 6] = [
+        CropShape::Free,
+        CropShape::Original,
+        CropShape::Square,
+        CropShape::FourThree,
+        CropShape::ThreeTwo,
+        CropShape::SixteenNine,
+    ];
+
+    /// Whether the swap button has a second shape to offer.
+    pub(crate) fn turns(self) -> bool {
+        matches!(
+            self,
+            CropShape::FourThree | CropShape::ThreeTwo | CropShape::SixteenNine
+        )
+    }
+
+    /// The landscape ratio's two terms, for the shapes that have fixed ones.
+    fn terms(self) -> Option<(u32, u32)> {
+        match self {
+            CropShape::Square => Some((1, 1)),
+            CropShape::FourThree => Some((4, 3)),
+            CropShape::ThreeTwo => Some((3, 2)),
+            CropShape::SixteenNine => Some((16, 9)),
+            CropShape::Free | CropShape::Original => None,
+        }
+    }
+
+    /// The dropdown's word: `3:4` for a portrait `4:3`.
+    pub(crate) fn label(self, portrait: bool) -> String {
+        match (self, self.terms()) {
+            (CropShape::Original, _) => "Original".into(),
+            (_, Some((a, b))) if portrait && self.turns() => format!("{b}:{a}"),
+            (_, Some((a, b))) => format!("{a}:{b}"),
+            _ => "Free".into(),
+        }
+    }
+
+    /// Width over height, or `None` for Free. `picture` is the oriented picture's
+    /// size, which Original reads, so its ratio follows a turn.
+    pub(crate) fn ratio(self, portrait: bool, picture: (f64, f64)) -> Option<f64> {
+        let r = match (self, self.terms()) {
+            (CropShape::Original, _) => {
+                let (w, h) = picture;
+                (w > 0.0 && h > 0.0).then(|| w / h)?
+            }
+            (_, Some((a, b))) => f64::from(a) / f64::from(b),
+            _ => return None,
+        };
+        Some(if portrait && self.turns() { 1.0 / r } else { r })
+    }
+}
+
+/// [`CropShape`] as the card holds it: the picture it was picked for, since a new
+/// picture starts Free, and whether the swap button turned it portrait.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CropAspect {
+    pub(crate) picture: Option<mastik_core::ImageId>,
+    pub(crate) shape: CropShape,
+    pub(crate) portrait: bool,
+}
+
+impl CropAspect {
+    /// The shape in force for `picture`: Free unless it was picked for this one.
+    pub(crate) fn for_picture(&self, picture: &mastik_core::ImageId) -> (CropShape, bool) {
+        match self.picture.as_ref() == Some(picture) {
+            true => (self.shape, self.portrait),
+            false => (CropShape::Free, false),
+        }
     }
 }
 fn align_label(a: StrokeAlign) -> &'static str {
@@ -23373,6 +23589,117 @@ mod mixed_spread_tests {
         assert!(
             row.alpha,
             "the control: a real difference still reads Mixed"
+        );
+    }
+
+    /// A picture shown whole at its own shape turns with its box, swapped about
+    /// the centre, in one undo step; a box of another shape stays put, and
+    /// picking a square crops it about its centre with the picture held still.
+    /// flip: `turn_picture` skipping `reshape_box` → fails at "the box turns";
+    /// `shape_crop` keeping the old crop → fails at "nailed".
+    #[test]
+    fn a_quarter_turn_and_a_picked_shape_reframe_about_the_centre() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let mut ids = mastik_core::IdSource::new(0x7A2);
+        let root = ids.mint();
+        let mut doc = mastik_core::Document::new(root);
+        let (wide, cut) = (ids.mint(), ids.mint());
+        let image = mastik_core::ImageId("turn".into());
+        let mut ops = vec![Operation::AddImage {
+            id: image.clone(),
+            entry: mastik_core::ImageEntry {
+                source: mastik_core::ImageSource::Embedded(vec![0u8; 16].into()),
+                format: mastik_core::ImageFormat::Png,
+                width: 4,
+                height: 3,
+            },
+        }];
+        for (i, (id, w)) in [(wide, 40.0), (cut, 60.0)].into_iter().enumerate() {
+            ops.push(Operation::CreateNode {
+                id,
+                parent: root,
+                index: i,
+                kind: NodeKind::Rect {
+                    size: Size::new(w, 30.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            });
+            ops.push(Operation::SetFills {
+                id,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: mastik_core::image_brush(image.clone()).into(),
+                    visible: true,
+                }]),
+            });
+        }
+        doc.apply(&Transaction(ops)).expect("two pictures");
+        app.session.adopt_document(doc, None);
+        let size_and_centre = |app: &MastikApp, id| {
+            let b =
+                mastik_core::local_box(&app.session.doc, &app.session.resolved, id).expect("a box");
+            let w = app.session.resolved.world_transform(id).expect("placed");
+            (b.size(), w * b.center())
+        };
+        let brush = mastik_core::image_brush(image);
+
+        let (_, centre) = size_and_centre(&app, wide);
+        app.turn_picture(wide, PaintSlot::Fill(0), &brush);
+        let (size, after) = size_and_centre(&app, wide);
+        assert_eq!(size, Size::new(30.0, 40.0), "the box turns");
+        assert!((after - centre).hypot() < 1e-9, "about its centre");
+        app.session.undo();
+        assert_eq!(
+            size_and_centre(&app, wide).0,
+            Size::new(40.0, 30.0),
+            "one undo step takes back the box and the picture together"
+        );
+
+        app.turn_picture(cut, PaintSlot::Fill(0), &brush);
+        assert_eq!(
+            size_and_centre(&app, cut).0,
+            Size::new(60.0, 30.0),
+            "a box of another shape is a framing someone chose"
+        );
+
+        // Picking a square on the 60 × 30 box: the largest square about its
+        // centre, in Crop, with the picture where Fill drew it.
+        let drawn = |app: &MastikApp| {
+            let n = app.session.doc.get(cut).expect("the layer");
+            let b = mastik_core::local_box(&app.session.doc, &app.session.resolved, cut)
+                .expect("a box");
+            let mastik_core::Brush::Image(img) = n.paint().fills[0].brush.literal().expect("lit")
+            else {
+                panic!("an image fill");
+            };
+            let w = app.session.resolved.world_transform(cut).expect("placed");
+            (
+                img.image.clone(),
+                b,
+                w * img.image.framing(b, 4, 3).transform,
+            )
+        };
+        let (_, _, before) = drawn(&app);
+        let held = app.session.doc.get(cut).expect("the layer").paint().fills[0]
+            .brush
+            .literal()
+            .cloned()
+            .expect("lit");
+        app.shape_crop(cut, PaintSlot::Fill(0), &held, 1.0);
+        let (img, b, after) = drawn(&app);
+        assert_eq!(b.size(), Size::new(30.0, 30.0), "the largest square");
+        assert_eq!(img.fit, mastik_core::ImageFit::Crop, "the mode is Crop");
+        assert!(
+            before
+                .as_coeffs()
+                .iter()
+                .zip(after.as_coeffs())
+                .all(|(a, b)| (a - b).abs() < 1e-9),
+            "the picture stays nailed: {before:?} became {after:?}"
         );
     }
 

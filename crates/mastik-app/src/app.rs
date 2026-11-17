@@ -868,6 +868,9 @@ pub struct MastikApp {
     /// Which tab of image editing's card is showing; a preference kept across entries.
     /// The card is open exactly while `Tool::ImageEdit` is.
     pub(crate) image_tab: ImageCard,
+    /// The shape image editing holds the crop to, kept across entries and Free
+    /// again on a new picture (`CropAspect::for_picture`).
+    pub(crate) crop_aspect: crate::panels::CropAspect,
     /// The strokes whose sides selector row is showing. The only thing deciding whether
     /// the row shows; a collapsed row still declares its setting through
     /// [`crate::ui::FieldButton::Set`], so losing this never loses a setting.
@@ -2006,6 +2009,7 @@ impl MastikApp {
             stroke_menu: None,
             effect_menu: None,
             image_tab: ImageCard::default(),
+            crop_aspect: Default::default(),
             stroke_sides_open: Vec::new(),
             prefs,
             settings: None,

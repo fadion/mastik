@@ -5682,11 +5682,41 @@ impl MastikApp {
         Some(Transaction(vec![Operation::SetFills { id, fills }]))
     }
 
+    /// The shape the image card holds `id`'s crop to, as width over height, and
+    /// its word: `None` while it is Free.
+    pub(crate) fn crop_shape_in_force(&self, id: NodeId, fill: usize) -> Option<(f64, String)> {
+        let node = self.session.doc.get(id)?;
+        let mastik_core::Brush::Image(img) = node.paint().fills.get(fill)?.brush.literal()? else {
+            return None;
+        };
+        let e = self.session.doc.image(&img.image.id)?;
+        let (shape, portrait) = self.crop_aspect.for_picture(&img.image.id);
+        let r = shape.ratio(portrait, img.image.oriented_size(e.width, e.height))?;
+        Some((r, shape.label(portrait)))
+    }
+
+    /// The shape a crop handle drag keeps: the card's, unless Shift lets go of
+    /// it; with the card on Free, Shift holds `frame`'s own shape, as Shift does
+    /// on a resize.
+    fn crop_held_shape(&self, id: NodeId, fill: usize, frame: KRect, shift: bool) -> Option<f64> {
+        match (self.crop_shape_in_force(id, fill), shift) {
+            (Some((r, _)), false) => Some(r),
+            (Some(_), true) => None,
+            (None, true) => (frame.height() > 0.0).then(|| frame.width() / frame.height()),
+            (None, false) => None,
+        }
+    }
+
     /// The transaction a crop **handle** drag previews and commits: the node
     /// resized, and the crop reframed so the picture does not move — one
     /// transaction, so neither edit can show or undo without the other. The resize
     /// goes through [`tools::resize_layer`], aimed at the corner of
     /// [`tools::crop_resized`]'s rectangle.
+    ///
+    /// `held` is the shape the window keeps (width over height), from
+    /// [`Self::crop_held_shape`]. A side handle held to a shape grows the other
+    /// axis about the middle, which no one held edge reaches, so that box is
+    /// written whole (`tools::reshape_box`).
     #[allow(clippy::too_many_arguments)]
     fn crop_resize_tx(
         &self,
@@ -5698,21 +5728,31 @@ impl MastikApp {
         limit: KRect,
         world: Affine,
         at: Point,
+        held: Option<f64>,
     ) -> Option<Transaction> {
-        let next = tools::crop_resized(frame, handle, at, limit);
+        let next = match held {
+            Some(r) => tools::crop_resized_held(frame, handle, at, limit, r),
+            None => tools::crop_resized(frame, handle, at, limit),
+        };
         let (ux, uy) = handle.unit();
         let corner = Point::new(
             next.min_x() + next.width() * ux,
             next.min_y() + next.height() * uy,
         );
-        let mut tx = tools::resize_layer(
-            &self.session.doc,
-            &self.session.resolved,
-            id,
-            handle,
-            world * corner,
-            tools::Resize::geometry(false, false),
-        );
+        let side = ux == 0.5 || uy == 0.5;
+        let mut tx = match (held, side) {
+            (Some(_), true) => {
+                tools::reshape_box(&self.session.doc, &self.session.resolved, id, next)
+            }
+            _ => tools::resize_layer(
+                &self.session.doc,
+                &self.session.resolved,
+                id,
+                handle,
+                world * corner,
+                tools::Resize::geometry(false, false),
+            ),
+        };
         if tx.0.is_empty() {
             return None;
         }
@@ -6035,10 +6075,13 @@ impl MastikApp {
                 start,
                 limit,
                 grab_world,
-            } => (
-                self.crop_resize_tx(id, fill, handle, frame, start, limit, world, at),
-                self.gesture_travelled(world_at - grab_world),
-            ),
+            } => {
+                let held = self.crop_held_shape(id, fill, frame, ui.input(|i| i.modifiers.shift));
+                (
+                    self.crop_resize_tx(id, fill, handle, frame, start, limit, world, at, held),
+                    self.gesture_travelled(world_at - grab_world),
+                )
+            }
             _ => (None, false),
         };
         if let Some(tx) = next {
@@ -8768,7 +8811,15 @@ impl MastikApp {
                 .collect()
         };
         let picture = self.image_ghost_live(id, fill).then(|| quad(limit));
-        for shape in crop_chrome(&quad(frame), picture.as_deref()) {
+        let window = quad(frame);
+        // The rule of thirds, only while a handle is held: placing the subject is
+        // what a crop drag is for, and the lines would clutter a pan.
+        if matches!(self.drag, Drag::CropResize { .. }) {
+            for shape in crop_thirds(&window) {
+                painter.add(shape);
+            }
+        }
+        for shape in crop_chrome(&window, picture.as_deref()) {
             painter.add(shape);
         }
     }
@@ -11071,10 +11122,15 @@ impl MastikApp {
     fn crop_exit_pill(&mut self, ui: &mut egui::Ui, rect: egui::Rect, ppp: f32) -> Option<()> {
         // A white wash: the ground is the accent, so there is no darker tier.
         let hover = egui::Color32::from_white_alpha(26);
-        let (id, _) = self.edited_image()?;
+        let (id, fill) = self.edited_image()?;
         let (edge, _) = self.badge_placement(rect, ppp, egui::Vec2::ZERO)?;
+        // The held shape is named on the canvas too, where the drag happens.
+        let word = match self.crop_shape_in_force(id, fill) {
+            Some((_, shape)) => format!("Done · {shape}"),
+            None => "Done".to_string(),
+        };
 
-        let size = crate::ui::canvas_pill_size(ui.painter(), "Done");
+        let size = crate::ui::canvas_pill_size(ui.painter(), &word);
         // `HANDLE_PICK_PX` below the box, the size badge's gap, so the pill stays off the handles.
         let centre = badge_frame(edge, size, HANDLE_PICK_PX).origin;
 
@@ -11089,7 +11145,7 @@ impl MastikApp {
                     true => color::BADGE.blend(hover),
                     false => color::BADGE,
                 };
-                crate::ui::canvas_pill(ui.painter(), r.min, egui::Align2::LEFT_TOP, "Done", hue);
+                crate::ui::canvas_pill(ui.painter(), r.min, egui::Align2::LEFT_TOP, &word, hue);
                 // No pointing hand (§9.2): the wash above is the hover answer.
                 done = resp.clicked();
             });
@@ -11487,6 +11543,25 @@ pub(crate) fn paint_squiggle_in(
 /// `GENERATED_NAMES`, which inverts `NodeKind::default_name`.
 fn image_layer_name(doc: &Document, parent: NodeId, given: Option<String>) -> String {
     given.unwrap_or_else(|| mastik_core::free_name(&doc.child_names(parent, &[]), "Image", 1))
+}
+
+/// The crop window's thirds: two hairlines each way across `window`, its screen
+/// corners clockwise from the top-left, in the picture outline's dim ink.
+fn crop_thirds(window: &[egui::Pos2]) -> Vec<egui::Shape> {
+    let [tl, tr, _, bl] = window else {
+        return Vec::new();
+    };
+    let (across, down) = (*tr - *tl, *bl - *tl);
+    let stroke = egui::Stroke::new(1.0, color::SELECT_DIM);
+    [1.0 / 3.0, 2.0 / 3.0]
+        .into_iter()
+        .flat_map(|t| {
+            [
+                egui::Shape::line_segment([*tl + across * t, *tl + across * t + down], stroke),
+                egui::Shape::line_segment([*tl + down * t, *tl + down * t + across], stroke),
+            ]
+        })
+        .collect()
 }
 
 /// Image editing's chrome: the dashed crop window, its four hollow corner

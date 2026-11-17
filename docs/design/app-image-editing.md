@@ -45,8 +45,24 @@ Part of §9.4.
   the dialog. Linked-source entries (*Embed/Link*, *Relink…*) are not built — no linking is authored.
   A replacement drops the layer's photo credit (`credit::dropped_by_replace`, in `replace_image_with`),
   since the photo it credited is gone; an icon's credit stays.
-- **Mirror** eyebrow over two `ui::label_button`s, *Horizontal* and *Vertical* — actions, never lit;
-  words, since on a symmetric shape the two flips look the same. No quarter turn here.
+- **Aspect** eyebrow under Mode: a `ComboBox` of `CropShape` (*Free*, *Original*, *1:1*, *4:3*,
+  *3:2*, *16:9*) and a `ui::field_button` (`icon::ARROWS_CLOCKWISE`, the reverse glyph) that swaps a
+  two-sided ratio to portrait, its tooltip naming the shape it swaps to; dimmed with a reason for
+  Free, Original and 1:1. The shape is **card state, not the document's** (`MastikApp::crop_aspect`,
+  a `CropAspect` keyed by the picture, so a new picture starts Free): a crop's shape is already its
+  box. *Original* reads the oriented picture, so it follows a turn. Picking one
+  (`MastikApp::shape_crop`) reshapes the window at once to the largest box of that shape inside the
+  box and the picture (`edit::crop_shaped`), about the box's centre, the picture held still and the
+  mode forced to Crop: one undo step, *Crop*, as a handle drag is. Re-picking the shape in force
+  reshapes again.
+- **Orient** eyebrow over three `ui::label_button`s, *Horizontal*, *Vertical* and *Turn 90°* —
+  actions, never lit; words, since on a symmetric shape the two flips look the same. The turn is
+  clockwise only (four presses come back round) and is the picture's, not the layer's Rotate 90°.
+  `MastikApp::turn_picture` writes `OrientOp::Turn`, which carries the crop. When the box showed the
+  whole picture at its own shape (`ImageRef::frames_whole_picture`: Fill or Fit, or Crop uncut, at
+  the oriented aspect within 1%) the box turns too, width and height swapped about its centre
+  (`edit::reshape_box`); any other box is a framing someone chose and stays. One undo step, *Turn
+  picture*.
 - **Scale** (`icon::RESIZE`) and **Tile** (`icon::IMAGE_TILE`) half-width fields, percent of source
   pixels (`1.0` = one unit per source pixel); each read by one mode and **dimmed, not hidden**,
   otherwise.
@@ -109,6 +125,12 @@ window onto its picture. There is no crop tool, rail button or `C` key.
 - `crop_resize_tx` aims `edit::resize_layer` at `crop_resized`'s corner and emits **one transaction**
   with the geometry and the `SetFills` together. The mode is forced to `Crop`. A crop is a resize, so
   the lock reaches it.
+- **A held shape** (`canvas::crop_held_shape`): while the card's Aspect is not Free every handle holds
+  it (`edit::crop_resized_held`) — a corner holds the far corner and follows the pointer's larger
+  reach, a side moves its edge and grows the other axis about the middle, the picture's edge winning
+  over the pointer. Shift swaps the rule for the drag: on Free it holds the box's shape at the press,
+  as Shift does on a resize; on a shape it lets go. A side drag's box has no held edge, so it is
+  written whole by `edit::reshape_box`.
 - Both drags capture start values at the press and re-derive each frame (`session.set_preview`). The
   **commit is gated on travel** (`grab_world`, `gesture_travelled`, §9.3); an untravelled release
   clears the preview (`clear_gesture_preview`). The preview is ungated.
@@ -126,8 +148,11 @@ window onto its picture. There is no crop tool, rail button or `C` key.
   `CROP_GAP_PX`, `CROP_STROKE_PX`) — with hollow corner handles, plus the picture's solid outline when
   the ghost is live, both via `shown_crop`. Cursor: the open hand (`Bitmap::Pan`) over the
   picture, the closed one while panning it, `Bitmap::Resize` at the handle's angle on handles.
+  While a handle is held, thirds hairlines cross the window (`canvas::crop_thirds`, in the picture
+  outline's `SELECT_DIM`); a pan does not show them.
 - **Done pill** (`canvas::crop_exit_pill`) in the size badge's slot, same ground, ink, radius, gap and
-  `badge_placement`. A `Foreground` `Area`; `wheel_input`'s exemption names its layer.
+  `badge_placement`. A `Foreground` `Area`; `wheel_input`'s exemption names its layer. While the card
+  holds a shape the pill names it (*Done · 4:3*), so the shape shows where the drag happens.
 
 ## Pictures by drop and paste
 

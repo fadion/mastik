@@ -1954,6 +1954,128 @@ pub fn crop_resized(frame: Rect, handle: Handle, at: Point, limit: Rect) -> Rect
     Rect::new(x0, y0, x1, y1)
 }
 
+/// [`crop_resized`] holding the window at `aspect` (width over height): a corner
+/// holds the opposite corner and follows the pointer's larger reach, and a side
+/// moves its edge while the other axis grows about the box's middle.
+///
+/// Bounded by `limit` as [`crop_resized`] is, the shape winning over the pointer;
+/// a side drag's box is no longer reachable with one held edge, so the caller
+/// writes it with [`reshape_box`]. An `aspect` that is not finite and positive
+/// leaves the drag free.
+pub fn crop_resized_held(frame: Rect, handle: Handle, at: Point, limit: Rect, aspect: f64) -> Rect {
+    if !(aspect.is_finite() && aspect > 0.0) {
+        return crop_resized(frame, handle, at, limit);
+    }
+    let (ux, uy) = handle.unit();
+    // The far side's coordinate, the reach the pointer asks for and the room the
+    // limit leaves, along one moving axis.
+    let axis = |u: f64, lo: f64, hi: f64, p: f64, lim_lo: f64, lim_hi: f64| match u {
+        0.0 => (hi, (hi - p).max(0.0), hi - lim_lo),
+        _ => (lo, (p - lo).max(0.0), lim_hi - lo),
+    };
+    // The floor yields to the room, as the picture's edge wins over it.
+    let floor = MIN_CROP * aspect.max(1.0);
+    let place = |u: f64, anchor: f64, len: f64| match u {
+        0.0 => (anchor - len, anchor),
+        _ => (anchor, anchor + len),
+    };
+    let centred = |mid: f64, len: f64| (mid - len / 2.0, mid + len / 2.0);
+    let room_about = |mid: f64, lim_lo: f64, lim_hi: f64| 2.0 * (mid - lim_lo).min(lim_hi - mid);
+    let (x0, x1, y0, y1);
+    if ux != 0.5 && uy != 0.5 {
+        let (ax, reach_x, room_x) = axis(ux, frame.x0, frame.x1, at.x, limit.x0, limit.x1);
+        let (ay, reach_y, room_y) = axis(uy, frame.y0, frame.y1, at.y, limit.y0, limit.y1);
+        let w = reach_x
+            .max(reach_y * aspect)
+            .max(floor)
+            .min(room_x)
+            .min(room_y * aspect);
+        (x0, x1) = place(ux, ax, w);
+        (y0, y1) = place(uy, ay, w / aspect);
+    } else if uy == 0.5 {
+        let (ax, reach, room) = axis(ux, frame.x0, frame.x1, at.x, limit.x0, limit.x1);
+        let cy = frame.center().y;
+        let w = reach
+            .max(floor)
+            .min(room)
+            .min(room_about(cy, limit.y0, limit.y1) * aspect);
+        (x0, x1) = place(ux, ax, w);
+        (y0, y1) = centred(cy, w / aspect);
+    } else {
+        let (ay, reach, room) = axis(uy, frame.y0, frame.y1, at.y, limit.y0, limit.y1);
+        let cx = frame.center().x;
+        let h = reach
+            .max(floor / aspect)
+            .min(room)
+            .min(room_about(cx, limit.x0, limit.x1) / aspect);
+        (y0, y1) = place(uy, ay, h);
+        (x0, x1) = centred(cx, h * aspect);
+    }
+    Rect::new(x0, y0, x1, y1)
+}
+
+/// The largest window of `aspect` (width over height) inside both `frame` and
+/// `limit`, centred on `frame`'s centre as far as `limit` allows: what picking a
+/// crop shape does to the box. `None` when the two do not overlap or `aspect` is
+/// not finite and positive.
+pub fn crop_shaped(frame: Rect, limit: Rect, aspect: f64) -> Option<Rect> {
+    let room = frame.intersect(limit);
+    if !(aspect.is_finite() && aspect > 0.0) || room.width() <= 0.0 || room.height() <= 0.0 {
+        return None;
+    }
+    let w = room.width().min(room.height() * aspect);
+    let size = Size::new(w, w / aspect);
+    let c = frame.center();
+    let cx =
+        c.x.clamp(room.x0 + size.width / 2.0, room.x1 - size.width / 2.0);
+    let cy =
+        c.y.clamp(room.y0 + size.height / 2.0, room.y1 - size.height / 2.0);
+    Some(Rect::from_center_size(Point::new(cx, cy), size))
+}
+
+/// Put `id`'s box at `to`, a rectangle in its local space, with no edge or centre
+/// held: a bottom-right drag to `to`'s size, then the move to `to`'s corner.
+///
+/// For the box changes a handle drag cannot make in one go: a crop held to a
+/// shape by a side handle, and a picture's quarter turn swapping the box about
+/// its centre.
+pub fn reshape_box(doc: &Document, res: &Resolved, id: NodeId, to: Rect) -> Transaction {
+    let (Some(node), Some(from), Some(world)) = (
+        doc.get(id),
+        crate::local_box(doc, res, id),
+        res.world_transform(id),
+    ) else {
+        return Transaction::default();
+    };
+    let corner = world * Point::new(from.x0 + to.width(), from.y0 + to.height());
+    let mut tx = resize_layer(
+        doc,
+        res,
+        id,
+        Handle::BottomRight,
+        corner,
+        Resize::geometry(false, false),
+    );
+    let shift = to.origin() - from.origin();
+    if shift.hypot2() > f64::EPSILON * f64::EPSILON {
+        // The resize may have moved the node itself (a path's correction); the
+        // move composes onto the transform it left.
+        let before =
+            tx.0.iter()
+                .rev()
+                .find_map(|op| match op {
+                    Operation::SetTransform { id: o, transform } if *o == id => Some(*transform),
+                    _ => None,
+                })
+                .unwrap_or_else(|| res.used_local_of(node));
+        tx.0.push(Operation::SetTransform {
+            id,
+            transform: before * Affine::translate(shift),
+        });
+    }
+    tx
+}
+
 /// The smallest a crop window gets: [`resized_box`]'s own floor, so [`crop_resized`]
 /// matches what [`resize_layer`] writes.
 const MIN_CROP: f64 = 1.0;

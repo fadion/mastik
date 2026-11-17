@@ -276,19 +276,16 @@ impl ImageOrient {
     }
 }
 
-/// One press of the popover's mirror buttons: a symmetry composed onto whatever
-/// orientation the picture is already in.
+/// One press of the image card's Orient buttons: a symmetry composed onto
+/// whatever orientation the picture is already in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrientOp {
     /// Mirror left-to-right, in the frame's axes.
     FlipH,
     /// Mirror top-to-bottom, in the frame's axes.
     FlipV,
-    /// A quarter turn clockwise.
-    ///
-    /// **No control writes this today, by decision**: the Transform panel's own
-    /// quarter turns cover the common case. It stays because
-    /// [`ImageOrient::applying`] resolves `FlipV` to `quarters: 2`.
+    /// A quarter turn clockwise; four come back round, so there is no
+    /// counter-clockwise op.
     Turn,
 }
 
@@ -1080,6 +1077,37 @@ impl ImageRef {
         )
     }
 
+    /// Whether `frame` shows the whole picture at its own shape: a box of the
+    /// oriented picture's aspect, within a hundredth, under Fill or Fit, or under
+    /// Crop with nothing cut away. Tile never does.
+    ///
+    /// What a quarter turn asks before it turns the box too: the sideways photo
+    /// just placed. Any other box is a framing someone chose, which the turn keeps.
+    pub fn frames_whole_picture(&self, frame: kurbo::Rect, width: u32, height: u32) -> bool {
+        let (iw, ih) = self
+            .orient
+            .oriented_size(f64::from(width), f64::from(height));
+        let (fw, fh) = (frame.width(), frame.height());
+        if ![iw, ih, fw, fh].into_iter().all(usable_span) {
+            return false;
+        }
+        let shaped = ((fw / fh) / (iw / ih) - 1.0).abs() < 0.01;
+        let uncut = [
+            self.crop.x0,
+            self.crop.y0,
+            self.crop.x1 - 1.0,
+            self.crop.y1 - 1.0,
+        ]
+        .iter()
+        .all(|d| d.abs() < 1e-3);
+        shaped
+            && match self.fit {
+                ImageFit::Fill | ImageFit::Fit => true,
+                ImageFit::Crop => uncut,
+                ImageFit::Tile => false,
+            }
+    }
+
     /// The picture's size under [`ImageFit::Crop`], in local units per **oriented**
     /// source pixel (as [`Self::tile_scale`]).
     ///
@@ -1410,6 +1438,38 @@ pub fn image_brush(id: ImageId) -> Brush {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A box shows the whole picture at its own shape under Fill or Fit, under
+    /// Crop only uncut, never under Tile, and a turned picture's shape is the
+    /// turned one.
+    /// flip: `frames_whole_picture` ignoring `orient` → fails at "turned".
+    #[test]
+    fn a_box_frames_the_whole_picture_only_at_its_own_shape() {
+        let wide = kurbo::Rect::new(0.0, 0.0, 300.0, 200.0);
+        let img = ImageRef::new(ImageId("p".into()));
+        assert!(img.frames_whole_picture(wide, 600, 400), "the control");
+        assert!(
+            img.frames_whole_picture(kurbo::Rect::new(0.0, 0.0, 300.0, 201.0), 600, 400),
+            "a box rounded to whole units still counts"
+        );
+        assert!(!img.frames_whole_picture(wide, 400, 400), "another shape");
+        let tile = ImageRef {
+            fit: ImageFit::Tile,
+            ..img.clone()
+        };
+        assert!(!tile.frames_whole_picture(wide, 600, 400), "tile repeats");
+        let cut = ImageRef {
+            fit: ImageFit::Crop,
+            crop: kurbo::Rect::new(0.1, 0.1, 0.9, 0.9),
+            ..img.clone()
+        };
+        assert!(!cut.frames_whole_picture(wide, 600, 400), "a crop cut away");
+        let turned = img.reoriented(OrientOp::Turn);
+        assert!(
+            turned.frames_whole_picture(kurbo::Rect::new(0.0, 0.0, 200.0, 300.0), 600, 400),
+            "turned: a 600 × 400 picture a quarter round is tall"
+        );
+    }
 
     /// A solid brush written by the old `peniko::Brush` still parses and
     /// re-serializes to the same bytes.
