@@ -1848,6 +1848,7 @@ impl MastikApp {
             collapsed_panels: ["Effects", "Preview", "Frame templates"]
                 .into_iter()
                 .chain(crate::panels::CHART_FOLDED)
+                .chain(crate::panels::IMAGE_FOLDED)
                 .collect(),
             chart_card: None,
             chart_others: Vec::new(),
@@ -10030,7 +10031,7 @@ mod tests {
     /// widening the scan would self-match.
     #[test]
     fn only_the_layers_panel_commits_without_the_committer() {
-        let panels: [(&str, &str); 21] = [
+        let panels: [(&str, &str); 22] = [
             ("binding.rs", include_str!("panels/binding.rs")),
             ("chart.rs", include_str!("panels/chart.rs")),
             ("chart_picture.rs", include_str!("panels/chart_picture.rs")),
@@ -10040,6 +10041,7 @@ mod tests {
             ("dashboard.rs", include_str!("panels/dashboard.rs")),
             ("export.rs", include_str!("panels/export.rs")),
             ("history.rs", include_str!("panels/history.rs")),
+            ("image_curves.rs", include_str!("panels/image_curves.rs")),
             ("import_files.rs", include_str!("panels/import_files.rs")),
             ("inspector.rs", include_str!("panels/inspector.rs")),
             ("layers.rs", include_str!("panels/layers.rs")),

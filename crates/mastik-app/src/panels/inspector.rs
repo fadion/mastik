@@ -118,22 +118,53 @@ pub(crate) enum ImageCard {
     /// the rectangle's own actions, and the asset.
     #[default]
     Settings,
-    /// The seven per-pixel adjustments.
+    /// The per-pixel adjustments, in `AdjustSection`'s three folds.
     Adjustments,
+    /// The one master tone curve, whose ends are the black point, white point and
+    /// fade rows.
+    Curves,
 }
 
 impl ImageCard {
     /// Tab order, left to right.
-    pub(crate) const ALL: [ImageCard; 2] = [ImageCard::Settings, ImageCard::Adjustments];
+    pub(crate) const ALL: [ImageCard; 3] = [
+        ImageCard::Settings,
+        ImageCard::Adjustments,
+        ImageCard::Curves,
+    ];
 
     /// The tab's label, which is also the card's heading when it is showing.
     fn title(self) -> &'static str {
         match self {
             ImageCard::Settings => "Settings",
             ImageCard::Adjustments => "Adjustments",
+            ImageCard::Curves => "Curves",
         }
     }
 }
+
+/// Each adjustment section's fold, as `collapsed_panels` remembers it.
+pub(crate) fn image_fold_key(section: mastik_core::AdjustSection) -> &'static str {
+    match section {
+        mastik_core::AdjustSection::Light => "Image light",
+        mastik_core::AdjustSection::Colour => "Image colour",
+        mastik_core::AdjustSection::Looks => "Image looks",
+    }
+}
+
+/// The adjustment folds a new session opens shut: Light is what a photograph
+/// needs most often.
+pub(crate) const IMAGE_FOLDED: [&str; 2] = ["Image colour", "Image looks"];
+
+/// Where the image card remembers the Settings tab's body height, which every
+/// tab's body keeps so the card never changes height.
+fn image_body_h_id() -> egui::Id {
+    egui::Id::new("image-card-body-h")
+}
+
+/// The body height every tab keeps until the Settings tab has been drawn once and
+/// measured: the Settings tab's height in Fill mode when this was written.
+const IMAGE_BODY_FALLBACK_H: f32 = 245.0;
 
 /// The Transform card's marks — `MastikApp::transform_marks`.
 #[derive(Default)]
@@ -8915,6 +8946,12 @@ impl MastikApp {
                     if locked {
                         super::styles::lock(ui);
                     }
+                    // Every tab's body is the Settings tab's height, measured where
+                    // it is drawn: an `Area` shrinks to its content but a popup
+                    // never grows back, and the card must not jump between tabs.
+                    let body_top = ui.cursor().top();
+                    let measured_h = ctx.data(|d| d.get_temp::<f32>(image_body_h_id()));
+                    let body_h = measured_h.unwrap_or(IMAGE_BODY_FALLBACK_H);
 
                     if card == ImageCard::Settings {
                         // Leaving Crop re-frames the picture in the box the crop left;
@@ -9165,85 +9202,138 @@ impl MastikApp {
                             });
                         });
                     }
+                    if card == ImageCard::Settings {
+                        let measured = ui.min_rect().bottom() - body_top;
+                        if measured_h.is_none_or(|h| (measured - h).abs() > 0.5) {
+                            ctx.data_mut(|d| d.insert_temp(image_body_h_id(), measured));
+                        }
+                    }
+                    // The other tabs' bodies stop a reset row short of Settings',
+                    // so their reset rows sit where Settings' last row ends.
+                    let scroll_h = (body_h - IMAGE_CARD_GAP - ui::MENU_ROW_H).max(ui::MENU_ROW_H);
 
                     if card == ImageCard::Adjustments {
-                        // Rows built from `Adjustment::ALL`, so order and words are the
-                        // model's. Percent (hue in degrees) under the hand, the model's
-                        // `Adjustment::range` in the file.
+                        // Rows built from `Adjustment::ALL` under `AdjustSection`'s
+                        // folds, so order and words are the model's. Percent (hue in
+                        // degrees) under the hand, the model's `Adjustment::range` in
+                        // the file. Past the card's height the folds scroll; the tab
+                        // strip and the reset stay put. The minimum and the unshrunk
+                        // height each hold the body at `scroll_h`; an `Area` hands a
+                        // scroll area last frame's size, so keep both.
                         let adjusted = !img.adjust.is_default();
                         let field_w = inner - CELL - ui::CARD_COL_GAP;
-                        ui.scope(|ui| {
-                            for k in Adjustment::ALL {
-                                let at_rest = k.of(&img.adjust) == 0.0;
-                                let scale = k.shown_scale();
-                                let mut shown = f64::from(k.of(&img.adjust)) * scale;
-                                let (lo, hi) = (*k.range().start(), *k.range().end());
-                                let one_sided = lo == 0.0;
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                                    let resp = ui::value_field_metered(
-                                        ui,
-                                        egui::vec2(field_w, CELL),
-                                        Prefix::Text(k.label()),
-                                        // An amount fills from the left; an offset
-                                        // grows either way from the middle.
-                                        match one_sided {
-                                            true => ui::Meter::Amount((shown / scale) as f32),
-                                            false => ui::Meter::Signed((shown / scale) as f32),
-                                        },
-                                        &mut shown,
-                                        Scrub::whole(0.25)
-                                            .range(f64::from(lo) * scale..=f64::from(hi) * scale),
-                                        |d| match (k, one_sided) {
-                                            (Adjustment::Hue, _) => {
-                                                d.suffix("°").custom_formatter(signed_number)
-                                            }
-                                            (_, true) => d.custom_formatter(ui::number(0)),
-                                            (_, false) => d.custom_formatter(signed_number),
-                                        },
-                                    )
-                                    .on_hover_text(k.hint());
-                                    self.valve_slot(
-                                        &resp,
-                                        id,
-                                        slot,
-                                        paint::map_image(brush, |r| {
-                                            k.set(&mut r.adjust, (shown / scale) as f32)
-                                        }),
-                                    );
-                                    // Dimmed at rest; re-asked after the click because a dim
-                                    // `icon_button` still senses one.
-                                    if ui::icon_button(
-                                        ui,
-                                        icon::ARROW_COUNTER_CLOCKWISE,
-                                        CELL,
-                                        12.0,
-                                        false,
-                                        !at_rest,
-                                    )
-                                    .on_hover_text(match at_rest {
-                                        true => format!("{} is already at rest", k.label()),
-                                        false => format!("Reset {}", k.label().to_lowercase()),
-                                    })
-                                    .clicked()
-                                        && !at_rest
-                                    {
-                                        self.write_slot(
-                                            id,
-                                            slot,
-                                            paint::map_image(brush, |r| k.set(&mut r.adjust, 0.0)),
-                                        );
+                        let scrolled = egui::ScrollArea::vertical()
+                            .id_salt(("image-adjust", id))
+                            .min_scrolled_height(scroll_h)
+                            .max_height(scroll_h)
+                            .auto_shrink([false, false])
+                            .scroll_bar_visibility(
+                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                            )
+                            .show(ui, |ui| {
+                                for section in mastik_core::AdjustSection::ALL {
+                                    let key = image_fold_key(section);
+                                    let open = !self.collapsed_panels.contains(key);
+                                    let moved = section.moved(&img.adjust);
+                                    if ui::fold_rule(ui, section.title(), open, moved).clicked() {
+                                        if open {
+                                            self.collapsed_panels.insert(key);
+                                        } else {
+                                            self.collapsed_panels.remove(key);
+                                        }
                                     }
-                                });
-                            }
-                            // Duotone's two ends under its slider, always drawn so the
-                            // card keeps one height; picking one before raising the
-                            // amount is allowed.
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                                let half = (field_w - ui::CARD_COL_GAP) / 2.0;
-                                for end in mastik_core::DuotoneEnd::BOTH {
-                                    self.slot_color_row(
+                                    if !open {
+                                        continue;
+                                    }
+                                    ui.scope(|ui| {
+                                        for k in section.members() {
+                                            let at_rest = k.of(&img.adjust) == 0.0;
+                                            let scale = k.shown_scale();
+                                            let mut shown = f64::from(k.of(&img.adjust)) * scale;
+                                            let (lo, hi) = (*k.range().start(), *k.range().end());
+                                            let one_sided = lo == 0.0;
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                                                let resp = ui::value_field_metered(
+                                                    ui,
+                                                    egui::vec2(field_w, CELL),
+                                                    Prefix::Text(k.label()),
+                                                    // An amount fills from the left; an offset
+                                                    // grows either way from the middle.
+                                                    match one_sided {
+                                                        true => ui::Meter::Amount(
+                                                            (shown / scale) as f32,
+                                                        ),
+                                                        false => ui::Meter::Signed(
+                                                            (shown / scale) as f32,
+                                                        ),
+                                                    },
+                                                    &mut shown,
+                                                    Scrub::whole(0.25).range(
+                                                        f64::from(lo) * scale
+                                                            ..=f64::from(hi) * scale,
+                                                    ),
+                                                    |d| match (k, one_sided) {
+                                                        (Adjustment::Hue, _) => d
+                                                            .suffix("°")
+                                                            .custom_formatter(signed_number),
+                                                        (_, true) => {
+                                                            d.custom_formatter(ui::number(0))
+                                                        }
+                                                        (_, false) => {
+                                                            d.custom_formatter(signed_number)
+                                                        }
+                                                    },
+                                                )
+                                                .on_hover_text(k.hint());
+                                                self.valve_slot(
+                                                    &resp,
+                                                    id,
+                                                    slot,
+                                                    paint::map_image(brush, |r| {
+                                                        k.set(&mut r.adjust, (shown / scale) as f32)
+                                                    }),
+                                                );
+                                                // Dimmed at rest; re-asked after the click because a dim
+                                                // `icon_button` still senses one.
+                                                if ui::icon_button(
+                                                    ui,
+                                                    icon::ARROW_COUNTER_CLOCKWISE,
+                                                    CELL,
+                                                    12.0,
+                                                    false,
+                                                    !at_rest,
+                                                )
+                                                .on_hover_text(match at_rest {
+                                                    true => {
+                                                        format!("{} is already at rest", k.label())
+                                                    }
+                                                    false => format!(
+                                                        "Reset {}",
+                                                        k.label().to_lowercase()
+                                                    ),
+                                                })
+                                                .clicked()
+                                                    && !at_rest
+                                                {
+                                                    self.write_slot(
+                                                        id,
+                                                        slot,
+                                                        paint::map_image(brush, |r| {
+                                                            k.set(&mut r.adjust, 0.0)
+                                                        }),
+                                                    );
+                                                }
+                                            });
+                                        }
+                                        // Duotone's two ends under its slider, always drawn with
+                                        // it; picking one before raising the amount is allowed.
+                                        if section == mastik_core::AdjustSection::Looks {
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                                                let half = (field_w - ui::CARD_COL_GAP) / 2.0;
+                                                for end in mastik_core::DuotoneEnd::BOTH {
+                                                    self.slot_color_row(
                                         ui,
                                         id,
                                         PaintSlot::Duotone(index, end),
@@ -9259,9 +9349,18 @@ impl MastikApp {
                                             }
                                         },
                                     );
+                                                }
+                                            });
+                                        }
+                                    });
                                 }
                             });
-                        });
+                        ui::scroll_fade_top(
+                            ui,
+                            scrolled.inner_rect,
+                            scrolled.state.offset.y,
+                            color::card(),
+                        );
                         ui.scope(|ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
                             if menu_action(
@@ -9281,6 +9380,10 @@ impl MastikApp {
                                 );
                             }
                         });
+                    }
+
+                    if card == ImageCard::Curves {
+                        self.image_curves_tab(ui, id, slot, brush, &img, scroll_h);
                     }
                 });
             });

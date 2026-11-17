@@ -1,6 +1,6 @@
 # Image fills and image editing
 
-The inspector's image fill row, the image-editing card (Settings and Adjustments tabs), image editing
+The inspector's image fill row, the image-editing card (Settings, Adjustments and Curves tabs), image editing
 mode (`Tool::ImageEdit`, the crop by handles and pan), and pictures arriving by drop or paste.
 Part of §9.4.
 
@@ -30,7 +30,11 @@ Part of §9.4.
   it. There is no click-away rule, since a canvas click is often the next crop drag. `MastikApp` keeps
   only `image_tab: ImageCard` (the last tab, kept across entries); which layer and paint is
   `canvas::edited_image`'s answer.
-- **The tab strip is the header**: a two-cell `ui::segmented` with `ImageCard::title` labels, then
+- **The card keeps one height: the Settings tab's.** The Settings body's height is measured where it
+  is drawn and remembered in the context (`image_body_h_id`; `IMAGE_BODY_FALLBACK_H` until it has been
+  drawn once). The other tabs' bodies stop one reset row short of it, so their reset rows sit where
+  Settings' last row ends. Nothing grows the popup, which egui could not shrink back.
+- **The tab strip is the header**: a three-cell `ui::segmented` (Settings, Adjustments, Curves) with `ImageCard::title` labels, then
   `ui::TABS_CLOSE_GAP` and `ui::close_button`, as the colour picker's header reads; the ✕ leaves the
   mode (`choose_tool(Tool::Select)`), keeping the crop made. Controls are `CELL` = 26; both tracks (this and Settings' mode strip) ask for `TRACK_CELL`,
   four less, since `ui::segmented` pads two each side.
@@ -62,24 +66,65 @@ Part of §9.4.
 
 ### Adjustments tab
 
-- One row per `Adjustment::ALL` entry, in its order, at `ui::CARD_ROW_GAP`. Each is a
+- **Three folds**, one per `AdjustSection`, each headed by `ui::fold_rule` as the Chart card's are:
+  **Light** (Exposure, Contrast, Highlights, Shadows, White point, Black point), **Colour** (Saturation,
+  Temperature, Tint, Hue) and **Looks** (Fade, Greyscale, Invert, Duotone with its two ends). The heads
+  have no tooltip. Each head carries a count (`AdjustSection::moved`, drawn as a card header's
+  overrides): the amounts in that fold away from rest, so a folded section is never silently
+  adjusted.
+- **Folds are remembered per section** in `collapsed_panels` (`inspector::image_fold_key`) and open
+  independently. A new session opens Light and folds Colour and Looks (`IMAGE_FOLDED`).
+- **The folds scroll** in a body of fixed height between the tab strip and *Reset adjustments*, with no
+  bar and `ui::scroll_fade_top` once scrolled; the strip and the reset stay put.
+- One row per amount, in `Adjustment::ALL`'s order, at `ui::CARD_ROW_GAP`. Each is a
   `ui::value_field_metered` with the **word** as prefix, scrubbing `Adjustment::shown_scale` (percent,
   hue in degrees) over the model's `Adjustment::range`, written through `valve_slot` (one undo step
   per scrub).
 - The meter (`ui::Meter`) is an accent wash across the field's ink. A two-sided amount is
   `Meter::Signed`, **growing from the middle** (negative left, positive right, ±1 reaching an edge)
   over a 1pt centre tick (`ui::METER_TICK_W`, from `ui::meter_wash()`) that is always drawn. A
-  `0..=1` amount (greyscale, invert, duotone) is `Meter::Amount`, **filling from the left edge
+  `0..=1` amount (white point, black point, fade, greyscale, invert, duotone) is `Meter::Amount`, **filling from the left edge
   across the whole field**, as an opacity reads, with no tick: no half of the field is dead. The number is right-aligned: signed
   via `inspector::signed_number` for a two-sided amount (hue with a `°` suffix), unsigned for a
   `0..=1` one.
+- Tooltips are `Adjustment::hint`: White point *Turn the lightest tones white*, Black point *Turn the
+  darkest tones black*, Fade *Lift black towards grey, for a muted print*. The undo step is the
+  image fill's, as every slider's.
 - A per-row reset is **dimmed, not absent**, at zero; *Reset adjustments* is a `menu_action` that puts
-  every amount back and the duotone colours to their defaults.
-- **Duotone's ends** sit under its row, always drawn so the card keeps one height (picking one before
-  raising the amount is allowed): two half-width `slot_color_row`s (chip and hex, no opacity, its
-  `alpha` switch off) on `PaintSlot::Duotone(fill_index, DuotoneEnd)`. That slot's read and write go
-  through the image fill's own `PaintSlot::Fill` slot. Its picker closes when the card closes or
-  leaves the Adjustments tab.
+  every amount back, the duotone colours to their defaults and the curve to a straight line.
+- **Duotone's ends** sit under its row whenever Looks is open (picking one before raising the amount
+  is allowed): two half-width `slot_color_row`s (chip and hex, no opacity, its `alpha` switch off) on
+  `PaintSlot::Duotone(fill_index, DuotoneEnd)`. That slot's read and write go through the image
+  fill's own `PaintSlot::Fill` slot. Its picker closes when the card closes, leaves the Adjustments
+  tab or folds Looks.
+
+### Curves tab (`panels::image_curves`)
+
+- **One master curve for R, G and B**, since the pipeline holds one table. The graph is the body's
+  full width and as tall as the body allows after the In/Out row, up to square; its ground is a
+  `color::field()` rounded rect.
+- Behind the curve: the picture's **luminance histogram** (`mastik_render::luminance_histogram`,
+  square-root heights in faint ink, cached per picture in the context), quarter lines in
+  `color::divider()`, and the straight line dashed.
+- **The ends are the tone rows.** The black end's square sits at (black point, fade) and the white
+  end's at (1 − white point, 1); each has a tick on the bottom edge under its input. Dragging the
+  black end writes black point and fade, dragging the white end writes white point: the same numbers
+  the Adjustments rows show. An end stops `MIN_GAP` short of the other.
+- **Inner points** (round): a click on the graph adds one where the curve already is, so nothing
+  changes until it is moved (up to eight; a click on an end's side or beside a point adds none). A
+  press that drags adds and moves in one step. A drag moves a point between its neighbours and
+  between fade and white; dragged more than `OFF_GRAPH` past the graph's edge it goes, as does a
+  double-click (`ui::double_clicked`). Points are stored between the ends (`ImageAdjust::curve`),
+  so moving an end carries them.
+- Tooltip *Click to add a point, drag it off to remove it*; the cursor is a grab hand over a handle
+  and while dragging. The held handle is drawn in `color::accent_400()`.
+- **In and Out** are half-width `ui::value_field`s for the held handle, in percent, written through
+  `valve_slot`, so arrows step it and a typed value lands exactly. With nothing held they read `–`,
+  dimmed with *Pick a point on the curve to set it*; the white end's Out is dimmed with *The white
+  end always maps to white*.
+- *Reset curve* is a `menu_action` at the reset row's place: black point, white point, fade and the
+  points back to rest, dimmed with *The curve is already a straight line*.
+- Every write is the image fill's own undo step, as the sliders' are; a drag is one step.
 
 ## Image editing mode (`Tool::ImageEdit`)
 
