@@ -139,6 +139,8 @@ pub fn header(source: &str) -> Result<Header, VmError> {
 
 /// The byte past the closing quote of an input's quoted default, which may hold
 /// ` --`; 0 when the default before the first ` --` is not quoted or not closed.
+/// A default has no escapes (`parse_default` only strips its quotes), so the
+/// next matching quote closes it, even after a `\`.
 fn quoted_end(text: &str) -> usize {
     let dash = text.find(" --").unwrap_or(text.len());
     let Some(eq) = text[..dash].find('=') else {
@@ -149,16 +151,10 @@ fn quoted_end(text: &str) -> usize {
     let Some(quote) = value.bytes().next().filter(|q| matches!(q, b'"' | b'\'')) else {
         return 0;
     };
-    let b = text.as_bytes();
-    let mut j = open + 1;
-    while j < b.len() {
-        match b[j] {
-            b'\\' => j += 2,
-            c if c == quote => return j + 1,
-            _ => j += 1,
-        }
-    }
-    0
+    text.as_bytes()[open + 1..]
+        .iter()
+        .position(|&c| c == quote)
+        .map_or(0, |p| open + 1 + p + 1)
 }
 
 /// One input from the text after `@input`, which starts at byte `at` of the source.

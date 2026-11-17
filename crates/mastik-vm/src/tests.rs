@@ -566,6 +566,11 @@ fn the_header_reads_inputs() {
     let h = header("---@input sep string = \"a -- b\" -- Separator").unwrap();
     assert_eq!(h.inputs[0].default, json!("a -- b"));
     assert_eq!(h.inputs[0].label.as_deref(), Some("Separator"));
+    // A default has no escapes, so one ending in `\` closes at its next quote.
+    // flip: `quoted_end` skipping the byte after `\` → fails at the default.
+    let h = header("---@input dir string = \"C:\\\" -- Folder \"out\"").unwrap();
+    assert_eq!(h.inputs[0].default, json!("C:\\"));
+    assert_eq!(h.inputs[0].label.as_deref(), Some("Folder \"out\""));
 }
 
 /// Each header refusal says why and underlines the text it is about.
