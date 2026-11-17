@@ -80,7 +80,7 @@ pub struct Snapping {
 
 impl Snapping {
     /// [`Self::tolerance_px`] in world units at this zoom.
-    fn tolerance(&self) -> f64 {
+    pub(crate) fn tolerance(&self) -> f64 {
         self.tolerance_px / self.zoom.max(f64::EPSILON)
     }
 

@@ -5268,8 +5268,16 @@ impl MastikApp {
         if self.snap_shapes
             && let Some(pen) = &self.pen
         {
+            // The anchor just placed is no target while the pointer still rests
+            // on it: landing there would make a segment of no length, and its
+            // *Anchor* pill would name the point the click itself made.
+            let tolerance = s.tolerance();
+            let last =
+                pen.anchors.len().checked_sub(1).filter(|i| {
+                    except.is_none() && pen.anchors[*i].at.distance(world) <= tolerance
+                });
             let others = pen.anchors.iter().enumerate();
-            let others = others.filter(|(i, _)| Some(*i) != except);
+            let others = others.filter(|(i, _)| Some(*i) != except && Some(*i) != last);
             s.outlines.anchors.extend(others.map(|(_, a)| a.at));
             // Tangents and perpendiculars are drawn from the anchors the new one
             // joins: the run's last, or a Ctrl-moved anchor's neighbours.
@@ -27668,6 +27676,35 @@ mod point_snap_tests {
             "from the last anchor"
         );
         assert_eq!(at, Point::new(30.0, 60.0));
+    }
+
+    /// The anchor the pen just placed is no *Anchor* target while the pointer
+    /// rests on it; the run's first anchor still is, so a run can close.
+    /// flip: `pen_point_except` keeping the last anchor under the pointer → fails
+    /// at "no pill on the point just placed".
+    #[test]
+    fn the_pens_last_anchor_is_no_target_under_the_pointer() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = app_with_rect_and_path(&ctx);
+        app.tool = Tool::Pen;
+        let first = Point::new(400.0, 400.0);
+        let last = Point::new(600.0, 450.0);
+        app.pen = Some(PenState {
+            parent: app.session.doc.first_page(),
+            parent_world: Affine::IDENTITY,
+            anchors: vec![
+                PenAnchor::corner(first),
+                PenAnchor::corner(Point::new(500.0, 520.0)),
+                PenAnchor::corner(last),
+            ],
+            shaping: false,
+            editing: None,
+        });
+        let (_, marks) = app.pen_point(last, false);
+        assert_eq!(marks.point, None, "no pill on the point just placed");
+        let (at, marks) = app.pen_point(first + Vec2::new(1.5, -1.0), false);
+        assert_eq!(at, first, "the control: the first anchor still lands");
+        assert_eq!(marks.point.map(|m| m.kind), Some(snap::PointKind::Anchor));
     }
 
     /// A dragged anchor's joined anchors are its neighbours that stay put, across

@@ -79,7 +79,9 @@ for Move and Resize, never stashed on `Drag`.
 
 A pen anchor, a node-tool point or segment drag and a line's end are given point targets
 (`MastikApp::point_snapping`); a resize is not. A pen drawing into an edited path reads that path
-as its own: every subpath but the run in flight is a target (`pen_point`). With both axes free, `snap::point_target` first
+as its own: every subpath but the run in flight is a target (`pen_point`). The run's own anchors are
+targets too, but the one just placed is none while the pointer rests on it, so the click that made
+it shows no *Anchor* pill (`pen_point_except`). With both axes free, `snap::point_target` first
 looks within the tolerance for, in this order, an **anchor**, an **intersection** of two segments,
 a **tangent**, a **perpendicular**, a segment's **midpoint**, a shape's **centre**, and the nearest
 point **on a path**. Tangent and perpendicular are drawn from `Outlines::from`, the anchors the
