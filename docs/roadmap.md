@@ -13,6 +13,143 @@ variables and scripts during play, smart animate and springs, a player over the 
 into its own window or fullscreen, and export as one HTML file running the player in WebAssembly.
 The design and its open questions are in `prototyping.md`.
 
+- **Inspect mode in the exported player.** A switch in the HTML export's player that stops
+  interactions and lets the viewer pick layers: a layer's CSS as *Copy as CSS* writes it, distances
+  to its neighbours as the canvas's `Alt` measure quotes them (`measure.rs`), and its export
+  settings' files to download. It gives a developer a handoff with no server, from the file the
+  designer already sends.
+- **Annotations.** Notes pinned to a layer that say what the drawing cannot ("this list scrolls",
+  "48 px touch target"), shown on the canvas, in inspect mode and atop the layer's code in code
+  export. They are specification, not conversation: no replies, no authors, no resolved state,
+  which keeps them apart from the comment tool `non-goals.md` declines.
+
+## Now · Misc
+
+Items run cheapest first.
+
+- **Repeat and reflect for gradients.** `peniko::Gradient::extend` is in the model, both backends
+  draw it and the SVG writer already emits `spreadMethod` (`svg::gradient_def`); nothing in the app
+  sets it. A switch in the gradient picker. CSS has no reflect, which `code::css` already reports.
+- **A better angular gradient in SVG.** SVG 1.1 has no sweep, so `svg::gradient_def` writes a
+  radial and reports it. Write it as wedges each filled with a linear gradient, or a raster `<image>`
+  when the stops are many. Exporter only.
+- **More warp presets.** Wave, Rise, Squeeze, Fisheye and Twist beside Arc, Flag and Bulge
+  (`warp::Preset`): each is one map function into the existing refit, and the result stays baked
+  paths.
+- **Inverted mask.** A flag beside `MaskMode` that shows the masked run everywhere except inside the
+  mask. Alpha and luminance compose `DestOut` where they compose `DestIn` (`scene::push_ink_mask`,
+  each backend's `push_mask_layer`); a shape mask clips to the run's ink box less the outline, even-odd. SVG writes a
+  `<mask>` of a white rect with the shape painted black; CSS writes `mask-composite: exclude`.
+  Hit-testing and `ink_bounds` follow the inversion: the run is hit outside the shape.
+- **Linear and grid repeat.** `Line` and `Grid` beside the ring in *Repeat around origin*
+  (`mastik_core::repeat`, `Ring`, `Place`), reusing its group and linked-copy placement:
+  step-and-repeat, with copies optionally linked as instances.
+- **Baked path filters.** *Roughen*, *Zig-zag* and *Pucker / Bloat* in the path bar's Clean up
+  card, built as *Simplify* and *Offset* are: flatten, displace, refit. They give the hand-drawn and
+  organic edge most illustration asks for.
+- **Oklab per-gradient switch.** A *Smooth (Oklab)* switch in the gradient picker, off by default:
+  CSS, Figma, Sketch and Penpot interpolate in sRGB, and imports must keep drawing as they did, so a
+  gradient written before it loads as sRGB. `vello_cpu` honours `Gradient::interpolation_cs` but
+  vello's GPU ramp (`vello_encoding::ramp_cache`) always mixes in sRGB, so the canvas and the PNG
+  would disagree; the render boundary expands an Oklab gradient into dense sRGB stops for both
+  backends. SVG 1.1 and the Penpot and Sketch writers take the same dense stops; CSS writes
+  `linear-gradient(in oklab, …)`.
+- **Honour an imported picture's colour profile.** `mastik_render::images::decode` reads no ICC
+  profile, so a Display P3 phone photo or an Adobe RGB JPEG draws as if its numbers were sRGB,
+  desaturated on the canvas and in every export. Convert to sRGB at decode with the profile `image`
+  exposes and a pure-Rust colour engine (`moxcms`); the stored bytes stay the original. Check it
+  against a real P3 photo first.
+- **The assets browser through MCP.** `search_assets` (icons or photos, several queries at once,
+  set and variant optional; icons by name, aliases and licence, photos with alt text, credit and a
+  small thumbnail as image content) and `place_asset` (at a point, a size, or filling layers),
+  through the panel's own placement so the credit, Unsplash's download report and the undo names
+  come with it. Only sets and services the person has switched on; an agent never switches one on,
+  since that reaches the network. Searching is a read (Look); placing needs Propose or Edit. A photo
+  lands after its download, inside the call's 30 s queue limit or as a pending id. Photo searches
+  are cached briefly, since an hourly limit is the person's. Library kits shown in the Icons tab
+  (`sets::icon_packs`) are included.
+- **Arrowheads on lines.** A start and an end decoration on `Line`, `Arc` and open `Path` (none,
+  arrow, open arrow, circle, square, bar), sized from the stroke width and drawn as their own
+  shapes, not as stroke ink, so a `Stroke` stays ink at one width. Hit-testing, `ink_bounds` and
+  *Outline stroke* include them. SVG writes `<marker>`; code export writes the SVG fallback. The
+  Figma, Sketch and Penpot readers and writers map their own arrow kinds.
+- **OKLCH.** An entry and display mode in the colour picker beside Hex, RGB, HSL and HSB, with the
+  plane drawn in OKLCH and the sRGB gamut's edge shown on it. Storage stays sRGB. An out-of-gamut
+  pick is mapped by lowering chroma (CSS Color 4's method), not by clipping channels; the picker
+  keeps the person's L, C and H while it is open, unsaved, so a hue drag near the edge does not
+  drift chroma. With it, *Generate scale*: a 50–950 ramp of colour variables from one colour, even
+  in lightness, from the variables browser, MCP and Luau. `contrast::nearest` already moves colours
+  in OKLCH.
+- **Blend shapes along a spine.** *Blend shapes* places its steps on a straight line
+  (`mastik_core::blend::blend`); map them onto a chosen path instead, optionally turned to its
+  tangent.
+- **N-fold radial symmetry for the pen and pencil.** `symmetry::PathMirror` holds a vertical and a
+  horizontal axis; a rotational order (3–12 copies about the centre, optionally mirrored) needs a
+  model change and its own rule for what the path stores, as the mirror's flags have.
+- **Design system health.** One card for a document: how much paint, type and spacing is bound to
+  variables and styles against raw values, detached instances, unused styles, variables and
+  components, near-duplicate colours, and kits waiting on updates. Most of the readings exist
+  (colour review, clean up, `kits_waiting`); the card and the coverage count do not. Its checks are
+  the ones the MCP review (*Now · MCP*) runs.
+- **Noise and grain.** A noise fill, and a grain effect over a layer. `non-goals.md` declined noise
+  as one generator written three times to agree to the pixel; SVG's `feTurbulence` is specified to
+  the algorithm, so porting that one algorithm to WGSL and the CPU backend makes the SVG writer the
+  reference rather than a third copy.
+- **Device and phone mirroring.** The app serves the prototype player to the local network and
+  shows a QR code; a phone on the same network plays the page and follows edits. Not hosting: it
+  ends with the app, needs no account and never leaves the network. Waits on the player
+  (*Now · Prototyping*).
+
+## Now · MCP
+
+Items run cheapest first.
+
+- **Raise or page the `changed` cap.** `changed` names at most 20 layers a list
+  (`mcp::revisions::CHANGED_LISTED`), so an agent reads a partial picture after a large edit. Raise
+  it, or let a call ask for the rest by revision.
+- **`group_steps`.** A begin and end call around several writes so one agent request is one undo
+  step without packing everything into one `batch`; an unclosed group closes at the turn's end or
+  the client's disconnect.
+- **Expose guides, layout grids, page background, Warp and Trace image.** Each is a door the app
+  has and the MCP surface leaves out (`design/mcp.md`).
+- **Make `get_tree` a faithful round trip.** `verbs::tree` writes the writable `Tree` but leaves
+  out styles, modes, component links, pivot and bindings for size, corners and type, so an agent
+  that copies and changes a part flattens it. The tree should insert back as what it read.
+- **Let the agent review its own visual output.** An `export_png` diff against a revision, so an
+  agent sees what its last steps changed, and a `review` read running the checks `check_layout`
+  skips (overlaps, text over a busy ground, spacing off a rhythm) beside off-scale spacing, raw
+  values where a variable or style fits, near-duplicate colours, inconsistent radii and low
+  contrast. The same checks feed *Design system health* and `mastik check`.
+
+## Now · Assistant
+
+Items run cheapest first.
+
+- **Keep proposals across a restart, and tool results in the chat history.** Proposals live in
+  memory (`assistant::applied`, `mcp::propose`) and saved chats store tool results as "(result not
+  saved)", so a reopened thread starts blind. Save both, bounded in size.
+- **A render with the scope and the chips for every harness.** Only Claude Code and Codex get a
+  render of attached layers, and the scope sends none (`design/assistant.md` §2, §6). Send one to
+  every harness that takes images, and a short description of it to one that does not.
+- **Change the access level without restarting the session.** A change restarts the harness's
+  session on the next question with only the prose replayed (`assistant_set_level`, `Started`), so
+  the agent loses its earlier reads. Keep the session and change only its grant, where the harness
+  allows it.
+
+## Now · Command bar and scripting
+
+Items run cheapest first.
+
+- **Seeded randomness.** `math.random` and `math.randomseed` are withheld (`run.rs`) to keep a run
+  deterministic. A `random(seed)` generator keeps it so: the same seed draws the same values. With
+  repeat, warp and blend, it opens scatter, jitter and generated patterns.
+- **More writable properties.** Fourteen are writable (`props.rs`), and `fill` and `stroke` read
+  nil for anything but one solid paint. Add effects, gradients, text style and layout properties,
+  and paint lists as tables.
+- **A stop key, and scripts off the UI thread.** A run holds the UI thread for up to its 1 s budget
+  with no progress and no stop (`command-mode.md` §8). Run it on a worker against the document as
+  it stood, with `Escape` stopping it and the result committed as one step.
+
 ## Now · Image editing
 
 Make the image-editing card feel complete without turning Mastik into a photo editor

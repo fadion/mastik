@@ -51,12 +51,11 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 
 ## Effects and paint
 
-- **Noise** — one generator written three times to agree to the pixel; belongs in fills if anywhere.
-- **Arrowheads, variable-width profiles, separate start/end caps** — a `Stroke` is ink at one width along an outline (§15 D126).
+- **Variable-width profiles and separate start/end caps** — a `Stroke` is ink at one width along an outline (§15 D126). Arrowheads are open work as decorations drawn beside the stroke (`roadmap.md`).
 - **A cap on the number of fills or strokes** (§15 D133).
 - **A pool of reusable effect-pass renderers** — the build cost is a one-off hitch, and a pool conflicts with a correctness rule (§15 D779).
 - **Reading `Filters` (brightness/contrast) back from SVG** — the combined matrix doesn't identify its inputs (§15 D411).
-- **OKLCH or wide-gamut colour entry** — the document stores sRGB.
+- **Wide-gamut colour (Display P3)** — the document stores sRGB. A P3 document would need a tag or a conversion in every export, every colour calculation (contrast, vision simulation, colour review) and every copy between documents, and a display path per OS that wgpu does not expose; most viewers of the output would see sRGB anyway. OKLCH as a way to pick sRGB colours is open work (`roadmap.md`).
 - **Diamond gradients** — Figma-only; peniko has no such kind, so the model would need its own gradient type for it. The Figma import reads one as radial and says so.
 - **A CSS display format in the picker** — CSS colours are typed or pasted into any colour field; the value row shows Hex, RGB, HSL or HSB.
 - **Setting one channel across layers that disagree** — over a *Mixed* row the value row is the text field, which sets the whole colour.
@@ -81,6 +80,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 
 ## Library and files
 
+- **Built-in design-system kits** (Material and the like) shipped inside the app — kits are offered for download on the Mastik website and land in the library as any kit does, which leaves room for kits people contribute.
 - **A multiple selection in the library** — every verb takes one document (§15 D383).
 - **Rollback after a partly-failed migration** — the retry is the recovery (§15 D814).
 - **Per-file "missing" marks** — the unit that goes missing is the whole library (§15 D384).

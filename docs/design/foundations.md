@@ -37,7 +37,6 @@ Mastik is a native, open-source 2D design tool (Figma-class scope, minimal v1) w
 
 ### Deferred (design for, do not build)
 
-- Noise is not built: three generators would have to agree to the pixel, and it is probably a fill (`non-goals.md`).
 - Hyphenation: a decided non-goal for v1 (§15 D399, `non-goals.md`), declined on price.
 - Persistent constraints in §13's sense (live relationships between arbitrary properties, a dependency graph). Layout insets are not this.
 - Real-time multiplayer: a real future goal. Operation and identity model are designed not to preclude it (§5.2, §12); the sync layer is not built.
