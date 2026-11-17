@@ -56,7 +56,7 @@ Phase 1 — read/export (ship first):
 Phase 2 — write (1:1 with operations/composites):
 `create_node`, `create_text(parent, text, x?, y?, width?)`, `insert_subtree`, `import_svg(parent, svg, x?, y?, name?)`, `delete_node`,
 `reparent`, `reorder`, `arrange(nodes, move)`, `group(nodes)`, `frame(nodes)`, `ungroup(nodes)`, `convert_container(node)`, `boolean(nodes, op)`, `flatten(nodes)`,
-`outline_shape(node)`, `outline_stroke(node)`, `outline_text(node)`, `divide(nodes)`, `blend_shapes(nodes, steps?, paint?, reverse?)`, `warp(nodes, preset?, bend?, vertical?, corners?)`,
+`outline_shape(node)`, `outline_stroke(node)`, `outline_text(node)`, `divide(nodes)`, `blend_shapes(nodes, steps?, paint?, reverse?, spine?, turn?)`, `warp(nodes, preset?, bend?, vertical?, corners?)`,
 `duplicate(nodes, dx?, dy?)`, `join_paths(node, other)`, `repeat(nodes, count?, line?, grid?, angle?, turn?, linked?)`, `align(nodes, edge)`,
 `distribute(nodes, axis)`, `tidy_up(nodes)`, `slice(nodes)`, `set_transform`, `set_pivot`, `set_geometry`,
 `set_point(node, point, subpath?, x?, y?, in_x?, in_y?, out_x?, out_y?, radius?)`, `set_size(node, width, height)`, `fit_to_content(node)`, `pixel_fit(nodes)`, `set_name`, `set_visible`,

@@ -4715,6 +4715,57 @@ fn blend_shapes_steps_between_two() {
     );
 }
 
+/// `blend_shapes` follows the path named as `spine`, or the path selected with
+/// the two, and turns the steps with it under `turn`.
+///
+/// flip: `blend_shapes` ignoring `spine` → fails at "B on the spine's end".
+#[test]
+fn blend_shapes_follows_a_spine_and_turns_with_it() {
+    use mastik_core::kurbo::{BezPath, Point};
+    for named in [true, false] {
+        let (mut doc, mut ids, page) = blank();
+        let (a, b) = two_rects(&mut doc, &mut ids, page, 200.0, 0.0);
+        let spine = ids.mint();
+        let mut path = BezPath::new();
+        path.move_to((0.0, 300.0));
+        path.line_to((300.0, 300.0));
+        path.line_to((300.0, 600.0));
+        doc.apply(&Transaction(vec![Operation::CreateNode {
+            id: spine,
+            parent: page,
+            index: 2,
+            kind: NodeKind::Path {
+                path,
+                corner_radii: Vec::new(),
+                corner_smoothing: 0.0,
+                mirror: Default::default(),
+            },
+            transform: None,
+            name: None,
+        }]))
+        .unwrap();
+        let args = match named {
+            true => {
+                json!({ "nodes": [a.to_wire(), b.to_wire()], "spine": spine.to_wire(), "turn": true })
+            }
+            false => json!({ "nodes": [a.to_wire(), b.to_wire(), spine.to_wire()], "turn": true }),
+        };
+        let g = run(&mut doc, &mut ids, "blend_shapes", args)[0];
+        let res = Resolved::rebuild(&doc);
+        let centre = res.world_bounds(b).unwrap().center();
+        assert!(
+            centre.distance(Point::new(300.0, 600.0)) < 1e-3,
+            "B on the spine's end ({named}): {centre:?}"
+        );
+        let c = res.world_transform(b).unwrap().as_coeffs();
+        assert!(
+            (c[1].atan2(c[0]).to_degrees() - 90.0).abs() < 1e-6,
+            "and turned a quarter"
+        );
+        assert_eq!(doc.get(page).unwrap().children(), &[spine, g]);
+    }
+}
+
 /// `tidy_up` evens the gaps of a row, then answers that the row is tidy.
 ///
 /// flip: `tidy_up` answering an empty edit as done → fails at "already tidy".

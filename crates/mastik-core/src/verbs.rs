@@ -2481,7 +2481,11 @@ pub static VERBS: &[Verb] = &[
         name: "blend_shapes",
         doc: "Put shapes between two, stepping from one to the other, in a new group; answers the group",
         params: &[
-            req("nodes", NODES, "exactly two shapes, the first lowest"),
+            req(
+                "nodes",
+                NODES,
+                "two shapes, the first lowest; a third layer that is a path is followed as `spine` is",
+            ),
             opt(
                 "steps",
                 INDEX,
@@ -2497,19 +2501,35 @@ pub static VERBS: &[Verb] = &[
                 BOOL,
                 "run the second shape's outline the other way round; false unless given",
             ),
+            opt(
+                "spine",
+                NODE,
+                "a path the steps follow, the first shape at its start and the second at its end",
+            ),
+            opt(
+                "turn",
+                BOOL,
+                "turn each step with the spine's direction; false unless given",
+            ),
         ],
         run: |ctx, a| {
             let steps = a.index("steps").unwrap_or(5);
             if !(1..=crate::blend::MAX_STEPS).contains(&steps) {
                 return Err(a.invalid("steps", "expected 1 to 200"));
             }
+            let nodes = a.layers(ctx.doc, "nodes")?;
+            let spine = match a.get("spine") {
+                Some(_) => Some(a.layer(ctx.doc, "spine")?),
+                None => crate::blend::spine_in(ctx.doc, &nodes),
+            };
             let blend = crate::blend::Blend {
                 steps,
                 paint: a.bool("paint").unwrap_or(true),
-                start: kurbo::Vec2::ZERO,
                 reverse: a.bool("reverse").unwrap_or(false),
+                spine,
+                turn: a.bool("turn").unwrap_or(false),
+                ..crate::blend::Blend::DEFAULT
             };
-            let nodes = a.layers(ctx.doc, "nodes")?;
             let (tx, group) = crate::blend::blend(ctx.doc, ctx.res, ctx.ids, &nodes, blend)
                 .map_err(|r| VerbError::Nothing(r.says()))?;
             Ok(Done::made(tx, vec![group]))

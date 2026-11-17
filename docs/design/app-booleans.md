@@ -341,12 +341,17 @@ armed after each cut.
 `core::blend` makes the steps between two shapes as plain paths. It is computed once; nothing
 stays live.
 
-- **The pair** (`blend::pair`): exactly two layers in the same parent, each a rect, ellipse,
-  polygon, star, line, spiral, arc, path or boolean, answered bottom of the stack first.
-  `blend::refusal` adds the outlines' test (`Parts`) to `pair`'s, so the dimmed row and the card
-  ask what a commit would. A `blend::Refusal`'s `says()` is the sentence both the dimmed row and a
-  refused commit give: `Count` *Blend shapes needs exactly two shapes* (also any other kind, a
-  group or a frame), `Picture` *Blend shapes can't take a picture*, `Text` *Blend shapes can't take
+- **The pair** (`blend::pair`): two layers in the same parent, each a rect, ellipse,
+  polygon, star, line, spiral, arc, path or boolean, answered bottom of the stack first. Of three
+  layers, the one `Path` among them is the spine (`blend::spine_in`) and the other two are the
+  pair; three with more than one path cannot say which is followed and are refused (`Count`), and
+  *Pick a path…* chooses the spine instead. `blend::refusal` adds the outlines' test (`Parts`)
+  and a selected spine's to `pair`'s, so the dimmed row and the card ask what a commit would. A
+  `blend::Refusal`'s `says()` is the sentence both the dimmed row and a refused commit give:
+  `Count` *Blend shapes needs two shapes, and a path to follow if you like* (also any other kind,
+  a group or a frame), `Spine` *Blend shapes can only follow a path with some length to it* (not a
+  path, one of the two shapes, or no length: `blend::spine_refusal`; a spine must also pass the
+  shapes' `Locked`, `Inside`, `Mask` and `Layout` tests, since it moves), `Picture` *Blend shapes can't take a picture*, `Text` *Blend shapes can't take
   text*, `Parts` *Blend shapes needs two shapes made of the same number of parts, both closed or
   both open*, `Locked` *A layer to blend is locked*, `Inside` *Blend shapes can't work inside a
   boolean, a component or an instance* — the group lands beside the upper shape, and there it
@@ -389,20 +394,34 @@ stays live.
   it upwards, the upper shape on top. A blend is almost always used with its ends, so the group is
   the whole thing; *Ungroup* gives the parts back. The steps are built on a scratch `Document`, so
   each node takes every default a created node has, then captured whole.
+- **Along a spine** (`Blend::spine`, its first subpath in world space): every item, the two
+  shapes included, is built as on a straight line and then moved by its box's centre onto its
+  place (`Spine::places`), the first shape on the spine's start and the second on its end, the
+  steps evenly between **by arc length**. A closed spine shares its whole loop, the last item one
+  gap short of the start, as a ring's copies are. `Blend::spine_reverse` runs it from its end.
+  `Blend::turn` (off) turns each item about its place by the tangent's angle there less the
+  tangent's at the start, so the first shape keeps the way it faces. A gradient is carried with the
+  move. The spine stays its own layer, unchanged on the page, moved to stand directly under the
+  group in its parent (`Reparent` and a `SetTransform` keeping its world transform).
 
 ### The card (`blend.rs`)
 
 `menu::Item::BlendShapes`, *Blend shapes…*, glyph `blend-shapes` (a small circle growing into a
 square through a rounded step), group Structure, no chord; palette aliases morph, tween, steps,
 interpolate. *Blend* alone already names the blend mode in the inspector and its undo steps. In the
-layer menu it follows *Flatten* whenever exactly two layers are selected, dimmed with
+layer menu it follows *Flatten* whenever two or three layers are selected, dimmed with
 `blend::refusal`'s sentence (`LayerState::blend_refusal`) or the lock sentence; otherwise the palette's *Not available
-here* row says *Blend shapes needs exactly two shapes* (`KIND_VERBS`).
+here* row says *Blend shapes needs two shapes, and a path to follow if you like* (`KIND_VERBS`).
 
 - **The card** is an inspector-lane popover placed as the Repeat card is
   (`MastikApp::transform_popover_area`, level with the Transform card, `tools.md`): no modal, no
   click-away. Rows: head `ui::popover_head` *Blend shapes*; *Steps between* (`icon::DOTS_THREE`, 1
-  to 200, default 5); the switch *Blend paint and opacity* (on); *Match points from*, a dropdown of
+  to 200, default 5); *Along*, a dropdown wearing the path layer's glyph, of `ui::menu_check`
+  rows: *A straight line* (the default), *Path · ‹name›* while one is chosen (ticked), a rule,
+  *Pick a path…*, and while a path is chosen *Reverse the path*; the switch *Turn the steps with
+  the path* (off), disabled on a straight line with *A straight line turns nothing* — both rows
+  are there whatever is chosen, so the card keeps its height; the switch *Blend paint and
+  opacity* (on); *Match points from*, a dropdown of
   the nine places (`canvas::NINE_POINTS`, the names the pivot's pill uses), default *Top left*; the
   switch *Reverse the second shape*; foot `settings::footer_row`, *Cancel*, primary *Blend*. Its
   settings live on the app and outlive a close. It holds the lane alone: opening it closes the
@@ -410,15 +429,26 @@ here* row says *Blend shapes needs exactly two shapes* (`KIND_VERBS`).
   inspector popover opened after it. Find and Colour review are left open.
 - **A right-click cancels a scrub** of *Steps between* wherever the pointer is
   (`InFlight::blend_scrub`, as the Repeat card's `repeat_scrub`).
-- **The preview** is the commit's own edit less the two shapes' move into the group (a preview
-  cannot reparent, and they draw where they stand either way), minted from a copy of the id
+- **The spine.** The card opens on the path selected with the two (`spine_in`), else on a
+  straight line, and lets go of a spine that stops fitting (`spine_refusal`). *Pick a path…*
+  hides the card and makes the canvas wait for a path (`BlendCard::picking`): the status says
+  *Click a path to blend along · Esc to cancel*, the cursor is the crosshair, every press but an
+  armed pan's goes to the pick (`blend_pick_at`), and the hover outline gives way to a 3pt accent
+  ring round the path under the pointer the card could follow (`MastikApp::blend_spine_at`: the
+  outline under the pointer, `rail_at`, then the leaf, `pick_leaf`, kept only if `spine_refusal`
+  passes it); anything else is passed over. A click on one chooses it and brings the card back;
+  `Escape` calls the wait off, a rung before the card's own. While the card is open its spine is
+  drawn dashed in the accent (`canvas::draw_blend_spine`).
+- **The preview** is the commit's own edit less the moves into the group and the spine's (a
+  preview cannot reparent; the two shapes' `SetTransform`s are kept, which place them on the spine
+  in their own parent, and the spine draws where it stands), minted from a copy of the id
   counter so it spends no ids; rebuilt when the revision, selection or settings change, and put back after another
   gesture's preview cleared it. A canvas drag owns the preview while it lasts.
 - **Keys.** `Enter` blends (`dispatch` hands `Action::Enter` to the card while it is open);
   `Escape` cancels, the rung after the Repeat card. The card closes when another document comes to
   the front and when the selection stops being blendable.
 - **Commit**: one undo step, *Blend shapes*; the *Blend* group is selected and the status line
-  says *Blended in 5 steps*.
+  says *Blended in 5 steps*, or *Blended in 5 steps along ‹name›*.
 
 ## The identity card's boolean row
 

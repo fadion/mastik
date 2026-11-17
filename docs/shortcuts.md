@@ -560,7 +560,7 @@ rail tool, which hands back to the tool it was armed from) → the detached colo
 insert picker (`kit_picker`) or the assets browser (`asset_panel`) → the
 variables browser (inner rungs first) → a text session → the find box → batch rename (its open
 order list first) → the Clean up box → the Fill with content box (an open kind list first) → colour review (its own
-inner rungs first) → the Credits card (`credits_open`) → the Repeat card → the Blend shapes card → an open warp envelope → the path bar's mirror flyout → a compare →
+inner rungs first) → the Credits card (`credits_open`) → the Repeat card → the Blend shapes card's wait for a path (`cancel_blend_pick`) → the Blend shapes card → an open warp envelope → the path bar's mirror flyout → a compare →
 the pen →
 **a gesture in flight**
 (`cancel_gesture`) → **a chrome field that just lost focus** (`chrome_focus`) → the path bar's

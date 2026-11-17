@@ -2439,8 +2439,9 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
     if !promoted_flatten && (cx.selection.len() >= 2 || on_boolean || (one && st.mirrored)) {
         rows.push(Row::new(Item::Flatten).dim_if(locked, why));
     }
-    // After Flatten for any two layers, refusing a picture or text by name.
-    if cx.selection.len() == 2 {
+    // After Flatten for any two layers, or three where one is a path to follow,
+    // refusing a picture or text by name.
+    if matches!(cx.selection.len(), 2 | 3) {
         rows.push(
             Row::new(Item::BlendShapes)
                 .dim_if(
@@ -2789,7 +2790,10 @@ pub const KIND_VERBS: &[(Item, &str)] = &[
     ),
     (Item::Flatten, "Needs two layers or a boolean"),
     (Item::Divide, DIVIDE_NEEDS),
-    (Item::BlendShapes, "Blend shapes needs exactly two shapes"),
+    (
+        Item::BlendShapes,
+        "Blend shapes needs two shapes, and a path to follow if you like",
+    ),
     (Item::Warp, "Select layers to warp"),
     (Item::OutlineShape, "Needs one shape"),
     (Item::OutlineStroke, "Needs one stroked shape"),

@@ -3394,6 +3394,8 @@ impl MastikApp {
             self.credits_open = false;
         } else if self.repeat.open {
             self.close_repeat();
+        } else if self.cancel_blend_pick() {
+            // Back to the card, which the next press closes.
         } else if self.blend.open {
             self.close_blend();
         } else if self.warp.is_some() {

@@ -5,11 +5,13 @@
 //! Computed once; nothing stays live. Both outlines are taken in world space and
 //! cut into the same number of cubic segments, so step `k` of `n` is every control
 //! point a fraction `k / (n + 1)` of the way from the first shape to the second.
+//! Along a spine each, the two shapes included, then moves by its centre onto
+//! its place, spaced evenly by arc length, and may turn with the spine.
 
 use crate::build;
 use crate::kurbo::{
-    Affine, BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, ParamCurveNearest, PathSeg,
-    Point, Rect, Shape, Vec2,
+    Affine, BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, ParamCurveDeriv,
+    ParamCurveNearest, PathSeg, Point, Rect, Shape, Vec2,
 };
 use crate::node::NodeKind;
 use crate::{Brush, Document, IdSource, NodeId, Operation, Resolved, Transaction};
@@ -33,13 +35,37 @@ pub struct Blend {
     pub start: Vec2,
     /// Run the second shape's outline the other way round.
     pub reverse: bool,
+    /// The path the steps follow, from the first shape at its start to the second
+    /// at its end; `None` for a straight line, or the path selected with the two.
+    pub spine: Option<NodeId>,
+    /// Run the spine from its end instead.
+    pub spine_reverse: bool,
+    /// Turn each step, the two shapes included, with the spine's tangent, measured
+    /// from the tangent at its start. Inert on a straight line.
+    pub turn: bool,
+}
+
+impl Blend {
+    /// Five steps with paint blended, outlines paired from the top-left, on a
+    /// straight line.
+    pub const DEFAULT: Blend = Blend {
+        steps: 5,
+        paint: true,
+        start: Vec2::ZERO,
+        reverse: false,
+        spine: None,
+        spine_reverse: false,
+        turn: false,
+    };
 }
 
 /// Why two layers cannot be blended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// Not exactly two shapes.
+    /// Not two shapes, or two shapes and one path to follow.
     Count,
+    /// The path to follow is not a path, is one of the two shapes, or has no length.
+    Spine,
     Picture,
     Text,
     /// One shape is closed and the other open, or they have different numbers of
@@ -67,7 +93,8 @@ impl Refusal {
     /// The sentence a dimmed row and a refused commit say.
     pub fn says(self) -> &'static str {
         match self {
-            Refusal::Count => "Blend shapes needs exactly two shapes",
+            Refusal::Count => "Blend shapes needs two shapes, and a path to follow if you like",
+            Refusal::Spine => "Blend shapes can only follow a path with some length to it",
             Refusal::Picture => "Blend shapes can't take a picture",
             Refusal::Text => "Blend shapes can't take text",
             Refusal::Parts => {
@@ -85,34 +112,63 @@ impl Refusal {
     }
 }
 
-/// The two shapes `selection` blends, bottom of the stack first, or why not.
-pub fn pair(doc: &Document, selection: &[NodeId]) -> Result<(NodeId, NodeId), Refusal> {
+/// The path among three selected layers that the other two follow: the one
+/// [`NodeKind::Path`] of the three. `None` for any other selection, or when more
+/// than one of the three is a path and which is the spine cannot be told.
+pub fn spine_in(doc: &Document, selection: &[NodeId]) -> Option<NodeId> {
     let members = build::in_document_order(doc, selection);
+    let [_, _, _] = members.as_slice() else {
+        return None;
+    };
+    let mut paths = members.iter().filter(|id| {
+        doc.get(**id)
+            .is_some_and(|n| matches!(n.kind(), NodeKind::Path { .. }))
+    });
+    match (paths.next(), paths.next()) {
+        (Some(spine), None) => Some(*spine),
+        _ => None,
+    }
+}
+
+/// Whether `id` may be moved by a blend: not locked, not a mask, and not in a
+/// boolean, a main or an instance, where a new or moved layer would change what
+/// that draws.
+fn movable(doc: &Document, id: NodeId) -> Result<&crate::Node, Refusal> {
+    let node = doc.get(id).ok_or(Refusal::Count)?;
+    if crate::is_effectively_locked(doc, id) {
+        return Err(Refusal::Locked);
+    }
+    let mut up = node.parent();
+    while let Some(p) = up.and_then(|p| doc.get(p)) {
+        if matches!(p.kind(), NodeKind::Boolean { .. }) || p.component() || p.link().is_some() {
+            return Err(Refusal::Inside);
+        }
+        up = p.parent();
+    }
+    if node.link().is_some() {
+        return Err(Refusal::Inside);
+    }
+    if node.mask() {
+        return Err(Refusal::Mask);
+    }
+    Ok(node)
+}
+
+/// The two shapes `selection` blends, bottom of the stack first, or why not. Of
+/// three layers, the path [`spine_in`] names is left out: it is followed, not
+/// blended.
+pub fn pair(doc: &Document, selection: &[NodeId]) -> Result<(NodeId, NodeId), Refusal> {
+    let mut members = build::in_document_order(doc, selection);
+    if let Some(spine) = spine_in(doc, selection) {
+        members.retain(|m| *m != spine);
+    }
     let [a, b] = members.as_slice() else {
         return Err(Refusal::Count);
     };
     for id in [a, b] {
-        let node = doc.get(*id).ok_or(Refusal::Count)?;
-        if crate::is_effectively_locked(doc, *id) {
-            return Err(Refusal::Locked);
-        }
-        // The group lands beside the upper shape: in a boolean it would be one
-        // more operand, in an instance a layer its main does not have.
-        let mut up = node.parent();
-        while let Some(p) = up.and_then(|p| doc.get(p)) {
-            if matches!(p.kind(), NodeKind::Boolean { .. }) || p.component() || p.link().is_some() {
-                return Err(Refusal::Inside);
-            }
-            up = p.parent();
-        }
-        if node.link().is_some() {
-            return Err(Refusal::Inside);
-        }
+        let node = movable(doc, *id)?;
         if node.paint().image_fill().is_some() {
             return Err(Refusal::Picture);
-        }
-        if node.mask() {
-            return Err(Refusal::Mask);
         }
         match node.kind() {
             NodeKind::Text { .. } => return Err(Refusal::Text),
@@ -161,7 +217,115 @@ pub fn refusal(doc: &Document, res: &Resolved, selection: &[NodeId]) -> Option<R
         Ok(pair) => pair,
         Err(r) => return Some(r),
     };
+    if let Some(id) = spine_in(doc, selection)
+        && let Err(r) = spine(doc, res, id, (a, b), false)
+    {
+        return Some(r);
+    }
     outlines(doc, res, a, b).err()
+}
+
+/// Why `id` cannot be the path a blend of `a` and `b` follows, if it cannot.
+pub fn spine_refusal(
+    doc: &Document,
+    res: &Resolved,
+    id: NodeId,
+    (a, b): (NodeId, NodeId),
+) -> Option<Refusal> {
+    spine(doc, res, id, (a, b), false).err()
+}
+
+/// The path a blend follows, in world space: its first subpath, measured.
+struct Spine {
+    run: Run,
+    /// Each segment's arc length.
+    lengths: Vec<f64>,
+    total: f64,
+}
+
+/// `id` as the spine of a blend of `a` and `b`, run from its end when `reverse`.
+/// It moves to stand under the blend, so it must be movable as the shapes are.
+fn spine(
+    doc: &Document,
+    res: &Resolved,
+    id: NodeId,
+    (a, b): (NodeId, NodeId),
+    reverse: bool,
+) -> Result<Spine, Refusal> {
+    if id == a || id == b {
+        return Err(Refusal::Spine);
+    }
+    let node = movable(doc, id)?;
+    if !matches!(node.kind(), NodeKind::Path { .. }) {
+        return Err(Refusal::Spine);
+    }
+    if crate::container::lays_out_above(&crate::resolve::DocView(doc), id) {
+        return Err(Refusal::Layout);
+    }
+    let world = res.world_transform(id).ok_or(Refusal::Spine)?
+        * res.local_path(doc, id).ok_or(Refusal::Spine)?;
+    let run = runs(&world).into_iter().next().ok_or(Refusal::Spine)?;
+    let run = if reverse { reversed(&run) } else { run };
+    let lengths: Vec<f64> = run.segs.iter().map(|c| c.arclen(ACCURACY)).collect();
+    let total: f64 = lengths.iter().sum();
+    if total < 1e-6 {
+        return Err(Refusal::Spine);
+    }
+    Ok(Spine {
+        run,
+        lengths,
+        total,
+    })
+}
+
+impl Spine {
+    /// The point `s` along the spine and the angle of its tangent there.
+    fn at(&self, s: f64) -> (Point, f64) {
+        let mut from = 0.0;
+        let last = self.run.segs.len() - 1;
+        for (i, (c, l)) in self.run.segs.iter().zip(&self.lengths).enumerate() {
+            if s <= from + l || i == last {
+                let t = match *l > 1e-12 {
+                    true => c.inv_arclen((s - from).clamp(0.0, *l), ACCURACY),
+                    false => 0.0,
+                };
+                let d = c.deriv().eval(t).to_vec2();
+                // A handle on its anchor has no derivative there: the chord says
+                // which way the segment runs.
+                let d = match d.hypot2() > 1e-18 {
+                    true => d,
+                    false => c.p3 - c.p0,
+                };
+                return (c.eval(t), d.atan2());
+            }
+            from += l;
+        }
+        (self.run.segs[0].p0, 0.0)
+    }
+
+    /// Where each of `count` items stands, first to last: evenly by arc length
+    /// from end to end, or over a closed spine's whole loop with the last one gap
+    /// short of the start, as a ring's copies are. Each with its turn from the
+    /// first, zero unless `turn`.
+    fn places(&self, count: usize, turn: bool) -> Vec<(Point, f64)> {
+        let gaps = match self.run.closed {
+            true => count,
+            false => count.saturating_sub(1).max(1),
+        };
+        let at: Vec<(Point, f64)> = (0..count)
+            .map(|k| self.at(self.total * k as f64 / gaps as f64))
+            .collect();
+        let first = at.first().map_or(0.0, |(_, a)| *a);
+        at.into_iter()
+            .map(|(p, a)| (p, if turn { a - first } else { 0.0 }))
+            .collect()
+    }
+}
+
+/// The map of world space that takes something centred on `centre` to stand on
+/// `place`, turned by its angle about it.
+fn placed(centre: Point, (place, angle): (Point, f64)) -> Affine {
+    Affine::rotate_about(angle, place) * Affine::translate(place - centre)
 }
 
 /// One subpath as cubic segments, and whether it closes.
@@ -516,6 +680,20 @@ pub fn blend(
             .collect()
     };
     let (ra_b, rb_b) = (unturned(&ra), unturned(&rb));
+    // Along a spine, item `k` (the first shape 0, the second `steps + 1`) is moved
+    // from where the straight blend puts it to stand, by its centre, on its place.
+    let followed = blend
+        .spine
+        .map(|s| spine(doc, res, s, (a, b), blend.spine_reverse))
+        .transpose()?;
+    let places = followed
+        .as_ref()
+        .map(|s| s.places(blend.steps + 2, blend.turn));
+    let place_of = |k: usize, centre: Point| {
+        places
+            .as_ref()
+            .map_or(Affine::IDENTITY, |p| placed(centre, p[k]))
+    };
     let upper = doc.get(b).ok_or(Refusal::Count)?;
     let parent = upper.parent().ok_or(Refusal::Count)?;
     let at = doc
@@ -533,12 +711,13 @@ pub fn blend(
     };
     let (shape_a, shape_b) = (world_box(a), world_box(b));
     // Each shape's paint into a step's space, laid over the step's world box as
-    // it lay over the shape's, so a gradient moves and sizes with the step.
-    let carry = |(world, bounds): (Affine, Option<Rect>), step: Rect| -> Carry {
+    // it lay over the shape's, so a gradient moves and sizes with the step, and
+    // then placed with it.
+    let carry = |(world, bounds): (Affine, Option<Rect>), step: Rect, place: Affine| -> Carry {
         let onto = bounds.map_or(Affine::IDENTITY, |from| box_onto(from, step));
         (
             size(world) / size(parent_world).max(1e-12),
-            to_parent * onto * world,
+            to_parent * place * onto * world,
         )
     };
 
@@ -566,7 +745,8 @@ pub fn blend(
             false => between(&ra, &rb, t),
         };
         let step_box = world.bounding_box();
-        let path = to_parent * world;
+        let place = place_of(k, step_box.center());
+        let path = to_parent * place * world;
         ops.push(Operation::CreateNode {
             id: step,
             parent: group,
@@ -580,7 +760,10 @@ pub fn blend(
             transform: None,
             name: Some(format!("Step {k}")),
         });
-        let carry = (carry(shape_a, step_box), carry(shape_b, step_box));
+        let carry = (
+            carry(shape_a, step_box, place),
+            carry(shape_b, step_box, place),
+        );
         let (paint, opacity) = look_between(doc, (a, b), t, blend.paint, carry);
         if let Some(rule) = doc.get(near).map(|n| n.fill_rule()) {
             ops.push(Operation::SetFillRule { id: step, rule });
@@ -607,10 +790,11 @@ pub fn blend(
         index: at,
     }];
     // The two shapes join their steps, the first under them and the second over,
-    // each where it stood: the group sits in the upper shape's parent with no
-    // transform of its own.
+    // each where it stood or on its end of the spine: the group sits in the upper
+    // shape's parent with no transform of its own.
     for (id, index) in [(a, 0), (b, blend.steps + 1)] {
         let world = res.world_transform(id).ok_or(Refusal::Count)?;
+        let centre = world_box(id).1.map_or(Point::ZERO, |r| r.center());
         ops.push(Operation::Reparent {
             id,
             new_parent: group,
@@ -618,6 +802,30 @@ pub fn blend(
         });
         ops.push(Operation::SetTransform {
             id,
+            transform: to_parent * place_of(index, centre) * world,
+        });
+    }
+    // The spine stays its own layer, unchanged on the page, directly under the
+    // group: the list as it stands once the group is in and the shapes out.
+    if let Some(s) = blend.spine {
+        let mut list: Vec<NodeId> = doc
+            .get(parent)
+            .map(|p| p.children().to_vec())
+            .unwrap_or_default();
+        list.insert(at, group);
+        list.retain(|c| *c != a && *c != b && *c != s);
+        let below = list
+            .iter()
+            .position(|c| *c == group)
+            .ok_or(Refusal::Count)?;
+        let world = res.world_transform(s).ok_or(Refusal::Spine)?;
+        ops.push(Operation::Reparent {
+            id: s,
+            new_parent: parent,
+            index: below,
+        });
+        ops.push(Operation::SetTransform {
+            id: s,
             transform: to_parent * world,
         });
     }

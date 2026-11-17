@@ -53,9 +53,6 @@ Items run cheapest first.
   drift chroma. With it, *Generate scale*: a 50–950 ramp of colour variables from one colour, even
   in lightness, from the variables browser, MCP and Luau. `contrast::nearest` already moves colours
   in OKLCH.
-- **Blend shapes along a spine.** *Blend shapes* places its steps on a straight line
-  (`mastik_core::blend::blend`); map them onto a chosen path instead, optionally turned to its
-  tangent.
 - **N-fold radial symmetry for the pen and pencil.** `symmetry::PathMirror` holds a vertical and a
   horizontal axis; a rotational order (3–12 copies about the centre, optionally mirrored) needs a
   model change and its own rule for what the path stores, as the mirror's flags have.

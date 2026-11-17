@@ -111,12 +111,7 @@ impl Fixture {
     }
 }
 
-const FIVE: Blend = Blend {
-    steps: 5,
-    paint: true,
-    start: Vec2::new(0.0, 0.0),
-    reverse: false,
-};
+const FIVE: Blend = Blend::DEFAULT;
 
 /// The steps between the two shapes, `steps` of them, inside the group.
 fn steps_of(f: &Fixture, group: NodeId) -> Vec<NodeId> {
@@ -825,5 +820,237 @@ fn a_stroke_draws_as_wide_from_scaled_shapes() {
         let width = f.doc.get(step).unwrap().paint().strokes[0].width;
         let scale = res.world_transform(step).unwrap().determinant().sqrt();
         assert!((width * scale - 8.0).abs() < 1e-9, "{width} × {scale}");
+    }
+}
+
+impl Fixture {
+    /// A path in the frame, in its coordinates, above the two shapes.
+    fn spine(&mut self, path: mastik_core::kurbo::BezPath) -> NodeId {
+        let id = self.ids.mint();
+        self.doc
+            .apply(&Transaction(vec![Operation::CreateNode {
+                id,
+                parent: self.frame,
+                index: 2,
+                kind: NodeKind::Path {
+                    path,
+                    corner_radii: Vec::new(),
+                    corner_smoothing: 0.0,
+                    mirror: Default::default(),
+                },
+                transform: None,
+                name: Some("Spine".into()),
+            }]))
+            .unwrap();
+        id
+    }
+}
+
+/// The frame-local polyline through `points`, closed when `closed`.
+fn polyline(points: &[(f64, f64)], closed: bool) -> mastik_core::kurbo::BezPath {
+    let mut p = mastik_core::kurbo::BezPath::new();
+    p.move_to(points[0]);
+    for q in &points[1..] {
+        p.line_to(*q);
+    }
+    if closed {
+        p.close_path();
+    }
+    p
+}
+
+/// Each of the group's layers' world centres, the circle first and the square last.
+fn centres(f: &Fixture, group: NodeId) -> Vec<Point> {
+    let res = Resolved::rebuild(&f.doc);
+    f.doc
+        .get(group)
+        .unwrap()
+        .children()
+        .iter()
+        .map(|id| res.world_bounds(*id).unwrap().center())
+        .collect()
+}
+
+fn close_to(a: Point, b: Point) -> bool {
+    a.distance(b) < 1e-3
+}
+
+/// The angle a layer's world transform turns by, in degrees.
+fn turned(f: &Fixture, id: NodeId) -> f64 {
+    let c = Resolved::rebuild(&f.doc)
+        .world_transform(id)
+        .unwrap()
+        .as_coeffs();
+    c[1].atan2(c[0]).to_degrees()
+}
+
+/// Along an open spine the circle stands on its start and the square on its end,
+/// by their centres, with the steps evenly spaced between by arc length; the spine
+/// stays its own layer, where it was on the page, directly under the group.
+/// flip: `places` spacing over `count` gaps on an open spine → fails at "the square
+/// on the end".
+#[test]
+fn an_open_spine_puts_the_shapes_on_its_ends_and_spaces_the_steps_evenly() {
+    let mut f = Fixture::new();
+    // An L: 300 along, then 300 down, so the middle item sits on the corner.
+    let spine = f.spine(polyline(
+        &[(100.0, 50.0), (400.0, 50.0), (400.0, 350.0)],
+        false,
+    ));
+    let before = Resolved::rebuild(&f.doc).world_bounds(spine);
+    let group = f.blend(Blend {
+        spine: Some(spine),
+        ..FIVE
+    });
+    let at = centres(&f, group);
+    assert_eq!(at.len(), 7);
+    // The frame stands at (50, 30); the spine is 600 long, so each gap is 100.
+    let world = |x: f64, y: f64| Point::new(x + 50.0, y + 30.0);
+    assert!(
+        close_to(at[0], world(100.0, 50.0)),
+        "the circle on the start: {at:?}"
+    );
+    assert!(
+        close_to(at[6], world(400.0, 350.0)),
+        "the square on the end: {at:?}"
+    );
+    assert!(
+        close_to(at[3], world(400.0, 50.0)),
+        "the middle step on the corner: {at:?}"
+    );
+    assert!(close_to(at[1], world(200.0, 50.0)), "a gap of 100: {at:?}");
+    assert_eq!(
+        f.doc.get(f.frame).unwrap().children(),
+        &[spine, group],
+        "the spine directly under the group"
+    );
+    assert_eq!(
+        Resolved::rebuild(&f.doc).world_bounds(spine),
+        before,
+        "and unchanged on the page"
+    );
+    assert!(
+        turned(&f, f.square).abs() < 1e-9,
+        "turning is off by default"
+    );
+}
+
+/// Turned, each item takes the spine's direction relative to its start: the
+/// circle stays as it faced, and the square, on the end of an L whose second
+/// leg runs down, turns a quarter.
+/// flip: `places` measuring each angle without subtracting the start's → fails
+/// at "the circle keeps".
+#[test]
+fn turning_follows_the_tangent_from_where_the_spine_starts() {
+    let mut f = Fixture::new();
+    // Starting downwards, so an absolute angle would turn the circle too.
+    let spine = f.spine(polyline(
+        &[(100.0, 50.0), (100.0, 350.0), (400.0, 350.0)],
+        false,
+    ));
+    f.blend(Blend {
+        spine: Some(spine),
+        turn: true,
+        ..FIVE
+    });
+    assert!(
+        turned(&f, f.circle).abs() < 1e-6,
+        "the circle keeps its facing"
+    );
+    assert!(
+        (turned(&f, f.square) + 90.0).abs() < 1e-6,
+        "the square turns from down to right: {}",
+        turned(&f, f.square)
+    );
+}
+
+/// On a closed spine the items share the whole loop, the square one gap short of
+/// the start; *Reverse the path* runs them round the other way.
+/// flip: `places` treating a closed spine as open → fails at "one gap short".
+#[test]
+fn a_closed_spine_spaces_the_items_round_the_loop() {
+    let mut f = Fixture::new();
+    // A 280-square: 1120 round, so seven items stand 160 apart.
+    let ring = polyline(
+        &[(100.0, 50.0), (380.0, 50.0), (380.0, 330.0), (100.0, 330.0)],
+        true,
+    );
+    let spine = f.spine(ring);
+    let world = |x: f64, y: f64| Point::new(x + 50.0, y + 30.0);
+    let group = f.blend(Blend {
+        spine: Some(spine),
+        ..FIVE
+    });
+    let at = centres(&f, group);
+    assert!(close_to(at[0], world(100.0, 50.0)), "{at:?}");
+    assert!(
+        close_to(at[6], world(100.0, 210.0)),
+        "one gap short of the start: {at:?}"
+    );
+
+    let mut g = Fixture::new();
+    let spine = g.spine(polyline(
+        &[(100.0, 50.0), (380.0, 50.0), (380.0, 330.0), (100.0, 330.0)],
+        true,
+    ));
+    let group = g.blend(Blend {
+        spine: Some(spine),
+        spine_reverse: true,
+        ..FIVE
+    });
+    let at = centres(&g, group);
+    assert!(
+        close_to(at[1], world(100.0, 210.0)),
+        "the other way round: {at:?}"
+    );
+}
+
+/// Three layers where one is a path: that path is the spine, the other two are
+/// blended, and the row says nothing against it. Two paths among the three cannot
+/// tell which is followed and are refused.
+/// flip: `pair` keeping the spine among the members → fails at "two shapes and a
+/// spine".
+#[test]
+fn a_path_selected_with_the_two_is_the_spine() {
+    let mut f = Fixture::new();
+    let spine = f.spine(polyline(&[(100.0, 50.0), (400.0, 50.0)], false));
+    let three = [f.square, spine, f.circle];
+    assert_eq!(blend::spine_in(&f.doc, &three), Some(spine));
+    assert_eq!(
+        blend::pair(&f.doc, &three),
+        Ok((f.circle, f.square)),
+        "two shapes and a spine"
+    );
+    let res = Resolved::rebuild(&f.doc);
+    assert_eq!(blend::refusal(&f.doc, &res, &three), None);
+
+    let other = f.spine(polyline(&[(100.0, 80.0), (400.0, 80.0)], false));
+    let paths = [f.circle, spine, other];
+    assert_eq!(blend::spine_in(&f.doc, &paths), None);
+    assert_eq!(blend::pair(&f.doc, &paths), Err(Refusal::Count));
+    assert_eq!(
+        Refusal::Count.says(),
+        "Blend shapes needs two shapes, and a path to follow if you like"
+    );
+}
+
+/// A spine that is one of the two shapes, is not a path, or has no length is
+/// refused.
+#[test]
+fn a_spine_must_be_a_path_with_length_apart_from_the_two() {
+    let mut f = Fixture::new();
+    let dot = f.spine(polyline(&[(100.0, 50.0), (100.0, 50.0)], false));
+    let res = Resolved::rebuild(&f.doc);
+    let pair = (f.circle, f.square);
+    for (spine, why) in [
+        (f.circle, "a shape"),
+        (f.frame, "a frame"),
+        (dot, "no length"),
+    ] {
+        assert_eq!(
+            blend::spine_refusal(&f.doc, &res, spine, pair),
+            Some(Refusal::Spine),
+            "{why}"
+        );
     }
 }

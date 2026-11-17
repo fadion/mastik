@@ -1834,6 +1834,19 @@ impl Polyline {
             (_, false) => egui::Shape::line(self.pts, stroke),
         }
     }
+
+    /// The subpath dashed, `dash` on and `gap` off, closed or open as the path was.
+    pub(crate) fn dashed(mut self, stroke: egui::Stroke, dash: f32, gap: f32) -> Vec<egui::Shape> {
+        if self.closed
+            && let Some(first) = self.pts.first().copied()
+        {
+            self.pts.push(first);
+        }
+        match self.pts.len() {
+            0..=1 => Vec::new(),
+            _ => egui::Shape::dashed_line(&self.pts, stroke, dash, gap),
+        }
+    }
 }
 
 /// A grid container's track lines and gaps in its own space
@@ -2300,6 +2313,9 @@ impl MastikApp {
         } else if self.dropper_armed().is_some() {
             // The loupe is the cursor; its ringed middle pixel is the hotspot.
             (egui::CursorIcon::None, None)
+        } else if self.blend_picking() {
+            // *Blend shapes* waits for a path: a click takes one.
+            (egui::CursorIcon::Crosshair, None)
         } else if self.text.is_some()
             && (resp.dragged() || pointer.is_some_and(|p| self.over_edited_text(p, rect, ppp)))
         {
@@ -2752,6 +2768,18 @@ impl MastikApp {
         // An armed eyedropper owns every press an armed pan does not, chrome included.
         if self.dropper_armed().is_some() && !panning_armed && !matches!(self.drag, Drag::Pan) {
             self.dropper_input(ui, resp, rect, ppp);
+            return;
+        }
+
+        // *Blend shapes* waiting for a path owns every press an armed pan does
+        // not: a click on a path it can follow takes it, any other does nothing.
+        if self.blend_picking() && !panning_armed && !matches!(self.drag, Drag::Pan) {
+            if resp.clicked()
+                && let Some(p) = resp.interact_pointer_pos()
+            {
+                let world = self.to_world(p, rect, ppp);
+                self.blend_pick_at(world);
+            }
             return;
         }
 
@@ -7917,11 +7945,12 @@ impl MastikApp {
     }
 
     /// The layer whose **outline** is under `world`, for the Text tool's *type
-    /// along this path* affordance. Unlike [`Self::pick_leaf`] it measures
-    /// distance to the outline, so an unfilled circle counts; nearest wins. Which
+    /// along this path* affordance and *Blend shapes*' path pick. Unlike
+    /// [`Self::pick_leaf`] it measures distance to the outline, so an unfilled
+    /// circle counts; nearest wins. Which
     /// kinds qualify is `mastik_core::query::outline_at`'s rule; the tolerance is
     /// `PEN_PICK_PX`.
-    fn rail_at(&self, world: Point) -> Option<NodeId> {
+    pub(crate) fn rail_at(&self, world: Point) -> Option<NodeId> {
         mastik_core::query::outline_at(
             &self.session.resolved,
             &self.session.doc,
@@ -8433,7 +8462,8 @@ impl MastikApp {
         ppp: f32,
         resp: &egui::Response,
     ) {
-        if !self.hover_chrome_live() {
+        // Waiting for a path, only a path rings (`draw_blend_spine`).
+        if !self.hover_chrome_live() || self.blend_picking() {
             return;
         }
         if self.tool == Tool::Text {
@@ -8459,6 +8489,34 @@ impl MastikApp {
             stroke,
             self.outline_view(stroke),
         );
+    }
+
+    /// The path the open *Blend shapes* card follows, dashed in the accent, and
+    /// while it waits for one, the path under the pointer it would take, ringed
+    /// in the accent as the hover outline rings a layer.
+    fn draw_blend_spine(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        ppp: f32,
+        resp: &egui::Response,
+    ) {
+        if let Some(id) = self.blend.shown_spine()
+            && let Some(path) = self.session.resolved.local_path(&self.session.doc, id)
+            && let Some(world) = self.session.preview_world_transform(id)
+        {
+            let stroke = egui::Stroke::new(1.5, color::accent());
+            for sub in self.flatten_to_screen(&(world * path), rect, ppp) {
+                painter.extend(sub.dashed(stroke, 6.0, 4.0));
+            }
+        }
+        if self.blend_picking()
+            && let Some(p) = resp.hover_pos()
+            && let Some(id) = self.blend_spine_at(self.to_world(p, rect, ppp))
+        {
+            let stroke = egui::Stroke::new(3.0, color::accent());
+            self.stroke_outlines(painter, id, rect, ppp, stroke, self.outline_view(stroke));
+        }
     }
 
     /// Whether the chrome that answers a *resting* pointer is live this frame —
@@ -10576,6 +10634,7 @@ impl MastikApp {
         self.draw_repeat_gaps(painter, rect, ppp);
         self.draw_shape_handles(painter, rect, ppp);
         self.draw_warp(painter, rect, ppp);
+        self.draw_blend_spine(painter, rect, ppp, resp);
 
         self.draw_hover_outline(ui, painter, rect, ppp, resp);
         self.draw_slices(ui, painter, rect, ppp, resp);
