@@ -339,6 +339,13 @@ pub(crate) fn render(doc: &Document, res: &Resolved, inverse: &Transaction) -> O
     let mut names: Vec<String> = Vec::new();
     let mut visible: Vec<bool> = Vec::new();
     let mut locked: Vec<bool> = Vec::new();
+    // The other properties, in the order the step first sets them, each with
+    // the value every layer it set took.
+    let mut props: Vec<(&'static str, Vec<String>)> = Vec::new();
+    // Texts whose style changed in no property: a hole unless a fill set on the
+    // same text explains it (a `.fill` write clears the style's colour).
+    let mut bare_styles: Vec<NodeId> = Vec::new();
+    let mut filled: Vec<NodeId> = Vec::new();
     for op in &inverse.0 {
         match op {
             Operation::SetTransform { id, transform } => {
@@ -348,8 +355,24 @@ pub(crate) fn render(doc: &Document, res: &Resolved, inverse: &Transaction) -> O
             Operation::SetName { id, .. } => names.push(doc.get(*id)?.name().to_string()),
             Operation::SetVisible { id, .. } => visible.push(doc.get(*id)?.visible()),
             Operation::SetLocked { id, .. } => locked.push(doc.get(*id)?.locked()),
-            _ => return None,
+            other => {
+                let set = mastik_vm::set_by(doc, res, other)?;
+                match other {
+                    Operation::SetTextStyle { id, .. } if set.is_empty() => bare_styles.push(*id),
+                    Operation::SetFills { id, .. } => filled.push(*id),
+                    _ => {}
+                }
+                for (prop, value) in set {
+                    match props.iter_mut().find(|(p, _)| *p == prop) {
+                        Some((_, values)) => values.push(value),
+                        None => props.push((prop, vec![value])),
+                    }
+                }
+            }
         }
+    }
+    if bare_styles.iter().any(|id| !filled.contains(id)) {
+        return None;
     }
     let mut lines = Vec::new();
     if let Some(d) = one(&moves, |a, b| (*a - *b).hypot() < 1e-6) {
@@ -378,6 +401,9 @@ pub(crate) fn render(doc: &Document, res: &Resolved, inverse: &Transaction) -> O
         } else if !list.is_empty() {
             return None;
         }
+    }
+    for (prop, values) in &props {
+        lines.push(format!(".{prop} = {}", one(values, |a, b| a == b)?));
     }
     (!lines.is_empty()).then(|| lines.join("; "))
 }

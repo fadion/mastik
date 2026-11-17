@@ -5,7 +5,7 @@
 use mastik_core::build::{self, PaintShown};
 use mastik_core::container::Display;
 use mastik_core::typography::{CharAttr, CharAttrKind, Length};
-use mastik_core::{Document, NodeId, NodeKind, Resolved};
+use mastik_core::{Document, NodeId, NodeKind, Operation, Resolved};
 
 /// What a property's value is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -468,7 +468,18 @@ fn char_attr(node: &mastik_core::Node, kind: CharAttrKind) -> Val {
     else {
         return Val::Nil;
     };
-    let mut values = spans.values_in(style, kind, 0..content.len());
+    char_val(style, spans, content.len(), kind)
+}
+
+/// One character attribute over a text `len` bytes long with `style` and
+/// `spans`: the value its characters share, `Mixed` when runs differ.
+fn char_val(
+    style: &mastik_core::typography::TextStyle,
+    spans: &mastik_core::typography::CharSpans,
+    len: usize,
+    kind: CharAttrKind,
+) -> Val {
+    let mut values = spans.values_in(style, kind, 0..len);
     if values.len() != 1 {
         return Val::Mixed("its characters differ".into());
     }
@@ -528,6 +539,215 @@ pub(crate) fn agree(prop: &str, a: &Val, b: &Val) -> bool {
         (Val::Num(a), Val::Num(b)) => (a - b).abs() <= tolerance(prop),
         (Val::Mixed(_), _) | (_, Val::Mixed(_)) => false,
         (a, b) => a == b,
+    }
+}
+
+/// The character properties, each with the attribute it reads.
+const CHAR_PROPS: [(&str, CharAttrKind); 7] = [
+    ("font_family", CharAttrKind::Family),
+    ("font_size", CharAttrKind::Size),
+    ("font_weight", CharAttrKind::Weight),
+    ("italic", CharAttrKind::Italic),
+    ("line_height", CharAttrKind::LineHeight),
+    ("letter_spacing", CharAttrKind::LetterSpacing),
+    ("text_case", CharAttrKind::Case),
+];
+
+/// What the step holding `inverse` set, as `(property, value)` with the value in
+/// Luau, read against the document after it: the writes a line would make for
+/// the same edit. `None` when `inverse` is no property's edit, or when a value
+/// has no one form (paints that differ inside a group, runs that differ). A
+/// text style edit that changed no character property answers empty: the colour
+/// a `.fill` write clears, or an edit no property names.
+pub fn set_by(
+    doc: &Document,
+    res: &Resolved,
+    inverse: &Operation,
+) -> Option<Vec<(&'static str, String)>> {
+    let now = |id: NodeId, prop: &'static str| -> Option<Vec<(&'static str, String)>> {
+        Some(vec![(prop, literal(&read(doc, res, id, prop).ok()?)?)])
+    };
+    match inverse {
+        Operation::SetFills { id, .. } => paints(doc, res, *id, "fill", "fills"),
+        Operation::SetStrokes { id, .. } => paints(doc, res, *id, "stroke", "strokes"),
+        Operation::SetEffects { id, .. } => now(*id, "effects"),
+        Operation::SetBlend { id, .. } => now(*id, "blend"),
+        Operation::SetLayoutItem { id, .. } => now(*id, "layout_item"),
+        Operation::SetDisplay { id, display } => {
+            let after = doc.get(*id)?.display();
+            match (display, after) {
+                (Some(before), Some(after)) => {
+                    layout_parts(before, after).or_else(|| now(*id, "layout"))
+                }
+                (None, None) => None,
+                _ => now(*id, "layout"),
+            }
+        }
+        Operation::SetTextStyle { id, style, spans } => {
+            let NodeKind::Text {
+                content,
+                style: now_style,
+                spans: now_spans,
+                ..
+            } = doc.get(*id)?.kind()
+            else {
+                return None;
+            };
+            let before = (style, spans.as_ref().unwrap_or(now_spans));
+            char_changes(content.len(), before, (now_style, now_spans))
+        }
+        Operation::SetTextSpans { id, spans } => {
+            let NodeKind::Text {
+                content,
+                style,
+                spans: now_spans,
+                ..
+            } = doc.get(*id)?.kind()
+            else {
+                return None;
+            };
+            char_changes(content.len(), (style, spans), (style, now_spans))
+        }
+        Operation::SetParagraphStyle { id, paragraph, .. } => {
+            let NodeKind::Text {
+                paragraph: now_p, ..
+            } = doc.get(*id)?.kind()
+            else {
+                return None;
+            };
+            (paragraph.align != now_p.align).then_some(())?;
+            now(*id, "text_align")
+        }
+        _ => None,
+    }
+}
+
+/// A paint list as the line writes it: `.fill` when one plain paint reads as
+/// that one value, else the whole `.fills`.
+fn paints(
+    doc: &Document,
+    res: &Resolved,
+    id: NodeId,
+    one: &'static str,
+    all: &'static str,
+) -> Option<Vec<(&'static str, String)>> {
+    match read(doc, res, id, one).ok()? {
+        v @ (Val::Str(_) | Val::Json(_)) => Some(vec![(one, literal(&v)?)]),
+        _ => Some(vec![(all, literal(&read(doc, res, id, all).ok()?)?)]),
+    }
+}
+
+/// The character properties that differ between `before` and `after` over a
+/// text `len` bytes long, each with its value after: empty when none does (the
+/// edit changed something no property names, such as the colour), `None` when
+/// one reads as several values.
+fn char_changes(
+    len: usize,
+    before: (
+        &mastik_core::typography::TextStyle,
+        &mastik_core::typography::CharSpans,
+    ),
+    after: (
+        &mastik_core::typography::TextStyle,
+        &mastik_core::typography::CharSpans,
+    ),
+) -> Option<Vec<(&'static str, String)>> {
+    let mut out = Vec::new();
+    for (prop, kind) in CHAR_PROPS {
+        let then = char_val(before.0, before.1, len, kind);
+        let now = char_val(after.0, after.1, len, kind);
+        if !agree(prop, &then, &now) {
+            out.push((prop, literal(&now)?));
+        }
+    }
+    Some(out)
+}
+
+/// The gap, padding and direction that differ between two layouts that differ in
+/// nothing else, each with its value after (empty when nothing changed); `None`
+/// when anything else changed, or one of them reads as several values.
+fn layout_parts(before: &Display, after: &Display) -> Option<Vec<(&'static str, String)>> {
+    let mut moved = before.clone();
+    match (&mut moved, after) {
+        (Display::Flex(m), Display::Flex(a)) => {
+            m.row_gap = a.row_gap;
+            m.column_gap = a.column_gap;
+            m.padding = a.padding;
+            m.direction = a.direction;
+        }
+        (Display::Grid(m), Display::Grid(a)) => {
+            m.row_gap = a.row_gap;
+            m.column_gap = a.column_gap;
+            m.padding = a.padding;
+        }
+        _ => return None,
+    }
+    if moved != *after {
+        return None;
+    }
+    let direction = |d: &Display| match d {
+        Display::Flex(f) => variant(serde_json::to_value(f.direction)),
+        Display::Grid(_) => Val::Nil,
+    };
+    let mut out = Vec::new();
+    for (prop, read) in [
+        ("gap", gap as fn(&Display) -> Val),
+        ("padding", padding),
+        ("direction", direction),
+    ] {
+        let now = read(after);
+        if !agree(prop, &read(before), &now) {
+            out.push((prop, literal(&now)?));
+        }
+    }
+    Some(out)
+}
+
+/// `v` written as Luau that reads back as it; `None` for layers and for a value
+/// that is several.
+fn literal(v: &Val) -> Option<String> {
+    Some(match v {
+        Val::Nil => "nil".into(),
+        Val::Num(n) => crate::format_number(*n),
+        Val::Str(s) => crate::quoted(s),
+        Val::Bool(b) => b.to_string(),
+        Val::Json(j) => json_literal(j),
+        Val::Layers(_) | Val::Mixed(_) => return None,
+    })
+}
+
+/// A JSON value as a Luau table constructor: an array as a list, an object's
+/// keys as fields (bracketed when not a name).
+pub(crate) fn json_literal(v: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match v {
+        Value::Null => "nil".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n
+            .as_f64()
+            .map_or_else(|| n.to_string(), crate::format_number),
+        Value::String(s) => crate::quoted(s),
+        Value::Array(items) if items.is_empty() => "{}".into(),
+        Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(json_literal).collect();
+            format!("{{ {} }}", items.join(", "))
+        }
+        Value::Object(map) if map.is_empty() => "{}".into(),
+        Value::Object(map) => {
+            let fields: Vec<String> = map
+                .iter()
+                .map(|(k, v)| {
+                    let name = k.chars().next().is_some_and(crate::lex::ident_start)
+                        && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        && !crate::lex::KEYWORDS.contains(&k.as_str());
+                    match name {
+                        true => format!("{k} = {}", json_literal(v)),
+                        false => format!("[{}] = {}", crate::quoted(k), json_literal(v)),
+                    }
+                })
+                .collect();
+            format!("{{ {} }}", fields.join(", "))
+        }
     }
 }
 

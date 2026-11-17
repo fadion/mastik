@@ -298,7 +298,14 @@ language covers.
 - It holds lines typed in the bar (with their result), script runs (`run "Card grid"`), and each
   step made anywhere else, watched once a frame and rendered from the step's stored inverse
   (`history::StepView::inverse`) against the document after it: a pure translation as
-  `.x += 5; .y -= 2`, opacity, name, visible and locked. The person's step with anything else
+  `.x += 5; .y -= 2`, opacity, name, visible and locked; paints as `.fill` (one plain paint) or
+  `.fills`, `.strokes` likewise, `.effects`, `.blend`, `.layout_item`, a layout's `.gap`,
+  `.padding` and `.direction` when nothing else in it changed (else the whole `.layout`), the
+  character properties that changed (`.font_size`…) and `.text_align` (`mastik_vm::set_by`, which
+  reads each value before and after from the inverse, so no copy of the document is made). A text
+  style change no property names is a hole unless a fill set on the same text explains it, since
+  a `.fill` write clears the style's colour. The layers a step set must agree on each value. The
+  person's step with anything else
   reads *— no command yet —* beside its name, a hole in what the language covers; an agent's
   (`Origin::Mcp`) is left out, since it teaches no one the language. A run that folds more into
   its step renders its line again. Every step since the watcher last looked is logged, oldest

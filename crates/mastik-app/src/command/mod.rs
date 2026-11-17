@@ -2780,6 +2780,66 @@ pub(crate) mod tests {
         );
     }
 
+    /// A paint or effect edit made elsewhere is logged as the property line that
+    /// makes it, not as a hole.
+    /// flip: `render` treating every other operation as a hole → fails at the
+    /// fill's line.
+    #[test]
+    fn a_paint_edit_elsewhere_is_logged_as_its_property() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let card = add_rect(&mut app);
+        let s = &mut app.session;
+        let edit = |s: &mut crate::session::EditorSession, verb: &str, args| {
+            let done = mastik_core::verbs::call(
+                &mut mastik_core::verbs::Ctx {
+                    doc: &s.doc,
+                    res: &s.resolved,
+                    ids: &mut s.ids,
+                    images: None,
+                    contrast: None,
+                },
+                verb,
+                &args,
+            )
+            .unwrap();
+            assert!(s.commit(done.tx));
+            log::Log::watch(s);
+            s.command_log.entries().last().unwrap().line.clone()
+        };
+        let nodes = serde_json::json!([card.to_wire()]);
+        assert_eq!(
+            edit(
+                s,
+                "set_fills",
+                serde_json::json!({ "nodes": nodes, "fills": ["#336699"] })
+            )
+            .as_deref(),
+            Some(".fill = \"#336699\"")
+        );
+        assert_eq!(
+            edit(
+                s,
+                "set_fills",
+                serde_json::json!({ "nodes": nodes, "fills": ["#336699", "#ffffff"] })
+            )
+            .as_deref(),
+            Some(".fills = { \"#336699\", \"#ffffff\" }")
+        );
+        let effects = mastik_core::verbs::example("[Effect]").unwrap();
+        let line = edit(
+            s,
+            "set_effects",
+            serde_json::json!({ "nodes": nodes, "effects": effects }),
+        );
+        assert!(
+            line.as_deref()
+                .is_some_and(|l| l.starts_with(".effects = { {")),
+            "{line:?}"
+        );
+    }
+
     /// The card grows back as its list does: empty, then with a log above the
     /// field, its height follows, and it keeps its foot where it docks.
     #[test]
@@ -3365,15 +3425,15 @@ pub(crate) mod tests {
             tool: "set".into(),
         };
         let rows = app.session.command_log.entries().len();
-        step_as(&ctx, &mut app, "sel.fill = \"#ff0000\"", "Fill", agent());
+        step_as(&ctx, &mut app, "sel.rotation = 30", "Rotate", agent());
         assert_eq!(app.session.command_log.entries().len(), rows, "left out");
         step_as(&ctx, &mut app, "sel.x += 1", "Move", agent());
         assert_eq!(app.session.command_log.entries().len(), rows + 1);
         step_as(
             &ctx,
             &mut app,
-            "sel.fill = \"#00ff00\"",
-            "Fill",
+            "sel.rotation = 60",
+            "Rotate",
             mastik_core::Origin::User,
         );
         let last = app.session.command_log.entries().last().unwrap();

@@ -19,6 +19,8 @@ struct TestHost {
     ids: IdSource,
     page: NodeId,
     commits: usize,
+    /// The last commit's inverse.
+    last: Option<Transaction>,
     /// How long each verb takes, as a slow host's might.
     slow: std::time::Duration,
     /// How many verbs were called.
@@ -62,7 +64,8 @@ impl Host for TestHost {
 
     fn commit(&mut self, mut tx: Transaction) -> Result<(), String> {
         mastik_core::propagate::owed(&self.doc, &mut tx, &mut self.ids);
-        self.doc.apply(&tx).map_err(|e| e.to_string())?;
+        let applied = self.doc.apply(&tx).map_err(|e| e.to_string())?;
+        self.last = Some(applied.inverse);
         self.res = Resolved::rebuild(&self.doc);
         self.commits += 1;
         Ok(())
@@ -82,6 +85,7 @@ impl TestHost {
             ids,
             page,
             commits: 0,
+            last: None,
             slow: std::time::Duration::ZERO,
             verbs: 0,
             stop_on_verb: None,
@@ -1887,6 +1891,69 @@ fn modelled_properties_round_trip() {
         "{}",
         err.message
     );
+}
+
+/// `set_by` names what a property edit set, as the line that makes it: run on a
+/// twin layer, that line makes the same edit.
+///
+/// flip: `set_by`'s `SetDisplay` arm skipping `layout_parts` → fails at the
+/// names `sel.gap = 20` set (the whole `.layout` comes back).
+#[test]
+fn set_by_names_an_edit_as_the_line_that_repeats_it() {
+    let mut h = TestHost::new();
+    let frames = [h.frame("A", 400.0, 300.0), h.frame("B", 400.0, 300.0)];
+    let rects = frames.map(|f| h.rect(f, "Box", 0.0, 0.0, 40.0, 40.0));
+    let texts = frames.map(|f| {
+        h.make(
+            "create_text",
+            json!({ "parent": f.to_wire(), "text": "Hi" }),
+        )[0]
+    });
+    let labels = FxHashMap::default();
+    let display = crate::props::json_literal(&verbs::example("Display").unwrap());
+    let effects = crate::props::json_literal(&verbs::example("[Effect]").unwrap());
+    let steps: Vec<([NodeId; 2], String, &[&str])> = vec![
+        (rects, "sel.fill = \"#336699\"".into(), &["fill"]),
+        (
+            rects,
+            "sel.fills = { \"#ff0000\", \"#00ff00\" }".into(),
+            &["fills"],
+        ),
+        (rects, format!("sel.effects = {effects}"), &["effects"]),
+        (texts, "sel.font_size = 24".into(), &["font_size"]),
+        (texts, "sel.font_weight = 700".into(), &["font_weight"]),
+        (texts, "sel.text_align = \"Center\"".into(), &["text_align"]),
+        (frames, format!("sel.layout = {display}"), &["layout"]),
+        (frames, "sel.gap = 20".into(), &["gap"]),
+        (frames, "sel.padding = 8".into(), &["padding"]),
+        (frames, "sel.direction = \"Column\"".into(), &["direction"]),
+    ];
+    for ([a, b], line, props) in steps {
+        run_script(&mut h, &env(&[a], &labels), &line)
+            .unwrap_or_else(|e| panic!("{line}: {}", e.message));
+        let inverse = h.last.take().expect("fixture: the line committed");
+        let mut set = Vec::new();
+        for op in &inverse.0 {
+            set.extend(
+                crate::set_by(&h.doc, &h.res, op).unwrap_or_else(|| panic!("{line}: {op:?}")),
+            );
+        }
+        let named: Vec<&str> = set.iter().map(|(p, _)| *p).collect();
+        assert_eq!(named, props, "{line}: set {named:?}");
+        let again: String = set
+            .iter()
+            .map(|(p, v)| format!("sel.{p} = {v}\n"))
+            .collect();
+        run_script(&mut h, &env(&[b], &labels), &again)
+            .unwrap_or_else(|e| panic!("{again}: {}", e.message));
+        for (prop, _) in &set {
+            assert_eq!(
+                crate::props::read(&h.doc, &h.res, a, prop).unwrap(),
+                crate::props::read(&h.doc, &h.res, b, prop).unwrap(),
+                "{again}: the twin's {prop}"
+            );
+        }
+    }
 }
 
 /// `random(seed)` draws the same numbers for the same seed, in each of its
