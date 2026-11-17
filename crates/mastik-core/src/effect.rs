@@ -4,9 +4,9 @@
 //! order is the compositing order. [`Effect`] mirrors [`crate::Fill`]: a payload
 //! and a `visible` flag.
 //!
-//! **Five effects**: drop shadow, inner shadow, layer blur, background blur and
-//! colour filters. The first four and the filters agree across the canvas (vello
-//! on wgpu), the raster export (`vello_cpu`) and the SVG writer; a background
+//! **Six effects**: drop shadow, inner shadow, layer blur, sharpen, background
+//! blur and colour filters. All but the background blur agree across the canvas
+//! (vello on wgpu), the raster export (`vello_cpu`) and the SVG writer; a background
 //! blur cannot be written to SVG (`BackgroundImage` was never implemented by any
 //! renderer), so that writer leaves it out and reports it, as it reports a
 //! [`Shadow::blend`] it draws Normal. A layer's mode is `crate::Node::blend`.
@@ -41,17 +41,33 @@ pub const BLUR_CUTOFF: f64 = 3.0;
 /// history step, and the loader and the SVG importer clamp to it.
 pub const MAX_BLUR: f64 = 1_000.0;
 
-/// Whether no blur in `effect` is past [`MAX_BLUR`].
+/// The largest [`EffectKind::Sharpen`] amount, 200%: past it the mask's overshoot
+/// clamps to black and white across most of an edge.
+pub const MAX_SHARPEN: f64 = 2.0;
+
+/// The amount a freshly added sharpen starts on, 60%.
+pub const DEFAULT_SHARPEN_AMOUNT: f64 = 0.6;
+
+/// The radius a freshly added sharpen starts on: an unsharp mask works over a
+/// pixel or two, so a blur's [`DEFAULT_BLUR_RADIUS`] would draw a halo.
+pub const DEFAULT_SHARPEN_RADIUS: f64 = 1.5;
+
+/// Whether no blur in `effect` is past [`MAX_BLUR`], and a sharpen's amount is
+/// within `0..=`[`MAX_SHARPEN`].
 pub fn blur_within_cap(effect: &Effect) -> bool {
     let ok = |r: f64| r <= MAX_BLUR;
     match &effect.kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => ok(s.blur),
         EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => ok(*radius),
+        EffectKind::Sharpen { amount, radius } => {
+            ok(*radius) && (0.0..=MAX_SHARPEN).contains(amount)
+        }
         EffectKind::Filters(_) => true,
     }
 }
 
-/// Lowers every blur in `effect` past [`MAX_BLUR`] to it, and reads a shadow's
+/// Lowers every blur in `effect` past [`MAX_BLUR`] to it, holds a sharpen's
+/// amount within `0..=`[`MAX_SHARPEN`], and reads a shadow's
 /// Pass through as Normal: what the loader does with a file written before the
 /// cap or by another tool, so a loaded document never holds a value
 /// `Document::apply` refuses.
@@ -69,6 +85,11 @@ pub(crate) fn clamp_blur(effect: &mut Effect) {
             }
         }
         EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => clamp(radius),
+        EffectKind::Sharpen { amount, radius } => {
+            clamp(radius);
+            // `max` first: it answers 0 for `NaN`, where `clamp` would keep it.
+            *amount = amount.max(0.0).clamp(0.0, MAX_SHARPEN);
+        }
         EffectKind::Filters(_) => {}
     }
 }
@@ -199,7 +220,8 @@ pub fn buffer_downscale(effects: &[Keyed<Effect>], scale: (f64, f64)) -> f64 {
 /// go: the shadow's silhouette is an alpha field on its way to becoming a
 /// gaussian of deviation σ, so *that output* carries nothing finer than σ. The
 /// resampling happens inside the shadow pass, over the mask, and the sharp
-/// artwork is never touched.
+/// artwork is never touched. A sharpen's blurred copy is resampled by the same
+/// answer, for the same reason: only its low-pass is read.
 ///
 /// A whole number, because the mask is box-averaged into `k`×`k` blocks, blurred
 /// at σ/k and read back bilinearly; `ceil` so σ/k lands at or under the budget.
@@ -239,8 +261,9 @@ pub struct Effect {
 }
 
 /// An effect's number bindings: a shadow's X, Y, blur and spread, in that order
-/// (§15 D1074). Either blur's radius takes the blur slot and its other three are
-/// always `None`; a filter's numbers bind nothing.
+/// (§15 D1074). Either blur's radius and a sharpen's take the blur slot and the
+/// other three are always `None`; a sharpen's amount and a filter's numbers bind
+/// nothing.
 pub type EffectVars = [Option<crate::variable::VarId>; 4];
 
 /// [`EffectVars`]' places.
@@ -274,9 +297,9 @@ impl Effect {
                 Some(s.blur),
                 Some(s.spread),
             ],
-            EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => {
-                [None, None, Some(*radius), None]
-            }
+            EffectKind::LayerBlur { radius }
+            | EffectKind::BackgroundBlur { radius }
+            | EffectKind::Sharpen { radius, .. } => [None, None, Some(*radius), None],
             EffectKind::Filters(_) => [None; 4],
         }
     }
@@ -296,7 +319,9 @@ impl Effect {
                 EFFECT_SPREAD => s.spread = x,
                 _ => {}
             },
-            EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius }
+            EffectKind::LayerBlur { radius }
+            | EffectKind::BackgroundBlur { radius }
+            | EffectKind::Sharpen { radius, .. }
                 if slot == EFFECT_BLUR =>
             {
                 *radius = x
@@ -346,6 +371,15 @@ pub enum EffectKind {
         /// In the same units as a shadow's blur — see [`BLUR_DEVIATION`].
         radius: f64,
     },
+    /// An unsharp mask over the layer's own drawing, children included:
+    /// `original + amount × (original − blur)`, clamped to the premultiplied
+    /// range. A pass of the layer's appearance, like [`Self::LayerBlur`].
+    Sharpen {
+        /// `0..=`[`MAX_SHARPEN`]; 1.0 is 100%.
+        amount: f64,
+        /// The blur the mask is taken over, in a layer blur's units.
+        radius: f64,
+    },
     /// Blurs what lies behind the layer, inside the layer's own outline: what was
     /// drawn before it within the nearest enclosing layer that isolates (CSS's
     /// backdrop root), never the layer itself.
@@ -376,6 +410,9 @@ impl EffectKind {
             // Drawn inside the shape's own alpha, so none of it lands outside.
             Self::InnerShadow(_) => Insets::ZERO,
             Self::LayerBlur { radius } => Insets::uniform(reach(*radius)),
+            // Where the layer is transparent the mask is negative and clamps to
+            // nothing, so no ink lands outside; where it reads is `buffer_escape`.
+            Self::Sharpen { .. } => Insets::ZERO,
             // Drawn inside the layer's outline: the blur reads outside it but
             // lands nowhere else.
             Self::BackgroundBlur { .. } => Insets::ZERO,
@@ -390,6 +427,7 @@ impl EffectKind {
             Self::DropShadow(_) => "Drop shadow",
             Self::InnerShadow(_) => "Inner shadow",
             Self::LayerBlur { .. } => "Layer blur",
+            Self::Sharpen { .. } => "Sharpen",
             Self::BackgroundBlur { .. } => "Background blur",
             Self::Filters(_) => "Filters",
         }
@@ -398,15 +436,20 @@ impl EffectKind {
     /// One of each kind, at its default, in the order the panel offers them.
     ///
     /// The order and the words are the model's, as with
-    /// [`crate::Adjustment::ALL`], so a panel cannot offer four of the five or
+    /// [`crate::Adjustment::ALL`], so a panel cannot offer five of the six or
     /// name one differently from the snapshot. A function rather than a `const`
-    /// because every variant carries a payload.
-    pub fn all_defaults() -> [Self; 5] {
+    /// because every variant carries a payload. Sharpen sits beside the layer
+    /// blur whose passes it reuses.
+    pub fn all_defaults() -> [Self; 6] {
         [
             Self::DropShadow(Shadow::default()),
             Self::InnerShadow(Shadow::default()),
             Self::LayerBlur {
                 radius: DEFAULT_BLUR_RADIUS,
+            },
+            Self::Sharpen {
+                amount: DEFAULT_SHARPEN_AMOUNT,
+                radius: DEFAULT_SHARPEN_RADIUS,
             },
             Self::BackgroundBlur {
                 radius: DEFAULT_BLUR_RADIUS,
@@ -429,6 +472,8 @@ impl EffectKind {
     /// Carries across what the two kinds share and defaults the rest, so a retype
     /// does not throw tuned numbers away: the two shadows share every field, the
     /// shadows and the two blurs share the radius, and [`Filters`] shares nothing.
+    /// Nor does a sharpen: its radius is a pixel or two where a blur's is a dozen,
+    /// so carrying either across would draw a halo or nothing.
     ///
     /// Only the kind of `to` is read, so a caller can pass one of
     /// [`Self::all_defaults`] as the name of a kind.
@@ -450,6 +495,16 @@ impl EffectKind {
                 }
             }
             Self::LayerBlur { .. } => Self::LayerBlur { radius: blur },
+            Self::Sharpen { .. } => match self {
+                Self::Sharpen { amount, radius } => Self::Sharpen {
+                    amount: *amount,
+                    radius: *radius,
+                },
+                _ => Self::Sharpen {
+                    amount: DEFAULT_SHARPEN_AMOUNT,
+                    radius: DEFAULT_SHARPEN_RADIUS,
+                },
+            },
             Self::BackgroundBlur { .. } => Self::BackgroundBlur { radius: blur },
             Self::Filters(_) => match self {
                 Self::Filters(f) => Self::Filters(*f),
@@ -458,8 +513,8 @@ impl EffectKind {
         }
     }
 
-    /// The blur radius this kind carries, or [`DEFAULT_BLUR_RADIUS`] for the one
-    /// kind that has none.
+    /// The blur radius this kind carries, or [`DEFAULT_BLUR_RADIUS`] for the
+    /// kinds that share none.
     ///
     /// Private: outside [`Self::retyped`], "the blur of a `Filters`" has no
     /// answer.
@@ -467,7 +522,7 @@ impl EffectKind {
         match self {
             Self::DropShadow(s) | Self::InnerShadow(s) => s.blur,
             Self::LayerBlur { radius } | Self::BackgroundBlur { radius } => *radius,
-            Self::Filters(_) => DEFAULT_BLUR_RADIUS,
+            Self::Sharpen { .. } | Self::Filters(_) => DEFAULT_BLUR_RADIUS,
         }
     }
 }
@@ -891,6 +946,34 @@ pub fn stack_escape(effects: &[Keyed<Effect>]) -> Insets {
     })
 }
 
+/// [`stack_escape`] grown by how far a visible [`EffectKind::Sharpen`]'s blur
+/// reads past the pixel it draws: the escape an effect layer's **buffer** is
+/// clipped with ([`buffer_box_within`]), never the ink bounds.
+///
+/// A sharpen lands no ink outside the layer, but at a buffer cut by the target
+/// its blur would read transparency where the layer goes on, and draw a bright
+/// rim along the window's edge.
+pub fn buffer_escape(effects: &[Keyed<Effect>]) -> Insets {
+    let e = stack_escape(effects);
+    let read: f64 = effects
+        .iter()
+        .filter(|e| e.visible)
+        .filter_map(|e| match e.kind {
+            EffectKind::Sharpen { radius, .. } => Some(reach(radius)),
+            _ => None,
+        })
+        .sum();
+    if read <= 0.0 {
+        return e;
+    }
+    Insets {
+        x0: e.x0.max(0.0) + read,
+        y0: e.y0.max(0.0) + read,
+        x1: e.x1.max(0.0) + read,
+        y1: e.y1.max(0.0) + read,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1118,7 +1201,7 @@ mod tests {
             color: Color::from_rgba8(10, 20, 30, 40),
             blend: crate::BlendMode::Normal,
         };
-        let [drop, inner, blur, backdrop, filters] = EffectKind::all_defaults();
+        let [drop, inner, blur, sharpen, backdrop, filters] = EffectKind::all_defaults();
 
         // Two shadows share everything they have, so nothing is lost either way.
         let EffectKind::InnerShadow(s) = EffectKind::DropShadow(tuned.clone()).retyped(&inner)
@@ -1154,6 +1237,27 @@ mod tests {
             "a layer blur's radius crosses to a background blur"
         );
 
+        // A sharpen shares nothing with a blur, either way, and keeps its own.
+        let EffectKind::Sharpen { amount, radius } =
+            EffectKind::LayerBlur { radius: 21.0 }.retyped(&sharpen)
+        else {
+            panic!("retyping to a sharpen gave something else");
+        };
+        assert_eq!(
+            (amount, radius),
+            (DEFAULT_SHARPEN_AMOUNT, DEFAULT_SHARPEN_RADIUS),
+            "a blur's radius of 21 is no sharpen's"
+        );
+        let tuned_sharpen = EffectKind::Sharpen {
+            amount: 1.4,
+            radius: 3.0,
+        };
+        assert_eq!(tuned_sharpen.retyped(&sharpen), tuned_sharpen);
+        let EffectKind::LayerBlur { radius } = tuned_sharpen.retyped(&blur) else {
+            panic!("retyping a sharpen to a layer blur gave something else");
+        };
+        assert_eq!(radius, DEFAULT_BLUR_RADIUS, "nor does a sharpen's cross");
+
         // `Filters` shares nothing with any of them, in either direction.
         let EffectKind::Filters(f) = EffectKind::DropShadow(tuned.clone()).retyped(&filters) else {
             panic!("retyping to filters gave something else");
@@ -1167,6 +1271,87 @@ mod tests {
             panic!("retyping filters to filters gave something else");
         };
         assert_eq!(kept.brightness, 1.5, "and filters keep their own");
+    }
+
+    /// A sharpen lands no ink outside the layer, but its buffer is clipped with
+    /// room for the blur it reads, on top of what the rest of the stack reaches.
+    ///
+    /// flip: `buffer_escape` returning `stack_escape` alone → fails at the
+    /// buffer assertion.
+    #[test]
+    fn a_sharpen_escapes_nothing_but_its_buffer_reads_past_the_layer() {
+        let sharpen = Effect::new(EffectKind::Sharpen {
+            amount: 1.0,
+            radius: 4.0,
+        });
+        assert_eq!(sharpen.escape(), Insets::ZERO);
+        let stack =
+            crate::keyed_by_position([Effect::new(EffectKind::LayerBlur { radius: 2.0 }), sharpen]);
+        assert_eq!(stack_escape(&stack), Insets::uniform(reach(2.0)));
+        assert_eq!(
+            buffer_escape(&stack),
+            Insets::uniform(reach(2.0) + reach(4.0)),
+            "the buffer reads the sharpen's reach past the blurred layer's ink"
+        );
+        let hidden = crate::keyed_by_position([Effect {
+            visible: false,
+            ..Effect::new(EffectKind::Sharpen {
+                amount: 1.0,
+                radius: 4.0,
+            })
+        }]);
+        assert_eq!(
+            buffer_escape(&hidden),
+            Insets::ZERO,
+            "a hidden one reads nothing"
+        );
+    }
+
+    /// A sharpen saves under its own tag with both numbers, loads back equal, and
+    /// the loader's clamp holds its amount to `0..=MAX_SHARPEN` and its radius to
+    /// the blur cap.
+    ///
+    /// flip: dropping the amount line from `clamp_blur` → fails at the amount
+    /// assertion.
+    #[test]
+    fn a_sharpen_round_trips_and_loads_within_its_range() {
+        let e = Effect::new(EffectKind::Sharpen {
+            amount: 0.6,
+            radius: 1.5,
+        });
+        let json = serde_json::to_value(&e).expect("serializes");
+        assert_eq!(
+            json["kind"],
+            serde_json::json!({ "type": "sharpen", "amount": 0.6, "radius": 1.5 })
+        );
+        let back: Effect = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back, e);
+        assert!(blur_within_cap(&back));
+
+        let mut wild = Effect::new(EffectKind::Sharpen {
+            amount: 9.0,
+            radius: 1e9,
+        });
+        assert!(!blur_within_cap(&wild), "past both caps is refused");
+        clamp_blur(&mut wild);
+        assert_eq!(
+            wild.kind,
+            EffectKind::Sharpen {
+                amount: MAX_SHARPEN,
+                radius: MAX_BLUR
+            },
+            "the amount and the radius"
+        );
+        let mut negative = Effect::new(EffectKind::Sharpen {
+            amount: -1.0,
+            radius: 1.0,
+        });
+        clamp_blur(&mut negative);
+        assert_eq!(negative.numbers()[EFFECT_BLUR], Some(1.0));
+        assert!(
+            blur_within_cap(&negative),
+            "a negative amount loads as none"
+        );
     }
 
     /// `same_kind` answers about the variant, not the value; `==` fails the second
@@ -1194,6 +1379,9 @@ mod tests {
                 }
                 EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => {
                     assert_eq!(*radius, Shadow::default().blur, "{kind:?}");
+                }
+                EffectKind::Sharpen { amount, radius } => {
+                    assert!(*amount > 0.0 && *radius > 0.0, "{kind:?}");
                 }
                 // Neutral on purpose: off-neutral channels would change the
                 // artwork the instant the row was added.

@@ -142,6 +142,7 @@ pub fn effect_is_finite(effect: &crate::Effect) -> bool {
         crate::EffectKind::LayerBlur { radius } | crate::EffectKind::BackgroundBlur { radius } => {
             radius.is_finite()
         }
+        crate::EffectKind::Sharpen { amount, radius } => amount.is_finite() && radius.is_finite(),
         crate::EffectKind::Filters(f) => {
             f.brightness.is_finite()
                 && f.contrast.is_finite()

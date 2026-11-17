@@ -623,6 +623,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
         let fields = match map.get("type")?.as_str()? {
             "drop_shadow" | "inner_shadow" => struct_fields::<crate::effect::Shadow>()?.to_vec(),
             "layer_blur" | "background_blur" => vec!["radius"],
+            "sharpen" => vec!["amount", "radius"],
             "filters" => struct_fields::<crate::effect::Filters>()?.to_vec(),
             _ => return None,
         };
