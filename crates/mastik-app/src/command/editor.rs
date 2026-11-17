@@ -471,15 +471,22 @@ impl MastikApp {
         let focused = ctx.memory(|m| m.has_focus(old));
         let sel = selection(ctx, old, &self.scripts.buffer);
         self.scripts.buffer = text;
-        self.scripts.shown += 1;
-        self.scripts.word_drag = None;
-        self.scripts.stepped = None;
+        self.new_code_pane();
         if focused {
             self.scripts.focus_code = true;
             if let Some(sel) = sel {
                 put_selection(ctx, self.scripts.code_id(), &self.scripts.buffer, sel);
             }
         }
+    }
+
+    /// Move the code pane to a fresh id for another text, dropping what the
+    /// old id kept and the gestures and step-back record made in it.
+    fn new_code_pane(&mut self) {
+        ui::forget_code_editor(&self.egui_ctx, self.scripts.code_id());
+        self.scripts.shown += 1;
+        self.scripts.word_drag = None;
+        self.scripts.stepped = None;
     }
 
     /// The palette's *Run* row `i`: start that script's run.
@@ -520,8 +527,7 @@ impl MastikApp {
         }
         self.scripts.on_disk = fresh;
         self.scripts.buffer = self.script_source(&which).unwrap_or_default();
-        self.scripts.shown += 1;
-        self.scripts.word_drag = None;
+        self.new_code_pane();
         self.scripts.current = Some(which);
         self.scripts.menu = None;
         self.scripts.renaming = None;
@@ -1578,7 +1584,7 @@ impl MastikApp {
                 }
                 self.scripts.current = None;
                 self.scripts.buffer.clear();
-                self.scripts.shown += 1;
+                self.new_code_pane();
             }
             Act::ShowInFolder => library::show_folder(),
         }
@@ -1622,7 +1628,7 @@ impl MastikApp {
             if self.scripts.current == Some(Which::Library(name)) {
                 self.scripts.current = None;
                 self.scripts.buffer.clear();
-                self.scripts.shown += 1;
+                self.new_code_pane();
             }
         } else if cancel || modal.should_close() {
             self.scripts.deleting = None;
@@ -3363,6 +3369,8 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx);
         let (mut app, _, script) = with_script(source, None);
+        // The frames run on this context, so the app's own handle names it too.
+        app.egui_ctx = ctx.clone();
         app.open_scripts();
         app.pick_script(Which::Document(script));
         for _ in 0..3 {
@@ -4208,6 +4216,77 @@ mod tests {
             "the code keeps the keyboard"
         );
         assert_eq!(caret(&ctx, &app), Some(10), "the caret where it was");
+    }
+
+    /// The step-back record a closing word leaves is dropped when another
+    /// script is shown, so typing on a line of the same offset there does not
+    /// step it in.
+    /// flip: `new_code_pane` not clearing `stepped` → fails at "the other
+    /// script's line is left alone".
+    #[test]
+    fn a_closing_words_step_back_stays_with_its_script() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = typing_at_end("do\n  ");
+        for c in ["e", "n", "d"] {
+            type_code(&ctx, &mut app, c);
+        }
+        assert_eq!(
+            app.scripts.buffer, "do\nend",
+            "fixture: the closer steps back"
+        );
+        assert!(app.scripts.stepped.is_some(), "fixture: the record is held");
+        app.add_unsaved("xy\nend".into());
+        for _ in 0..3 {
+            pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        let code = ctx
+            .read_response(app.scripts.code_id())
+            .expect("fixture: the code is drawn")
+            .rect;
+        click_at(
+            &ctx,
+            &mut app,
+            egui::pos2(code.center().x, code.bottom() + 40.0),
+        );
+        assert_eq!(
+            caret(&ctx, &app),
+            Some(6),
+            "fixture: the caret is at the end"
+        );
+        type_code(&ctx, &mut app, "s");
+        assert_eq!(
+            app.scripts.buffer, "xy\nends",
+            "the other script's line is left alone"
+        );
+    }
+
+    /// Showing another script drops the galleys and inks the code pane kept
+    /// under its old id.
+    /// flip: `new_code_pane` not calling `forget_code_editor` → fails at "the
+    /// old id's galley is gone".
+    #[test]
+    fn showing_another_script_drops_the_old_panes_galleys() {
+        use crate::command::tests::pass;
+        let (ctx, mut app) = open_on("print(1)");
+        let galley = |id: egui::Id| {
+            ctx.data(|d| d.get_temp::<ui::ShiftedGalley>(id.with("code-galley")))
+                .is_some()
+        };
+        let old = app.scripts.code_id();
+        assert!(galley(old), "fixture: the pane keeps its galley");
+        app.add_unsaved("print(2)".into());
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        let new = app.scripts.code_id();
+        assert_ne!(new, old, "fixture: on a new id");
+        assert!(galley(new), "fixture: the new pane keeps its own");
+        assert!(!galley(old), "the old id's galley is gone");
+        assert!(
+            ctx.data(|d| {
+                d.get_temp::<(u64, std::sync::Arc<ui::CodeInks>)>(old.with("code-inks"))
+            })
+            .is_none(),
+            "and its inks"
+        );
     }
 
     /// A right-click on a list row opens that script and its menu at the

@@ -2667,6 +2667,25 @@ fn code_row_offsets(ui: &egui::Ui) -> (f32, f32) {
     )
 }
 
+/// What [`code_editor`] keeps of its galley: the one epaint laid out, the
+/// shift applied as bits, and the shifted copy it draws.
+pub(crate) type ShiftedGalley = (
+    std::sync::Arc<egui::Galley>,
+    [u32; 2],
+    std::sync::Arc<egui::Galley>,
+);
+
+/// Drop what [`code_editor`] keeps under `id`: its inks, its galleys and the
+/// text edit's state. egui never collects temp data, so a caller that moves
+/// its editor to a new id calls this for the old one.
+pub fn forget_code_editor(ctx: &egui::Context, id: egui::Id) {
+    ctx.data_mut(|d| {
+        d.remove::<(u64, std::sync::Arc<CodeInks>)>(id.with("code-inks"));
+        d.remove::<ShiftedGalley>(id.with("code-galley"));
+        d.remove::<egui::text_edit::TextEditState>(id);
+    });
+}
+
 /// The script editor's text: monospace at [`CODE_PT`], unwrapped, its runs inked
 /// by `inks`, with a gutter of line numbers. Each of `marks` inks its line's
 /// number and squiggles its span; the first mark on a line wins its number.
@@ -2730,12 +2749,7 @@ pub fn code_editor(
         // is kept while epaint hands back that same galley (the text, inks,
         // fonts and scale unchanged) and the shift is the same.
         let shift = [drop.to_bits(), lift.to_bits()];
-        type Shifted = (
-            std::sync::Arc<egui::Galley>,
-            [u32; 2],
-            std::sync::Arc<egui::Galley>,
-        );
-        if let Some((from, at, shifted)) = ui.data(|d| d.get_temp::<Shifted>(galley_key))
+        if let Some((from, at, shifted)) = ui.data(|d| d.get_temp::<ShiftedGalley>(galley_key))
             && std::sync::Arc::ptr_eq(&from, &laid)
             && at == shift
         {
@@ -2753,7 +2767,7 @@ pub fn code_editor(
             row.visuals.mesh.translate(egui::vec2(0.0, drop));
             row.visuals.mesh_bounds = row.visuals.mesh_bounds.translate(egui::vec2(0.0, drop));
         }
-        let kept: Shifted = (laid, shift, galley.clone());
+        let kept: ShiftedGalley = (laid, shift, galley.clone());
         ui.data_mut(|d| d.insert_temp(galley_key, kept));
         galley
     };
