@@ -484,12 +484,13 @@ struct EffectRowOut {
     /// Its grip began a drag: the row is being carried to a new place in the stack.
     grabbed: bool,
 }
-/// The glyph an effect row wears; the five read as one set.
+/// The glyph an effect row wears; the six read as one set.
 fn effect_glyph(kind: &EffectKind) -> &'static str {
     match kind {
         EffectKind::DropShadow(_) => icon::DROP_HALF_BOTTOM,
         EffectKind::InnerShadow(_) => icon::DROP_HALF,
         EffectKind::LayerBlur { .. } => icon::LAYER_BLUR,
+        EffectKind::Sharpen { .. } => icon::SHARPEN,
         EffectKind::BackgroundBlur { .. } => icon::SQUARE_DOTS,
         EffectKind::Filters(_) => icon::SUN,
     }
@@ -511,10 +512,11 @@ fn effects_step_glyph(before: &[Keyed<Effect>], after: &[Keyed<Effect>]) -> &'st
         .or(after.first())
         .map_or(icon::DROP_HALF_BOTTOM, |e| effect_glyph(&e.kind))
 }
-/// The one number at the right-hand end of an effect row.
+/// The number at the right-hand end of an effect row.
 ///
-/// A shadow's alpha, a blur's radius, or how many filter channels are off
-/// neutral ([`mastik_core::Filters::changed`]).
+/// A shadow's alpha, a blur's radius, a sharpen's amount and radius
+/// (`60% · 1.5`), or how many filter channels are off neutral
+/// ([`mastik_core::Filters::changed`]).
 fn effect_summary(kind: &EffectKind) -> String {
     match kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
@@ -522,6 +524,9 @@ fn effect_summary(kind: &EffectKind) -> String {
         }
         EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => {
             ui::number(2)(*radius, 0..=2)
+        }
+        EffectKind::Sharpen { amount, radius } => {
+            format!("{:.0}% · {}", amount * 100.0, ui::number(2)(*radius, 0..=2))
         }
         EffectKind::Filters(f) => f.changed().to_string(),
     }
@@ -537,6 +542,10 @@ fn effect_hint(kind: &EffectKind) -> &'static str {
         }
         EffectKind::LayerBlur { .. } => {
             "Blurs the layer's own drawing, children included. The number is the radius"
+        }
+        EffectKind::Sharpen { .. } => {
+            "Crisper edges, an unsharp mask over a small blur. The numbers are the amount and \
+             the radius"
         }
         EffectKind::BackgroundBlur { .. } => {
             "Blurs what lies behind the layer, inside its outline. The number is the radius"
@@ -10376,6 +10385,43 @@ impl MastikApp {
                                 );
                             }
                         }
+                        EffectKind::Sharpen { amount, radius } => {
+                            // A one-way amount, filling from the left as Opacity's does.
+                            let top = mastik_core::effect::MAX_SHARPEN;
+                            let mut shown = amount * 100.0;
+                            let resp = ui::value_field_metered(
+                                ui,
+                                egui::vec2(inner, CELL),
+                                Prefix::Text("Amount"),
+                                ui::Meter::Amount((amount / top) as f32),
+                                &mut shown,
+                                Scrub::whole(0.25).range(0.0..=top * 100.0),
+                                |d| d.suffix("%").max_decimals(0),
+                            )
+                            .on_hover_text(
+                                "How hard edges are pushed apart: 0% leaves the layer alone, \
+                                 200% is the most",
+                            );
+                            self.effect_valve(&resp, subjects, index, move |k| {
+                                if let EffectKind::Sharpen { amount, .. } = k {
+                                    *amount = (shown / 100.0).clamp(0.0, top);
+                                }
+                            });
+                            if let Some(r) = self.effect_number_field(
+                                ui,
+                                subjects,
+                                index,
+                                mastik_core::EFFECT_BLUR,
+                                "Radius",
+                                egui::vec2(inner, CELL),
+                                *radius,
+                                0.0..=MAX_BLUR,
+                            ) {
+                                let _ = r.on_hover_text(
+                                    "How wide an edge the mask reads, in a blur's units",
+                                );
+                            }
+                        }
                         EffectKind::BackgroundBlur { radius } => {
                             if let Some(r) = self.effect_number_field(
                                 ui,
@@ -18287,7 +18333,7 @@ mod effects_panel_tests {
     /// is absent rather than dimmed. Field prefixes are checked, not the title.
     #[test]
     fn each_kinds_popover_holds_that_kinds_numbers() {
-        let want: [(EffectKind, &[&str]); 4] = [
+        let want: [(EffectKind, &[&str]); 5] = [
             (
                 EffectKind::DropShadow(Default::default()),
                 &["X", "Y", "Blur", "Spread"],
@@ -18297,6 +18343,13 @@ mod effects_panel_tests {
                 &["X", "Y", "Blur", "Spread"],
             ),
             (EffectKind::LayerBlur { radius: 6.0 }, &["Radius"]),
+            (
+                EffectKind::Sharpen {
+                    amount: 0.6,
+                    radius: 1.5,
+                },
+                &["Amount", "Radius"],
+            ),
             (
                 EffectKind::Filters(Default::default()),
                 &["Brightness", "Contrast", "Saturation", "Hue"],
@@ -18329,6 +18382,19 @@ mod effects_panel_tests {
                 kind.label()
             );
         }
+    }
+
+    /// A sharpen's row reads its amount and its radius, `60% · 1.5`, and wears its
+    /// own glyph rather than the layer blur's.
+    #[test]
+    fn a_sharpen_row_reads_its_amount_and_radius() {
+        let kind = EffectKind::Sharpen {
+            amount: 0.6,
+            radius: 1.5,
+        };
+        assert_eq!(effect_summary(&kind), "60% · 1.5");
+        assert_eq!(effect_glyph(&kind), icon::SHARPEN);
+        assert_ne!(icon::SHARPEN, icon::LAYER_BLUR);
     }
 
     /// The kind combo retypes a row and carries across what the two kinds share. The rule lives
