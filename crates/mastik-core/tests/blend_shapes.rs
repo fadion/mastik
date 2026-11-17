@@ -921,8 +921,8 @@ fn an_open_spine_puts_the_shapes_on_its_ends_and_spaces_the_steps_evenly() {
     assert!(close_to(at[1], world(200.0, 50.0)), "a gap of 100: {at:?}");
     assert_eq!(
         f.doc.get(f.frame).unwrap().children(),
-        &[spine, group],
-        "the spine directly under the group"
+        &[group, spine],
+        "the spine directly over the group"
     );
     assert_eq!(
         Resolved::rebuild(&f.doc).world_bounds(spine),

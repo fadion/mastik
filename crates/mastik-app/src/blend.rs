@@ -599,7 +599,7 @@ mod tests {
     }
 
     /// A path selected with the two is the spine the card opens on; the commit
-    /// says what it followed, and the spine stands under the group.
+    /// says what it followed, and the spine stands over the group.
     /// flip: `open_blend` leaving the spine unset → fails at "the spine is chosen".
     #[test]
     fn a_path_selected_with_the_two_is_followed() {
@@ -615,7 +615,7 @@ mod tests {
         let page = app.session.doc.first_page();
         assert_eq!(
             app.session.doc.get(page).unwrap().children(),
-            &[spine, group]
+            &[group, spine]
         );
     }
 

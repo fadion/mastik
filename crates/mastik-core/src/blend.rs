@@ -805,8 +805,9 @@ pub fn blend(
             transform: to_parent * place_of(index, centre) * world,
         });
     }
-    // The spine stays its own layer, unchanged on the page, directly under the
-    // group: the list as it stands once the group is in and the shapes out.
+    // The spine stays its own layer, unchanged on the page, directly over the
+    // group, so the steps never bury it and it is still there to pick: the list
+    // as it stands once the group is in and the shapes out.
     if let Some(s) = blend.spine {
         let mut list: Vec<NodeId> = doc
             .get(parent)
@@ -814,15 +815,16 @@ pub fn blend(
             .unwrap_or_default();
         list.insert(at, group);
         list.retain(|c| *c != a && *c != b && *c != s);
-        let below = list
+        let above = list
             .iter()
             .position(|c| *c == group)
-            .ok_or(Refusal::Count)?;
+            .ok_or(Refusal::Count)?
+            + 1;
         let world = res.world_transform(s).ok_or(Refusal::Spine)?;
         ops.push(Operation::Reparent {
             id: s,
             new_parent: parent,
-            index: below,
+            index: above,
         });
         ops.push(Operation::SetTransform {
             id: s,

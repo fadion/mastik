@@ -401,8 +401,9 @@ stays live.
   gap short of the start, as a ring's copies are. `Blend::spine_reverse` runs it from its end.
   `Blend::turn` (off) turns each item about its place by the tangent's angle there less the
   tangent's at the start, so the first shape keeps the way it faces. A gradient is carried with the
-  move. The spine stays its own layer, unchanged on the page, moved to stand directly under the
-  group in its parent (`Reparent` and a `SetTransform` keeping its world transform).
+  move. The spine stays its own layer, unchanged on the page, moved to stand directly over the
+  group in its parent (`Reparent` and a `SetTransform` keeping its world transform), so the steps
+  never hide it.
 
 ### The card (`blend.rs`)
 

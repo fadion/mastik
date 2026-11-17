@@ -4762,7 +4762,7 @@ fn blend_shapes_follows_a_spine_and_turns_with_it() {
             (c[1].atan2(c[0]).to_degrees() - 90.0).abs() < 1e-6,
             "and turned a quarter"
         );
-        assert_eq!(doc.get(page).unwrap().children(), &[spine, g]);
+        assert_eq!(doc.get(page).unwrap().children(), &[g, spine]);
     }
 }
 
