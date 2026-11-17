@@ -1194,14 +1194,14 @@ impl<'de> Deserialize<'de> for BrushSource {
         #[serde(untagged)]
         enum Repr {
             Bound(BoundRepr),
-            Literal(crate::Brush),
+            Literal(Box<crate::Brush>),
         }
         Ok(match Repr::deserialize(d)? {
             Repr::Bound(b) => BrushSource::Bound {
                 var: b.var,
                 alpha: b.alpha,
             },
-            Repr::Literal(b) => BrushSource::Literal(b),
+            Repr::Literal(b) => BrushSource::Literal(*b),
         })
     }
 }

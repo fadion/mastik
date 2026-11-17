@@ -468,8 +468,171 @@ impl Framing {
 /// list an SVG export writes, which the pixel path evaluates identically.
 pub const TONE_STEPS: usize = 33;
 
-/// The per-pixel adjustments an image fill carries: eleven amounts, each `0.0` at
-/// rest and running over [`Adjustment::range`], and duotone's two colours.
+/// The most inner points a tone curve holds ([`CurvePoints`]).
+pub const CURVE_POINTS: usize = 8;
+
+/// The inner points of the Curves tab's one master curve, in order of input.
+///
+/// **Stored between the curve's ends**, not on the picture's tone axis: `x = 0` is
+/// the black point's input and `x = 1` the white point's, `y = 0` is fade's level
+/// and `y = 1` white. Moving an end therefore carries the points with it, and no
+/// end can pass a point. A fixed array and a count, so [`ImageAdjust`] stays
+/// `Copy`; the file writes it as a list of `[x, y]` pairs.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<[f32; 2]>", into = "Vec<[f32; 2]>")]
+pub struct CurvePoints {
+    /// The first `len` are the points; the rest stay zero, so `PartialEq` holds.
+    points: [[f32; 2]; CURVE_POINTS],
+    len: u8,
+}
+
+impl CurvePoints {
+    /// No inner points: the curve is the straight line between its ends.
+    pub const EMPTY: Self = Self {
+        points: [[0.0; 2]; CURVE_POINTS],
+        len: 0,
+    };
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn len(&self) -> usize {
+        usize::from(self.len)
+    }
+
+    pub fn as_slice(&self) -> &[[f32; 2]] {
+        &self.points[..self.len()]
+    }
+
+    /// Put `p` in its place by input, or [`None`] when the curve is full or a
+    /// point already sits at that input. Answers the new point's index.
+    pub fn insert(&mut self, p: [f32; 2]) -> Option<usize> {
+        if self.len() == CURVE_POINTS || self.as_slice().iter().any(|q| q[0] == p[0]) {
+            return None;
+        }
+        let at = self.as_slice().iter().take_while(|q| q[0] < p[0]).count();
+        let n = self.len();
+        self.points.copy_within(at..n, at + 1);
+        self.points[at] = p;
+        self.len += 1;
+        Some(at)
+    }
+
+    /// Move point `i`, which the caller keeps between its neighbours.
+    pub fn set(&mut self, i: usize, p: [f32; 2]) {
+        if i < self.len() {
+            self.points[i] = p;
+        }
+    }
+
+    pub fn remove(&mut self, i: usize) {
+        let n = self.len();
+        if i < n {
+            self.points.copy_within(i + 1..n, i);
+            self.points[n - 1] = [0.0; 2];
+            self.len -= 1;
+        }
+    }
+
+    /// Whether these points describe a curve: every coordinate inside `0..=1`,
+    /// and inputs strictly rising strictly inside the ends.
+    fn is_usable(&self) -> bool {
+        let pts = self.as_slice();
+        pts.iter()
+            .all(|p| p.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
+            && pts.iter().all(|p| p[0] > 0.0 && p[0] < 1.0)
+            && pts.windows(2).all(|w| w[0][0] < w[1][0])
+    }
+
+    /// The curve through `(0, 0)`, these points and `(1, 1)` at `t`: a monotone
+    /// cubic (Fritsch–Carlson), so between two points it never overshoots
+    /// either and a rising run of points draws a rising curve.
+    pub fn eval(&self, t: f32) -> f32 {
+        if self.is_empty() {
+            return t;
+        }
+        let mut xs = [0.0f32; CURVE_POINTS + 2];
+        let mut ys = [0.0f32; CURVE_POINTS + 2];
+        let n = self.len() + 2;
+        for (i, p) in self.as_slice().iter().enumerate() {
+            (xs[i + 1], ys[i + 1]) = (p[0], p[1]);
+        }
+        (xs[n - 1], ys[n - 1]) = (1.0, 1.0);
+        let t = t.clamp(0.0, 1.0);
+        let k = (1..n - 1).take_while(|&i| xs[i] <= t).count();
+        let slope = |i: usize| (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]);
+        // A knot's tangent: the mean of the slopes either side, flat where they
+        // disagree in sign (a peak or a valley), one-sided at the two ends.
+        let tangent = |i: usize| {
+            if i == 0 {
+                slope(0)
+            } else if i == n - 1 {
+                slope(n - 2)
+            } else {
+                let (a, b) = (slope(i - 1), slope(i));
+                if a * b <= 0.0 { 0.0 } else { (a + b) / 2.0 }
+            }
+        };
+        let d = slope(k);
+        let (mut m0, mut m1) = (tangent(k), tangent(k + 1));
+        if d == 0.0 {
+            (m0, m1) = (0.0, 0.0);
+        } else {
+            // The bound that keeps the segment monotone: (α, β) inside the
+            // circle of radius 3.
+            let (a, b) = (m0 / d, m1 / d);
+            let r = a * a + b * b;
+            if r > 9.0 {
+                let tau = 3.0 / r.sqrt();
+                (m0, m1) = (tau * a * d, tau * b * d);
+            }
+        }
+        let h = xs[k + 1] - xs[k];
+        let s = (t - xs[k]) / h;
+        let (s2, s3) = (s * s, s * s * s);
+        let y = (2.0 * s3 - 3.0 * s2 + 1.0) * ys[k]
+            + (s3 - 2.0 * s2 + s) * h * m0
+            + (-2.0 * s3 + 3.0 * s2) * ys[k + 1]
+            + (s3 - s2) * h * m1;
+        y.clamp(0.0, 1.0)
+    }
+}
+
+impl Default for CurvePoints {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl TryFrom<Vec<[f32; 2]>> for CurvePoints {
+    type Error = String;
+
+    /// More points than the curve holds is refused, not cut: cutting would
+    /// draw a curve the file does not describe.
+    fn try_from(v: Vec<[f32; 2]>) -> Result<Self, String> {
+        if v.len() > CURVE_POINTS {
+            return Err(format!(
+                "a tone curve holds at most {CURVE_POINTS} points, not {}",
+                v.len()
+            ));
+        }
+        let mut out = Self::EMPTY;
+        out.points[..v.len()].copy_from_slice(&v);
+        out.len = v.len() as u8;
+        Ok(out)
+    }
+}
+
+impl From<CurvePoints> for Vec<[f32; 2]> {
+    fn from(c: CurvePoints) -> Self {
+        c.as_slice().to_vec()
+    }
+}
+
+/// The per-pixel adjustments an image fill carries: fourteen amounts, each `0.0`
+/// at rest and running over [`Adjustment::range`], duotone's two colours, and the
+/// Curves tab's inner points.
 ///
 /// **Per fill, not per image** (on [`ImageRef`], not [`ImageEntry`]). **Every amount
 /// is zero at rest**, so the default is the identity (§5.11); the duotone colours
@@ -500,9 +663,21 @@ pub struct ImageAdjust {
     /// Lifts (`+`) or deepens (`-`) the dark end, leaving the bright end alone.
     #[serde(default, skip_serializing_if = "is_neutral")]
     pub shadows: f32,
+    /// Turns the lightest tones white, `0..=1`: input over `1 − white_point` maps
+    /// to white. The curve's white end.
+    #[serde(default, skip_serializing_if = "is_neutral")]
+    pub white_point: f32,
+    /// Turns the darkest tones black, `0..=1`: input under `black_point` maps to
+    /// black. The input of the curve's black end.
+    #[serde(default, skip_serializing_if = "is_neutral")]
+    pub black_point: f32,
     /// Turns every colour round the wheel: `±1` is half a turn either way.
     #[serde(default, skip_serializing_if = "is_neutral")]
     pub hue: f32,
+    /// Lifts black towards grey, `0..=1`: black becomes `fade` grey and white
+    /// stays. The output of the curve's black end.
+    #[serde(default, skip_serializing_if = "is_neutral")]
+    pub fade: f32,
     /// Drains the colour, `0..=1`: `1` is grey.
     #[serde(default, skip_serializing_if = "is_neutral")]
     pub greyscale: f32,
@@ -519,6 +694,10 @@ pub struct ImageAdjust {
     /// What white maps to under [`Self::duotone`]. Its alpha is not read.
     #[serde(default = "duotone_light", skip_serializing_if = "is_duotone_light")]
     pub duotone_light: Color,
+    /// The Curves tab's inner points, between the ends that [`Self::black_point`],
+    /// [`Self::white_point`] and [`Self::fade`] place.
+    #[serde(default, skip_serializing_if = "CurvePoints::is_empty")]
+    pub curve: CurvePoints,
 }
 
 fn is_neutral(v: &f32) -> bool {
@@ -562,13 +741,20 @@ impl ImageAdjust {
         tint: 0.0,
         highlights: 0.0,
         shadows: 0.0,
+        white_point: 0.0,
+        black_point: 0.0,
         hue: 0.0,
+        fade: 0.0,
         greyscale: 0.0,
         invert: 0.0,
         duotone: 0.0,
         duotone_dark: DUOTONE_DARK,
         duotone_light: DUOTONE_LIGHT,
+        curve: CurvePoints::EMPTY,
     };
+
+    /// How many numbers [`Self::key_bits`] answers.
+    pub const KEY_LEN: usize = Adjustment::ALL.len() + 8 + 1 + 2 * CURVE_POINTS;
 
     /// Whether this is the value a missing key means (§5.11). **Compared exactly,
     /// and a non-finite value is not neutral**: a `NaN` must reach
@@ -578,28 +764,82 @@ impl ImageAdjust {
         Adjustment::ALL.iter().all(|k| k.of(self) == 0.0)
             && self.duotone_dark == DUOTONE_DARK
             && self.duotone_light == DUOTONE_LIGHT
+            && self.curve.is_empty()
     }
 
-    /// Every slider back to zero and duotone back to its own colours.
+    /// Every slider back to zero, duotone back to its own colours and the curve
+    /// back to a straight line.
     pub fn reset(&mut self) {
         *self = Self::NEUTRAL;
     }
 
-    /// Every number this draws with, as bits, for a cache key: the eleven amounts
-    /// in [`Adjustment::ALL`]'s order, then the two duotone colours.
-    pub fn key_bits(&self) -> [u32; 19] {
-        let mut out = [0u32; 19];
-        for (o, k) in out.iter_mut().zip(Adjustment::ALL) {
-            *o = k.of(self).to_bits();
-        }
-        let colours = self.duotone_dark.components.iter();
-        for (o, c) in out[11..]
+    /// Every number this draws with, as bits, for a cache key: the amounts in
+    /// [`Adjustment::ALL`]'s order, the two duotone colours, then the curve's
+    /// point count and its points (unused slots are zero).
+    pub fn key_bits(&self) -> [u32; Self::KEY_LEN] {
+        let mut out = [0u32; Self::KEY_LEN];
+        let amounts = Adjustment::ALL.iter().map(|k| k.of(self));
+        let colours = self
+            .duotone_dark
+            .components
+            .into_iter()
+            .chain(self.duotone_light.components);
+        let count = std::iter::once(f32::from(self.curve.len));
+        let points = self.curve.points.into_iter().flatten();
+        for (o, v) in out
             .iter_mut()
-            .zip(colours.chain(self.duotone_light.components.iter()))
+            .zip(amounts.chain(colours).chain(count).chain(points))
         {
-            *o = c.to_bits();
+            *o = v.to_bits();
         }
         out
+    }
+
+    /// Where the curve's black end and white end sit on the Curves graph, as
+    /// `[input, output]`: the black end at (black point, fade) and the white end
+    /// at (1 − white point, 1).
+    pub fn curve_ends(&self) -> ([f32; 2], [f32; 2]) {
+        ([self.black_point, self.fade], [1.0 - self.white_point, 1.0])
+    }
+
+    /// A stored inner point ([`CurvePoints`]) as the graph shows it, on the
+    /// picture's tone axes.
+    pub fn curve_shown(&self, p: [f32; 2]) -> [f32; 2] {
+        let ([x0, y0], [x1, y1]) = self.curve_ends();
+        [x0 + p[0] * (x1 - x0), y0 + p[1] * (y1 - y0)]
+    }
+
+    /// A point on the graph as an inner point stores it; [`Self::curve_shown`]
+    /// undone. Ends that meet store `0`.
+    pub fn curve_stored(&self, p: [f32; 2]) -> [f32; 2] {
+        let ([x0, y0], [x1, y1]) = self.curve_ends();
+        let along = |v: f32, a: f32, b: f32| {
+            if b - a > f32::EPSILON {
+                ((v - a) / (b - a)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        [along(p[0], x0, x1), along(p[1], y0, y1)]
+    }
+
+    /// The Curves stage alone at input `x`: flat at fade under the black point,
+    /// white over the white point, and the inner points' monotone cubic between.
+    ///
+    /// Ends that cross (black point past the white point's input) make a step
+    /// half way between them, so every in-range pair still draws.
+    pub fn curve_at(&self, x: f32) -> f32 {
+        let (lo, hi) = (self.black_point, 1.0 - self.white_point);
+        let y = if hi <= lo {
+            if x < (lo + hi) / 2.0 { 0.0 } else { 1.0 }
+        } else if x <= lo {
+            0.0
+        } else if x >= hi {
+            1.0
+        } else {
+            self.curve.eval((x - lo) / (hi - lo))
+        };
+        self.fade + (1.0 - self.fade) * y
     }
 
     /// The per-pixel function these numbers describe, or [`None`] when they
@@ -611,8 +851,9 @@ impl ImageAdjust {
     ///
     /// [`None`] for the neutral value **and for any amount outside its
     /// [`Adjustment::range`]**, including non-finite ones, or a non-finite duotone
-    /// colour (§15 D538): `"exposure": 1000.0` makes every matrix coefficient
-    /// `NaN`, and `"shadows": 2.0` makes [`Self::curve`] non-monotonic. **Refused
+    /// colour (§15 D538), or a curve point outside `0..=1` or out of order:
+    /// `"exposure": 1000.0` makes every matrix coefficient `NaN`, and
+    /// `"shadows": 2.0` makes [`Self::tone_table`] non-monotonic. **Refused
     /// rather than clamped**, since clamping would make the file *draw* what it does
     /// not *say*; `an_impossible_value_is_refused_at_both_doors` asserts on
     /// `pipeline().is_none()` to tell the two apart.
@@ -620,7 +861,8 @@ impl ImageAdjust {
         if Adjustment::ALL.iter().any(|k| {
             let v = k.of(self);
             !v.is_finite() || !k.range().contains(&v)
-        }) {
+        }) || !self.curve.is_usable()
+        {
             return None;
         }
         let colours = [self.duotone_dark, self.duotone_light];
@@ -631,7 +873,7 @@ impl ImageAdjust {
             return None;
         }
         let matrix = self.matrix();
-        let curve = self.curve();
+        let curve = self.tone_table();
         (matrix.is_some() || curve.is_some()).then_some(AdjustPipeline { matrix, curve })
     }
 
@@ -690,23 +932,29 @@ impl ImageAdjust {
         Some(compose(&invert, &compose(&duotone, &tone)))
     }
 
-    /// The tone curve for highlights and shadows, sampled at [`TONE_STEPS`]
-    /// points, or [`None`] when both are neutral.
+    /// The one tone table, sampled at [`TONE_STEPS`] points, or [`None`] when
+    /// every tone amount is neutral and the curve has no points.
     ///
-    /// **The two ends are weighted so that each slider leaves the other end
+    /// Highlights and shadows first, then the Curves stage ([`Self::curve_at`]:
+    /// the inner points, then black point, white point and fade at the ends). With
+    /// the ends at rest and no points the second stage is exactly the identity,
+    /// so a highlights-and-shadows table is the one it always was.
+    ///
+    /// **Highlights and shadows are weighted so that each leaves the other end
     /// alone** — `(1−v)²` for the shadows and `v²` for the highlights — and the
     /// ±0.4 strength is the largest that keeps the curve monotonic at both ends
     /// (the derivative of `v + a(1−v)²` at `v = 0` is `1 − 2a`).
-    fn curve(&self) -> Option<[f32; TONE_STEPS]> {
+    fn tone_table(&self) -> Option<[f32; TONE_STEPS]> {
         let (h, s) = (self.highlights, self.shadows);
-        if h == 0.0 && s == 0.0 {
+        let ends = [self.black_point, self.white_point, self.fade];
+        if h == 0.0 && s == 0.0 && ends == [0.0; 3] && self.curve.is_empty() {
             return None;
         }
         let mut table = [0.0f32; TONE_STEPS];
         for (i, out) in table.iter_mut().enumerate() {
             let v = i as f32 / (TONE_STEPS - 1) as f32;
             let lifted = v + 0.4 * s * (1.0 - v) * (1.0 - v) + 0.4 * h * v * v;
-            *out = lifted.clamp(0.0, 1.0);
+            *out = self.curve_at(lifted.clamp(0.0, 1.0));
         }
         Some(table)
     }
@@ -723,7 +971,7 @@ fn diagonal(r: f32, g: f32, b: f32) -> [f32; 20] {
 
 /// SVG's own luminance coefficients, not Rec.601's: the ones `feColorMatrix`'s
 /// `saturate` and `hueRotate` are written with.
-const LUMINANCE: [f32; 3] = [0.213, 0.715, 0.072];
+pub const LUMINANCE: [f32; 3] = [0.213, 0.715, 0.072];
 
 /// `feColorMatrix type="saturate"` at `k`: `0` is grey, `1` the identity.
 fn saturate(k: f32) -> [f32; 20] {
@@ -835,52 +1083,131 @@ pub fn transfer(table: &[f32], v: f32) -> f32 {
     table[k] + t * (table[k + 1] - table[k])
 }
 
-/// One of the eleven amounts, named, so the panel draws them from one list.
+/// One of the amounts, named, so the panel draws them from one list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Adjustment {
     Exposure,
     Contrast,
+    Highlights,
+    Shadows,
+    WhitePoint,
+    BlackPoint,
     Saturation,
     Temperature,
     Tint,
-    Highlights,
-    Shadows,
     Hue,
+    Fade,
     Greyscale,
     Invert,
     Duotone,
 }
 
+/// The folds the amounts are grouped under, in [`Adjustment::ALL`]'s order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AdjustSection {
+    /// What a photograph needs most often: exposure and the tones.
+    Light,
+    Colour,
+    /// The amounts that restyle a picture rather than repair it.
+    Looks,
+}
+
+impl AdjustSection {
+    pub const ALL: [AdjustSection; 3] = [Self::Light, Self::Colour, Self::Looks];
+
+    /// The fold's heading.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Light => "Light",
+            Self::Colour => "Colour",
+            Self::Looks => "Looks",
+        }
+    }
+
+    /// This section's amounts, in [`Adjustment::ALL`]'s order.
+    pub fn members(self) -> impl Iterator<Item = Adjustment> {
+        Adjustment::ALL
+            .into_iter()
+            .filter(move |k| k.section() == self)
+    }
+
+    /// How many of this section's amounts are away from rest on `a`.
+    pub fn moved(self, a: &ImageAdjust) -> usize {
+        self.members().filter(|k| k.of(a) != 0.0).count()
+    }
+}
+
 impl Adjustment {
-    /// The eleven, in the order the panel lists them.
-    pub const ALL: [Adjustment; 11] = [
+    /// Every amount, in the order the panel, the file and the MCP list read them:
+    /// grouped by [`AdjustSection`].
+    pub const ALL: [Adjustment; 14] = [
         Self::Exposure,
         Self::Contrast,
+        Self::Highlights,
+        Self::Shadows,
+        Self::WhitePoint,
+        Self::BlackPoint,
         Self::Saturation,
         Self::Temperature,
         Self::Tint,
-        Self::Highlights,
-        Self::Shadows,
         Self::Hue,
+        Self::Fade,
         Self::Greyscale,
         Self::Invert,
         Self::Duotone,
     ];
 
-    /// The word the control carries (no icon set has eleven distinguishable glyphs).
+    /// The fold this amount is drawn under.
+    pub fn section(self) -> AdjustSection {
+        match self {
+            Self::Exposure
+            | Self::Contrast
+            | Self::Highlights
+            | Self::Shadows
+            | Self::WhitePoint
+            | Self::BlackPoint => AdjustSection::Light,
+            Self::Saturation | Self::Temperature | Self::Tint | Self::Hue => AdjustSection::Colour,
+            Self::Fade | Self::Greyscale | Self::Invert | Self::Duotone => AdjustSection::Looks,
+        }
+    }
+
+    /// The word the control carries (no icon set has this many distinguishable glyphs).
     pub fn label(self) -> &'static str {
         match self {
             Self::Exposure => "Exposure",
             Self::Contrast => "Contrast",
+            Self::Highlights => "Highlights",
+            Self::Shadows => "Shadows",
+            Self::WhitePoint => "White point",
+            Self::BlackPoint => "Black point",
             Self::Saturation => "Saturation",
             Self::Temperature => "Temperature",
             Self::Tint => "Tint",
-            Self::Highlights => "Highlights",
-            Self::Shadows => "Shadows",
             Self::Hue => "Hue",
+            Self::Fade => "Fade",
             Self::Greyscale => "Greyscale",
             Self::Invert => "Invert",
             Self::Duotone => "Duotone",
+        }
+    }
+
+    /// The amount's key in the file, which the snapshot's `adjust` map uses too.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Exposure => "exposure",
+            Self::Contrast => "contrast",
+            Self::Highlights => "highlights",
+            Self::Shadows => "shadows",
+            Self::WhitePoint => "white_point",
+            Self::BlackPoint => "black_point",
+            Self::Saturation => "saturation",
+            Self::Temperature => "temperature",
+            Self::Tint => "tint",
+            Self::Hue => "hue",
+            Self::Fade => "fade",
+            Self::Greyscale => "greyscale",
+            Self::Invert => "invert",
+            Self::Duotone => "duotone",
         }
     }
 
@@ -894,7 +1221,10 @@ impl Adjustment {
             Self::Tint => "Magenta to the right, green to the left",
             Self::Highlights => "Lift or recover the bright end, leaving the dark end",
             Self::Shadows => "Lift or deepen the dark end, leaving the bright end",
+            Self::WhitePoint => "Turn the lightest tones white",
+            Self::BlackPoint => "Turn the darkest tones black",
             Self::Hue => "Turn every colour round the wheel, up to half a turn either way",
+            Self::Fade => "Lift black towards grey, for a muted print",
             Self::Greyscale => "Drain the colour; 100 is grey",
             Self::Invert => "Swap light for dark; 50 is flat grey, 100 the negative",
             Self::Duotone => "Map the tones onto two colours, dark to light",
@@ -902,10 +1232,16 @@ impl Adjustment {
     }
 
     /// The values the model holds: `-1..=1` for the offsets either way, `0..=1`
-    /// for the three with no opposite (greyscale, invert, duotone).
+    /// for the amounts with no opposite (the two points, fade, greyscale, invert,
+    /// duotone).
     pub fn range(self) -> std::ops::RangeInclusive<f32> {
         match self {
-            Self::Greyscale | Self::Invert | Self::Duotone => 0.0..=1.0,
+            Self::WhitePoint
+            | Self::BlackPoint
+            | Self::Fade
+            | Self::Greyscale
+            | Self::Invert
+            | Self::Duotone => 0.0..=1.0,
             _ => -1.0..=1.0,
         }
     }
@@ -928,7 +1264,10 @@ impl Adjustment {
             Self::Tint => a.tint,
             Self::Highlights => a.highlights,
             Self::Shadows => a.shadows,
+            Self::WhitePoint => a.white_point,
+            Self::BlackPoint => a.black_point,
             Self::Hue => a.hue,
+            Self::Fade => a.fade,
             Self::Greyscale => a.greyscale,
             Self::Invert => a.invert,
             Self::Duotone => a.duotone,
@@ -955,7 +1294,10 @@ impl Adjustment {
             Self::Tint => a.tint = v,
             Self::Highlights => a.highlights = v,
             Self::Shadows => a.shadows = v,
+            Self::WhitePoint => a.white_point = v,
+            Self::BlackPoint => a.black_point = v,
             Self::Hue => a.hue = v,
+            Self::Fade => a.fade = v,
             Self::Greyscale => a.greyscale = v,
             Self::Invert => a.invert = v,
             Self::Duotone => a.duotone = v,
@@ -2732,7 +3074,7 @@ mod adjust_tests {
 
     /// The tone curve never doubles back at either extreme of either slider.
     ///
-    /// flip: raising the ±0.4 strength to 0.55 in `ImageAdjust::curve` → the
+    /// flip: raising the ±0.4 strength to 0.55 in `ImageAdjust::tone_table` → the
     /// shadow arm fails the monotonic assertion.
     #[test]
     fn the_tone_curve_is_monotonic_at_every_extreme() {
@@ -2746,7 +3088,7 @@ mod adjust_tests {
             let mut a = ImageAdjust::NEUTRAL;
             a.highlights = h;
             a.shadows = s;
-            let table = a.curve().expect("a moved end has a curve");
+            let table = a.tone_table().expect("a moved end has a curve");
             for pair in table.windows(2) {
                 assert!(
                     pair[1] >= pair[0] - 1e-6,
@@ -2901,5 +3243,289 @@ mod adjust_tests {
         a.reset();
         assert_eq!(a, ImageAdjust::NEUTRAL, "reset puts every amount back");
         assert!(a.is_default());
+    }
+
+    /// The input of table sample `i`.
+    fn at(i: usize) -> f32 {
+        i as f32 / (TONE_STEPS - 1) as f32
+    }
+
+    /// Black point 14, white point 20 and fade 30 do what the card's words say,
+    /// read off the table the SVG writer writes.
+    ///
+    #[test]
+    fn the_three_tone_rows_do_what_their_words_say() {
+        let black = ImageAdjust {
+            black_point: 0.14,
+            ..ImageAdjust::NEUTRAL
+        };
+        let table = black.tone_table().expect("a black point is a table");
+        for (i, v) in table.iter().enumerate() {
+            if at(i) <= 0.14 {
+                assert_eq!(*v, 0.0, "input under 14% maps to black, not {v} at {i}");
+            } else {
+                assert!(*v > 0.0, "input over 14% keeps a tone, at {i}");
+            }
+        }
+        assert_eq!(table[TONE_STEPS - 1], 1.0, "and white stays white");
+
+        let white = ImageAdjust {
+            white_point: 0.2,
+            ..ImageAdjust::NEUTRAL
+        };
+        let table = white.tone_table().expect("a white point is a table");
+        for (i, v) in table.iter().enumerate() {
+            if at(i) >= 0.8 {
+                assert_eq!(*v, 1.0, "input over 80% maps to white, not {v} at {i}");
+            } else {
+                assert!(*v < 1.0, "input under 80% stays below white, at {i}");
+            }
+        }
+        assert_eq!(table[0], 0.0, "and black stays black");
+
+        let fade = ImageAdjust {
+            fade: 0.3,
+            ..ImageAdjust::NEUTRAL
+        };
+        let table = fade.tone_table().expect("fade is a table");
+        assert!((table[0] - 0.3).abs() < 1e-6, "black lifts to 30% grey");
+        assert_eq!(table[TONE_STEPS - 1], 1.0, "white stays");
+        assert!(
+            (table[TONE_STEPS / 2] - 0.65).abs() < 1e-6,
+            "and the tones between lift in proportion: {}",
+            table[TONE_STEPS / 2]
+        );
+    }
+
+    /// With the ends at rest and no inner points, the Curves stage is exactly the
+    /// identity, so a highlights-and-shadows table is byte for byte what it was
+    /// before the ends existed.
+    #[test]
+    fn resting_ends_leave_the_highlights_and_shadows_table_alone() {
+        let a = ImageAdjust {
+            highlights: 0.6,
+            shadows: -0.3,
+            ..ImageAdjust::NEUTRAL
+        };
+        let table = a.tone_table().expect("two moved sliders");
+        for (i, v) in table.iter().enumerate() {
+            let x = at(i);
+            let old = (x + 0.4 * -0.3 * (1.0 - x) * (1.0 - x) + 0.4 * 0.6 * x * x).clamp(0.0, 1.0);
+            assert_eq!(v.to_bits(), old.to_bits(), "sample {i} moved");
+        }
+    }
+
+    /// The curve passes through each inner point where the graph shows it, a
+    /// rising run of points draws a rising table, and a zigzag never overshoots
+    /// the points either side of a span.
+    ///
+    /// flip: dropping the radius-3 bound in `CurvePoints::eval` → fails at
+    /// "never turns back" on the steep run.
+    #[test]
+    fn the_curve_passes_through_its_points_and_never_turns_back() {
+        let mut a = ImageAdjust {
+            black_point: 0.1,
+            white_point: 0.05,
+            fade: 0.2,
+            ..ImageAdjust::NEUTRAL
+        };
+        for p in [[0.2, 0.1], [0.25, 0.9], [0.3, 0.92], [0.8, 0.95]] {
+            a.curve.insert(p).expect("room for four");
+        }
+        for p in a.curve.as_slice() {
+            let [x, y] = a.curve_shown(*p);
+            assert!(
+                (a.curve_at(x) - y).abs() < 1e-5,
+                "the curve misses the point it shows at ({x}, {y}): {}",
+                a.curve_at(x)
+            );
+        }
+        let table = a.pipeline().and_then(|p| p.curve).expect("a curve draws");
+        for w in table.windows(2) {
+            assert!(w[1] >= w[0] - 1e-6, "the curve never turns back: {table:?}");
+        }
+        let fine: Vec<f32> = (0..=1000).map(|i| a.curve_at(i as f32 / 1000.0)).collect();
+        for w in fine.windows(2) {
+            assert!(
+                w[1] >= w[0] - 1e-6,
+                "the curve never turns back, sampled finely"
+            );
+        }
+
+        let mut zig = ImageAdjust::NEUTRAL;
+        zig.curve.insert([0.3, 0.8]);
+        zig.curve.insert([0.6, 0.2]);
+        let knots: [[f32; 2]; 4] = [[0.0, 0.0], [0.3, 0.8], [0.6, 0.2], [1.0, 1.0]];
+        for span in knots.windows(2) {
+            let (lo, hi) = (span[0][1].min(span[1][1]), span[0][1].max(span[1][1]));
+            for i in 0..=100 {
+                let x = span[0][0] + (span[1][0] - span[0][0]) * i as f32 / 100.0;
+                let y = zig.curve_at(x);
+                assert!(
+                    y >= lo - 1e-6 && y <= hi + 1e-6,
+                    "the curve overshoots its points at {x}: {y} outside {lo}..{hi}"
+                );
+            }
+        }
+    }
+
+    /// An inner point is stored between the ends, so moving an end carries it and
+    /// the graph's position converts back to what is stored.
+    #[test]
+    fn the_ends_carry_the_inner_points() {
+        let mut a = ImageAdjust {
+            black_point: 0.2,
+            white_point: 0.2,
+            fade: 0.1,
+            ..ImageAdjust::NEUTRAL
+        };
+        a.curve.insert([0.5, 0.5]);
+        let shown = a.curve_shown([0.5, 0.5]);
+        assert!((shown[0] - 0.5).abs() < 1e-6 && (shown[1] - 0.55).abs() < 1e-6);
+        let back = a.curve_stored(shown);
+        assert!((back[0] - 0.5).abs() < 1e-6 && (back[1] - 0.5).abs() < 1e-6);
+        a.black_point = 0.4;
+        assert!(
+            (a.curve_shown([0.5, 0.5])[0] - 0.6).abs() < 1e-6,
+            "the point moves with the black end"
+        );
+    }
+
+    /// The new amounts and the curve are additive in the file: absent at rest,
+    /// round-tripped when moved, and a curve longer than the model holds is
+    /// refused at parse rather than cut.
+    #[test]
+    fn tone_rows_and_curve_points_round_trip() {
+        let mut a = ImageAdjust {
+            white_point: 0.2,
+            black_point: 0.14,
+            fade: 0.3,
+            ..ImageAdjust::NEUTRAL
+        };
+        a.curve.insert([0.25, 0.4]);
+        a.curve.insert([0.75, 0.7]);
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(
+            json.contains(r#""curve":[[0.25,0.4],[0.75,0.7]]"#),
+            "the points are a list of pairs, got {json}"
+        );
+        let back: ImageAdjust = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, a);
+        assert_eq!(
+            serde_json::to_string(&ImageAdjust::NEUTRAL).unwrap(),
+            "{}",
+            "nothing at rest is written"
+        );
+        let nine = format!(
+            r#"{{"curve":{}}}"#,
+            serde_json::to_string(&[[0.5f32, 0.5]; 9]).unwrap()
+        );
+        assert!(
+            serde_json::from_str::<ImageAdjust>(&nine).is_err(),
+            "nine points is more than the curve holds"
+        );
+        let eight = format!(
+            r#"{{"curve":{}}}"#,
+            serde_json::to_string(&[[0.5f32, 0.5]; 8]).unwrap()
+        );
+        assert!(
+            serde_json::from_str::<ImageAdjust>(&eight).is_ok(),
+            "control: eight parse (and are refused later, being out of order)"
+        );
+    }
+
+    /// A curve the file says but the model cannot draw is refused by `pipeline`,
+    /// as an out-of-range amount is, and is still not the neutral value.
+    ///
+    /// flip: `CurvePoints::is_usable` returning `true` → fails at the first arm.
+    #[test]
+    fn an_impossible_curve_is_refused() {
+        for (label, points) in [
+            ("an input past white", vec![[1.2f32, 0.5]]),
+            ("an output under black", vec![[0.5, -0.1]]),
+            ("a point on the black end", vec![[0.0, 0.3]]),
+            ("inputs out of order", vec![[0.6, 0.5], [0.4, 0.5]]),
+            ("two points at one input", vec![[0.4, 0.5], [0.4, 0.6]]),
+            ("a NaN", vec![[f32::NAN, 0.5]]),
+        ] {
+            let a = ImageAdjust {
+                curve: CurvePoints::try_from(points).unwrap(),
+                ..ImageAdjust::NEUTRAL
+            };
+            assert!(a.pipeline().is_none(), "{label}");
+            assert!(!a.is_default(), "{label} — and is not neutral");
+        }
+        let fine = ImageAdjust {
+            curve: CurvePoints::try_from(vec![[0.4f32, 0.5], [0.6, 0.5]]).unwrap(),
+            ..ImageAdjust::NEUTRAL
+        };
+        assert!(fine.pipeline().is_some(), "control: an ordered pair draws");
+    }
+
+    /// Inserting keeps the points in input order and stops at eight; removing
+    /// closes the gap and leaves the tail zero, so equal curves compare equal.
+    #[test]
+    fn points_insert_in_order_and_stop_at_eight() {
+        let mut c = CurvePoints::EMPTY;
+        assert_eq!(c.insert([0.5, 0.5]), Some(0));
+        assert_eq!(c.insert([0.2, 0.3]), Some(0));
+        assert_eq!(c.insert([0.8, 0.9]), Some(2));
+        assert_eq!(c.insert([0.5, 0.1]), None, "one point per input");
+        assert_eq!(c.as_slice(), &[[0.2, 0.3], [0.5, 0.5], [0.8, 0.9]]);
+        c.remove(1);
+        let mut d = CurvePoints::EMPTY;
+        d.insert([0.8, 0.9]);
+        d.insert([0.2, 0.3]);
+        assert_eq!(c, d, "a removed point leaves nothing behind");
+        for i in 0..CURVE_POINTS {
+            c.insert([0.05 + i as f32 * 0.01, 0.5]);
+        }
+        assert_eq!(c.len(), CURVE_POINTS);
+        assert_eq!(c.insert([0.99, 0.5]), None, "the curve holds eight");
+    }
+
+    /// The sections hold `Adjustment::ALL` in order, each a contiguous run, so the
+    /// card's folds, the file and the MCP list agree; `moved` counts a section's
+    /// amounts away from rest.
+    #[test]
+    fn the_sections_split_the_list_in_order() {
+        let regrouped: Vec<Adjustment> = AdjustSection::ALL
+            .into_iter()
+            .flat_map(AdjustSection::members)
+            .collect();
+        assert_eq!(regrouped, Adjustment::ALL, "sections out of ALL's order");
+        assert_eq!(
+            AdjustSection::Light.members().collect::<Vec<_>>(),
+            [
+                Adjustment::Exposure,
+                Adjustment::Contrast,
+                Adjustment::Highlights,
+                Adjustment::Shadows,
+                Adjustment::WhitePoint,
+                Adjustment::BlackPoint,
+            ]
+        );
+        assert_eq!(Adjustment::Fade.section(), AdjustSection::Looks);
+        let a = ImageAdjust {
+            exposure: 0.18,
+            shadows: 0.24,
+            black_point: 0.14,
+            fade: 0.3,
+            ..ImageAdjust::NEUTRAL
+        };
+        assert_eq!(AdjustSection::Light.moved(&a), 3);
+        assert_eq!(AdjustSection::Colour.moved(&a), 0);
+        assert_eq!(AdjustSection::Looks.moved(&a), 1);
+    }
+
+    /// Every amount's key is its field's name in the file.
+    #[test]
+    fn each_key_is_the_files_own() {
+        for k in Adjustment::ALL {
+            let mut a = ImageAdjust::NEUTRAL;
+            k.set(&mut a, 0.5);
+            let json = serde_json::to_string(&a).unwrap();
+            assert_eq!(json, format!(r#"{{"{}":0.5}}"#, k.key()), "{}", k.label());
+        }
     }
 }
