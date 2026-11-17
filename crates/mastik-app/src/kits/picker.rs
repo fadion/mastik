@@ -3989,4 +3989,60 @@ pub(crate) mod tests {
             "half the canvas: {sizes:?}"
         );
     }
+
+    /// *Open library* on the empty picker lands on *Kits*, leaving a results
+    /// page and a search left open in the library.
+    /// flip: `Act::OpenLibrary` setting `dash.nav` alone → fails at "leaves
+    /// the results page".
+    #[test]
+    fn open_library_leaves_an_old_search_for_kits() {
+        use crate::panels::dashboard::Nav;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let root = temp_root("open-library");
+        let mut app = app_on(&ctx, root.clone());
+        app.dash.nav = Nav::All;
+        app.dash.search_page = Some("check".into());
+        app.dash.search = Some("check".into());
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let frame_with = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |_| app.kit_picker_ui(&ctx))
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        app.toggle_kit_picker();
+        frame_with(&mut app, vec![]);
+        let text = frame_with(&mut app, vec![]);
+        let at = text
+            .iter()
+            .find(|(t, _)| t == "Open library")
+            .map(|(_, at)| *at)
+            .unwrap_or_else(|| panic!("the empty picker offers the library: {text:?}"));
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame_with(&mut app, vec![egui::Event::PointerMoved(at)]);
+        frame_with(&mut app, vec![press(true)]);
+        frame_with(&mut app, vec![press(false)]);
+        assert!(app.kit_picker.is_none(), "the picker closes");
+        assert_eq!(app.dash.nav, Nav::Kits);
+        assert_eq!(app.dash.search_page, None, "leaves the results page");
+        assert_eq!(app.dash.search, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

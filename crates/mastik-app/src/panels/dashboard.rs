@@ -10453,6 +10453,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Each text run painted inside the menu area `id`, with its ink.
+    fn menu_inks(
+        app: &mut MastikApp,
+        ctx: &egui::Context,
+        id: &str,
+    ) -> Vec<(String, egui::Color32)> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        for _ in 0..4 {
+            let full = ctx.run_ui(input.clone(), |ui| app.dashboard_ui(ui));
+            let area = ctx
+                .memory(|m| m.area_rect(egui::Id::new(id)))
+                .expect("the menu is up");
+            out = full
+                .shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(t) if area.contains(t.pos) => Some((
+                        t.galley.text().to_owned(),
+                        t.galley.job.sections[0].format.color,
+                    )),
+                    _ => None,
+                })
+                .collect();
+        }
+        out
+    }
+
+    /// The sort menu lights the field and the direction in force, and the
+    /// project filter the project in force, in the selected ink and nothing else.
+    /// flip: `sort_menu` lighting the direction not in force → fails at "Z to A";
+    /// `project_filter_menu` lighting nothing → fails at "the project in force".
+    #[test]
+    fn the_sort_and_filter_menus_light_what_is_in_force() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "menu-lit");
+        seed(&mut app, "p-1", "Web shop", None);
+        seed(&mut app, "p-2", "Blog", None);
+        seed_file(&mut app, &root, "p-1", "Wallet");
+        app.dash.nav = Nav::All;
+        app.dash.sort = SortBy {
+            field: Sort::Name,
+            reversed: true,
+        };
+        let chosen = ctx.global_style().visuals.selection.stroke.color;
+        let lit = |runs: &[(String, egui::Color32)]| -> Vec<String> {
+            runs.iter()
+                .filter(|(_, c)| *c == chosen)
+                .map(|(t, _)| t.clone())
+                .collect()
+        };
+
+        app.dash.sort_open = true;
+        let runs = menu_inks(&mut app, &ctx, "library-sort-menu");
+        assert!(
+            runs.iter().any(|(t, _)| t == "A to Z"),
+            "the menu's rows were read: {runs:?}"
+        );
+        assert_eq!(lit(&runs), ["Name", "Z to A"]);
+        app.dash.sort_open = false;
+
+        app.dash.filter = Some("p-2".into());
+        app.dash.filter_open = true;
+        let runs = menu_inks(&mut app, &ctx, "library-filter-menu");
+        assert!(runs.iter().any(|(t, _)| t == ALL_PROJECTS));
+        assert_eq!(lit(&runs), ["Blog"], "the project in force");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A project's page heads with its name and description, and the card counts
     /// a description edit alone as a change, trimmed; private mode leaves the
     /// description out.

@@ -15580,6 +15580,63 @@ mod library_wiring_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The breadcrumb's project opens the library on that project, leaving a
+    /// results page and a search left open there.
+    /// flip: `document_crumb` setting `dash.nav` alone → fails at "leaves the
+    /// results page".
+    #[test]
+    fn the_breadcrumb_project_leaves_an_old_search() {
+        use crate::panels::dashboard::Nav;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let root = temp_root("crumb-door");
+        let mut app = app_with_a_project(&ctx, root.clone());
+        app.library.refresh();
+        let filed = app
+            .library
+            .entries
+            .iter()
+            .find(|e| e.display_name() == "Landing v4")
+            .unwrap()
+            .path
+            .clone();
+        app.open_path(&filed);
+        let project = app.session.doc.meta().project.clone().unwrap();
+        app.dash.nav = Nav::All;
+        app.dash.search_page = Some("check".into());
+        app.dash.search = Some("check".into());
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| app.top_bar(ui))
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == "Kestrel" => {
+                        Some(t.pos + t.galley.size() / 2.0)
+                    }
+                    _ => None,
+                })
+        };
+        let at = frame(&mut app, vec![]).expect("the crumb names the project");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut app, vec![press(true)]);
+        frame(&mut app, vec![press(false)]);
+        assert!(matches!(app.view, View::Dashboard), "the library opens");
+        assert_eq!(app.dash.nav, Nav::Project(project));
+        assert_eq!(app.dash.search_page, None, "leaves the results page");
+        assert_eq!(app.dash.search, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The document menu's *Export ▸* opens its list on hover, with the frame rows
     /// dimmed while there are no frames, and closes it when another row is hovered.
     /// flip: `document_menu` not calling `document_export_flyout` → fails at "the
