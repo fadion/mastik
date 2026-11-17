@@ -8,8 +8,8 @@
 //! then the horizontal one over what that made, so a quarter drawn from axis to
 //! axis closes into a whole.
 //!
-//! *Around a centre* turns copies of the run about a point instead, each mirrored
-//! too if asked ([`radial`]); copies whose ends meet are welded.
+//! *Around a centre* turns copies of the run about a point instead ([`radial`]);
+//! copies whose ends meet are welded.
 //!
 //! A path drawn mirrored is saved mirrored (`mastik_core::symmetry`), and point
 //! editing keeps it so ([`mastik_core::symmetry::symmetric_edit`]), its axis points
@@ -34,7 +34,7 @@ pub(crate) enum Axes {
     Vertical,
     Horizontal,
     Both,
-    /// Copies turned about a centre ([`Mirror::copies`], [`Mirror::reflect`]).
+    /// Copies turned about a centre ([`Mirror::copies`]).
     Centre,
 }
 
@@ -80,8 +80,6 @@ pub(crate) struct Mirror {
     /// Under [`Axes::Centre`], how many copies turn about it, the drawn one
     /// counted; kept while another choice is ticked.
     pub(crate) copies: u8,
-    /// Under [`Axes::Centre`], each copy mirrored too.
-    pub(crate) reflect: bool,
 }
 
 impl Default for Mirror {
@@ -90,7 +88,6 @@ impl Default for Mirror {
             axes: Axes::Off,
             at: None,
             copies: START_COPIES,
-            reflect: false,
         }
     }
 }
@@ -532,6 +529,13 @@ const PILL: egui::Vec2 = egui::vec2(16.0, 10.0);
 /// The centre's grip across, in screen pt.
 const CENTRE_GRIP: f32 = 14.0;
 
+/// Whether the primary button holds a mirror grip `resp`: only the left button
+/// moves an axis or the centre, as it moves a layer.
+fn primary_grab(ui: &egui::Ui, resp: &egui::Response) -> bool {
+    resp.dragged_by(egui::PointerButton::Primary)
+        || (resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_down()))
+}
+
 impl MastikApp {
     /// The switch the next new run follows: inside a path edit that edit's own,
     /// which starts off whatever the drawing switch says; otherwise the drawing
@@ -716,7 +720,7 @@ impl MastikApp {
             to_world: Affine::IDENTITY,
             own: false,
             copies: m.copies,
-            reflect: m.reflect,
+            reflect: false,
             phase: -std::f64::consts::FRAC_PI_2,
         })
     }
@@ -931,9 +935,8 @@ impl MastikApp {
             Axes::Horizontal => "the horizontal axis",
             Axes::Both => "both axes",
             Axes::Centre => {
-                let mirrored = if m.reflect { ", each mirrored" } else { "" };
                 return Some(format!(
-                    "Repeating {} copies around the centre{mirrored} · draw from one line to the next to close the shape",
+                    "Repeating {} copies around the centre · draw from one line to the next to close the shape",
                     m.copies
                 ));
             }
@@ -1051,13 +1054,13 @@ impl MastikApp {
                     false => egui::CursorIcon::ResizeVertical,
                 })
                 .on_hover_text("Drag to move the axis · double-click to put it back");
-            if resp.dragged() || resp.is_pointer_button_down_on() {
+            if primary_grab(ui, &resp) {
                 self.mirror_grips.held = Some(Grip::Axis(vertical));
                 self.mirror_grips.from = Some(from.unwrap_or(self.mirror().at));
             }
             if ui::double_clicked(ui, &resp) {
                 self.mirror_mut().at = None;
-            } else if resp.dragged()
+            } else if resp.dragged_by(egui::PointerButton::Primary)
                 && let Some(p) = resp.interact_pointer_pos()
             {
                 let w = self.to_world(p, rect, ppp);
@@ -1137,9 +1140,8 @@ impl MastikApp {
     }
 
     /// The switch's centre while drawing around it: a dashed slice line from the
-    /// centre to the edge of `span` (screen) per copy, a dotted mirror line
-    /// halfway between each pair when each copy is mirrored, and the centre's
-    /// grip. Dragging the grip moves the centre; a double-click puts it back.
+    /// centre to the edge of `span` (screen) per copy, and the centre's grip.
+    /// Dragging the grip moves the centre; a double-click puts it back.
     #[allow(clippy::too_many_arguments)]
     fn centre_chrome(
         &mut self,
@@ -1192,13 +1194,13 @@ impl MastikApp {
             )
             .on_hover_cursor(egui::CursorIcon::Move)
             .on_hover_text("Drag to move the centre · double-click to put it back");
-        if resp.dragged() || resp.is_pointer_button_down_on() {
+        if primary_grab(ui, &resp) {
             self.mirror_grips.held = Some(Grip::Centre);
             self.mirror_grips.from = Some(from.unwrap_or(self.mirror().at));
         }
         if ui::double_clicked(ui, &resp) {
             self.mirror_mut().at = None;
-        } else if resp.dragged()
+        } else if resp.dragged_by(egui::PointerButton::Primary)
             && let Some(p) = resp.interact_pointer_pos()
         {
             self.mirror_mut().at = Some(self.to_world(p, rect, ppp));
@@ -1313,10 +1315,10 @@ impl MastikApp {
         let mut pick = None;
         let mut reset = false;
         let mut copies = f64::from(m.copies);
-        let mut flip_reflect = false;
-        // The five choices, the copies field (a labelled control, about two rows),
-        // the mirror check and *Reset*.
-        let rows = Axes::ALL.len() + 2 + 1 + 1;
+        let mut scrubbed = false;
+        // The five choices, the copies field (a labelled control, about two rows)
+        // and *Reset*.
+        let rows = Axes::ALL.len() + 2 + 1;
         let card = ui::flyout(id, button, 200.0)
             .order(egui::Order::Foreground)
             .show(ctx, (rows, 1), |ui| {
@@ -1325,15 +1327,18 @@ impl MastikApp {
                         pick = Some(axes);
                     }
                 }
-                // Under *Around a centre*, indented to its label; disabled under
-                // the others, so the flyout keeps one height.
+                // Under *Around a centre*, indented to its label and set off from
+                // the rows by an eyebrow's gap; disabled under the others, so the
+                // flyout keeps one height.
+                ui.add_space(ui::SECTION_LABEL_GAP);
                 ui.horizontal(|ui| {
                     ui.add_space(ui::MENU_LABEL_X);
                     ui.vertical(|ui| {
                         ui::disable_unless(ui, centre, |ui| {
                             ui::labelled(ui, "Copies", |ui| {
-                                let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
-                                ui::value_field(
+                                let w = ui.available_width() - ui::MENU_ROW_INSET;
+                                let size = egui::vec2(w, ui::CONTROL_H);
+                                let resp = ui::value_field(
                                     ui,
                                     size,
                                     ui::Prefix::Icon(icon::RADIAL_SYMMETRY),
@@ -1348,20 +1353,9 @@ impl MastikApp {
                                     "How many copies turn about the centre, the drawn one counted",
                                 )
                                 .on_disabled_hover_text("Pick Around a centre to set its copies");
+                                scrubbed = resp.dragged();
                             });
                         });
-                        let row = ui::MenuRow {
-                            enabled: centre,
-                            ..ui::MenuRow::new("", "Mirror each copy").checked(m.reflect)
-                        };
-                        let resp = ui::menu_row(ui, row, ui::MENU_ROW_H);
-                        let resp = match centre {
-                            true => resp,
-                            false => {
-                                resp.on_hover_text("Pick Around a centre to mirror its copies")
-                            }
-                        };
-                        flip_reflect = centre && resp.clicked();
                     });
                 });
                 ui::menu_sep(ui);
@@ -1388,8 +1382,10 @@ impl MastikApp {
         if centre && copies != m.copies {
             self.mirror_mut().copies = copies;
         }
-        if flip_reflect {
-            self.mirror_mut().reflect = !m.reflect;
+        // Armed after a right-click's cancel is answered, so the frame it lands on
+        // cannot re-arm it.
+        if scrubbed && !self.gesture_cancelled && self.in_flight.mirror_copies_scrub.is_none() {
+            self.in_flight.mirror_copies_scrub = Some(m.copies);
         }
         if let Some(axes) = pick {
             self.mirror_mut().axes = axes;
@@ -1399,7 +1395,9 @@ impl MastikApp {
             self.mirror_mut().at = None;
             self.mirror_open = false;
         }
+        // A right-click that called off a scrub is spent on it.
         let pressed_elsewhere = ctx.input(|i| i.pointer.any_pressed())
+            && !self.gesture_cancelled
             && !card.contains_pointer()
             && !ctx
                 .pointer_interact_pos()
@@ -1640,10 +1638,10 @@ mod tests {
         assert_eq!(app.mirror_axes(None).map(|(_, at)| at), Some(was));
     }
 
-    /// Around a centre, five copies each mirrored: a run from the centre to the
-    /// first slice line lands as one path of five closed kites, saved as turning
-    /// five times and mirrored; dragging one anchor of one kite under the node
-    /// tool moves the same anchor of every kite, so the rule still holds.
+    /// Around a centre, five copies: a petal from the centre out and back lands
+    /// as one path of five closed petals, saved as turning five times; dragging
+    /// one anchor of one petal under the node tool moves the same anchor of every
+    /// petal, so the rule still holds.
     ///
     /// flip: `local_mirror` answering `NONE` for a centre → fails at "saved
     /// around"; `symmetric_edit` without its radial arm → fails at "still five".
@@ -1655,13 +1653,12 @@ mod tests {
             axes: Axes::Centre,
             at: Some(Point::new(100.0, 100.0)),
             copies: 5,
-            reflect: true,
         };
         let page = app.session.page;
         app.pen = Some(crate::preview::PenState {
             parent: page,
             parent_world: Affine::IDENTITY,
-            anchors: [(100.0, 100.0), (112.0, 70.0), (100.0, 40.0)]
+            anchors: [(100.0, 100.0), (112.0, 70.0), (100.5, 99.6)]
                 .map(|(x, y)| PenAnchor::corner(Point::new(x, y)))
                 .to_vec(),
             shaping: false,
@@ -1669,13 +1666,13 @@ mod tests {
         });
         app.finish_pen(false);
         let id = app.session.selection.single().expect("the path");
-        let around = PathMirror::around(5, true);
+        let around = PathMirror::around(5, false);
         assert_eq!(mirror_of(&app, id), around, "saved around");
         let Some(NodeKind::Path { path, .. }) = app.session.doc.get(id).map(|n| n.kind()) else {
             panic!("a path");
         };
         let base = crate::tools::pen_anchors(path, &[]);
-        assert_eq!(base.len(), 5, "five kites");
+        assert_eq!(base.len(), 5, "five petals");
         assert!(base.iter().all(|s| s.closed));
 
         let world = app.session.resolved.world_transform(id).unwrap();
@@ -1713,6 +1710,47 @@ mod tests {
         let centre = height(&mut app);
         assert!((off - centre).abs() < 0.5, "one height: {off} vs {centre}");
         assert_eq!(app.symmetry_glyph(), icon::RADIAL_SYMMETRY);
+    }
+
+    /// A right-click mid-scrub of the flyout's copies puts the count back and
+    /// leaves the flyout open, with the pointer on the flyout or out over the
+    /// canvas.
+    ///
+    /// flip: `cancel_gesture` not restoring `mirror_copies_scrub` → fails at "the
+    /// copies are back"; `mirror_flyout`'s press-elsewhere check without its
+    /// `gesture_cancelled` → fails at "still open".
+    #[test]
+    fn a_right_click_winds_a_copies_scrub_back() {
+        use crate::repeat::tests::scrub_then_right_click;
+        for outside in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = mirroring_pen(&ctx);
+            app.session.mirror.axes = Axes::Centre;
+            app.mirror_open = true;
+            scrub_then_right_click(
+                &ctx,
+                &mut app,
+                egui::Id::new("mirror-flyout"),
+                "Copies",
+                |at| match outside {
+                    true => egui::pos2(700.0, 500.0),
+                    false => at,
+                },
+                |app| {
+                    assert_ne!(app.mirror().copies, START_COPIES, "the drag scrubbed it");
+                    assert!(
+                        app.in_flight.mirror_copies_scrub.is_some(),
+                        "the scrub is armed"
+                    );
+                },
+            );
+            assert!(app.mirror_open, "still open ({outside})");
+            assert_eq!(
+                app.mirror().copies,
+                START_COPIES,
+                "the copies are back ({outside})"
+            );
+        }
     }
 
     /// The pen's finish goes through the mirror: a run from the axis and back to it
@@ -2349,6 +2387,49 @@ mod tests {
             "and stays"
         );
         assert!(app.pen.is_none(), "the pen plants nothing");
+    }
+
+    /// A right-button drag on the centre's grip leaves the centre where it is; the
+    /// left button moves it.
+    ///
+    /// flip: `centre_chrome` moving on `dragged()` instead of the primary's drag →
+    /// fails at "the right button moves nothing".
+    #[test]
+    fn only_the_left_button_drags_the_centre() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = mirroring_pen(&ctx);
+        app.session.mirror.axes = Axes::Centre;
+        canvas_frame(&ctx, &mut app, Vec::new());
+        let c = pill(&app).center();
+        let start = app.session.mirror.at;
+        let drag = |app: &mut MastikApp, button| {
+            hover(&ctx, app, c);
+            let press = |pressed, pos| egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            canvas_frame(&ctx, app, vec![press(true, c)]);
+            let mut at = c;
+            for i in 1..=3 {
+                at = c + egui::vec2(10.0 * i as f32, 0.0);
+                canvas_frame(&ctx, app, vec![egui::Event::PointerMoved(at)]);
+            }
+            canvas_frame(&ctx, app, vec![press(false, at)]);
+        };
+        drag(&mut app, egui::PointerButton::Secondary);
+        assert_eq!(
+            app.session.mirror.at, start,
+            "the right button moves nothing"
+        );
+        drag(&mut app, egui::PointerButton::Primary);
+        let moved = app.session.mirror.at.expect("dragged");
+        assert!(
+            (moved.x - 130.0).abs() < 0.5,
+            "the left button moves it: {moved:?}"
+        );
     }
 
     /// A path edit's pen mirrors through the edit's own switch: off when the edit

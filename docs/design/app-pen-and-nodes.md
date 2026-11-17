@@ -96,9 +96,11 @@ The pen and the pencil draw the other half of a new path as they go, reflected a
 axis, a horizontal one or both, or its copies turned about a centre (`crate::mirror`). One symmetry
 at a time: `mirror::Axes` is *Off*, *Vertical*, *Horizontal*, *Both* or *Centre*.
 
-- **State.** `EditorSession::mirror` (`mirror::Mirror { axes, at, copies, reflect }`), per document,
-  in memory only. `copies` (3–12, 6 to start) and `reflect` are the centre's and are kept while
-  another choice is ticked.
+- **State.** `EditorSession::mirror` (`mirror::Mirror { axes, at, copies }`), per document,
+  in memory only. `copies` (3–12, 6 to start) is the centre's and is kept while another choice is
+  ticked. The switch has no reflection: a centre drawn with it repeats its copies by turning only.
+  Reflected copies are a property of a saved path's own frame (`Frame::reflect`, from its
+  `PathMirror`; *Mirrored paths*, below).
   `at` is where the axes cross, or the centre, once dragged. `None` is the default: the middle of the
   frame the run lands in (`run_frame`: a pen run's parent fixed at its first press, which a Ctrl-moved
   first anchor does not change; under the pointer while nothing is drawn), on open canvas the middle
@@ -126,14 +128,15 @@ at a time: `mirror::Axes` is *Off*, *Vertical*, *Horizontal*, *Both* or *Centre*
   it was drawn. *Both axes* applies the vertical rule, then the horizontal one over what that made,
   so a quarter drawn from axis to axis closes into a whole.
 - **Around a centre** (`mirror::radial`). The run is turned about the centre `copies` times, a slice
-  of 360°/copies apart from straight up (`slice_lines`); under `reflect` it is also mirrored across
-  the line halfway through the first slice, the image run backwards to wind with it, and that is
-  turned too. An open run's end within `ON_AXIS_PT` of the centre, a slice line or (under
-  `reflect`) a mirror line is pulled onto it (`snap_radial`). Then the copies are welded
+  of 360°/copies apart from the frame's phase (`slice_lines`; straight up for the switch). In a
+  frame with `reflect` (a saved path's own, below) it is also mirrored across the line halfway
+  through the first slice, the image run backwards to wind with it, and that is turned too. An open
+  run's end within `ON_AXIS_PT` of the centre, a slice line or (under `reflect`) a mirror line is
+  pulled onto it (`snap_radial`). Then the copies are welded
   (`mirror::weld`): a copy whose ends meet closes, and two copies whose ends meet where no other end
   does join into one run, again closing when its ends meet. So a petal drawn out from the centre and
-  back closes as copies petals, a run from the centre to a slice line under `reflect` closes as
-  copies kites, and a run from one slice line to the next at one radius comes round as one ring.
+  back closes as copies petals, and a run from one slice line to the next at one radius comes round
+  as one ring.
   Copies where ends meet at the centre are never joined there, any pairing being a guess. Copies are
   not clipped to their slice.
 - **New runs mirror; extending an end does not.** The pen's and the pencil's new-path finishes go
@@ -163,7 +166,8 @@ at a time: `mirror::Axes` is *Off*, *Vertical*, *Horizontal*, *Both* or *Centre*
   axes cross inside it; otherwise down the whole canvas past the rulers (`axis_frame`). A 16×10
   accent pill at its top end (left end for the horizontal axis) is its grab handle: a drag moves
   that axis, a right-click mid-drag puts it back where the drag began (`Grips::from`, in
-  `cancel_gesture`), a double-click puts the axes back to the default. The pill claims its pointer
+  `cancel_gesture`), a double-click puts the axes back to the default. Only the primary button
+  moves it, as it moves a layer (`mirror::primary_grab`); a right-button drag moves nothing. The pill claims its pointer
   (`mirror::Grips`, `MastikApp::mirror_grip`): a press or drag on it places no point, shows no
   *On axis* mark and wears the resize cursor, under the pen, the pencil and the node tool. While the pen
   draws, the mirrored run shows at 45% of the pen stroke; while the pencil draws, its trail's image
@@ -175,17 +179,18 @@ at a time: `mirror::Axes` is *Off*, *Vertical*, *Horizontal*, *Both* or *Centre*
   *Mirroring across the vertical axis · start and end on the axis to close the shape* (the
   horizontal axis likewise; under both axes, *draw from one axis to the other to close the shape*;
   under a centre, *Repeating 6 copies around the centre · draw from one line to the next to close
-  the shape*, with *, each mirrored* after the centre under `reflect`) instead of its usual hint.
+  the shape*) instead of its usual hint.
 - **A centre on the canvas** (`centre_chrome`). In place of the axes, a dashed `accent_400` slice
-  line (6 on, 4 off) from the centre to the edge of the frame drawn in, or of the view, one per copy,
-  and under `reflect` a dotted one (1 on, 4 off) halfway between each pair. Its grip, in place of the
+  line (6 on, 4 off) from the centre to the edge of the frame drawn in, or of the view, one per copy.
+  Its grip, in place of the
   pills, is a 14 pt accent disc ringed and dotted in the handle white (`color::POINT`), tooltip *Drag
   to move the centre · double-click to put it back*, wearing the move cursor (`mirror::Grip::Centre`);
   it claims its pointer, moves, puts back on a right-click and resets on a double-click as a pill
   does. The run's copies show at 45% as the mirrored half does. While the node tool edits a radial
   path, its own lines run from its centre to a little past its box's farthest corner, from one of
   its mirror lines (`symmetry::reflection_axis`) or else from its first anchor off the centre, with
-  no grip.
+  no grip; a path saved with `reflect` adds a dotted mirror line (1 on, 4 off) halfway between each
+  pair.
 - **The switch** is the path bar's symmetry button (*The path bar*, below).
 
 ### Mirrored paths
@@ -196,8 +201,8 @@ Point editing keeps it symmetric. It wears the mirror switch's `flip-horizontal`
 head of its size badge while it is the lone selection (`canvas::size_badge_marks`), and as its layer
 row's resting badge (`BADGE_MIRROR`, tooltip *Mirrored path*), which the eye and lock cover on hover.
 
-A path drawn around a centre is saved the same way (`PathMirror { copies, reflect }`): every copy is
-real points, so renderers, writers (SVG, code export, Figma, Penpot, Sketch), hit-testing and bounds
+A path drawn around a centre is saved the same way (`PathMirror { copies, reflect }`, `reflect`
+false from the switch; true only from a document or the MCP): every copy is real points, so renderers, writers (SVG, code export, Figma, Penpot, Sketch), hit-testing and bounds
 see the whole outline and nothing outside sees the rule. Its centre is its anchors' mean
 (`symmetry::radial_centre`), exact for any set that turns onto itself, and the rule is kept only
 while the set turns onto itself by 360°/copies and, under `reflect`, is mirrored across some line
@@ -322,12 +327,15 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
   `RADIAL_SYMMETRY` under a centre; lit while drawing with symmetry or while its flyout is open)
   opens a `ui::flyout` in the `Foreground` order (`MastikApp::mirror_open`): one symmetry at a time,
   *Off*, *Vertical axis*, *Horizontal axis*, *Both axes* and *Around a centre* as `ui::menu_check`
-  rows; under them, indented to the labels, a `ui::labelled` *Copies* field (3–12, scrubbed or
-  stepped with the arrows) and a *Mirror each copy* check, both disabled under any other choice so
-  the flyout keeps one height; a rule; and *Reset axis*, read *Reset centre* under a centre, dimmed
+  rows; under them, `ui::SECTION_LABEL_GAP` below and indented to `ui::MENU_LABEL_X`, a
+  `ui::labelled` *Copies* field (3–12, scrubbed or stepped with the arrows) stopping
+  `ui::MENU_ROW_INSET` short of the card's right edge, disabled under any other choice so the
+  flyout keeps one height; a rule; and *Reset axis*, read *Reset centre* under a centre, dimmed
   until it has been dragged (*The axis is where it starts*, *The centre is where it starts*). A
   pick or a press elsewhere closes it, and so does `Escape`, a rung of the ladder; leaving the pen
-  and the pencil drops it.
+  and the pencil drops it. A right-click mid-scrub of *Copies* puts the count back
+  (`InFlight::mirror_copies_scrub`, in `cancel_gesture`) and is spent on that, so it leaves the
+  flyout open.
 - **While a warp envelope is open** the warp bar stands in its place, ahead of both, and the mirror
   flyout and the three cards close (`path_bar::warp_bar`, `tools.md` *Warp*).
 

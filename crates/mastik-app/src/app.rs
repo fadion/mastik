@@ -199,6 +199,8 @@ pub(crate) struct InFlight {
     pub(crate) distort_scrub: Option<crate::distort::DistortNumbers>,
     /// The Offset card's distance as it was when its scrub began, likewise.
     pub(crate) offset_scrub: Option<f64>,
+    /// The mirror flyout's copies as they were when its scrub began, likewise.
+    pub(crate) mirror_copies_scrub: Option<u8>,
     /// The vision bar's condition and its severity as it was when the slider was
     /// pressed, likewise (`crate::vision`).
     pub(crate) vision_scrub: Option<(mastik_render::vision::Condition, f32)>,
@@ -335,6 +337,13 @@ mod in_flight_tests {
                 "offset_scrub",
                 InFlight {
                     offset_scrub: Some(4.0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "mirror_copies_scrub",
+                InFlight {
+                    mirror_copies_scrub: Some(6),
                     ..Default::default()
                 },
             ),
@@ -3168,6 +3177,7 @@ impl MastikApp {
         self.in_flight.cleanup_scrub = None;
         self.in_flight.distort_scrub = None;
         self.in_flight.offset_scrub = None;
+        self.in_flight.mirror_copies_scrub = None;
         self.in_flight.vision_scrub = None;
         self.in_flight.track_drag = None;
     }
@@ -3319,6 +3329,10 @@ impl MastikApp {
         }
         if let Some(d) = self.in_flight.offset_scrub.take() {
             self.restore_offset_scrub(d);
+        }
+        // And the mirror flyout's copies.
+        if let Some(copies) = self.in_flight.mirror_copies_scrub.take() {
+            self.mirror_mut().copies = copies;
         }
         // And the vision bar's severity, never saved while the slider was held.
         if let Some((condition, from)) = self.in_flight.vision_scrub.take() {

@@ -881,9 +881,13 @@ pub fn menu_selected_ink(ui: &egui::Ui) -> egui::Color32 {
     ui.visuals().selection.stroke.color
 }
 
-/// Where a [`menu_row`]'s label starts after its glyph: the 8pt inset, the 15pt
-/// glyph column, 9pt of air. A list row with a box in the glyph's place uses it too.
-pub const MENU_LABEL_X: f32 = 8.0 + 15.0 + 9.0;
+/// The air a [`menu_row`] keeps inside each end; a control set in a menu keeps
+/// it off the card's right edge too.
+pub const MENU_ROW_INSET: f32 = 8.0;
+
+/// Where a [`menu_row`]'s label starts after its glyph: the inset, the 15pt glyph
+/// column, 9pt of air. A list row with a box in the glyph's place uses it too.
+pub const MENU_LABEL_X: f32 = MENU_ROW_INSET + 15.0 + 9.0;
 
 /// The air between a menu row's label and its accelerator; small so every fixed
 /// label stays whole (`a_long_reset_label_is_cut_inside_the_row_and_fixed_labels_are_whole`).
