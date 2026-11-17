@@ -319,18 +319,30 @@ impl std::ops::Deref for Matches {
 }
 
 /// What the search and the *Kits* cards derive from the whole library, kept
-/// across frames: the per-frame cost is one comparison of the list, and the
-/// work is redone only when the list, the content index or the query changes.
+/// across frames: the per-frame cost is one comparison of the list, however
+/// many cards ask, and the work is redone only when the list, the content index
+/// or the query changes.
 #[derive(Default)]
 pub(crate) struct LibraryMemo {
     /// The library's list and the index's generation the rest was derived from.
     entries: Vec<Entry>,
     index: u64,
-    /// The last query's words and what it matched.
-    search: Option<(Vec<String>, std::sync::Arc<Matches>)>,
+    /// The pass the list was last compared in; later asks in that pass compare
+    /// only its length, since every card on the page asks.
+    checked: Option<u64>,
+    /// The two queries asked most recently and what they matched, the newest
+    /// last: the `Ctrl+K` dropdown over the results page asks for two every
+    /// frame.
+    search: Vec<(Vec<String>, std::sync::Arc<Matches>)>,
     /// How many documents use each kit; the inner `None` until the index has
     /// read them all, the outer until it is asked.
     kit_counts: Option<Option<std::collections::HashMap<String, usize>>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread's `LibraryMemo` compared the whole list.
+    static LIST_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// What a search row says in its meta slot at the right edge.
@@ -1719,28 +1731,47 @@ impl MastikApp {
     /// Memoised: ranked again only when the query, the list or the index moves.
     pub(crate) fn search_matches(&self, words: &[String]) -> std::sync::Arc<Matches> {
         let mut memo = self.memo();
-        if let Some((asked, found)) = &memo.search
-            && asked.as_slice() == words
+        if let Some(at) = memo
+            .search
+            .iter()
+            .position(|(asked, _)| asked.as_slice() == words)
         {
-            return std::sync::Arc::clone(found);
+            let hit = memo.search.remove(at);
+            let found = std::sync::Arc::clone(&hit.1);
+            memo.search.push(hit);
+            return found;
         }
         let found = std::sync::Arc::new(Matches::new(self.rank_documents(words)));
-        memo.search = Some((words.to_vec(), std::sync::Arc::clone(&found)));
+        if memo.search.len() == 2 {
+            memo.search.remove(0);
+        }
+        memo.search
+            .push((words.to_vec(), std::sync::Arc::clone(&found)));
         found
     }
 
     /// The derived state [`LibraryMemo`] keeps, emptied first when the library's
-    /// list or the content index has moved since it was filled.
+    /// list or the content index has moved since it was filled. The list is
+    /// compared in full once a pass; a list that moves later in the same pass
+    /// is caught only by its length.
     fn memo(&self) -> std::cell::RefMut<'_, LibraryMemo> {
+        let pass = self.egui_ctx.cumulative_pass_nr();
         let mut memo = self.dash.memo.borrow_mut();
         let generation = self.index.generation();
-        if memo.index != generation || memo.entries != self.library.entries {
+        let moved = memo.entries.len() != self.library.entries.len()
+            || (memo.checked != Some(pass) && {
+                #[cfg(test)]
+                LIST_CHECKS.with(|n| n.set(n.get() + 1));
+                memo.entries != self.library.entries
+            });
+        if memo.index != generation || moved {
             *memo = LibraryMemo {
                 entries: self.library.entries.clone(),
                 index: generation,
                 ..LibraryMemo::default()
             };
         }
+        memo.checked = Some(pass);
         memo
     }
 
@@ -10585,6 +10616,66 @@ mod tests {
             app.search_matches(&words).len(),
             3,
             "a list that moved is ranked again"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A frame of the results page compares the library's list once, not once
+    /// per card.
+    /// flip: `memo` ignoring its `checked` pass → fails at "once a frame, not
+    /// once a card".
+    #[test]
+    fn a_results_page_frame_compares_the_list_once() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "memo-once");
+        for i in 0..20 {
+            let mut doc = mastik_core::Document::new(app.session.ids.mint());
+            store::file_document(&root, None, &format!("Check {i}"), &mut doc).unwrap();
+        }
+        app.library.refresh();
+        app.dash.search_page = Some("check".into());
+        let _ = galleys(&mut app, &ctx);
+        app.index.settle();
+        let _ = galleys(&mut app, &ctx);
+        assert_eq!(app.visible_entries().len(), 20, "a page of 20 cards");
+        let before = LIST_CHECKS.with(std::cell::Cell::get);
+        // `galleys` draws four frames.
+        let runs = galleys(&mut app, &ctx);
+        assert!(in_body(&runs, "Check 19"), "the cards were drawn");
+        let checks = LIST_CHECKS.with(std::cell::Cell::get) - before;
+        assert!(
+            (1..=4).contains(&checks),
+            "once a frame, not once a card: {checks}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The `Ctrl+K` dropdown open over the results page asks for its own query
+    /// each frame without dropping the page's ranking.
+    /// flip: `search_matches` keeping one query → fails at "the page's ranking
+    /// is kept"; a hit not moved to the newest slot → fails at "a third query".
+    #[test]
+    fn the_dropdown_over_the_results_page_keeps_both_rankings() {
+        use std::sync::Arc;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, root) = app(&ctx, "memo-two");
+        for name in ["Check", "Wallet"] {
+            let mut doc = mastik_core::Document::new(app.session.ids.mint());
+            store::file_document(&root, None, name, &mut doc).unwrap();
+        }
+        app.library.refresh();
+        let page = search::words("check");
+        let typed = search::words("wal");
+        let first = app.search_matches(&page);
+        let _ = app.search_matches(&typed);
+        let again = app.search_matches(&page);
+        assert!(Arc::ptr_eq(&first, &again), "the page's ranking is kept");
+        assert!(app.search_matches(&search::words("zzz")).is_empty());
+        assert!(
+            Arc::ptr_eq(&first, &app.search_matches(&page)),
+            "a third query drops the one asked least recently"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
