@@ -863,19 +863,36 @@ impl MastikApp {
                                     .font(theme::icon_font(ui::CONTROL_PT + 1.0))
                                     .color(color::accent_300()),
                             );
-                            ui.label(
-                                egui::RichText::new(&p.title)
-                                    .size(ui::CONTROL_PT)
-                                    .color(color::text()),
-                            );
+                            let count = egui::RichText::new(ui::count(p.changes.len(), "change"))
+                                .size(ui::SMALL_PT - 0.5)
+                                .color(theme::text::faint());
+                            let count_w = ui.fonts_mut(|f| {
+                                f.layout_no_wrap(
+                                    count.text().to_owned(),
+                                    egui::FontId::proportional(ui::SMALL_PT - 0.5),
+                                    egui::Color32::PLACEHOLDER,
+                                )
+                                .size()
+                                .x
+                            });
+                            // The agent's title, cut before the count with the
+                            // whole on hover, so a long one never runs over it.
+                            let room = (ui.available_width() - count_w - 8.0).max(0.0);
+                            ui.scope(|ui| {
+                                ui.set_max_width(room);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&p.title)
+                                            .size(ui::CONTROL_PT)
+                                            .color(color::text()),
+                                    )
+                                    .truncate(),
+                                );
+                            });
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    ui.label(
-                                        egui::RichText::new(ui::count(p.changes.len(), "change"))
-                                            .size(ui::SMALL_PT - 0.5)
-                                            .color(theme::text::faint()),
-                                    );
+                                    ui.label(count);
                                 },
                             );
                         });

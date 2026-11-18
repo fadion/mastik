@@ -6384,7 +6384,9 @@ pub fn field_button_marked(
 }
 
 /// [`field_button_sized`] with a **word** in it instead of a glyph, for an act
-/// no glyph names: *Apply*, *Undo*, *Merge*.
+/// no glyph names: *Apply*, *Undo*, *Merge*. Words too long for the box are cut
+/// with an ellipsis, [`FIELD_PAD_X`] in from each side, and the whole is the
+/// tooltip: an assistant's reply options are the agent's text.
 pub fn label_button(
     ui: &mut egui::Ui,
     text: &str,
@@ -6392,14 +6394,27 @@ pub fn label_button(
     state: FieldButton,
 ) -> egui::Response {
     let (rect, resp, fg) = button_face(ui, box_size, state);
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(Scale::of(box_size.y).text_pt()),
-        fg,
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat::simple(
+            egui::FontId::proportional(Scale::of(box_size.y).text_pt()),
+            fg,
+        ),
     );
-    resp
+    job.wrap = egui::text::TextWrapping {
+        max_width: (rect.width() - FIELD_PAD_X * 2.0).max(0.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let p = ui.painter();
+    let galley = p.layout_job(job);
+    let cut = galley.elided;
+    p.galley(rect.center() - galley.size() / 2.0, galley, fg);
+    match cut {
+        true => resp.on_hover_text(text),
+        false => resp,
+    }
 }
 
 /// [`label_button`] with a `note` after its word, in [`SMALL_PT`] mono and
