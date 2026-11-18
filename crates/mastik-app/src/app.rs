@@ -3895,12 +3895,12 @@ impl MastikApp {
         let ids = self.session.selection.ids().to_vec();
         let tx = build::move_by_world(&self.session.doc, &self.session.resolved, &ids, delta);
         match tx {
+            // A burst of taps is one undo step, under its own verb so it never
+            // merges with a point nudge. The camera stays put: zoomed in to align
+            // by the pixel, any pan to show the selection moves what is being
+            // lined up.
             Ok(tx) => {
-                // A burst of taps is one undo step, under its own verb so it never
-                // merges with a point nudge.
-                if self.session.commit_run(tx, "nudge-layers") {
-                    self.reveal_selection();
-                }
+                self.session.commit_run(tx, "nudge-layers");
             }
             Err(e) => self.session.fail(format!("Nudge failed: {e}")),
         }
@@ -10251,6 +10251,50 @@ mod reveal_tests {
             0.0,
             "one correction, not a loop"
         );
+    }
+
+    /// A keyboard nudge moves the layer and leaves the camera where it is, even
+    /// zoomed in on a layer overhanging one edge, which a reveal would pan to.
+    ///
+    /// flip: `nudge` calling `reveal_selection` after its commit → fails at
+    /// "the camera stays".
+    #[test]
+    fn a_nudge_leaves_the_camera_alone() {
+        use mastik_core::{Document, IdSource, NodeId};
+        use serde_json::{Value, json};
+        let ctx = eframe::egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = super::MastikApp::headless(&ctx);
+        let mut ids = IdSource::new(0x6e7);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let made = mastik_core::verbs::run_script(
+            &mut doc,
+            &mut ids,
+            mastik_core::verbs::Lent::default(),
+            &Value::Array(vec![json!({ "verb": "insert_subtree", "args": {
+                "parent": page.to_wire(), "tree": {
+                    "kind": { "Rect": { "size": { "width": 400, "height": 400 } } },
+                    "fills": ["#3366cc"] } } })]),
+        )
+        .expect("the fixture builds");
+        let rect = NodeId::from_wire(&made[0][0]).unwrap();
+        app.session.adopt_document(doc, None);
+        app.session.selection.set_one(rect);
+        app.canvas_px = (800, 600);
+        // At 8x the view is 100 × 75 world units: on the rect's right edge, its
+        // left edge far off screen.
+        app.session.camera.set_zoom(8.0);
+        app.session.camera.center = mastik_core::kurbo::Point::new(380.0, 200.0);
+        let before = app.session.camera.center;
+        let x0 = app.selection_bounds().unwrap().x0;
+        app.nudge(mastik_core::kurbo::Vec2::new(1.0, 0.0));
+        assert_eq!(
+            app.selection_bounds().unwrap().x0,
+            x0 + 1.0,
+            "the layer moved"
+        );
+        assert_eq!(app.session.camera.center, before, "the camera stays");
     }
 }
 

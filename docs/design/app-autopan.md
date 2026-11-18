@@ -43,10 +43,11 @@ idempotent reset. A completed gesture keeps the scrolled view.
 
 ## `reveal_selection`
 
-A held arrow key or a scrubbed X/Y field can walk a layer off screen. The nudge action and the
-inspector's X and Y scroll it back by the **minimum** that shows it, and only once it has left.
-W, H, rotation, skew and the `Ctrl`+arrow size step do not reveal — they change what a layer is, not
-where. `reveal_axis` is the arithmetic; a selection larger than the viewport that overhangs both
+A scrubbed X/Y field can walk a layer off screen. The inspector's X and Y scroll it back by the
+**minimum** that shows it, and only once it has left. A keyboard nudge, of layers or of points,
+never moves the camera: zoomed in to align by the pixel, a layer larger than the view overhangs an
+edge, and any pan to show it moves what is being lined up. W, H, rotation, skew and the `Ctrl`+arrow
+size step do not reveal either — they change what a layer is, not where. `reveal_axis` is the arithmetic; a selection larger than the viewport that overhangs both
 edges scrolls **not at all**.
 
 ## Layers tree edge scroll

@@ -6648,12 +6648,12 @@ impl MastikApp {
     }
 
     /// Arrow-key nudge of the selected points (`app::dispatch`). Silent, so a held
-    /// key writes no status line per repeat.
+    /// key writes no status line per repeat; the camera stays put, as a layer
+    /// nudge's does.
     pub(crate) fn nudge_points(&mut self, delta: Vec2) {
         self.edit_points(None, Some("nudge-points"), |subpaths, points| {
             tools::move_points(subpaths, points, delta)
         });
-        self.reveal_selection();
     }
 
     /// Run `edit` over the edited path's world-space subpaths and commit the
