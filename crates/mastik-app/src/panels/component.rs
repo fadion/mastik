@@ -1281,6 +1281,7 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         | O::SetCredit { .. }
         // What a layer is in code is its main's; an instance never differs.
         | O::SetElement { .. }
+        | O::SetDetachedFrom { .. }
         | O::SetHref { .. }
         // A chart never sits in a main or a copy.
         | O::SetChart { .. }

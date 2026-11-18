@@ -1708,6 +1708,7 @@ impl RenderOverrides {
             | Operation::SetDocLink { .. }
             | Operation::SetCredit { .. }
             | Operation::SetElement { .. }
+            | Operation::SetDetachedFrom { .. }
             | Operation::SetChart { .. }
             | Operation::SetChartParts { .. }
             | Operation::SetHref { .. }

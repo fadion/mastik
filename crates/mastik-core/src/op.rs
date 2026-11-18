@@ -322,6 +322,12 @@ pub enum Operation {
         id: NodeId,
         element: Option<crate::element::HtmlElement>,
     },
+    /// The main a detached layer was an instance of (`crate::component::detach`),
+    /// never drawn; `None` clears the record.
+    SetDetachedFrom {
+        id: NodeId,
+        from: Option<NodeId>,
+    },
     /// The address a layer written as a link goes to, never drawn. Refused
     /// unless in [`crate::element::is_href`]'s form; empty is none.
     SetHref {
@@ -715,7 +721,8 @@ impl Operation {
             | Operation::SetEffectsStyle { id, .. }
             | Operation::SetTypeStyle { id, .. }
             | Operation::SetLayoutStyle { id, .. }
-            | Operation::SetOrigin { id, .. } => Some(*id),
+            | Operation::SetOrigin { id, .. }
+            | Operation::SetDetachedFrom { id, .. } => Some(*id),
             Operation::CreateNode { .. }
             | Operation::DeleteNode { .. }
             | Operation::InsertSubtree { .. }
@@ -946,6 +953,7 @@ impl Operation {
             | Operation::SetPageDraft { .. }
             // Provenance is a label on a node, never ink (§15 D1016).
             | Operation::SetOrigin { .. }
+            | Operation::SetDetachedFrom { .. }
             // A variable's name is a row in the browser; a new or removed variable
             // is read by nothing (a removal is refused while bound, and the
             // detaches beside it are the ink). A mode's name is ink: a kit's
@@ -1229,6 +1237,9 @@ impl Operation {
 
             Operation::SetOrigin { id, origin } => {
                 node(id).is_some_and(|n| n.origin() == origin.as_ref())
+            }
+            Operation::SetDetachedFrom { id, from } => {
+                node(id).is_some_and(|n| n.detached_from == *from)
             }
 
             // This arm and the pivot, stroke and layout arms below compare what
@@ -1958,6 +1969,7 @@ mod changes_ink_tests {
             Operation::MovePage { id, index: 0 },
             Operation::SetPageDraft { id, draft: true },
             Operation::SetOrigin { id, origin: None },
+            Operation::SetDetachedFrom { id, from: None },
             Operation::AddVariable {
                 var: crate::variable::Variable {
                     id: crate::variable::VarId(id),
@@ -2011,7 +2023,7 @@ mod changes_ink_tests {
                 source: "print(1)".into(),
             },
         ];
-        assert_eq!(invisible.len(), 47, "the whole false arm");
+        assert_eq!(invisible.len(), 48, "the whole false arm");
         for op in &invisible {
             assert!(
                 !op.changes_ink(),

@@ -330,7 +330,12 @@ on — an instance still equal to the main's old value takes the new one, one wi
   (`document_rewound`) — a redo back to the cut with no commit between unparks it, a commit while
   parked ends it.
 - **Detach** (`component::detach`) cuts the root and its own members, letting a nested instance inside
-  climb past this main to its own.
+  climb past this main to its own. The root records the main it showed (`Node::detached_from`,
+  `Operation::SetDetachedFrom`: `main_of(root)`, else its swap or link source), so a document can
+  count its detached layers (System health). Only an explicit detach records it: an instance cut
+  loose because its main was deleted (`relink_past`) does not. The record is never drawn
+  (`changes_ink` is false), is not propagated, travels with a copy (`remap_subtree`) and is cleared
+  when the layer becomes an instance again (`Node::make_copy_of`). Saved from v19 (`io.md`).
 - **Create component** `Ctrl+Alt+K`, in place or wrapping the selection in a frame (toast only when
   wrapping). On an instance root: *"An instance can't become a component — detach it first
   (Ctrl+Alt+B)."* **Detach instance** `Ctrl+Alt+B`; also *Duplicate as component*, *Select all

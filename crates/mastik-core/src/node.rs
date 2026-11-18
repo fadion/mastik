@@ -152,6 +152,10 @@ pub struct Node {
     /// The address a link goes to, in [`crate::element::is_href`]'s form; empty
     /// is none. Kept while the element is not a link, written only while it is.
     pub(crate) href: String,
+    /// The main component this layer was an instance of before it was detached
+    /// (`crate::component::detach`), so a document can count its detached
+    /// layers. Never drawn; a copy keeps it, and becoming an instance clears it.
+    pub(crate) detached_from: Option<NodeId>,
     /// Where this node was **vendored from**, when part of a kit main in the
     /// document's vault (§5.3e). A copy never keeps it (`remap_subtree`); only
     /// the kit verbs write one (`crate::kit::check`).
@@ -216,6 +220,7 @@ impl Node {
         self.description.clear();
         self.doc_link.clear();
         self.lineage = None;
+        self.detached_from = None;
     }
     /// The key that pairs this layer with its copies in the other variants of its
     /// set: the one recorded, else its own id.
@@ -246,6 +251,10 @@ impl Node {
     /// The HTML element a code export writes this layer as; `None` is Automatic.
     pub fn element(&self) -> Option<crate::element::HtmlElement> {
         self.element
+    }
+    /// The main component this layer was detached from, if it was.
+    pub fn detached_from(&self) -> Option<NodeId> {
+        self.detached_from
     }
     /// The address a link goes to; empty is none.
     pub fn href(&self) -> &str {

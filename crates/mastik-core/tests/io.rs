@@ -1040,17 +1040,48 @@ fn an_inverted_mask_is_a_v18_field_and_a_v17_file_climbs_to_it() {
     ]))
     .unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&io::save(&doc).unwrap()).unwrap();
-    assert_eq!(
-        saved["schema_version"],
-        serde_json::json!(18),
-        "saved as v18"
+    assert!(
+        saved["schema_version"].as_u64() >= Some(18),
+        "saved as v18 or later"
     );
 
     let (plain, _) = rich_document();
     let mut old: serde_json::Value = serde_json::from_slice(&io::save(&plain).unwrap()).unwrap();
     old["schema_version"] = serde_json::json!(17);
     let loaded = io::load(&serde_json::to_vec(&old).unwrap()).unwrap();
-    assert_eq!(loaded.schema_version(), 18);
+    assert_eq!(loaded.schema_version(), io::CURRENT_SCHEMA_VERSION);
+    assert_eq!(loaded, plain, "a number-only step");
+}
+
+/// A detached layer's record is v19, so a v18 build refuses the file rather
+/// than dropping the record on save; a v18 file climbs with nothing moved.
+/// flip: `CURRENT_SCHEMA_VERSION` left at 18 → fails at "saved as v19".
+#[test]
+fn a_detached_record_is_a_v19_field_and_a_v18_file_climbs_to_it() {
+    let (mut doc, root) = rich_document();
+    let frame = doc.get(root).unwrap().children()[0];
+    doc.apply(&Transaction(vec![Operation::SetDetachedFrom {
+        id: frame,
+        from: Some(root),
+    }]))
+    .unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&io::save(&doc).unwrap()).unwrap();
+    assert!(saved["schema_version"].as_u64() >= Some(19), "saved as v19");
+    assert_eq!(
+        io::load(&io::save(&doc).unwrap())
+            .unwrap()
+            .get(frame)
+            .unwrap()
+            .detached_from(),
+        Some(root),
+        "the record round-trips"
+    );
+
+    let (plain, _) = rich_document();
+    let mut old: serde_json::Value = serde_json::from_slice(&io::save(&plain).unwrap()).unwrap();
+    old["schema_version"] = serde_json::json!(18);
+    let loaded = io::load(&serde_json::to_vec(&old).unwrap()).unwrap();
+    assert_eq!(loaded.schema_version(), io::CURRENT_SCHEMA_VERSION);
     assert_eq!(loaded, plain, "a number-only step");
 }
 

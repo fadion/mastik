@@ -1673,6 +1673,30 @@ fn components_are_made_placed_swapped_and_detached() {
         json!({ "nodes": [inst.to_wire()] }),
     );
     assert_eq!(mastik_core::component::main_of(&doc, inst), None);
+    // flip: `component::detach` without its `SetDetachedFrom` → fails here.
+    assert_eq!(
+        doc.get(inst).unwrap().detached_from(),
+        Some(other),
+        "the detached layer records the main it showed, its swap"
+    );
+    let bytes = mastik_core::io::save(&doc).unwrap();
+    let back = mastik_core::io::load(&bytes).unwrap();
+    assert_eq!(
+        back.get(inst).unwrap().detached_from(),
+        Some(other),
+        "the record is saved"
+    );
+    let copy = run(
+        &mut doc,
+        &mut ids,
+        "duplicate",
+        json!({ "nodes": [inst.to_wire()] }),
+    )[0];
+    assert_eq!(
+        doc.get(copy).unwrap().detached_from(),
+        Some(other),
+        "a copy of a detached layer was detached from the same main"
+    );
 
     let res = Resolved::rebuild(&doc);
     let again = verbs::call(

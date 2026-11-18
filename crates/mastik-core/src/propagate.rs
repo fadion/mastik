@@ -142,6 +142,8 @@ fn mode(op: &Operation) -> Mode {
         | Operation::CloseVault { .. }
         // A copy is never vendored, so no copy follows a main's provenance.
         | Operation::SetOrigin { .. }
+        // A detached layer is no copy, so no copy follows its record.
+        | Operation::SetDetachedFrom { .. }
         // The variables table is the document's, read by main and copy alike:
         // an edit to it writes no node, so nothing propagates (§5.3f).
         | Operation::AddVariable { .. }
@@ -1251,6 +1253,8 @@ pub(crate) fn untouched(
         chart: _,
         element,
         href,
+        // Never on a copy: becoming one clears it.
+        detached_from: _,
         origin: _,
         modes,
         queries,

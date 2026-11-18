@@ -2241,6 +2241,7 @@ mod tests {
             chart: None,
             element: None,
             href: String::new(),
+            detached_from: None,
             origin: None,
             modes: Vec::new(),
             queries: Vec::new(),

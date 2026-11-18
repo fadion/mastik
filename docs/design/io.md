@@ -6,7 +6,7 @@ The native `.mastik` file format (JSON, versioned DTO), its integrity checks, th
 
 ### Format and the two readers
 
-- Native format is JSON, currently **v18** (`io::CURRENT_SCHEMA_VERSION`). `schema.rs` defines a versioned DTO decoupled from the in-memory types.
+- Native format is JSON, currently **v19** (`io::CURRENT_SCHEMA_VERSION`). `schema.rs` defines a versioned DTO decoupled from the in-memory types.
 - `io::clip` writes a copied subtree for the system clipboard through the same `NodeDto` and `ImageDto` a file uses (`from_node`/`into_node`, `from_entry`/`into_entry` are lifted out of `DocumentDto` for this), so every normalization applies to a pasted layer too. Refuse a second projection beside `NodeDto`: a field added to one and not the other compiles, saves and loads.
 - The clipboard deliberately does **not** share the migration ladder. `io::clip::read` compares `schema_version` for equality and refuses anything else: a file is an archive and must open in a build written years later; a clipboard is a handoff between two processes running now. Do not route `clip` through `migrate.rs`.
 - `io::clip::read` carries envelope checks of its own (§15 D833–D836, D852):
@@ -121,6 +121,7 @@ A bump **is** required when a field's meaning changes or its default would silen
 | v15 to v16 | A frame's fill left out of exports (`export.md`, *Plan*) | `migrate_15_to_16`: number only, published document moving with it; v15 had shipped, so the key could not join it, and a v15 reader would drop the flag and save the fill back into every export. `NodeDto::fill_hidden_in_export` is skipped when false. |
 | v16 to v17 | The document's scripts (`command-mode.md` §10) | `migrate_16_to_17`: number only, published document moving with it; v16 had shipped, and a v16 reader would drop the scripts on its next save. `DocumentDto::scripts` is skipped when empty. |
 | v17 to v18 | An inverted mask (§5.3) | `migrate_17_to_18`: number only, published document moving with it; v17 had shipped, and a v17 reader would drop the flag and save the mask back the right way out. `NodeDto::mask_inverted` is skipped when false. A radial path's `PathMirror::copies` and `reflect` (§5.3) and a stroke's markers (`Stroke::start`, `end`, `marker_size`) share v18 unbumped, skipped when unset. |
+| v18 to v19 | A detached layer's record (§5.3d) | `migrate_18_to_19`: number only, published document moving with it; an older build would drop the record on save. `NodeDto::detached_from` is a wire id, skipped when none, and **not checked against the document on load**: the main may since have been deleted, and the layer was still detached from it. |
 
 ## 5.11a The library block
 

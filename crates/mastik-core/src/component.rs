@@ -690,7 +690,8 @@ pub fn relink_for_delete(doc: &Document, deleted: &[NodeId]) -> Vec<Operation> {
 }
 
 /// Detach the instance rooted at `root`: it becomes ordinary layers that keep
-/// their current look (§5.3d).
+/// their current look (§5.3d), the root recording the main it showed
+/// (`Node::detached_from`) so a document can count what was detached.
 ///
 /// The root and every node that belongs to it are cut loose. A nested instance
 /// inside it stays an instance of its own main: its links climb past this
@@ -722,10 +723,16 @@ pub fn detach(doc: &Document, root: NodeId) -> Option<Transaction> {
         }
         None
     };
-    let mut ops = vec![Operation::SetLink {
-        id: root,
-        link: None,
-    }];
+    let mut ops = vec![
+        Operation::SetLink {
+            id: root,
+            link: None,
+        },
+        Operation::SetDetachedFrom {
+            id: root,
+            from: Some(main_of(doc, root).unwrap_or(src)),
+        },
+    ];
     if r.swap.is_some() {
         ops.push(Operation::SetSwap {
             id: root,

@@ -388,6 +388,11 @@ pub(crate) struct NodeDto {
     /// `element::is_href`'s form is emptied on load, never refused.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub href: String,
+    /// The main a detached layer was an instance of, as a wire id, absent when
+    /// none. New in v19. Not checked against the document: the main may since
+    /// have been deleted, and the layer was still detached from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detached_from: Option<String>,
     /// Where a vault node was vendored from (§15 D1012), absent on every node
     /// outside the vault — which `crate::kit::check` holds on load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -548,6 +553,7 @@ impl NodeDto {
             element: n.element,
             chart: n.chart.clone(),
             href: n.href.clone(),
+            detached_from: n.detached_from.map(NodeId::to_wire),
             origin: n.origin().map(|o| OriginDto {
                 kit: o.kit.clone(),
                 node: o.node.to_wire(),
@@ -583,6 +589,7 @@ impl NodeDto {
         let link = self.link.as_deref().map(parse_id).transpose()?;
         let swap = self.swap.as_deref().map(parse_id).transpose()?;
         let lineage = self.lineage.as_deref().map(parse_id).transpose()?;
+        let detached_from = self.detached_from.as_deref().map(parse_id).transpose()?;
         let children = self
             .children
             .iter()
@@ -697,6 +704,7 @@ impl NodeDto {
                 true => self.href,
                 false => String::new(),
             },
+            detached_from,
             origin: self
                 .origin
                 .map(|o| -> Result<_, IoError> {

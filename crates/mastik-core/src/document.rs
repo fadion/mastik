@@ -206,6 +206,7 @@ pub(crate) fn root_node(id: NodeId, name: String) -> Node {
         chart: None,
         element: None,
         href: String::new(),
+        detached_from: None,
         origin: None,
         modes: Vec::new(),
         queries: Vec::new(),
@@ -1807,6 +1808,12 @@ impl Document {
             Operation::RemoveImage { id } => self.op_remove_image(id.clone()),
             Operation::OpenVault { id } => self.op_open_vault(*id),
             Operation::CloseVault { id } => self.op_close_vault(*id),
+            // A record of what a layer was, never drawn.
+            Operation::SetDetachedFrom { id, from } => {
+                let node = self.nodes.get_mut(id).ok_or(OpError::NoSuchNode(*id))?;
+                let old = std::mem::replace(&mut node.detached_from, *from);
+                Ok(Operation::SetDetachedFrom { id: *id, from: old })
+            }
             Operation::SetOrigin { id, origin } => {
                 let node = self.nodes.get_mut(id).ok_or(OpError::NoSuchNode(*id))?;
                 let old = std::mem::replace(&mut node.origin, origin.clone());
@@ -2565,6 +2572,7 @@ impl Document {
             chart: None,
             element: None,
             href: String::new(),
+            detached_from: None,
             origin: None,
             modes: Vec::new(),
             queries: Vec::new(),
@@ -4199,6 +4207,8 @@ pub fn remap_subtree(template: &[Node], ids: &mut IdSource) -> Option<(Vec<Node>
             // What the layer is in code travels with it, as its name does.
             element: n.element,
             href: n.href.clone(),
+            // A copy of a detached layer was detached from the same main.
+            detached_from: n.detached_from,
             // **Never carried** (§15 D1012): a copy of a vendored node does not live
             // in the vault, and `kit::check` refuses an origin outside it. The kit
             // verbs write the origin after minting their copies here.
@@ -4491,6 +4501,7 @@ mod tests {
             chart: None,
             element: None,
             href: String::new(),
+            detached_from: None,
             origin: None,
             modes: Vec::new(),
             queries: Vec::new(),
