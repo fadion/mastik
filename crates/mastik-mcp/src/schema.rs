@@ -205,7 +205,7 @@ pub static TOOLS: &[Tool] = &[
                 "max",
                 ParamKind::Index,
                 false,
-                "The longest side in pixels at most, up to 4096; 1600 when absent. A page is never drawn above 1×, a layer or a region above 2×.",
+                "The longest side in pixels at most, up to 4096; 1600 when absent (1000 in Mastik's assistant). A page is never drawn above 1×, a layer or a region above 2×.",
             ),
             param(
                 "since",

@@ -529,6 +529,12 @@ impl Engine {
         if let Err(why) = check_call(&call) {
             return Output::error(why);
         }
+        if call.tool == "export_png"
+            && call.key.is_some()
+            && let Some(map) = call.args.as_object_mut()
+        {
+            map.entry("max").or_insert(json!(CHAT_PNG_MAX));
+        }
         // Ids start from the launch's time, so a card saved in a thread before
         // a restart never names a proposal made after it.
         if self.proposed == 0 {
@@ -1085,6 +1091,11 @@ fn is_page(s: &EditorSession, id: NodeId) -> bool {
 
 /// The default longest side of `export_png`.
 const PNG_MAX: u64 = 1600;
+
+/// [`PNG_MAX`] for an assistant chat, whose pictures are read again on every
+/// later step of its turn: about half the image tokens, still enough to judge
+/// a page by.
+const CHAT_PNG_MAX: u64 = 1000;
 
 /// The longest answer any read gives, in bytes. Harnesses cut a tool
 /// result past their own limit (Claude Code's is about 25,000 tokens), and a
@@ -2846,6 +2857,51 @@ mod tests {
             .to_rgba8()
             .dimensions();
         assert!(w.max(h) <= 65, "the ink stays within `max` ({w}×{h})");
+    }
+
+    /// An assistant chat's `export_png` with no `max` is drawn smaller than
+    /// another client's, and one that asks for a size gets it.
+    ///
+    /// flip: the chat default left out of `answer_ids` → fails at "a chat".
+    #[test]
+    fn a_chat_looks_at_a_smaller_picture_by_default() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        let grants = engine.grants();
+        grants.grant(
+            "assistant-1",
+            crate::mcp::access::Level::Edit,
+            std::sync::Arc::new(|_| false),
+        );
+        let chat = Some("assistant-1");
+        let doc = json!({ "document": "a" });
+        ok(&keyed(&mut engine, &mut docs, 1, chat, "use_document", doc));
+        open(&mut engine, &mut docs, 2);
+        let big = rect(&mut engine, &mut docs, 2, "Big");
+        let size = json!({ "nodes": [big], "props": { "size": [1200, 800] } });
+        ok(&call(&mut engine, &mut docs, 2, "set", size));
+        let mut width = |conn, key, args: Value| {
+            let out = keyed(&mut engine, &mut docs, conn, key, "export_png", args);
+            assert!(!out.is_error, "{:?}", out.content);
+            match &out.content[0] {
+                Content::Image { bytes, .. } => image::load_from_memory(bytes).unwrap().width(),
+                other => panic!("not an image: {other:?}"),
+            }
+        };
+        assert_eq!(
+            width(2, None, json!({ "id": big })),
+            PNG_MAX as u32,
+            "another client"
+        );
+        assert_eq!(
+            width(1, chat, json!({ "id": big })),
+            CHAT_PNG_MAX as u32,
+            "a chat"
+        );
+        assert_eq!(
+            width(1, chat, json!({ "id": big, "max": 1400 })),
+            1400,
+            "a chat's own size"
+        );
     }
 
     /// `run_exports` refuses a document with no settings, then renders a layer's
