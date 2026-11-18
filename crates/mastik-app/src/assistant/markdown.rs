@@ -396,6 +396,25 @@ fn spans_row(
     acts: &mut Vec<Act>,
     strong: bool,
 ) {
+    // Every line one text line tall: a wrapped row's first line is otherwise
+    // `interact_size.y` tall, and a link or code span that wraps onto a row of
+    // its own would open the block gap above it.
+    let line_h = ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(ui::CONTROL_PT)));
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = line_h;
+        ui.spacing_mut().item_spacing.y = 0.0;
+        spans_wrapped(ui, spans, look, acts, strong);
+    });
+}
+
+/// [`spans_row`]'s wrapped row, under its spacing.
+fn spans_wrapped(
+    ui: &mut egui::Ui,
+    spans: &[Span],
+    look: &Look<'_>,
+    acts: &mut Vec<Act>,
+    strong: bool,
+) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for s in spans {
@@ -704,5 +723,64 @@ mod tests {
         // A blank line before a paragraph still ends the list.
         let b = parse("- a\n\nAfter");
         assert_eq!(b.len(), 2, "{b:?}");
+    }
+
+    /// A wrapped paragraph holding code and a layer link is one even pitch of
+    /// text lines, its first line included and the link on its neighbours'
+    /// line, and the next paragraph still starts a block gap below it.
+    ///
+    /// flip: `spans_row` without its `interact_size.y` → fails at "one pitch";
+    /// without its scope → fails at "the block gap".
+    #[test]
+    fn a_reply_paragraph_wraps_at_one_line_pitch() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let text = "Some words here and more words to wrap the line again and \
+                    `place_asset` is outside my access, and it can't go into a proposal \
+                    either and ab12:3 then more words to wrap a few times over and over.\n\n\
+                    Next.";
+        let blocks = parse(text);
+        let look = Look {
+            layer: &|id| (id == "ab12:3").then(|| "Rectangle 3".to_owned()),
+            options_live: true,
+            ink: color::text(),
+        };
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let out = ctx.run_ui(Default::default(), |ui| {
+            ui.set_max_width(260.0);
+            ui.vertical(|ui| show(ui, &blocks, &look, &mut Vec::new()));
+        });
+        let line = ctx.fonts_mut(|f| f.row_height(&egui::FontId::proportional(ui::CONTROL_PT)));
+        // Every drawn text row's top, and the second paragraph's.
+        let mut tops: Vec<f32> = Vec::new();
+        let mut next = None;
+        let mut link = false;
+        for s in &out.shapes {
+            if let egui::Shape::Text(t) = &s.shape {
+                link |= t.galley.text() == "Rectangle 3";
+                if t.galley.text() == "Next." {
+                    next = Some(t.pos.y);
+                    continue;
+                }
+                tops.extend(t.galley.rows.iter().map(|r| t.pos.y + r.pos.y));
+            }
+        }
+        assert!(link, "the fixture: the id drew as a link");
+        tops.sort_by(f32::total_cmp);
+        tops.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        assert!(tops.len() >= 4, "the fixture: it wrapped: {tops:?}");
+        // Rows land on whole points, so the pitch is the line rounded.
+        let (first, pitch) = (tops[0], line.round());
+        assert!(
+            tops.iter()
+                .enumerate()
+                .all(|(i, y)| (y - (first + pitch * i as f32)).abs() < 0.01),
+            "one pitch of {pitch}, the link's line too: {tops:?}"
+        );
+        let bottom = tops.last().unwrap() + pitch;
+        assert!(
+            next.is_some_and(|y| (y - bottom - BLOCK_GAP).abs() < 0.5),
+            "the block gap after it: {next:?} against {bottom}"
+        );
     }
 }

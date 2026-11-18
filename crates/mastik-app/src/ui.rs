@@ -6632,24 +6632,13 @@ const ACTION_GLYPH_PT: f32 = CONTROL_GLYPH_PT;
 /// status line's *Cancel*, the variables browser's offer to bind other uses.
 /// For an act that sits inside a line of words, where a button would outweigh it.
 pub fn word_link(ui: &mut egui::Ui, label: &str, quiet: bool) -> egui::Response {
-    word_link_raised(ui, label, quiet, SMALL_PT, 0.0)
+    word_link_pt(ui, label, quiet, SMALL_PT)
 }
 
 /// [`word_link`] at `pt`, for a link inside prose of that size: a layer named
-/// in the assistant's reply. Its box, centred in a wrapped row of labels,
-/// sits a point under their baseline, so its ink is lifted that point.
+/// in the assistant's reply. Its box is one line of that prose, so in a row of
+/// lines that tall it sits on their baseline.
 pub fn word_link_pt(ui: &mut egui::Ui, label: &str, quiet: bool, pt: f32) -> egui::Response {
-    word_link_raised(ui, label, quiet, pt, 1.0)
-}
-
-/// A [`word_link`] at `pt`, its ink drawn `rise` above its box.
-fn word_link_raised(
-    ui: &mut egui::Ui,
-    label: &str,
-    quiet: bool,
-    pt: f32,
-    rise: f32,
-) -> egui::Response {
     let word = ui.fonts_mut(|f| {
         f.layout_no_wrap(
             label.to_owned(),
@@ -6664,8 +6653,7 @@ fn word_link_raised(
         (true, false) => theme::text::dim(),
         (true, true) => theme::text::strong(),
     };
-    ui.painter()
-        .galley(rect.min - egui::vec2(0.0, rise), word, ink);
+    ui.painter().galley(rect.min, word, ink);
     resp
 }
 
