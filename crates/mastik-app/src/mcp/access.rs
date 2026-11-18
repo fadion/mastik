@@ -67,6 +67,13 @@ pub(crate) fn allowed(level: Level, tool: &str) -> bool {
     }
 }
 
+/// Whether a chat at `level` can use `tool` one way or another: run it, or, at
+/// Propose, put it in a proposal (`place_asset`, which Propose may not run).
+/// What `describe_tools` describes to it.
+pub(crate) fn usable(level: Level, tool: &str) -> bool {
+    allowed(level, tool) || (level == Level::Propose && tool == "place_asset")
+}
+
 /// Whether a host serves a tool called `name`: a registry verb or a table tool.
 pub(crate) fn is_tool(name: &str) -> bool {
     mastik_core::verbs::find(name).is_some() || mastik_mcp::schema::tool(name).is_some()
@@ -355,11 +362,20 @@ mod tests {
             "describe_tools",
             args,
         );
+        let found = ok(&found);
+        assert!(
+            found["tools"]
+                .as_array()
+                .is_some_and(|t| t.iter().any(|t| t["name"] == "place_asset")),
+            "a photo search at Propose describes the placement it can propose: {found}"
+        );
+        let args = json!({ "query": "photo", "brief": true });
+        let found = keyed(&mut engine, &mut docs, 5, look, "describe_tools", args);
         assert!(
             ok(&found)["beyond_access"]
                 .as_array()
-                .is_some_and(|b| b.contains(&json!({ "name": "place_asset", "needs": "Edit" }))),
-            "a photo search at Propose finds the placement and the level it needs: {found:?}"
+                .is_some_and(|b| b.contains(&json!({ "name": "place_asset", "needs": "Propose" }))),
+            "and at Look names the level that can: {found:?}"
         );
 
         let lists = grants.lists();

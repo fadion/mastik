@@ -1336,6 +1336,7 @@ fn sweep_on(theme: Theme) {
             writes: vec![node],
             before: vec![a.session.doc.get(node).expect("the rect").clone()],
             client: "Claude".into(),
+            held: Vec::new(),
         });
         let id = node.to_wire();
         let chip = Chip {

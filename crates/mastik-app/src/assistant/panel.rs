@@ -1037,6 +1037,10 @@ impl MastikApp {
         }
         match crate::mcp::propose::apply(&mut self.session, &p) {
             Ok(a) => {
+                // A photo counts as used once it lands, not when proposed.
+                for h in &p.held {
+                    crate::mcp::assets::report_used(self, h);
+                }
                 self.assistant.applied.insert(id, Some(a));
                 if !self.assistant.proposals.iter().any(|k| k.id == id) {
                     self.assistant.proposals.push(p);

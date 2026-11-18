@@ -513,6 +513,170 @@ fn length(args: &Value, name: &str) -> Result<Option<f64>, String> {
     }
 }
 
+/// A placement's asset made ready: an icon's drawing or a photo's pixels, with
+/// the credit it carries. What `place_asset` lays down at once, and what a
+/// proposal holds until the person applies it, so applying reaches no network.
+#[derive(Clone)]
+pub(crate) enum Held {
+    Icon {
+        name: String,
+        svg: String,
+        credit: mastik_core::Credit,
+    },
+    Photo {
+        image: Box<crate::app::LoadedImage>,
+        credit: mastik_core::Credit,
+        /// The service's photo, which is told it was used once it lands.
+        photo: Box<crate::assets::photos::Photo>,
+    },
+}
+
+impl PartialEq for Held {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Held::Icon { svg: a, .. }, Held::Icon { svg: b, .. }) => a == b,
+            (Held::Photo { image: a, .. }, Held::Photo { image: b, .. }) => a.id == b.id,
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Debug for Held {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Held::Icon { name, .. } => write!(f, "Held::Icon({name})"),
+            Held::Photo { photo, .. } => write!(f, "Held::Photo({})", photo.id),
+        }
+    }
+}
+
+/// [`hold`]'s answer: the asset, or that it waits on a download.
+pub(crate) enum Holding {
+    Ready(Box<Held>),
+    Wait,
+}
+
+/// Where a placement lands, read from `place_asset`'s arguments.
+struct Target {
+    fill: Option<Vec<NodeId>>,
+    parent: Option<NodeId>,
+    at: Point,
+    size: Option<f64>,
+}
+
+/// `args`' landing place: the layers a photo fills, else the parent and the
+/// box's corner in it, and the size asked for.
+fn target(args: &Value) -> Result<Target, String> {
+    Ok(Target {
+        fill: match super::nodes(args, "fill")? {
+            Some(ids) if ids.is_empty() => return Err("`fill` is empty".into()),
+            other => other,
+        },
+        parent: super::node(args, "parent")?,
+        at: Point::new(
+            args.get("x").and_then(Value::as_f64).unwrap_or(0.0),
+            args.get("y").and_then(Value::as_f64).unwrap_or(0.0),
+        ),
+        size: length(args, "size")?,
+    })
+}
+
+/// The refusal of an icon asked to fill layers.
+const ICON_FILLS_NOTHING: &str =
+    "An icon fills no layer; a photo does. Place the icon with `parent`.";
+/// The refusal of a placement with nowhere to go.
+const NO_PARENT: &str = "`parent`: the frame, group or page to place it in";
+
+/// Ready the asset `place_asset`'s `args` name, for the document at `path`: a
+/// switched-on set's icon drawn at its size, or a photo from a recent search
+/// downloaded and given to the canvas. A kit's icon is no held asset; it is an
+/// instance its kit tool places.
+pub(crate) fn hold(
+    docs: &mut impl Documents,
+    path: &Path,
+    args: &Value,
+) -> Result<Holding, String> {
+    let asset = args
+        .get("asset")
+        .and_then(Value::as_str)
+        .ok_or("`asset`: an id `search_assets` answered with")?;
+    let t = target(args)?;
+    match parse(asset)? {
+        Asset::Icon { set, name, variant } => {
+            if t.fill.is_some() {
+                return Err(ICON_FILLS_NOTHING.into());
+            }
+            t.parent.ok_or(NO_PARENT)?;
+            icon_drawing(docs, (&set, &name, &variant), t.size)
+        }
+        Asset::Kit { .. } => {
+            Err("A kit's icon is an instance of its component, placed at Edit access".into())
+        }
+        Asset::Photo { service, id } => {
+            let desk = docs.desk().ok_or(NO_DESK)?;
+            if !desk.prefs().photo_services.contains(&service) {
+                return Err(format!(
+                    "`{service}` is not switched on in Settings › Assets; an agent cannot switch it on"
+                ));
+            }
+            let photo = desk.assets().agent_found(&service, &id).ok_or(
+                "That photo is in no recent search: search again with `search_assets`, and place one it answers",
+            )?;
+            targets(docs, path, args)?;
+            let desk = docs.desk().ok_or(NO_DESK)?;
+            let px = PhotoSize::from_key(&desk.prefs().photo_size);
+            let (image, pixels) = match desk.assets().agent_photo(&photo, px) {
+                Poll::Waiting => return Ok(Holding::Wait),
+                Poll::Ready(read) => read?,
+            };
+            desk.adopt(&image.id, pixels);
+            let credit = photo.credit(&panel::today());
+            Ok(Holding::Ready(Box::new(Held::Photo {
+                image: Box::new(image),
+                credit,
+                photo: Box::new(photo),
+            })))
+        }
+    }
+}
+
+/// Lay `held` down on `s` where `args` say, as the panel does: an icon in its
+/// parent, a photo in its parent or filling layers, each one undo step under
+/// the panel's name.
+pub(crate) fn put_held(
+    s: &mut crate::session::EditorSession,
+    client: &str,
+    args: &Value,
+    held: &Held,
+) -> Result<Value, String> {
+    let t = target(args)?;
+    match held {
+        Held::Icon { name, svg, credit } => {
+            if t.fill.is_some() {
+                return Err(ICON_FILLS_NOTHING.into());
+            }
+            let parent = t.parent.ok_or(NO_PARENT)?;
+            put_icon(s, client, parent, t.at, name, svg, credit)
+        }
+        Held::Photo { image, credit, .. } => match t.fill {
+            Some(ids) => fill_photo(s, client, &ids, image, credit),
+            None => {
+                let parent = t.parent.ok_or(NO_PARENT)?;
+                put_photo(s, client, parent, t.at, t.size, image, credit)
+            }
+        },
+    }
+}
+
+/// Tell `held`'s photo service its photo was used, as the panel does once one
+/// lands; nothing for an icon.
+pub(crate) fn report_used(desk: &mut dyn Desk, held: &Held) {
+    if let Held::Photo { photo, .. } = held {
+        let keys = desk.keys();
+        desk.assets().report_download(photo, keys.as_ref());
+    }
+}
+
 /// `place_asset`: an icon or photo at a place in a parent, or a photo filling
 /// layers, on the document at `path`.
 pub(super) fn place(docs: &mut impl Documents, path: &Path, call: &Call) -> Result<Step, String> {
@@ -521,33 +685,14 @@ pub(super) fn place(docs: &mut impl Documents, path: &Path, call: &Call) -> Resu
         .get("asset")
         .and_then(Value::as_str)
         .ok_or("`asset`: an id `search_assets` answered with")?;
-    let fill = match super::nodes(args, "fill")? {
-        Some(ids) if ids.is_empty() => return Err("`fill` is empty".into()),
-        other => other,
-    };
-    let parent = super::node(args, "parent")?;
-    let at = Point::new(
-        args.get("x").and_then(Value::as_f64).unwrap_or(0.0),
-        args.get("y").and_then(Value::as_f64).unwrap_or(0.0),
-    );
-    let size = length(args, "size")?;
     match parse(asset)? {
-        Asset::Icon { set, name, variant } => {
-            if fill.is_some() {
-                return Err(
-                    "An icon fills no layer; a photo does. Place the icon with `parent`.".into(),
-                );
-            }
-            let parent = parent.ok_or("`parent`: the frame, group or page to place it in")?;
-            place_icon(docs, path, call, (&set, &name, &variant), parent, at, size)
-        }
         Asset::Kit { kit, main } => {
-            if fill.is_some() {
-                return Err(
-                    "An icon fills no layer; a photo does. Place the icon with `parent`.".into(),
-                );
+            let t = target(args)?;
+            if t.fill.is_some() {
+                return Err(ICON_FILLS_NOTHING.into());
             }
-            let parent = parent.ok_or("`parent`: the frame, group or page to place it in")?;
+            let parent = t.parent.ok_or(NO_PARENT)?;
+            let at = t.at;
             let desk = docs.desk().ok_or(NO_DESK)?;
             if !desk.prefs().icon_sets.contains(&sets::pack_key(&kit)) {
                 return Err(format!(
@@ -566,55 +711,26 @@ pub(super) fn place(docs: &mut impl Documents, path: &Path, call: &Call) -> Resu
             });
             super::kits::run(docs, path, &inner).map(Step::Done)
         }
-        Asset::Photo { service, id } => {
-            let desk = docs.desk().ok_or(NO_DESK)?;
-            if !desk.prefs().photo_services.contains(&service) {
-                return Err(format!(
-                    "`{service}` is not switched on in Settings › Assets; an agent cannot switch it on"
-                ));
-            }
-            let photo = desk.assets().agent_found(&service, &id).ok_or(
-                "That photo is in no recent search: search again with `search_assets`, and place one it answers",
-            )?;
-            targets(docs, path, args)?;
-            let desk = docs.desk().ok_or(NO_DESK)?;
-            let px = PhotoSize::from_key(&desk.prefs().photo_size);
-            let (image, pixels) = match desk.assets().agent_photo(&photo, px) {
-                Poll::Waiting => return Ok(Step::Wait),
-                Poll::Ready(read) => read?,
+        Asset::Icon { .. } | Asset::Photo { .. } => {
+            let held = match hold(docs, path, args)? {
+                Holding::Wait => return Ok(Step::Wait),
+                Holding::Ready(held) => *held,
             };
-            let keys = desk.keys();
-            desk.adopt(&image.id, pixels);
-            let today = panel::today();
-            let credit = photo.credit(&today);
             let s = docs.session(path).ok_or("the document closed")?;
-            let answer = match fill {
-                Some(ids) => fill_photo(s, &call.client, &ids, &image, &credit)?,
-                None => {
-                    let parent =
-                        parent.ok_or("`parent`: the frame, group or page to place it in")?;
-                    put_photo(s, &call.client, parent, at, size, &image, &credit)?
-                }
-            };
-            let desk = docs.desk().ok_or(NO_DESK)?;
-            desk.assets().report_download(&photo, keys.as_ref());
+            let answer = put_held(s, &call.client, args, &held)?;
+            report_used(docs.desk().ok_or(NO_DESK)?, &held);
             Ok(Step::Done(Answer::Json(answer)))
         }
     }
 }
 
-/// A remote set's icon as the panel inserts it: the SVG importer's group named
-/// after the icon, `size` points across, its box's corner at `at` in `parent`,
-/// with its credit, as *Insert icon*.
-fn place_icon(
+/// A remote set's icon drawn as the panel inserts it, `size` points across
+/// (the variant's grid unless given), with its credit.
+fn icon_drawing(
     docs: &mut impl Documents,
-    path: &Path,
-    call: &Call,
     (set, name, variant): (&str, &str, &str),
-    parent: NodeId,
-    at: Point,
     size: Option<f64>,
-) -> Result<Step, String> {
+) -> Result<Holding, String> {
     let desk = docs.desk().ok_or(NO_DESK)?;
     let spec = SetSpec::by_key(set).ok_or_else(|| format!("`asset`: no icon set `{set}`"))?;
     if !desk.prefs().icon_sets.iter().any(|k| k == spec.key) {
@@ -625,7 +741,7 @@ fn place_icon(
     }
     let loaded = match desk.assets().set(spec) {
         SetState::Ready(s) => Arc::clone(s),
-        SetState::Loading { .. } => return Ok(Step::Wait),
+        SetState::Loading { .. } => return Ok(Holding::Wait),
         SetState::Failed => return Err(format!("{} could not be downloaded", spec.name)),
     };
     let v = spec
@@ -639,16 +755,32 @@ fn place_icon(
         .find(|i| i.name == name && i.variant == v)
         .ok_or_else(|| format!("`asset`: {} has no icon `{name}`", spec.name))?;
     let size = size.unwrap_or_else(|| loaded.grid_of(v));
-    let svg = icon.svg(size, panel::ICON_INK);
-    let credit = panel::icon_credit(spec, &panel::today());
-    let s = docs.session(path).ok_or("the document closed")?;
+    Ok(Holding::Ready(Box::new(Held::Icon {
+        name: icon.name.clone(),
+        svg: icon.svg(size, panel::ICON_INK),
+        credit: panel::icon_credit(spec, &panel::today()),
+    })))
+}
+
+/// A held icon as the panel inserts it: the SVG importer's group named after
+/// the icon, its box's corner at `at` in `parent`, with its credit, as
+/// *Insert icon*.
+fn put_icon(
+    s: &mut crate::session::EditorSession,
+    client: &str,
+    parent: NodeId,
+    at: Point,
+    name: &str,
+    svg: &str,
+    credit: &mastik_core::Credit,
+) -> Result<Value, String> {
     let index = s
         .doc
         .get(parent)
         .ok_or_else(|| format!("`parent`: no layer `{}`", parent.to_wire()))?
         .children()
         .len();
-    let mut out = mastik_core::svg_in::import(&svg, &mut s.ids, parent, index, None)
+    let mut out = mastik_core::svg_in::import(svg, &mut s.ids, parent, index, None)
         .map_err(|e| format!("{name} could not be read: {e}"))?;
     let root = out.root;
     if let Some(Operation::CreateNode {
@@ -662,19 +794,19 @@ fn place_icon(
         .find(|op| matches!(op, Operation::CreateNode { id, .. } if *id == root))
     {
         *transform = Some(Affine::translate(at.to_vec2()) * transform.unwrap_or(Affine::IDENTITY));
-        *layer = Some(icon.name.clone());
+        *layer = Some(name.to_owned());
     }
     out.tx.0.push(Operation::SetCredit {
         id: root,
         credit: Some(Box::new(credit.clone())),
     });
-    s.name_mcp_step_as(&call.client, "place_asset", "Insert icon", icon::ASSETS);
+    s.name_mcp_step_as(client, "place_asset", "Insert icon", icon::ASSETS);
     commit_named(s, out.tx)?;
     let mut answer = json!({ "created": [root.to_wire()] });
     if credit.required {
         answer["credit"] = json!(credit.text);
     }
-    Ok(Step::Done(Answer::Json(answer)))
+    Ok(answer)
 }
 
 /// A photo as a new layer, its box's corner at `at` in `parent`: `width` across
@@ -1143,7 +1275,81 @@ mod tests {
         assert!(made.get("changed").is_some(), "changed: {made}");
     }
 
-    /// A chat searches at any level and places only at Edit.
+    /// A proposal that places a photo waits on its download, changes nothing,
+    /// and lands credited as one step named by its title when the person
+    /// applies it, which is when Unsplash hears of it; read back without its
+    /// photo, it refuses.
+    ///
+    /// flip: `propose::run` writing a `place_asset` call through `write` → fails
+    /// at "proposed"; `assistant_apply` without `report_used` → fails at "reported
+    /// on apply".
+    #[test]
+    fn a_proposal_places_its_photo_when_applied() {
+        let (mut app, mut engine, file, _page, rect, _) = fixture("propose");
+        let photo = coffee(&mut app);
+        searched(&mut app, &photo);
+        let ask = json!({
+            "title": "Hero photo",
+            "calls": [{ "verb": "place_asset",
+                        "args": { "asset": "photo:unsplash/x1", "fill": [rect.to_wire()] } }],
+        });
+        let answer = waits(&mut engine, &mut app, "propose_edit", ask);
+        let depth = Documents::session(&mut app, &file)
+            .unwrap()
+            .history
+            .undo_depth();
+        downloaded(&mut app, &photo);
+        engine.run_later(&mut app);
+        let out = answer.try_recv().expect("answered once downloaded");
+        assert!(!out.is_error, "proposed: {:?}", out.content);
+        let made = out.structured.unwrap();
+        assert!(
+            made["changes"][0]
+                .as_str()
+                .unwrap()
+                .starts_with("Fill with photo"),
+            "its line: {made}"
+        );
+        let s = Documents::session(&mut app, &file).unwrap();
+        assert!(
+            s.doc.get(rect).and_then(|n| n.credit()).is_none() && s.history.undo_depth() == depth,
+            "nothing changed yet"
+        );
+        assert!(app.assets.reported.is_empty(), "not reported when proposed");
+
+        let id = made["proposal"].as_u64().unwrap();
+        let p = engine.proposal(id).expect("held").clone();
+        app.assistant.proposals.push(p.clone());
+        // A card applies to the document in front.
+        let tab = app.tab_of_path(&file).expect("its tab");
+        app.activate_tab(tab);
+        assert!(
+            app.session.doc.contains(rect),
+            "the fixture: its tab in front"
+        );
+        app.assistant_apply(id);
+        let s = Documents::session(&mut app, &file).unwrap();
+        assert!(
+            s.doc.get(rect).and_then(|n| n.credit()).is_some(),
+            "credited"
+        );
+        assert_eq!(s.history.undo_depth(), depth + 1, "one step");
+        assert_eq!(last_step(&mut app, &file), "Hero photo");
+        assert_eq!(app.assets.reported.len(), 1, "reported on apply");
+
+        // As read back from a saved thread.
+        Documents::session(&mut app, &file).unwrap().undo();
+        let bare = crate::mcp::propose::Proposal {
+            held: Vec::new(),
+            ..p
+        };
+        let s = Documents::session(&mut app, &file).unwrap();
+        let why = crate::mcp::propose::apply(s, &bare).expect_err("no photo at hand");
+        assert!(why.contains("no longer at hand"), "{why}");
+    }
+
+    /// A chat searches at any level and runs a placement only at Edit; Propose
+    /// proposes one.
     ///
     /// flip: `access::allowed` without the `place_asset` arm → fails at "Edit places".
     #[test]

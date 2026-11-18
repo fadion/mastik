@@ -500,7 +500,7 @@ pub static TOOLS: &[Tool] = &[
                 "calls",
                 ParamKind::Model("Steps"),
                 true,
-                "The calls in order, each {\"verb\": <a write tool>, \"args\": {…}}.",
+                "The calls in order, each {\"verb\": <a write tool, or `place_asset` for a searched photo or icon>, \"args\": {…}}.",
             ),
         ],
     },
@@ -626,7 +626,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "place_asset",
-        doc: "Place a searched asset with its credit: its box's corner at `x`, `y` in `parent`, or a photo filling the `fill` layers. A photo still downloading after 25 s answers `pending`.",
+        doc: "Place a searched asset with its credit: its box's corner at `x`, `y` in `parent`, or a photo filling the `fill` layers. A photo still downloading after 25 s answers `pending`. At Propose access it is a call in `propose_edit`.",
         params: &[
             param(
                 "asset",

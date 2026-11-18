@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Value {
     let within = |d: &Value| {
         let name = d["name"].as_str().unwrap_or_default();
-        level.is_none_or(|l| access::allowed(l, name))
+        level.is_none_or(|l| access::usable(l, name))
     };
     let (all, beyond): (Vec<Value>, Vec<Value>) = every_definition().into_iter().partition(within);
     let names: Vec<&str> = args
@@ -105,11 +105,12 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
     answer
 }
 
-/// The lowest access level that runs `tool`, `None` when no chat's does.
+/// The lowest access level that can use `tool` ([`access::usable`]), `None`
+/// when no chat's can.
 fn needs(tool: &str) -> Option<access::Level> {
     access::Level::ALL
         .into_iter()
-        .find(|&l| access::allowed(l, tool))
+        .find(|&l| access::usable(l, tool))
 }
 
 /// Every tool's `tools/list` entry, listed or not.

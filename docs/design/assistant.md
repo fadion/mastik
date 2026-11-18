@@ -234,8 +234,9 @@ what it has read:
 
 - **Look** — Phase 1's reads and exports (`mcp.md` §8.4), and `search_assets`. `export_png` is the
   agent's eyes.
-- **Propose** (the default) — Look, plus `propose_edit` (*Proposals*). Not `place_asset`: a
-  proposal replays registry verbs, and a credited placement is no verb.
+- **Propose** (the default) — Look, plus `propose_edit` (*Proposals*), whose calls may include
+  `place_asset`; Propose does not run `place_asset` itself, and `describe_tools` describes it
+  there as a call to propose (`access::usable`).
 - **Edit** — Look, plus the writes of Phases 2 and 3 and `place_asset`. Each call commits as its own
   undo step marked as the assistant's (`Origin::Mcp`). Edit does not list `propose_edit`.
 

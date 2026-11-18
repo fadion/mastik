@@ -456,6 +456,7 @@ mod tests {
             writes: Vec::new(),
             before: Vec::new(),
             client: "Claude".into(),
+            held: Vec::new(),
         }
     }
 

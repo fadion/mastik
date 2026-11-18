@@ -112,7 +112,9 @@ fn level_rules(level: Level) -> &'static str {
              them. To propose, call `propose_edit` with a short `title` (it becomes the undo \
              step's name) and `calls`, a list of `{\"verb\", \"args\"}` registry calls; Mastik \
              checks them and draws a card the person applies. Nothing changes until they \
-             apply it. Say in one line what the proposal does; don't repeat its rows."
+             apply it. A photo or icon from `search_assets` goes in as a `place_asset` call \
+             with its own arguments. Say in one line what the proposal does; don't repeat \
+             its rows."
         }
         Level::Edit => {
             "Access: Edit. You can read and change the document. Each change you make is \
@@ -690,6 +692,7 @@ mod tests {
             writes: Vec::new(),
             before: Vec::new(),
             client: "Claude".into(),
+            held: Vec::new(),
         };
         let kept = [proposal(7, "Rename"), proposal(8, "Fade")];
         let r = replay(&msgs, "claude", &kept, &|id| id == 7).expect("same harness");

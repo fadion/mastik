@@ -34,6 +34,11 @@ pub(crate) struct Proposal {
     pub before: Vec<Node>,
     /// The client's name, which the applied step's History row shows.
     pub client: String,
+    /// The asset each `place_asset` call lays down, in call order, made ready
+    /// when proposed. Kept in memory only: a photo's pixels would bloat the
+    /// saved thread, so a proposal read back from one cannot place them.
+    #[serde(skip)]
+    pub held: Vec<super::assets::Held>,
 }
 
 /// An applied proposal's undo step, for [`is_last`].
@@ -43,12 +48,21 @@ pub(crate) struct Applied {
     depth: usize,
 }
 
-/// The verbs a proposal may call: the write tools, never the kits and library.
+/// The verbs a proposal may call: the write tools, never the kits and library,
+/// and `place_asset`, whose asset is made ready when it is proposed.
 fn proposable(verb: &str) -> bool {
-    mastik_core::verbs::find(verb).is_some()
-        && (mastik_mcp::tools::PHASE_2.contains(&verb)
-            || mastik_mcp::tools::PHASE_3.contains(&verb))
+    verb == PLACE
+        || mastik_core::verbs::find(verb).is_some()
+            && (mastik_mcp::tools::PHASE_2.contains(&verb)
+                || mastik_mcp::tools::PHASE_3.contains(&verb))
 }
+
+/// The one proposable call that is no registry verb.
+pub(super) const PLACE: &str = "place_asset";
+
+/// Why a proposal's placement cannot be laid down: read back from a saved
+/// thread, it no longer holds its asset.
+const NOT_HELD: &str = "its photo or icon is no longer at hand, since Mastik was closed after it was proposed; ask for the proposal again";
 
 /// `propose_edit`'s `calls` read as verbs and arguments, `base_rev` dropped: a
 /// proposal is checked again when it is applied.
@@ -88,20 +102,30 @@ pub(super) fn calls(args: &Value) -> Result<Vec<(String, Value)>, String> {
 }
 
 /// Run `calls` on `s` in turn, each committed as its own step, answering each
-/// one's line and the subjects of its step. On a refusal the steps already made
-/// are taken back.
+/// one's line and the subjects of its step; a `place_asset` call lays down the
+/// next of `held`. On a refusal the steps already made are taken back.
 fn run(
     s: &mut EditorSession,
     client: &str,
     calls: &[(String, Value)],
+    held: &[super::assets::Held],
 ) -> Result<(Vec<String>, Vec<NodeId>, usize), String> {
     let conn = Connection::default();
     let mut lines = Vec::new();
     let mut subjects: Vec<NodeId> = Vec::new();
     let mut made = 0;
+    let mut held = held.iter();
     for (i, (verb, args)) in calls.iter().enumerate() {
         let depth = s.history.undo_depth();
-        let said = match write(&conn, s, client, verb, args) {
+        let wrote = match verb.as_str() {
+            PLACE => held
+                .next()
+                .ok_or_else(|| NOT_HELD.to_owned())
+                .and_then(|h| super::assets::put_held(s, client, args, h))
+                .map(super::Answer::Json),
+            _ => write(&conn, s, client, verb, args),
+        };
+        let said = match wrote {
             Ok(super::Answer::Json(answer)) => answer
                 .get("said")
                 .and_then(Value::as_str)
@@ -153,16 +177,17 @@ fn scratch(s: &EditorSession) -> EditorSession {
 }
 
 /// Check `calls` against `s` without changing it: the [`Proposal`] they make,
-/// less its id, key, document and client, which the engine knows. Answers the
-/// first refusal instead.
+/// less its id, key, document and client, which the engine knows; `held` is
+/// each placement's asset, in call order. Answers the first refusal instead.
 pub(super) fn check(
     s: &EditorSession,
     client: &str,
     title: &str,
     calls: Vec<(String, Value)>,
+    held: Vec<super::assets::Held>,
 ) -> Result<Proposal, String> {
     let mut trial = scratch(s);
-    let (changes, subjects, _) = run(&mut trial, client, &calls)?;
+    let (changes, subjects, _) = run(&mut trial, client, &calls, &held)?;
     let (writes, before): (Vec<NodeId>, Vec<Node>) = subjects
         .into_iter()
         .filter_map(|id| s.doc.get(id).map(|n| (id, n.clone())))
@@ -178,6 +203,7 @@ pub(super) fn check(
         writes,
         before,
         client: client.to_owned(),
+        held,
     })
 }
 
@@ -197,7 +223,7 @@ pub(crate) fn apply(session: &mut EditorSession, p: &Proposal) -> Result<Applied
 /// [`apply`] without the redo kept.
 fn apply_calls(session: &mut EditorSession, p: &Proposal) -> Result<Applied, String> {
     let mark = session.mark();
-    let (made, subjects) = match run(session, &p.client, &p.calls) {
+    let (made, subjects) = match run(session, &p.client, &p.calls, &p.held) {
         Ok((_, subjects, made)) => (made, subjects),
         Err(why) => {
             session.rewind(&mark);
@@ -228,7 +254,7 @@ fn apply_calls(session: &mut EditorSession, p: &Proposal) -> Result<Applied, Str
             ));
         }
         // Only layers it creates: run it again for real.
-        return match run(session, &p.client, &p.calls) {
+        return match run(session, &p.client, &p.calls, &p.held) {
             Ok((_, _, made)) => finish_apply(session, p, made),
             Err(why) => {
                 session.rewind(&mark);

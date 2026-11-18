@@ -164,11 +164,31 @@ fn who(call: &Call) -> Who {
 
 /// The asset tool `call` runs, named or through `call`.
 fn assets_tool(call: &Call) -> Option<&'static str> {
-    let tool = match call.tool.as_str() {
-        "call" => call.args.get("tool").and_then(Value::as_str)?,
-        tool => tool,
+    let (tool, args) = match call.tool.as_str() {
+        "call" => (
+            call.args.get("tool").and_then(Value::as_str)?,
+            call.args.get("args").unwrap_or(&Value::Null),
+        ),
+        tool => (tool, &call.args),
     };
+    // A proposal that places an asset waits on its download too.
+    if tool == "propose_edit" && !placements(args).is_empty() {
+        return Some("propose_edit");
+    }
     assets::TOOLS.iter().copied().find(|t| *t == tool)
+}
+
+/// A `propose_edit`'s `place_asset` calls: each one's number in `calls`, from
+/// 1, and its arguments.
+fn placements(args: &Value) -> Vec<(usize, Value)> {
+    args.get("calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(_, c)| c.get("verb").and_then(Value::as_str) == Some(propose::PLACE))
+        .map(|(i, c)| (i + 1, c.get("args").cloned().unwrap_or_else(|| json!({}))))
+        .collect()
 }
 
 /// The client `call` comes from as its steps record it
@@ -389,6 +409,14 @@ impl Engine {
                 continue;
             }
             if l.pending.is_none() && l.since.elapsed() >= assets::WAIT {
+                // The download goes on; a proposal asked again finds it.
+                if assets_tool(&again) == Some("propose_edit") {
+                    let _ = again.reply.send(Output::error(format!(
+                        "The photo did not download within {} s, so nothing was proposed. It goes on downloading: propose again shortly.",
+                        assets::WAIT.as_secs()
+                    )));
+                    continue;
+                }
                 if assets_tool(&again) == Some("search_assets") {
                     let _ = again.reply.send(Output::error(format!(
                         "The search did not answer within {} s: the service is slow or out of reach. Call again shortly.",
@@ -633,6 +661,29 @@ impl Engine {
         if let Err(why) = fonts_checked {
             return Output::error(why);
         }
+        // A proposal's placements are made ready first, each photo downloaded,
+        // so the proposal holds them and applying it reaches no network.
+        let mut held = Vec::new();
+        if call.tool == "propose_edit" {
+            for (n, args) in placements(&call.args) {
+                let ready = match assets::waits(docs, Some(&path), &args) {
+                    true => Ok(assets::Holding::Wait),
+                    false => assets::hold(docs, &path, &args),
+                };
+                match ready {
+                    Ok(assets::Holding::Ready(h)) => held.push(*h),
+                    Ok(assets::Holding::Wait) => {
+                        self.waiting = true;
+                        return Output::error("waiting on a download");
+                    }
+                    Err(why) => {
+                        return Output::error(format!(
+                            "call {n} (`place_asset`): {why}. Nothing was proposed."
+                        ));
+                    }
+                }
+            }
+        }
         if mastik_mcp::schema::class(&call.tool) != mastik_mcp::schema::Class::Read {
             docs.before_write(&path);
         }
@@ -666,7 +717,7 @@ impl Engine {
         } else if call.tool == "propose_edit" {
             let title = call.args["title"].as_str().unwrap_or_default();
             propose::calls(&call.args)
-                .and_then(|calls| propose::check(session, &call.client, title, calls))
+                .and_then(|calls| propose::check(session, &call.client, title, calls, held))
                 .map(|mut p| {
                     p.id = next;
                     p.key.clone_from(&call.key);
