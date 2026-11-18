@@ -2003,6 +2003,42 @@ fn a_scale_is_generated_from_a_variable_in_every_mode() {
     );
 }
 
+/// `generate_scale` with `steps` makes only the kept steps, refuses an anchor
+/// the scale does not keep, and a count out of range.
+///
+/// flip: the verb ignoring `steps` → fails at "three made".
+#[test]
+fn a_scale_of_fewer_steps_makes_only_those() {
+    let (mut doc, mut ids, _) = blank();
+    let made = script(
+        &mut doc,
+        &mut ids,
+        json!([
+            { "verb": "add_variable", "args": { "kind": "color", "name": "brand", "value": { "color": "#2f6bff" } }, "as": "v" },
+            { "verb": "generate_scale", "args": { "variable": "@v", "steps": 3 } },
+        ]),
+    );
+    let mut names: Vec<String> = doc.variables().iter().map(|v| v.name.clone()).collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["brand", "brand/100", "brand/500", "brand/900"],
+        "three made"
+    );
+    let off = refused_step(
+        &mut doc,
+        &mut ids,
+        json!({ "verb": "generate_scale", "args": { "variable": made[0][0], "steps": 3, "anchor": 300 } }),
+    );
+    assert!(off.contains("100, 500, 900"), "{off}");
+    let many = refused_step(
+        &mut doc,
+        &mut ids,
+        json!({ "verb": "generate_scale", "args": { "variable": made[0][0], "steps": 12 } }),
+    );
+    assert!(many.contains("3 to 11"), "{many}");
+}
+
 /// `script` run on `doc`, panicking on a refusal; answers what each step made.
 fn script(doc: &mut Document, ids: &mut IdSource, steps: Value) -> Vec<Vec<String>> {
     verbs::run_script(doc, ids, Lent::default(), &steps).unwrap_or_else(|e| panic!("{e}"))

@@ -1352,6 +1352,17 @@ pub fn flyout(id: egui::Id, row: egui::Rect, w: f32) -> Flyout {
         w,
         pad: FLYOUT_PAD,
         order: egui::Order::Tooltip,
+        under: false,
+    }
+}
+
+/// The list a [`head_drop`] inside a popup opens: a [`flyout`] card hung
+/// [`MENU_GAP`] under `drop`, right edges together as the Appearance header's
+/// blend menu is, placed by [`dropdown_place`].
+pub fn drop_list(id: egui::Id, drop: egui::Rect, w: f32) -> Flyout {
+    Flyout {
+        under: true,
+        ..flyout(id, drop, w)
     }
 }
 
@@ -1363,6 +1374,8 @@ pub struct Flyout {
     w: f32,
     pad: f32,
     order: egui::Order,
+    /// Under its anchor ([`drop_list`]) rather than beside it.
+    under: bool,
 }
 
 impl Flyout {
@@ -1395,7 +1408,17 @@ impl Flyout {
             + rows as f32 * MENU_ROW_H
             + seps as f32 * MENU_SEP_H
             + (items - 1.0).max(0.0);
-        let pos = flyout_place(ctx, self.row, egui::vec2(self.w, h), self.pad);
+        let size = egui::vec2(self.w, h);
+        let pos = match self.under {
+            true => {
+                let under = egui::Rect::from_min_max(
+                    egui::pos2(self.row.right() - self.w, self.row.top()),
+                    self.row.max,
+                );
+                dropdown_place(ctx, under, size, MENU_GAP)
+            }
+            false => flyout_place(ctx, self.row, size, self.pad),
+        };
         egui::Area::new(self.id)
             .order(self.order)
             .fixed_pos(pos)
@@ -2360,8 +2383,9 @@ fn head_badge(ui: &mut egui::Ui, word: &str) {
 }
 
 /// A [`HeadDrop`]: [`SMALL_PT`] text and a 10-pt caret 4 pt after it, muted at
-/// the default and strong otherwise or under the pointer.
-fn head_drop(ui: &mut egui::Ui, d: HeadDrop<'_>) -> egui::Response {
+/// the default and strong otherwise or under the pointer. A card's header
+/// carries one (the blend mode); a popup row may too, its list a [`drop_list`].
+pub fn head_drop(ui: &mut egui::Ui, d: HeadDrop<'_>) -> egui::Response {
     let font = egui::FontId::proportional(SMALL_PT);
     let text_w = ui
         .painter()
@@ -5109,7 +5133,7 @@ const METER_ALPHA: u8 = 41;
 const METER_TICK_W: f32 = 1.0;
 
 /// The accent wash a metered field's bar and its zero tick share.
-fn meter_wash() -> egui::Color32 {
+pub fn meter_wash() -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(
         color::accent_400().r(),
         color::accent_400().g(),

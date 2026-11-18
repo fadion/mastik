@@ -4045,11 +4045,16 @@ pub fn scale_source(table: &Variables, var: VarId) -> Option<(CollectionId, Mode
     }
 }
 
-/// What *Generate scale* would do in collection `c` under `stem`: each step's
-/// name and the variable already holding it, if one does.
-pub fn scale_names(table: &Variables, c: CollectionId, stem: &str) -> Vec<(String, Option<VarId>)> {
+/// What *Generate scale* would do in collection `c` under `stem`: each of
+/// `steps`' names and the variable already holding it, if one does.
+pub fn scale_names(
+    table: &Variables,
+    c: CollectionId,
+    stem: &str,
+    steps: &[u16],
+) -> Vec<(String, Option<VarId>)> {
     let stem = stem.trim();
-    crate::oklch::SCALE_STEPS
+    steps
         .iter()
         .map(|s| {
             let name = format!("{stem}/{s}");
@@ -4059,9 +4064,9 @@ pub fn scale_names(table: &Variables, c: CollectionId, stem: &str) -> Vec<(Strin
         .collect()
 }
 
-/// *Generate scale* in collection `c`: `colours`, one per
-/// [`crate::oklch::SCALE_STEPS`], as the colour variables `stem/50` to
-/// `stem/950` in every mode. A name already holding a colour variable is
+/// *Generate scale* in collection `c`: `colours`, each a step of
+/// [`crate::oklch::SCALE_STEPS`] and its colour, as the colour variables
+/// `stem/<step>` in every mode. A name already holding a colour variable is
 /// updated instead, in `only` when given and in every mode otherwise; refused
 /// when a name holds another kind or cannot name a variable. Answers the ops and
 /// how many variables were made and updated.
@@ -4079,7 +4084,8 @@ pub fn scale_ops(
     if stem.trim().is_empty() {
         return Err("A scale needs a name.".into());
     }
-    let names = scale_names(table, c, stem);
+    let steps: Vec<u16> = colours.iter().map(|(s, _)| *s).collect();
+    let names = scale_names(table, c, stem, &steps);
     let (mut ops, modes) = columns_for_new(table, c, ids.mint_mode());
     let (mut made, mut updated) = (0, 0);
     for ((name, held), (_, colour)) in names.into_iter().zip(colours) {
@@ -4114,8 +4120,8 @@ pub fn scale_ops(
 }
 
 /// The line *Generate scale* says when done: what it made and updated, and the
-/// names it spans.
-pub fn scale_said(stem: &str, made: usize, updated: usize) -> String {
+/// names it spans, `first` to `last`.
+pub fn scale_said(stem: &str, made: usize, updated: usize, (first, last): (u16, u16)) -> String {
     let stem = stem.trim();
     let plural = |n: usize| if n == 1 { "variable" } else { "variables" };
     let what = match (made, updated) {
@@ -4123,7 +4129,7 @@ pub fn scale_said(stem: &str, made: usize, updated: usize) -> String {
         (0, u) => format!("Updated {u} {}", plural(u)),
         (m, u) => format!("Made {m} {} and updated {u}", plural(m)),
     };
-    format!("{what} · {stem}/50 – {stem}/950")
+    format!("{what} · {stem}/{first} – {stem}/{last}")
 }
 
 /// Why a kit's variable is refused an edit: an update writes it, and nothing

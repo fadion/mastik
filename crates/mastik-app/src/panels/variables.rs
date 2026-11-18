@@ -164,7 +164,10 @@ struct ScaleDraft {
     var: VarId,
     /// The scale's group, typed.
     name: String,
-    /// The step the source lands on, an index of `oklch::SCALE_STEPS`.
+    /// *Steps*: how many it makes, `oklch::SCALE_MIN_STEPS` to 11.
+    steps: usize,
+    /// The step the source lands on, an index of `oklch::SCALE_STEPS` among
+    /// those `steps` keeps.
     anchor: usize,
     /// *Keep the source exact*.
     exact: bool,
@@ -177,6 +180,7 @@ struct ScaleDraft {
 struct ScaleAsk {
     var: VarId,
     name: String,
+    steps: usize,
     anchor: usize,
     exact: bool,
     this_mode: bool,
@@ -244,7 +248,7 @@ pub(crate) struct Browser {
     uses_count: Option<(VarId, u64, usize)>,
     /// *Generate scale…*'s choices while its popover is open.
     scale: Option<ScaleDraft>,
-    /// Its *Source lands on ▸* row while the steps' list is open beside it.
+    /// Its *Source lands on* value while the steps' list is open under it.
     scale_steps: Option<egui::Rect>,
 }
 
@@ -900,7 +904,7 @@ impl MastikApp {
         let table = doc.variables();
         let menu_w = match &menu {
             Menu::ConfirmMode(_) | Menu::ConfirmCollection(_) => 240.0,
-            Menu::Scope(_) | Menu::Bind(_) | Menu::Scale(_) => SCOPE_W,
+            Menu::Scope(_) | Menu::Bind(_) | Menu::Scale(_) => POPOVER_W,
             _ => 200.0,
         };
         let modes_of = |m: ModeId| table.collection_of_mode(m).map_or(0, |c| c.modes.len());
@@ -915,7 +919,7 @@ impl MastikApp {
         let rows = match &menu {
             Menu::Add => 7.0,
             Menu::Var(_) => 9.0,
-            Menu::Scale(_) => 11.0,
+            Menu::Scale(_) => 10.5,
             Menu::Bind(_) => BIND_LIST_ROWS + 5.0,
             Menu::Mode(m) if modes_of(*m) > 1 => 6.5 + width_field(*m),
             Menu::Mode(m) => 3.0 + width_field(*m),
@@ -1650,27 +1654,28 @@ impl MastikApp {
                 });
             fly = Some(card.rect);
         }
-        // *Source lands on ▸*'s list: the eleven steps, each with its lightness.
-        if let (Menu::Scale(_), Some(row_rect), false) = (&menu, b.scale_steps, close) {
+        // *Source lands on*'s list under its value: the steps the scale keeps,
+        // each with its lightness, the one in use lit as a dropdown's is.
+        if let (Menu::Scale(_), Some(drop), false) = (&menu, b.scale_steps, close) {
             let id = egui::Id::new("var-browser-menu").with("scale-steps");
-            let card = ui::flyout(id, row_rect, 160.0).pad(4.0).show(
-                ctx,
-                (oklch::SCALE_STEPS.len(), 0),
-                |ui| {
-                    let Some(d) = b.scale.as_mut() else { return };
-                    for (i, step) in oklch::SCALE_STEPS.iter().enumerate() {
-                        let note = format!("L {:.0}%", oklch::step_lightness(i) * 100.0);
-                        let label = step.to_string();
-                        let row = ui::MenuRow::new("", &label)
-                            .note(&note)
-                            .checked(i == d.anchor);
-                        if ui::menu_row(ui, row, MENU_ROW_H).clicked() {
-                            d.anchor = i;
-                            b.scale_steps = None;
-                        }
+            let keep = b
+                .scale
+                .as_ref()
+                .map_or_else(Vec::new, |d| oklch::scale_subset(d.steps));
+            let card = ui::drop_list(id, drop, 160.0).show(ctx, (keep.len(), 0), |ui| {
+                let Some(d) = b.scale.as_mut() else { return };
+                for i in keep {
+                    let note = format!("L {:.0}%", oklch::step_lightness(i) * 100.0);
+                    let label = oklch::SCALE_STEPS[i].to_string();
+                    let row = ui::MenuRow::new("", &label)
+                        .note(&note)
+                        .selected(i == d.anchor);
+                    if ui::menu_row(ui, row, MENU_ROW_H).clicked() {
+                        d.anchor = i;
+                        b.scale_steps = None;
                     }
-                },
-            );
+                }
+            });
             fly = Some(card.rect);
         }
         // Not during a gesture: the right-click that cancels the breakpoint scrub
@@ -2027,14 +2032,16 @@ impl MastikApp {
                 let Some((c, mode, base)) = var::scale_source(table, ask.var) else {
                     return;
                 };
-                let ramp = oklch::scale(base, ask.anchor, ask.exact);
+                let keep = oklch::scale_subset(ask.steps);
+                let ramp = oklch::scale_kept(base, ask.anchor, ask.exact, &keep);
+                let span = scale_span(&keep);
                 let only = ask.this_mode.then_some(mode);
                 let ids = &mut self.session.ids;
                 match var::scale_ops(table, ids, c, &ask.name, &ramp, only) {
                     Ok((ops, made, updated)) => {
                         self.session.name_step("Generate scale", icon::SCALE);
                         if self.commit_edit(Transaction(ops)) {
-                            let said = var::scale_said(&ask.name, made, updated);
+                            let said = var::scale_said(&ask.name, made, updated, span);
                             self.session.info(said);
                         }
                     }
@@ -2463,12 +2470,44 @@ fn collection_row(ui: &mut egui::Ui, c: &mastik_core::variable::Collection) {
     );
 }
 
-/// The scope popover's width.
-const SCOPE_W: f32 = 300.0;
+/// The width of the popovers that take the variable menu's place: *Scope…*,
+/// *Bind other uses…* and *Generate scale…*.
+const POPOVER_W: f32 = 300.0;
 
-/// The scope popover's inset on both sides, a menu row's: its head's glyph, the
-/// switch's label, the boxes, the counts and the footer all keep it.
-const SCOPE_INSET: f32 = 8.0;
+/// Those popovers' inset on both sides, a menu row's: their titles, labels,
+/// fields, boxes, counts and foot lines all keep it, while list rows run edge to
+/// edge as a menu's do.
+const POPOVER_INSET: f32 = ui::MENU_ROW_INSET;
+
+/// `add` drawn at [`POPOVER_INSET`] from both sides of a variable popover.
+fn popover_inset<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let inset = ui
+        .available_rect_before_wrap()
+        .shrink2(egui::vec2(POPOVER_INSET, 0.0));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(inset), add)
+        .inner
+}
+
+/// A line of words in a variable popover, wrapping at its inset.
+fn popover_line(ui: &mut egui::Ui, text: egui::RichText) {
+    popover_inset(ui, |ui| ui.add(egui::Label::new(text).wrap()));
+}
+
+/// A variable popover's title: what it does, to which variable.
+fn popover_title(ui: &mut egui::Ui, title: &str) {
+    popover_line(
+        ui,
+        egui::RichText::new(title)
+            .size(ui::CONTROL_PT)
+            .color(theme::text::strong()),
+    );
+}
+
+/// A [`ui::switch_row`] at a variable popover's inset: the row sets its label
+/// flush with its rect.
+fn popover_switch(ui: &mut egui::Ui, label: &str, on: bool) -> egui::Response {
+    popover_inset(ui, |ui| ui::switch_row(ui, label, on, MENU_ROW_H))
+}
 
 /// Where a ticked row's label starts: a menu row's label column.
 const SCOPE_LABEL_X: f32 = ui::MENU_LABEL_X;
@@ -2505,18 +2544,7 @@ impl MastikApp {
         let Some(v) = table.get(list.var) else {
             return true;
         };
-        let inset = |ui: &mut egui::Ui, text: egui::RichText| {
-            ui.horizontal(|ui| {
-                ui.add_space(SCOPE_INSET);
-                ui.add(egui::Label::new(text).wrap());
-            });
-        };
-        inset(
-            ui,
-            egui::RichText::new(format!("Bind {} to its other users", v.name))
-                .size(ui::CONTROL_PT)
-                .color(theme::text::strong()),
-        );
+        popover_title(ui, &format!("Bind {} to its other users", v.name));
         let value = table
             .collection_of(v.id)
             .and_then(|c| c.default_mode())
@@ -2526,7 +2554,7 @@ impl MastikApp {
             Some(Value::Color(_)) => " at any opacity",
             _ => "",
         };
-        inset(
+        popover_line(
             ui,
             egui::RichText::new(format!(
                 "Fields drawing {what}{opacity}, on every page, in the modes in force there"
@@ -2559,13 +2587,13 @@ impl MastikApp {
                 let y = head.bottom() - 7.0;
                 ui::paint_eyebrow(
                     p,
-                    egui::pos2(head.left() + SCOPE_INSET, y),
+                    egui::pos2(head.left() + POPOVER_INSET, y),
                     egui::Align2::LEFT_CENTER,
                     &format!("{} · {n}", field_label(*f)),
                 );
                 if !own(*f) {
                     p.text(
-                        egui::pos2(head.right() - SCOPE_INSET, y),
+                        egui::pos2(head.right() - POPOVER_INSET, y),
                         egui::Align2::RIGHT_CENTER,
                         "widens its scope",
                         egui::FontId::proportional(ui::CAPTION_PT),
@@ -2633,9 +2661,10 @@ impl MastikApp {
         }
     }
 
-    /// *Generate scale…*: the scale's name, the step the source lands on, the
-    /// ramp it would make, whether the source is kept exact, and what generating
-    /// would make and update. Whether it closed.
+    /// *Generate scale…*, in the variable menu's place: the scale's name and how
+    /// many steps, the step the source lands on, the ramp it would make, whether
+    /// the source is kept exact, and what generating would make and update.
+    /// Whether it closed.
     fn scale_popover(&self, ui: &mut egui::Ui, b: &mut Browser, acts: &mut Vec<Act>) -> bool {
         let table = self.session.doc.variables();
         let Some(d) = b.scale.as_mut() else {
@@ -2644,50 +2673,89 @@ impl MastikApp {
         let Some((c, _, base)) = var::scale_source(table, d.var) else {
             return true;
         };
-        if ui::popover_head(ui, "Generate scale") {
-            return true;
-        }
-        ui::labelled(ui, "Name · /50 – /950", |ui| {
-            ui::text_field(
-                ui,
-                egui::vec2(ui.available_width(), ui::CONTROL_H),
-                &mut d.name,
-                "Name",
-            )
+        let source = table.get(d.var).map_or("", |v| v.name.as_str());
+        popover_title(ui, &format!("Generate a scale from {source}"));
+        ui::menu_sep(ui);
+        let (first, last) = scale_span(&oklch::scale_subset(d.steps));
+        popover_inset(ui, |ui| {
+            ui::labelled(ui, &format!("Name · /{first} – /{last}"), |ui| {
+                let w = ui.available_width();
+                ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut d.name, "Name");
+                let all = oklch::SCALE_STEPS.len();
+                let lo = oklch::SCALE_MIN_STEPS;
+                let mut n = d.steps as f64;
+                ui::value_field_metered(
+                    ui,
+                    egui::vec2(w, ui::CONTROL_H),
+                    ui::Prefix::Text("Steps"),
+                    ui::Meter::Amount((d.steps - lo) as f32 / (all - lo) as f32),
+                    &mut n,
+                    ui::Scrub::whole(0.1).range(lo as f64..=all as f64),
+                    |v| v.custom_formatter(ui::number(0)),
+                )
+                .on_hover_text("How many steps: 10 drops 950, 9 and fewer spread over 100–900");
+                d.steps = (n.round() as usize).clamp(lo, all);
+            })
         });
-        // The step the source lands on, chosen from a list beside the row.
+        // Fewer steps may drop the one the source was on.
+        let keep = oklch::scale_subset(d.steps);
+        d.anchor = oklch::nearest_kept(&keep, d.anchor);
+        let ramp = oklch::scale_kept(base, d.anchor, d.exact, &keep);
+        // The step the source lands on, chosen from a list under its value.
+        let nearest = oklch::nearest_kept(&keep, oklch::nearest_step(base));
         let step = oklch::SCALE_STEPS[d.anchor];
-        let note = match d.anchor == oklch::nearest_step(base) {
+        let shown = match d.anchor == nearest {
             true => format!("{step} · by its lightness"),
             false => step.to_string(),
         };
-        let held = b.scale_steps.is_some();
-        let lands = ui::submenu_row(
-            ui,
-            ui::MenuRow::new("", "Source lands on").note(&note),
-            held,
-        );
-        if lands.clicked() {
-            b.scale_steps = match held {
-                true => None,
-                false => Some(lands.rect),
+        let drop = popover_inset(ui, |ui| {
+            let (row, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), MENU_ROW_H),
+                egui::Sense::hover(),
+            );
+            ui.painter().text(
+                egui::pos2(row.left(), row.center().y),
+                egui::Align2::LEFT_CENTER,
+                "Source lands on",
+                egui::FontId::proportional(ui::SWITCH_ROW_LABEL_PT),
+                ui::switch_row_ink(true),
+            );
+            let layout = egui::Layout::right_to_left(egui::Align::Center);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(layout), |ui| {
+                ui::head_drop(
+                    ui,
+                    ui::HeadDrop {
+                        text: &shown,
+                        strong: d.anchor != nearest,
+                        tooltip: "The step the source colour becomes",
+                    },
+                )
+            })
+            .inner
+        });
+        if drop.clicked() {
+            b.scale_steps = match b.scale_steps {
+                Some(_) => None,
+                None => Some(drop.rect),
             };
-        } else if held {
-            b.scale_steps = Some(lands.rect);
+        } else if b.scale_steps.is_some() {
+            b.scale_steps = Some(drop.rect);
         }
-        let ramp = oklch::scale(base, d.anchor, d.exact);
-        scale_ramp(ui, &ramp, d.anchor);
-        if ui::switch_row(ui, "Keep the source exact", d.exact, MENU_ROW_H).clicked() {
+        let lit = keep.iter().position(|i| *i == d.anchor);
+        popover_inset(ui, |ui| scale_ramp(ui, &ramp, lit));
+        if popover_switch(ui, "Keep the source exact", d.exact).clicked() {
             d.exact = !d.exact;
         }
         let collection = table.collection(c);
         if collection.is_some_and(|c| c.modes.len() > 1)
-            && ui::switch_row(ui, "This mode only", d.this_mode, MENU_ROW_H).clicked()
+            && popover_switch(ui, "This mode only", d.this_mode).clicked()
         {
             d.this_mode = !d.this_mode;
         }
+        ui::menu_sep(ui);
         // What generating would do, or why it cannot.
-        let names = var::scale_names(table, c, &d.name);
+        let steps: Vec<u16> = ramp.iter().map(|(s, _)| *s).collect();
+        let names = var::scale_names(table, c, &d.name, &steps);
         let refusal = names
             .iter()
             .find_map(|(n, held)| match held {
@@ -2708,25 +2776,21 @@ impl MastikApp {
             .map(|(n, _)| n.as_str())
             .collect();
         let into = collection.map_or("", |c| c.name.as_str());
+        let makes = format!("Makes {} colour variables in {into}.", names.len());
         let says = match (&refusal, taken.len()) {
             (Some(why), _) => why.clone(),
-            (None, 0) => format!("Makes 11 colour variables in {into}."),
-            (None, 1) => format!(
-                "Makes 11 colour variables in {into}. 1 name exists and will be updated: {}.",
-                taken[0]
-            ),
+            (None, 0) => makes,
+            (None, 1) => format!("{makes} 1 name exists and will be updated: {}.", taken[0]),
             (None, n) => format!(
-                "Makes 11 colour variables in {into}. {n} names exist and will be updated: {}.",
+                "{makes} {n} names exist and will be updated: {}.",
                 taken.join(", ")
             ),
         };
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(says)
-                    .size(ui::CAPTION_PT)
-                    .color(theme::text::faint()),
-            )
-            .wrap(),
+        popover_line(
+            ui,
+            egui::RichText::new(says)
+                .size(ui::SMALL_PT)
+                .color(theme::text::faint()),
         );
         let go = match refusal {
             Some(_) => ui::FieldButton::Disabled,
@@ -2740,6 +2804,7 @@ impl MastikApp {
                 acts.push(Act::Scale(ScaleAsk {
                     var: d.var,
                     name: d.name.trim().to_owned(),
+                    steps: d.steps,
                     anchor: d.anchor,
                     exact: d.exact,
                     this_mode: d.this_mode,
@@ -2752,24 +2817,34 @@ impl MastikApp {
 }
 
 /// *Generate scale…*'s first choices for the colour variable `var`: its name
-/// less a numeric step, landing on the step nearest its lightness, exact.
+/// less a numeric step, all eleven steps, landing on the step nearest its
+/// lightness, exact.
 fn scale_draft(table: &var::Variables, var: VarId) -> Option<ScaleDraft> {
     let (_, _, base) = var::scale_source(table, var)?;
     Some(ScaleDraft {
         var,
         name: var::scale_stem(&table.get(var)?.name).to_owned(),
+        steps: oklch::SCALE_STEPS.len(),
         anchor: oklch::nearest_step(base),
         exact: true,
         this_mode: false,
     })
 }
 
-/// A scale's eleven colours as swatches over their step names, the source's
-/// step ringed; each swatch's hover gives its hex and its contrast on white and
-/// on black.
-fn scale_ramp(ui: &mut egui::Ui, ramp: &[(u16, Color)], anchor: usize) {
+/// The first and last step names of the scale keeping `keep`
+/// (`oklch::scale_subset`).
+fn scale_span(keep: &[usize]) -> (u16, u16) {
+    let step = |i: Option<&usize>| i.map_or(0, |i| oklch::SCALE_STEPS[*i]);
+    (step(keep.first()), step(keep.last()))
+}
+
+/// A scale's colours as swatches over their step names, the source's step
+/// (`lit`) ringed; each swatch's hover gives its hex and its contrast on white
+/// and on black.
+fn scale_ramp(ui: &mut egui::Ui, ramp: &[(u16, Color)], lit: Option<usize>) {
     const CHIP_H: f32 = 34.0;
-    const GAP: f32 = 2.0;
+    // Room for the ring's 1.5pt outside the lit chip.
+    const GAP: f32 = 4.0;
     let w = ui.available_width();
     let label_h = ui::CAPTION_PT + 4.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, CHIP_H + label_h), egui::Sense::hover());
@@ -2782,7 +2857,7 @@ fn scale_ramp(ui: &mut egui::Ui, ramp: &[(u16, Color)], anchor: usize) {
         // A colour chip's look, and the source ringed as the picker rings the
         // swatch in use.
         ui::paint_colour_chip(p, chip, ui::color_to_egui(*colour));
-        if i == anchor {
+        if lit == Some(i) {
             p.rect_stroke(
                 chip,
                 (chip.width().min(chip.height()) * 0.25).round(),
@@ -2790,7 +2865,7 @@ fn scale_ramp(ui: &mut egui::Ui, ramp: &[(u16, Color)], anchor: usize) {
                 egui::StrokeKind::Outside,
             );
         }
-        let ink = match i == anchor {
+        let ink = match lit == Some(i) {
             true => theme::color::text(),
             false => theme::text::dim(),
         };
@@ -2840,7 +2915,7 @@ fn scope_popover(
     };
     // Head: its kind's glyph, its name, its collection.
     ui.horizontal(|ui| {
-        ui.add_space(SCOPE_INSET);
+        ui.add_space(POPOVER_INSET);
         ui.label(theme::icon_text(
             kind_glyph(v.kind),
             15.0,
@@ -2854,7 +2929,7 @@ fn scope_popover(
         );
         if let Some(c) = t.collection_of(v.id) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(SCOPE_INSET);
+                ui.add_space(POPOVER_INSET);
                 ui.label(
                     egui::RichText::new(&c.name)
                         .size(ui::SMALL_PT)
@@ -2866,14 +2941,7 @@ fn scope_popover(
     ui::menu_sep(ui);
     let every = v.scope.is_none();
     let every_label = format!("Every {} field", kind_word(v.kind));
-    // At the rows' inset: `switch_row` sets its label flush with its rect.
-    let inset = ui
-        .available_rect_before_wrap()
-        .shrink2(egui::vec2(SCOPE_INSET, 0.0));
-    let switch = ui.scope_builder(egui::UiBuilder::new().max_rect(inset), |ui| {
-        ui::switch_row(ui, &every_label, every, MENU_ROW_H)
-    });
-    if switch.inner.clicked() {
+    if popover_switch(ui, &every_label, every).clicked() {
         // Off leaves every box ticked to start from.
         let next = match every {
             true => Some(every_field(v.kind)),
@@ -2891,10 +2959,7 @@ fn scope_popover(
         {
             group = Some(g);
             ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.add_space(SCOPE_INSET);
-                ui.label(ui::eyebrow(g));
-            });
+            popover_inset(ui, |ui| ui.label(ui::eyebrow(g)));
         }
         let on = scope.contains(f);
         let who = count(f);
@@ -2908,7 +2973,7 @@ fn scope_popover(
         ui::paint_tick_box(
             p,
             egui::pos2(
-                rect.left() + SCOPE_INSET + ui::TICK_BOX / 2.0,
+                rect.left() + POPOVER_INSET + ui::TICK_BOX / 2.0,
                 rect.center().y,
             ),
             on,
@@ -2937,7 +3002,7 @@ fn scope_popover(
             );
             let hit = ui.interact(r, resp.id.with("count"), egui::Sense::click());
             ui.painter().text(
-                egui::pos2(rect.right() - SCOPE_INSET, rect.center().y),
+                egui::pos2(rect.right() - POPOVER_INSET, rect.center().y),
                 egui::Align2::RIGHT_CENTER,
                 n,
                 egui::FontId::proportional(ui::SMALL_PT),
@@ -2969,7 +3034,7 @@ fn scope_popover(
     ui::menu_sep(ui);
     let foot = |ui: &mut egui::Ui, text: String, ink: egui::Color32| {
         ui.horizontal(|ui| {
-            ui.add_space(SCOPE_INSET);
+            ui.add_space(POPOVER_INSET);
             ui.label(egui::RichText::new(text).size(ui::SMALL_PT).color(ink));
         });
     };
@@ -7423,7 +7488,7 @@ mod tests {
             "level: {row:?} against {label:?}"
         );
         let card = 400.0 + 4.0 + ui::MENU_BORDER;
-        assert!(row.left() >= card + SCOPE_INSET - 0.5, "inset: {row:?}");
+        assert!(row.left() >= card + POPOVER_INSET - 0.5, "inset: {row:?}");
     }
 
     /// **The picker counts a collection's modes and never names them.**
@@ -8114,5 +8179,50 @@ mod tests {
         let b = app.var_browser.as_ref().unwrap();
         assert!(b.menu.is_none(), "without opening the list");
         assert!(b.offer.is_none(), "and the offer line goes");
+    }
+
+    /// *Generate scale…* at three steps lands the white source on 100, the
+    /// nearest kept step, draws three chips, says three, and its *Source lands
+    /// on* list hangs under the value, right edges together, offering only those.
+    ///
+    /// flip: `scale_popover` without its `nearest_kept` snap → fails at "100".
+    #[test]
+    fn a_three_step_scale_offers_three_steps_under_its_value() {
+        let (ctx, mut app) = app();
+        app.toggle_var_browser();
+        app.var_act(Act::NewVar(VarKind::Color));
+        let v = the_only_var(&app).id;
+        app.var_browser.as_mut().unwrap().edit = None;
+        app.open_scale(v);
+        let draw: fn(&mut MastikApp, &egui::Context) = |a, c| a.var_browser_ui(c);
+        for _ in 0..2 {
+            pass(&ctx, &mut app, vec![], draw);
+        }
+        app.var_browser
+            .as_mut()
+            .unwrap()
+            .scale
+            .as_mut()
+            .unwrap()
+            .steps = 3;
+        let mut shapes = vec![];
+        for _ in 0..2 {
+            shapes = pass(&ctx, &mut app, vec![], draw);
+        }
+        assert!(
+            last_text(&shapes, "100 · by its lightness").is_some(),
+            "100"
+        );
+        assert!(last_text(&shapes, "Makes 3 colour variables in Variables.").is_some());
+        assert!(last_text(&shapes, "50").is_none() && last_text(&shapes, "950").is_none());
+        click_text(&ctx, &mut app, "100 · by its lightness", draw);
+        let shapes = pass(&ctx, &mut app, vec![], draw);
+        let list = ctx
+            .memory(|m| m.area_rect(egui::Id::new("var-browser-menu").with("scale-steps")))
+            .expect("the list is open");
+        let value = last_text(&shapes, "100 · by its lightness").unwrap();
+        assert!(list.top() > value.y, "under the value: {list:?}");
+        assert!(last_text(&shapes, "L 60%").is_some(), "500 is offered");
+        assert!(last_text(&shapes, "L 97%").is_none(), "50 is not");
     }
 }

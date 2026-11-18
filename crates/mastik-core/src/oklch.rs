@@ -125,6 +125,36 @@ pub fn max_chroma(l: f64, h: f64) -> f64 {
 /// The steps of a colour scale, lightest first.
 pub const SCALE_STEPS: [u16; 11] = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950];
 
+/// The fewest steps a scale may have; the most is every one of [`SCALE_STEPS`].
+pub const SCALE_MIN_STEPS: usize = 3;
+
+/// The indices of [`SCALE_STEPS`] a scale of `count` steps keeps, `count`
+/// clamped to [`SCALE_MIN_STEPS`]..=11. Eleven keep all; ten drop 950; nine and
+/// fewer spread evenly over the hundreds, 100 to 900, so five are 100, 300 …
+/// 900 and three 100, 500, 900. Each name keeps the full ramp's lightness.
+pub fn scale_subset(count: usize) -> Vec<usize> {
+    let all = SCALE_STEPS.len();
+    match count.clamp(SCALE_MIN_STEPS, all) {
+        n if n >= all - 1 => (0..n).collect(),
+        n => {
+            // 100 is index 1 and 900 index 9: eight gaps, rounded half up.
+            let span = all - 3;
+            (0..n)
+                .map(|k| 1 + (2 * k * span + (n - 1)) / (2 * (n - 1)))
+                .collect()
+        }
+    }
+}
+
+/// The index of `keep` nearest the step `anchor`, by lightness: where the
+/// source lands when the steps it was on are no longer kept.
+pub fn nearest_kept(keep: &[usize], anchor: usize) -> usize {
+    keep.iter()
+        .copied()
+        .min_by_key(|i| i.abs_diff(anchor))
+        .unwrap_or(anchor)
+}
+
 /// The OKLCH lightness of a scale's lightest and darkest steps.
 const SCALE_LIGHTNESS: (f64, f64) = (0.97, 0.24);
 
@@ -191,6 +221,14 @@ pub fn scale(base: Color, anchor: usize, exact: bool) -> [(u16, Color); SCALE_ST
             Color::new([r as f32, g as f32, b as f32, alpha]),
         )
     })
+}
+
+/// [`scale`] cut to the `keep` indices of [`SCALE_STEPS`] ([`scale_subset`]):
+/// each kept step the colour the full ramp gives it, so a shorter scale's 500
+/// is the eleven-step scale's 500.
+pub fn scale_kept(base: Color, anchor: usize, exact: bool, keep: &[usize]) -> Vec<(u16, Color)> {
+    let full = scale(base, anchor, exact);
+    keep.iter().filter_map(|i| full.get(*i).copied()).collect()
 }
 
 /// Whether straight sRGB `x` lies in the gamut, give or take float error.
@@ -344,5 +382,41 @@ mod tests {
         assert_eq!(steps[5].1, base);
         let ls = steps.map(|(_, c)| Oklch::of(c).l);
         assert!(ls.windows(2).all(|w| w[0] > w[1]), "{ls:?}");
+    }
+
+    /// Every count keeps its steps lightest first and symmetric about 500
+    /// below ten, and a kept step is the full ramp's colour.
+    ///
+    /// flip: `scale_subset` rounding down rather than half up → fails at the
+    /// four-step set.
+    #[test]
+    fn a_shorter_scale_keeps_a_symmetric_subset() {
+        let names = |n: usize| {
+            scale_subset(n)
+                .iter()
+                .map(|i| SCALE_STEPS[*i])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(3), [100, 500, 900]);
+        assert_eq!(names(4), [100, 400, 600, 900]);
+        assert_eq!(names(5), [100, 300, 500, 700, 900]);
+        assert_eq!(names(8), [100, 200, 300, 400, 600, 700, 800, 900]);
+        assert_eq!(names(9), [100, 200, 300, 400, 500, 600, 700, 800, 900]);
+        assert_eq!(names(10).last(), Some(&900));
+        assert_eq!(names(11), SCALE_STEPS);
+        assert_eq!(names(1), names(3), "clamped");
+        for n in SCALE_MIN_STEPS..=9 {
+            let s = names(n);
+            assert!(s.windows(2).all(|w| w[0] < w[1]), "{s:?}");
+            for (a, b) in s.iter().zip(s.iter().rev()) {
+                assert_eq!(a + b, 1000, "{n}: {s:?}");
+            }
+        }
+        let base = Color::from_rgb8(0x2f, 0x6b, 0xff);
+        let full = scale(base, 5, true);
+        let kept = scale_kept(base, 5, true, &scale_subset(3));
+        assert_eq!(kept, vec![full[1], full[5], full[9]]);
+        assert_eq!(nearest_kept(&scale_subset(3), 3), 1);
+        assert_eq!(nearest_kept(&scale_subset(3), 4), 5);
     }
 }
