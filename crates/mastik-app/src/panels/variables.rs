@@ -2729,17 +2729,15 @@ fn scale_ramp(ui: &mut egui::Ui, ramp: &[(u16, Color)], anchor: usize) {
         let x = rect.left() + i as f32 * (chip_w + GAP);
         let chip = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(chip_w, CHIP_H));
         let p = ui.painter();
-        p.rect_filled(
-            chip,
-            egui::CornerRadius::same(3),
-            ui::color_to_egui(*colour),
-        );
+        // A colour chip's look, and the source ringed as the picker rings the
+        // swatch in use.
+        ui::paint_colour_chip(p, chip, ui::color_to_egui(*colour));
         if i == anchor {
             p.rect_stroke(
-                chip.expand(1.5),
-                egui::CornerRadius::same(4),
-                egui::Stroke::new(1.5, theme::color::text()),
-                egui::StrokeKind::Middle,
+                chip,
+                (chip.width().min(chip.height()) * 0.25).round(),
+                egui::Stroke::new(1.5, theme::color::accent_200()),
+                egui::StrokeKind::Outside,
             );
         }
         let ink = match i == anchor {
