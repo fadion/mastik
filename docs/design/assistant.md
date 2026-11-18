@@ -232,13 +232,16 @@ what it has read:
   *Stopped: the access level changed.*) and the next question starts a new one with the prose
   replayed.
 
-- **Look** — Phase 1's reads and exports (`mcp.md` §8.4). `export_png` is the agent's eyes.
-- **Propose** (the default) — Look, plus `propose_edit` (*Proposals*).
-- **Edit** — Look, plus the writes of Phases 2 and 3. Each call commits as its own undo step marked
-  as the assistant's (`Origin::Mcp`). Edit does not list `propose_edit`.
+- **Look** — Phase 1's reads and exports (`mcp.md` §8.4), and `search_assets`. `export_png` is the
+  agent's eyes.
+- **Propose** (the default) — Look, plus `propose_edit` (*Proposals*). Not `place_asset`: a
+  proposal replays registry verbs, and a credited placement is no verb.
+- **Edit** — Look, plus the writes of Phases 2 and 3 and `place_asset`. Each call commits as its own
+  undo step marked as the assistant's (`Origin::Mcp`). Edit does not list `propose_edit`.
 
 Every level lists the core set within it (`access::listed`) plus `describe_tools` and `call`, and
-reaches its other tools through `call`. Phase 4, the kits and the library, is never a chat's.
+reaches its other tools through `call`. Phase 4, the kits and the library, is never a chat's, but
+for the assets browser's two tools (`mcp.md` §8.4, *The assets browser*).
 `propose_edit` sits outside the phases, in `mastik_mcp::tools::ASSISTANT`.
 
 **The host holds the level, not the harness.** The endpoint serves any process running as the

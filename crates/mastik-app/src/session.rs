@@ -1605,6 +1605,25 @@ impl EditorSession {
         ));
     }
 
+    /// [`Self::name_mcp_step`] with the step called `name`, as the app's own door
+    /// for the same act calls it, rather than by the tool.
+    pub fn name_mcp_step_as(
+        &mut self,
+        client: impl Into<String>,
+        tool: impl Into<String>,
+        name: &str,
+        glyph: &'static str,
+    ) {
+        self.naming = Some((
+            name.to_owned(),
+            glyph,
+            mastik_core::Origin::Mcp {
+                client: client.into(),
+                tool: tool.into(),
+            },
+        ));
+    }
+
     /// Whether a step name is waiting for the next commit, so a door that forwards
     /// to another keeps the more particular name the first gave.
     pub fn has_step_name(&self) -> bool {

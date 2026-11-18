@@ -7,6 +7,7 @@
 //! once, since a tab behind is kept clean.
 
 use super::access::Grants;
+use super::assets::{Desk, Pack};
 use super::endpoint::{self, Endpoint, Host};
 use super::propose::Proposal;
 use super::{Documents, Engine};
@@ -23,7 +24,13 @@ pub(crate) struct WindowHost {
     calls: Receiver<Request>,
     engine: Engine,
     _endpoint: Endpoint,
+    /// When the calls waiting on a download last ran, and the assets' landed
+    /// count then.
+    later_run: Option<(u64, std::time::Instant)>,
 }
+
+/// How often a call waiting on a download runs again with nothing new landed.
+const LATER_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Listen for agents. A relay thread hands each call on and wakes the window,
 /// which otherwise sleeps until the person moves. `None`, logged, when the
@@ -59,6 +66,7 @@ pub(crate) fn start(ctx: &egui::Context) -> Option<WindowHost> {
         calls,
         engine,
         _endpoint: endpoint,
+        later_run: None,
     })
 }
 
@@ -82,11 +90,33 @@ impl MastikApp {
             return;
         };
         let mut answered = false;
+        // Calls waiting on a download run again once something landed, and at
+        // least every half second, so one past its wait is answered.
+        if host.engine.has_later() {
+            let ctx = self.egui_ctx.clone();
+            self.assets.pass(&ctx);
+            let now = std::time::Instant::now();
+            let due = host.later_run.is_none_or(|(count, at)| {
+                count != self.assets.landed_count || now.duration_since(at) >= LATER_EVERY
+            });
+            if due {
+                host.later_run = Some((self.assets.landed_count, now));
+                host.engine.run_later(self);
+                answered = true;
+            }
+            ctx.request_repaint_after(LATER_EVERY);
+        }
         while let Ok(request) = host.calls.try_recv() {
             match request {
                 Request::Call(call) if call.take() => {
                     let reply = call.reply.clone();
-                    let _ = reply.send(host.engine.handle(self, call));
+                    if let Some(out) = host.engine.handle_or_wait(self, call) {
+                        let _ = reply.send(out);
+                    } else {
+                        host.later_run =
+                            Some((self.assets.landed_count, std::time::Instant::now()));
+                        self.egui_ctx.request_repaint_after(LATER_EVERY);
+                    }
                     answered = true;
                 }
                 // Its connection gave up waiting and told the agent nothing changed.
@@ -240,6 +270,57 @@ impl Documents for MastikApp {
         if self.tab_of_path(path).is_some() && self.tab_of_path(path) == self.tabs.active {
             self.finish_text_first();
         }
+    }
+
+    fn desk(&mut self) -> Option<&mut dyn Desk> {
+        Some(self)
+    }
+}
+
+impl Desk for MastikApp {
+    fn prefs(&self) -> &crate::prefs::AssetPrefs {
+        &self.prefs.assets
+    }
+
+    fn assets(&mut self) -> &mut crate::assets::Assets {
+        &mut self.assets
+    }
+
+    fn keys(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        self.asset_keys.clone()
+    }
+
+    fn packs(&mut self, own: Option<&str>) -> Vec<(crate::kits::index::KitEntry, Pack)> {
+        use crate::kits::index::Load;
+        let on = &self.prefs.assets.icon_sets;
+        let kits: Vec<_> = crate::assets::sets::icon_packs(&self.library, own)
+            .into_iter()
+            .filter(|k| on.contains(&crate::assets::sets::pack_key(&k.id)))
+            .collect();
+        kits.into_iter()
+            .filter_map(|k| {
+                self.kit_shelf.ask(&k);
+                let pack = match self.kit_shelf.load(&k.id) {
+                    Some(Load::Ready(Some(p))) => {
+                        let version = self.kit_shelf.read_version(&k.id).unwrap_or(k.version);
+                        Pack::Ready(std::sync::Arc::new(crate::assets::panel::KitPack::new(
+                            k.clone(),
+                            version,
+                            p.clone(),
+                        )))
+                    }
+                    // A kit that published nothing has no icons to offer.
+                    Some(Load::Ready(None)) => return None,
+                    Some(Load::Failed) => Pack::Failed,
+                    Some(Load::Pending) | None => Pack::Reading,
+                };
+                Some((k, pack))
+            })
+            .collect()
+    }
+
+    fn adopt(&mut self, image: &mastik_core::ImageId, pixels: mastik_core::peniko::ImageData) {
+        self.canvas.images_mut().adopt(image, pixels);
     }
 }
 

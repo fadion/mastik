@@ -583,6 +583,76 @@ pub static TOOLS: &[Tool] = &[
         ],
     },
     Tool {
+        name: "search_assets",
+        doc: "Search the icon sets, icon kits or photo services the person switched on: icons with set, variant, size, aliases and licence; photos with alt text, credit and a thumbnail. Answers `asset` ids for `place_asset`.",
+        params: &[
+            param(
+                "queries",
+                ParamKind::Model("[Name]"),
+                true,
+                "One search each.",
+            ),
+            param(
+                "kind",
+                ParamKind::Choice(&["icons", "photos"]),
+                true,
+                "What to search.",
+            ),
+            param(
+                "source",
+                ParamKind::Text,
+                false,
+                "One set, kit or service by name.",
+            ),
+            param(
+                "variant",
+                ParamKind::Text,
+                false,
+                "With one set as `source`, such as `Bold`.",
+            ),
+            param(
+                "orientation",
+                ParamKind::Choice(&["any", "landscape", "portrait", "square"]),
+                false,
+                "Photos only.",
+            ),
+            param(
+                "limit",
+                ParamKind::Index,
+                false,
+                "Per query; 12 icons or 6 photos unless given.",
+            ),
+        ],
+    },
+    Tool {
+        name: "place_asset",
+        doc: "Place a searched asset with its credit: its box's corner at `x`, `y` in `parent`, or a photo filling the `fill` layers. A photo still downloading after 25 s answers `pending`.",
+        params: &[
+            param(
+                "asset",
+                ParamKind::Text,
+                false,
+                "An id from `search_assets`.",
+            ),
+            param("parent", ParamKind::Node, false, "Where it goes."),
+            param("x", ParamKind::Number, false, "0 unless given."),
+            param("y", ParamKind::Number, false, "0 unless given."),
+            param(
+                "size",
+                ParamKind::Number,
+                false,
+                "An icon's side or a photo's width.",
+            ),
+            param("fill", ParamKind::Nodes, false, "Layers a photo fills."),
+            param(
+                "pending",
+                ParamKind::Text,
+                false,
+                "Alone: what that placement made.",
+            ),
+        ],
+    },
+    Tool {
         name: "list_kit_updates",
         doc: "The kits this document uses that published since: the version held, the version waiting, its note, and how many components and instances it touches.",
         params: &[],
@@ -734,14 +804,18 @@ pub enum Class {
 }
 
 /// The library and host reads past Phase 1, every tool of which reads.
-const LATER_READS: [&str; 6] = [
+const LATER_READS: [&str; 7] = [
     "list_documents",
     "list_kits",
     "get_kit",
     "list_kit_updates",
     "list_versions",
     "compare_version",
+    "search_assets",
 ];
+
+/// The tools that reach the network, which every other tool never does.
+const OPEN_WORLD: [&str; 2] = ["search_assets", "place_asset"];
 
 /// The tools whose effect `undo` does not revert (`docs/design/mcp.md`, *Outside
 /// undo*): written to disk, or published to every document using the kit.
@@ -779,9 +853,9 @@ fn entry(name: &str, doc: &str, params: &[Param], extra: Option<Param>) -> Value
             required.push(json!(p.name));
         }
     }
-    // Every tool acts on the person's documents only, never the outside world,
-    // which the protocol assumes unless told.
-    let annotations = match class(name) {
+    // Every tool but the assets browser's acts on the person's documents only,
+    // never the outside world, which the protocol assumes unless told.
+    let mut annotations = match class(name) {
         Class::Read => json!({ "readOnlyHint": true, "openWorldHint": false }),
         // Undo reverts it: not destructive in the protocol's sense.
         Class::Write => {
@@ -791,6 +865,9 @@ fn entry(name: &str, doc: &str, params: &[Param], extra: Option<Param>) -> Value
             json!({ "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false })
         }
     };
+    if OPEN_WORLD.contains(&name) {
+        annotations["openWorldHint"] = json!(true);
+    }
     json!({
         "name": name,
         "description": match doc.ends_with('.') {
@@ -1040,7 +1117,8 @@ mod tests {
         );
         for name in PHASE_1.iter().chain(&PHASE_4) {
             let d = definition(name).unwrap();
-            assert_eq!(d["annotations"]["openWorldHint"], false, "{name}");
+            let open = OPEN_WORLD.contains(name);
+            assert_eq!(d["annotations"]["openWorldHint"], open, "{name}");
         }
     }
 
@@ -1062,7 +1140,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 108_400;
+        const ALL_BUDGET: usize = 110_400;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

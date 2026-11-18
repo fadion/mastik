@@ -54,15 +54,16 @@ impl Level {
 }
 
 /// Whether `level` may run `tool`. `call` is a door, checked by the tool it
-/// names; Phase 4, the kits and the library, is never a chat's.
+/// names; Phase 4, the kits and the library, is never a chat's, but for the
+/// assets browser's search, a read, and its placement at Edit.
 pub(crate) fn allowed(level: Level, tool: &str) -> bool {
-    if tool == "call" || PHASE_1.contains(&tool) {
+    if tool == "call" || tool == "search_assets" || PHASE_1.contains(&tool) {
         return true;
     }
     match level {
         Level::Look => false,
         Level::Propose => ASSISTANT.contains(&tool),
-        Level::Edit => PHASE_2.contains(&tool) || PHASE_3.contains(&tool),
+        Level::Edit => PHASE_2.contains(&tool) || PHASE_3.contains(&tool) || tool == "place_asset",
     }
 }
 

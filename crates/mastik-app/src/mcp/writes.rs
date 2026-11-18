@@ -319,6 +319,15 @@ pub(super) fn commit(
     tx: mastik_core::Transaction,
 ) -> Result<(), String> {
     s.name_mcp_step(client, tool, "");
+    commit_named(s, tx)
+}
+
+/// Commit `tx` under the step name already set on `s`, through the door every
+/// tool's commit takes.
+pub(super) fn commit_named(
+    s: &mut EditorSession,
+    tx: mastik_core::Transaction,
+) -> Result<(), String> {
     let held = s.style_edit.take();
     let applied = s.try_commit(tx);
     s.style_edit = held;

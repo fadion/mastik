@@ -127,6 +127,16 @@ impl PhotoSize {
         }
     }
 
+    /// The address `photo` is downloaded from at this size.
+    pub(crate) fn url_of(self, photo: &Photo) -> String {
+        photo.urls[match self {
+            PhotoSize::Small => 0,
+            PhotoSize::Regular => 1,
+            PhotoSize::Full => 2,
+        }]
+        .clone()
+    }
+
     /// The width asked of a service that scales on request; `None` is the original.
     fn width(self) -> Option<u32> {
         match self {

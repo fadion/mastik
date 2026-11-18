@@ -150,7 +150,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **An embedded model, or a provider API key held by Mastik** — the harness holds the model, the account and the billing (`design/assistant.md` §1).
 - **An approval prompt inside a turn** — a headless harness cannot pause for one; the access level is the approval.
 - **The agent's own tools** (shell, files, web) inside the assistant.
-- **Kits and the library through the assistant** — Phase 4 is never a chat's.
+- **Kits and the library through the assistant** — Phase 4's kit and library tools are never a chat's (the assets browser's two are).
 - **A chat saved in the document** — a chat is the person's, not the work's.
 - **Gemini CLI as a harness** — Google withdrew its OAuth sign-in for individuals in favour of Antigravity, which is driven.
 

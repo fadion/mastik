@@ -12,7 +12,7 @@ pub(crate) mod photos;
 pub(crate) mod sets;
 
 use crate::kits::index::Pixels;
-use photos::{Page, Photo, PhotoError, PhotoSize, ServiceSpec};
+use photos::{Orientation, Page, Photo, PhotoError, PhotoSize, ServiceSpec};
 use sets::{IconSet, SetSpec};
 use std::collections::HashMap;
 use std::io::Read as _;
@@ -84,6 +84,54 @@ enum Done {
     CacheSize(u64),
     /// A download report went out; nothing to take.
     Reported,
+    /// An agent's photo search answered.
+    AgentPhotos {
+        key: SearchKey,
+        page: Result<Page, PhotoError>,
+    },
+    /// An agent's thumbnail, shrunk and encoded, or `None` when it would not read.
+    AgentThumb {
+        url: String,
+        jpeg: Option<Vec<u8>>,
+    },
+    /// A photo downloaded for an agent's placement.
+    AgentPhoto {
+        url: String,
+        read: Fetched,
+    },
+}
+
+/// What an agent's photo search asked: the service, the query as typed less
+/// its outer spaces, the orientation.
+pub(crate) type SearchKey = (&'static str, String, Orientation);
+
+/// A photo search's answer.
+type Searched = Result<Page, PhotoError>;
+
+/// How long an agent's photo search is answered from memory: the hourly limit
+/// is the person's, and an agent asks again often.
+const AGENT_SEARCH_KEEP: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// How many agent searches are kept, the oldest forgotten first.
+const AGENT_SEARCHES: usize = 32;
+/// The longest side of a thumbnail an agent is shown, in pixels: enough to tell
+/// photos apart at a fraction of a full picture's tokens.
+const AGENT_THUMB_PX: u32 = 160;
+
+/// Where something an agent waits on stands.
+pub(crate) enum Poll<T> {
+    /// Asked for, not landed; the call runs again once something lands.
+    Waiting,
+    Ready(T),
+}
+
+/// The searches, thumbnails and photos an agent's calls wait on (`mcp::assets`),
+/// kept apart from the panel's, so neither replaces the other's.
+#[derive(Default)]
+struct ForAgents {
+    /// Newest last: when each was asked, and its answer once landed.
+    searches: Vec<(SearchKey, std::time::Instant, Option<Searched>)>,
+    thumbs: HashMap<String, Option<Option<Vec<u8>>>>,
+    photos: HashMap<String, Option<Fetched>>,
 }
 
 /// `service`'s key as the session holds it: `Some(None)` when the keychain was
@@ -159,6 +207,10 @@ pub(crate) struct Assets {
     pub(crate) prefs_dirty: bool,
     /// Off the network, for tests: nothing is spawned.
     offline: bool,
+    agents: ForAgents,
+    /// How many answers the workers have handed back: an agent's waiting call
+    /// runs again when it moves.
+    pub(crate) landed_count: u64,
     /// The download reports `Assets::report_download` passed its guard, in order.
     #[cfg(test)]
     pub(crate) reported: Vec<String>,
@@ -185,6 +237,8 @@ impl Default for Assets {
             cache_bytes: None,
             prefs_dirty: false,
             offline: cfg!(test),
+            agents: ForAgents::default(),
+            landed_count: 0,
             #[cfg(test)]
             reported: Vec::new(),
         }
@@ -330,6 +384,25 @@ fn thumb_pixels(bytes: &[u8]) -> Option<Pixels> {
     })
 }
 
+/// A thumbnail's bytes as an agent is shown them: decoded as the panel's are,
+/// fitted into [`AGENT_THUMB_PX`] square and written as JPEG.
+fn agent_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
+    let px = thumb_pixels(bytes)?;
+    let img = image::RgbaImage::from_raw(px.width, px.height, px.rgba)?;
+    let small = image::DynamicImage::ImageRgba8(img)
+        .resize(
+            AGENT_THUMB_PX,
+            AGENT_THUMB_PX,
+            image::imageops::FilterType::Triangle,
+        )
+        .to_rgb8();
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 75)
+        .encode_image(&small)
+        .ok()?;
+    Some(out)
+}
+
 /// An icon's markup drawn in white at `px` pixels, for the panel to tint: read
 /// through the SVG importer, so the tile is what an insert makes.
 pub(crate) fn icon_pixels(svg: &str) -> Option<Pixels> {
@@ -401,6 +474,7 @@ impl Assets {
             *slot = Some(ctx.clone());
         }
         while let Ok(done) = self.done.try_recv() {
+            self.landed_count += 1;
             match done {
                 Done::Progress { set, done, total } => {
                     if let Some(SetState::Loading { .. }) = self.sets.get(set) {
@@ -459,6 +533,19 @@ impl Assets {
                 }
                 Done::CacheSize(n) => self.cache_bytes = Some(n),
                 Done::Reported => {}
+                Done::AgentPhotos { key, page } => {
+                    if let Some(slot) = self.agents.searches.iter_mut().find(|s| s.0 == key) {
+                        slot.2 = Some(page);
+                    }
+                }
+                Done::AgentThumb { url, jpeg } => {
+                    self.agents.thumbs.insert(url, Some(jpeg));
+                }
+                Done::AgentPhoto { url, read } => {
+                    if let Some(slot) = self.agents.photos.get_mut(&url) {
+                        *slot = Some(read);
+                    }
+                }
             }
         }
     }
@@ -598,15 +685,7 @@ impl Assets {
         self.fetch_live.store(token, Ordering::Relaxed);
         let jobs: Vec<(String, String)> = photos
             .iter()
-            .map(|p| {
-                let url = p.urls[match size {
-                    PhotoSize::Small => 0,
-                    PhotoSize::Regular => 1,
-                    PhotoSize::Full => 2,
-                }]
-                .clone();
-                (url, p.layer_name())
-            })
+            .map(|p| (size.url_of(p), p.layer_name()))
             .collect();
         self.fetch = Some(Fetch {
             token,
@@ -670,6 +749,121 @@ impl Assets {
         }));
     }
 
+    /// An agent's photo search, answered from memory for [`AGENT_SEARCH_KEEP`],
+    /// else asked for: one page, the service's first. The key is taken as
+    /// [`Assets::search_photos`] takes it.
+    pub(crate) fn agent_search(
+        &mut self,
+        key: SearchKey,
+        keys: Option<&std::collections::BTreeMap<String, String>>,
+    ) -> Poll<Result<Page, PhotoError>> {
+        let now = std::time::Instant::now();
+        self.agents
+            .searches
+            .retain(|s| now.duration_since(s.1) < AGENT_SEARCH_KEEP);
+        if let Some((_, _, answer)) = self.agents.searches.iter().find(|s| s.0 == key) {
+            return match answer {
+                Some(page) => Poll::Ready(page.clone()),
+                None => Poll::Waiting,
+            };
+        }
+        let Some(service) = ServiceSpec::by_key(key.0) else {
+            return Poll::Ready(Err(PhotoError::Unreachable));
+        };
+        if self.agents.searches.len() >= AGENT_SEARCHES {
+            self.agents.searches.remove(0);
+        }
+        self.agents.searches.push((key.clone(), now, None));
+        let known = session_key(service, keys);
+        self.run(Box::new(move || {
+            let key_text = known.unwrap_or_else(|| {
+                service
+                    .key_label
+                    .and_then(|_| crate::keychain::read_account(&service.account()))
+            });
+            let page = photos::request(service, &key.1, 1, key.2, key_text.as_deref()).and_then(
+                |(url, auth)| {
+                    let body = get(&agent(), &url, auth.as_deref(), |_, _| {})
+                        .map_err(|e| e.map_or(PhotoError::Unreachable, photos::status_error))?;
+                    photos::read_page(service, &body, 1).ok_or(PhotoError::Unreachable)
+                },
+            );
+            Done::AgentPhotos { key, page }
+        }));
+        Poll::Waiting
+    }
+
+    /// A photo an agent's search answered with, by service and id, while that
+    /// search is remembered.
+    pub(crate) fn agent_found(&self, service: &str, id: &str) -> Option<Photo> {
+        self.agents
+            .searches
+            .iter()
+            .rev()
+            .filter_map(|s| s.2.as_ref()?.as_ref().ok())
+            .flat_map(|page| &page.photos)
+            .find(|p| p.service == service && p.id == id)
+            .cloned()
+    }
+
+    /// A photo's thumbnail as an agent is shown it: at most [`AGENT_THUMB_PX`]
+    /// on its longer side, as JPEG; `None` once it would not read.
+    pub(crate) fn agent_thumb(&mut self, url: &str) -> Poll<Option<Vec<u8>>> {
+        match self.agents.thumbs.get(url) {
+            Some(Some(jpeg)) => return Poll::Ready(jpeg.clone()),
+            Some(None) => return Poll::Waiting,
+            None => {}
+        }
+        // A long session's searches would keep every thumbnail they showed.
+        if self.agents.thumbs.len() > 256 {
+            self.agents.thumbs.retain(|_, t| t.is_none());
+        }
+        self.agents.thumbs.insert(url.to_string(), None);
+        let url = url.to_string();
+        self.run(Box::new(move || Done::AgentThumb {
+            jpeg: get(&agent(), &url, None, |_, _| {})
+                .ok()
+                .and_then(|b| agent_jpeg(&b)),
+            url,
+        }));
+        Poll::Waiting
+    }
+
+    /// `photo` downloaded at `size` for an agent's placement. A landed download
+    /// is handed over once; the next ask downloads again.
+    pub(crate) fn agent_photo(&mut self, photo: &Photo, size: PhotoSize) -> Poll<Fetched> {
+        if !self.agent_photo_ready(photo, size) {
+            return Poll::Waiting;
+        }
+        match self.agents.photos.remove(&size.url_of(photo)) {
+            Some(Some(read)) => Poll::Ready(read),
+            _ => Poll::Waiting,
+        }
+    }
+
+    /// Whether `photo` at `size` has downloaded for an agent, asking for it when
+    /// it is not on its way; nothing is handed over.
+    pub(crate) fn agent_photo_ready(&mut self, photo: &Photo, size: PhotoSize) -> bool {
+        let url = size.url_of(photo);
+        match self.agents.photos.get(&url) {
+            Some(Some(_)) => return true,
+            Some(None) => return false,
+            None => {}
+        }
+        self.agents.photos.insert(url.clone(), None);
+        let name = photo.layer_name();
+        self.run(Box::new(move || Done::AgentPhoto {
+            read: get(&agent(), &url, None, |_, _| {})
+                .map_err(|_| "The photo could not be downloaded".to_string())
+                .and_then(|bytes| {
+                    crate::app::read_picture(bytes, None, Some(name))
+                        .map_err(|_| "The photo could not be read".to_string())
+                }),
+            url,
+        }));
+        false
+    }
+
     /// The cache's size, counted once after it was asked for or changed; `None`
     /// until the count lands.
     pub(crate) fn cache_bytes(&mut self) -> Option<u64> {
@@ -694,6 +888,32 @@ impl Assets {
         self.tiles.clear();
         self.cache_bytes = Some(0);
         freed
+    }
+}
+
+/// What the workers would hand back for an agent's calls, handed by a test,
+/// since tests spawn none.
+#[cfg(test)]
+impl Assets {
+    pub(crate) fn agent_land_search(&mut self, key: SearchKey, page: Searched) {
+        match self.agents.searches.iter_mut().find(|s| s.0 == key) {
+            Some(slot) => slot.2 = Some(page),
+            None => self
+                .agents
+                .searches
+                .push((key, std::time::Instant::now(), Some(page))),
+        }
+        self.landed_count += 1;
+    }
+
+    pub(crate) fn agent_land_thumb(&mut self, url: &str, jpeg: Option<Vec<u8>>) {
+        self.agents.thumbs.insert(url.to_owned(), Some(jpeg));
+        self.landed_count += 1;
+    }
+
+    pub(crate) fn agent_land_photo(&mut self, url: &str, read: Fetched) {
+        self.agents.photos.insert(url.to_owned(), Some(read));
+        self.landed_count += 1;
     }
 }
 

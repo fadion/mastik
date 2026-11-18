@@ -11617,7 +11617,7 @@ pub(crate) fn paint_squiggle_in(
 /// `CreateNode { name: None }` would number from the kind's stem ("Rectangle 4"),
 /// but an image is a fill on a Rect; `"Image"` stays out of core's
 /// `GENERATED_NAMES`, which inverts `NodeKind::default_name`.
-fn image_layer_name(doc: &Document, parent: NodeId, given: Option<String>) -> String {
+pub(crate) fn image_layer_name(doc: &Document, parent: NodeId, given: Option<String>) -> String {
     given.unwrap_or_else(|| mastik_core::free_name(&doc.child_names(parent, &[]), "Image", 1))
 }
 

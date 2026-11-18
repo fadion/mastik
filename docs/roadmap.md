@@ -27,15 +27,10 @@ The design and its open questions are in `prototyping.md`.
 
 Items run cheapest first.
 
-- **The assets browser through MCP.** `search_assets` (icons or photos, several queries at once,
-  set and variant optional; icons by name, aliases and licence, photos with alt text, credit and a
-  small thumbnail as image content) and `place_asset` (at a point, a size, or filling layers),
-  through the panel's own placement so the credit, Unsplash's download report and the undo names
-  come with it. Only sets and services the person has switched on; an agent never switches one on,
-  since that reaches the network. Searching is a read (Look); placing needs Propose or Edit. A photo
-  lands after its download, inside the call's 30 s queue limit or as a pending id. Photo searches
-  are cached briefly, since an hourly limit is the person's. Library kits shown in the Icons tab
-  (`sets::icon_packs`) are included.
+- **The assets tools at Propose and in `serve`.** `place_asset` at Propose: a proposal that
+  carries a credited placement, and downloads the photo when the person applies it, since
+  `propose_edit` replays only registry verbs. And `search_assets` / `place_asset` in `serve`,
+  reading the person's switched-on sets and services from the preferences rather than refusing.
 - **Arrowheads on lines.** A start and an end decoration on `Line`, `Arc` and open `Path` (none,
   arrow, open arrow, circle, square, bar), sized from the stroke width and drawn as their own
   shapes, not as stroke ink, so a `Stroke` stays ink at one width. Hit-testing, `ink_bounds` and

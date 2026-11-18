@@ -54,7 +54,6 @@ pub(crate) struct SetSpec {
 
 impl SetSpec {
     /// The set by its key.
-    #[cfg(test)]
     pub(crate) fn by_key(key: &str) -> Option<&'static SetSpec> {
         SETS.iter().find(|s| s.key == key)
     }

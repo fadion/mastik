@@ -195,8 +195,9 @@ pub const PHASE_3: [&str; 52] = [
 /// document metadata rather than an operation, so `undo` reverts none of them.
 /// `insert_from_kit` returns the new instance's id and `create_document` the new
 /// file's path. `save_version` pins a file, outside history too; `import_tokens`
-/// is one undo step.
-pub const PHASE_4: [&str; 16] = [
+/// is one undo step. `search_assets` and `place_asset` are the assets browser's,
+/// answered only by the window.
+pub const PHASE_4: [&str; 18] = [
     "list_documents",
     "create_document",
     "list_kits",
@@ -213,6 +214,8 @@ pub const PHASE_4: [&str; 16] = [
     "list_versions",
     "compare_version",
     "save_version",
+    "search_assets",
+    "place_asset",
 ];
 
 /// The assistant's own tools, outside the phases: listed only to a chat the

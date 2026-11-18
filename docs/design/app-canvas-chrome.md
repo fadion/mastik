@@ -1083,6 +1083,12 @@ Open-source icons and stock photos, inserted with their credit (`Node::credit`, 
   box resized so its longer side is the size field's (`edit::resize_to`, as the inspector's W and H
   would, so its layers follow the author's constraints), then centred, as one *Insert icon* step
   with no credit.
+- **Agents** reach the browser through MCP's `search_assets` and `place_asset` (`mcp.md` §8.4,
+  *The assets browser*), in the window only. Only the sets, packs and services switched on here
+  answer, and an agent never switches one on. An agent's photo searches are kept in a cache of
+  their own, apart from the panel's, since the hourly limit is the person's. A placement goes
+  through the panel's own insert and fill, with the same credit, Unsplash download report and
+  undo step names.
 - **Settings ▸ Assets**, its own tab: the **Icon sets** eyebrow (the library's icon
   packs after the remote sets, noted *Kit in your library · v4*) and the **Photos** eyebrow, a
   `ui::switch_row_noted` per set or service noted with its licence or what it needs; under a keyed

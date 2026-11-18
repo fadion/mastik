@@ -67,6 +67,22 @@ impl Call {
         }
     }
 
+    /// The same call, sharing its claim and its reply: a host that must wait to
+    /// answer (a download) keeps this copy and runs it again later.
+    pub fn again(&self) -> Self {
+        Self {
+            conn: self.conn,
+            client: self.client.clone(),
+            key: self.key.clone(),
+            pid: self.pid,
+            short_ids: self.short_ids,
+            tool: self.tool.clone(),
+            args: self.args.clone(),
+            reply: self.reply.clone(),
+            claim: Arc::clone(&self.claim),
+        }
+    }
+
     /// Claim the call for the owning thread; `false` when its connection already
     /// gave up, so it must not run: the agent was told nothing changed.
     pub fn take(&self) -> bool {

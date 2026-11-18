@@ -9,6 +9,7 @@
 pub(crate) mod access;
 mod actions;
 mod agent_log;
+pub(crate) mod assets;
 mod context;
 mod describe;
 mod diff;
@@ -73,6 +74,11 @@ pub(crate) trait Documents {
     /// window ends the person's text edit there first, so the typing lands as
     /// its own step rather than being lost under the agent's.
     fn before_write(&mut self, _path: &Path) {}
+    /// The assets browser's providers, which the window lends and `serve`, with
+    /// no sets or services switched on, does not.
+    fn desk(&mut self) -> Option<&mut dyn assets::Desk> {
+        None
+    }
 }
 
 /// The document `wanted` names: an absolute path; else a name or relative path
@@ -156,6 +162,15 @@ fn who(call: &Call) -> Who {
     }
 }
 
+/// The asset tool `call` runs, named or through `call`.
+fn assets_tool(call: &Call) -> Option<&'static str> {
+    let tool = match call.tool.as_str() {
+        "call" => call.args.get("tool").and_then(Value::as_str)?,
+        tool => tool,
+    };
+    assets::TOOLS.iter().copied().find(|t| *t == tool)
+}
+
 /// The client `call` comes from as its steps record it
 /// ([`mastik_core::StepNote::agent`]): its key, or its connection in this
 /// process, so an unkeyed client's steps stop being its own when it reconnects,
@@ -199,7 +214,29 @@ pub(crate) struct Engine {
     proposed: u64,
     /// Where a granted chat's calls are written.
     log: agent_log::Log,
+    /// Asset calls waiting on a download, run again as downloads land.
+    later: Vec<Later>,
+    /// Set while a call is answered, when it must wait for a download.
+    waiting: bool,
+    /// What a placement answered with a pending id finally answered, by that
+    /// id, newest last.
+    finished: VecDeque<(String, Output)>,
+    /// The last pending id handed out.
+    pending: u64,
 }
+
+/// An asset call waiting on the network.
+struct Later {
+    call: Call,
+    /// When it was first taken.
+    since: std::time::Instant,
+    /// The id it was answered with once it waited past [`assets::WAIT`]; it
+    /// keeps running, and its answer is kept under the id.
+    pending: Option<String>,
+}
+
+/// How many finished placements are kept for `place_asset`'s `pending`.
+const FINISHED: usize = 16;
 
 impl Engine {
     /// Forget a connection that closed, and its state unless a key holds it.
@@ -290,8 +327,90 @@ impl Engine {
     /// calling, acts under the chat's key, is refused a tool above its level,
     /// and has the call written to the agent log. A chat's key this window
     /// holds no grant for (a chat of an earlier run, or one ended long ago) is
-    /// refused rather than answered as an ungranted client's.
-    pub(crate) fn handle(&mut self, docs: &mut impl Documents, mut call: Call) -> Output {
+    /// refused rather than answered as an ungranted client's. A call that would
+    /// wait on a download is refused here; the window answers it later
+    /// ([`Self::handle_or_wait`]).
+    pub(crate) fn handle(&mut self, docs: &mut impl Documents, call: Call) -> Output {
+        self.handle_or_wait(docs, call).unwrap_or_else(|| {
+            // The one `handle_or_wait` just kept.
+            self.later.pop();
+            Output::error("It is still downloading; call again shortly.")
+        })
+    }
+
+    /// [`Self::handle`], or `None` when the call waits on a download: it is kept,
+    /// and [`Self::run_later`] answers it on its own reply.
+    pub(crate) fn handle_or_wait(
+        &mut self,
+        docs: &mut impl Documents,
+        call: Call,
+    ) -> Option<Output> {
+        // Only an asset call waits, and the rest can carry megabytes of arguments.
+        let again = assets_tool(&call).map(|_| call.again());
+        self.waiting = false;
+        let out = self.handle_now(docs, call);
+        let (true, Some(again)) = (std::mem::take(&mut self.waiting), again) else {
+            return Some(out);
+        };
+        self.later.push(Later {
+            call: again,
+            since: std::time::Instant::now(),
+            pending: None,
+        });
+        None
+    }
+
+    /// Whether some call waits on a download.
+    pub(crate) fn has_later(&self) -> bool {
+        !self.later.is_empty()
+    }
+
+    /// Run again each call waiting on a download, answering those that no longer
+    /// wait. A placement still waiting past [`assets::WAIT`] is answered with a
+    /// pending id and keeps running; a search is answered as not done.
+    pub(crate) fn run_later(&mut self, docs: &mut impl Documents) {
+        for mut l in std::mem::take(&mut self.later) {
+            let again = l.call.again();
+            self.waiting = false;
+            let out = self.handle_now(docs, l.call);
+            let waits = std::mem::take(&mut self.waiting);
+            if !waits {
+                match l.pending {
+                    None => {
+                        let _ = again.reply.send(out);
+                    }
+                    Some(id) => {
+                        self.finished.push_back((id, out));
+                        if self.finished.len() > FINISHED {
+                            self.finished.pop_front();
+                        }
+                    }
+                }
+                continue;
+            }
+            if l.pending.is_none() && l.since.elapsed() >= assets::WAIT {
+                if assets_tool(&again) == Some("search_assets") {
+                    let _ = again.reply.send(Output::error(format!(
+                        "The search did not answer within {} s: the service is slow or out of reach. Call again shortly.",
+                        assets::WAIT.as_secs()
+                    )));
+                    continue;
+                }
+                self.pending += 1;
+                let id = format!("p{}", self.pending);
+                let _ = again.reply.send(Output::json(json!({
+                    "pending": id,
+                    "said": "The photo is still downloading and lands when it arrives; call `place_asset` with `pending` for what it made.",
+                })));
+                l.pending = Some(id);
+            }
+            l.call = again;
+            self.later.push(l);
+        }
+    }
+
+    /// [`Self::handle`] with nothing kept: `self.waiting` says whether it waits.
+    fn handle_now(&mut self, docs: &mut impl Documents, mut call: Call) -> Output {
         parse_json_text(&mut call);
         let Some((key, level)) = self.grants.resolve(call.key.as_deref(), call.pid) else {
             if call
@@ -455,6 +574,29 @@ impl Engine {
                 Err(why) => Output::error(why),
             };
         }
+        if call.tool == "search_assets" {
+            let own = conn
+                .document
+                .clone()
+                .and_then(|p| docs.session(&p).and_then(|s| s.doc.meta().id.clone()));
+            return match assets::search(docs, &call.args, own.as_deref()) {
+                Ok(assets::Step::Done(a)) => output_of(Ok(a)),
+                Ok(assets::Step::Wait) => {
+                    self.waiting = true;
+                    Output::error("waiting on a download")
+                }
+                Err(why) => Output::error(why),
+            };
+        }
+        if call.tool == "place_asset" {
+            if let Some(id) = call.args.get("pending").and_then(Value::as_str) {
+                return self.pending_answer(id);
+            }
+            if assets::waits(docs, conn.document.clone().as_deref(), &call.args) {
+                self.waiting = true;
+                return Output::error("waiting on a download");
+            }
+        }
         let Some(path) = conn.document.clone() else {
             return Output::error(
                 "No document yet: call `use_document` with the file the person named.",
@@ -511,7 +653,17 @@ impl Engine {
         session.mcp_agent = Some(agent(&call));
         let mut proposed = None;
         let mut held_redo = None;
-        let answer = if call.tool == "propose_edit" {
+        let mut wait = false;
+        let answer = if call.tool == "place_asset" {
+            match assets::place(docs, &path, &call) {
+                Ok(assets::Step::Done(a)) => Ok(a),
+                Ok(assets::Step::Wait) => {
+                    wait = true;
+                    Ok(Answer::Json(Value::Null))
+                }
+                Err(why) => Err(why),
+            }
+        } else if call.tool == "propose_edit" {
             let title = call.args["title"].as_str().unwrap_or_default();
             propose::calls(&call.args)
                 .and_then(|calls| propose::check(session, &call.client, title, calls))
@@ -558,24 +710,7 @@ impl Engine {
             session.history.restore_redo(redo);
         }
         let after = session.revision();
-        let mut output = match answer {
-            Ok(Answer::Json(v)) => Output::json(v),
-            Ok(Answer::Image(bytes)) => Output {
-                content: vec![Content::Image {
-                    bytes,
-                    mime: "image/png",
-                }],
-                structured: None,
-                is_error: false,
-                meta: None,
-            },
-            Ok(Answer::Files(report, files)) => {
-                let mut output = Output::json(report);
-                output.content.extend(files);
-                output
-            }
-            Err(why) => Output::error(why),
-        };
+        let mut output = output_of(answer);
         if after != before {
             // The call's own edit is not news to the caller; an undo's or redo's
             // layers are, since it did not choose them.
@@ -615,7 +750,48 @@ impl Engine {
                 self.proposals.pop_front();
             }
         }
+        if wait {
+            self.waiting = true;
+        }
         output
+    }
+
+    /// `place_asset` with `pending`: what the placement made once it landed,
+    /// answered once, or that it still downloads.
+    fn pending_answer(&mut self, id: &str) -> Output {
+        if let Some(i) = self.finished.iter().position(|(p, _)| p == id)
+            && let Some((_, out)) = self.finished.remove(i)
+        {
+            return out;
+        }
+        if self.later.iter().any(|l| l.pending.as_deref() == Some(id)) {
+            return Output::json(json!({ "pending": id, "said": "Still downloading." }));
+        }
+        Output::error(format!(
+            "No placement is pending as `{id}`: its answer was read already, or it never was"
+        ))
+    }
+}
+
+/// A handler's answer as the client is sent it.
+fn output_of(answer: Result<Answer, String>) -> Output {
+    match answer {
+        Ok(Answer::Json(v)) => Output::json(v),
+        Ok(Answer::Image(bytes)) => Output {
+            content: vec![Content::Image {
+                bytes,
+                mime: "image/png",
+            }],
+            structured: None,
+            is_error: false,
+            meta: None,
+        },
+        Ok(Answer::Files(report, files)) => {
+            let mut output = Output::json(report);
+            output.content.extend(files);
+            output
+        }
+        Err(why) => Output::error(why),
     }
 }
 

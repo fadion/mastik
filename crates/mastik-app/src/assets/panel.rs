@@ -59,12 +59,12 @@ const SEARCH_ID: &str = "assets-search";
 const EMPTY_AIR: f32 = 40.0;
 /// What an icon's `currentColor` becomes: the ink a new text layer draws in,
 /// which has no fill of its own and reads as black.
-const ICON_INK: &str = "#000000";
+pub(crate) const ICON_INK: &str = "#000000";
 
 /// One icon of the results: a remote set's, by where it sits there, or a kit's
 /// published main (a set's by its default variant, as `kit::insert` places it).
 #[derive(Clone)]
-enum Hit {
+pub(crate) enum Hit {
     Set {
         spec: &'static SetSpec,
         set: Arc<IconSet>,
@@ -126,17 +126,17 @@ impl Choice {
 }
 
 /// A kit's published state, read for the Icons tab.
-struct KitPack {
-    entry: crate::kits::index::KitEntry,
+pub(crate) struct KitPack {
+    pub(crate) entry: crate::kits::index::KitEntry,
     /// The version the state was read at, which a placement records.
-    version: u32,
-    published: Arc<mastik_core::kit::Published>,
+    pub(crate) version: u32,
+    pub(crate) published: Arc<mastik_core::kit::Published>,
     /// The size field's default: the width most of its icons share.
-    grid: f64,
+    pub(crate) grid: f64,
 }
 
 impl KitPack {
-    fn new(
+    pub(crate) fn new(
         entry: crate::kits::index::KitEntry,
         version: u32,
         published: Arc<mastik_core::kit::Published>,
@@ -295,7 +295,7 @@ fn services_on(on: &[String]) -> Vec<&'static ServiceSpec> {
 /// The icons of `sets` answering `query` in `variant` (each set's default under
 /// *All sets*), then those of `kits`, each main once by its default variant,
 /// best first: by rank, then name, then source order.
-fn find_icons(
+pub(crate) fn find_icons(
     query: &str,
     sets: &[(&'static SetSpec, Arc<IconSet>)],
     kits: &[Arc<KitPack>],
@@ -434,7 +434,7 @@ fn photo_error_words(err: &PhotoError, service: &str) -> (String, String) {
 /// unlocked, and not part of an inserted icon, on itself or an ancestor — a layer
 /// holds one credit, and the photo's would take the place of the icon's (a CC BY
 /// set's attribution) once the icon is ungrouped.
-fn fillable(doc: &mastik_core::Document, id: NodeId) -> bool {
+pub(crate) fn fillable(doc: &mastik_core::Document, id: NodeId) -> bool {
     let in_icon =
         std::iter::successors(doc.get(id), |n| n.parent().and_then(|p| doc.get(p))).any(|n| {
             n.credit()
@@ -1033,7 +1033,7 @@ impl MastikApp {
 
 /// The transaction giving `id` `image` as its fill, framed to fill the layer:
 /// its picture fill replaced, else its top fill, else a new fill.
-fn fill_tx(
+pub(crate) fn fill_tx(
     doc: &mastik_core::Document,
     id: NodeId,
     image: &crate::app::LoadedImage,
