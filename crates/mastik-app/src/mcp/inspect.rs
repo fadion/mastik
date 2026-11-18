@@ -138,44 +138,20 @@ fn check_contrast(s: &EditorSession, args: &Value) -> Result<Answer, String> {
         }
         None => vec![super::page_of(s, node(args, "page")?)?],
     };
-    let mut findings = Vec::new();
-    let mut skipped = Vec::new();
-    for page in pages {
-        let only: Option<Vec<NodeId>> = scope.as_ref().map(|ids| {
-            contrast::subjects(doc, &s.resolved, page, options.non_text)
-                .into_iter()
-                .filter(|sub| ids.iter().any(|r| under(doc, *sub, *r)))
-                .collect()
-        });
-        let report = contrast::check_with(doc, page, options, only.as_deref());
-        for f in &report.findings {
-            findings.push(json!({
-                "id": f.id.to_wire(),
-                "trail": f.trail,
-                "passes": f.passes(),
-                "score": level.format(f.ratio),
-                "needs": level.format_needs(f.needs),
-                "large": f.large,
-                "non_text": f.non_text,
-                "mode": f.mode,
-            }));
-        }
-        for k in &report.skipped {
-            skipped.push(json!({ "id": k.id.to_wire(), "trail": k.trail, "why": k.why }));
-        }
-    }
-    let measured = findings.len();
-    if args.get("all").and_then(Value::as_bool) != Some(true) {
-        findings.retain(|f| f["passes"] == false);
-    }
-    let failing = findings.iter().filter(|f| f["passes"] == false).count();
-    Ok(Answer::Json(json!({
-        "level": level.label(),
-        "measured": measured,
-        "failing": failing,
-        "findings": findings,
-        "skipped": skipped,
-    })))
+    let reports: Vec<contrast::Report> = pages
+        .into_iter()
+        .map(|page| {
+            let only: Option<Vec<NodeId>> = scope.as_ref().map(|ids| {
+                contrast::subjects(doc, &s.resolved, page, options.non_text)
+                    .into_iter()
+                    .filter(|sub| ids.iter().any(|r| under(doc, *sub, *r)))
+                    .collect()
+            });
+            contrast::check_with(doc, page, options, only.as_deref())
+        })
+        .collect();
+    let all = args.get("all").and_then(Value::as_bool) == Some(true);
+    Ok(Answer::Json(contrast::to_json(level, &reports, all)))
 }
 
 /// Whether `id` is `root` or under it.

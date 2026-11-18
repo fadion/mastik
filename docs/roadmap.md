@@ -33,13 +33,6 @@ The CLI's design lives in `design/export.md` *CLI*; each item adds its passage t
 
 - **`--help`, `help <cmd>` and `--version`.** `main.rs` `parse` treats them as a malformed
   command line; each subcommand has its own usage string, but nothing lists the commands.
-- **`mastik check layout <file> [--page]`.** `check_layout` (`mastik_export::context`) is the
-  one MCP check with no CLI door, and the most CI-shaped: no render, findings that are defects.
-  A parser arm in `parse_check` and a printer.
-- **`--json` on every `check`.** Review, health, contrast and layout print text for a person;
-  `Health::to_json` already exists for the MCP. Structured output lets CI annotate a PR.
-- **Several documents per `check`.** Each takes exactly one file, so a folder in CI needs a
-  shell loop that combines exit codes. Take many paths, report per file, exit with the worst.
 - **Export by layer.** `mastik export` renders a whole page; the MCP's `export_png` and
   `run_exports` take `ids`. Add `--layer <name|id>` (repeatable), and close the one-off
   command's missing `--jpeg` and `--webp`.

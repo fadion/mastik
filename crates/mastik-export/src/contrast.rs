@@ -67,6 +67,43 @@ pub struct Report {
     pub skipped: Vec<Skipped>,
 }
 
+/// Some pages' reports as the MCP's `check_contrast` and `mastik check contrast
+/// --json` answer them: how many were measured and fail, the failing findings
+/// (every one with `all`) and the skipped layers.
+pub fn to_json(level: Level, reports: &[Report], all: bool) -> serde_json::Value {
+    use serde_json::json;
+    let found = reports.iter().flat_map(|r| &r.findings);
+    let measured = found.clone().count();
+    let failing = found.clone().filter(|f| !f.passes()).count();
+    let findings: Vec<serde_json::Value> = found
+        .filter(|f| all || !f.passes())
+        .map(|f| {
+            json!({
+                "id": f.id.to_wire(),
+                "trail": f.trail,
+                "passes": f.passes(),
+                "score": level.format(f.ratio),
+                "needs": level.format_needs(f.needs),
+                "large": f.large,
+                "non_text": f.non_text,
+                "mode": f.mode,
+            })
+        })
+        .collect();
+    let skipped: Vec<serde_json::Value> = reports
+        .iter()
+        .flat_map(|r| &r.skipped)
+        .map(|k| json!({ "id": k.id.to_wire(), "trail": k.trail, "why": k.why }))
+        .collect();
+    json!({
+        "level": level.label(),
+        "measured": measured,
+        "failing": failing,
+        "findings": findings,
+        "skipped": skipped,
+    })
+}
+
 /// How many device pixels per world unit the boxes are drawn at: two, so a
 /// small glyph has a core of fully covered pixels to sample.
 const SCALE: f64 = 2.0;

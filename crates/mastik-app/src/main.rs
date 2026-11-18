@@ -34,20 +34,16 @@
 //! mastik diff <a> <b> [--json]    what changed from document a to b, by layer;
 //!                                exit 0 when nothing did, 1 when something did,
 //!                                2 when either cannot be read
-//! mastik check contrast <file> [--page <name|n>] [--aaa|--apca] [--non-text]
-//!                                every text layer (and small shape) against what
-//!                                is drawn behind it, in every mode; exit 0 all
-//!                                pass, 1 some fail, 2 unreadable
-//! mastik check code <file> [--page <name|n>]
-//!                                the page's HTML export in a headless browser,
-//!                                held to the canvas; names each layer drawn
-//!                                differently; exit 0 it matches, 1 it drifts,
-//!                                2 unreadable or no browser
-//! mastik check review <file> [--page <name|n>]
-//!                                the design review MCP's `review` runs
-//!                                (overlaps, busy grounds, spacing, raw values,
-//!                                near-duplicate colours, radii, contrast); exit
-//!                                0 nothing found, 1 something, 2 unreadable
+//! mastik check contrast|code|review|health|layout <file>... [--page <name|n>] [--json]
+//!                                contrast: every text layer (and small shape,
+//!                                --non-text) against what is drawn behind it,
+//!                                --aaa or --apca; code: the page's HTML export
+//!                                held to the canvas in a headless browser;
+//!                                review: the MCP's `review`; health: System
+//!                                health, --min <percent>; layout: the MCP's
+//!                                `check_layout`. Each document is reported in
+//!                                turn; exit 0 all pass, 1 one fails, 2 one is
+//!                                unreadable (or no browser)
 //! mastik merge <base> <ours> <theirs> [-o out]
 //!                                three-way merge, written over ours unless -o;
 //!                                exit 0 clean, 1 with conflicts (ours kept at
@@ -95,6 +91,7 @@ mod canvas;
 mod chart_data;
 mod chart_import;
 mod cheatsheet;
+mod check_cli;
 mod chrome;
 mod clean_up_box;
 mod cleanup;
@@ -230,26 +227,9 @@ enum Command {
     Render(render_cli::Render),
     /// Compare two documents (`mastik_core::diff`), `a` the earlier.
     Diff { a: String, b: String, json: bool },
-    /// Measure every text layer's contrast against what is drawn behind it
-    /// (`mastik_export::contrast`), on one page.
-    CheckContrast {
-        file: String,
-        page: Option<String>,
-        options: mastik_export::contrast::Options,
-    },
-    /// Open the page's HTML export in a headless browser and name every layer it
-    /// draws differently from the canvas (`mastik_export::code::fidelity`).
-    CheckCode { file: String, page: Option<String> },
-    /// The design review the MCP `review` read runs (`mastik_export::review`),
-    /// on one page.
-    CheckReview { file: String, page: Option<String> },
-    /// *System health*'s readings (`mastik_export::review::health`), over every
-    /// page or one; failing when coverage is under `min` percent.
-    CheckHealth {
-        file: String,
-        page: Option<String>,
-        min: Option<u32>,
-    },
+    /// `mastik check`: contrast, code, review, health or layout, over one
+    /// document or several.
+    Check(check_cli::Check),
     /// Three-way merge of a document (`mastik_core::merge`), the result written to
     /// `out`, by default over `ours` as git's merge driver expects.
     Merge {
@@ -390,7 +370,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Some("diff") => parse_diff(&args[1..]),
         Some("tokens") => parse_tokens(&args[1..]),
         Some("merge") => parse_merge(&args[1..]),
-        Some("check") => parse_check(&args[1..]),
+        Some("check") => check_cli::parse(&args[1..]).map(Command::Check),
         Some("run") => parse_run(&args[1..]),
         Some("mcp-proxy") => parse_mcp_proxy(&args[1..]),
         // Absolute, so the session's save path and `prefs.last_document` survive a
@@ -463,250 +443,6 @@ fn parse_mcp_proxy(args: &[String]) -> Result<Command, String> {
         document,
         all_tools,
     })
-}
-
-fn parse_check(args: &[String]) -> Result<Command, String> {
-    use mastik_export::contrast::{Level, Options};
-    const USAGE: &str = "usage: mastik check contrast <file.mastik> [--page <name|n>] \
-                         [--aaa|--apca] [--non-text]\n       \
-                         mastik check code <file.mastik> [--page <name|n>]\n       \
-                         mastik check review <file.mastik> [--page <name|n>]\n       \
-                         mastik check health <file.mastik> [--page <name|n>] [--min <percent>]";
-    let which = args.first().map(String::as_str);
-    let contrast = match which {
-        Some("contrast") => true,
-        Some("code" | "review" | "health") => false,
-        _ => return Err(USAGE.to_string()),
-    };
-    let (mut file, mut page, mut options) = (None, None, Options::default());
-    let mut min = None;
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--min" if which == Some("health") => {
-                i += 1;
-                min = Some(
-                    args.get(i)
-                        .and_then(|v| v.trim_end_matches('%').parse::<u32>().ok())
-                        .filter(|m| *m <= 100)
-                        .ok_or_else(|| format!("--min wants a percentage, 0 to 100\n{USAGE}"))?,
-                );
-            }
-            level @ ("--aaa" | "--apca") if contrast => {
-                if options.level != Level::Aa {
-                    return Err(format!("one level at a time\n{USAGE}"));
-                }
-                options.level = if level == "--aaa" {
-                    Level::Aaa
-                } else {
-                    Level::Apca
-                };
-            }
-            "--non-text" if contrast => options.non_text = true,
-            "--page" => {
-                i += 1;
-                let value = args.get(i).filter(|v| !v.starts_with('-'));
-                page = Some(
-                    value
-                        .ok_or_else(|| format!("--page wants a name or number\n{USAGE}"))?
-                        .clone(),
-                );
-            }
-            other if other.starts_with('-') => {
-                return Err(format!("unknown option {other}\n{USAGE}"));
-            }
-            other if file.is_some() => {
-                return Err(format!(
-                    "check takes one document; got a second, {other}\n{USAGE}"
-                ));
-            }
-            other => file = Some(other.to_string()),
-        }
-        i += 1;
-    }
-    let file = file.ok_or_else(|| USAGE.to_string())?;
-    match which {
-        Some("code") => Ok(Command::CheckCode { file, page }),
-        Some("review") => Ok(Command::CheckReview { file, page }),
-        Some("health") => Ok(Command::CheckHealth { file, page, min }),
-        _ => Ok(Command::CheckContrast {
-            file,
-            page,
-            options,
-        }),
-    }
-}
-
-/// `mastik check review`: every finding of the design review on the page, a
-/// line each, and whether there were none.
-fn run_check_review(file: &str, page: Option<&str>) -> Result<(String, bool), String> {
-    use mastik_export::review::{Options, Scope, review};
-    let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
-    let doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
-    let page = chosen_page(&doc, page)?;
-    let res = mastik_core::Resolved::rebuild(&doc);
-    let scope = Scope::new(&doc, &res, &[page]);
-    let found = review(&scope, Options::default());
-    let mut out = String::new();
-    for f in &found {
-        let names: Vec<&str> = f
-            .ids
-            .iter()
-            .filter_map(|id| doc.get(*id).map(|n| n.name()))
-            .collect();
-        out.push_str(&format!("{}  {}: {}", f.code, names.join(", "), f.message));
-        if let Some(instead) = &f.instead {
-            out.push_str(&format!(" Instead: {instead}."));
-        }
-        out.push('\n');
-    }
-    out.push_str(&format!(
-        "{} {} on {} layers\n",
-        found.len(),
-        if found.len() == 1 {
-            "finding"
-        } else {
-            "findings"
-        },
-        scope.layers.len()
-    ));
-    Ok((out, found.is_empty()))
-}
-
-/// `mastik check health`: the readings as text, over the page asked for or every
-/// page, and whether coverage reaches `min` (always, without one).
-fn run_check_health(
-    file: &str,
-    page: Option<&str>,
-    min: Option<u32>,
-) -> Result<(String, bool), String> {
-    use mastik_export::review::{Options, Scope, every_page, health};
-    let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
-    let doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
-    let roots = match page {
-        Some(_) => vec![chosen_page(&doc, page)?],
-        None => {
-            let first = doc
-                .pages()
-                .first()
-                .map(|p| p.id)
-                .ok_or("the file has no page")?;
-            every_page(&doc, first)
-        }
-    };
-    let res = mastik_core::Resolved::rebuild(&doc);
-    let scope = Scope::new(&doc, &res, &roots);
-    let h = health(&scope, Options::default().step);
-    let held = min.is_none_or(|m| h.overall().unwrap_or(100) as u32 >= m);
-    Ok((h.to_text(), held))
-}
-
-/// `mastik check contrast`: the report as text, and whether every measured layer
-/// passed.
-fn run_check_contrast(
-    file: &str,
-    page: Option<&str>,
-    options: mastik_export::contrast::Options,
-) -> Result<(String, bool), String> {
-    use mastik_export::contrast::check_with;
-    let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
-    let doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
-    let page = chosen_page(&doc, page)?;
-    let level = options.level;
-    let report = check_with(&doc, page, options, None);
-    let mut out = String::new();
-    let mut failed = 0;
-    for f in &report.findings {
-        if f.passes() {
-            continue;
-        }
-        failed += 1;
-        let mode = f
-            .mode
-            .as_ref()
-            .map(|m| format!(" in {m}"))
-            .unwrap_or_default();
-        // Rounded down, so a fail never prints as its threshold.
-        out.push_str(&format!(
-            "fail  {}: {}, needs {}{mode}\n",
-            f.trail.join(" / "),
-            level.format(f.ratio),
-            level.format_needs(f.needs)
-        ));
-    }
-    for s in &report.skipped {
-        out.push_str(&format!("skip  {}: {}\n", s.trail.join(" / "), s.why));
-    }
-    out.push_str(&format!(
-        "{} of {} {} pass {}\n",
-        report.findings.len() - failed,
-        report.findings.len(),
-        if options.non_text {
-            "layers"
-        } else {
-            "text layers"
-        },
-        level.label()
-    ));
-    Ok((out, failed == 0))
-}
-
-/// `mastik check code`: the report as text, and whether the page draws as the
-/// canvas does. On a drift the page is kept in a temp folder and named, so the
-/// screenshot can be compared with `cpu.png` by eye.
-fn run_check_code(file: &str, page: Option<&str>) -> Result<(String, bool), String> {
-    use mastik_export::code::fidelity;
-    let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
-    let mut doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
-    let res = mastik_core::Resolved::settled(&mut doc);
-    let page = chosen_page(&doc, page)?;
-    let origins = doc
-        .get(page)
-        .map(|r| r.children().to_vec())
-        .unwrap_or_default();
-    let browser = fidelity::browser().ok_or(
-        "no headless browser found: install Chrome, Chromium or Edge, or set MASTIK_BROWSER",
-    )?;
-    let dir = std::env::temp_dir().join(format!("mastik-check-code-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
-    let export = mastik_export::code::html::html_of(&doc, &res, &origins);
-    let found = fidelity::check_export(&doc, &res, &origins, &export, &browser, &dir)?;
-    let mut out = String::new();
-    for d in &found.drifted {
-        let how = match d.how {
-            fidelity::How::Cell { error, at } => format!("{error:.1}/255 at {at:?}"),
-            fidelity::How::Ink { misplaced } => {
-                format!("{:.0}% of its ink is off the canvas's", misplaced * 100.0)
-            }
-        };
-        out.push_str(&format!("drift  {}: {how}\n", d.label));
-    }
-    if found.unclaimed > 0 {
-        out.push_str(&format!(
-            "drift  {} cells where no layer has ink\n",
-            found.unclaimed
-        ));
-    }
-    for a in &export.approximated {
-        out.push_str(&format!("noted  {a}\n"));
-    }
-    let holds = found.holds();
-    if holds {
-        let _ = std::fs::remove_dir_all(&dir);
-        out.push_str(&format!(
-            "the page draws as the canvas does (mean {:.2}/255)\n",
-            found.mean
-        ));
-    } else {
-        out.push_str(&format!(
-            "{} layers drawn differently, mean {:.2}/255; the page is kept in {}\n",
-            found.drifted.len(),
-            found.mean,
-            dir.display()
-        ));
-    }
-    Ok((out, holds))
 }
 
 fn parse_merge(args: &[String]) -> Result<Command, String> {
@@ -1211,60 +947,8 @@ fn main() {
                 std::process::exit(2);
             }
         },
-        // `diff`'s codes: 1 is "a layer fails", so an unreadable file is 2.
-        Ok(Command::CheckContrast {
-            file,
-            page,
-            options,
-        }) => match run_check_contrast(&file, page.as_deref(), options) {
-            Ok((report, passed)) => {
-                print!("{report}");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-                std::process::exit(i32::from(!passed));
-            }
-            Err(msg) => {
-                eprintln!("{msg}");
-                std::process::exit(2);
-            }
-        },
-        // `diff`'s codes: 1 is "something was found", so an unreadable file is 2.
-        Ok(Command::CheckReview { file, page }) => match run_check_review(&file, page.as_deref()) {
-            Ok((report, clean)) => {
-                print!("{report}");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-                std::process::exit(i32::from(!clean));
-            }
-            Err(msg) => {
-                eprintln!("{msg}");
-                std::process::exit(2);
-            }
-        },
-        // 1 is "under `--min`", so an unreadable file is 2.
-        Ok(Command::CheckHealth { file, page, min }) => {
-            match run_check_health(&file, page.as_deref(), min) {
-                Ok((report, held)) => {
-                    print!("{report}");
-                    let _ = std::io::Write::flush(&mut std::io::stdout());
-                    std::process::exit(i32::from(!held));
-                }
-                Err(msg) => {
-                    eprintln!("{msg}");
-                    std::process::exit(2);
-                }
-            }
-        }
-        // `diff`'s codes: 1 is "a layer drifts", so a check that cannot run is 2.
-        Ok(Command::CheckCode { file, page }) => match run_check_code(&file, page.as_deref()) {
-            Ok((report, holds)) => {
-                print!("{report}");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-                std::process::exit(i32::from(!holds));
-            }
-            Err(msg) => {
-                eprintln!("{msg}");
-                std::process::exit(2);
-            }
-        },
+        // `diff`'s codes: 1 is "a document fails", so an unreadable one is 2.
+        Ok(Command::Check(check)) => std::process::exit(check_cli::run(&check)),
         Ok(Command::Run { script, input, out }) => {
             run_script(&script, input.as_deref(), &out).map(|lines| {
                 for line in lines {
@@ -1995,197 +1679,6 @@ mod tests {
         ] {
             assert!(export(refused).is_err(), "{refused:?}");
         }
-    }
-
-    /// `check contrast` takes one document, a page and a level, and refuses the rest.
-    #[test]
-    fn check_contrast_takes_one_document_a_page_and_a_level() {
-        let check = |s: &[&str]| {
-            let mut v = vec!["check".to_string()];
-            v.extend(s.iter().map(|a| a.to_string()));
-            parse(&v)
-        };
-        assert_eq!(
-            check(&["contrast", "a.mastik", "--page", "2", "--aaa"]),
-            Ok(Command::CheckContrast {
-                file: "a.mastik".into(),
-                page: Some("2".into()),
-                options: mastik_export::contrast::Options {
-                    level: mastik_export::contrast::Level::Aaa,
-                    non_text: false,
-                    default_ground: None,
-                },
-            })
-        );
-        assert_eq!(
-            check(&["contrast", "a.mastik", "--apca", "--non-text"]),
-            Ok(Command::CheckContrast {
-                file: "a.mastik".into(),
-                page: None,
-                options: mastik_export::contrast::Options {
-                    level: mastik_export::contrast::Level::Apca,
-                    non_text: true,
-                    default_ground: None,
-                },
-            })
-        );
-        for refused in [
-            &["a.mastik"][..],
-            &["contrast"],
-            &["contrast", "a.mastik", "b.mastik"],
-            &["contrast", "a.mastik", "--page"],
-            &["contrast", "a.mastik", "--aa"],
-            &["contrast", "a.mastik", "--aaa", "--apca"],
-        ] {
-            assert!(check(refused).is_err(), "{refused:?}");
-        }
-    }
-
-    /// `check code` takes one document and a page, and refuses contrast's levels.
-    #[test]
-    fn check_code_takes_one_document_and_a_page() {
-        let check = |s: &[&str]| {
-            let mut v = vec!["check".to_string()];
-            v.extend(s.iter().map(|a| a.to_string()));
-            parse(&v)
-        };
-        assert_eq!(
-            check(&["code", "a.mastik", "--page", "Home"]),
-            Ok(Command::CheckCode {
-                file: "a.mastik".into(),
-                page: Some("Home".into()),
-            })
-        );
-        for refused in [
-            &["code"][..],
-            &["code", "a.mastik", "b.mastik"],
-            &["code", "a.mastik", "--aaa"],
-            &["code", "a.mastik", "--non-text"],
-        ] {
-            assert!(check(refused).is_err(), "{refused:?}");
-        }
-    }
-
-    /// `check review` takes one document and a page, and refuses contrast's
-    /// options.
-    #[test]
-    fn check_review_takes_one_document_and_a_page() {
-        let check = |s: &[&str]| {
-            let mut v = vec!["check".to_string()];
-            v.extend(s.iter().map(|a| a.to_string()));
-            parse(&v)
-        };
-        assert_eq!(
-            check(&["review", "a.mastik", "--page", "2"]),
-            Ok(Command::CheckReview {
-                file: "a.mastik".into(),
-                page: Some("2".into()),
-            })
-        );
-        for refused in [&["review"][..], &["review", "a.mastik", "--apca"]] {
-            assert!(check(refused).is_err(), "{refused:?}");
-        }
-    }
-
-    /// `check health` takes a page and a `--min` percentage, and refuses one past
-    /// 100 or `--min` on another check.
-    #[test]
-    fn check_health_takes_a_page_and_a_minimum() {
-        let check = |s: &[&str]| {
-            let mut v = vec!["check".to_string()];
-            v.extend(s.iter().map(|a| a.to_string()));
-            parse(&v)
-        };
-        assert_eq!(
-            check(&["health", "a.mastik", "--min", "80%"]),
-            Ok(Command::CheckHealth {
-                file: "a.mastik".into(),
-                page: None,
-                min: Some(80),
-            })
-        );
-        for refused in [
-            &["health", "a.mastik", "--min", "101"][..],
-            &["review", "a.mastik", "--min", "80"],
-        ] {
-            assert!(check(refused).is_err(), "{refused:?}");
-        }
-    }
-
-    /// Light grey type on white fails and names the layer; the run answers
-    /// "not all passed".
-    #[test]
-    fn check_contrast_reports_a_failing_layer() {
-        use mastik_core::{
-            Brush, Fill, IdSource, NodeKind, Operation, TextSizing, TextStyle, Transaction,
-        };
-        let dir = std::env::temp_dir().join(format!("mastik-contrast-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut ids = IdSource::new(0xD5);
-        let root = ids.mint();
-        let (frame, text) = (ids.mint(), ids.mint());
-        let mut doc = mastik_core::Document::new(root);
-        let fill = |r, g, b| {
-            mastik_core::keyed_by_position([Fill {
-                brush: Brush::Solid(mastik_core::peniko::Color::from_rgba8(r, g, b, 255)).into(),
-                visible: true,
-            }])
-        };
-        doc.apply(&Transaction(vec![
-            Operation::CreateNode {
-                id: frame,
-                parent: root,
-                index: 0,
-                kind: NodeKind::Artboard {
-                    size: mastik_core::kurbo::Size::new(300.0, 100.0),
-                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
-                    corner_smoothing: 0.0,
-                },
-                transform: None,
-                name: Some("Card".into()),
-            },
-            Operation::SetFills {
-                id: frame,
-                fills: fill(255, 255, 255),
-            },
-            Operation::CreateNode {
-                id: text,
-                parent: frame,
-                index: 0,
-                kind: NodeKind::Text {
-                    content: "Faint".into(),
-                    style: Box::new(TextStyle {
-                        font_family: "Inter".into(),
-                        font_size: 16.0,
-                        weight: 400,
-                        ..Default::default()
-                    }),
-                    spans: Default::default(),
-                    para_spans: Default::default(),
-                    paragraph: Default::default(),
-                    block: Default::default(),
-                    sizing: TextSizing::Auto,
-                    on_path: None,
-                    on_path_flip: false,
-                    on_path_offset: 0.0,
-                },
-                transform: Some(mastik_core::kurbo::Affine::translate((10.0, 10.0))),
-                name: Some("Caption".into()),
-            },
-            Operation::SetFills {
-                id: text,
-                fills: fill(200, 200, 200),
-            },
-        ]))
-        .unwrap();
-        let file = dir.join("c.mastik");
-        std::fs::write(&file, mastik_core::io::save(&doc).unwrap()).unwrap();
-        let (report, passed) =
-            run_check_contrast(file.to_str().unwrap(), None, Default::default()).unwrap();
-        assert!(!passed, "{report}");
-        assert!(report.contains("fail  Card / Caption"), "{report}");
-        assert!(report.contains("0 of 1 text layers pass AA"), "{report}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `merge` takes three documents and an output, and refuses the rest.
