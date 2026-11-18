@@ -207,31 +207,7 @@ pub(super) fn batch(
         };
         made += pushed;
         if let Some(label) = step.get("as").and_then(Value::as_str) {
-            let first = answer["created"]
-                .get(0)
-                .or_else(|| answer.get("main"))
-                .or_else(|| answer.get(made_key(tool)))
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            if let Some(first) = first {
-                labels.insert(label.to_owned(), first);
-            }
-            // `insert_subtree`'s layers by `label/Path`, the path below the root.
-            let root = step["args"]["tree"]["name"].as_str();
-            for (path, id) in answer
-                .get("named")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flatten()
-            {
-                let below = match root {
-                    Some(root) => path.strip_prefix(root).and_then(|p| p.strip_prefix('/')),
-                    None => Some(path.as_str()),
-                };
-                if let (Some(below), Some(id)) = (below, id.as_str()) {
-                    labels.insert(format!("{label}/{below}"), id.to_owned());
-                }
-            }
+            record_label(&mut labels, label, tool, &step["args"], &answer);
         }
         answers.push(answer);
     }
@@ -248,6 +224,43 @@ pub(super) fn batch(
         };
     }
     Ok(Answer::Json(json!({ "steps": answers })))
+}
+
+/// Remember under `label` what a step running `tool` with `args` made, from
+/// its `answer`: the first layer it created (or the main, or what its verb names
+/// as made), and an `insert_subtree`'s layers by `label/Path`, the path below
+/// the root. For [`batch`] and a proposal's calls alike.
+pub(super) fn record_label(
+    labels: &mut HashMap<String, String>,
+    label: &str,
+    tool: &str,
+    args: &Value,
+    answer: &Value,
+) {
+    let first = answer["created"]
+        .get(0)
+        .or_else(|| answer.get("main"))
+        .or_else(|| answer.get(made_key(tool)))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(first) = first {
+        labels.insert(label.to_owned(), first);
+    }
+    let root = args["tree"]["name"].as_str();
+    for (path, id) in answer
+        .get("named")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let below = match root {
+            Some(root) => path.strip_prefix(root).and_then(|p| p.strip_prefix('/')),
+            None => Some(path.as_str()),
+        };
+        if let (Some(below), Some(id)) = (below, id.as_str()) {
+            labels.insert(format!("{label}/{below}"), id.to_owned());
+        }
+    }
 }
 
 /// One step of [`batch`]: its answer and how many undo steps it committed.

@@ -25,6 +25,10 @@ pub(crate) struct Proposal {
     pub changes: Vec<String>,
     /// Each call's verb and arguments.
     pub calls: Vec<(String, Value)>,
+    /// Each call's `as`, the label a later call names what it made by
+    /// (`"@label"`); empty in a proposal saved before labels were kept.
+    #[serde(default)]
+    pub labels: Vec<Option<String>>,
     /// The document's revision when it was proposed.
     pub rev: u64,
     /// The layers it writes that were there when it was proposed.
@@ -48,10 +52,12 @@ pub(crate) struct Applied {
     depth: usize,
 }
 
-/// The verbs a proposal may call: the write tools, never the kits and library,
-/// and `place_asset`, whose asset is made ready when it is proposed.
+/// The verbs a proposal may call: the write tools, never the kits and library;
+/// `set`, as a batch runs it; and `place_asset`, whose asset is made ready when
+/// it is proposed.
 fn proposable(verb: &str) -> bool {
     verb == PLACE
+        || verb == "set"
         || mastik_core::verbs::find(verb).is_some()
             && (mastik_mcp::tools::PHASE_2.contains(&verb)
                 || mastik_mcp::tools::PHASE_3.contains(&verb))
@@ -64,11 +70,22 @@ pub(super) const PLACE: &str = "place_asset";
 /// thread, it no longer holds its asset.
 const NOT_HELD: &str = "its photo or icon is no longer at hand, since Mastik was closed after it was proposed; ask for the proposal again";
 
-/// `propose_edit`'s `calls` read as verbs and arguments, `base_rev` dropped: a
-/// proposal is checked again when it is applied.
-pub(super) fn calls(args: &Value) -> Result<Vec<(String, Value)>, String> {
+/// A proposal's call's name: its `verb`, or its `tool` as a `batch` step
+/// names it, since an agent copies one shape for the other.
+pub(super) fn call_name(call: &Value) -> Option<&str> {
+    call.get("verb")
+        .or_else(|| call.get("tool"))
+        .and_then(Value::as_str)
+}
+
+/// A proposal's calls, each a verb and its arguments, and each call's `as`.
+pub(super) type Calls = (Vec<(String, Value)>, Vec<Option<String>>);
+
+/// `propose_edit`'s `calls` read as verbs and arguments, `base_rev` dropped (a
+/// proposal is checked again when it is applied), and each call's `as`.
+pub(super) fn calls(args: &Value) -> Result<Calls, String> {
     let Some(Value::Array(list)) = args.get("calls") else {
-        return Err("`calls` is a list of `{ verb, args }`".into());
+        return Err("`calls` is a list of `{ verb, args, as }`".into());
     };
     if list.is_empty() {
         return Err("`calls` is empty".into());
@@ -77,16 +94,13 @@ pub(super) fn calls(args: &Value) -> Result<Vec<(String, Value)>, String> {
         .enumerate()
         .map(|(i, c)| {
             let n = i + 1;
-            if let Some(extra) = c
-                .as_object()
-                .and_then(|m| m.keys().find(|k| !["verb", "args"].contains(&k.as_str())))
-            {
+            if let Some(extra) = c.as_object().and_then(|m| {
+                m.keys()
+                    .find(|k| !["verb", "tool", "args", "as"].contains(&k.as_str()))
+            }) {
                 return Err(format!("call {n}: a call takes no `{extra}`"));
             }
-            let verb = c
-                .get("verb")
-                .and_then(Value::as_str)
-                .ok_or(format!("call {n}: a call names its `verb`"))?;
+            let verb = call_name(c).ok_or(format!("call {n}: a call names its `verb`"))?;
             if !proposable(verb) {
                 return Err(format!(
                     "call {n}: `{verb}` is no write tool a proposal can call"
@@ -96,40 +110,51 @@ pub(super) fn calls(args: &Value) -> Result<Vec<(String, Value)>, String> {
             if let Some(map) = args.as_object_mut() {
                 map.remove("base_rev");
             }
-            Ok((verb.to_owned(), args))
+            let label = c.get("as").and_then(Value::as_str).map(str::to_owned);
+            Ok(((verb.to_owned(), args), label))
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()
+        .map(|both| both.into_iter().unzip())
 }
 
-/// Run `calls` on `s` in turn, each committed as its own step, answering each
-/// one's line and the subjects of its step; a `place_asset` call lays down the
-/// next of `held`. On a refusal the steps already made are taken back.
+/// Run `p`'s calls on `s` in turn, each committed as its own step, answering
+/// each one's line and the subjects of its step; a `place_asset` call lays down
+/// the next of `p.held`, and an `"@label"` names what the call that gave it
+/// made in this run. On a refusal the steps already made are taken back.
 fn run(
     s: &mut EditorSession,
     client: &str,
-    calls: &[(String, Value)],
-    held: &[super::assets::Held],
+    p: &Proposal,
 ) -> Result<(Vec<String>, Vec<NodeId>, usize), String> {
     let conn = Connection::default();
     let mut lines = Vec::new();
     let mut subjects: Vec<NodeId> = Vec::new();
     let mut made = 0;
-    let mut held = held.iter();
-    for (i, (verb, args)) in calls.iter().enumerate() {
+    let mut held = p.held.iter();
+    let mut labels = std::collections::HashMap::new();
+    for (i, (verb, args)) in p.calls.iter().enumerate() {
         let depth = s.history.undo_depth();
-        let wrote = match verb.as_str() {
-            PLACE => held
-                .next()
-                .ok_or_else(|| NOT_HELD.to_owned())
-                .and_then(|h| super::assets::put_held(s, client, args, h))
-                .map(super::Answer::Json),
-            _ => write(&conn, s, client, verb, args),
-        };
+        let mut args = args.clone();
+        let wrote =
+            mastik_core::verbs::substitute(&mut args, &labels).and_then(|()| match verb.as_str() {
+                PLACE => held
+                    .next()
+                    .ok_or_else(|| NOT_HELD.to_owned())
+                    .and_then(|h| super::assets::put_held(s, client, &args, h))
+                    .map(super::Answer::Json),
+                "set" => super::set::set(&conn, s, client, &args),
+                _ => write(&conn, s, client, verb, &args),
+            });
         let said = match wrote {
-            Ok(super::Answer::Json(answer)) => answer
-                .get("said")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            Ok(super::Answer::Json(answer)) => {
+                if let Some(Some(label)) = p.labels.get(i) {
+                    super::writes::record_label(&mut labels, label, verb, &args, &answer);
+                }
+                answer
+                    .get("said")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            }
             Ok(_) => None,
             Err(why) => {
                 for _ in 0..made {
@@ -177,34 +202,38 @@ fn scratch(s: &EditorSession) -> EditorSession {
 }
 
 /// Check `calls` against `s` without changing it: the [`Proposal`] they make,
-/// less its id, key, document and client, which the engine knows; `held` is
-/// each placement's asset, in call order. Answers the first refusal instead.
+/// less its id, key and document, which the engine knows; `labels` is each
+/// call's `as` and `held` each placement's asset, in call order. Answers the
+/// first refusal instead.
 pub(super) fn check(
     s: &EditorSession,
     client: &str,
     title: &str,
-    calls: Vec<(String, Value)>,
+    (calls, labels): Calls,
     held: Vec<super::assets::Held>,
 ) -> Result<Proposal, String> {
-    let mut trial = scratch(s);
-    let (changes, subjects, _) = run(&mut trial, client, &calls, &held)?;
-    let (writes, before): (Vec<NodeId>, Vec<Node>) = subjects
-        .into_iter()
-        .filter_map(|id| s.doc.get(id).map(|n| (id, n.clone())))
-        .unzip();
-    Ok(Proposal {
+    let mut p = Proposal {
         id: 0,
         key: None,
         document: PathBuf::new(),
         title: title.to_owned(),
-        changes,
+        changes: Vec::new(),
         calls,
+        labels,
         rev: s.revision(),
-        writes,
-        before,
+        writes: Vec::new(),
+        before: Vec::new(),
         client: client.to_owned(),
         held,
-    })
+    };
+    let mut trial = scratch(s);
+    let (changes, subjects, _) = run(&mut trial, client, &p)?;
+    (p.writes, p.before) = subjects
+        .into_iter()
+        .filter_map(|id| s.doc.get(id).map(|n| (id, n.clone())))
+        .unzip();
+    p.changes = changes;
+    Ok(p)
 }
 
 /// Apply `p` to `session` as one undo step named by its title, made over MCP so
@@ -223,7 +252,7 @@ pub(crate) fn apply(session: &mut EditorSession, p: &Proposal) -> Result<Applied
 /// [`apply`] without the redo kept.
 fn apply_calls(session: &mut EditorSession, p: &Proposal) -> Result<Applied, String> {
     let mark = session.mark();
-    let (made, subjects) = match run(session, &p.client, &p.calls, &p.held) {
+    let (made, subjects) = match run(session, &p.client, p) {
         Ok((_, subjects, made)) => (made, subjects),
         Err(why) => {
             session.rewind(&mark);
@@ -254,7 +283,7 @@ fn apply_calls(session: &mut EditorSession, p: &Proposal) -> Result<Applied, Str
             ));
         }
         // Only layers it creates: run it again for real.
-        return match run(session, &p.client, &p.calls, &p.held) {
+        return match run(session, &p.client, p) {
             Ok((_, _, made)) => finish_apply(session, p, made),
             Err(why) => {
                 session.rewind(&mark);
@@ -612,5 +641,46 @@ mod tests {
             .unwrap()
             .clone();
         apply(&mut docs.session, &p).expect("a proposal that only creates applies");
+    }
+
+    /// A proposal takes a batch's shape (`tool`, `as`) and `set`: a later call
+    /// names what an earlier one made by its label, on the trial and again on
+    /// the apply, whose own new layer it then sets, as one step.
+    ///
+    /// flip: `run` not recording a call's `as` → fails at "proposed"; `run`
+    /// sending `set` through `write` → fails at "proposed" too.
+    #[test]
+    fn a_proposal_takes_a_batch_shape_labels_and_set() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let page = docs.session.page.to_wire();
+        let out = propose(
+            &mut engine,
+            &mut docs,
+            json!([
+                { "tool": "create_text", "args": { "parent": page, "text": "Hi" }, "as": "t" },
+                { "verb": "set", "args": { "nodes": ["@t"], "props": { "opacity": 0.5 } } },
+            ]),
+        );
+        assert!(!out.is_error, "proposed: {:?}", out.content);
+        let answer = ok(&out).clone();
+        let p = engine
+            .proposal(answer["proposal"].as_u64().unwrap())
+            .unwrap()
+            .clone();
+        let depth = docs.session.history.undo_depth();
+        apply(&mut docs.session, &p).expect("applies");
+        assert_eq!(docs.session.history.undo_depth(), depth + 1, "one step");
+        let made = docs
+            .session
+            .doc
+            .get(docs.session.page)
+            .and_then(|page| page.children().last().copied())
+            .expect("the new text");
+        assert_eq!(
+            docs.session.doc.get(made).unwrap().opacity(),
+            0.5,
+            "the label named the applied run's own layer"
+        );
     }
 }

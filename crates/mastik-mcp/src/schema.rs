@@ -500,7 +500,7 @@ pub static TOOLS: &[Tool] = &[
                 "calls",
                 ParamKind::Model("Steps"),
                 true,
-                "The calls in order, each {\"verb\": <a write tool, or `place_asset` for a searched photo or icon>, \"args\": {…}}.",
+                "The calls in order, each {\"verb\": <a write tool, `set`, or `place_asset` for a searched photo or icon>, \"args\": {…}, \"as\"?: <a label a later call names as \"@label\">}, as a `batch` takes steps.",
             ),
         ],
     },

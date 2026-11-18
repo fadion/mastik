@@ -276,8 +276,11 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
 
 ### Proposals
 
-- **`propose_edit(title, calls)`** takes `calls` as `{verb, args}`, each a registry verb of Phases 2
-  or 3. They are checked by running them on a copy of the document (`mcp::propose::check`), so the
+- **`propose_edit(title, calls)`** takes `calls` as `{verb, args, as?}`, each a registry verb of
+  Phases 2 or 3, `set`, or `place_asset`; a call may name its verb `tool`, as a `batch` step does,
+  since an agent copies one shape for the other. A later call names what an earlier one made as
+  `"@label"`, resolved on each run, since the trial run on the copy mints its own ids
+  (`Proposal::labels`). They are checked by running them on a copy of the document (`mcp::propose::check`), so the
   person's document, its revision and their redo stay as they were. The answer is
   `{proposal, changes}`: the id, and what each call changes in its verb's own words. A refusal
   names the call and proposes nothing.

@@ -3321,6 +3321,7 @@ pub(crate) mod tests {
             before: vec![app.session.doc.get(card).unwrap().clone()],
             client: "Claude".into(),
             held: Vec::new(),
+            labels: Vec::new(),
         });
         let depth = app.session.history.undo_depth();
         pass(&ctx, &mut app, vec![key(egui::Key::Enter, NONE)], NONE);

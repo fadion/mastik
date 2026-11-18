@@ -457,6 +457,7 @@ mod tests {
             before: Vec::new(),
             client: "Claude".into(),
             held: Vec::new(),
+            labels: Vec::new(),
         }
     }
 

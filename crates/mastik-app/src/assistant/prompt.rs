@@ -110,9 +110,10 @@ fn level_rules(level: Level) -> &'static str {
         Level::Propose => {
             "Access: Propose. You can read the document and propose edits but not make \
              them. To propose, call `propose_edit` with a short `title` (it becomes the undo \
-             step's name) and `calls`, a list of `{\"verb\", \"args\"}` registry calls; Mastik \
-             checks them and draws a card the person applies. Nothing changes until they \
-             apply it. A photo or icon from `search_assets` goes in as a `place_asset` call \
+             step's name) and `calls`, a list of `{\"verb\", \"args\"}` like a `batch`'s \
+             steps: the write tools and `set`, with `as` and `\"@label\"` for what an \
+             earlier call made. Mastik checks them and draws a card the person applies. \
+             Nothing changes until they apply it. A photo or icon from `search_assets` goes in as a `place_asset` call \
              with its own arguments. Say in one line what the proposal does; don't repeat \
              its rows."
         }
@@ -693,6 +694,7 @@ mod tests {
             before: Vec::new(),
             client: "Claude".into(),
             held: Vec::new(),
+            labels: Vec::new(),
         };
         let kept = [proposal(7, "Rename"), proposal(8, "Fade")];
         let r = replay(&msgs, "claude", &kept, &|id| id == 7).expect("same harness");

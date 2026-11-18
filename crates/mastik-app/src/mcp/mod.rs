@@ -186,7 +186,7 @@ fn placements(args: &Value) -> Vec<(usize, Value)> {
         .into_iter()
         .flatten()
         .enumerate()
-        .filter(|(_, c)| c.get("verb").and_then(Value::as_str) == Some(propose::PLACE))
+        .filter(|(_, c)| propose::call_name(c) == Some(propose::PLACE))
         .map(|(i, c)| (i + 1, c.get("args").cloned().unwrap_or_else(|| json!({}))))
         .collect()
 }
@@ -640,21 +640,23 @@ impl Engine {
         let fonts_checked = match call.tool.as_str() {
             "replace_font" => host_font(docs, &mut call.args),
             "batch" | "propose_edit" => {
-                // A batch's steps name their `tool`, a proposal's calls their `verb`.
-                let (list, name) = match call.tool == "batch" {
-                    true => ("steps", "tool"),
-                    false => ("calls", "verb"),
+                // A batch's steps name their `tool`, a proposal's calls their
+                // `verb` or `tool`.
+                let list = match call.tool == "batch" {
+                    true => "steps",
+                    false => "calls",
                 };
                 let steps = call.args.get_mut(list).and_then(Value::as_array_mut);
-                steps.into_iter().flatten().try_for_each(|step| {
-                    match step.get(name).and_then(Value::as_str) {
+                steps
+                    .into_iter()
+                    .flatten()
+                    .try_for_each(|step| match propose::call_name(step) {
                         Some("replace_font") => match step.get_mut("args") {
                             Some(args) => host_font(docs, args),
                             None => Ok(()),
                         },
                         _ => Ok(()),
-                    }
-                })
+                    })
             }
             _ => Ok(()),
         };
