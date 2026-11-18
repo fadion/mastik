@@ -1678,6 +1678,12 @@ pub struct GradientBrush {
     /// `build::brush_is_finite` carries its range and `paint::alpha_of` clamps.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub opacity: f32,
+    /// Set, this brush is a **noise fill**: the ramp from the first stop's colour
+    /// to the last is laid over `feTurbulence`'s value rather than along the
+    /// gradient's geometry, which only a reader that cannot draw noise falls back
+    /// on. A field rather than a fourth brush kind, since the brush is peniko's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noise: Option<crate::noise::Noise>,
 }
 
 /// A [`GradientBrush`] as read, before its stops are made monotonic. The same
@@ -1690,6 +1696,8 @@ struct GradientBrushWire {
     transform: kurbo::Affine,
     #[serde(default = "one")]
     opacity: f32,
+    #[serde(default)]
+    noise: Option<crate::noise::Noise>,
 }
 
 impl From<GradientBrushWire> for GradientBrush {
@@ -1700,7 +1708,50 @@ impl From<GradientBrushWire> for GradientBrush {
             gradient,
             transform: w.transform,
             opacity: w.opacity,
+            noise: w.noise,
         }
+    }
+}
+
+impl GradientBrush {
+    /// A noise fill mapping `noise` from `from` to `to`, its fallback ramp a
+    /// linear gradient across one cell.
+    pub fn noise(noise: crate::noise::Noise, from: peniko::Color, to: peniko::Color) -> Self {
+        let mut gradient = peniko::Gradient::new_linear((0.0, 0.0), (noise.scale, 0.0));
+        gradient.stops = [
+            peniko::ColorStop {
+                offset: 0.0,
+                color: from.into(),
+            },
+            peniko::ColorStop {
+                offset: 1.0,
+                color: to.into(),
+            },
+        ]
+        .as_slice()
+        .into();
+        Self {
+            noise: Some(noise),
+            ..Self::from(gradient)
+        }
+    }
+
+    /// A noise fill's two colours, straight sRGB: the first stop's and the
+    /// last's, with [`Self::opacity`] folded into both alphas. `None` for a
+    /// gradient that is no noise fill.
+    pub fn noise_ramp(&self) -> Option<(crate::noise::Noise, [f32; 4], [f32; 4])> {
+        let noise = self.noise?;
+        let end = |s: Option<&peniko::ColorStop>| {
+            let c = s.map_or(peniko::Color::TRANSPARENT, |s| s.color.to_alpha_color());
+            let mut v = c.components;
+            v[3] *= self.opacity.clamp(0.0, 1.0);
+            v
+        };
+        Some((
+            noise,
+            end(self.gradient.stops.first()),
+            end(self.gradient.stops.last()),
+        ))
     }
 }
 
@@ -1854,6 +1905,7 @@ impl From<peniko::Gradient> for GradientBrush {
             transform: kurbo::Affine::IDENTITY,
             // Opaque: the stops carry their own alpha.
             opacity: 1.0,
+            noise: None,
         }
     }
 }
@@ -2046,6 +2098,7 @@ mod tests {
             gradient: peniko::Gradient::new_linear((0.0, 0.0), (10.0, 0.0)),
             transform: kurbo::Affine::scale_non_uniform(1.0, 6.0),
             opacity: 1.0,
+            noise: None,
         });
         let out = serde_json::to_string(&squashed).expect("serializes");
         assert!(
@@ -2072,6 +2125,7 @@ mod tests {
             gradient: peniko::Gradient::new_linear((0.0, 0.0), (10.0, 0.0)).with_stops(stops),
             transform: kurbo::Affine::IDENTITY,
             opacity: 1.0,
+            noise: None,
         });
         let json = serde_json::to_string(&written).expect("serializes");
         let peniko::Brush::Gradient(g) = serde_json::from_str::<Brush>(&json).expect("reads")

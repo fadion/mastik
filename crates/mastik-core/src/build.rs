@@ -118,6 +118,7 @@ pub fn brush_is_finite(brush: &crate::Brush) -> bool {
                 // `valid_opacity`, not `is_finite`: a finite out-of-range value
                 // would distort every stop and survive a round trip.
                 && valid_opacity(g.opacity)
+                && g.noise.is_none_or(|n| n.scale.is_finite() && n.stretch.is_finite())
         }
         peniko::Brush::Image(i) => i.sampler.alpha.is_finite() && image_ref_is_finite(&i.image),
     }
@@ -143,6 +144,9 @@ pub fn effect_is_finite(effect: &crate::Effect) -> bool {
             radius.is_finite()
         }
         crate::EffectKind::Sharpen { amount, radius } => amount.is_finite() && radius.is_finite(),
+        crate::EffectKind::Grain(g) => {
+            g.amount.is_finite() && g.size.is_finite() && g.blend != crate::BlendMode::PassThrough
+        }
         crate::EffectKind::Filters(f) => {
             f.brightness.is_finite()
                 && f.contrast.is_finite()

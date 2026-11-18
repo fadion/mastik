@@ -449,6 +449,7 @@ fn a_gradients_and_a_tracks_unknown_field_is_refused() {
         gradient: ramp,
         transform: Default::default(),
         opacity: 1.0,
+        noise: None,
     }))
     .unwrap();
     let ok = json!({ "nodes": [f.to_wire()], "fills": [{ "brush": gradient.clone() }] });
