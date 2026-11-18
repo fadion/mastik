@@ -37,10 +37,6 @@ Items run cheapest first.
   components, near-duplicate colours, and kits waiting on updates. Most of the readings exist
   (colour review, clean up, `kits_waiting`); the card and the coverage count do not. Its checks are
   `mastik_export::review`'s, the ones MCP's `review` and `mastik check review` run.
-- **Noise and grain.** A noise fill, and a grain effect over a layer. `non-goals.md` declined noise
-  as one generator written three times to agree to the pixel; SVG's `feTurbulence` is specified to
-  the algorithm, so porting that one algorithm to WGSL and the CPU backend makes the SVG writer the
-  reference rather than a third copy.
 
 ## Later · Platform and dependencies
 

@@ -71,8 +71,11 @@ input event (winit/egui)
 
 It keeps no colour of its own: it reads its target brush through `display_node` each frame and writes each edit to the slot. A layer's gradient is edited as drawn: `MastikApp::slot_brush` maps a Fill or Stroke brush onto the box layout gives the layer (`paint_box_map`, §6.2) and `slot_transaction` maps it back (`stored_on_box`, which keeps the held transform exactly when the edit left it alone, so a colour edit leaves no rounding in it). It keeps only intent the document cannot hold: selected gradient stop, the hue behind a grey, a half-typed colour. Its window opens every time beside the inspector, `app::POPOVER_GAP` from the cards (or from an open popover, `picker_lane_right`) as a popover is, level with the field it edits (`Picker::spawn`; `placed` forces `current_pos` on the first frame; `default_size` height zero so the first-frame estimate is not clamped). A picker requested by a header `+` has no row yet: parked in `MastikApp::pending_picker` and claimed by the created row next frame. Retargeting keeps its position.
 
-**The faces.** The tab strip is *Solid* · *Gradient* · *Variables* (the last only where the slot binds;
-*Gradient* disabled where it cannot hold one). *Gradient* from a solid or a binding makes a linear.
+**The faces.** The tab strip is *Solid* · *Gradient* · *Noise* · *Variables* (the last only where the
+slot binds; *Gradient* and *Noise* disabled where the slot takes no gradient, since a noise fill is a
+gradient brush, *Noise*'s tooltip *Only fills and strokes take noise*). *Gradient* from a solid or a
+binding makes a linear; *Noise* from any kind keeps the first and last stops as its two colours
+(`paint::convert`, `PaintKind::Noise`).
 Each gradient face opens with its geometry row, whose first control is the 34px preview chip
 (`picker::kind_chip`, a caret badge on its corner): a click opens a menu of `PaintKind::GRADIENTS`,
 and picking one converts the paint, stops kept and geometry reframed on the box. The rest of the row:
@@ -90,6 +93,13 @@ eyebrow *Beyond the ends* over three ticked rows, *Pad*, *Repeat*, *Reflect*, th
 the check *Smooth (Oklab)* (§5.5a, *Gradient ends and mixing*); it stays open after a pick so the
 canvas shows each one. On a sweep the three ends rows are disabled, *A sweep goes all the way
 round, so it has no ends*. The undo steps are *Gradient ends* and *Gradient mixing*.
+
+**The Noise face** (`Picker::noise_face`) keeps the Solid face's height: a preview of the noise at
+real scale from the layer's top-left (`noise_preview::texture`, the CPU `effects::noise_fill` in an
+egui texture cached per use site, which the paint row's chip also draws), sized to what the rows
+below leave; *Clouds* / *Veins* segmented; *Scale* (px) and *Detail*; *Seed* and *Stretch* (%); a
+*From* / *To* segmented choosing which end the value row under it edits. A noise fill has no canvas
+handles.
 
 Ends, centres and radii are dragged on the canvas, not in the picker (`tools.md`, gradient handles).
 The stop bar follows the row; the selected stop (`Picker::stop`) is shared with the canvas's dots.
