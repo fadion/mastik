@@ -607,8 +607,8 @@ fn with_a_rect(ctx: &egui::Context) -> MastikApp {
     app
 }
 
-/// One stroked line with an arrow at its end, selected: the stroke row's first
-/// slot holds the two ends, and the popover's Ends group is live.
+/// One stroked line with an arrow at its end, selected: the stroke row's
+/// position is dimmed, and the popover's Ends group is live.
 fn with_a_line(ctx: &egui::Context) -> MastikApp {
     let mut app = MastikApp::headless(ctx);
     let mut ids = mastik_core::IdSource::new(0xA0E);

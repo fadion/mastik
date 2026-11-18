@@ -6354,8 +6354,6 @@ impl MastikApp {
         let aligns = self.stroke_rule(scope, mastik_core::geometry::stroke_align_applies);
         let sides_apply = self.stroke_rule(scope, mastik_core::geometry::stroke_sides_apply);
         let joins = self.stroke_rule(scope, mastik_core::geometry::stroke_join_applies);
-        // An open shape strokes centred, so its position slot holds the two ends.
-        let ends = !aligns && self.stroke_rule(scope, mastik_core::marker::applies);
         // Open, not "open or set": a collapsed row keeps its setting (`FieldButton::Set`).
         let shown = sides_apply && self.stroke_sides_open.contains(&index);
         let mut out = None;
@@ -6365,24 +6363,18 @@ impl MastikApp {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
                 let combo_w = Self::align_combo_width(ui);
-                if ends {
-                    if let Some(st) = Self::end_combos(ui, index, combo_w, stroke) {
-                        out = Some(st);
-                    }
-                } else {
-                    let picked = Self::align_combo(
-                        ui,
-                        ("stroke-align", index),
-                        aligns,
-                        combo_w,
-                        Some(stroke.align),
-                    );
-                    if let Some(align) = picked.filter(|a| *a != stroke.align) {
-                        out = Some(Stroke {
-                            align,
-                            ..stroke.clone()
-                        });
-                    }
+                let picked = Self::align_combo(
+                    ui,
+                    ("stroke-align", index),
+                    aligns,
+                    combo_w,
+                    Some(stroke.align),
+                );
+                if let Some(align) = picked.filter(|a| *a != stroke.align) {
+                    out = Some(Stroke {
+                        align,
+                        ..stroke.clone()
+                    });
                 }
                 let field_w = ui.available_width() - 28.0 * 2.0 - ui::CARD_COL_GAP * 2.0;
                 // Bound, the weight is a chip — a layer's own stroke only.
@@ -6715,34 +6707,6 @@ impl MastikApp {
             })
             .response;
         (resp, (chosen != current).then_some(chosen))
-    }
-
-    /// The stroke row's first slot on an open shape: the start and end dropdowns,
-    /// glyphs alone, sharing the position combo's width, two points apart.
-    fn end_combos(ui: &mut egui::Ui, index: usize, width: f32, stroke: &Stroke) -> Option<Stroke> {
-        const PAIR_GAP: f32 = 2.0;
-        let mut out = None;
-        ui.scope(|ui| {
-            ui.spacing_mut().item_spacing.x = PAIR_GAP;
-            ui.spacing_mut().interact_size.y = ui::CONTROL_H;
-            ui.spacing_mut().button_padding.y = 0.0;
-            let w = (width - PAIR_GAP) / 2.0;
-            for (at_end, current) in [(false, stroke.start), (true, stroke.end)] {
-                let face = ui::glyph_face(end_glyph(current, at_end));
-                let (resp, picked) =
-                    Self::end_combo(ui, ("stroke-end-slot", index), at_end, w, face, current);
-                let line = if at_end {
-                    "End of the line"
-                } else {
-                    "Start of the line"
-                };
-                resp.on_hover_text(format!("{line}: {}", current.label()));
-                if let Some(m) = picked {
-                    out = Some(set_end(stroke, at_end, m));
-                }
-            }
-        });
-        out
     }
 
     /// The stroke popover's Ends group: the start and end dropdowns with their
