@@ -256,7 +256,8 @@ mod tests {
     }
 
     /// Each level lists its own tools and none above it: Look reads, Propose
-    /// adds `propose_edit`, Edit the writes; no level lists Phase 4.
+    /// adds `propose_edit`, Edit the writes; no level lists Phase 4 but for the
+    /// assets browser's two tools, each where its level runs it.
     ///
     /// flip: `allowed` answering Phase 2 at Propose → fails at "no write at
     /// Propose".
@@ -269,10 +270,13 @@ mod tests {
             assert!(list.contains(&"get_node") && list.contains(&"call"));
             assert!(list.contains(&"describe_tools"));
             assert!(
-                !list.iter().any(|t| mastik_mcp::tools::PHASE_4.contains(t)),
+                !list.iter().any(|t| mastik_mcp::tools::PHASE_4.contains(t)
+                    && !["search_assets", "place_asset"].contains(t)),
                 "Phase 4 is never listed: {list:?}"
             );
+            assert!(list.contains(&"search_assets"), "{list:?}");
         }
+        assert!(edit.contains(&"place_asset") && !propose.contains(&"place_asset"));
         assert!(!look.contains(&"propose_edit") && !look.contains(&"set"));
         assert!(propose.contains(&"propose_edit"));
         assert!(

@@ -227,7 +227,7 @@ pub const ASSISTANT: [&str; 1] = ["propose_edit"];
 /// The tools `tools/list` names by default (§8.4, *Core*): what nearly every
 /// task uses. Every other tool still answers by name, through `call`, or listed
 /// with `mastik mcp-proxy --tools all`; a short list is read on every turn.
-pub const CORE: [&str; 43] = [
+pub const CORE: [&str; 39] = [
     "use_document",
     "list_documents",
     "get_selection",
@@ -244,6 +244,8 @@ pub const CORE: [&str; 43] = [
     "list_variables",
     "list_styles",
     "list_fonts",
+    "search_assets",
+    "place_asset",
     "describe_tools",
     "insert_subtree",
     "create_text",
@@ -254,22 +256,16 @@ pub const CORE: [&str; 43] = [
     "reparent",
     "group",
     "ungroup",
-    "align",
-    "distribute",
     "create_instance",
     "set_instance_property",
     "make_component",
-    "define_property",
     "apply_style",
-    "add_style",
     "bind_variable",
-    "add_variable",
     "batch",
     "group_steps",
     "run_script",
     "call",
     "undo",
-    "redo",
     "set_selection",
 ];
 
