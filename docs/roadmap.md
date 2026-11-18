@@ -36,13 +36,6 @@ Items run cheapest first.
   shapes, not as stroke ink, so a `Stroke` stays ink at one width. Hit-testing, `ink_bounds` and
   *Outline stroke* include them. SVG writes `<marker>`; code export writes the SVG fallback. The
   Figma, Sketch and Penpot readers and writers map their own arrow kinds.
-- **OKLCH.** An entry and display mode in the colour picker beside Hex, RGB, HSL and HSB, with the
-  plane drawn in OKLCH and the sRGB gamut's edge shown on it. Storage stays sRGB. An out-of-gamut
-  pick is mapped by lowering chroma (CSS Color 4's method), not by clipping channels; the picker
-  keeps the person's L, C and H while it is open, unsaved, so a hue drag near the edge does not
-  drift chroma. With it, *Generate scale*: a 50–950 ramp of colour variables from one colour, even
-  in lightness, from the variables browser, MCP and Luau. `contrast::nearest` already moves colours
-  in OKLCH.
 - **Design system health.** One card for a document: how much paint, type and spacing is bound to
   variables and styles against raw values, detached instances, unused styles, variables and
   components, near-duplicate colours, and kits waiting on updates. Most of the readings exist

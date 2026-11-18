@@ -1031,6 +1031,9 @@ pub mod icon {
     /// variable*, Group colors, the picker's row of this document's colours, and
     /// Tools' *Colour review…*.
     pub const PALETTE: &str = "\u{e6c8}";
+    /// A ramp of one colour, light to dark: three swatches, the first filled —
+    /// a variable's *Generate scale…*.
+    pub const SCALE: &str = "\u{f07c}";
     pub const HASH: &str = "\u{e2a2}";
     /// A boolean variable: a switch, its knob on.
     pub const TOGGLE: &str = "\u{f01f}";
@@ -1540,6 +1543,7 @@ pub mod icon {
         ("swatches", SWATCHES),
         ("plus-square", PLUS_SQUARE),
         ("palette", PALETTE),
+        ("scale", SCALE),
         ("hash", HASH),
         ("toggle", TOGGLE),
         ("columns-plus-right", COLUMNS_PLUS_RIGHT),
