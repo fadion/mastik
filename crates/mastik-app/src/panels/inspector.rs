@@ -8843,6 +8843,16 @@ impl MastikApp {
                             },
                             None => Swatch::Ramp(&stops),
                         },
+                        // The noise itself, from the layer's corner at 100%.
+                        PaintKind::Noise => match crate::noise_preview::texture(
+                            ui.ctx(),
+                            egui::Id::new(("noise-chip", id, format!("{slot:?}"))),
+                            brush,
+                            egui::vec2(CHIP, CHIP),
+                        ) {
+                            Some(id) => Swatch::Picture { id, alpha: 1.0 },
+                            None => Swatch::Ramp(&stops),
+                        },
                         _ => Swatch::Ramp(&stops),
                     };
                     let chip = ui
