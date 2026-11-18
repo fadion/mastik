@@ -2522,9 +2522,11 @@ fn popover_title(ui: &mut egui::Ui, title: &str) {
 }
 
 /// A [`ui::switch_row`] at a variable popover's inset: the row sets its label
-/// flush with its rect.
+/// flush with its rect. Every switch list's height, so two stack at the pitch
+/// Settings and the Appearance card keep.
 fn popover_switch(ui: &mut egui::Ui, label: &str, on: bool) -> egui::Response {
-    popover_inset(ui, |ui| ui::switch_row(ui, label, on, MENU_ROW_H))
+    let h = crate::settings::SWITCH_H;
+    popover_inset(ui, |ui| ui::switch_row(ui, label, on, h))
 }
 
 /// Where a ticked row's label starts: a menu row's label column.
