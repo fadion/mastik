@@ -18,6 +18,9 @@ The design and its open questions are in `prototyping.md`.
   to its neighbours as the canvas's `Alt` measure quotes them (`measure.rs`), and its export
   settings' files to download. It gives a developer a handoff with no server, from the file the
   designer already sends.
+- **Device and phone mirroring.** The app serves the prototype player to the local network and
+  shows a QR code; a phone on the same network plays the page and follows edits. Not hosting: it
+  ends with the app, needs no account and never leaves the network.
 - **Annotations.** Notes pinned to a layer that say what the drawing cannot ("this list scrolls",
   "48 px touch target"), shown on the canvas, in inspect mode and atop the layer's code in code
   export. They are specification, not conversation: no replies, no authors, no resolved state,
@@ -38,10 +41,6 @@ Items run cheapest first.
   as one generator written three times to agree to the pixel; SVG's `feTurbulence` is specified to
   the algorithm, so porting that one algorithm to WGSL and the CPU backend makes the SVG writer the
   reference rather than a third copy.
-- **Device and phone mirroring.** The app serves the prototype player to the local network and
-  shows a QR code; a phone on the same network plays the page and follows edits. Not hosting: it
-  ends with the app, needs no account and never leaves the network. Waits on the player
-  (*Now · Prototyping*).
 
 ## Later · Platform and dependencies
 
