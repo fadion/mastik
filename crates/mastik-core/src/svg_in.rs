@@ -1985,7 +1985,7 @@ impl<'d, 'input> Builder<'_, 'd, 'input> {
                 // SVG strokes are always centred.
                 align: StrokeAlign::Center,
                 sides: StrokeSides::All,
-                visible: true,
+                ..Default::default()
             })
             .into_iter()
             .collect();

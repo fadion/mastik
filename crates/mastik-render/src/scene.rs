@@ -3627,7 +3627,9 @@ fn paint_shape<P: ScenePainter>(
 /// ink's, and for outlined type the text box. `rule` is how `shape` decides its
 /// interior, as its fill reads it. `device`, when given, snaps each centred
 /// stroke's edges to device pixels ([`snapped_stroke`]). `base` is the walk's
-/// world-to-device transform ([`Painted::base`]).
+/// world-to-device transform ([`Painted::base`]). Each centred stroke fills its
+/// own markers just after its ink (`geometry::marker_ink`), in its own paint
+/// framed as its ink is; an open outline is always centred.
 #[allow(clippy::too_many_arguments)]
 fn paint_strokes<P: ScenePainter>(
     doc: &Document,
@@ -3667,11 +3669,14 @@ fn paint_strokes<P: ScenePainter>(
         if align == StrokeAlign::Center {
             for s in run {
                 let framing = framing_of(doc, s.brush.drawn(), frame);
+                let heads = geometry::marker_ink(kind, shape, s.width, s.markers());
+                // A snapped stroke is laid untrimmed, so one with heads is not snapped.
                 let snapped = device
                     .filter(|_| {
-                        geometry::effective_sides(kind, s)
-                            .per_side(s.width)
-                            .is_none()
+                        heads.is_none()
+                            && geometry::effective_sides(kind, s)
+                                .per_side(s.width)
+                                .is_none()
                     })
                     .and_then(|(d, edges)| snapped_stroke(shape, d, s, edges));
                 match snapped {
@@ -3679,7 +3684,10 @@ fn paint_strokes<P: ScenePainter>(
                         p.fill_path(world, &ink, s.brush.drawn(), framing, ClipRule::NonZero)
                     }),
                     None => clipped(painter, world, framing, |p| {
-                        lay_sides(p, (world, base), kind, s, shape, framing, false)
+                        lay_sides(p, (world, base), kind, s, shape, framing, false);
+                        if let Some(heads) = &heads {
+                            p.fill_path(world, heads, s.brush.drawn(), framing, ClipRule::NonZero);
+                        }
                     }),
                 }
             }
@@ -3745,7 +3753,8 @@ fn paint_strokes<P: ScenePainter>(
 /// One stroke's ink: the whole outline, or one open path per side it occupies.
 ///
 /// `doubled` is the aligned construction's twice-width stroke. `at` is the node's
-/// world transform and the walk's world-to-device base.
+/// world transform and the walk's world-to-device base. The whole outline is cut
+/// back under the stroke's heads that trim; the heads are the caller's.
 fn lay_sides<P: ScenePainter>(
     painter: &mut P,
     at: (Affine, Affine),
@@ -3757,7 +3766,7 @@ fn lay_sides<P: ScenePainter>(
 ) {
     match geometry::effective_sides(kind, s).per_side(s.width) {
         None => {
-            let laid = geometry::stroked_path(kind, shape, s.width);
+            let laid = geometry::stroked_path(kind, shape, s.width, s.markers());
             lay_dashed(painter, at, &laid, s, s.width, framing, doubled);
         }
         Some(sides) => {

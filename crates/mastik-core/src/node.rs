@@ -1735,7 +1735,29 @@ pub struct Stroke {
     /// stale on the next resize while still reading as on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dash_fit: bool,
+    /// What an open outline's start wears (`crate::marker`): a shape of its own in
+    /// this stroke's paint, not ink, so the stroke stays one width. Per stroke, so
+    /// a second stroke on the same line can wear none.
+    #[serde(default, skip_serializing_if = "crate::marker::Marker::is_none")]
+    pub start: crate::marker::Marker,
+    /// What its end wears, as [`Self::start`].
+    #[serde(default, skip_serializing_if = "crate::marker::Marker::is_none")]
+    pub end: crate::marker::Marker,
+    /// How large both ends are drawn, a fraction: 1 is three stroke widths. Held
+    /// to `crate::marker::SIZE_RANGE`.
+    #[serde(default = "unit_size", skip_serializing_if = "is_unit_size")]
+    pub marker_size: f64,
     pub visible: bool,
+}
+
+/// [`Stroke::marker_size`]'s default, 100%.
+fn unit_size() -> f64 {
+    1.0
+}
+
+/// Whether a marker size is the default and so left out of the file.
+fn is_unit_size(v: &f64) -> bool {
+    *v == 1.0
 }
 
 /// kurbo's own default, which is SVG's: ratio 4, i.e. corners sharper than
@@ -1948,6 +1970,19 @@ impl Stroke {
         {
             [top, right, bottom, left].into_iter().for_each(c);
         }
+        self.marker_size = crate::marker::clamped_size(self.marker_size);
+    }
+
+    /// The markers this stroke draws at an open outline's ends, with what shapes
+    /// them: its cap and join, for the heads drawn as strokes.
+    pub fn markers(&self) -> crate::marker::Markers {
+        crate::marker::Markers {
+            start: self.start,
+            end: self.end,
+            size: self.marker_size,
+            cap: self.cap,
+            join: self.join,
+        }
     }
 
     /// Which of the panel's four dash cells this stroke's pattern is.
@@ -1994,6 +2029,9 @@ impl Default for Stroke {
             sides: StrokeSides::All,
             miter_limit: default_miter_limit(),
             dash_fit: false,
+            start: crate::marker::Marker::None,
+            end: crate::marker::Marker::None,
+            marker_size: unit_size(),
             visible: true,
         }
     }

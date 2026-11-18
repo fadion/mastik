@@ -158,6 +158,7 @@ fn four_shapes() -> (Document, Resolved, Vec<NodeId>) {
                 align: mastik_core::StrokeAlign::Center,
                 sides: mastik_core::StrokeSides::All,
                 visible: true,
+                ..Default::default()
             }]),
         },
     ]))

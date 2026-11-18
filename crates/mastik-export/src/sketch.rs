@@ -972,6 +972,23 @@ impl Writer<'_> {
             FillRule::EvenOdd => 1,
             FillRule::NonZero => 0,
         });
+        // Sketch keeps one pair for a layer: the first stroke's.
+        if mastik_core::marker::applies(node.kind())
+            && let Some(first) = paint.strokes.first()
+        {
+            if paint
+                .strokes
+                .iter()
+                .any(|s| (s.start, s.end) != (first.start, first.end))
+            {
+                self.approximate("Borders with different line ends, drawn with the first's");
+            }
+            if !first.markers().is_none() && first.marker_size != 1.0 {
+                self.approximate("Line end sizes, drawn at Sketch's own");
+            }
+            st["startMarkerType"] = json!(marker_type(first.start));
+            st["endMarkerType"] = json!(marker_type(first.end));
+        }
     }
 
     /// The options every border of a layer shares in Sketch, from its first.
@@ -1489,6 +1506,20 @@ fn frame_rect(l: &Value) -> Rect {
 
 fn local_size(kind: &NodeKind) -> Size {
     kind.box_size().unwrap_or(Size::ZERO)
+}
+
+/// Sketch's line-end code for `m`: 0 none, 1 open arrow, 2 filled arrow, 3 a
+/// line across, 5 a filled circle, 7 a filled square. Sketch sizes its own.
+fn marker_type(m: mastik_core::Marker) -> i64 {
+    use mastik_core::Marker;
+    match m {
+        Marker::None => 0,
+        Marker::OpenArrow => 1,
+        Marker::Arrow => 2,
+        Marker::Bar => 3,
+        Marker::Circle => 5,
+        Marker::Square => 7,
+    }
 }
 
 /// A style with nothing in it but what the schema asks for, its id derived

@@ -165,6 +165,7 @@ fn rich_document() -> (Document, NodeId) {
                     dash_fit: false,
                     align: StrokeAlign::Center,
                     visible: true,
+                    ..Default::default()
                 }]),
             },
             Operation::SetOpacity {
@@ -2358,6 +2359,51 @@ fn the_inverted_flag_is_absent_until_a_mask_is_inverted() {
         loaded.get(rect).unwrap().mask_inverted(),
         "still inverted, remembered while the mask is off"
     );
+}
+
+/// A stroke's markers write no key until an end is marked or sized, and round-trip
+/// once one is.
+/// flip: `Stroke::end` skipped by serde → fails at the loaded stroke's end.
+#[test]
+fn a_strokes_markers_are_absent_until_an_end_is_marked() {
+    use mastik_core::Marker;
+    let (mut doc, _root) = rich_document();
+    let line = doc
+        .node_ids()
+        .find(|id| matches!(doc.get(*id).unwrap().kind(), NodeKind::Line { .. }))
+        .unwrap();
+    doc.apply(&Transaction(vec![Operation::SetStrokes {
+        id: line,
+        strokes: keyed_by_position([Stroke {
+            width: 2.0,
+            ..Default::default()
+        }]),
+    }]))
+    .unwrap();
+    let plain = String::from_utf8(io::save(&doc).unwrap()).unwrap();
+    for key in ["OpenArrow", "marker_size"] {
+        assert!(!plain.contains(key), "an unmarked stroke writes no {key}");
+    }
+    doc.apply(&Transaction(vec![Operation::SetStrokes {
+        id: line,
+        strokes: keyed_by_position([Stroke {
+            width: 2.0,
+            end: Marker::OpenArrow,
+            marker_size: 1.5,
+            ..Default::default()
+        }]),
+    }]))
+    .unwrap();
+    let text = String::from_utf8(io::save(&doc).unwrap()).unwrap();
+    assert!(
+        text.contains(r#""OpenArrow""#) && text.contains("marker_size"),
+        "{text}"
+    );
+    let loaded = io::load(text.as_bytes()).unwrap();
+    let s = &loaded.get(line).unwrap().paint().strokes[0];
+    assert_eq!(s.end, Marker::OpenArrow, "the loaded stroke's end");
+    assert_eq!((s.start, s.marker_size), (Marker::None, 1.5));
+    assert_eq!(doc, loaded);
 }
 
 /// The **fill rule** is additive on exactly the same terms (§15 D239), and one

@@ -696,7 +696,8 @@ fn spiral_path(size: Size, turns: f64) -> BezPath {
 }
 
 /// The path a stroke `width` wide is laid along: `shape`, except that a spiral's
-/// path starts where it first bends no tighter than half the width.
+/// path starts where it first bends no tighter than half the width, and that
+/// `markers` whose heads trim cut its ends back (`crate::marker::trimmed`).
 ///
 /// Inward of there every point within half the width of the curve leaves a cusp
 /// on the stroke's inner edge, a spike any stroker draws. Render, Outline stroke,
@@ -706,7 +707,51 @@ pub fn stroked_path<'a>(
     kind: &NodeKind,
     shape: &'a BezPath,
     width: f64,
+    markers: crate::marker::Markers,
 ) -> std::borrow::Cow<'a, BezPath> {
+    use std::borrow::Cow;
+    let laid = laid_path(kind, shape, width);
+    if markers.is_none() || !crate::marker::drawn_on(kind) {
+        return laid;
+    }
+    match (laid, crate::marker::trimmed(shape, width, markers)) {
+        (Cow::Borrowed(_), cut) => cut,
+        (Cow::Owned(laid), _) => {
+            Cow::Owned(crate::marker::trimmed(&laid, width, markers).into_owned())
+        }
+    }
+}
+
+/// The markers a stroke `width` wide draws on `shape`, as one path to fill
+/// non-zero, placed on [`stroked_path`]'s path before it is trimmed.
+pub fn marker_ink(
+    kind: &NodeKind,
+    shape: &BezPath,
+    width: f64,
+    markers: crate::marker::Markers,
+) -> Option<BezPath> {
+    if markers.is_none() || !crate::marker::drawn_on(kind) {
+        return None;
+    }
+    crate::marker::ink(&laid_path(kind, shape, width), width, markers)
+}
+
+/// The markers placed on `shape` for a stroke `width` wide, as [`marker_ink`]
+/// places them; for a writer that draws each one itself.
+pub fn placed_markers(
+    kind: &NodeKind,
+    shape: &BezPath,
+    width: f64,
+    markers: crate::marker::Markers,
+) -> Vec<crate::marker::Placed> {
+    if markers.is_none() || !crate::marker::drawn_on(kind) {
+        return Vec::new();
+    }
+    crate::marker::placed(&laid_path(kind, shape, width), width, markers)
+}
+
+/// [`stroked_path`] before the markers trim it: the spiral's cut alone.
+fn laid_path<'a>(kind: &NodeKind, shape: &'a BezPath, width: f64) -> std::borrow::Cow<'a, BezPath> {
     use kurbo::ParamCurveCurvature;
     use std::borrow::Cow;
     /// Samples a cubic is searched at before the crossing is bisected.
@@ -1725,6 +1770,9 @@ fn segment_runs(path: &BezPath) -> Vec<(Vec<PathSeg>, bool)> {
 /// **Parts, because no caller has the kind a `Node` would hand it.** Render
 /// previews measure under a pending edit's override, and `Resolved` measures at the
 /// **used** kind, which is the node's own only until container layout resizes it.
+///
+/// Grown by the markers each stroke draws, as by the stroke itself: the spatial
+/// index is keyed on this box, and a head out past the stroke is clicked too.
 pub fn world_bounds_of_parts(
     kind: &NodeKind,
     paint: &Paint,
@@ -1733,7 +1781,25 @@ pub fn world_bounds_of_parts(
 ) -> Option<Rect> {
     let local = local_bounds(kind, text)?;
     let expansion = stroke_expansion(kind, paint);
-    measurable(transform_rect(world, local.inflate(expansion, expansion)))
+    let grown = local.inflate(expansion, expansion);
+    measurable(transform_rect(world, marked_bounds(grown, kind, paint)))
+}
+
+/// `local` grown by the heads each visible stroke of `paint` puts on `kind`.
+fn marked_bounds(local: Rect, kind: &NodeKind, paint: &Paint) -> Rect {
+    let marked = |s: &&crate::item::Keyed<Stroke>| s.visible && !s.markers().is_none();
+    if !crate::marker::drawn_on(kind) || !paint.strokes.iter().any(|s| marked(&s)) {
+        return local;
+    }
+    let Some(path) = local_path(kind) else {
+        return local;
+    };
+    paint
+        .strokes
+        .iter()
+        .filter(marked)
+        .filter_map(|s| marker_ink(kind, &path, s.width, s.markers()))
+        .fold(local, |r, heads| r.union(heads.bounding_box()))
 }
 
 /// `r` if it is a box anything can be measured against, `None` otherwise.
@@ -1780,9 +1846,10 @@ pub fn world_bounds_of_path(
 }
 
 /// World box of everything a non-container node draws: [`world_bounds_of_parts`]
-/// grown by what that box leaves out — a text's glyphs past its trimmed box, and a
-/// stroke's mitre points and square caps. What [`crate::Resolved::ink_bounds`]
-/// starts a leaf from; the editing box stays the tighter one.
+/// grown by what that box leaves out — a text's glyphs past its trimmed box, a
+/// stroke's mitre points and square caps, and the markers each stroke draws.
+/// What [`crate::Resolved::ink_bounds`] starts a leaf from; the editing box stays
+/// the tighter one.
 pub fn world_ink_of_parts(
     kind: &NodeKind,
     paint: &Paint,
@@ -1791,7 +1858,7 @@ pub fn world_ink_of_parts(
 ) -> Option<Rect> {
     let local = local_bounds(kind, text)?;
     let expansion = stroke_expansion(kind, paint);
-    let mut ink = local.inflate(expansion, expansion);
+    let mut ink = marked_bounds(local.inflate(expansion, expansion), kind, paint);
     match kind {
         NodeKind::Text { .. } => {
             if let Some(glyphs) = text.and_then(|t| t.ink) {
@@ -1900,6 +1967,9 @@ pub fn contains_local(
     slop: f64,
 ) -> bool {
     let tol = stroke_expansion(kind, paint) + slop;
+    if markers_hit(paint, kind, p, slop) {
+        return true;
+    }
     match kind {
         NodeKind::Rect { size, .. } | NodeKind::Artboard { size, .. } => {
             p.x >= -tol && p.y >= -tol && p.x <= size.width + tol && p.y <= size.height + tol
@@ -1963,6 +2033,22 @@ pub fn contains_local(
             slop > 0.0 && b.inflate(slop, slop).contains(p) && !b.inflate(-slop, -slop).contains(p)
         }
     }
+}
+
+/// Whether `p` (local) lands on a marker some visible stroke of `paint` draws on
+/// `kind`'s outline, or within `slop` of one: a head is grabbed as its stroke is.
+fn markers_hit(paint: &Paint, kind: &NodeKind, p: Point, slop: f64) -> bool {
+    let marked = |s: &&crate::item::Keyed<Stroke>| s.visible && !s.markers().is_none();
+    if !crate::marker::drawn_on(kind) || !paint.strokes.iter().any(|s| marked(&s)) {
+        return false;
+    }
+    let Some(path) = local_path(kind) else {
+        return false;
+    };
+    paint.strokes.iter().filter(marked).any(|s| {
+        marker_ink(kind, &path, s.width, s.markers())
+            .is_some_and(|ink| winding(&ink, p) != 0 || near_outline(&ink, p, slop))
+    })
 }
 
 /// How finely [`winding`] flattens a path, in its own units.
@@ -3179,7 +3265,7 @@ mod tests {
             turns: 3.5,
         };
         let shape = local_path(&kind).unwrap();
-        let laid = stroked_path(&kind, &shape, 21.0);
+        let laid = stroked_path(&kind, &shape, 21.0, crate::marker::Markers::NONE);
         assert!(
             matches!(laid, std::borrow::Cow::Owned(_)),
             "a thick stroke cuts"
@@ -3214,7 +3300,7 @@ mod tests {
         );
         // A hairline opens out at once, so it keeps the path.
         assert!(matches!(
-            stroked_path(&kind, &shape, 1.0),
+            stroked_path(&kind, &shape, 1.0, crate::marker::Markers::NONE),
             std::borrow::Cow::Borrowed(_)
         ));
         let line = NodeKind::Line {
@@ -3222,7 +3308,7 @@ mod tests {
         };
         let lp = local_path(&line).unwrap();
         assert!(matches!(
-            stroked_path(&line, &lp, 50.0),
+            stroked_path(&line, &lp, 50.0, crate::marker::Markers::NONE),
             std::borrow::Cow::Borrowed(_)
         ));
     }

@@ -742,6 +742,7 @@ fn a_border_width_is_always_a_dimension() {
         dash_fit: false,
         align: mastik_core::StrokeAlign::Center,
         visible: true,
+        ..Default::default()
     };
     f.doc
         .apply(&Transaction(vec![

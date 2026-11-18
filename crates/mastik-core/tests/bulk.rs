@@ -49,6 +49,7 @@ fn solid_stroke(c: Color) -> Stroke {
         dash_fit: false,
         align: StrokeAlign::Center,
         visible: true,
+        ..Default::default()
     }
 }
 

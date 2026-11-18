@@ -3531,7 +3531,7 @@ fn line_stroke(brush: BrushSource, width: f64, dash: super::Dash) -> Stroke {
         miter_limit: 4.0,
         dash_fit: false,
         align: crate::node::StrokeAlign::Center,
-        visible: true,
+        ..Default::default()
     }
 }
 

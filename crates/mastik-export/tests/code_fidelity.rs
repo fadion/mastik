@@ -142,6 +142,7 @@ impl Doc {
                 dash_fit: false,
                 align,
                 visible: true,
+                ..Default::default()
             }]),
         }]);
     }

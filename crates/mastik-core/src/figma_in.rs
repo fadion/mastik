@@ -856,6 +856,25 @@ impl Builder<'_> {
         id
     }
 
+    /// The marker an arrow or marker `strokeCap` draws. The REST API gives one cap
+    /// for a vector's ends, so it marks both; a diamond is drawn as a square.
+    fn markers(&mut self, n: &Value) -> Option<crate::marker::Marker> {
+        use crate::marker::Marker;
+        let marker = match str_of(n, "strokeCap") {
+            "LINE_ARROW" => Marker::OpenArrow,
+            "TRIANGLE_ARROW" | "TRIANGLE_FILLED" => Marker::Arrow,
+            "CIRCLE_FILLED" => Marker::Circle,
+            "DIAMOND_FILLED" => {
+                self.count("Diamond line ends", 1, "layers", "Drawn as squares");
+                Marker::Square
+            }
+            _ => return None,
+        };
+        // The file says one cap, not which end wears it.
+        self.count("Arrow caps", 1, "layers", "Put on both ends");
+        Some(marker)
+    }
+
     fn strokes(&mut self, n: &Value, size: Size) -> Vec<Stroke> {
         let width = n.get("strokeWeight").and_then(Value::as_f64).unwrap_or(1.0);
         if n.get("individualStrokeWeights")
@@ -871,9 +890,11 @@ impl Builder<'_> {
         let cap = match str_of(n, "strokeCap") {
             "ROUND" => crate::kurbo::Cap::Round,
             "SQUARE" => crate::kurbo::Cap::Square,
-            "" | "NONE" => crate::kurbo::Cap::Butt,
+            // Markers (`markers`), drawn beside a plain end.
+            "" | "NONE" | "LINE_ARROW" | "TRIANGLE_ARROW" | "TRIANGLE_FILLED" | "CIRCLE_FILLED"
+            | "DIAMOND_FILLED" => crate::kurbo::Cap::Butt,
             _ => {
-                self.count("Arrow and marker caps", 1, "strokes", "Drawn without them");
+                self.count("Washi tape caps", 1, "strokes", "Drawn without them");
                 crate::kurbo::Cap::Butt
             }
         };
@@ -895,6 +916,7 @@ impl Builder<'_> {
             "OUTSIDE" => StrokeAlign::Outside,
             _ => StrokeAlign::Center,
         };
+        let marker = self.markers(n).unwrap_or_default();
         arr(n, "strokes")
             .to_vec()
             .iter()
@@ -911,6 +933,9 @@ impl Builder<'_> {
                     dash_fit: false,
                     align,
                     sides: crate::StrokeSides::All,
+                    start: marker,
+                    end: marker,
+                    marker_size: 1.0,
                     visible: p.get("visible").and_then(Value::as_bool) != Some(false),
                 })
             })

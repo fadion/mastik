@@ -328,6 +328,7 @@ fn golden_document() -> (Document, Resolved) {
                 dash_fit: false,
                 align: StrokeAlign::Center,
                 visible: true,
+                ..Default::default()
             }]),
         },
         // A gradient, so the `<defs>` block and the stop list are covered.
@@ -378,6 +379,7 @@ fn golden_document() -> (Document, Resolved) {
                 dash_fit: false,
                 align: StrokeAlign::Center,
                 visible: true,
+                ..Default::default()
             }]),
         },
         // An outside stroke on a closed shape: a `<clipPath>` plus a doubled width.
@@ -396,6 +398,7 @@ fn golden_document() -> (Document, Resolved) {
                 dash_fit: false,
                 align: StrokeAlign::Outside,
                 visible: true,
+                ..Default::default()
             }]),
         },
         Operation::SetFills {

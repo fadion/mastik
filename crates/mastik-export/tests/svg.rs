@@ -816,6 +816,7 @@ fn stacked_paints_export_one_element_each_in_paint_order() {
                         dash_fit: false,
                         align: StrokeAlign::Center,
                         visible: true,
+                        ..Default::default()
                     },
                     Stroke {
                         brush: solid(0x44).into(),
@@ -830,6 +831,7 @@ fn stacked_paints_export_one_element_each_in_paint_order() {
                         dash_fit: false,
                         align: StrokeAlign::Center,
                         visible: true,
+                        ..Default::default()
                     },
                 ]),
             },
@@ -5040,4 +5042,45 @@ fn react_and_vue_pages_carry_credits_their_comments_survive() {
     assert!(vue.starts_with("<!--\n  Credits\n"), "{vue}");
     let comment = &vue[4..vue.find("-->\n").expect("the comment closes")];
     assert!(!comment.contains("--"), "no double dash: {vue}");
+}
+
+/// A line's heads go out as `<marker>`s on its stroke, the stroke cut back under
+/// the arrow so its tip lands on the end, as the canvas draws it.
+/// flip: `emit_strokes` leaving out its marker attributes → fails at "marker-end".
+#[test]
+fn a_lines_heads_export_as_markers() {
+    use mastik_core::{Marker, NodeKind, Stroke};
+    let mut f = common::fixture();
+    let line = f
+        .doc
+        .node_ids()
+        .find(|id| matches!(f.doc.get(*id).unwrap().kind(), NodeKind::Line { .. }))
+        .expect("the fixture's line");
+    f.doc
+        .apply(&Transaction(vec![Operation::SetStrokes {
+            id: line,
+            strokes: keyed_by_position([Stroke {
+                brush: mastik_core::peniko::Brush::Solid(mastik_core::peniko::Color::BLACK).into(),
+                width: 2.0,
+                start: Marker::Circle,
+                end: Marker::Arrow,
+                ..Default::default()
+            }]),
+        }]))
+        .expect("markers");
+    f.res = Resolved::rebuild(&f.doc);
+    let out = svg_of(&f.doc, &f.res, &[line]);
+    assert_eq!(out.matches("<marker ").count(), 2, "{out}");
+    assert!(out.contains(r#"markerUnits="strokeWidth""#), "{out}");
+    assert!(
+        out.contains("marker-start=\"url(#mk-"),
+        "marker-start: {out}"
+    );
+    assert!(out.contains("marker-end=\"url(#mk-"), "marker-end: {out}");
+    // The 60-long line stops a width and a half short of its end.
+    assert!(out.contains(r#"d="M0,0 L57,0""#), "the cut stroke: {out}");
+    assert!(
+        out.contains(r#"refX="-1.5" refY="0""#),
+        "the tip on the end: {out}"
+    );
 }

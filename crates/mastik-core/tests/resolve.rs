@@ -1129,6 +1129,7 @@ fn stroke_expansion_follows_alignment() {
             dash_fit: false,
             align,
             visible: true,
+            ..Default::default()
         }]),
     };
 

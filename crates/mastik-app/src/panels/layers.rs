@@ -3408,6 +3408,7 @@ mod missing_picture_tests {
             dash_fit: false,
             align: StrokeAlign::Center,
             visible,
+            ..Default::default()
         }
     }
 

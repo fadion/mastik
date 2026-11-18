@@ -1120,7 +1120,7 @@ fn hex(v: &Value) -> String {
 /// The keys the file skips at a default other than an empty list, `false` or
 /// zero, with that default as JSON. `skipped_keys_are_listed` holds every key
 /// skipped beside a `default = "…"` function to this list.
-const SKIPPED_AT: [(&str, &str); 14] = [
+const SKIPPED_AT: [(&str, &str); 15] = [
     ("alpha", "1"),
     // A shadow's; a node's `blend` is an `Option`, absent at its kind's default.
     ("blend", r#""Normal""#),
@@ -1134,6 +1134,7 @@ const SKIPPED_AT: [(&str, &str); 14] = [
         "duotone_light",
         r#"{"components":[0.96862745,0.69803923,0.40392157,1.0]}"#,
     ),
+    ("marker_size", "1.0"),
     ("opacity", "1"),
     ("precision", "2"),
     ("quality", "90"),

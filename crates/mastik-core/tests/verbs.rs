@@ -5706,6 +5706,38 @@ fn set_mask_inverts_a_mask() {
     assert_eq!(refused_param(&doc, &mut ids, "set_mask", args), "inverted");
 }
 
+/// A stroke's ends are written through `set_strokes` like its other fields, a
+/// marker in any case, and `verbs::tree` reads them back on the stroke.
+#[test]
+fn a_strokes_ends_are_set_with_its_other_fields() {
+    use mastik_core::Marker;
+    let (mut doc, mut ids, page) = blank();
+    let line = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": { "Line": { "end": [100.0, 0.0] } } }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_strokes",
+        json!({
+            "nodes": [line.to_wire()],
+            "strokes": [{ "brush": "#000000", "width": 2, "end": "open arrow", "marker_size": 1.5 }],
+        }),
+    );
+    let s = &doc.get(line).unwrap().paint().strokes[0];
+    assert_eq!(
+        (s.start, s.end, s.marker_size),
+        (Marker::None, Marker::OpenArrow, 1.5)
+    );
+    let shown = verbs::tree(&doc, line)
+        .expect("the line's tree")
+        .to_string();
+    assert!(shown.contains(r#""end":"OpenArrow""#), "{shown}");
+}
+
 /// A frame is written as an element its kind offers and, as a link, takes an
 /// address; a shape, an element a text takes, a link address on a layer that is
 /// no link and an address a link cannot take are refused.

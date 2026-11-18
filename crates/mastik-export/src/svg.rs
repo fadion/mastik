@@ -18,8 +18,8 @@ use mastik_core::kurbo::{Affine, BezPath, Insets, Rect, Shape};
 use mastik_core::peniko::{Color, Extend, GradientKind};
 use mastik_core::{
     BlendMode, Decoration, Document, Effect, EffectKind, ExportSpec, ExportText, Fill, Framing,
-    LineStyle, MaskMode, Node, NodeId, NodeKind, Paint, Resolved, Shadow, Stroke, StrokeAlign,
-    SvgColour, SvgStrokes, SvgView, geometry,
+    LineStyle, Markers, MaskMode, Node, NodeId, NodeKind, Paint, Resolved, Shadow, Stroke,
+    StrokeAlign, SvgColour, SvgStrokes, SvgView, geometry,
 };
 use mastik_core::{Brush, Keyed};
 use std::fmt::Write;
@@ -1874,7 +1874,13 @@ fn emit_shape(
                     && geometry::effective_sides(res.used_kind_of(node), s).is_all()
                     && dash_pieces(shape.as_ref(), s, s.width).is_none()
                     && (fills.is_empty()
-                        || trimmed_stroke(res.used_kind_of(node), shape.as_ref(), s).is_none())
+                        || trimmed_stroke(res.used_kind_of(node), shape.as_ref(), s, Markers::NONE)
+                            .is_none())
+                    // Its markers are elements of their own (`emit_strokes`).
+                    && shape.as_ref().is_none_or(|shape| {
+                        geometry::placed_markers(res.used_kind_of(node), shape, s.width, s.markers())
+                            .is_empty()
+                    })
             }
             _ => false,
         };
@@ -1900,9 +1906,9 @@ fn emit_shape(
     // `fill-rule` rides with the fill, even when it is `none` (see `with_fill_rule`).
     let fill = with_fill_rule(fill, node);
     // An unfilled element is all stroke, so it can carry the stroke's cut path.
-    let cut = strokes
-        .first()
-        .and_then(|(_, s)| trimmed_stroke(res.used_kind_of(node), shape.as_ref(), s));
+    let cut = strokes.first().and_then(|(_, s)| {
+        trimmed_stroke(res.used_kind_of(node), shape.as_ref(), s, Markers::NONE)
+    });
     let stroke = match strokes.first() {
         Some((i, s)) => stroke_attr(
             id,
@@ -2022,10 +2028,16 @@ fn dash_pieces(
 }
 
 /// The path `s` is laid along when it is not `shape` itself (a thick stroke on a
-/// spiral starts further out, `geometry::stroked_path`); such a stroke is its own
-/// `<path>`, apart from the fills' element.
-fn trimmed_stroke(kind: &NodeKind, shape: Option<&BezPath>, s: &Stroke) -> Option<BezPath> {
-    match geometry::stroked_path(kind, shape?, s.width) {
+/// spiral starts further out, and a head cuts its end back:
+/// `geometry::stroked_path`); such a stroke is its own `<path>`, apart from the
+/// fills' element.
+fn trimmed_stroke(
+    kind: &NodeKind,
+    shape: Option<&BezPath>,
+    s: &Stroke,
+    markers: mastik_core::Markers,
+) -> Option<BezPath> {
+    match geometry::stroked_path(kind, shape?, s.width, markers) {
         std::borrow::Cow::Owned(path) => Some(path),
         std::borrow::Cow::Borrowed(_) => None,
     }
@@ -2049,7 +2061,7 @@ pub(crate) fn spiral_for_one_path(
     let Some(paint) = mastik_core::paint_box::node_paint(doc, res, id) else {
         return (path, false);
     };
-    let cut = |s: &Stroke| match geometry::stroked_path(kind, &path, s.width) {
+    let cut = |s: &Stroke| match geometry::stroked_path(kind, &path, s.width, Markers::NONE) {
         std::borrow::Cow::Owned(p) => Some(p),
         std::borrow::Cow::Borrowed(_) => None,
     };
@@ -2221,15 +2233,40 @@ fn emit_strokes(
         let sides = geometry::effective_sides(res.used_kind_of(node), s).per_side(s.width);
         // A fitted multi-subpath dash is one `<path>` per subpath: an element has
         // one `stroke-dasharray`.
-        let trimmed = trimmed_stroke(res.used_kind_of(node), shape.as_ref(), s);
+        let trimmed = trimmed_stroke(res.used_kind_of(node), shape.as_ref(), s, s.markers());
         let pieces = dash_pieces(trimmed.as_ref().or(shape.as_ref()), s, s.width);
+        let placed = shape.as_ref().map_or_else(Vec::new, |shape| {
+            geometry::placed_markers(res.used_kind_of(node), shape, s.width, s.markers())
+        });
+        // A solid stroke's heads are `<marker>`s; any other paint inside a marker
+        // would be laid out against the marker's own box, so those heads are
+        // filled paths in the stroke's space instead, as are the heads of a line
+        // too short to keep any stroke to hang them on.
+        let solid = matches!(s.brush.drawn(), Brush::Solid(_))
+            && trimmed.as_ref().is_none_or(|t| !t.is_empty());
+        let (mut marker_start, mut marker_end) = (String::new(), String::new());
+        if solid {
+            for p in &placed {
+                let end = if p.at_end { "end" } else { "start" };
+                let marker_id = format!("mk-{}-{i}-{end}", id.to_wire().replace(':', "-"));
+                emit_marker(out, inner, &marker_id, p, s, id, *i, defs);
+                let attr = format!(r#" marker-{end}="url(#{marker_id})""#);
+                match p.at_end {
+                    true => marker_end = attr,
+                    false => marker_start = attr,
+                }
+            }
+        }
         let ink = |out: &mut String, pad: &str, doubled: bool| {
             let scale = if doubled { 2.0 } else { 1.0 };
             let segments = |out: &mut String, parts: &[(BezPath, Vec<f64>)], w: f64| {
-                for (part, dashes) in parts {
+                let last = parts.len().saturating_sub(1);
+                for (j, (part, dashes)) in parts.iter().enumerate() {
+                    let start = if j == 0 { marker_start.as_str() } else { "" };
+                    let end = if j == last { marker_end.as_str() } else { "" };
                     let _ = writeln!(
                         out,
-                        r#"{pad}<path d="{d}"{UNFILLED}{stroke}/>"#,
+                        r#"{pad}<path d="{d}"{UNFILLED}{stroke}{start}{end}/>"#,
                         d = path_d(part),
                         stroke = stroke_attr(id, *i, s, w * scale, dashes, defs),
                     );
@@ -2259,13 +2296,16 @@ fn emit_strokes(
                     pad,
                     "",
                     UNFILLED,
-                    &stroke_attr(
-                        id,
-                        *i,
-                        s,
-                        s.width * scale,
-                        &resolved_dashes(shape.as_ref(), s, s.width),
-                        defs,
+                    &format!(
+                        "{}{marker_start}{marker_end}",
+                        stroke_attr(
+                            id,
+                            *i,
+                            s,
+                            s.width * scale,
+                            &resolved_dashes(shape.as_ref(), s, s.width),
+                            defs,
+                        )
                     ),
                     "",
                     defs,
@@ -2311,9 +2351,70 @@ fn emit_strokes(
                     }
                     None => ink(out, inner, false),
                 }
+                if !solid {
+                    for heads in placed.iter().filter_map(|p| p.ink(s.width, s.markers())) {
+                        let _ = writeln!(
+                            out,
+                            r#"{inner}<path d="{d}"{fill}/>"#,
+                            d = path_d(&heads),
+                            fill = paint_attr(
+                                "fill",
+                                s.brush.drawn(),
+                                id,
+                                &format!("stroke-{i}"),
+                                defs
+                            ),
+                        );
+                    }
+                }
             },
         );
     }
+}
+
+/// One head of a solid stroke as a `<marker>` named `marker_id`: drawn in stroke
+/// widths, turned to the fixed angle the canvas places it at, and its reference
+/// point the stroke's trimmed end, so the tip lands on the outline's end. Its box
+/// is the head's own, a width larger all round.
+#[allow(clippy::too_many_arguments)]
+fn emit_marker(
+    out: &mut String,
+    pad: &str,
+    marker_id: &str,
+    p: &mastik_core::marker::Placed,
+    s: &Stroke,
+    id: NodeId,
+    index: usize,
+    defs: &Defs,
+) {
+    let m = s.markers();
+    let Some(head) = p.marker.outline(m.size, m.cap, m.join) else {
+        return;
+    };
+    // The trimmed end in the marker's own space, which `refX`/`refY` pin to it.
+    let back = (p.base - p.tip) / s.width;
+    let along = mastik_core::kurbo::Vec2::new(back.dot(p.dir), p.dir.cross(back));
+    let b = head.bounding_box().inflate(1.0, 1.0);
+    let (x, y, w, h) = (b.x0, b.y0, b.width(), b.height());
+    let _ = writeln!(
+        out,
+        r#"{pad}<marker id="{marker_id}" markerUnits="strokeWidth" orient="{angle}" refX="{ref_x}" refY="{ref_y}" viewBox="{x} {y} {w} {h}" markerWidth="{w}" markerHeight="{h}" overflow="visible"><path d="{d}"{fill}/></marker>"#,
+        angle = fmt(p.dir.atan2().to_degrees()),
+        ref_x = fmt(along.x),
+        ref_y = fmt(along.y),
+        x = fmt(x),
+        y = fmt(y),
+        w = fmt(w),
+        h = fmt(h),
+        d = path_d(&head),
+        fill = paint_attr(
+            "fill",
+            s.brush.drawn(),
+            id,
+            &format!("stroke-{index}"),
+            defs
+        ),
+    );
 }
 
 /// A frame's or rect's outline as an element name and its geometry attributes.

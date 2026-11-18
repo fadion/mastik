@@ -2514,9 +2514,11 @@ pub fn outline_stroke(
 
 /// The ink one stroke lays on `shape` (`kind`'s outline, local space), as a path to
 /// fill non-zero: what `scene::paint_strokes` draws, built the same way — per side
-/// where the stroke has sides, dash patterns resolved against each piece, and an
-/// inside or outside stroke laid at twice the width and cut to the shape.
+/// where the stroke has sides, dash patterns resolved against each piece, an
+/// inside or outside stroke laid at twice the width and cut to the shape, and its
+/// markers united with it, so the result is one shape.
 pub fn stroke_ink(kind: &NodeKind, shape: &kurbo::BezPath, s: &Stroke) -> Option<kurbo::BezPath> {
+    let markers = s.markers();
     use crate::node::StrokeAlign;
     if s.width.is_nan() || s.width <= 0.0 {
         return None;
@@ -2555,7 +2557,7 @@ pub fn stroke_ink(kind: &NodeKind, shape: &kurbo::BezPath, s: &Stroke) -> Option
     };
     match crate::geometry::effective_sides(kind, s).per_side(s.width) {
         None => lay(
-            &crate::geometry::stroked_path(kind, shape, s.width),
+            &crate::geometry::stroked_path(kind, shape, s.width, markers),
             s.width,
         ),
         Some(sides) => {
@@ -2570,13 +2572,25 @@ pub fn stroke_ink(kind: &NodeKind, shape: &kurbo::BezPath, s: &Stroke) -> Option
     use i_overlay::core::overlay_rule::OverlayRule;
     use i_overlay::float::simplify::SimplifyShape;
     use i_overlay::float::single::SingleFloatOverlay;
+    let heads: Vec<Vec<[f64; 2]>> = crate::geometry::marker_ink(kind, shape, s.width, markers)
+        .map(|ink| {
+            let tol = OFFSET_FLATTEN.min(thinnest / 8.0);
+            crate::geometry::subpaths(&ink)
+                .iter()
+                .filter_map(|sub| polyline(sub, Flatten::chords(tol), 3))
+                .collect()
+        })
+        .unwrap_or_default();
     // i_overlay asserts on bounds it cannot scale, so a panic draws nothing.
     let shapes = std::panic::catch_unwind(|| {
         let mut band: Vec<Vec<[f64; 2]>> = Vec::new();
         for (path, width) in &laid_paths {
             band.extend(stroke_polygons(path, width / 2.0, s));
         }
-        let band = band.simplify_shape(FillRule::NonZero);
+        let band = match heads.is_empty() {
+            true => band.simplify_shape(FillRule::NonZero),
+            false => band.overlay(&heads, OverlayRule::Union, FillRule::NonZero),
+        };
         let rule = match align {
             StrokeAlign::Center => return band,
             StrokeAlign::Inside => OverlayRule::Intersect,

@@ -602,12 +602,42 @@ impl Writer<'_> {
         let mut strokes = Vec::new();
         for (i, st) in paint.strokes.iter().enumerate().rev() {
             let bound = own.strokes.get(i).and_then(|o| o.brush.var());
-            if let Some(v) = self.stroke(st, bound, space) {
+            if let Some(mut v) = self.stroke(st, bound, space) {
+                if mastik_core::marker::applies(node.kind()) {
+                    self.markers(&mut v, st.markers());
+                }
                 strokes.push(v);
             }
         }
         s["fills"] = Value::Array(fills);
         s["strokes"] = Value::Array(strokes);
+    }
+
+    /// A stroke's two caps as Penpot's arrow and marker caps for its `markers`,
+    /// which Penpot draws at its own size. A bar has no Penpot cap and is left
+    /// out.
+    fn markers(&mut self, v: &mut Value, markers: mastik_core::Markers) {
+        use mastik_core::Marker;
+        if !markers.is_none() && markers.size != 1.0 {
+            self.approximate("Line end sizes, drawn at Penpot's own");
+        }
+        for (key, m) in [
+            ("strokeCapStart", markers.start),
+            ("strokeCapEnd", markers.end),
+        ] {
+            let cap = match m {
+                Marker::None => continue,
+                Marker::Arrow => "triangle-arrow",
+                Marker::OpenArrow => "line-arrow",
+                Marker::Circle => "circle-marker",
+                Marker::Square => "square-marker",
+                Marker::Bar => {
+                    self.approximate("Bar line ends, left out");
+                    continue;
+                }
+            };
+            v[key] = json!(cap);
+        }
     }
 
     fn stroke(&mut self, st: &Stroke, bound: Option<VarId>, space: &PaintSpace) -> Option<Value> {

@@ -1323,6 +1323,7 @@ fn bare_stroked_rect(align: StrokeAlign, closed: bool) -> (Document, Resolved) {
             dash_fit: false,
             align,
             visible: true,
+            ..Default::default()
         }]),
     }]))
     .unwrap();
@@ -1476,6 +1477,7 @@ fn round_capped(kind: NodeKind, width: f64) -> (Document, Resolved, NodeId) {
                 dash_fit: false,
                 align: StrokeAlign::Center,
                 visible: true,
+                ..Default::default()
             }]),
         },
     ]))
@@ -1570,7 +1572,8 @@ fn a_thick_spiral_is_stroked_from_its_cut() {
     let width = 6.0;
     let (doc, res, _) = round_capped(kind.clone(), width);
     let whole = mastik_core::geometry::local_path(&kind).unwrap();
-    let cut = mastik_core::geometry::stroked_path(&kind, &whole, width);
+    let none = mastik_core::Markers::NONE;
+    let cut = mastik_core::geometry::stroked_path(&kind, &whole, width, none);
     let (first, start) = (
         whole.elements()[0].end_point().unwrap(),
         cut.elements()[0].end_point().unwrap(),
@@ -1666,6 +1669,7 @@ fn stroke(red: u8, visible: bool) -> mastik_core::Stroke {
         dash_fit: false,
         align: StrokeAlign::Center,
         visible,
+        ..Default::default()
     }
 }
 

@@ -196,6 +196,7 @@ pub fn fixture() -> Fixture {
                 dash_fit: false,
                 align: StrokeAlign::Center,
                 visible: true,
+                ..Default::default()
             }]),
         },
     ]))
@@ -231,6 +232,7 @@ pub fn fixture_with_stroke_align(align: StrokeAlign) -> Fixture {
                 dash_fit: false,
                 align,
                 visible: true,
+                ..Default::default()
             }]),
         }]))
         .expect("align stroke");

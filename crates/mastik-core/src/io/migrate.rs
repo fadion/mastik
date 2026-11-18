@@ -459,9 +459,10 @@ fn migrate_16_to_17(value: &mut Value) {
     }
 }
 
-/// v17 → v18: the inverted-mask flag (`NodeDto::mask_inverted`). A number and
-/// nothing else: a v17 file holds no inverted mask. The bump is for the older
-/// build, which would drop the flag and save the mask back the right way out.
+/// v17 → v18: the inverted-mask flag (`NodeDto::mask_inverted`) and a stroke's
+/// markers (`Stroke::start`, `end`, `marker_size`). A number and nothing else: a
+/// v17 file holds neither. The bump is for the older build, which would drop them
+/// on save.
 fn migrate_17_to_18(value: &mut Value) {
     value["schema_version"] = Value::from(18u32);
     if let Some(inner) = value

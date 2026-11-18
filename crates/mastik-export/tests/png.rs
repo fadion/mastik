@@ -266,6 +266,7 @@ fn stroked_rect_doc(align: StrokeAlign) -> (Document, Resolved) {
                 dash_fit: false,
                 align,
                 visible: true,
+                ..Default::default()
             }]),
         },
     ]))
@@ -516,6 +517,7 @@ fn an_open_shape_ignores_alignment_rather_than_half_drawing_itself() {
             dash_fit: false,
             align: StrokeAlign::Inside,
             visible: true,
+            ..Default::default()
         }]),
     }]))
     .unwrap();

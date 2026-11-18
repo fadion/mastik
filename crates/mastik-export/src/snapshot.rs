@@ -60,7 +60,8 @@ use std::collections::BTreeMap;
 /// - **26** `PaintSummary::Image` gained `curve`, the tone curve's inner points;
 ///   `adjust` names each amount by its key in the file (`white_point`).
 /// - **27** `PaintSummary::Gradient` gained `extend` and `smooth`, absent at pad
-///   and sRGB; `NodeSnapshot::mask_inverted`, on an inverted mask only.
+///   and sRGB; `NodeSnapshot::mask_inverted`, on an inverted mask only;
+///   `StrokeSummary::start`, `end` and `marker_size`, on a marked stroke only.
 pub const SNAPSHOT_VERSION: u32 = 27;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -712,6 +713,16 @@ pub struct StrokeSummary {
     pub index: usize,
     pub paint: PaintSummary,
     pub width: f64,
+    /// What an open outline's start wears, by the model's variant name
+    /// (`"Arrow"`), on a marked start only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    /// What its end wears, on a marked end only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+    /// The markers' size as a fraction, absent at 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_size: Option<f64>,
 }
 
 /// Project a document + resolved layer into the public snapshot schema.
@@ -878,6 +889,15 @@ fn node_snapshot(
                     Some(v) => doc.stroke_width_drawn_in(doc.variables(), id, v),
                     None => s.width,
                 }),
+                start: Some(s.start)
+                    .filter(|m| !m.is_none())
+                    .map(|m| format!("{m:?}")),
+                end: Some(s.end)
+                    .filter(|m| !m.is_none())
+                    .map(|m| format!("{m:?}")),
+                marker_size: Some(s.marker_size)
+                    .filter(|z| *z != 1.0 && !(s.start.is_none() && s.end.is_none()))
+                    .map(round4),
             })
             .collect(),
         effects: doc

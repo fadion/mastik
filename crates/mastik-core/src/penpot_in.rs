@@ -675,11 +675,24 @@ impl Builder<'_> {
                     _ => Vec::new(),
                 };
                 let plain = |k: &str| matches!(str_of(s, k), "" | "round" | "square");
+                // An arrow or marker cap is the stroke's marker at that end; the
+                // cap is the other end's.
+                let marked = |k: &str| penpot_marker(str_of(s, k)).is_some();
+                if [str_of(s, "strokeCapStart"), str_of(s, "strokeCapEnd")]
+                    .contains(&"diamond-marker")
+                {
+                    self.count("Diamond line ends", 1, "strokes", "Drawn as squares");
+                }
                 if dotted {
                     // Round dots, whatever the caps say.
-                } else if !plain("strokeCapStart") || !plain("strokeCapEnd") {
-                    self.count("Arrow and marker caps", 1, "strokes", "Drawn without them");
-                } else if str_of(s, "strokeCapStart") != str_of(s, "strokeCapEnd") {
+                } else if !(plain("strokeCapStart") || marked("strokeCapStart"))
+                    || !(plain("strokeCapEnd") || marked("strokeCapEnd"))
+                {
+                    self.count("Unknown caps", 1, "strokes", "Drawn without them");
+                } else if plain("strokeCapStart")
+                    && plain("strokeCapEnd")
+                    && str_of(s, "strokeCapStart") != str_of(s, "strokeCapEnd")
+                {
                     self.count(
                         "Different caps at each end",
                         1,
@@ -687,7 +700,11 @@ impl Builder<'_> {
                         "Both drawn as the end's",
                     );
                 }
-                let cap = match str_of(s, "strokeCapEnd") {
+                let end_cap = match marked("strokeCapEnd") {
+                    true => str_of(s, "strokeCapStart"),
+                    false => str_of(s, "strokeCapEnd"),
+                };
+                let cap = match end_cap {
                     _ if dotted => crate::kurbo::Cap::Round,
                     "round" => crate::kurbo::Cap::Round,
                     "square" => crate::kurbo::Cap::Square,
@@ -709,6 +726,9 @@ impl Builder<'_> {
                         _ => StrokeAlign::Center,
                     },
                     sides: crate::StrokeSides::All,
+                    start: penpot_marker(str_of(s, "strokeCapStart")).unwrap_or_default(),
+                    end: penpot_marker(str_of(s, "strokeCapEnd")).unwrap_or_default(),
+                    marker_size: 1.0,
                     visible: true,
                 })
             })
@@ -1224,6 +1244,19 @@ fn gradient(g: &Value, size: Size, alpha: f32) -> crate::Brush {
         gradient: gradient.with_stops(stops.as_slice()),
         transform,
         opacity: alpha,
+    })
+}
+
+/// The marker a Penpot stroke cap draws, for its arrow and marker caps; a
+/// diamond is read as a square.
+fn penpot_marker(cap: &str) -> Option<crate::marker::Marker> {
+    use crate::marker::Marker;
+    Some(match cap {
+        "triangle-arrow" => Marker::Arrow,
+        "line-arrow" => Marker::OpenArrow,
+        "circle-marker" => Marker::Circle,
+        "square-marker" | "diamond-marker" => Marker::Square,
+        _ => return None,
     })
 }
 

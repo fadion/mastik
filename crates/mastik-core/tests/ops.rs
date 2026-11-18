@@ -588,6 +588,7 @@ fn set_fills_and_strokes_paintable_only() {
                     dash_fit: false,
                     align: StrokeAlign::Center,
                     visible: true,
+                    ..Default::default()
                 }]),
             },
         ]),

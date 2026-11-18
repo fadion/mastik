@@ -3190,7 +3190,10 @@ impl Document {
         // The same refusal `op_set_fills` makes (§15 D451), plus a stroke's own
         // numbers: the width and dash lengths are written to the same file.
         if !strokes.iter().all(|s| {
-            s.brush.is_finite() && s.width.is_finite() && s.dashes.iter().all(|d| d.is_finite())
+            s.brush.is_finite()
+                && s.width.is_finite()
+                && s.marker_size.is_finite()
+                && s.dashes.iter().all(|d| d.is_finite())
         }) {
             return Err(OpError::NonFinite);
         }
