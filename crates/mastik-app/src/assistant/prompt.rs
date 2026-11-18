@@ -228,7 +228,7 @@ pub(crate) struct Turn<'a> {
     /// The frame the person scoped the assistant to, if any.
     pub scope: Option<&'a Chip>,
     pub earlier: &'a [&'a str],
-    /// The page's id, for the outline on the first turn.
+    /// The page's id, beside its name and for the outline on the first turn.
     pub page_id: &'a str,
     /// The level the person gave the session since its last turn: the agent
     /// still holds the old one's rules.
@@ -297,7 +297,8 @@ pub(crate) fn preamble(t: &Turn<'_>) -> String {
             level_rules(level)
         ));
     }
-    s.push_str(&format!("page: {}\n", named(t.page)));
+    // With its id, which every `page` parameter takes.
+    s.push_str(&format!("page: {} {}\n", named(t.page), t.page_id));
     if t.selection.is_empty() {
         s.push_str("selection: none\n");
     } else {

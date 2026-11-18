@@ -336,7 +336,9 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   prompt, so neither is on the command line. OpenCode
   would also wrap an argument holding a space in quotes, escaping the quotes inside it, before the
   model saw it.
-- **Each turn opens with a preamble**, fenced as data: the revision; the page; the selection; the
+- **Each turn opens with a preamble**, fenced as data: the revision; the page, its name and id,
+  since every `page` parameter takes the id (and reads a unique page name as it, `mcp::page_by_name`,
+  a miss answered with the pages and their ids); the selection; the
   layers added, changed and removed since the last turn, by id and name (forty at most, then how
   many more); the scope, as `scope: ‹name› ‹id› (kind, w×h); work in this frame unless the question
   names another place`; the attached layers; the pictures (*Pictures*); the access level when the

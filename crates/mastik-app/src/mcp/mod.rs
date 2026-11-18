@@ -519,6 +519,13 @@ impl Engine {
             call.tool = tool.to_owned();
             call.args = args;
         }
+        // Before the arguments are checked, which would refuse a name as no id.
+        let path = self.client(&call).document.clone();
+        if let Some(s) = path.and_then(|p| docs.session(&p))
+            && let Err(why) = page_by_name(s, &mut call.args)
+        {
+            return Output::error(why);
+        }
         if let Err(why) = check_call(&call) {
             return Output::error(why);
         }
@@ -952,6 +959,46 @@ fn node(args: &Value, name: &str) -> Result<Option<NodeId>, String> {
             .ok_or_else(|| format!("`{name}`: `{s}` is not a layer id")),
         Some(other) => Err(format!("`{name}`: expected a layer id, got {other}")),
     }
+}
+
+/// A `page` argument given as a page's name, as an agent reads it in the
+/// preamble or a tree, written as that page's id; one no page has, or several
+/// do, is refused naming the pages with their ids. An id is left as it is.
+fn page_by_name(s: &EditorSession, args: &mut Value) -> Result<(), String> {
+    let Some(Value::String(name)) = args.get("page") else {
+        return Ok(());
+    };
+    if NodeId::from_wire(name).is_some() {
+        return Ok(());
+    }
+    let pages: Vec<(NodeId, &str)> = s
+        .doc
+        .pages()
+        .iter()
+        .filter_map(|p| s.doc.get(p.id).map(|n| (p.id, n.name())))
+        .collect();
+    let wanted = name.trim();
+    let matching: Vec<NodeId> = pages
+        .iter()
+        .filter(|(_, n)| n.eq_ignore_ascii_case(wanted))
+        .map(|(id, _)| *id)
+        .collect();
+    if let [one] = matching[..] {
+        args["page"] = json!(one.to_wire());
+        return Ok(());
+    }
+    let listed: Vec<String> = pages
+        .iter()
+        .map(|(id, n)| format!("{n} {}", id.to_wire()))
+        .collect();
+    let why = match matching.len() {
+        0 => "is no page's name or id",
+        _ => "names several pages",
+    };
+    Err(format!(
+        "`page`: `{name}` {why}; the pages are {}",
+        listed.join(", ")
+    ))
 }
 
 /// A list of layer ids, `None` when absent.
@@ -2665,6 +2712,39 @@ mod tests {
             by(&group)["selected"],
             true,
             "the section holds the selection"
+        );
+    }
+
+    /// A `page` given as the page's name reads as its id, in any case; one no
+    /// page has is refused with the pages and their ids.
+    ///
+    /// flip: `page_by_name` returning before its lookup → fails at "by name".
+    #[test]
+    fn a_page_is_found_by_its_name() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        two_headers(&mut engine, &mut docs);
+        let page = docs.session.doc.first_page();
+        let name = docs.session.doc.get(page).unwrap().name().to_uppercase();
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "find_nodes",
+            json!({ "query": "e", "page": name }),
+        );
+        assert!(!out.is_error, "by name: {:?}", out.content);
+        assert!(!ok(&out)["nodes"].as_array().unwrap().is_empty());
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "find_nodes",
+            json!({ "query": "e", "page": "Site" }),
+        );
+        let why = format!("{:?}", out.content);
+        assert!(
+            out.is_error && why.contains(&page.to_wire()),
+            "the pages named: {why}"
         );
     }
 
