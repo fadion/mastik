@@ -517,13 +517,14 @@ struct EffectRowOut {
     /// Its grip began a drag: the row is being carried to a new place in the stack.
     grabbed: bool,
 }
-/// The glyph an effect row wears; the six read as one set.
+/// The glyph an effect row wears; the seven read as one set.
 fn effect_glyph(kind: &EffectKind) -> &'static str {
     match kind {
         EffectKind::DropShadow(_) => icon::DROP_HALF_BOTTOM,
         EffectKind::InnerShadow(_) => icon::DROP_HALF,
         EffectKind::LayerBlur { .. } => icon::LAYER_BLUR,
         EffectKind::Sharpen { .. } => icon::SHARPEN,
+        EffectKind::Grain(_) => icon::GRAIN,
         EffectKind::BackgroundBlur { .. } => icon::SQUARE_DOTS,
         EffectKind::Filters(_) => icon::SUN,
     }
@@ -548,7 +549,7 @@ fn effects_step_glyph(before: &[Keyed<Effect>], after: &[Keyed<Effect>]) -> &'st
 /// The number at the right-hand end of an effect row.
 ///
 /// A shadow's alpha, a blur's radius, a sharpen's amount and radius
-/// (`60% · 1.5`), or how many filter channels are off neutral
+/// (`60% · 1.5`), a grain's amount, or how many filter channels are off neutral
 /// ([`mastik_core::Filters::changed`]).
 fn effect_summary(kind: &EffectKind) -> String {
     match kind {
@@ -561,6 +562,7 @@ fn effect_summary(kind: &EffectKind) -> String {
         EffectKind::Sharpen { amount, radius } => {
             format!("{:.0}% · {}", amount * 100.0, ui::number(2)(*radius, 0..=2))
         }
+        EffectKind::Grain(g) => format!("{:.0}%", g.amount * 100.0),
         EffectKind::Filters(f) => f.changed().to_string(),
     }
 }
@@ -579,6 +581,9 @@ fn effect_hint(kind: &EffectKind) -> &'static str {
         EffectKind::Sharpen { .. } => {
             "Crisper edges, an unsharp mask over a small blur. The numbers are the amount and \
              the radius"
+        }
+        EffectKind::Grain(_) => {
+            "Noise blended over the layer, inside its edges. The number is the amount"
         }
         EffectKind::BackgroundBlur { .. } => {
             "Blurs what lies behind the layer, inside its outline. The number is the radius"
@@ -802,6 +807,44 @@ pub(super) fn popup_rule(ui: &mut egui::Ui) {
         egui::Stroke::new(1.0, ui::sep_ink()),
     );
     ui.add_space(BELOW - spacing);
+}
+
+/// An effect's blend mode combo, `width` wide and [`ui::CONTROL_H`] tall: a
+/// shadow's and a grain's. Pass through is left out, since an effect is no
+/// container. Answers the mode picked, when it differs from `current`.
+fn effect_blend_combo(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    current: BlendMode,
+    hint: &str,
+) -> Option<BlendMode> {
+    let mut picked = None;
+    ui.scope(|ui| {
+        // The control's height whole: a combo strokes inside its own rect.
+        ui.spacing_mut().interact_size.y = ui::CONTROL_H;
+        ui.spacing_mut().button_padding.y = 0.0;
+        egui::ComboBox::from_id_salt(salt)
+            .icon(ui::combo_chevron)
+            .width(width)
+            .selected_text(ui::glyph_and_text(icon::INTERSECT_THREE, current.label()))
+            .show_ui(ui, |ui| {
+                ui::menu_rows(ui);
+                for mode in &BlendMode::ALL[1..] {
+                    let on = current == *mode;
+                    if ui.selectable_label(on, mode.label()).clicked() && !on {
+                        picked = Some(*mode);
+                    }
+                    // An item-spaced list, so not `ui::menu_sep`.
+                    if BlendMode::FAMILY_ENDS.contains(mode) {
+                        popup_rule(ui);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(hint);
+    });
+    picked
 }
 
 use super::op_glyph;
@@ -10648,7 +10691,9 @@ impl MastikApp {
         let ctx = ui.ctx().clone();
         let mut close = false;
         let mut retype: Option<EffectKind> = None;
+        // A shadow's or a grain's blend mode, picked from its combo.
         let mut shadow_blend: Option<BlendMode> = None;
+        let mut grain_colour: Option<bool> = None;
         // The kind combo's list is its own `Area` above this one, so a pick there
         // misses `contains_pointer`; asked by layer order.
         let over_overlay = ctx
@@ -10767,37 +10812,15 @@ impl MastikApp {
                                 "Edit this shadow's colour",
                             );
                             // --- how it mixes with what is beneath it ---------
-                            ui.scope(|ui| {
-                                // `CELL` whole: a combo strokes inside its own rect.
-                                ui.spacing_mut().interact_size.y = CELL;
-                                ui.spacing_mut().button_padding.y = 0.0;
-                                egui::ComboBox::from_id_salt(("shadow-blend", index))
-                                    .icon(ui::combo_chevron)
-                                    .width(inner)
-                                    .selected_text(ui::glyph_and_text(
-                                        icon::INTERSECT_THREE,
-                                        s.blend.label(),
-                                    ))
-                                    .show_ui(ui, |ui| {
-                                        ui::menu_rows(ui);
-                                        // A shadow is no container: no Pass through.
-                                        for mode in &BlendMode::ALL[1..] {
-                                            let on = s.blend == *mode;
-                                            if ui.selectable_label(on, mode.label()).clicked() && !on
-                                            {
-                                                shadow_blend = Some(*mode);
-                                            }
-                                            // An item-spaced list, so not `ui::menu_sep`.
-                                            if BlendMode::FAMILY_ENDS.contains(mode) {
-                                                popup_rule(ui);
-                                            }
-                                        }
-                                    })
-                                    .response
-                                    .on_hover_text(
-                                        "Blend mode: how the shadow mixes with what is beneath it",
-                                    );
-                            });
+                            if let Some(mode) = effect_blend_combo(
+                                ui,
+                                ("shadow-blend", index),
+                                inner,
+                                s.blend,
+                                "Blend mode: how the shadow mixes with what is beneath it",
+                            ) {
+                                shadow_blend = Some(mode);
+                            }
                         }
                         EffectKind::LayerBlur { radius } => {
                             if let Some(r) = self.effect_number_field(
@@ -10854,6 +10877,79 @@ impl MastikApp {
                                     );
                                 }
                             });
+                        }
+                        EffectKind::Grain(g) => {
+                            let g = *g;
+                            let cell = egui::vec2(half, CELL);
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = COL;
+                                // A one-way amount, filling from the left as Opacity's does.
+                                let mut shown = g.amount * 100.0;
+                                let resp = ui::value_field_metered(
+                                    ui,
+                                    cell,
+                                    Prefix::Text("Amount"),
+                                    ui::Meter::Amount(g.amount as f32),
+                                    &mut shown,
+                                    Scrub::whole(0.25).range(0.0..=100.0),
+                                    |d| d.suffix("%").max_decimals(0),
+                                )
+                                .on_hover_text("How strongly the grain shows");
+                                self.effect_valve(&resp, subjects, index, move |k| {
+                                    if let EffectKind::Grain(g) = k {
+                                        g.amount = (shown / 100.0).clamp(0.0, 1.0);
+                                    }
+                                });
+                                let range = mastik_core::noise::GRAIN_SIZE_RANGE;
+                                let mut size = g.size;
+                                let resp = ui::value_field(
+                                    ui,
+                                    cell,
+                                    Prefix::Text("Size"),
+                                    &mut size,
+                                    Scrub::fine(0.05, 1).range(range.clone()),
+                                    |d| d.max_decimals(1),
+                                )
+                                .on_hover_text("How large one grain is, in the layer's units");
+                                self.effect_valve(&resp, subjects, index, move |k| {
+                                    if let EffectKind::Grain(g) = k {
+                                        g.size = size.clamp(*range.start(), *range.end());
+                                    }
+                                });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = COL;
+                                let mut seed = f64::from(g.seed);
+                                let resp = ui::value_field(
+                                    ui,
+                                    cell,
+                                    Prefix::Text("Seed"),
+                                    &mut seed,
+                                    Scrub::whole(0.25)
+                                        .range(f64::from(i32::MIN)..=f64::from(i32::MAX)),
+                                    |d| d.max_decimals(0),
+                                )
+                                .on_hover_text("Which grain: another number scatters it anew");
+                                self.effect_valve(&resp, subjects, index, move |k| {
+                                    if let EffectKind::Grain(g) = k {
+                                        g.seed = seed.round() as i32;
+                                    }
+                                });
+                                if let Some(mode) = effect_blend_combo(
+                                    ui,
+                                    ("grain-blend", index),
+                                    half,
+                                    g.blend,
+                                    "Blend mode: how the grain mixes with the layer",
+                                ) {
+                                    shadow_blend = Some(mode);
+                                }
+                            });
+                            let toggled = ui::switch_row(ui, "Colour grain", g.colour, CELL)
+                                .on_hover_text("Grain in three colours rather than grey");
+                            if toggled.clicked() {
+                                grain_colour = Some(!g.colour);
+                            }
                         }
                         EffectKind::BackgroundBlur { radius } => {
                             if let Some(r) = self.effect_number_field(
@@ -10989,14 +11085,32 @@ impl MastikApp {
                 Some(n) => n.effects().to_vec(),
                 None => return,
             };
-            if let Some(EffectKind::DropShadow(s) | EffectKind::InnerShadow(s)) =
-                effects.get_mut(index).map(|e| &mut e.kind)
-            {
-                s.blend = mode;
-                self.session.name_step(
-                    format!("Shadow blend · {}", mode.label()),
-                    icon::INTERSECT_THREE,
-                );
+            let named = match effects.get_mut(index).map(|e| &mut e.kind) {
+                Some(EffectKind::DropShadow(s) | EffectKind::InnerShadow(s)) => {
+                    s.blend = mode;
+                    Some("Shadow blend")
+                }
+                Some(EffectKind::Grain(g)) => {
+                    g.blend = mode;
+                    Some("Grain blend")
+                }
+                _ => None,
+            };
+            if let Some(name) = named {
+                self.session
+                    .name_step(format!("{name} · {}", mode.label()), icon::INTERSECT_THREE);
+                self.write_effects(subjects, effects);
+            }
+        }
+        if let Some(on) = grain_colour {
+            let mut effects = match self.session.display_node(id) {
+                Some(n) => n.effects().to_vec(),
+                None => return,
+            };
+            if let Some(EffectKind::Grain(g)) = effects.get_mut(index).map(|e| &mut e.kind) {
+                g.colour = on;
+                self.session
+                    .name_step(if on { "Colour grain" } else { "Grey grain" }, icon::GRAIN);
                 self.write_effects(subjects, effects);
             }
         }
@@ -18882,7 +18996,7 @@ mod effects_panel_tests {
     /// is absent rather than dimmed. Field prefixes are checked, not the title.
     #[test]
     fn each_kinds_popover_holds_that_kinds_numbers() {
-        let want: [(EffectKind, &[&str]); 5] = [
+        let want: [(EffectKind, &[&str]); 6] = [
             (
                 EffectKind::DropShadow(Default::default()),
                 &["X", "Y", "Blur", "Spread"],
@@ -18898,6 +19012,10 @@ mod effects_panel_tests {
                     radius: 1.5,
                 },
                 &["Amount", "Radius"],
+            ),
+            (
+                EffectKind::Grain(Default::default()),
+                &["Amount", "Size", "Seed", "Colour grain"],
             ),
             (
                 EffectKind::Filters(Default::default()),
@@ -18944,6 +19062,68 @@ mod effects_panel_tests {
         assert_eq!(effect_summary(&kind), "60% · 1.5");
         assert_eq!(effect_glyph(&kind), icon::SHARPEN);
         assert_ne!(icon::SHARPEN, icon::LAYER_BLUR);
+    }
+
+    /// A grain's row reads its amount and wears its own glyph, not background
+    /// blur's dots.
+    #[test]
+    fn a_grain_row_reads_its_amount() {
+        let kind = EffectKind::Grain(mastik_core::Grain {
+            amount: 0.18,
+            ..Default::default()
+        });
+        assert_eq!(effect_summary(&kind), "18%");
+        assert_eq!(effect_glyph(&kind), icon::GRAIN);
+        assert_ne!(icon::GRAIN, icon::SQUARE_DOTS);
+    }
+
+    /// The grain's blend combo writes its mode as one named step, as a
+    /// shadow's does, and its switch turns the grain to colour.
+    ///
+    /// flip: the popover's blend arm writing only a shadow's mode → fails at "the
+    /// pick landed".
+    #[test]
+    fn a_grains_blend_and_colour_write_through() {
+        let mut card = Card::new(vec![EffectKind::Grain(Default::default())]);
+        card.app.effect_menu = Some((card.id, 0));
+        let out = card.settle();
+        let at = |out: &egui::FullOutput, pick: &dyn Fn(&str) -> bool| {
+            ink(out)
+                .into_iter()
+                .find(|(t, _)| pick(t))
+                .expect("the text is painted")
+                .1
+                .center()
+        };
+        let face = at(&out, &|t| {
+            t.starts_with(icon::INTERSECT_THREE) && t.ends_with("Overlay")
+        });
+        card.click(face);
+        let out = card.settle();
+        card.click(at(&out, &|t| t == "Multiply"));
+        let grain = |card: &mut Card| match &card.committed()[0].kind {
+            EffectKind::Grain(g) => *g,
+            other => panic!("the kind changed: {other:?}"),
+        };
+        assert_eq!(
+            grain(&mut card).blend,
+            BlendMode::Multiply,
+            "the pick landed"
+        );
+        assert_eq!(
+            card.app
+                .session
+                .history
+                .current_note_mut()
+                .map(|n| n.label.clone()),
+            Some("Grain blend · Multiply".into())
+        );
+        let out = card.settle();
+        card.click(at(&out, &|t| t == "Colour grain"));
+        assert!(
+            grain(&mut card).colour,
+            "the switch turned the grain to colour"
+        );
     }
 
     /// The kind combo retypes a row and carries across what the two kinds share. The rule lives
