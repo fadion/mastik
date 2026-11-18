@@ -581,6 +581,235 @@ pub fn sharpen(s: &mut Surface<'_>, amount: f32, sigma_x: f32, sigma_y: f32) {
     }
 }
 
+/// The map from an effect buffer's pixel corner into the layer's own space: the
+/// buffer's top-left at device `origin`, one buffer pixel `k` device pixels, the
+/// layer drawn into the device by `layer_to_device`. Both backends build it here,
+/// so their noise lands on one lattice.
+pub fn buffer_to_local(
+    layer_to_device: kurbo::Affine,
+    origin: (f64, f64),
+    k: f64,
+) -> kurbo::Affine {
+    layer_to_device.inverse() * kurbo::Affine::translate(origin) * kurbo::Affine::scale(k)
+}
+
+/// A grain over `s`, in place: `feTurbulence` blended with the layer by
+/// `g.blend` and mixed in at `g.amount`, inside the layer's alpha.
+///
+/// The SVG writer's chain, step for step: the noise made opaque (grey from red,
+/// or its three channels), blended over the layer, cut to the layer's alpha,
+/// then `amount × that + (1 − amount) × layer` as an arithmetic `feComposite`,
+/// clamped as that primitive is. `to_local` maps a buffer pixel's corner into the
+/// layer's space; `fx.wgsl`'s `grain` repeats this.
+pub fn grain(s: &mut Surface<'_>, g: &mastik_core::Grain, to_local: kurbo::Affine) {
+    let g = g.clamped();
+    let lattice = mastik_core::noise::Lattice::new(g.seed);
+    let map = mastik_core::noise::LatticeMap::new(to_local, g.base_frequency());
+    let (amount, mode, colour) = (g.amount as f32, g.blend, g.colour);
+    let row_bytes = s.w * 4;
+    let cost = s.w * s.h * 160;
+    for_row_bands(s.px, row_bytes, cost, |first, rows| {
+        for (i, px) in rows.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = (
+                (i % (row_bytes / 4)) as u32,
+                (first + i / (row_bytes / 4)) as u32,
+            );
+            if px[3] == 0 {
+                continue;
+            }
+            let (u, v) = map.at(x, y);
+            let n = if colour {
+                let c = lattice.rgba(u, v, mastik_core::noise::GRAIN_OCTAVES, true);
+                [c[0], c[1], c[2]].map(|c| f32::from(c) / 255.0)
+            } else {
+                [f32::from(lattice.red(u, v, mastik_core::noise::GRAIN_OCTAVES, true)) / 255.0; 3]
+            };
+            *px = grain_pixel(*px, n, mode, amount);
+        }
+    });
+}
+
+/// One pixel of [`grain`]: premultiplied `px`, the straight noise `n`.
+pub fn grain_pixel(px: [u8; 4], n: [f32; 3], mode: mastik_core::BlendMode, amount: f32) -> [u8; 4] {
+    let a = f32::from(px[3]) / 255.0;
+    let s: [f32; 3] = std::array::from_fn(|c| f32::from(px[c]) / 255.0);
+    let cb = s.map(|c| (c / a).clamp(0.0, 1.0));
+    let b = blend(mode, cb, n);
+    let mut out = [0u8; 4];
+    for c in 0..3 {
+        // The opaque noise over the layer, then cut to the layer's alpha.
+        let over = a * ((1.0 - a) * n[c] + a * b[c]);
+        let v = amount * over + (1.0 - amount) * s[c];
+        out[c] = (v.clamp(0.0, a) * 255.0 + 0.5) as u8;
+    }
+    out[3] = px[3];
+    out
+}
+
+/// A noise fill over `s`, in place: each pixel's alpha is the fill's coverage,
+/// drawn white, and becomes `from` mixed towards `to` by the noise's red channel,
+/// as the SVG writer's `feColorMatrix` maps it, times that coverage.
+///
+/// `from` and `to` are straight sRGB. `fx.wgsl`'s `noise_fill` repeats this.
+pub fn noise_fill(
+    s: &mut Surface<'_>,
+    noise: &mastik_core::Noise,
+    from: [f32; 4],
+    to: [f32; 4],
+    to_local: kurbo::Affine,
+) {
+    let lattice = mastik_core::noise::Lattice::new(noise.seed);
+    let map = mastik_core::noise::LatticeMap::new(to_local, noise.base_frequency());
+    let (octaves, fractal) = (noise.octaves(), noise.fractal());
+    let row_bytes = s.w * 4;
+    let cost = s.w * s.h * 40 * octaves as usize;
+    for_row_bands(s.px, row_bytes, cost, |first, rows| {
+        for (i, px) in rows.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = (
+                (i % (row_bytes / 4)) as u32,
+                (first + i / (row_bytes / 4)) as u32,
+            );
+            if px[3] == 0 {
+                *px = [0; 4];
+                continue;
+            }
+            let (u, v) = map.at(x, y);
+            let t = f32::from(lattice.red(u, v, octaves, fractal)) / 255.0;
+            *px = noise_pixel(px[3], t, from, to);
+        }
+    });
+}
+
+/// One pixel of [`noise_fill`]: coverage `cover`, noise value `t` in `0..=1`.
+pub fn noise_pixel(cover: u8, t: f32, from: [f32; 4], to: [f32; 4]) -> [u8; 4] {
+    // The matrix's output is held at 8 bits before it is premultiplied, as an
+    // SVG renderer holds it.
+    let c: [f32; 4] = std::array::from_fn(|i| {
+        let v = (from[i] + t * (to[i] - from[i])).clamp(0.0, 1.0);
+        (v * 255.0 + 0.5).floor() / 255.0
+    });
+    let a = c[3] * f32::from(cover) / 255.0;
+    [
+        (c[0] * a * 255.0 + 0.5) as u8,
+        (c[1] * a * 255.0 + 0.5) as u8,
+        (c[2] * a * 255.0 + 0.5) as u8,
+        (a * 255.0 + 0.5) as u8,
+    ]
+}
+
+/// The W3C compositing spec's blend function `B(cb, cs)` for straight colours,
+/// backdrop `cb` and source `cs`: the sixteen modes `feBlend` and both backends
+/// draw. `fx.wgsl`'s `blend` repeats it.
+pub fn blend(mode: mastik_core::BlendMode, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
+    use mastik_core::BlendMode as M;
+    let sep = |f: fn(f32, f32) -> f32| std::array::from_fn(|i| f(cb[i], cs[i]));
+    match mode {
+        M::PassThrough | M::Normal => cs,
+        M::Multiply => sep(|b, s| b * s),
+        M::Screen => sep(screen),
+        M::Overlay => sep(|b, s| hard_light(s, b)),
+        M::Darken => sep(f32::min),
+        M::Lighten => sep(f32::max),
+        M::ColorDodge => sep(|b, s| {
+            if b == 0.0 {
+                0.0
+            } else if s >= 1.0 {
+                1.0
+            } else {
+                (b / (1.0 - s)).min(1.0)
+            }
+        }),
+        M::ColorBurn => sep(|b, s| {
+            if b >= 1.0 {
+                1.0
+            } else if s <= 0.0 {
+                0.0
+            } else {
+                1.0 - ((1.0 - b) / s).min(1.0)
+            }
+        }),
+        M::HardLight => sep(hard_light),
+        M::SoftLight => sep(|b, s| {
+            if s <= 0.5 {
+                b - (1.0 - 2.0 * s) * b * (1.0 - b)
+            } else {
+                let d = if b <= 0.25 {
+                    ((16.0 * b - 12.0) * b + 4.0) * b
+                } else {
+                    b.sqrt()
+                };
+                b + (2.0 * s - 1.0) * (d - b)
+            }
+        }),
+        M::Difference => sep(|b, s| (b - s).abs()),
+        M::Exclusion => sep(|b, s| b + s - 2.0 * b * s),
+        M::Hue => set_lum(set_sat(cs, sat(cb)), lum(cb)),
+        M::Saturation => set_lum(set_sat(cb, sat(cs)), lum(cb)),
+        M::Color => set_lum(cs, lum(cb)),
+        M::Luminosity => set_lum(cb, lum(cs)),
+    }
+}
+
+/// The number `fx.wgsl`'s `blend` names `mode` by: its place in
+/// [`mastik_core::BlendMode::ALL`].
+pub fn blend_code(mode: mastik_core::BlendMode) -> u32 {
+    mastik_core::BlendMode::ALL
+        .iter()
+        .position(|m| *m == mode)
+        .unwrap_or(1) as u32
+}
+
+fn screen(b: f32, s: f32) -> f32 {
+    b + s - b * s
+}
+
+/// Hard light of backdrop `b` and source `s`; overlay is this with the two swapped.
+fn hard_light(b: f32, s: f32) -> f32 {
+    if s <= 0.5 {
+        b * 2.0 * s
+    } else {
+        screen(b, 2.0 * s - 1.0)
+    }
+}
+
+fn lum(c: [f32; 3]) -> f32 {
+    0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+}
+
+fn sat(c: [f32; 3]) -> f32 {
+    c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
+}
+
+fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
+    let d = l - lum(c);
+    let c = c.map(|v| v + d);
+    let l = lum(c);
+    let (n, x) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
+    c.map(|v| {
+        let v = if n < 0.0 {
+            l + (v - l) * l / (l - n)
+        } else {
+            v
+        };
+        if x > 1.0 {
+            l + (v - l) * (1.0 - l) / (x - l)
+        } else {
+            v
+        }
+    })
+}
+
+/// The spec's `SetSat`, as the min–max rescale it reduces to: the smallest
+/// channel to 0, the largest to `s`, the middle in proportion.
+fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
+    let (n, x) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
+    if x > n {
+        c.map(|v| (v - n) * s / (x - n))
+    } else {
+        [0.0; 3]
+    }
+}
+
 /// The device-space deviations a blur of `radius` document units needs, given the
 /// scale the surface was rasterized at.
 ///
@@ -594,26 +823,45 @@ pub fn device_sigma(radius: f64, scale_x: f64, scale_y: f64) -> (f32, f32) {
 
 /// Apply a whole effect stack to a rasterized layer, in place.
 ///
-/// `scale` is device pixels per document unit along each axis.
+/// `scale` is device pixels per document unit along each axis, and `to_local`
+/// maps a buffer pixel's corner into the layer's own space, where a grain's
+/// noise lives.
 ///
 /// **The statement of §6.4's two stages**, which the SVG writer (`svg::effect_def`)
-/// and the bounds (`effect::stack_escape`) follow: `Filters`, `LayerBlur` and
-/// `Sharpen` transform the layer's own appearance in list order, then every shadow is cast
-/// from *that* and merged behind or in front. Not one fold: an inner shadow after
-/// a drop shadow would take its silhouette from the layer plus the shadow. Reorder
-/// the stages and both followers must move too; nothing fails if only one does.
-pub fn run(s: &mut Surface<'_>, effects: &[Keyed<Effect>], scale: (f64, f64)) {
-    run_keeping(s, effects, scale, true);
+/// and the bounds (`effect::stack_escape`) follow: `Filters`, `LayerBlur`,
+/// `Sharpen` and `Grain` transform the layer's own appearance in list order, then
+/// every shadow is cast from *that* and merged behind or in front. Not one fold: an
+/// inner shadow after a drop shadow would take its silhouette from the layer plus
+/// the shadow. Reorder the stages and both followers must move too; nothing fails
+/// if only one does.
+pub fn run(
+    s: &mut Surface<'_>,
+    effects: &[Keyed<Effect>],
+    scale: (f64, f64),
+    to_local: kurbo::Affine,
+) {
+    run_keeping(s, effects, scale, to_local, true);
 }
 
 /// [`run`] keeping only the shadows the stack casts, the layer left out: one
 /// pass of a layer whose shadows blend (`scene::shadow_passes`), composited by
 /// its own blend layer.
-pub fn run_shadows(s: &mut Surface<'_>, effects: &[Keyed<Effect>], scale: (f64, f64)) {
-    run_keeping(s, effects, scale, false);
+pub fn run_shadows(
+    s: &mut Surface<'_>,
+    effects: &[Keyed<Effect>],
+    scale: (f64, f64),
+    to_local: kurbo::Affine,
+) {
+    run_keeping(s, effects, scale, to_local, false);
 }
 
-fn run_keeping(s: &mut Surface<'_>, effects: &[Keyed<Effect>], scale: (f64, f64), layer: bool) {
+fn run_keeping(
+    s: &mut Surface<'_>,
+    effects: &[Keyed<Effect>],
+    scale: (f64, f64),
+    to_local: kurbo::Affine,
+    layer: bool,
+) {
     for e in effects.iter().filter(|e| e.visible) {
         match &e.kind {
             EffectKind::Filters(f) if !f.is_neutral() => apply_matrix(s, &filter_matrix(f)),
@@ -625,6 +873,7 @@ fn run_keeping(s: &mut Surface<'_>, effects: &[Keyed<Effect>], scale: (f64, f64)
                 let (sx, sy) = device_sigma(*radius, scale.0, scale.1);
                 sharpen(s, *amount as f32, sx, sy);
             }
+            EffectKind::Grain(g) if g.amount > 0.0 => grain(s, g, to_local),
             _ => {}
         }
     }
@@ -860,6 +1109,7 @@ pub fn any_ink(effects: &[Keyed<Effect>]) -> bool {
                 }
                 EffectKind::LayerBlur { radius } => *radius > 0.0,
                 EffectKind::Sharpen { amount, radius } => *amount > 0.0 && *radius > 0.0,
+                EffectKind::Grain(g) => g.amount > 0.0,
                 EffectKind::BackgroundBlur { .. } => false,
                 EffectKind::Filters(f) => !f.is_neutral(),
             }
@@ -875,6 +1125,93 @@ mod tests {
 
     fn solid(w: usize, h: usize, rgba: [u8; 4]) -> Vec<u8> {
         rgba.iter().copied().cycle().take(w * h * 4).collect()
+    }
+
+    /// A grain keeps every pixel's alpha and every transparent pixel, and moves
+    /// an opaque flat field into a spread of values; at Normal and 100% an opaque
+    /// pixel is the noise itself.
+    ///
+    /// flip: `grain_pixel` writing the blended alpha `a·(2 − a)` → fails at the
+    /// alpha assertion.
+    #[test]
+    fn a_grain_stays_inside_the_layers_alpha() {
+        let (w, h) = (32, 8);
+        let mut px: Vec<u8> = (0..w * h)
+            .flat_map(|i| match i % 3 {
+                0 => [0, 0, 0, 0],
+                1 => [64, 64, 64, 128],
+                _ => [128, 128, 128, 255],
+            })
+            .collect();
+        let before = px.clone();
+        let grain = mastik_core::Grain {
+            amount: 0.7,
+            ..mastik_core::Grain::default()
+        };
+        grain_pass(&mut px, w, h, &grain);
+        for (a, b) in px.as_chunks::<4>().0.iter().zip(before.as_chunks::<4>().0) {
+            assert_eq!(a[3], b[3], "the alpha is the layer's");
+            assert!(a[0] <= a[3], "and the colour within it: {a:?}");
+            if b[3] == 0 {
+                assert_eq!(a, b, "a transparent pixel stays clean");
+            }
+        }
+        let opaque: Vec<u8> = px
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] == 255)
+            .map(|p| p[0])
+            .collect();
+        assert!(
+            opaque.iter().max().unwrap() - opaque.iter().min().unwrap() > 20,
+            "a flat field takes the grain: {opaque:?}"
+        );
+        assert_eq!(
+            grain_pixel(
+                [10, 20, 30, 255],
+                [0.2, 0.4, 0.6],
+                mastik_core::BlendMode::Normal,
+                1.0
+            ),
+            [51, 102, 153, 255]
+        );
+    }
+
+    fn grain_pass(px: &mut [u8], w: usize, h: usize, g: &mastik_core::Grain) {
+        grain(
+            &mut Surface::new(px, w, h),
+            g,
+            kurbo::Affine::translate((3.0, 4.0)),
+        );
+    }
+
+    /// A noise fill maps the value from one colour to the other, held at 8 bits
+    /// and then multiplied by the coverage.
+    #[test]
+    fn a_noise_pixel_ramps_between_its_two_colours() {
+        let (from, to) = ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.5]);
+        assert_eq!(noise_pixel(255, 0.0, from, to), [255, 0, 0, 255]);
+        assert_eq!(noise_pixel(255, 1.0, from, to), [0, 0, 128, 128]);
+        assert_eq!(noise_pixel(0, 0.5, from, to), [0, 0, 0, 0]);
+    }
+
+    /// The blend functions are the compositing spec's at points each mode is
+    /// known by: overlay keeps a mid-grey source's backdrop, multiply by white is
+    /// the identity, luminosity takes the source's lightness.
+    #[test]
+    fn the_blend_functions_are_the_specs() {
+        use mastik_core::BlendMode as M;
+        let cb = [0.2, 0.6, 0.9];
+        assert_eq!(
+            blend(M::Overlay, cb, [0.5; 3]),
+            cb.map(|b| hard_light(0.5, b))
+        );
+        assert_eq!(blend(M::Multiply, cb, [1.0; 3]), cb);
+        let l = blend(M::Luminosity, cb, [0.5; 3]);
+        assert!((lum(l) - 0.5).abs() < 1e-6, "{l:?}");
+        assert_eq!(blend_code(M::Normal), 1);
+        assert_eq!(blend_code(M::Luminosity), 16);
     }
 
     /// A sharpen leaves a flat field alone, pushes the two sides of an edge
@@ -1160,6 +1497,7 @@ mod tests {
                 &mut Surface::new(&mut px, w, h),
                 &keyed_by_position(effects),
                 scale,
+                kurbo::Affine::IDENTITY,
             );
             let a = |x: usize, y: usize| px[(y * w + x) * 4 + 3];
             let right = (hi..w).take_while(|&x| a(x, (lo + hi) / 2) > 0).count();
@@ -1196,7 +1534,12 @@ mod tests {
             }))];
             let effects = keyed_by_position(effects);
             let started = std::time::Instant::now();
-            run(&mut Surface::new(&mut px, w, h), &effects, (1.0, 1.0));
+            run(
+                &mut Surface::new(&mut px, w, h),
+                &effects,
+                (1.0, 1.0),
+                kurbo::Affine::IDENTITY,
+            );
             (px, started.elapsed())
         };
 
@@ -1380,7 +1723,12 @@ mod tests {
         }))];
         let effects = keyed_by_position(effects);
         let t = std::time::Instant::now();
-        run(&mut Surface::new(&mut px, w, h), &effects, (1.0, 1.0));
+        run(
+            &mut Surface::new(&mut px, w, h),
+            &effects,
+            (1.0, 1.0),
+            kurbo::Affine::IDENTITY,
+        );
         let took = t.elapsed();
         assert!(
             took < std::time::Duration::from_secs(5),

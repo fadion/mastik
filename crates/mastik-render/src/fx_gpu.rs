@@ -25,7 +25,7 @@ const TILE: u32 = 8;
 /// with a shader in another language, and the offsets spelled in `Params::bytes`
 /// are where the two are read against each other. 160 is the struct's size
 /// rounded to WGSL's 16-byte boundary.
-const PARAMS_BYTES: usize = 160;
+const PARAMS_BYTES: usize = 240;
 
 /// Which pass a dispatch runs. One per entry point in `fx.wgsl`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,6 +43,8 @@ enum Pass {
     Coarsen,
     Upsample,
     Sharpen,
+    NoiseFill,
+    Grain,
 }
 
 impl Pass {
@@ -62,10 +64,12 @@ impl Pass {
             Self::Coarsen => "coarsen",
             Self::Upsample => "upsample",
             Self::Sharpen => "sharpen",
+            Self::NoiseFill => "noise_fill",
+            Self::Grain => "grain",
         }
     }
 
-    const ALL: [Pass; 13] = [
+    const ALL: [Pass; 15] = [
         Self::Premul,
         Self::Unpremul,
         Self::Copy,
@@ -79,6 +83,8 @@ impl Pass {
         Self::Coarsen,
         Self::Upsample,
         Self::Sharpen,
+        Self::NoiseFill,
+        Self::Grain,
     ];
 }
 
@@ -110,6 +116,33 @@ struct Params {
     k_off: u32,
     /// A sharpen's amount. Read by `Pass::Sharpen` alone.
     amount: f32,
+    /// The noise passes' numbers, `nz` in `fx.wgsl`: the lattice map's origin,
+    /// x step and y step, a grain's amount, then a noise fill's two colours.
+    noise: [f32; 16],
+    /// `nzi` in `fx.wgsl`: octaves, the fractal sum, a grain's blend code and
+    /// its colour switch.
+    noise_i: [u32; 4],
+}
+
+impl Params {
+    /// The noise passes' params: `map` into the lattice, its tables at `k_off`.
+    fn noise(map: mastik_core::noise::LatticeMap, k_off: u32, ints: [u32; 4]) -> Self {
+        let mut noise = [0.0; 16];
+        noise[..6].copy_from_slice(&[
+            map.origin[0],
+            map.origin[1],
+            map.dx[0],
+            map.dx[1],
+            map.dy[0],
+            map.dy[1],
+        ]);
+        Self {
+            k_off,
+            noise,
+            noise_i: ints,
+            ..Default::default()
+        }
+    }
 }
 
 impl Params {
@@ -145,9 +178,17 @@ impl Params {
         put(136, self.dst_origin.0.to_le_bytes());
         put(140, self.dst_origin.1.to_le_bytes());
         // offset 144: k_off: u32; 148: amount: f32, then 8 bytes of padding to
-        // the struct's 16-byte alignment.
+        // the next vec4's 16-byte alignment.
         put(144, self.k_off.to_le_bytes());
         put(148, self.amount.to_le_bytes());
+        // offset 160: nz: array<vec4<f32>, 4>
+        for (i, v) in self.noise.iter().enumerate() {
+            put(160 + i * 4, v.to_le_bytes());
+        }
+        // offset 224: nzi: vec4<u32>, which ends the struct at 240.
+        for (i, v) in self.noise_i.iter().enumerate() {
+            put(224 + i * 4, v.to_le_bytes());
+        }
         b
     }
 }
@@ -633,6 +674,18 @@ pub struct Item<'a> {
     /// Whether the layer itself is kept, or only the shadows it casts — the
     /// CPU's `effects::run` against `effects::run_shadows`.
     pub layer: bool,
+    /// A buffer pixel's corner → the layer's own space (`effects::buffer_to_local`).
+    pub to_local: kurbo::Affine,
+    /// Set, the layer is a noise fill's coverage and `effects` is empty: the
+    /// CPU's `effects::noise_fill` rather than `effects::run`.
+    pub noise: Option<crate::scene::NoiseRamp>,
+}
+
+impl Item<'_> {
+    /// Whether this layer has anything for the passes to do.
+    fn has_ink(&self) -> bool {
+        self.noise.is_some() || effects::any_ink(self.effects)
+    }
 }
 
 /// Slots in the scratch, named so the sequence below reads as the reference does.
@@ -671,20 +724,24 @@ pub fn run(
     slice: Slice,
     effects: &[mastik_core::Keyed<Effect>],
     scale: (f64, f64),
+    to_local: kurbo::Affine,
+    noise: Option<crate::scene::NoiseRamp>,
 ) -> Option<Texture> {
-    if !effects::any_ink(effects) {
-        return None;
-    }
-    let mut pool = FxPool::new();
-    let src = pool.adopt(src);
-    let dst = pool.take(device, slice.size.0, slice.size.1);
     let item = Item {
         slice,
         dst_at: (0, 0),
         effects,
         scale,
         layer: true,
+        to_local,
+        noise,
     };
+    if !item.has_ink() {
+        return None;
+    }
+    let mut pool = FxPool::new();
+    let src = pool.adopt(src);
+    let dst = pool.take(device, slice.size.0, slice.size.1);
     run_batch(device, queue, fx, &mut pool, &src, &dst, &[item]);
     Some(dst.texture)
 }
@@ -715,7 +772,7 @@ pub fn run_batch(
     let mut copies: Vec<&Item<'_>> = Vec::new();
     let mut largest = (0u32, 0u32);
     for item in items {
-        if !effects::any_ink(item.effects) {
+        if !item.has_ink() {
             copies.push(item);
             continue;
         }
@@ -851,6 +908,8 @@ impl Runner<'_> {
             effects,
             scale,
             layer,
+            to_local,
+            noise,
         } = *item;
         let run = self;
 
@@ -868,6 +927,29 @@ impl Runner<'_> {
         );
         let mut cur = A;
         let mut alt = B;
+        if let Some(r) = noise {
+            let mut p = run.lattice(
+                r.noise.seed,
+                to_local,
+                r.noise.base_frequency(),
+                [r.noise.octaves(), u32::from(r.noise.fractal()), 0, 0],
+            );
+            p.noise[8..12].copy_from_slice(&r.from);
+            p.noise[12..16].copy_from_slice(&r.to);
+            run.slot(Pass::NoiseFill, cur, cur, alt, p);
+            run.step(
+                Pass::Unpremul,
+                At::Scratch(alt),
+                At::Scratch(alt),
+                At::Dst,
+                Params {
+                    dst_origin: (dst_at.0 as i32, dst_at.1 as i32),
+                    ..Default::default()
+                },
+                (w, h),
+            );
+            return;
+        }
         for e in effects.iter().filter(|e| e.visible) {
             match &e.kind {
                 EffectKind::Filters(f) if !f.is_neutral() => {
@@ -899,6 +981,23 @@ impl Runner<'_> {
                         ..Default::default()
                     };
                     run.slot(Pass::Sharpen, O0, cur, alt, p);
+                    std::mem::swap(&mut cur, &mut alt);
+                }
+                EffectKind::Grain(g) if g.amount > 0.0 => {
+                    let g = g.clamped();
+                    let mut p = run.lattice(
+                        g.seed,
+                        to_local,
+                        g.base_frequency(),
+                        [
+                            mastik_core::noise::GRAIN_OCTAVES,
+                            1,
+                            effects::blend_code(g.blend),
+                            u32::from(g.colour),
+                        ],
+                    );
+                    p.noise[6] = g.amount as f32;
+                    run.slot(Pass::Grain, cur, cur, alt, p);
                     std::mem::swap(&mut cur, &mut alt);
                 }
                 _ => {}
@@ -1078,6 +1177,26 @@ impl Runner<'_> {
             params,
             dom,
         });
+    }
+
+    /// A noise pass's params, the lattice of `seed` appended to the batch's
+    /// kernel buffer: `effects::grain`'s and `effects::noise_fill`'s setup.
+    fn lattice(
+        &mut self,
+        seed: i32,
+        to_local: kurbo::Affine,
+        freq: (f64, f64),
+        ints: [u32; 4],
+    ) -> Params {
+        let k_off = self.plan.kernels.len() as u32;
+        self.plan
+            .kernels
+            .extend(mastik_core::noise::Lattice::new(seed).table());
+        Params::noise(
+            mastik_core::noise::LatticeMap::new(to_local, freq),
+            k_off,
+            ints,
+        )
     }
 
     /// Both axes of a separable gaussian over the whole buffer.

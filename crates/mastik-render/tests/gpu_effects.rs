@@ -609,6 +609,60 @@ fn both_backends_draw_the_same_shadow() {
     }
 }
 
+/// A noise fill under a grain draws the same picture through both whole paths:
+/// the walk hands the noise brush to each backend, each lays its coverage in a
+/// buffer of its own, and both land the noise on one lattice. Within two levels a
+/// channel, the passes' own slack (`tests/fx_gpu.rs`, `NOISE_TOLERANCE`).
+///
+/// flip: `GpuScenePainter::fill_path` drawing a noise brush through `resolve`
+/// rather than `scene::draw_noise` → fails at the backends' comparison (the GPU
+/// draws the fallback ramp).
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn both_backends_draw_the_same_noise_fill_and_grain() {
+    let Some(mut g) = gpu() else {
+        return;
+    };
+    let grain = Effect::new(EffectKind::Grain(mastik_core::Grain {
+        amount: 0.5,
+        ..mastik_core::Grain::default()
+    }));
+    let (mut doc, _) = document(vec![grain], 1.0);
+    let r = doc.get(doc.first_page()).unwrap().children()[0];
+    let noise = mastik_core::Noise {
+        scale: 6.0,
+        ..mastik_core::Noise::default()
+    };
+    let brush = Brush::Gradient(mastik_core::GradientBrush::noise(
+        noise,
+        Color::from_rgb8(230, 236, 255),
+        Color::from_rgb8(31, 41, 82),
+    ));
+    doc.apply(&Transaction(vec![Operation::SetFills {
+        id: r,
+        fills: keyed_by_position([Fill {
+            brush: brush.into(),
+            visible: true,
+        }]),
+    }]))
+    .unwrap();
+    let res = Resolved::rebuild(&doc);
+    let gpu_px = render_gpu(&mut g, &doc, &res);
+    let cpu_px = render_cpu(&doc, &res);
+    let row: Vec<u8> = (32..68).map(|x| at(&gpu_px, x, 50).0).collect();
+    assert!(
+        row.iter().max().unwrap() - row.iter().min().unwrap() > 30,
+        "the noise is drawn, not a flat or smooth fill: {row:?}"
+    );
+    let worst = gpu_px
+        .iter()
+        .zip(&cpu_px)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
+    assert!(worst <= 2, "the two backends differ by {worst} somewhere");
+}
+
 /// A luminance mask draws the same on both backends: a red square under an opaque
 /// mid-grey luminance mask comes out red at half alpha on each. Vello's GPU
 /// backend masks in a drawn layer, `vello_cpu` through a converted buffer, so this

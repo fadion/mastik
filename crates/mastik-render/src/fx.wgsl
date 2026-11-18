@@ -54,6 +54,14 @@ struct Params {
     k_off: u32,
     // A sharpen's amount, 1.0 for 100%. Appended, for the reason on `src_size`.
     amount: f32,
+    // The noise passes' numbers (`fx_gpu::Params::noise`): [0] the lattice
+    // map's origin and x step, [1] its y step and a grain's amount, [2] and [3]
+    // a noise fill's two straight colours. Appended, for the reason on
+    // `src_size`.
+    nz: array<vec4<f32>, 4>,
+    // Octaves, 1 for the fractal sum, the grain's blend mode
+    // (`effects::blend_code`), 1 for a colour grain.
+    nzi: vec4<u32>,
 };
 
 @group(0) @binding(0) var src_a: texture_2d<f32>;
@@ -341,4 +349,246 @@ fn over(@builtin(global_invocation_id) gid: vec3<u32>) {
     let s = load_a(c);
     let d = textureLoad(src_b, c, 0);
     textureStore(dst, c, q(s + d * (1.0 - s.a)));
+}
+
+// ---- noise: `mastik_core::noise::Lattice`, line for line ----------------------
+//
+// The lattice's tables sit in `kernel` from `k_off` (`Lattice::table`): 514
+// selector entries, then each channel's 514 two-component gradients.
+
+const NZ_LEN: u32 = 514u;
+
+fn nz_sel(i: u32) -> u32 {
+    return u32(kernel[p.k_off + i]);
+}
+
+fn nz_grad(ch: u32, b: u32) -> vec2<f32> {
+    let at = p.k_off + NZ_LEN + (ch * NZ_LEN + b) * 2u;
+    return vec2<f32>(kernel[at], kernel[at + 1u]);
+}
+
+fn nz_curve(t: f32) -> f32 {
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// `Lattice::noise2`.
+fn noise2(ch: u32, x: f32, y: f32) -> f32 {
+    let fx = floor(x);
+    let fy = floor(y);
+    let rx0 = x - fx;
+    let ry0 = y - fy;
+    let rx1 = rx0 - 1.0;
+    let ry1 = ry0 - 1.0;
+    let bx0 = u32(i32(fx) & 255);
+    let by0 = u32(i32(fy) & 255);
+    let bx1 = (bx0 + 1u) & 255u;
+    let by1 = (by0 + 1u) & 255u;
+    let i = nz_sel(bx0);
+    let j = nz_sel(bx1);
+    let b00 = nz_sel(i + by0);
+    let b10 = nz_sel(j + by0);
+    let b01 = nz_sel(i + by1);
+    let b11 = nz_sel(j + by1);
+    let sx = nz_curve(rx0);
+    let sy = nz_curve(ry0);
+    let g00 = nz_grad(ch, b00);
+    let g10 = nz_grad(ch, b10);
+    let g01 = nz_grad(ch, b01);
+    let g11 = nz_grad(ch, b11);
+    let u0 = rx0 * g00.x + ry0 * g00.y;
+    let v0 = rx1 * g10.x + ry0 * g10.y;
+    let a = u0 + sx * (v0 - u0);
+    let u1 = rx0 * g01.x + ry1 * g01.y;
+    let v1 = rx1 * g11.x + ry1 * g11.y;
+    let b = u1 + sx * (v1 - u1);
+    return a + sy * (b - a);
+}
+
+// `Lattice::level`: one channel of the octave sum as an 8-bit level.
+fn nz_level(ch: u32, uv: vec2<f32>) -> f32 {
+    let fractal = p.nzi.y == 1u;
+    var x = uv.x;
+    var y = uv.y;
+    var ratio = 1.0;
+    var sum = 0.0;
+    for (var o = 0u; o < p.nzi.x; o = o + 1u) {
+        let n = noise2(ch, x, y);
+        if (fractal) {
+            sum = sum + n / ratio;
+        } else {
+            sum = sum + abs(n) / ratio;
+        }
+        x = x * 2.0;
+        y = y * 2.0;
+        ratio = ratio * 2.0;
+    }
+    var v = sum * 255.0;
+    if (fractal) {
+        v = (sum * 255.0 + 255.0) / 2.0;
+    }
+    return floor(clamp(v, 0.0, 255.0) + 0.5);
+}
+
+// `noise::round_trip`: a level premultiplied by the noise's own alpha and read
+// back straight, each step at 8 bits.
+fn nz_round_trip(c: f32, a: f32) -> f32 {
+    if (a == 0.0) {
+        return 0.0;
+    }
+    let af = a / 255.0;
+    let pre = floor(c * af + 0.5);
+    return floor(min(pre / af + 0.5, 255.0));
+}
+
+// `LatticeMap::at`.
+fn nz_at(c: vec2<i32>) -> vec2<f32> {
+    let x = f32(c.x);
+    let y = f32(c.y);
+    return vec2<f32>(
+        p.nz[0].x + x * p.nz[0].z + y * p.nz[1].x,
+        p.nz[0].y + x * p.nz[0].w + y * p.nz[1].y,
+    );
+}
+
+// `effects::noise_fill`: the coverage's alpha becomes the ramp's colour.
+@compute @workgroup_size(8, 8)
+fn noise_fill(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let c = vec2<i32>(gid.xy);
+    if (!inside(c)) { return; }
+    let cover = load_a(c).a;
+    if (cover <= 0.0) {
+        textureStore(dst, c, vec4<f32>(0.0));
+        return;
+    }
+    let uv = nz_at(c);
+    let t = nz_round_trip(nz_level(0u, uv), nz_level(3u, uv)) / 255.0;
+    let ramp = clamp(p.nz[2] + t * (p.nz[3] - p.nz[2]), vec4<f32>(0.0), vec4<f32>(1.0));
+    let col = floor(ramp * 255.0 + 0.5) / 255.0;
+    let a = col.a * cover;
+    textureStore(dst, c, q(vec4<f32>(col.rgb * a, a)));
+}
+
+fn bl_screen(b: f32, s: f32) -> f32 {
+    return b + s - b * s;
+}
+
+fn bl_hard_light(b: f32, s: f32) -> f32 {
+    if (s <= 0.5) {
+        return b * 2.0 * s;
+    }
+    return bl_screen(b, 2.0 * s - 1.0);
+}
+
+// `effects::blend`'s separable modes, one channel, by `effects::blend_code`.
+fn bl_channel(m: u32, b: f32, s: f32) -> f32 {
+    switch m {
+        case 2u: { return min(b, s); }
+        case 3u: { return b * s; }
+        case 4u: {
+            if (b >= 1.0) { return 1.0; }
+            if (s <= 0.0) { return 0.0; }
+            return 1.0 - min((1.0 - b) / s, 1.0);
+        }
+        case 5u: { return max(b, s); }
+        case 6u: { return bl_screen(b, s); }
+        case 7u: {
+            if (b == 0.0) { return 0.0; }
+            if (s >= 1.0) { return 1.0; }
+            return min(b / (1.0 - s), 1.0);
+        }
+        case 8u: { return bl_hard_light(s, b); }
+        case 9u: {
+            if (s <= 0.5) {
+                return b - (1.0 - 2.0 * s) * b * (1.0 - b);
+            }
+            var d = sqrt(b);
+            if (b <= 0.25) {
+                d = ((16.0 * b - 12.0) * b + 4.0) * b;
+            }
+            return b + (2.0 * s - 1.0) * (d - b);
+        }
+        case 10u: { return bl_hard_light(b, s); }
+        case 11u: { return abs(b - s); }
+        case 12u: { return b + s - 2.0 * b * s; }
+        default: { return s; }
+    }
+}
+
+fn bl_lum(c: vec3<f32>) -> f32 {
+    return 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
+}
+
+fn bl_sat(c: vec3<f32>) -> f32 {
+    return max(max(c.x, c.y), c.z) - min(min(c.x, c.y), c.z);
+}
+
+fn bl_set_lum(c0: vec3<f32>, l0: f32) -> vec3<f32> {
+    let c = c0 + vec3<f32>(l0 - bl_lum(c0));
+    let l = bl_lum(c);
+    let n = min(min(c.x, c.y), c.z);
+    let x = max(max(c.x, c.y), c.z);
+    var o = c;
+    if (n < 0.0) {
+        o = vec3<f32>(l) + (o - vec3<f32>(l)) * l / (l - n);
+    }
+    if (x > 1.0) {
+        o = vec3<f32>(l) + (o - vec3<f32>(l)) * (1.0 - l) / (x - l);
+    }
+    return o;
+}
+
+fn bl_set_sat(c: vec3<f32>, s: f32) -> vec3<f32> {
+    let n = min(min(c.x, c.y), c.z);
+    let x = max(max(c.x, c.y), c.z);
+    if (x > n) {
+        return (c - vec3<f32>(n)) * s / (x - n);
+    }
+    return vec3<f32>(0.0);
+}
+
+// `effects::blend`: backdrop `cb`, source `cs`, by `effects::blend_code`.
+fn blend(m: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    switch m {
+        case 13u: { return bl_set_lum(bl_set_sat(cs, bl_sat(cb)), bl_lum(cb)); }
+        case 14u: { return bl_set_lum(bl_set_sat(cb, bl_sat(cs)), bl_lum(cb)); }
+        case 15u: { return bl_set_lum(cs, bl_lum(cb)); }
+        case 16u: { return bl_set_lum(cb, bl_lum(cs)); }
+        default: {
+            return vec3<f32>(
+                bl_channel(m, cb.x, cs.x),
+                bl_channel(m, cb.y, cs.y),
+                bl_channel(m, cb.z, cs.z),
+            );
+        }
+    }
+}
+
+// `effects::grain`: the opaque noise blended over the layer, cut to its alpha,
+// mixed in at the amount.
+@compute @workgroup_size(8, 8)
+fn grain(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let c = vec2<i32>(gid.xy);
+    if (!inside(c)) { return; }
+    let s = load_a(c);
+    if (s.a <= 0.0) {
+        textureStore(dst, c, s);
+        return;
+    }
+    let uv = nz_at(c);
+    let na = nz_level(3u, uv);
+    var n = vec3<f32>(nz_round_trip(nz_level(0u, uv), na) / 255.0);
+    if (p.nzi.w == 1u) {
+        n = vec3<f32>(
+            nz_round_trip(nz_level(0u, uv), na),
+            nz_round_trip(nz_level(1u, uv), na),
+            nz_round_trip(nz_level(2u, uv), na),
+        ) / 255.0;
+    }
+    let a = s.a;
+    let cb = clamp(s.rgb / a, vec3<f32>(0.0), vec3<f32>(1.0));
+    let b = blend(p.nzi.z, cb, n);
+    let over = a * ((1.0 - a) * n + a * b);
+    let amount = p.nz[1].z;
+    let v = amount * over + (1.0 - amount) * s.rgb;
+    textureStore(dst, c, q(vec4<f32>(clamp(v, vec3<f32>(0.0), vec3<f32>(a)), a)));
 }
