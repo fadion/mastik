@@ -62,6 +62,14 @@ pub struct Picker {
     /// that colour, as [`Self::intent`] is; alpha is not in the key, so the
     /// opacity slider keeps it.
     lch: Option<(Oklch, [u8; 3])>,
+    /// The intent [`Self::lch`] held before its latest change, still trusted for
+    /// its own colour: the controls below the plane read the colour as the frame
+    /// began, so on the frame a drag moves it they are a colour behind, and
+    /// without this they would show it re-derived, lowered chroma and all.
+    lch_was: Option<(Oklch, [u8; 3])>,
+    /// [`Self::lch`] as it was when the gesture under way began, what a cancel
+    /// puts back with the colour; `None` between gestures.
+    lch_from: Option<Option<(Oklch, [u8; 3])>>,
     /// A hex field mid-edit. `None` when the field is showing the brush.
     pub(crate) hex: Option<String>,
     /// Where the window goes, and whether it has been put there yet.
@@ -99,6 +107,8 @@ impl Picker {
             stop: 0,
             intent: None,
             lch: None,
+            lch_was: None,
+            lch_from: None,
             hex: None,
             spawn,
             placed: false,
@@ -121,6 +131,8 @@ impl Picker {
             // intent out anyway, but dropping it does not rely on that.
             self.intent = None;
             self.lch = None;
+            self.lch_was = None;
+            self.lch_from = None;
             self.browse = false;
             self.search.clear();
             self.scrolled = false;
@@ -2054,17 +2066,48 @@ impl MastikApp {
     }
     /// OKLCH for a colour, honouring what the picker last wrote ([`Picker::lch`]).
     fn lch_of(&self, c: Color) -> Oklch {
-        lch_for(self.picker.as_ref().and_then(|p| p.lch), c)
+        let held = self
+            .picker
+            .as_ref()
+            .map_or([None, None], |p| [p.lch, p.lch_was]);
+        lch_for(held, c)
     }
     /// The value row's format, the app's one choice.
     fn format(&self) -> Format {
         Format::from_key(&self.prefs.colour_format)
     }
-    /// Remember `lch` as the intent behind `c`, the colour it was mapped to.
+    /// Remember `lch` as the intent behind `c`, the colour it was mapped to. The
+    /// first hold of a gesture keeps the intent it replaces for a cancel, and a
+    /// cancelled gesture holds nothing more: its colour has been put back.
     fn hold_lch(&mut self, lch: Oklch, c: Color) {
+        if self.gesture_cancelled {
+            return;
+        }
         if let Some(p) = &mut self.picker {
-            p.lch = Some((lch, rgb8(c)));
+            let next = (lch, rgb8(c));
+            p.lch_from.get_or_insert(p.lch);
+            if p.lch.is_some_and(|(_, key)| key != next.1) {
+                p.lch_was = p.lch;
+            }
+            p.lch = Some(next);
             p.hex = None;
+        }
+    }
+    /// Put back the OKLCH intent a cancelled gesture began from, as the cancel
+    /// puts back its colour; otherwise the colour would read re-derived, its
+    /// chroma lowered into sRGB, or keep the cancelled ask where both map alike.
+    pub(crate) fn cancel_picker_lch(&mut self) {
+        if let Some(p) = &mut self.picker
+            && let Some(from) = p.lch_from.take()
+        {
+            p.lch = from;
+            p.lch_was = None;
+        }
+    }
+    /// The gesture is over: the next hold begins another.
+    pub(crate) fn end_picker_lch(&mut self) {
+        if let Some(p) = &mut self.picker {
+            p.lch_from = None;
         }
     }
     /// Write one stop's colour, remembering the HSV that produced it.
@@ -2513,12 +2556,14 @@ fn hsv_for(intent: Option<(Hsv, [u8; 4])>, c: Color) -> Hsv {
 }
 
 /// [`hsv_for`] for OKLCH: the remembered OKLCH while the slot holds the colour
-/// it mapped to, its alpha aside, otherwise derived from that colour.
-fn lch_for(intent: Option<(Oklch, [u8; 3])>, c: Color) -> Oklch {
-    match intent {
-        Some((lch, key)) if key == rgb8(c) => lch,
-        _ => Oklch::of(c),
-    }
+/// it mapped to, its alpha aside, otherwise derived from that colour. `held` is
+/// the latest intent, then the one before it ([`Picker::lch_was`]).
+fn lch_for(held: [Option<(Oklch, [u8; 3])>; 2], c: Color) -> Oklch {
+    let key = rgb8(c);
+    held.into_iter()
+        .flatten()
+        .find(|&(_, k)| k == key)
+        .map_or_else(|| Oklch::of(c), |(lch, _)| lch)
 }
 
 /// The format button's width: [`CHOOSER_W`], or what `format`'s label needs
@@ -4738,6 +4783,88 @@ mod oklch_tests {
         assert!(
             (second.l - 0.7).abs() < 0.03,
             "and the lightness: {second:?}"
+        );
+    }
+
+    /// A drag on the plane from an ask past sRGB: on the frame it moves the
+    /// colour, the colour the frame began with still reads as the ask, not
+    /// re-derived; and a cancel puts the ask back with the colour.
+    ///
+    /// flip: `hold_lch` not keeping `lch_was` → fails at "the old colour still
+    /// reads as its ask"; `cancel_gesture` not calling `cancel_picker_lch` →
+    /// fails at "the cancel puts the ask back".
+    #[test]
+    fn a_cancelled_plane_drag_keeps_the_ask_and_never_reads_it_lowered() {
+        let (ctx, mut app, id) = app();
+        frame(&ctx, &mut app, Vec::new());
+        let rect = plane(&frame(&ctx, &mut app, Vec::new()));
+        let at = |l: f32, c: f32| {
+            egui::pos2(
+                rect.left() + rect.width() * c / oklch::MAX_CHROMA as f32,
+                rect.top() + rect.height() * (1.0 - l),
+            )
+        };
+        click(&ctx, &mut app, at(0.4, 0.3));
+        // What the app's frame does once no button is down; `frame` runs the
+        // picker alone.
+        app.end_released_gestures();
+        let before = fill(&app, id);
+        let ask = app.lch_of(before);
+        assert!(
+            !ask.in_gamut() && (ask.c - 0.3).abs() < 0.01,
+            "the fixture: an ask past the edge: {ask:?}"
+        );
+        // Press at a lighter point, still past the edge: the colour moves.
+        let to = at(0.6, 0.3);
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(to)]);
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        // The press previews, so the colour is read as the picker reads it.
+        let shown = |app: &MastikApp| match app.slot_brush(id, PaintSlot::Fill(0)) {
+            Some(Brush::Solid(c)) => c,
+            other => panic!("{other:?}"),
+        };
+        assert_ne!(
+            rgb8(shown(&app)),
+            rgb8(before),
+            "the fixture: the press moved it"
+        );
+        let stale = app.lch_of(before);
+        assert!(
+            (stale.c - ask.c).abs() < 1e-9 && (stale.l - ask.l).abs() < 1e-9,
+            "the old colour still reads as its ask: {ask:?} → {stale:?}"
+        );
+        // Drag on, as a scrub does, so the ask is two holds back.
+        let pressed = shown(&app);
+        for l in [0.7, 0.8] {
+            frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at(l, 0.3))]);
+        }
+        assert_ne!(
+            rgb8(shown(&app)),
+            rgb8(pressed),
+            "the fixture: the drag moved it on"
+        );
+        assert!(app.cancel_gesture(&ctx), "the fixture: a gesture to cancel");
+        frame(&ctx, &mut app, Vec::new());
+        assert_eq!(
+            rgb8(shown(&app)),
+            rgb8(before),
+            "the fixture: the colour went back"
+        );
+        let back = app.lch_of(shown(&app));
+        assert!(
+            (back.c - ask.c).abs() < 1e-9
+                && (back.l - ask.l).abs() < 1e-9
+                && (back.h - ask.h).abs() < 1e-9,
+            "the cancel puts the ask back: {ask:?} → {back:?}"
         );
     }
 

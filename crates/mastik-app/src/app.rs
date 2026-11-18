@@ -3180,6 +3180,7 @@ impl MastikApp {
         self.in_flight.mirror_copies_scrub = None;
         self.in_flight.vision_scrub = None;
         self.in_flight.track_drag = None;
+        self.end_picker_lch();
     }
 
     fn canvas_center(&self) -> Vec2 {
@@ -3346,6 +3347,8 @@ impl MastikApp {
         self.in_flight.grid_paint = None;
         // A pending opacity digit is a gesture too, or its deadline would land it.
         self.opacity_entry = None;
+        // The picker's OKLCH ask goes back with the colour it was asking for.
+        self.cancel_picker_lch();
         self.chrome_hold = ChromeHold::Free;
         self.gesture_cancelled = true;
         ctx.stop_dragging();
