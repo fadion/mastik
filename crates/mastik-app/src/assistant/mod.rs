@@ -1081,6 +1081,7 @@ impl MastikApp {
             ai::Event::Done {
                 seconds,
                 input_tokens,
+                cached_tokens,
                 output_tokens,
                 is_error,
             } => {
@@ -1089,7 +1090,11 @@ impl MastikApp {
                     (i, o) => Some(i.unwrap_or(0) + o.unwrap_or(0)),
                 };
                 if let Some(Msg::Agent { stats, .. }) = a.msgs.get_mut(msg) {
-                    *stats = Some(Stats { seconds, tokens });
+                    *stats = Some(Stats {
+                        seconds,
+                        tokens,
+                        cached: cached_tokens.filter(|_| tokens.is_some()),
+                    });
                 }
                 // A turn the harness ended as failed says so, whether or not it
                 // wrote a reason.
@@ -2012,6 +2017,7 @@ mod tests {
             *stats = Some(Stats {
                 seconds: 3.0,
                 tokens: None,
+                cached: None,
             });
         }
         app.prefs.assistant.agent.clear();
@@ -2104,6 +2110,7 @@ mod tests {
                 stats: Some(Stats {
                     seconds: 14.0,
                     tokens: Some(3100),
+                    cached: Some(2852),
                 }),
             },
             Msg::Note(Note::Failed {
@@ -2130,7 +2137,10 @@ mod tests {
             "the fourth call on folds, its count said once: {all}"
         );
         assert!(all.contains("Ask again"), "{all}");
-        assert!(all.contains("14 s · 3.1k tokens"), "{all}");
+        assert!(
+            all.contains("14 s · 3.1k tokens · 92% cached"),
+            "the cache's share follows the count: {all}"
+        );
         assert!(all.contains("Fill"), "the options draw as buttons: {all}");
         assert!(all.contains("The assistant is off"), "{all}");
     }

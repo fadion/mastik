@@ -1242,14 +1242,27 @@ fn turn_foot(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         let mut words = format!("{} s", s.seconds.round() as u64);
+        let mut tip = None;
         if let Some(t) = s.tokens {
             words.push_str(&format!(" · {} tokens", tokens(t)));
+            // Every model step re-reads the conversation, so most of a long
+            // turn's count is the same context read back from the cache.
+            if let Some(share) = s.cached.and_then(|c| cached_share(c, t)) {
+                words.push_str(&format!(" · {share}% cached"));
+                tip = Some(format!(
+                    "Summed over the turn's model steps, each of which reads the \
+                     conversation again; {share}% was read back from the prompt cache"
+                ));
+            }
         }
-        ui.label(
+        let label = ui.label(
             egui::RichText::new(words)
                 .size(ui::CAPTION_PT)
                 .color(theme::text::faint()),
         );
+        if let Some(tip) = tip {
+            label.on_hover_text(tip);
+        }
         if ui::icon_button(ui, icon::COPY, 18.0, 12.0, false, true)
             .on_hover_text("Copy")
             .clicked()
@@ -1278,6 +1291,13 @@ fn turn_foot(
             }
         }
     });
+}
+
+/// `cached` as a whole percentage of `total`, `None` when there is none to
+/// show.
+fn cached_share(cached: u64, total: u64) -> Option<u64> {
+    let share = (cached.min(total) as f64 / total as f64 * 100.0).round() as u64;
+    (total > 0 && cached > 0).then_some(share)
 }
 
 /// A token count as the foot shows it: `850`, `3.1k`.

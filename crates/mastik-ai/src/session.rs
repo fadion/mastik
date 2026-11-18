@@ -161,6 +161,8 @@ pub enum Event {
     Done {
         seconds: f64,
         input_tokens: Option<u64>,
+        /// The part of `input_tokens` read back from the prompt cache.
+        cached_tokens: Option<u64>,
         output_tokens: Option<u64>,
         is_error: bool,
     },
@@ -1136,6 +1138,7 @@ impl Inner {
                     is_error,
                     duration_ms,
                     input_tokens,
+                    cached_tokens,
                     output_tokens,
                 } => {
                     let seconds = self.seconds(duration_ms);
@@ -1144,6 +1147,7 @@ impl Inner {
                         Event::Done {
                             seconds,
                             input_tokens,
+                            cached_tokens,
                             output_tokens,
                             is_error,
                         },
@@ -1304,6 +1308,7 @@ enum Translated {
         is_error: bool,
         duration_ms: Option<u64>,
         input_tokens: Option<u64>,
+        cached_tokens: Option<u64>,
         output_tokens: Option<u64>,
     },
 }
@@ -1363,11 +1368,13 @@ impl Reader {
                 is_error,
                 duration_ms,
                 input_tokens,
+                cached_tokens,
                 output_tokens,
             } => Translated::Done {
                 is_error,
                 duration_ms,
                 input_tokens,
+                cached_tokens,
                 output_tokens,
             },
         }

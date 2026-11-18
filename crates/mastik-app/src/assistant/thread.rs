@@ -76,6 +76,10 @@ pub(crate) enum Part {
 pub(crate) struct Stats {
     pub seconds: f64,
     pub tokens: Option<u64>,
+    /// The part of `tokens` read back from the prompt cache, when the harness
+    /// says; absent in threads saved before it was kept.
+    #[serde(default)]
+    pub cached: Option<u64>,
 }
 
 /// The app's own words beside a turn, never sent back to the model.

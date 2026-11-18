@@ -520,7 +520,9 @@ layers being asked about, and is one more kind of surface.
   the next question, with the same chips and scope. Only the last turn's options are live.
 - **A tool call is a row**, 22 tall: its name in mono, its argument, a status dot and its result
   cut short. After a turn's third call the rest fold into *+N calls*.
-- **Under each finished turn:** its time and tokens, *Copy*, and on the last turn *Regenerate*
+- **Under each finished turn:** its time and tokens, then the share read back from the prompt
+  cache where the harness reports it (`14 s · 3.1k tokens · 92% cached`; the tokens are summed over
+  the turn's model steps, each of which reads the conversation again), *Copy*, and on the last turn *Regenerate*
   (`icon::ARROW_CLOCKWISE`), which drops that turn and asks again. While nothing can be sent it is
   disabled, its tooltip the composer's reason, and a send that is not taken puts the turn back.
 - **The composer** is a bare `ui::text_area` in a field ground with the scope and the chips above

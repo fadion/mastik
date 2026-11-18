@@ -1373,6 +1373,7 @@ fn sweep_on(theme: Theme) {
                 stats: Some(Stats {
                     seconds: 14.0,
                     tokens: Some(3100),
+                    cached: Some(2852),
                 }),
             },
         ];

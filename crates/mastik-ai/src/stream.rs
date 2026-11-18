@@ -37,6 +37,9 @@ pub(crate) enum Parsed {
         is_error: bool,
         duration_ms: Option<u64>,
         input_tokens: Option<u64>,
+        /// The part of `input_tokens` read back from the prompt cache, where the
+        /// dialect says.
+        cached_tokens: Option<u64>,
         output_tokens: Option<u64>,
     },
     /// The conversation id the next turn resumes with.
@@ -119,6 +122,8 @@ struct OpenCodeTurn {
     first_ts: Option<u64>,
     last_ts: Option<u64>,
     input: u64,
+    /// The part of `input` that was cache reads.
+    cached: u64,
     output: u64,
     saw_tokens: bool,
 }
@@ -129,6 +134,8 @@ struct OpenCodeTurn {
 #[derive(Default)]
 struct DshTurn {
     input: Option<u64>,
+    /// The part of `input` that was cache reads.
+    cached: Option<u64>,
     output: Option<u64>,
     spoke: bool,
     failure: Option<String>,
@@ -363,6 +370,7 @@ impl StreamParser {
                     is_error,
                     duration_ms: u("/duration_ms"),
                     input_tokens: input,
+                    cached_tokens: u("/usage/cache_read_input_tokens"),
                     output_tokens: u("/usage/output_tokens"),
                 });
             }
@@ -393,6 +401,7 @@ impl StreamParser {
                     is_error: false,
                     duration_ms: None,
                     input_tokens: u("input_tokens"),
+                    cached_tokens: u("cached_input_tokens"),
                     output_tokens: u("output_tokens"),
                 }]
             }
@@ -540,6 +549,7 @@ impl StreamParser {
                         .filter(|d| d.is_finite() && *d >= 0.0)
                         .map(|d| (d * 1000.0).round() as u64),
                     input_tokens: u("input_tokens"),
+                    cached_tokens: None,
                     output_tokens: u("output_tokens"),
                 });
                 out
@@ -648,6 +658,7 @@ impl StreamParser {
                         self.oc.saw_tokens = true;
                     }
                 }
+                self.oc.cached += at("cache/read").unwrap_or(0);
                 if let Some(o) = at("output") {
                     self.oc.output += o;
                     self.oc.saw_tokens = true;
@@ -692,6 +703,7 @@ impl StreamParser {
                 _ => None,
             },
             input_tokens: self.oc.saw_tokens.then_some(self.oc.input),
+            cached_tokens: self.oc.saw_tokens.then_some(self.oc.cached),
             output_tokens: self.oc.saw_tokens.then_some(self.oc.output),
         }
     }
@@ -761,6 +773,7 @@ impl StreamParser {
                     is_error: v.get("exitCode").and_then(|x| x.as_i64()).unwrap_or(0) != 0,
                     duration_ms: None,
                     input_tokens: None,
+                    cached_tokens: None,
                     output_tokens: None,
                 });
                 out
@@ -820,6 +833,7 @@ impl StreamParser {
                     is_error,
                     duration_ms: v.get("duration_ms").and_then(|d| d.as_u64()),
                     input_tokens: input,
+                    cached_tokens: at("cacheReadTokens"),
                     output_tokens: at("outputTokens"),
                 });
                 out
@@ -906,6 +920,7 @@ impl StreamParser {
                 };
                 let step_in = add(at("inputTokens"), at("cacheReadTokens"));
                 self.dsh.input = add(self.dsh.input, step_in);
+                self.dsh.cached = add(self.dsh.cached, at("cacheReadTokens"));
                 self.dsh.output = add(self.dsh.output, at("outputTokens"));
                 Vec::new()
             }
@@ -972,6 +987,7 @@ impl StreamParser {
                     is_error: !completed,
                     duration_ms: None,
                     input_tokens: self.dsh.input,
+                    cached_tokens: self.dsh.cached,
                     output_tokens: self.dsh.output,
                 });
                 out
@@ -985,6 +1001,7 @@ impl StreamParser {
                     is_error: true,
                     duration_ms: None,
                     input_tokens: None,
+                    cached_tokens: None,
                     output_tokens: None,
                 });
                 out
@@ -1036,6 +1053,7 @@ fn failed(message: Option<&str>) -> Vec<Parsed> {
         is_error: true,
         duration_ms: None,
         input_tokens: None,
+        cached_tokens: None,
         output_tokens: None,
     });
     out
@@ -1194,6 +1212,7 @@ mod tests {
                 is_error: false,
                 duration_ms: Some(1200),
                 input_tokens: Some(10),
+                cached_tokens: None,
                 output_tokens: Some(3)
             })
         );
@@ -1241,6 +1260,7 @@ mod tests {
             done(&evs),
             Some(Parsed::Done {
                 input_tokens: Some(41065),
+                cached_tokens: Some(33024),
                 duration_ms: None,
                 ..
             })
@@ -1372,6 +1392,7 @@ mod tests {
     }
 
     /// Claude's input tokens include cached input, as the other dialects' do.
+    /// Its cache reads, not its cache writes, are the cached part.
     /// flip: reading only `input_tokens` → fails at the assertion.
     #[test]
     fn claude_input_tokens_include_the_cache() {
@@ -1386,6 +1407,7 @@ mod tests {
                 done(&evs),
                 Some(Parsed::Done {
                     input_tokens: Some(40_004),
+                    cached_tokens: Some(38_000),
                     output_tokens: Some(300),
                     ..
                 })
@@ -1497,6 +1519,7 @@ mod tests {
                 is_error: false,
                 duration_ms: Some(1233),
                 input_tokens: Some(2497 + 29 + 637 + 22 + 1984),
+                cached_tokens: Some(1984),
                 output_tokens: Some(12),
             })
         );
@@ -1597,6 +1620,7 @@ mod tests {
             done(&evs),
             Some(Parsed::Done {
                 input_tokens: Some(35987),
+                cached_tokens: Some(26240),
                 ..
             })
         ));
@@ -1649,6 +1673,7 @@ mod tests {
                 is_error: false,
                 duration_ms: None,
                 input_tokens: Some(2726 + 187 + 2944),
+                cached_tokens: Some(2944),
                 output_tokens: Some(108),
             })
         );
