@@ -565,7 +565,7 @@ fn spawn() -> (mpsc::Sender<Job>, mpsc::Receiver<Done>) {
 /// Load a kit's file: its published state, with the version the file says it
 /// published, as read. Its tiles are drawn after, by [`tiles_of`], in a
 /// message of their own.
-fn read(path: &std::path::Path) -> (Load, Option<u32>) {
+pub(crate) fn read(path: &std::path::Path) -> (Load, Option<u32>) {
     let Some(doc) = std::fs::read(path)
         .ok()
         .and_then(|b| mastik_core::io::load(&b).ok())

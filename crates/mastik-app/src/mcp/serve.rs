@@ -4,16 +4,21 @@
 //! in the window; each commit is written to its file at once, since nobody is
 //! there to save later. The process ends when a window starts, which takes over,
 //! and after its last connection closes — [`KEYED_LINGER`] after, while it
-//! remembers a keyed client.
+//! remembers a keyed client. The asset tools read the sets and services the
+//! person switched on in Settings, and a call waiting on a download is run
+//! again as the window runs one ([`run_waiting`]).
 
+use super::assets::{Desk, Pack};
 use super::endpoint::{self, Host};
 use super::system_fonts::SystemFonts;
 use super::{Documents, Engine};
+use crate::assets::panel::KitPack;
 use crate::library::state::Library;
 use crate::session::EditorSession;
 use mastik_mcp::queue::{self, Request};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
@@ -31,6 +36,14 @@ const FLUSH_WAIT: Duration = Duration::from_secs(1);
 /// finds its document and revisions where it left them.
 const KEYED_LINGER: Duration = Duration::from_secs(15 * 60);
 
+/// How often waiting asset calls are run again when no download has landed,
+/// as the window does.
+const LATER_EVERY: Duration = Duration::from_millis(500);
+
+/// How long the loop waits for a request while an asset call waits on a
+/// download, so one that landed is answered soon after.
+const LATER_POLL: Duration = Duration::from_millis(50);
+
 /// The headless host's documents.
 pub(crate) struct Headless {
     open: HashMap<PathBuf, EditorSession>,
@@ -42,6 +55,15 @@ pub(crate) struct Headless {
     fonts: Option<SystemFonts>,
     /// How many undo steps a library document keeps across opens; `0` keeps none.
     history: u64,
+    /// The icon sets, kit packs and photo services the person switched on, as
+    /// the preferences held them when `serve` started; a window that starts
+    /// takes over.
+    asset_prefs: crate::prefs::AssetPrefs,
+    assets: crate::assets::Assets,
+    /// What `Assets::pass` hands frames to; nothing draws here.
+    ctx: egui::Context,
+    /// The kit icon packs read, by kit id, with the file time they were read at.
+    packs: HashMap<String, (u64, Option<Arc<KitPack>>)>,
 }
 
 impl Headless {
@@ -52,6 +74,10 @@ impl Headless {
             scanned: None,
             fonts: None,
             history: crate::prefs::Prefs::default().history_size,
+            asset_prefs: crate::prefs::AssetPrefs::default(),
+            assets: crate::assets::Assets::default(),
+            ctx: egui::Context::default(),
+            packs: HashMap::new(),
         }
     }
 
@@ -182,6 +208,92 @@ impl Documents for Headless {
     fn canvas(&mut self, _: &Path) -> Option<(u32, u32)> {
         None
     }
+
+    fn desk(&mut self) -> Option<&mut dyn Desk> {
+        Some(self)
+    }
+}
+
+impl Desk for Headless {
+    fn prefs(&self) -> &crate::prefs::AssetPrefs {
+        &self.asset_prefs
+    }
+
+    fn assets(&mut self) -> &mut crate::assets::Assets {
+        &mut self.assets
+    }
+
+    /// Never read here: each worker reads its service's key from the keychain,
+    /// as the window's do before its own read lands.
+    fn keys(&self) -> Option<std::collections::BTreeMap<String, String>> {
+        None
+    }
+
+    /// Each switched-on pack read from its file on this thread, as the kit
+    /// tools read kits here, and kept until the file changes.
+    fn packs(&mut self, own: Option<&str>) -> Vec<(crate::kits::index::KitEntry, Pack)> {
+        use crate::kits::index::Load;
+        self.rescan();
+        let Some(lib) = self.scanned.as_ref() else {
+            return Vec::new();
+        };
+        let on = &self.asset_prefs.icon_sets;
+        let kits: Vec<_> = crate::assets::sets::icon_packs(lib, own)
+            .into_iter()
+            .filter(|k| on.contains(&crate::assets::sets::pack_key(&k.id)))
+            .collect();
+        kits.into_iter()
+            .filter_map(|k| {
+                let held = self.packs.get(&k.id).filter(|(at, _)| *at == k.modified);
+                let pack = match held {
+                    Some((_, pack)) => pack.clone(),
+                    None => {
+                        let pack = match crate::kits::index::read(&k.path) {
+                            (Load::Ready(Some(p)), version) => Some(Arc::new(KitPack::new(
+                                k.clone(),
+                                version.unwrap_or(k.version),
+                                p,
+                            ))),
+                            (Load::Ready(None), _) => None,
+                            // A failed read is not kept, so the next search reads again.
+                            (Load::Failed | Load::Pending, _) => return Some((k, Pack::Failed)),
+                        };
+                        self.packs.insert(k.id.clone(), (k.modified, pack.clone()));
+                        pack
+                    }
+                };
+                // A kit that published nothing has no icons to offer.
+                pack.map(|p| (k, Pack::Ready(p)))
+            })
+            .collect()
+    }
+
+    /// No canvas caches pixels here: the photo's bytes are in the document,
+    /// which the CPU renderer decodes.
+    fn adopt(&mut self, _: &mastik_core::ImageId, _: mastik_core::peniko::ImageData) {}
+}
+
+/// Run again the asset calls waiting on a download, as the window's
+/// `drain_mcp` does: once a worker landed something since `last`, else every
+/// [`LATER_EVERY`]. Answers whether it ran them.
+fn run_waiting(
+    engine: &mut Engine,
+    docs: &mut Headless,
+    last: &mut Option<(u64, Instant)>,
+    now: Instant,
+) -> bool {
+    if !engine.has_later() {
+        return false;
+    }
+    docs.assets.pass(&docs.ctx);
+    let landed = docs.assets.landed_count;
+    let due =
+        last.is_none_or(|(count, at)| count != landed || now.duration_since(at) >= LATER_EVERY);
+    if due {
+        *last = Some((landed, now));
+        engine.run_later(docs);
+    }
+    due
 }
 
 /// When `serve` ends: its own count of the connections that called, so one whose
@@ -201,6 +313,11 @@ impl Life {
         self.callers.insert(conn);
         self.served = true;
         self.idle = None;
+        self.answered = Some(now);
+    }
+
+    /// A waiting call was answered: its reply is flushed before a hand-over too.
+    fn answered(&mut self, now: Instant) {
         self.answered = Some(now);
     }
 
@@ -271,19 +388,31 @@ pub(crate) fn run() -> Result<(), String> {
     let prefs = crate::prefs::Prefs::load();
     let mut docs = Headless::new(crate::library::root(prefs.base_folder.as_deref()));
     docs.history = prefs.history_size;
+    docs.asset_prefs = prefs.assets;
     let mut engine = Engine::default();
     let started = Instant::now();
     let mut looked = Instant::now();
     let mut life = Life::default();
     let mut window = false;
+    let mut later_run = None;
     loop {
-        match from.recv_timeout(Duration::from_millis(500)) {
+        let wait = match engine.has_later() {
+            true => LATER_POLL,
+            false => Duration::from_millis(500),
+        };
+        match from.recv_timeout(wait) {
             // One its connection gave up waiting for is not run.
             Ok(Request::Call(call)) if !call.take() => {}
             Ok(Request::Call(call)) => {
                 let conn = call.conn;
                 let reply = call.reply.clone();
-                let _ = reply.send(engine.handle(&mut docs, call));
+                match engine.handle_or_wait(&mut docs, call) {
+                    Some(out) => {
+                        let _ = reply.send(out);
+                    }
+                    // Kept: `run_waiting` answers it on its own reply.
+                    None => later_run = Some((docs.assets.landed_count, Instant::now())),
+                }
                 life.called(conn, Instant::now());
             }
             // A connection that never called, such as a liveness probe from
@@ -299,6 +428,9 @@ pub(crate) fn run() -> Result<(), String> {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
+        if run_waiting(&mut engine, &mut docs, &mut later_run, Instant::now()) {
+            life.answered(Instant::now());
+        }
         let linger = match engine.remembers_clients() {
             true => KEYED_LINGER,
             false => Duration::ZERO,
@@ -310,7 +442,8 @@ pub(crate) fn run() -> Result<(), String> {
             looked = Instant::now();
             window = endpoint::hosts().iter().any(|h| h.host == Host::Window);
         }
-        if window && life.hand_over(Instant::now()) {
+        // A call waiting on a download would lose its answer with the process.
+        if window && !engine.has_later() && life.hand_over(Instant::now()) {
             return Ok(());
         }
     }
@@ -424,5 +557,118 @@ mod tests {
             assert_eq!(kept(), run, "kept");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `serve` answers `search_assets` and `place_asset` from the sets and
+    /// services the person switched on, and a photo search waiting on the
+    /// network is answered once its page lands rather than refused.
+    ///
+    /// flip: `Headless::desk` answering `None` → fails at "an icon found";
+    /// `run_waiting` not running the kept calls → fails at "the photo search
+    /// answered".
+    #[test]
+    fn serve_answers_the_asset_tools_from_what_is_switched_on() {
+        use crate::assets::SetState;
+        use crate::assets::photos::{Orientation, Page, Photo};
+        use crate::assets::sets::{self, IconSet, SetSpec};
+        let dir = std::env::temp_dir().join(format!("mastik-serve-assets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("page.mastik");
+        let mut ids = mastik_core::IdSource::new(crate::session::random_actor());
+        let doc = mastik_core::Document::new(ids.mint());
+        let page = doc.first_page().to_wire();
+        std::fs::write(&file, mastik_core::io::save(&doc).unwrap()).unwrap();
+        let mut docs = Headless::new(None);
+        let spec = SetSpec::by_key("font-awesome").unwrap();
+        let set = IconSet {
+            icons: vec![sets::Icon {
+                name: "bell".into(),
+                variant: 0,
+                body: r#"<path fill="currentColor" d="M0 0h32v32H0z"/>"#.into(),
+                view: [0.0, 0.0, 32.0, 32.0],
+                aliases: Vec::new(),
+            }],
+            grid: 32.0,
+            variant_grids: Vec::new(),
+        };
+        docs.assets
+            .sets
+            .insert(spec.key, SetState::Ready(Arc::new(set)));
+        docs.asset_prefs.icon_sets = vec![spec.key.into()];
+        docs.asset_prefs.photo_services = vec!["unsplash".into()];
+        let mut engine = Engine::default();
+        let call = |engine: &mut Engine, docs: &mut Headless, tool: &str, args| {
+            let (reply, answer) = std::sync::mpsc::sync_channel(1);
+            (
+                engine.handle_or_wait(docs, Call::new(1, None, tool, args, reply)),
+                answer,
+            )
+        };
+        let document = json!({ "document": file.display().to_string() });
+        call(&mut engine, &mut docs, "use_document", document);
+
+        let icons = json!({ "queries": ["bell"], "kind": "icons" });
+        let out = call(&mut engine, &mut docs, "search_assets", icons)
+            .0
+            .unwrap();
+        assert!(!out.is_error, "an icon found: {:?}", out.content);
+        let found = out.structured.unwrap();
+        let asset = found["results"][0]["assets"][0]["asset"].clone();
+        assert_eq!(
+            asset
+                .as_str()
+                .map(|a| a.starts_with("icon:font-awesome/bell/")),
+            Some(true)
+        );
+        let place = json!({ "asset": asset, "parent": page });
+        let out = call(&mut engine, &mut docs, "place_asset", place)
+            .0
+            .unwrap();
+        assert!(!out.is_error, "placed: {:?}", out.content);
+        let s = docs.open.values().next().unwrap();
+        assert_eq!(s.history.done().last().unwrap().note.label, "Insert icon");
+
+        let photos = json!({ "queries": ["coffee"], "kind": "photos" });
+        let (out, answer) = call(&mut engine, &mut docs, "search_assets", photos);
+        assert!(out.is_none(), "the search waits on the network: {out:?}");
+        let mut last = Some((docs.assets.landed_count, Instant::now()));
+        let photo = Photo {
+            service: "unsplash",
+            id: "x1".into(),
+            size: Some((8, 6)),
+            thumb: "https://i/thumb".into(),
+            urls: [
+                "https://i/small".into(),
+                "https://i/regular".into(),
+                "https://i/full".into(),
+            ],
+            title: "a coffee cup".into(),
+            author: "Ana Ruiz".into(),
+            author_url: "https://unsplash.com/@ana".into(),
+            page_url: "https://unsplash.com/photos/x1".into(),
+            licence: "Unsplash License".into(),
+            licence_url: "https://unsplash.com/license".into(),
+            report_url: None,
+        };
+        let thumb = photo.thumb.clone();
+        let page = Page {
+            photos: vec![photo],
+            total: 1,
+            more: false,
+        };
+        let key = ("unsplash", "coffee".to_owned(), Orientation::Any);
+        docs.assets.agent_land_search(key, Ok(page));
+        docs.assets
+            .agent_land_thumb(&thumb, Some(vec![0xff, 0xd8, 0xff]));
+        run_waiting(&mut engine, &mut docs, &mut last, Instant::now());
+        let out = answer.try_recv().expect("the photo search answered");
+        assert!(!out.is_error, "{:?}", out.content);
+        let found = out.structured.unwrap();
+        assert_eq!(
+            found["results"][0]["assets"][0]["asset"],
+            "photo:unsplash/x1"
+        );
+        assert!(!engine.has_later());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

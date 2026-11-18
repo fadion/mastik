@@ -30,8 +30,6 @@ The design and its open questions are in `prototyping.md`.
 
 Items run cheapest first.
 
-- **The assets tools in `serve`.** `search_assets` / `place_asset` in `serve`, reading the
-  person's switched-on sets and services from the preferences rather than refusing.
 - **Design system health.** One card for a document: how much paint, type and spacing is bound to
   variables and styles against raw values, detached instances, unused styles, variables and
   components, near-duplicate colours, and kits waiting on updates. Most of the readings exist
