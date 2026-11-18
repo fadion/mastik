@@ -134,7 +134,7 @@ pub const PHASE_2: [&str; 86] = [
 /// still in use is refused at the commit. `create_instance`, `add_variable`,
 /// `add_mode`, `add_collection`, `duplicate_collection` and `add_style` return
 /// the new ids.
-pub const PHASE_3: [&str; 52] = [
+pub const PHASE_3: [&str; 53] = [
     "make_component",
     "duplicate_as_component",
     "create_instance",
@@ -162,6 +162,7 @@ pub const PHASE_3: [&str; 52] = [
     "reset_overrides",
     "push_to_main",
     "add_variable",
+    "generate_scale",
     "remove_variable",
     "rename_variable",
     "set_variable_value",

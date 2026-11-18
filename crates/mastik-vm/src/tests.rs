@@ -498,6 +498,26 @@ fn a_verb_returns_what_it_created() {
     assert_eq!(out.selection, Some(out.created.clone()), "both selected");
 }
 
+/// A script makes a colour scale with the registry's `generate_scale`, one
+/// table of named arguments and no layer for a subject.
+#[test]
+fn a_script_generates_a_colour_scale() {
+    let mut h = TestHost::new();
+    let labels = FxHashMap::default();
+    let e = env(&[], &labels);
+    run_script(
+        &mut h,
+        &e,
+        "local v = add_variable{kind = \"color\", name = \"brand\", value = {color = \"#3366cc\"}}\n\
+         generate_scale{variable = v}",
+    )
+    .unwrap();
+    let table = h.doc.variables();
+    for step in mastik_core::oklch::SCALE_STEPS {
+        assert!(table.by_name(&format!("brand/{step}")).is_some(), "{step}");
+    }
+}
+
 /// A verb's arguments hold a bounded count of values, so a table sharing one
 /// subtable at every level is refused rather than expanded as a tree, and a table
 /// inside itself is refused at its depth.

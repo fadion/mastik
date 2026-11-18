@@ -3704,6 +3704,53 @@ pub static VERBS: &[Verb] = &[
         },
     },
     Verb {
+        name: "generate_scale",
+        doc: "Make `name/50`…`name/950` from a colour variable's default-mode value, even in OKLCH lightness; a name taken by a colour variable is updated",
+        params: &[
+            req("variable", ParamKind::Id("variable"), "the colour variable"),
+            opt(
+                "name",
+                TEXT,
+                "the group, its name less a numeric step unless given",
+            ),
+            opt(
+                "anchor",
+                ParamKind::Index,
+                "the step it lands on, 50–950; the nearest by lightness unless given",
+            ),
+            opt(
+                "exact",
+                ParamKind::Bool,
+                "whether that step is the colour itself; true unless given",
+            ),
+        ],
+        run: |ctx, a| {
+            let table = ctx.doc.variables();
+            let id = own_variable(ctx, a)?;
+            let (c, _, base) = crate::variable::scale_source(table, id)
+                .ok_or_else(|| a.invalid("variable", "not a colour variable"))?;
+            let steps = crate::oklch::SCALE_STEPS;
+            let anchor = match a.index("anchor") {
+                None => crate::oklch::nearest_step(base),
+                Some(s) => steps
+                    .iter()
+                    .position(|t| usize::from(*t) == s)
+                    .ok_or_else(|| a.invalid("anchor", "one of 50, 100 … 900, 950"))?,
+            };
+            let name = table.get(id).map(|v| v.name.as_str()).unwrap_or_default();
+            let stem = a
+                .text("name")
+                .unwrap_or_else(|| crate::variable::scale_stem(name))
+                .to_owned();
+            let ramp = crate::oklch::scale(base, anchor, a.bool("exact").unwrap_or(true));
+            let (ops, made, updated) =
+                crate::variable::scale_ops(table, ctx.ids, c, &stem, &ramp, None)
+                    .map_err(|why| a.invalid("name", why))?;
+            let said = crate::variable::scale_said(&stem, made, updated);
+            Ok(Done::ops(ops).saying(said))
+        },
+    },
+    Verb {
         name: "remove_variable",
         doc: "Remove a variable; its users keep the value they drew, and aliases of it resolve",
         params: &[req("variable", ParamKind::Id("variable"), "the variable")],

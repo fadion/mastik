@@ -6,6 +6,7 @@
 //! **The measuring is not here**: a backdrop is rendered, which core cannot do,
 //! so a caller lends a [`Probe`] (`mastik_export::contrast`'s is the one).
 
+use crate::oklch::{Oklch, oklab};
 use crate::peniko::Color;
 use crate::variable::BrushSource;
 use crate::{Brush, CharAttr, Document, Fill, ModeId, NodeId, Operation, Transaction, Value};
@@ -287,8 +288,8 @@ pub fn apca(text: [f64; 3], bg: [f64; 3]) -> f64 {
 
 /// The colour at `ink`'s hue and chroma whose lightness is nearest `ink`'s and
 /// passes `finding` in every sample, against that sample's threshold, with a
-/// small margin; chroma gives way only where the gamut ends. `None` when no
-/// lightness at that hue passes.
+/// small margin; chroma gives way only where the gamut ends
+/// ([`Oklch::to_srgb_mapped`]). `None` when no lightness at that hue passes.
 pub fn nearest(finding: &Finding, level: Level, ink: Color) -> Option<Color> {
     let passes = |c: Color| {
         !finding.samples.is_empty()
@@ -297,12 +298,9 @@ pub fn nearest(finding: &Finding, level: Level, ink: Color) -> Option<Color> {
                 .iter()
                 .all(|s| s.score_of(level, c) + 1e-9 >= s.needs + level.margin())
     };
-    let [l, a, b] = oklab(rgb(ink));
-    let (chroma, hue) = ((a * a + b * b).sqrt(), b.atan2(a));
-    let at = |l: f64| {
-        let [r, g, b] = in_gamut(l, chroma, hue);
-        Color::new([r as f32, g as f32, b as f32, ink.components[3]])
-    };
+    let from = Oklch::of(ink);
+    let l = from.l;
+    let at = |l: f64| Oklch { l, ..from }.to_color(ink.components[3]);
     const STEP: f64 = 0.002;
     let steps = (1.0 / STEP) as usize;
     (1..=steps)
@@ -354,66 +352,6 @@ pub fn passing_variables(
         .collect();
     out.sort_by(|a, b| a.2.total_cmp(&b.2));
     out.into_iter().map(|(v, s, _)| (v, s)).collect()
-}
-
-/// Straight sRGB to OKLab.
-fn oklab(c: [f64; 3]) -> [f64; 3] {
-    let lin = |x: f64| {
-        if x <= 0.04045 {
-            x / 12.92
-        } else {
-            ((x + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let [r, g, b] = c.map(lin);
-    let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
-    let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
-    let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
-    [
-        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
-        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
-        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
-    ]
-}
-
-/// OKLab to straight sRGB, unclamped: a channel outside 0..=1 is out of gamut.
-fn from_oklab([l, a, b]: [f64; 3]) -> [f64; 3] {
-    let l_ = (l + 0.3963377774 * a + 0.2158037573 * b).powi(3);
-    let m_ = (l - 0.1055613458 * a - 0.0638541728 * b).powi(3);
-    let s_ = (l - 0.0894841775 * a - 1.2914855480 * b).powi(3);
-    let lin = [
-        4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_,
-        -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_,
-        -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_,
-    ];
-    lin.map(|x| {
-        if x <= 0.0031308 {
-            x * 12.92
-        } else {
-            1.055 * x.powf(1.0 / 2.4) - 0.055
-        }
-    })
-}
-
-/// The sRGB colour at OKLCH `l`, `chroma`, `hue`, with the chroma reduced, by
-/// bisection, as far as the gamut needs.
-fn in_gamut(l: f64, chroma: f64, hue: f64) -> [f64; 3] {
-    let at = |c: f64| from_oklab([l, c * hue.cos(), c * hue.sin()]);
-    let fits = |x: [f64; 3]| x.iter().all(|v| (-1e-6..=1.0 + 1e-6).contains(v));
-    let first = at(chroma);
-    if fits(first) {
-        return first.map(|v| v.clamp(0.0, 1.0));
-    }
-    let (mut lo, mut hi) = (0.0, chroma);
-    for _ in 0..24 {
-        let mid = (lo + hi) / 2.0;
-        if fits(at(mid)) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    at(lo).map(|v| v.clamp(0.0, 1.0))
 }
 
 /// A fix: a colour the failing paints take, or a variable they are bound to.
@@ -594,16 +532,6 @@ mod tests {
         assert!((apca(grey, white) - 63.06).abs() < 0.05);
     }
 
-    /// OKLab round-trips a colour, so a fix at the same lightness is the colour.
-    #[test]
-    fn oklab_round_trips() {
-        let c = [0.64, 0.63, 0.61];
-        let back = from_oklab(oklab(c));
-        for k in 0..3 {
-            assert!((back[k] - c[k]).abs() < 1e-6, "{back:?}");
-        }
-    }
-
     /// A score prints rounded down, so a fail never reads as its threshold.
     #[test]
     fn scores_print_rounded_down() {
@@ -647,11 +575,13 @@ mod tests {
         let fix = nearest(&f, Level::Aa, ink).expect("a darker grey passes");
         let s = f.score_of(Level::Aa, fix).unwrap();
         assert!((4.5..4.8).contains(&s), "{s}");
-        let [l, ..] = oklab(rgb(fix));
-        let lighter = Color::new({
-            let [r, g, b] = in_gamut(l + 0.004, 0.0, 0.0);
-            [r as f32, g as f32, b as f32, 1.0]
-        });
+        let l = Oklch::of(fix).l;
+        let lighter = Oklch {
+            l: l + 0.004,
+            c: 0.0,
+            h: 0.0,
+        }
+        .to_color(1.0);
         assert!(f.score_of(Level::Aa, lighter).unwrap() < 4.5 + Level::Aa.margin());
         let ([_, a0, b0], [_, a1, b1]) = (oklab(rgb(ink)), oklab(rgb(fix)));
         assert!((b0.atan2(a0) - b1.atan2(a1)).abs() < 0.05, "same hue");

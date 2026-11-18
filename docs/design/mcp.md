@@ -79,7 +79,7 @@ Phase 3 — components, variables and styles (through the verbs, never the raw o
 `define_property(node, kind, property?, name?)`, `edit_property(node, property, name?, filter?, preferred?)`,
 `delete_property(node, property)`, `show_nested_properties(node, shown)`, `set_description(text, node? | style? | variable?)`,
 `set_doc_link(node, url)`, `set_instance_property(node, property, value)`,
-`reset_overrides(nodes, scope)`, `push_to_main(node, scope?)`, `add_variable(kind, name, value)`, `remove_variable(variable)`,
+`reset_overrides(nodes, scope)`, `push_to_main(node, scope?)`, `add_variable(kind, name, value)`, `generate_scale(variable, name?, anchor?, exact?)`, `remove_variable(variable)`,
 `rename_variable(variable, name)`, `set_variable_value(variable, mode?, value | alias)`, `add_mode(name, collection?)`,
 `remove_mode(mode)`, `rename_mode(mode, name)`, `set_frame_mode(node, mode?, collection?)` (one pick, the frame's
 other collections' modes kept), `move_mode(mode, index)`, `add_collection(name?)`, `rename_collection(collection, name)`,

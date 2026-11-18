@@ -1905,6 +1905,80 @@ fn a_variable_value_takes_the_only_mode_unnamed() {
     assert!(two.contains("more than one mode"), "{two}");
 }
 
+/// `generate_scale` from `blue/500` makes `blue/50` to `blue/950` beside it from
+/// its default mode's value, the same ramp in every mode, and the source's own
+/// name is updated to itself rather than refused. A run again updates all
+/// eleven; a name held by a number is refused, and so is a step that is none.
+///
+/// flip: `variable::scale_names` answering no holder → fails at the first
+/// script, on "blue/500 already exists".
+#[test]
+fn a_scale_is_generated_from_a_variable_in_every_mode() {
+    let (mut doc, mut ids, _) = blank();
+    let made = script(
+        &mut doc,
+        &mut ids,
+        json!([
+            { "verb": "add_variable", "args": { "kind": "color", "name": "blue/500", "value": { "color": "#2f6bff" } }, "as": "v" },
+            { "verb": "add_mode", "args": { "name": "Dark" }, "as": "dark" },
+            { "verb": "set_variable_value", "args": { "variable": "@v", "mode": "@dark", "value": { "color": "#cc3366" } } },
+            { "verb": "generate_scale", "args": { "variable": "@v", "anchor": 500 } },
+        ]),
+    );
+    let dark: mastik_core::ModeId = serde_json::from_value(json!(made[1][0])).unwrap();
+    let table = doc.variables();
+    let scale: Vec<_> = mastik_core::oklch::SCALE_STEPS
+        .iter()
+        .map(|s| {
+            table
+                .by_name(&format!("blue/{s}"))
+                .unwrap_or_else(|| panic!("blue/{s} is made"))
+        })
+        .collect();
+    assert_eq!(table.iter().count(), 11, "the source is one of the eleven");
+    let colour = |c: &mastik_core::Cell| match c {
+        mastik_core::Cell::Color(c) => *c,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        colour(&scale[5].cells[&dark]),
+        Color::from_rgb8(0x2f, 0x6b, 0xff),
+        "every mode takes the default mode's ramp; exact keeps the source"
+    );
+    for w in scale.windows(2) {
+        let l =
+            |v: &&mastik_core::Variable| mastik_core::oklch::Oklch::of(colour(&v.cells[&dark])).l;
+        assert!(l(&w[0]) > l(&w[1]));
+    }
+
+    script(
+        &mut doc,
+        &mut ids,
+        json!([{ "verb": "generate_scale", "args": { "variable": made[0][0], "exact": false } }]),
+    );
+    assert_eq!(doc.variables().iter().count(), 11, "updated, none added");
+    let bad_step = refused_step(
+        &mut doc,
+        &mut ids,
+        json!({ "verb": "generate_scale", "args": { "variable": made[0][0], "anchor": 450 } }),
+    );
+    assert!(bad_step.contains("950"), "{bad_step}");
+    script(
+        &mut doc,
+        &mut ids,
+        json!([{ "verb": "add_variable", "args": { "kind": "number", "name": "red/50" } }]),
+    );
+    let number = refused_step(
+        &mut doc,
+        &mut ids,
+        json!({ "verb": "generate_scale", "args": { "variable": made[0][0], "name": "red" } }),
+    );
+    assert!(
+        number.contains("red/50 is not a colour variable"),
+        "{number}"
+    );
+}
+
 /// `script` run on `doc`, panicking on a refusal; answers what each step made.
 fn script(doc: &mut Document, ids: &mut IdSource, steps: Value) -> Vec<Vec<String>> {
     verbs::run_script(doc, ids, Lent::default(), &steps).unwrap_or_else(|e| panic!("{e}"))

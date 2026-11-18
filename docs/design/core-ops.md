@@ -279,7 +279,8 @@ it created. A verb never commits; its caller does, as every edit is committed.
   `variant::swap_carrying` (the instance card's *Main* relink and nested *Swap*); and the variables
   browser's edits, `variable::add_variable_ops`, `rename_variable_ops`, `set_cell_ops`,
   `add_mode_ops`, `mode_name_refusal`, `frame_mode_ops`, beside `remove_ops`, `remove_mode_ops` and
-  `rename_mode_ops`. A verb takes a cell as a typed `Cell`; the browser's text parsing (`--name`
+  `rename_mode_ops`, and *Generate scale…*'s `scale_source`, `scale_stem`, `scale_ops` and
+  `scale_said` over `oklch::scale`. A verb takes a cell as a typed `Cell`; the browser's text parsing (`--name`
   for an alias, colour text) stays the browser's. Ids that are not a layer's are `ParamKind::Id`, in
   the node wire form, and a verb that makes one answers it in `Done::made`. The style verbs share
   `style::add_op` (behind *Create style…*'s `create_ops`), `name_refusal`, `rename_ops`,

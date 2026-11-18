@@ -61,6 +61,7 @@ pub mod merge;
 pub mod meta;
 pub mod naming;
 pub mod node;
+pub mod oklch;
 pub mod op;
 pub mod page;
 pub mod paint_box;

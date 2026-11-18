@@ -4020,6 +4020,112 @@ pub fn add_variable_ops(
     Ok((ops, id))
 }
 
+/// The name a scale from the variable `name` starts with: the name without a
+/// last step that is a number, so `blue/500` gives `blue` and `brand` stays.
+pub fn scale_stem(name: &str) -> &str {
+    match split_name(name) {
+        (group, leaf) if !group.is_empty() && leaf.parse::<u32>().is_ok() => group,
+        _ => name,
+    }
+}
+
+/// Where a scale from the colour variable `var` comes from: its collection,
+/// that collection's default mode, and its colour there. `None` for a
+/// variable of another kind or a kit's.
+pub fn scale_source(table: &Variables, var: VarId) -> Option<(CollectionId, ModeId, Color)> {
+    let v = table.get(var).filter(|v| v.origin.is_none())?;
+    if v.kind != VarKind::Color {
+        return None;
+    }
+    let c = table.collection_of(var)?;
+    let mode = c.default_mode()?;
+    match table.resolve(var, mode)? {
+        Value::Color(colour) => Some((c.id, mode, colour)),
+        _ => None,
+    }
+}
+
+/// What *Generate scale* would do in collection `c` under `stem`: each step's
+/// name and the variable already holding it, if one does.
+pub fn scale_names(table: &Variables, c: CollectionId, stem: &str) -> Vec<(String, Option<VarId>)> {
+    let stem = stem.trim();
+    crate::oklch::SCALE_STEPS
+        .iter()
+        .map(|s| {
+            let name = format!("{stem}/{s}");
+            let held = table.by_name_in(c, &name).map(|v| v.id);
+            (name, held)
+        })
+        .collect()
+}
+
+/// *Generate scale* in collection `c`: `colours`, one per
+/// [`crate::oklch::SCALE_STEPS`], as the colour variables `stem/50` to
+/// `stem/950` in every mode. A name already holding a colour variable is
+/// updated instead, in `only` when given and in every mode otherwise; refused
+/// when a name holds another kind or cannot name a variable. Answers the ops and
+/// how many variables were made and updated.
+pub fn scale_ops(
+    table: &Variables,
+    ids: &mut crate::IdSource,
+    c: CollectionId,
+    stem: &str,
+    colours: &[(u16, Color)],
+    only: Option<ModeId>,
+) -> Result<(Vec<crate::Operation>, usize, usize), String> {
+    if table.collection(c).is_none() {
+        return Err("No collection has that id.".into());
+    }
+    if stem.trim().is_empty() {
+        return Err("A scale needs a name.".into());
+    }
+    let names = scale_names(table, c, stem);
+    let (mut ops, modes) = columns_for_new(table, c, ids.mint_mode());
+    let (mut made, mut updated) = (0, 0);
+    for ((name, held), (_, colour)) in names.into_iter().zip(colours) {
+        if let Some(why) = name_refusal(table, c, &name, held) {
+            return Err(why);
+        }
+        let Some(id) = held else {
+            made += 1;
+            ops.push(crate::Operation::AddVariable {
+                var: Variable {
+                    id: ids.mint_var(),
+                    name,
+                    kind: VarKind::Color,
+                    cells: modes.iter().map(|m| (*m, Cell::Color(*colour))).collect(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            });
+            continue;
+        };
+        if table.kind_of(id) != Some(VarKind::Color) {
+            return Err(format!("{name} is not a colour variable."));
+        }
+        updated += 1;
+        for m in modes.iter().filter(|m| only.is_none_or(|o| o == **m)) {
+            ops.extend(set_cell_ops(table, id, *m, Cell::Color(*colour))?);
+        }
+    }
+    Ok((ops, made, updated))
+}
+
+/// The line *Generate scale* says when done: what it made and updated, and the
+/// names it spans.
+pub fn scale_said(stem: &str, made: usize, updated: usize) -> String {
+    let stem = stem.trim();
+    let plural = |n: usize| if n == 1 { "variable" } else { "variables" };
+    let what = match (made, updated) {
+        (m, 0) => format!("Made {m} {}", plural(m)),
+        (0, u) => format!("Updated {u} {}", plural(u)),
+        (m, u) => format!("Made {m} {} and updated {u}", plural(m)),
+    };
+    format!("{what} · {stem}/50 – {stem}/950")
+}
+
 /// Why a kit's variable is refused an edit: an update writes it, and nothing
 /// the user does.
 pub const KIT_READ_ONLY: &str = "A kit's variable is read-only here.";

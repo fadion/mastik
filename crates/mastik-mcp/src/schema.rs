@@ -1140,7 +1140,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 110_400;
+        const ALL_BUDGET: usize = 111_300;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,
