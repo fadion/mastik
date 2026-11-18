@@ -759,11 +759,20 @@
         },
         {
           "id": "0:4",
+          "kind": "Grain",
+          "blend": "Overlay",
+          "amount": 0.25,
+          "size": 1.0,
+          "seed": 7,
+          "colour": false
+        },
+        {
+          "id": "0:5",
           "kind": "BackgroundBlur",
           "blur": 5.0
         },
         {
-          "id": "0:5",
+          "id": "0:6",
           "kind": "Filters",
           "brightness": 1.1,
           "contrast": 0.9,

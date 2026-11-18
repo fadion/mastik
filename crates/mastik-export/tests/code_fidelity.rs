@@ -197,6 +197,7 @@ fn ramp(kind: GradientKind, extend: Extend) -> Brush {
         },
         transform: Affine::IDENTITY,
         opacity: 1.0,
+        noise: None,
     })
 }
 

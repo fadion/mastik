@@ -558,6 +558,7 @@ fn the_same_picture_pairs_across_variants() {
             },
             transform: Affine::IDENTITY,
             opacity: 1.0,
+            noise: None,
         })
     };
     let (doc, inst) = chip(|doc, rest, hover| {

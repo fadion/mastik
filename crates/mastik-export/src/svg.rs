@@ -584,6 +584,43 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
                 );
                 graphic = r;
             }
+            // `effects::grain`: the opaque noise blended over the layer, cut to its
+            // alpha, then mixed in at the amount by an arithmetic `feComposite`.
+            EffectKind::Grain(g) if g.amount > 0.0 => {
+                let g = g.clamped();
+                out.push_str(&turbulence(
+                    mastik_core::NoiseKind::FractalNoise,
+                    g.base_frequency(),
+                    mastik_core::noise::GRAIN_OCTAVES,
+                    g.seed,
+                    &format!("{r}t"),
+                ));
+                let values = match g.colour {
+                    true => "1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 0 1",
+                    false => "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1",
+                };
+                let _ = writeln!(
+                    out,
+                    "      <feColorMatrix in=\"{r}t\" type=\"matrix\" values=\"{values}\" result=\"{r}n\"/>"
+                );
+                let _ = writeln!(
+                    out,
+                    "      <feBlend in=\"{r}n\" in2=\"{graphic}\" mode=\"{}\" result=\"{r}b\"/>",
+                    g.blend.css(),
+                );
+                let _ = writeln!(
+                    out,
+                    "      <feComposite in=\"{r}b\" in2=\"{graphic}\" operator=\"in\" result=\"{r}c\"/>"
+                );
+                let _ = writeln!(
+                    out,
+                    "      <feComposite in=\"{r}c\" in2=\"{graphic}\" operator=\"arithmetic\" \
+                     k1=\"0\" k2=\"{}\" k3=\"{}\" k4=\"0\" result=\"{r}\"/>",
+                    fmt_unit(g.amount),
+                    fmt_unit(1.0 - g.amount),
+                );
+                graphic = r;
+            }
             _ => {}
         }
     }
@@ -625,6 +662,76 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
     }
     out.push_str("    </filter>\n");
     out
+}
+
+/// Whether `effects` holds a visible grain, whose noise lives in the layer's own
+/// space: its filter is then written inside the layer's transform rather than in
+/// the parent's space every other stack is written in.
+fn grained(effects: &[Keyed<Effect>]) -> bool {
+    effects
+        .iter()
+        .any(|e| e.visible && matches!(&e.kind, EffectKind::Grain(g) if g.amount > 0.0))
+}
+
+/// One `<feTurbulence>` primitive named `result`, its base frequencies at nine
+/// places: they multiply every coordinate the noise is read at, so four would
+/// move a large layer's noise by a visible fraction of a cell.
+fn turbulence(
+    kind: mastik_core::NoiseKind,
+    freq: (f64, f64),
+    octaves: u32,
+    seed: i32,
+    result: &str,
+) -> String {
+    let f = |v: f64| fmt_fixed(v, 9);
+    let freq = match freq.0 == freq.1 {
+        true => f(freq.0),
+        false => format!("{} {}", f(freq.0), f(freq.1)),
+    };
+    format!(
+        "      <feTurbulence type=\"{}\" baseFrequency=\"{freq}\" numOctaves=\"{octaves}\" \
+         seed=\"{seed}\" result=\"{result}\"/>\n",
+        kind.svg_type(),
+    )
+}
+
+/// Stable per-node, per-slot noise filter id (`nz-<node>-fill-0`), spelled like
+/// [`gradient_id`].
+fn noise_id(node: NodeId, slot: &str) -> String {
+    format!("nz-{}-{slot}", node.to_wire().replace(':', "_"))
+}
+
+/// The `<filter>` a noise fill is drawn through: `effects::noise_fill` as
+/// primitives. The element it sits on is painted white, so `SourceAlpha` is the
+/// paint's coverage; `feColorMatrix` lays the noise's red channel from one colour
+/// to the other and the composite cuts it to that coverage. `region` is in the
+/// element's own space, where the noise lives.
+fn noise_def(name: &str, g: &mastik_core::GradientBrush, region: Rect) -> Option<String> {
+    let (noise, from, to) = g.noise_ramp()?;
+    let rows: Vec<String> = (0..4)
+        .map(|c| {
+            format!(
+                "{} 0 0 0 {}",
+                fmt_unit(f64::from(to[c] - from[c])),
+                fmt_unit(f64::from(from[c]))
+            )
+        })
+        .collect();
+    Some(format!(
+        "    <filter id=\"{name}\" filterUnits=\"userSpaceOnUse\" \
+         color-interpolation-filters=\"sRGB\"{}>\n{}      \
+         <feColorMatrix in=\"t\" type=\"matrix\" values=\"{}\" result=\"n\"/>\n      \
+         <feComposite in=\"n\" in2=\"SourceAlpha\" operator=\"in\"/>\n    </filter>\n",
+        region_attrs(region),
+        turbulence(
+            noise.kind,
+            noise.base_frequency(),
+            noise.octaves(),
+            noise.seed,
+            "t"
+        ),
+        rows.join("  "),
+    ))
 }
 
 /// The primitives for one shadow, returning its result's name. An inner shadow
@@ -738,8 +845,14 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
     let transform = outer * res.used_local_of(node);
     // As drawn: a bound effect number takes its variable's value.
     let effects = doc.resolved_effects(id, node.effects());
+    // A grain's filter is written in the layer's own space (`emit_node`), and
+    // `ink_in` under the identity is that space.
+    let space = match grained(&effects) {
+        true => Affine::IDENTITY,
+        false => transform,
+    };
     if mastik_render::effects::any_ink(&effects)
-        && let Some(region) = effect_region(res, id, transform, &effects)
+        && let Some(region) = effect_region(res, id, space, &effects)
     {
         defs.add(effect_id(id), effect_def(&effect_id(id), &effects, region));
     }
@@ -770,6 +883,14 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
     }
     let mut consider = |brush: &Brush, slot: &str| {
         match brush {
+            // In the element's own space: the ink box, which covers a stroke's.
+            Brush::Gradient(g) if g.noise.is_some() => {
+                if let Some(region) = ink_in(res, id, id, Affine::IDENTITY)
+                    && let Some(body) = noise_def(&noise_id(id, slot), g, region)
+                {
+                    defs.add(noise_id(id, slot), body);
+                }
+            }
             Brush::Gradient(g) => {
                 let name = gradient_id(id, slot);
                 // Only a sweep needs the shape's box, and finding it costs an
@@ -1542,12 +1663,27 @@ fn emit_node(
     }
     let wrap_pad = "  ".repeat(depth);
     let depth = depth + usize::from(fx);
-    if fx {
+    // A grained stack is filtered in the layer's own space, where its noise
+    // lives: the wrapper takes the layer's transform and undoes it inside, so the
+    // artwork lands where it always does.
+    let own = outer * res.used_local_of(node);
+    let local = fx && grained(&drawn_fx) && mastik_core::build::affine_is_invertible(own);
+    if local {
+        let _ = writeln!(
+            out,
+            "{wrap_pad}<g{}><g filter=\"url(#{})\"><g{}>",
+            transform_attr(own),
+            effect_id(id),
+            transform_attr(own.inverse()),
+        );
+    } else if fx {
         let _ = writeln!(out, "{wrap_pad}<g filter=\"url(#{})\">", effect_id(id));
     }
     // Closes the filter wrapper and the blend one, in that order.
     let close_fx = |out: &mut String| {
-        if fx {
+        if local {
+            let _ = writeln!(out, "{wrap_pad}</g></g></g>");
+        } else if fx {
             let _ = writeln!(out, "{wrap_pad}</g>");
         }
         if blend.is_some() {
@@ -1860,8 +1996,16 @@ fn emit_shape(
     let missing = fills
         .iter()
         .any(|(_, f)| missing_picture(doc, f.brush.drawn()));
+    // So does a noise paint: its filter must sit on an element holding that
+    // paint alone.
+    let noisy = fills
+        .iter()
+        .map(|(_, f)| f.brush.drawn())
+        .chain(strokes.iter().map(|(_, s)| s.brush.drawn()))
+        .any(|b| matches!(b, Brush::Gradient(g) if g.noise.is_some()));
     let plain = !letterboxed
         && !missing
+        && !noisy
         && fills.len() <= 1
         && match strokes.as_slice() {
             [] => true,
@@ -2998,6 +3142,15 @@ fn stroke_attr(
 fn paint_attr(attr: &str, brush: &Brush, id: NodeId, slot: &str, defs: &Defs) -> String {
     match brush {
         Brush::Solid(c) => solid_attr(attr, *c, defs),
+        // White under the noise filter, which turns the coverage into the ramp;
+        // the element carries only this paint (`emit_shape` stacks a noisy shape).
+        Brush::Gradient(g) if g.noise.is_some() => match defs.has(&noise_id(id, slot)) {
+            true => format!(
+                r##" {attr}="#ffffff" filter="url(#{})""##,
+                noise_id(id, slot)
+            ),
+            false => solid_attr(attr, brush_color(brush), defs),
+        },
         // `{attr}-opacity` multiplies the paint server's own alpha, so stops keep
         // `stop-opacity`; through `alpha_attr` so opacity rounds the same everywhere.
         Brush::Gradient(g) => format!(

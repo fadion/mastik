@@ -2370,6 +2370,7 @@ fn a_squashed_radial_gradient_paints_an_ellipse_rather_than_a_circle() {
                         * Affine::scale_non_uniform(1.0, 2.0)
                         * Affine::translate((0.0, -50.0)),
                     opacity: 1.0,
+                    noise: None,
                 })
                 .into(),
                 visible: true,

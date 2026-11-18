@@ -289,7 +289,9 @@ fn gradients_are_described_not_just_flagged() {
             stops,
             extend,
             smooth,
+            noise,
         } => {
+            assert_eq!(*noise, None, "a gradient is no noise fill");
             assert_eq!(*extend, None, "an untouched gradient pads");
             assert!(!smooth, "an untouched gradient mixes in sRGB");
             assert_eq!(kind, "linear");

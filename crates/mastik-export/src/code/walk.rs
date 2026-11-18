@@ -1563,6 +1563,8 @@ impl Walk<'_> {
                 EffectKind::InnerShadow(_) => return Some("an inner shadow".into()),
                 // CSS `filter` has no unsharp mask.
                 EffectKind::Sharpen { .. } => return Some("a sharpen".into()),
+                // Nor a noise.
+                EffectKind::Grain(_) => return Some("a grain".into()),
                 EffectKind::Filters(_) => return Some("colour filters".into()),
             }
         }

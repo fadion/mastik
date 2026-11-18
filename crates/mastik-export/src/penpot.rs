@@ -573,6 +573,7 @@ impl Writer<'_> {
                     self.approximate("A second blur of the same kind, left out");
                 }
                 EffectKind::Sharpen { .. } => self.approximate("Sharpen, left out"),
+                EffectKind::Grain(_) => self.approximate("Grain, left out"),
                 EffectKind::Filters(_) => self.approximate("Colour filters, left out"),
             }
         }
@@ -766,6 +767,9 @@ impl Writer<'_> {
         g: &mastik_core::GradientBrush,
         to_frac: Affine,
     ) -> Option<(Value, f32)> {
+        if g.noise.is_some() {
+            self.approximate("Noise fills, drawn as their two-colour ramp");
+        }
         if g.gradient.extend != Extend::Pad {
             self.approximate("Repeating and reflected gradients, drawn padded");
         }

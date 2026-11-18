@@ -244,6 +244,7 @@ fn a_gradient_fill_is_skipped() {
             .with_stops([Color::BLACK, Color::WHITE].as_slice()),
         transform: Affine::IDENTITY,
         opacity: 1.0,
+        noise: None,
     });
     d.doc
         .apply(&Transaction(vec![Operation::SetFills {
@@ -852,6 +853,7 @@ fn the_fix_contrast_verb_names_a_layer_it_skipped() {
             .with_stops([Color::from_rgb8(0xbb, 0xbb, 0xbb), Color::WHITE].as_slice()),
         transform: Affine::IDENTITY,
         opacity: 1.0,
+        noise: None,
     });
     d.doc
         .apply(&Transaction(vec![Operation::SetFills {

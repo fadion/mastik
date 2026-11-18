@@ -65,3 +65,7 @@ miniz_oxide = "0.8.9"
 # Writes a Display P3 profile into a picture fixture. Already in the tree
 # through `image` and `mastik-render`.
 moxcms = "0.8.1"
+# Renders the SVG writer's `feTurbulence` as the reference a noise fill and a
+# grain are held to (`tests/noise_reference.rs`). Already in the tree through
+# `krilla-svg`; no default features, so it adds no font or picture decoders.
+resvg = { version = "0.47.0", default-features = false }

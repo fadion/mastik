@@ -48,6 +48,7 @@ fn sweep() -> Brush {
         },
         transform: Affine::IDENTITY,
         opacity: 1.0,
+        noise: None,
     })
 }
 
