@@ -265,11 +265,10 @@ impl MastikApp {
             c.scope = Scope::Document;
         }
         c.reread(self);
-        let title = self.shown_title();
         let mut act = None;
         let hold = crate::settings::CardHold::Open;
         crate::settings::movable_canvas_card(ctx, "system-health", canvas, W, hold, |ui| {
-            if crate::settings::card_head_noted(ui, W, "System health", Some(&title)) {
+            if crate::settings::card_head(ui, W, "System health") {
                 act = Some(Act::Close);
             }
             egui::Frame::NONE
@@ -485,9 +484,11 @@ fn tidy(ui: &mut egui::Ui, c: &SystemHealth, act: &mut Option<Act>) {
                     egui::vec2(W - 2.0 * (PAD - 6.0), ROW_H),
                     egui::Sense::hover(),
                 );
-                let resp = resp.on_hover_text(row.hint());
+                resp.on_hover_text(row.hint());
                 let live = n > 0;
-                ui::list_row_ground(ui.painter(), rect, false, live && resp.hovered());
+                // The pointer over the row's button still lights the row.
+                let over = ui.rect_contains_pointer(rect);
+                ui::list_row_ground(ui.painter(), rect, false, live && over);
                 let fade = |c: egui::Color32| match live {
                     true => c,
                     false => c.gamma_multiply(0.55),

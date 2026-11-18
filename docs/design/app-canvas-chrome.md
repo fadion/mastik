@@ -1299,7 +1299,7 @@ the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's 
   canvas's top at a time, with Find, Colour review, batch rename, Clean up, Fill with content and
   the chart data window: opening any of them closes it, and opening it closes them. `Escape` closes
   it, the rung after Colour review's. In `control_audit`'s list.
-- **Head.** `card_head_noted`: *System health*, the document's title as the note. Scope
+- **Head.** `card_head`: *System health*, no note. Scope
   `batch_rename::scope_segments` (*Selection · This page · All pages*), opening on *Selection* when
   something is selected and on *All pages* otherwise (`review::every_page`: every page but
   drafts, the current page kept, Clean up's rule); a *Selection* left with nothing selected reads
@@ -1308,7 +1308,8 @@ the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's 
   *Paint*, *Type*, *Spacing and radii*, each *bound of total*; a click selects the raw layers.
 - **To tidy.** An eyebrow with *k of 8* (rows with something to report), then every row, always,
   so the card keeps one height: glyph, count, sentence, button. A row at zero dims, shows its zero
-  in `color::saved()` and has no button. Each row's hover says what it counts.
+  in `color::saved()` and has no button. Each row's hover says what it counts; a live row stays
+  lit while the pointer is over its button.
 - **Select.** Selects the counted layers on this page, else on the first one's page, going there;
   locked layers are counted and left out, and the status says how many. On *Selection* the card
   keeps reading what was selected before until the selection changes some other way (Clean up's
