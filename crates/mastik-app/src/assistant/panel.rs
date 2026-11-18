@@ -719,6 +719,7 @@ impl MastikApp {
                 });
             return;
         }
+        context_line(ui, self.assistant.context());
         let running = self.assistant.running();
         let stopping = self.assistant_stopping();
         let edit_id = egui::Id::new("assistant-composer");
@@ -1304,12 +1305,60 @@ fn cached_share(cached: u64, total: u64) -> Option<u64> {
     (total > 0 && cached > 0).then_some(share)
 }
 
-/// A token count as the foot shows it: `850`, `3.1k`.
+/// A token count as the foot shows it: `850`, `3.1k`, `1.0M`.
 fn tokens(n: u64) -> String {
     match n {
         0..1000 => n.to_string(),
-        _ => format!("{:.1}k", n as f64 / 1000.0),
+        1000..1_000_000 => format!("{:.1}k", n as f64 / 1000.0),
+        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
     }
+}
+
+/// From this share of the window on, the context line wears `warn`.
+const CONTEXT_WARN: f64 = 0.8;
+
+/// The context line's words and whether it warns: the share of the window
+/// when the harness names one, else the count alone.
+fn context_words(r: ai::Reading) -> (String, bool) {
+    match r.window.filter(|w| *w > 0) {
+        Some(w) => {
+            let share = r.used as f64 / w as f64;
+            let words = format!(
+                "Context {}% · {} of {}",
+                (share * 100.0).round() as u64,
+                tokens(r.used),
+                tokens(w)
+            );
+            (words, share >= CONTEXT_WARN)
+        }
+        None => (format!("Context {} tokens", tokens(r.used)), false),
+    }
+}
+
+/// How full the conversation's context is, on its own line above the
+/// composer; nothing until the harness has said.
+fn context_line(ui: &mut egui::Ui, reading: Option<ai::Reading>) {
+    let Some(r) = reading else {
+        return;
+    };
+    let (words, warn) = context_words(r);
+    let ink = match warn {
+        true => color::warn(),
+        false => theme::text::faint(),
+    };
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(egui::RichText::new(words).size(ui::CAPTION_PT).color(ink))
+            .on_hover_text(match r.window {
+                Some(_) => {
+                    "What the agent's next step reads: the conversation so far, out of \
+                            the most its model takes. Start a new chat to begin again from empty."
+                }
+                None => {
+                    "What the agent's next step reads: the conversation so far. Its agent \
+                         does not say how much its model takes."
+                }
+            });
+    });
 }
 
 /// The question `Ctrl+↑` (`up`) or `Ctrl+↓` steps to among `len` questions,
@@ -1333,6 +1382,31 @@ mod tests {
     fn token_counts_read_short() {
         assert_eq!(tokens(850), "850");
         assert_eq!(tokens(3100), "3.1k");
+        assert_eq!(tokens(1_000_000), "1.0M");
+    }
+
+    /// The context line gives the share of a named window and warns from 80%;
+    /// without a window it gives the count alone and never warns.
+    #[test]
+    fn the_context_line_reads_its_share() {
+        let r = |used, window| ai::Reading { used, window };
+        assert_eq!(
+            context_words(r(44_932, Some(1_000_000))),
+            ("Context 4% · 44.9k of 1.0M".to_string(), false)
+        );
+        assert_eq!(
+            context_words(r(206_720, Some(258_400))),
+            ("Context 80% · 206.7k of 258.4k".to_string(), true)
+        );
+        assert_eq!(
+            context_words(r(11_200, None)),
+            ("Context 11.2k tokens".to_string(), false)
+        );
+        assert_eq!(
+            context_words(r(10, Some(0))),
+            ("Context 10 tokens".to_string(), false),
+            "a zero window is no window"
+        );
     }
 
     /// A recall left past the end by a longer thread starts at the newest.

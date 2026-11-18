@@ -10,6 +10,7 @@
 //! tools the chat's access level grants.
 
 mod antigravity;
+mod context;
 mod cursor;
 mod find;
 mod harness;
@@ -18,6 +19,7 @@ mod run;
 mod session;
 mod stream;
 
+pub use context::Reading;
 pub use find::{Found, NotFound, find, forget_probes, warm};
 pub use harness::{Harness, Seal};
 pub use process::process_running;

@@ -216,6 +216,21 @@ impl Harness {
         }
     }
 
+    /// The turn's end reports usage summed over the whole conversation, not
+    /// the turn, and a resumed process carries on from the conversation's
+    /// start. Measured: Antigravity's `result` counts every turn so far.
+    pub(crate) fn usage_is_running_total(self) -> bool {
+        match self {
+            Harness::Antigravity => true,
+            Harness::Claude
+            | Harness::Codex
+            | Harness::OpenCode
+            | Harness::Copilot
+            | Harness::Cursor
+            | Harness::DeepSeek => false,
+        }
+    }
+
     /// The system prompt rides in the first turn's text, once per conversation,
     /// rather than in a flag. Only Claude Code has `--append-system-prompt`.
     pub(crate) fn system_in_first_turn(self) -> bool {

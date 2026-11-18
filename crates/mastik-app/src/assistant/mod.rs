@@ -107,6 +107,9 @@ struct Live {
     /// The thread the session's system prompt replays, kept to write that
     /// prompt again for a new level.
     replay: String,
+    /// How full the conversation's context was at its latest model call; a
+    /// new session starts a new conversation, so it goes with this one.
+    context: Option<ai::Reading>,
 }
 
 impl Drop for Live {
@@ -289,6 +292,11 @@ pub(crate) struct Assistant {
 }
 
 impl Assistant {
+    /// How full the live conversation's context is, once its harness has said.
+    pub(crate) fn context(&self) -> Option<ai::Reading> {
+        self.live.as_ref().and_then(|l| l.context)
+    }
+
     /// Whether a turn is in flight.
     pub(crate) fn running(&self) -> bool {
         self.running.is_some()
@@ -1032,6 +1040,13 @@ impl MastikApp {
         let mut proposed = None;
         match e {
             ai::Event::Alive => r.alive = true,
+            ai::Event::Context(reading) => {
+                if let Some(l) = a.live.as_mut() {
+                    // A reading without a window keeps the one already named.
+                    let window = reading.window.or(l.context.and_then(|c| c.window));
+                    l.context = Some(ai::Reading { window, ..reading });
+                }
+            }
             ai::Event::Text(t) => {
                 r.alive = true;
                 match parts.last_mut() {
@@ -1502,6 +1517,7 @@ impl MastikApp {
             key,
             grants: self.mcp.as_ref().map(|h| h.grants()),
             replay,
+            context: None,
         });
         self.assistant.look = None;
         Ok(())

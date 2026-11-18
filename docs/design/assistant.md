@@ -137,8 +137,29 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 
 - **Events** (`mastik_ai::Event`): text deltas, tool calls, tool results (paired to their call by the
   harness's own id, never by recency, which mis-pairs parallel calls), the end of the turn with its
-  duration and token counts, the harness exiting first, a refusal, and *Stopped*. Thinking is not
-  shown.
+  duration and token counts, a context reading, the harness exiting first, a refusal, and
+  *Stopped*. Thinking is not shown.
+- **A context reading** (`Event::Context`, `mastik_ai::Reading { used, window }`, `context.rs`)
+  is the prompt of the latest model call, cached tokens included: what the next call starts from.
+  `Done`'s tokens are summed over the turn's calls, each of which reads the same context again, so
+  they are never used for it. Where each harness says it:
+
+  | Harness | Used | Window |
+  | --- | --- | --- |
+  | Claude Code | each `assistant` event's `message.usage` (input + cache read + cache creation), per call | the `result`'s `modelUsage.<model>.contextWindow`, the latest call's model else the largest; kept for later turns |
+  | OpenCode | each `step_finish`'s tokens (input + cache read + cache write), per step | none |
+  | DeepSeek | each `status` `step_end`'s usage, per step | none |
+  | Codex | the rollout file's latest `token_count`, `last_token_usage.input_tokens` | its `model_context_window` |
+  | Copilot | `$COPILOT_HOME/session-state/<session>/events.jsonl`, the session's own home: the latest `session.usage_record`'s `inputTokens` | its `maxPromptTokens` |
+  | Antigravity | `~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript_full.jsonl`, the latest `source: MODEL` step (input + cache read) | none |
+  | Cursor | the turn's sum, read only on a turn with no tool call (one model call) | none |
+
+  Codex's stream gives only the turn's sum, Copilot's no counts, and Antigravity's `result` a
+  running total over the session, so those three are read from the harness's log at the turn's
+  end and emitted just before `Done`. Codex files a thread under the day it started
+  (`$CODEX_HOME` or `~/.codex`, `sessions/YYYY/MM/DD/rollout-*-<thread>.jsonl`) and a resumed turn
+  appends to that file, so the days are searched newest first. A log is read from its last 512 KiB,
+  and an id holding a path separator or a dot is never joined into a path.
 - **The parser is stateful per harness:** it turns restated text into deltas, drops restated tool
   calls, and resets at the end of each turn. A line that is not JSON is kept as a diagnostic, and
   so is Codex's `error` while it reconnects: only `turn.failed` ends its turn as failed.
@@ -527,10 +548,21 @@ layers being asked about, and is one more kind of surface.
 - **A tool call is a row**, 22 tall: its name in mono, its argument, a status dot and its result
   cut short. After a turn's third call the rest fold into *+N calls*.
 - **Under each finished turn:** its time and tokens, then the share read back from the prompt
-  cache where the harness reports it (`14 s · 3.1k tokens · 92% cached`; the tokens are summed over
-  the turn's model steps, each of which reads the conversation again), *Copy*, and on the last turn *Regenerate*
+  cache where the harness reports it (`14 s · 3.1k tokens · 92% cached`; `850`, `3.1k`, `1.0M`; the
+  tokens are summed over the turn's model steps, each of which reads the conversation again; cached
+  input counts as input. Antigravity's `result` is a running total over the conversation, which a
+  respawned process carries on, so the session keeps the totals reported so far and gives each turn
+  its difference: `Harness::usage_is_running_total`), *Copy*, and on the last turn *Regenerate*
   (`icon::ARROW_CLOCKWISE`), which drops that turn and asks again. While nothing can be sent it is
   disabled, its tooltip the composer's reason, and a send that is not taken puts the turn back.
+- **The context line** sits right-aligned directly above the composer (`context_line`), in
+  `ui::CAPTION_PT` and `text::faint()`, `color::warn()` from 80% of the window: *Context 34% ·
+  68.0k of 200.0k* when the window is known, *Context 11.2k tokens* when not. Its tooltip says what
+  it counts. It shows nothing until the harness has reported, and not when the composer is
+  replaced by a reason. The reading lives on the live session (`Live::context`), so it goes when
+  the session ends (*New chat*, a harness change, a level change that cannot regrant) and a resumed
+  or reloaded thread shows nothing until its next call. A reading with no window keeps the window
+  already named. The placement is provisional.
 - **The composer** is a bare `ui::text_area` in a field ground with the scope and the chips above
   it and the hint and send button on its foot, all on one left edge; it grows to 15 lines, then
   scrolls.

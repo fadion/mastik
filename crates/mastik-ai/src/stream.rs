@@ -44,6 +44,9 @@ pub(crate) enum Parsed {
     },
     /// The conversation id the next turn resumes with.
     Session(String),
+    /// How full the context is: the prompt of the latest model call, and the
+    /// window when the dialect names one. Never a turn's sum over its calls.
+    Context(crate::context::Reading),
 }
 
 /// What one line of stdout turned out to be.
@@ -170,6 +173,14 @@ pub(crate) struct StreamParser {
     /// Codex only: the last `error` notice, the reason of a `turn.failed`
     /// that gives none.
     codex_error: Option<String>,
+    /// Claude only, kept across turns: the model of the latest call, its
+    /// prompt, and the window the last `result` named for it.
+    claude_model: String,
+    claude_used: Option<u64>,
+    claude_window: Option<u64>,
+    /// Cursor only: the turn called a tool, the catalogue lookup included, so
+    /// it made more than one model call.
+    cursor_tooled: bool,
     /// The turn has said something, so a failure at its end is not silent.
     turn_said: bool,
     last_line: LineKind,
@@ -185,6 +196,10 @@ impl StreamParser {
             dsh: DshTurn::default(),
             claude_spoke: false,
             codex_error: None,
+            claude_model: String::new(),
+            claude_used: None,
+            claude_window: None,
+            cursor_tooled: false,
             turn_said: false,
             last_line: LineKind::Blank,
         }
@@ -281,6 +296,7 @@ impl StreamParser {
             self.oc = OpenCodeTurn::default();
             self.claude_spoke = false;
             self.codex_error = None;
+            self.cursor_tooled = false;
             self.turn_said = false;
         }
         out
@@ -308,6 +324,25 @@ impl StreamParser {
                 }
             }
             Some("assistant") => {
+                // One model call's own usage, restated per content block.
+                let u = |k: &str| {
+                    v.pointer(&format!("/message/usage/{k}"))
+                        .and_then(|n| n.as_u64())
+                };
+                if let Some(used) = sum_some([
+                    u("input_tokens"),
+                    u("cache_read_input_tokens"),
+                    u("cache_creation_input_tokens"),
+                ]) {
+                    if let Some(m) = v.pointer("/message/model").and_then(|m| m.as_str()) {
+                        m.clone_into(&mut self.claude_model);
+                    }
+                    self.claude_used = Some(used);
+                    out.push(Parsed::Context(crate::context::Reading {
+                        used,
+                        window: self.claude_window,
+                    }));
+                }
                 for b in blocks(v.pointer("/message/content")) {
                     if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                         let id = str_at(b, "id");
@@ -366,6 +401,27 @@ impl StreamParser {
                 .iter()
                 .filter_map(|k| u(&format!("/usage/{k}")))
                 .reduce(|a, b| a + b);
+                // The window is named only here, per model the session used:
+                // the latest call's model, else the largest.
+                let windows = v.get("modelUsage").and_then(|m| m.as_object());
+                let window = windows.and_then(|m| {
+                    m.get(&self.claude_model)
+                        .and_then(|e| e.get("contextWindow")?.as_u64())
+                        .or_else(|| {
+                            m.values()
+                                .filter_map(|e| e.get("contextWindow")?.as_u64())
+                                .max()
+                        })
+                });
+                if let Some(w) = window {
+                    self.claude_window = Some(w);
+                }
+                if let Some(used) = self.claude_used {
+                    out.push(Parsed::Context(crate::context::Reading {
+                        used,
+                        window: self.claude_window,
+                    }));
+                }
                 out.push(Parsed::Done {
                     is_error,
                     duration_ms: u("/duration_ms"),
@@ -548,8 +604,10 @@ impl StreamParser {
                         .and_then(|d| d.as_f64())
                         .filter(|d| d.is_finite() && *d >= 0.0)
                         .map(|d| (d * 1000.0).round() as u64),
-                    input_tokens: u("input_tokens"),
-                    cached_tokens: None,
+                    // Running totals over the conversation, made the turn's by
+                    // the session. Cached input is not in `input_tokens` here.
+                    input_tokens: sum_some([u("input_tokens"), u("cache_read_tokens")]),
+                    cached_tokens: u("cache_read_tokens"),
                     output_tokens: u("output_tokens"),
                 });
                 out
@@ -659,6 +717,13 @@ impl StreamParser {
                     }
                 }
                 self.oc.cached += at("cache/read").unwrap_or(0);
+                // The step's prompt: fresh input and both sides of the cache.
+                if let Some(used) = sum_some([at("input"), at("cache/read"), at("cache/write")]) {
+                    out.push(Parsed::Context(crate::context::Reading {
+                        used,
+                        window: None,
+                    }));
+                }
                 if let Some(o) = at("output") {
                     self.oc.output += o;
                     self.oc.saw_tokens = true;
@@ -810,6 +875,7 @@ impl StreamParser {
             }
             "tool_call" => {
                 self.text.clear(SEG);
+                self.cursor_tooled = true;
                 self.cursor_tool(v)
             }
             "result" => {
@@ -828,6 +894,20 @@ impl StreamParser {
                 // On success `result` restates the answer; on failure it is the reason.
                 if is_error && !str_at(v, "result").trim().is_empty() {
                     out.push(Parsed::Text(format!("\n{}\n", str_at(v, "result").trim())));
+                }
+                // Usage is the turn's sum over its model calls, so it reads the
+                // context only on a turn of one call, one with no tool in it.
+                if !self.cursor_tooled
+                    && let Some(used) = sum_some([
+                        at("inputTokens"),
+                        at("cacheReadTokens"),
+                        at("cacheWriteTokens"),
+                    ])
+                {
+                    out.push(Parsed::Context(crate::context::Reading {
+                        used,
+                        window: None,
+                    }));
                 }
                 out.push(Parsed::Done {
                     is_error,
@@ -922,7 +1002,19 @@ impl StreamParser {
                 self.dsh.input = add(self.dsh.input, step_in);
                 self.dsh.cached = add(self.dsh.cached, at("cacheReadTokens"));
                 self.dsh.output = add(self.dsh.output, at("outputTokens"));
-                Vec::new()
+                let prompt = sum_some([
+                    at("inputTokens"),
+                    at("cacheReadTokens"),
+                    at("cacheWriteTokens"),
+                ]);
+                prompt
+                    .map(|used| {
+                        vec![Parsed::Context(crate::context::Reading {
+                            used,
+                            window: None,
+                        })]
+                    })
+                    .unwrap_or_default()
             }
             "tool_call" => {
                 self.dsh.spoke = false;
@@ -1014,6 +1106,11 @@ impl StreamParser {
 /// `v[key]` as a string, `""` when absent.
 fn str_at<'a>(v: &'a serde_json::Value, key: &str) -> &'a str {
     v.get(key).and_then(|x| x.as_str()).unwrap_or("")
+}
+
+/// The sum of the counts present, `None` when none is.
+pub(crate) fn sum_some<const N: usize>(parts: [Option<u64>; N]) -> Option<u64> {
+    parts.into_iter().flatten().reduce(|a, b| a + b)
 }
 
 /// The elements of an optional JSON array.
@@ -1702,5 +1799,82 @@ mod tests {
             ],
         );
         assert_eq!(text_of(&evs), "abcdef");
+    }
+
+    fn readings(evs: &[Parsed]) -> Vec<crate::context::Reading> {
+        evs.iter()
+            .filter_map(|e| match e {
+                Parsed::Context(r) => Some(*r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn reading(used: u64, window: Option<u64>) -> crate::context::Reading {
+        crate::context::Reading { used, window }
+    }
+
+    /// Claude Code, trimmed from a captured two-call turn and its resumed follow-up.
+    const CLAUDE_CONTEXT: &[&str] = &[
+        r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}],"usage":{"input_tokens":2,"cache_creation_input_tokens":2595,"cache_read_input_tokens":42140,"output_tokens":60}}}"#,
+        r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"lantern"}],"usage":{"input_tokens":2,"cache_creation_input_tokens":195,"cache_read_input_tokens":44735,"output_tokens":20}}}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"duration_ms":9000,"usage":{"input_tokens":6,"cache_creation_input_tokens":15101,"cache_read_input_tokens":116704,"output_tokens":340},"modelUsage":{"claude-haiku-5-5":{"contextWindow":200000},"claude-opus-5-5":{"contextWindow":1000000}}}"#,
+        r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":4,"cache_creation_input_tokens":48,"cache_read_input_tokens":44930,"output_tokens":4}}}"#,
+    ];
+
+    /// Claude Code's context is the latest call's prompt, never the `result`'s
+    /// sum over the turn, and its window is the latest model's, kept for the
+    /// calls of later turns.
+    /// flip: the `result` arm reading `/usage` for `used` → fails at the turn's end.
+    #[test]
+    fn claude_context_is_the_latest_calls_prompt() {
+        let evs = drive(Harness::Claude, CLAUDE_CONTEXT);
+        assert_eq!(
+            readings(&evs),
+            vec![
+                reading(2 + 2595 + 42140, None),
+                reading(2 + 195 + 44735, None),
+                reading(2 + 195 + 44735, Some(1_000_000)),
+                reading(4 + 48 + 44930, Some(1_000_000)),
+            ],
+            "per call, the window named at the turn's end and kept after it"
+        );
+    }
+
+    /// OpenCode and DeepSeek say each step's prompt; the turn's sum is not it.
+    #[test]
+    fn opencode_and_deepseek_context_is_each_steps_prompt() {
+        assert_eq!(
+            readings(&drive(Harness::OpenCode, OC_REAL_TOOL_CYCLE)),
+            vec![reading(2497, None), reading(637 + 1984, None)]
+        );
+        assert_eq!(
+            readings(&drive(Harness::DeepSeek, DSH_REAL_TURN)),
+            vec![reading(2726, None), reading(187 + 2944, None)]
+        );
+    }
+
+    /// Cursor's usage is the turn's sum, so only a turn of one call reads the
+    /// context; a turn that called a tool says nothing.
+    /// flip: `cursor_tooled` never set → fails at "a turn with a tool".
+    #[test]
+    fn cursor_context_only_from_a_turn_of_one_call() {
+        let result = r#"{"type":"result","subtype":"success","is_error":false,"usage":{"inputTokens":133,"outputTokens":15,"cacheReadTokens":12160,"cacheWriteTokens":0}}"#;
+        let tool = r#"{"type":"tool_call","subtype":"started","call_id":"c1","tool_call":{"readToolCall":{"args":{"path":"note.txt"}}}}"#;
+        assert_eq!(
+            readings(&drive(Harness::Cursor, &[result])),
+            vec![reading(133 + 12160, None)],
+            "a turn of one call"
+        );
+        assert_eq!(
+            readings(&drive(Harness::Cursor, &[tool, result])),
+            vec![],
+            "a turn with a tool"
+        );
+        assert_eq!(
+            readings(&drive(Harness::Cursor, &[tool, result, result])),
+            vec![reading(133 + 12160, None)],
+            "the next turn starts clear"
+        );
     }
 }

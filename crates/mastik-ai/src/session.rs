@@ -6,6 +6,7 @@
 //! newer turn has begun, so a killed child's late output never lands in the
 //! next turn.
 
+use crate::context;
 use crate::find::{Launch, NotFound, launch, probe};
 use crate::harness::{self, ClaudeFlags, Harness, Seal, TurnSpec};
 use crate::process::{Tracker, wait_bounded};
@@ -166,6 +167,9 @@ pub enum Event {
         output_tokens: Option<u64>,
         is_error: bool,
     },
+    /// How full the conversation's context is now. Sent as calls finish where
+    /// the stream says, and just before `Done` where only a log does.
+    Context(crate::Reading),
     /// The harness exited before the turn was done; `signed_out` when it said
     /// it was not signed in.
     Exited {
@@ -236,6 +240,10 @@ struct State {
     stopping: bool,
     /// The conversation id the next turn or respawn resumes.
     resume: Option<String>,
+    /// Input, cached and output tokens reported so far, for a harness whose
+    /// usage is a running total over the conversation; kept here because a
+    /// respawned process carries on counting from the conversation's start.
+    reported: [Option<u64>; 3],
     /// The system prompt has not reached the conversation yet.
     owes_system: bool,
     prepared: Option<Result<(), Refusal>>,
@@ -1142,6 +1150,26 @@ impl Inner {
                     output_tokens,
                 } => {
                     let seconds = self.seconds(duration_ms);
+                    let [input_tokens, cached_tokens, output_tokens] =
+                        match self.harness.usage_is_running_total() {
+                            true => {
+                                let mut st = self.lock();
+                                let (turn, reported) = this_turn(
+                                    st.reported,
+                                    [input_tokens, cached_tokens, output_tokens],
+                                );
+                                st.reported = reported;
+                                turn
+                            }
+                            false => [input_tokens, cached_tokens, output_tokens],
+                        };
+                    // The log is written before the turn's end is printed.
+                    let id = self.lock().resume.clone();
+                    if let Some(r) =
+                        id.and_then(|id| context::from_log(self.harness, &id, &self.env))
+                    {
+                        self.emit(turn, Event::Context(r));
+                    }
                     self.finish(
                         turn,
                         Event::Done {
@@ -1333,6 +1361,7 @@ impl Reader {
     fn translate(&mut self, p: Parsed) -> Translated {
         match p {
             Parsed::Text(t) => Translated::Event(Event::Text(t)),
+            Parsed::Context(r) => Translated::Event(Event::Context(r)),
             Parsed::Session(id) => Translated::Session(id),
             Parsed::ToolUse { id, name, input } => {
                 let id = match id.filter(|i| !i.is_empty()) {
@@ -1379,6 +1408,27 @@ impl Reader {
             },
         }
     }
+}
+
+/// One turn's share of running totals `now`, given those reported before, and
+/// the totals to keep. A count the turn did not report keeps its earlier total;
+/// one below it is a count started over, so it is the turn's whole.
+fn this_turn(
+    before: [Option<u64>; 3],
+    now: [Option<u64>; 3],
+) -> ([Option<u64>; 3], [Option<u64>; 3]) {
+    let mut turn = [None; 3];
+    let mut kept = before;
+    for i in 0..3 {
+        if let Some(n) = now[i] {
+            turn[i] = Some(match before[i] {
+                Some(b) if b <= n => n - b,
+                _ => n,
+            });
+            kept[i] = Some(n);
+        }
+    }
+    (turn, kept)
 }
 
 /// `mcp__mastik__get_node` → `get_node`; any other name unchanged.
@@ -1709,12 +1759,40 @@ mod tests {
                     }
                 }
             }
+            // Antigravity's usage as it really reports it: every turn so far.
+            "agy-totals" => {
+                let mut n = 0;
+                for line in std::io::stdin().lock().lines() {
+                    let Ok(line) = line else { break };
+                    if !line.contains(r#""event":"user""#) {
+                        continue;
+                    }
+                    n += 1;
+                    say(r#"{"event":"init","conversation_id":"c-1"}"#);
+                    say(&serde_json::json!({"event":"result","result":{"status":"SUCCESS","num_turns":n,"usage":{"input_tokens":100 * n,"cache_read_tokens":10 * n,"output_tokens":5 * n}}}).to_string());
+                }
+            }
             // A turn that names its conversation only at its end, as Copilot's.
             "hang-unnamed" => {
                 say(
                     r#"{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"Let me look."}}"#,
                 );
                 std::thread::sleep(Duration::from_secs(60));
+            }
+            // Copilot: one model call logged under its home, and the session
+            // named only in the `result` that ends the turn.
+            "copilot-log" => {
+                let _ = std::io::stdin().read_to_string(&mut String::new());
+                let home = PathBuf::from(std::env::var_os("COPILOT_HOME").unwrap());
+                let dir = home.join("session-state").join("s-9");
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(
+                    dir.join("events.jsonl"),
+                    r#"{"type":"session.usage_record","data":{"usage":{"inputTokens":900,"maxPromptTokens":1000}}}"#,
+                )
+                .unwrap();
+                say(r#"{"type":"assistant.message","data":{"messageId":"m1","content":"hi"}}"#);
+                say(r#"{"type":"result","sessionId":"s-9","exitCode":0}"#);
             }
             // A persistent harness still starting: it reads nothing on stdin.
             "deaf" => std::thread::sleep(Duration::from_secs(60)),
@@ -1855,6 +1933,80 @@ mod tests {
         drop(s);
         assert!(!folder.exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A harness whose context is only in its log reports it just before the
+    /// turn's end, read under the session's own home by the id the same last
+    /// line names.
+    /// flip: the `Done` arm's `from_log` call removed → fails at "read from its log".
+    #[test]
+    fn a_logged_context_arrives_before_done() {
+        let (mut s, root) = fake_session(Harness::Copilot, "copilot-log");
+        s.send(Turn {
+            text: "hello".into(),
+            images: Vec::new(),
+        })
+        .unwrap();
+        let evs = until_idle(&mut s);
+        let n = evs.len();
+        assert!(n >= 2, "{evs:?}");
+        assert_eq!(
+            evs[n - 2],
+            Event::Context(crate::Reading {
+                used: 900,
+                window: Some(1000)
+            }),
+            "read from its log, in {evs:?}"
+        );
+        assert!(matches!(evs[n - 1], Event::Done { .. }), "{evs:?}");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A harness that reports running totals has each turn's own share in its
+    /// `Done`, its cached input counted as input.
+    /// flip: `usage_is_running_total` answering `false` → fails at "the second turn's own".
+    #[test]
+    fn running_totals_become_each_turns_own() {
+        let (mut s, root) = fake_session(Harness::Antigravity, "agy-totals");
+        let mut dones = Vec::new();
+        for text in ["one", "two"] {
+            s.send(Turn {
+                text: text.into(),
+                images: Vec::new(),
+            })
+            .unwrap();
+            let evs = until_idle(&mut s);
+            dones.extend(evs.into_iter().filter_map(|e| match e {
+                Event::Done {
+                    input_tokens,
+                    cached_tokens,
+                    output_tokens,
+                    ..
+                } => Some((input_tokens, cached_tokens, output_tokens)),
+                _ => None,
+            }));
+        }
+        let each = (Some(110), Some(10), Some(5));
+        assert_eq!(
+            dones,
+            vec![each, each],
+            "the second turn's own, not the sum"
+        );
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A turn's share of running totals: the difference, the whole when the
+    /// count started over, and an unreported count keeps its earlier total.
+    #[test]
+    fn a_turns_share_of_running_totals() {
+        let (turn, kept) = this_turn([Some(100), Some(10), None], [Some(150), Some(4), Some(7)]);
+        assert_eq!(turn, [Some(50), Some(4), Some(7)]);
+        assert_eq!(kept, [Some(150), Some(4), Some(7)]);
+        let (turn, kept) = this_turn(kept, [None, None, None]);
+        assert_eq!(turn, [None, None, None], "a failed turn reports nothing");
+        assert_eq!(kept, [Some(150), Some(4), Some(7)], "and keeps the totals");
     }
 
     /// Stop kills a per-turn child and ends the turn as stopped, well inside
