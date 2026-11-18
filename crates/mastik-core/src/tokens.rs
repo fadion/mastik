@@ -136,6 +136,31 @@ pub(crate) fn reached<'a>(
     (vs, ss)
 }
 
+/// The document's own variables nothing reads, in id order: no layer's field,
+/// chart or style reads one, directly or through an alias, and no other
+/// variable aliases it. A kit's variables are the kit's to keep.
+pub fn unused_variables(doc: &Document) -> Vec<VarId> {
+    let t = doc.variables();
+    let (read, _) = reached(t, doc.styles(), doc.node_map().values());
+    let mut used: FxHashSet<VarId> = read.into_iter().collect();
+    for n in doc.node_map().values() {
+        if let Some(c) = n.chart() {
+            used.extend(c.brushes().filter_map(|b| b.var()));
+        }
+    }
+    for v in t.iter() {
+        for c in v.cells.values() {
+            if let Cell::Alias(to) = c {
+                used.insert(*to);
+            }
+        }
+    }
+    t.local()
+        .filter(|v| !used.contains(&v.id))
+        .map(|v| v.id)
+        .collect()
+}
+
 /// What a copy of `subtrees` and the vault mains it carries reads of `doc`'s
 /// **kits'** variables and styles — the clipboard's half of a carrying paste
 /// (§15 D1064). The document's own are not here: a paste rebinds those by name

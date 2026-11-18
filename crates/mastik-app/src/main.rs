@@ -126,6 +126,7 @@ mod knife;
 mod lasso;
 mod loose_spacing;
 mod shape_handles;
+mod system_health;
 // No blanket `dead_code` allow here: the plain build is the gate that catches an
 // unwired item. `store::versions` (test-only callers) carries its own allow.
 mod library;
@@ -242,6 +243,13 @@ enum Command {
     /// The design review the MCP `review` read runs (`mastik_export::review`),
     /// on one page.
     CheckReview { file: String, page: Option<String> },
+    /// *System health*'s readings (`mastik_export::review::health`), over every
+    /// page or one; failing when coverage is under `min` percent.
+    CheckHealth {
+        file: String,
+        page: Option<String>,
+        min: Option<u32>,
+    },
     /// Three-way merge of a document (`mastik_core::merge`), the result written to
     /// `out`, by default over `ours` as git's merge driver expects.
     Merge {
@@ -462,17 +470,28 @@ fn parse_check(args: &[String]) -> Result<Command, String> {
     const USAGE: &str = "usage: mastik check contrast <file.mastik> [--page <name|n>] \
                          [--aaa|--apca] [--non-text]\n       \
                          mastik check code <file.mastik> [--page <name|n>]\n       \
-                         mastik check review <file.mastik> [--page <name|n>]";
+                         mastik check review <file.mastik> [--page <name|n>]\n       \
+                         mastik check health <file.mastik> [--page <name|n>] [--min <percent>]";
     let which = args.first().map(String::as_str);
     let contrast = match which {
         Some("contrast") => true,
-        Some("code" | "review") => false,
+        Some("code" | "review" | "health") => false,
         _ => return Err(USAGE.to_string()),
     };
     let (mut file, mut page, mut options) = (None, None, Options::default());
+    let mut min = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--min" if which == Some("health") => {
+                i += 1;
+                min = Some(
+                    args.get(i)
+                        .and_then(|v| v.trim_end_matches('%').parse::<u32>().ok())
+                        .filter(|m| *m <= 100)
+                        .ok_or_else(|| format!("--min wants a percentage, 0 to 100\n{USAGE}"))?,
+                );
+            }
             level @ ("--aaa" | "--apca") if contrast => {
                 if options.level != Level::Aa {
                     return Err(format!("one level at a time\n{USAGE}"));
@@ -509,6 +528,7 @@ fn parse_check(args: &[String]) -> Result<Command, String> {
     match which {
         Some("code") => Ok(Command::CheckCode { file, page }),
         Some("review") => Ok(Command::CheckReview { file, page }),
+        Some("health") => Ok(Command::CheckHealth { file, page, min }),
         _ => Ok(Command::CheckContrast {
             file,
             page,
@@ -551,6 +571,34 @@ fn run_check_review(file: &str, page: Option<&str>) -> Result<(String, bool), St
         scope.layers.len()
     ));
     Ok((out, found.is_empty()))
+}
+
+/// `mastik check health`: the readings as text, over the page asked for or every
+/// page, and whether coverage reaches `min` (always, without one).
+fn run_check_health(
+    file: &str,
+    page: Option<&str>,
+    min: Option<u32>,
+) -> Result<(String, bool), String> {
+    use mastik_export::review::{Options, Scope, every_page, health};
+    let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
+    let roots = match page {
+        Some(_) => vec![chosen_page(&doc, page)?],
+        None => {
+            let first = doc
+                .pages()
+                .first()
+                .map(|p| p.id)
+                .ok_or("the file has no page")?;
+            every_page(&doc, first)
+        }
+    };
+    let res = mastik_core::Resolved::rebuild(&doc);
+    let scope = Scope::new(&doc, &res, &roots);
+    let h = health(&scope, Options::default().step);
+    let held = min.is_none_or(|m| h.overall().unwrap_or(100) as u32 >= m);
+    Ok((h.to_text(), held))
 }
 
 /// `mastik check contrast`: the report as text, and whether every measured layer
@@ -1191,6 +1239,20 @@ fn main() {
                 std::process::exit(2);
             }
         },
+        // 1 is "under `--min`", so an unreadable file is 2.
+        Ok(Command::CheckHealth { file, page, min }) => {
+            match run_check_health(&file, page.as_deref(), min) {
+                Ok((report, held)) => {
+                    print!("{report}");
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    std::process::exit(i32::from(!held));
+                }
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    std::process::exit(2);
+                }
+            }
+        }
         // `diff`'s codes: 1 is "a layer drifts", so a check that cannot run is 2.
         Ok(Command::CheckCode { file, page }) => match run_check_code(&file, page.as_deref()) {
             Ok((report, holds)) => {
@@ -2021,6 +2083,31 @@ mod tests {
             })
         );
         for refused in [&["review"][..], &["review", "a.mastik", "--apca"]] {
+            assert!(check(refused).is_err(), "{refused:?}");
+        }
+    }
+
+    /// `check health` takes a page and a `--min` percentage, and refuses one past
+    /// 100 or `--min` on another check.
+    #[test]
+    fn check_health_takes_a_page_and_a_minimum() {
+        let check = |s: &[&str]| {
+            let mut v = vec!["check".to_string()];
+            v.extend(s.iter().map(|a| a.to_string()));
+            parse(&v)
+        };
+        assert_eq!(
+            check(&["health", "a.mastik", "--min", "80%"]),
+            Ok(Command::CheckHealth {
+                file: "a.mastik".into(),
+                page: None,
+                min: Some(80),
+            })
+        );
+        for refused in [
+            &["health", "a.mastik", "--min", "101"][..],
+            &["review", "a.mastik", "--min", "80"],
+        ] {
             assert!(check(refused).is_err(), "{refused:?}");
         }
     }

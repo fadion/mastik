@@ -394,6 +394,36 @@ pub static TOOLS: &[Tool] = &[
         ],
     },
     Tool {
+        name: "health",
+        doc: "How much paint, type and spacing is `bound` to variables and styles against raw, and what to tidy, each with a count and ids: `raw_match` (raw values a variable or style holds), `near_duplicates`, `off_scale`, `detached`, and `unused` components, variables and styles.",
+        params: &[
+            param(
+                "ids",
+                ParamKind::Nodes,
+                false,
+                "Only the layers in and under these; else a page.",
+            ),
+            param(
+                "page",
+                ParamKind::Node,
+                false,
+                "The page when no `ids`; the person's page when absent.",
+            ),
+            param(
+                "pages",
+                ParamKind::Bool,
+                false,
+                "Every page, when no `ids`.",
+            ),
+            param(
+                "step",
+                ParamKind::Number,
+                false,
+                "The spacing scale's step; 4 when absent.",
+            ),
+        ],
+    },
+    Tool {
         name: "undo",
         doc: "Undo your latest step, answering its name as `undone` and the layers it changed. Under others' later steps it is taken back alone when they changed other things, else refused.",
         params: &[],
@@ -1140,7 +1170,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 111_300;
+        const ALL_BUDGET: usize = 111_900;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

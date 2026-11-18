@@ -10,7 +10,7 @@ use crate::session::EditorSession;
 use serde_json::Value;
 
 /// The tools this module answers.
-pub(super) const TOOLS: [&str; 3] = ["design_context", "check_layout", "review"];
+pub(super) const TOOLS: [&str; 4] = ["design_context", "check_layout", "review", "health"];
 
 /// Answer `tool` on `s`.
 pub(super) fn run(s: &EditorSession, tool: &str, args: &Value) -> Result<Answer, String> {
@@ -54,6 +54,21 @@ pub(super) fn run(s: &EditorSession, tool: &str, args: &Value) -> Result<Answer,
             let scope = Scope::new(doc, res, &roots()?);
             let found = review(&scope, Options { step, level });
             Ok(Answer::Json(to_json(&scope, &found)))
+        }
+        "health" => {
+            use mastik_export::review::{Options, Scope, health};
+            let step = match args.get("step").and_then(Value::as_f64) {
+                None => Options::default().step,
+                Some(s) if s > 0.0 => s,
+                Some(_) => return Err("`step` is a length above zero".into()),
+            };
+            let every = args.get("pages").and_then(Value::as_bool) == Some(true);
+            let roots = match every && args.get("ids").is_none() {
+                true => mastik_export::review::every_page(doc, s.page),
+                false => roots()?,
+            };
+            let scope = Scope::new(doc, res, &roots);
+            Ok(Answer::Json(health(&scope, step).to_json(doc)))
         }
         tool => Err(format!("no tool `{tool}`")),
     }

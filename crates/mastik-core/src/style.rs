@@ -687,6 +687,20 @@ pub fn users(doc: &Document, style: StyleId) -> Vec<NodeId> {
     out
 }
 
+/// The document's own styles no layer outside the vault takes, in id order; a
+/// kit's are the kit's to keep.
+pub fn unused(doc: &Document) -> Vec<StyleId> {
+    let mut taken: rustc_hash::FxHashSet<StyleId> = Default::default();
+    for n in doc.node_map().values().filter(|n| !doc.in_vault(n.id)) {
+        taken.extend(n.styles.iter().map(|(_, s)| s));
+    }
+    doc.styles()
+        .iter()
+        .filter(|s| s.kit().is_none() && !taken.contains(&s.id))
+        .map(|s| s.id)
+        .collect()
+}
+
 /// What a transaction owes the styles (§15 D1062), appended by
 /// `propagate::owed`: every layer whose slot no longer holds its style's look in
 /// the document `tx` leaves is either **rewritten** with the style's values or

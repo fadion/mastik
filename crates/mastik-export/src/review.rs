@@ -3,8 +3,9 @@
 //! spacing off its rhythm or off the scale, raw values where a variable or a
 //! style fits, near-duplicate colours, radii that nearly agree, and low
 //! contrast. Each check is a function of its own over a [`Scope`], so the MCP
-//! `review` read and `mastik check review` run the same ones, and a *Design
-//! system health* card can run any of them.
+//! `review` read and `mastik check review` run the same ones. [`health`] reads
+//! some of them beside its coverage count, for the *System health* card, MCP's
+//! `health` and `mastik check health` alike.
 
 use crate::context::{own_box, shown_under};
 use crate::contrast;
@@ -496,6 +497,27 @@ impl Raw {
 /// layout's gaps and padding against those scoped to spacing, and a layer's
 /// whole fill, stroke or effect list, or a text's type, against the styles.
 pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
+    raw_matches(scope)
+        .by
+        .into_iter()
+        .map(|(key, (line, ids))| {
+            let (code, instead) = match key.starts_with('s') {
+                true => ("raw_style", "apply the style"),
+                false => ("raw_value", "bind the variable"),
+            };
+            Finding::new(
+                code,
+                named(&ids),
+                format!("{line} on {}.", layers(ids.len())),
+            )
+            .instead(instead.into())
+        })
+        .collect()
+}
+
+/// [`raw_values`]' matches with every layer each names: keyed `s<style>` for a
+/// style, `v<variable><what>` for a variable.
+fn raw_matches(scope: &Scope<'_>) -> Raw {
     let doc = scope.doc;
     let vars = doc.variables();
     let value = |v: &mastik_core::Variable| vars.resolve_opt(v.id, None);
@@ -644,21 +666,7 @@ pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
             }
         }
     }
-    raw.by
-        .into_iter()
-        .map(|(key, (line, ids))| {
-            let (code, instead) = match key.starts_with('s') {
-                true => ("raw_style", "apply the style"),
-                false => ("raw_value", "bind the variable"),
-            };
-            Finding::new(
-                code,
-                named(&ids),
-                format!("{line} on {}.", layers(ids.len())),
-            )
-            .instead(instead.into())
-        })
-        .collect()
+    raw
 }
 
 /// `near_duplicate_colours`: the colours painted under the roots that Colour
@@ -779,6 +787,393 @@ pub fn low_contrast(scope: &Scope<'_>, level: contrast::Level) -> Vec<Finding> {
                 )
                 .instead("`fix_contrast`".into()),
             );
+        }
+    }
+    out
+}
+
+/// How many uses of one kind are bound to the system, of how many, and the
+/// layers holding the raw ones.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Coverage {
+    pub bound: usize,
+    pub total: usize,
+    pub raw: Vec<NodeId>,
+}
+
+impl Coverage {
+    fn count(&mut self, id: NodeId, bound: bool) {
+        self.total += 1;
+        match bound {
+            true => self.bound += 1,
+            false if !self.raw.contains(&id) => self.raw.push(id),
+            false => {}
+        }
+    }
+
+    /// The bound share as a whole percentage, rounded down so 99.6% never
+    /// reads as all of it; `None` when there is nothing to count.
+    pub fn percent(&self) -> Option<usize> {
+        (self.total > 0).then(|| self.bound * 100 / self.total)
+    }
+
+    fn to_json(&self) -> Value {
+        json!({ "bound": self.bound, "of": self.total })
+    }
+}
+
+/// A list of the things one *To tidy* row counts, with every layer it names.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Tidy {
+    /// How many there are, in the row's own unit.
+    pub count: usize,
+    pub ids: Vec<NodeId>,
+}
+
+impl Tidy {
+    fn of(ids: Vec<NodeId>) -> Self {
+        Self {
+            count: ids.len(),
+            ids,
+        }
+    }
+}
+
+/// *System health*: how much of a scope's paint, type and spacing is bound to
+/// variables and styles, and what is left to tidy — the card, MCP `health` and
+/// `mastik check health` all read this one function, so their numbers agree.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Health {
+    /// Every visible fill and stroke, bound to a colour variable or its whole
+    /// list to a style; and every shadow's colour, which no variable binds,
+    /// bound when the effect list takes a style.
+    pub paint: Coverage,
+    /// Every text layer, bound when it takes a text style.
+    pub text: Coverage,
+    /// Every non-zero gap, padding and corner radius, bound to a number variable.
+    pub spacing: Coverage,
+    /// Layers whose raw value is exactly a variable or a style; `count` is the
+    /// layers, and the commonest match leads `matches`.
+    pub raw_match: Tidy,
+    /// The matches behind [`Self::raw_match`], commonest first: the variable or
+    /// style each names, and the layers.
+    pub matches: Vec<(Match, Vec<NodeId>)>,
+    /// Groups of near-identical colours; `count` is the groups.
+    pub near_duplicates: Tidy,
+    /// Layers with a gap, padding or radius off the spacing scale, unbound.
+    pub off_scale: Tidy,
+    /// Layers detached from a component (`Node::detached_from`).
+    pub detached: Tidy,
+    /// Main components in the scope with no instance anywhere; a component
+    /// set counts once, when none of its variants has one.
+    pub unused_components: Tidy,
+    /// The document's own variables nothing reads, whatever the scope.
+    pub unused_variables: Vec<mastik_core::VarId>,
+    /// The document's own styles no layer takes, whatever the scope.
+    pub unused_styles: Vec<mastik_core::style::StyleId>,
+    /// The layers looked at, and the pages they are on.
+    pub checked: usize,
+    pub pages: usize,
+}
+
+/// What a raw value is exactly: a variable or a style of the document.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Match {
+    Variable(mastik_core::VarId),
+    Style(mastik_core::style::StyleId),
+}
+
+impl Health {
+    /// Every bound use of the three kinds against every use, as a whole
+    /// percentage; `None` for a scope with nothing to count.
+    pub fn overall(&self) -> Option<usize> {
+        let bound = self.paint.bound + self.text.bound + self.spacing.bound;
+        let total = self.paint.total + self.text.total + self.spacing.total;
+        (total > 0).then(|| bound * 100 / total)
+    }
+
+    /// How many things the *To tidy* rows count together.
+    pub fn to_tidy(&self) -> usize {
+        self.raw_match.count
+            + self.near_duplicates.count
+            + self.off_scale.count
+            + self.detached.count
+            + self.unused_components.count
+            + self.unused_variables.len()
+            + self.unused_styles.len()
+    }
+
+    /// As MCP's `health` answers it: the counts, and each row's layer ids, at
+    /// most [`LISTED`] of them.
+    pub fn to_json(&self, doc: &Document) -> Value {
+        let ids = |ids: &[NodeId]| -> Vec<String> {
+            ids.iter().take(LISTED).map(|i| i.to_wire()).collect()
+        };
+        let tidy = |t: &Tidy| json!({ "count": t.count, "ids": ids(&t.ids) });
+        let var_name = |v: mastik_core::VarId| {
+            doc.variables()
+                .get(v)
+                .map(|v| v.name.clone())
+                .unwrap_or_default()
+        };
+        json!({
+            "bound": {
+                "paint": self.paint.to_json(),
+                "type": self.text.to_json(),
+                "spacing": self.spacing.to_json(),
+                "percent": self.overall(),
+            },
+            "raw_match": tidy(&self.raw_match),
+            "near_duplicates": tidy(&self.near_duplicates),
+            "off_scale": tidy(&self.off_scale),
+            "detached": tidy(&self.detached),
+            "unused": {
+                "components": tidy(&self.unused_components),
+                "variables": self.unused_variables.iter().map(|v| var_name(*v)).collect::<Vec<_>>(),
+                "styles": self.unused_styles.iter().filter_map(|s| doc.styles().get(*s)).map(|s| s.name.clone()).collect::<Vec<_>>(),
+            },
+            "checked": self.checked,
+        })
+    }
+
+    /// As `mastik check health` prints it: one line per reading, then the sum.
+    pub fn to_text(&self) -> String {
+        let cov = |c: &Coverage| match c.percent() {
+            Some(p) => format!("{p}% ({}/{})", c.bound, c.total),
+            None => "none".to_string(),
+        };
+        let mut out = format!(
+            "bound      paint {}  type {}  spacing {}\n",
+            cov(&self.paint),
+            cov(&self.text),
+            cov(&self.spacing)
+        );
+        out.push_str(&format!("raw_match  {}\n", self.raw_match.count));
+        out.push_str(&format!("near_dup   {}\n", self.near_duplicates.count));
+        out.push_str(&format!("off_scale  {}\n", self.off_scale.count));
+        out.push_str(&format!("detached   {}\n", self.detached.count));
+        out.push_str(&format!(
+            "unused     components {}  variables {}  styles {}\n",
+            self.unused_components.count,
+            self.unused_variables.len(),
+            self.unused_styles.len()
+        ));
+        let overall = self
+            .overall()
+            .map_or_else(|| "nothing to count".to_string(), |p| format!("{p}% bound"));
+        out.push_str(&format!("{overall} · {} to tidy\n", self.to_tidy()));
+        out
+    }
+}
+
+/// The roots of an *All pages* reading: every page but drafts, `current` kept
+/// even when a draft, as Clean up gathers them.
+pub fn every_page(doc: &Document, current: NodeId) -> Vec<NodeId> {
+    doc.pages()
+        .iter()
+        .filter(|p| !p.draft || p.id == current)
+        .map(|p| p.id)
+        .collect()
+}
+
+/// Whether `id` is a copy, whose values are its main's choices, counted there.
+fn is_copy(doc: &Document, id: NodeId) -> bool {
+    doc.get(id).is_some_and(|n| n.link().is_some())
+}
+
+/// [`Health::overall`] alone for `scope`: the coverage pass without the checks,
+/// for a summary read more often than the card is open.
+pub fn overall(scope: &Scope<'_>) -> Option<usize> {
+    let mut h = Health::default();
+    counts(scope, 4.0, &mut h);
+    h.overall()
+}
+
+/// The coverage pass over `scope`'s own layers, copies left out: the three
+/// [`Coverage`]s and the detached layers into `h`. Answers the layers whose
+/// own spacing or radius is off the scale, unbound.
+fn counts(scope: &Scope<'_>, step: f64, h: &mut Health) -> Vec<NodeId> {
+    let doc = scope.doc;
+    let own: Vec<NodeId> = scope.own().filter(|id| !is_copy(doc, *id)).collect();
+    let mut off_scale: Vec<NodeId> = Vec::new();
+    for &id in &own {
+        let Some(n) = doc.get(id) else { continue };
+        let styles = n.styles();
+        let paint = n.paint();
+        let counted =
+            |b: &mastik_core::variable::BrushSource| !matches!(b.literal(), Some(Brush::Image(_)));
+        for f in paint
+            .fills
+            .iter()
+            .filter(|f| f.visible && counted(&f.brush))
+        {
+            h.paint
+                .count(id, styles.fills.is_some() || f.brush.var().is_some());
+        }
+        for s in paint
+            .strokes
+            .iter()
+            .filter(|s| s.visible && counted(&s.brush))
+        {
+            h.paint
+                .count(id, styles.strokes.is_some() || s.brush.var().is_some());
+        }
+        for e in n.effects().iter().filter(|e| e.visible) {
+            if matches!(
+                e.kind,
+                mastik_core::effect::EffectKind::DropShadow(_)
+                    | mastik_core::effect::EffectKind::InnerShadow(_)
+            ) {
+                h.paint.count(id, styles.effects.is_some());
+            }
+        }
+        if matches!(n.kind(), NodeKind::Text { .. }) {
+            h.text.count(id, styles.text.is_some());
+        }
+        let mut off = false;
+        if let Some(d) = doc.resolved_display(id) {
+            let bound = n.spacing_vars();
+            for (k, v) in d.spacing().into_iter().enumerate() {
+                if v > 0.0 {
+                    h.spacing.count(id, bound[k].is_some());
+                    off |= bound[k].is_none() && !on_step(v, step);
+                }
+            }
+        }
+        if matches!(n.kind(), NodeKind::Rect { .. } | NodeKind::Artboard { .. })
+            && let Some(r) = scope.kind(id).and_then(NodeKind::corner_radii)
+        {
+            let vars = n.corner_vars();
+            let corners = [r.top_left, r.top_right, r.bottom_right, r.bottom_left];
+            for (k, c) in corners.into_iter().enumerate() {
+                if c > 0.0 {
+                    h.spacing.count(id, vars[k].is_some());
+                    off |= vars[k].is_none() && !on_step(c, step);
+                }
+            }
+        }
+        if off {
+            off_scale.push(id);
+        }
+        if n.detached_from().is_some() {
+            h.detached.ids.push(id);
+        }
+    }
+    off_scale
+}
+
+/// [`Health`] for `scope`, the spacing scale's step being `step`.
+pub fn health(scope: &Scope<'_>, step: f64) -> Health {
+    let doc = scope.doc;
+    let mut h = Health::default();
+    let mut off_scale = counts(scope, step, &mut h);
+    // Gaps between layers placed by hand, the spacing check's own reading.
+    for f in spacing(scope, step)
+        .into_iter()
+        .filter(|f| f.code == "off_scale")
+    {
+        for id in f.ids {
+            if !off_scale.contains(&id) && !is_copy(doc, id) {
+                off_scale.push(id);
+            }
+        }
+    }
+    h.off_scale = Tidy::of(off_scale);
+    h.detached.count = h.detached.ids.len();
+
+    let mut layers: Vec<NodeId> = Vec::new();
+    let mut matches: Vec<(Match, Vec<NodeId>)> = Vec::new();
+    for (key, (_, ids)) in raw_matches(scope).by {
+        let ids: Vec<NodeId> = ids.into_iter().filter(|i| !is_copy(doc, *i)).collect();
+        if ids.is_empty() {
+            continue;
+        }
+        let Some(m) = match_of(doc, &key) else {
+            continue;
+        };
+        for id in &ids {
+            if !layers.contains(id) {
+                layers.push(*id);
+            }
+        }
+        matches.push((m, ids));
+    }
+    matches.sort_by_key(|(_, ids)| std::cmp::Reverse(ids.len()));
+    h.raw_match = Tidy::of(layers);
+    h.matches = matches;
+
+    let near = near_duplicate_colours(scope);
+    h.near_duplicates = Tidy {
+        count: near.len(),
+        ids: near.into_iter().flat_map(|f| f.ids).collect(),
+    };
+
+    h.unused_components = Tidy::of(unused_components(scope));
+    h.unused_variables = mastik_core::tokens::unused_variables(doc);
+    h.unused_styles = mastik_core::style::unused(doc);
+    h.checked = scope.own().count();
+    let mut pages: Vec<NodeId> = scope.own().filter_map(|id| doc.page_of(id)).collect();
+    pages.sort();
+    pages.dedup();
+    h.pages = pages.len();
+    h
+}
+
+/// The variable or style a [`raw_matches`] key names.
+fn match_of(doc: &Document, key: &str) -> Option<Match> {
+    let wire = NodeId::from_wire;
+    match key.strip_prefix('s') {
+        Some(rest) => {
+            let id = wire(rest)?;
+            doc.styles()
+                .iter()
+                .find(|s| s.id.0 == id)
+                .map(|s| Match::Style(s.id))
+        }
+        None => {
+            let rest = key.strip_prefix('v')?;
+            let id = ["fill", "stroke", "radius", "spacing"]
+                .iter()
+                .find_map(|what| rest.strip_suffix(what))
+                .and_then(wire)?;
+            doc.variables()
+                .iter()
+                .find(|v| v.id.0 == id)
+                .map(|v| Match::Variable(v.id))
+        }
+    }
+}
+
+/// The scope's main components no instance anywhere shows, and the component
+/// sets none of whose variants has one; a kit's mains are the kit's.
+fn unused_components(scope: &Scope<'_>) -> Vec<NodeId> {
+    let doc = scope.doc;
+    let used = mastik_core::component::instances_by_main(doc);
+    let has = |m: NodeId| used.get(&m).is_some_and(|i| !i.is_empty());
+    let mut out = Vec::new();
+    for id in scope.own() {
+        let Some(n) = doc.get(id) else { continue };
+        if doc.in_vault(id) {
+            continue;
+        }
+        if n.set().is_some() {
+            let variants: Vec<NodeId> = n
+                .children()
+                .iter()
+                .copied()
+                .filter(|c| doc.get(*c).is_some_and(|c| c.component()))
+                .collect();
+            if !variants.is_empty() && !variants.iter().any(|v| has(*v)) {
+                out.push(id);
+            }
+            continue;
+        }
+        let in_set = n
+            .parent()
+            .and_then(|p| doc.get(p))
+            .is_some_and(|p| p.set().is_some());
+        if n.component() && !in_set && !has(id) {
+            out.push(id);
         }
     }
     out
@@ -929,5 +1324,78 @@ mod tests {
         assert!(!pale.contains(&vec![l["readable"]]), "dark on white reads");
         let answer = to_json(&scope, &found);
         assert!(answer["checked"].as_u64().unwrap() > 20);
+    }
+
+    /// `health` counts uses bound against raw, a copy's at its main only, and
+    /// finds the unused main, the unused variable, the detached layer and the
+    /// raw match.
+    ///
+    /// flip: `counts` counting a copy's paint → fails at "paint"; `unused_components`
+    /// ignoring instances → fails at "the used main"; `unused_variables` reading
+    /// no layer → fails at "Brand is used".
+    #[test]
+    fn health_counts_bound_uses_and_what_to_tidy() {
+        let mut ids = IdSource::new(0x4ea);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let p = page.to_wire();
+        let steps = vec![
+            json!({ "verb": "add_variable", "args": { "kind": "color", "name": "Brand",
+                "value": { "color": "#3366cc" } }, "as": "brand_var" }),
+            json!({ "verb": "add_variable", "args": { "kind": "number", "name": "Idle",
+                "value": { "number": 3 } }, "as": "idle_var" }),
+            layer(&p, "bound", 0.0, 0.0, rect(40.0, 40.0, "#3366cc", 0.0)),
+            json!({ "verb": "bind_variable", "args": { "nodes": ["@bound"],
+                "field": { "Fill": 0 }, "variable": "@brand_var" } }),
+            layer(&p, "raw", 100.0, 0.0, rect(40.0, 40.0, "#3366cc", 0.0)),
+            layer(&p, "main", 200.0, 0.0, rect(40.0, 40.0, "#ff0000", 0.0)),
+            json!({ "verb": "make_component", "args": { "nodes": ["@main"] }, "as": "used" }),
+            json!({ "verb": "create_instance", "args": { "main": "@used", "parent": p,
+                "x": 300, "y": 0 } }),
+            json!({ "verb": "create_instance", "args": { "main": "@used", "parent": p,
+                "x": 400, "y": 0 }, "as": "gone" }),
+            json!({ "verb": "detach_instance", "args": { "nodes": ["@gone"] } }),
+            layer(&p, "alone", 500.0, 0.0, rect(40.0, 40.0, "#00ff00", 0.0)),
+            json!({ "verb": "make_component", "args": { "nodes": ["@alone"] }, "as": "lonely" }),
+        ];
+        let made = mastik_core::verbs::run_script(
+            &mut doc,
+            &mut ids,
+            mastik_core::verbs::Lent::default(),
+            &Value::Array(steps.clone()),
+        )
+        .expect("the fixture builds");
+        let l: std::collections::HashMap<&str, NodeId> = steps
+            .iter()
+            .zip(made)
+            .filter_map(|(s, m)| Some((s["as"].as_str()?, NodeId::from_wire(m.first()?)?)))
+            .collect();
+        let res = Resolved::rebuild(&doc);
+        let scope = Scope::new(&doc, &res, &[page]);
+        let h = health(&scope, 4.0);
+        let gone = l["gone"];
+        assert_eq!(h.detached.ids, vec![gone], "detached");
+        // The bound rect, the raw one, and the rects of the used main, the
+        // detached copy and the lonely main (their frames have no fill): the
+        // live instance's paint is its main's, counted there.
+        assert_eq!((h.paint.bound, h.paint.total), (1, 5), "paint: {h:?}");
+        assert!(h.paint.raw.contains(&l["raw"]));
+        assert!(
+            h.raw_match.ids.contains(&l["raw"]),
+            "the raw #3366cc is Brand: {h:?}"
+        );
+        assert!(matches!(h.matches.first(), Some((Match::Variable(_), _))));
+        assert_eq!(h.unused_components.ids, vec![l["lonely"]], "the used main");
+        let idle = doc
+            .variables()
+            .iter()
+            .find(|v| v.name == "Idle")
+            .unwrap()
+            .id;
+        assert_eq!(h.unused_variables, vec![idle], "Brand is used");
+        assert_eq!(h.overall(), Some(20));
+        let json = h.to_json(&doc);
+        assert_eq!(json["detached"]["count"], 1);
+        assert_eq!(json["unused"]["variables"], json!(["Idle"]));
     }
 }
