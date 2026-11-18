@@ -55,9 +55,9 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **A cap on the number of fills or strokes** (§15 D133).
 - **A pool of reusable effect-pass renderers** — the build cost is a one-off hitch, and a pool conflicts with a correctness rule (§15 D779).
 - **Reading `Filters` (brightness/contrast) back from SVG** — the combined matrix doesn't identify its inputs (§15 D411).
-- **Wide-gamut colour (Display P3)** — the document stores sRGB. A P3 document would need a tag or a conversion in every export, every colour calculation (contrast, vision simulation, colour review) and every copy between documents, and a display path per OS that wgpu does not expose; most viewers of the output would see sRGB anyway. OKLCH as a way to pick sRGB colours is open work (`roadmap.md`).
+- **Wide-gamut colour (Display P3)** — the document stores sRGB. A P3 document would need a tag or a conversion in every export, every colour calculation (contrast, vision simulation, colour review) and every copy between documents, and a display path per OS that wgpu does not expose; most viewers of the output would see sRGB anyway. OKLCH is a way to pick sRGB colours, its picks past the gamut mapped into it (`app-dataflow.md`, *Colour picker*).
 - **Diamond gradients** — Figma-only; peniko has no such kind, so the model would need its own gradient type for it. The Figma import reads one as radial and says so.
-- **A CSS display format in the picker** — CSS colours are typed or pasted into any colour field; the value row shows Hex, RGB, HSL or HSB.
+- **A CSS display format in the picker** — CSS colours are typed or pasted into any colour field; the value row shows Hex, RGB, HSL, HSB or OKLCH.
 - **Setting one channel across layers that disagree** — over a *Mixed* row the value row is the text field, which sets the whole colour.
 - **Pattern fills (a layer or component tiled as a fill)** — niche outside illustration, a tiled image fill covers the common case, and CSS can only repeat an image.
 

@@ -11,8 +11,9 @@
 //! (§9.3), so a drag across the saturation plane is one undo step and the canvas
 //! updates live. The only state carried between frames is intent the document
 //! cannot express: which gradient stop is selected, the HSV it last wrote (RGB
-//! forgets hue at zero saturation and most of the saturation range near black), and
-//! a half-typed hex.
+//! forgets hue at zero saturation and most of the saturation range near black), the
+//! OKLCH it last wrote (the stored sRGB holds an out-of-gamut pick's chroma
+//! lowered), and a half-typed hex.
 //!
 //! **Two gestures the shared valve cannot see**, handled in
 //! [`MastikApp::pointer_slot`]: these controls are *position*-valued, so a colour
@@ -30,6 +31,7 @@ use eframe::egui::emath::GuiRounding as _;
 use mastik_core::Brush;
 use mastik_core::NodeId;
 use mastik_core::kurbo::Size;
+use mastik_core::oklch::{self, Oklch};
 use mastik_core::peniko::{Color, Extend};
 /// The open picker. Dropped when the target stops existing or the user closes it.
 pub struct Picker {
@@ -51,6 +53,15 @@ pub struct Picker {
     /// else — the hex field, another panel, undo — changes the key and falls back to
     /// deriving from the colour.
     intent: Option<(Hsv, [u8; 4])>,
+    /// The OKLCH the picker last wrote in the OKLCH format, and the 8-bit colour
+    /// it came to.
+    ///
+    /// The slot stores sRGB with an out-of-gamut pick's chroma lowered, so
+    /// L, C and H re-derived from it would hand the next hue drag the lowered
+    /// chroma and the colour would drift inward. Trusted while the slot holds
+    /// that colour, as [`Self::intent`] is; alpha is not in the key, so the
+    /// opacity slider keeps it.
+    lch: Option<(Oklch, [u8; 3])>,
     /// A hex field mid-edit. `None` when the field is showing the brush.
     pub(crate) hex: Option<String>,
     /// Where the window goes, and whether it has been put there yet.
@@ -87,6 +98,7 @@ impl Picker {
             slot,
             stop: 0,
             intent: None,
+            lch: None,
             hex: None,
             spawn,
             placed: false,
@@ -108,6 +120,7 @@ impl Picker {
             // A different slot holds a different colour; its key would rule the
             // intent out anyway, but dropping it does not rely on that.
             self.intent = None;
+            self.lch = None;
             self.browse = false;
             self.search.clear();
             self.scrolled = false;
@@ -151,12 +164,16 @@ const RECENT_COLOURS: usize = SWATCHES;
 /// The value row's spacing, and its format button's and opacity field's widths.
 const ROW_GAP: f32 = ui::CARD_COL_GAP;
 const CHOOSER_W: f32 = 52.0;
+/// What the format button needs beside its label: the label's 6pt inset, the
+/// chevron's 13pt and its 4pt inset, and 3pt between them. A label wider than
+/// `CHOOSER_W` leaves (OKLCH's) widens the button by what it needs.
+const CHOOSER_ROOM: f32 = 26.0;
 const PCT_W: f32 = 40.0;
 /// The value row's right inset, under a text field's 9 so the opacity sits nearer
 /// the edge and leaves the channels their room.
 const ROW_PAD_R: f32 = 6.0;
-/// The format menu's width, which holds `223 100 100` beside `HSB`.
-const MENU_W: f32 = 150.0;
+/// The format menu's width, which holds `100 .37 360` beside `OKLCH`.
+const MENU_W: f32 = 190.0;
 
 /// How the value row shows and takes the colour, a choice kept for the whole app
 /// (`Prefs::colour_format`).
@@ -166,10 +183,19 @@ pub(crate) enum Format {
     Rgb,
     Hsl,
     Hsb,
+    /// Lightness, chroma and hue in OKLCH; the plane and the hue strip are drawn
+    /// in it too.
+    Oklch,
 }
 
 impl Format {
-    pub(crate) const ALL: [Format; 4] = [Format::Hex, Format::Rgb, Format::Hsl, Format::Hsb];
+    pub(crate) const ALL: [Format; 5] = [
+        Format::Hex,
+        Format::Rgb,
+        Format::Hsl,
+        Format::Hsb,
+        Format::Oklch,
+    ];
 
     /// The name the preferences file stores.
     pub(crate) fn key(self) -> &'static str {
@@ -178,6 +204,7 @@ impl Format {
             Format::Rgb => "rgb",
             Format::Hsl => "hsl",
             Format::Hsb => "hsb",
+            Format::Oklch => "oklch",
         }
     }
 
@@ -195,6 +222,7 @@ impl Format {
             Format::Rgb => "RGB",
             Format::Hsl => "HSL",
             Format::Hsb => "HSB",
+            Format::Oklch => "OKLCH",
         }
     }
 
@@ -216,17 +244,41 @@ impl Format {
                 ("Saturation · 0–100", 100.0),
                 ("Brightness · 0–100", 100.0),
             ],
+            Format::Oklch => [
+                ("Lightness · 0–100", 100.0),
+                ("Chroma · 0–0.37", oklch::MAX_CHROMA),
+                ("Hue · 0–360", 360.0),
+            ],
         }
     }
 
-    /// `c` as this format's three numbers. HSB and HSL come from `hsv`, the
-    /// picker's remembered intent for `c`, so a grey keeps its hue.
-    fn values(self, c: Color, hsv: Hsv) -> [f64; 3] {
+    /// Whether channel `i` is OKLCH's chroma, the one field that is not whole.
+    fn is_chroma(self, i: usize) -> bool {
+        self == Format::Oklch && i == 1
+    }
+
+    /// Channel `i`'s value `v` as its field and menu row read it: a whole number,
+    /// or chroma to two places without its leading zero (`.19`), as CSS allows.
+    fn channel_text(self, i: usize, v: f64) -> String {
+        match self.is_chroma(i) {
+            true => {
+                let s = format!("{v:.2}");
+                s.strip_prefix('0').map_or(s.clone(), str::to_owned)
+            }
+            false => format!("{}", v.round()),
+        }
+    }
+
+    /// `c` as this format's three numbers. HSB and HSL come from `hsv`, and
+    /// OKLCH from `lch`, the picker's remembered intent for `c`, so a grey keeps
+    /// its hue.
+    fn values(self, c: Color, hsv: Hsv, lch: Oklch) -> [f64; 3] {
         let [h, s, third] = match self {
             Format::Hex | Format::Rgb => {
                 let k = c.components;
                 return [k[0], k[1], k[2]].map(|v| f64::from(v) * 255.0);
             }
+            Format::Oklch => return [lch.l * 100.0, lch.c, lch.h],
             Format::Hsb => [hsv.h, hsv.s, hsv.v],
             Format::Hsl => hsl_of(hsv),
         };
@@ -253,18 +305,21 @@ impl Format {
                 let [h, s, l] = set(hsl_of(hsv));
                 hsv_of_hsl(h, s, l, hsv.a)
             }
-            Format::Hex | Format::Rgb => hsv,
+            Format::Hex | Format::Rgb | Format::Oklch => hsv,
         }
     }
 
     /// The colour as the format's menu row reads it.
-    fn preview(self, c: Color, hsv: Hsv) -> String {
+    fn preview(self, c: Color, hsv: Hsv, lch: Oklch) -> String {
         match self {
             Format::Hex => hex_of(c),
-            _ => self
-                .values(c, hsv)
-                .map(|v| format!("{}", v.round()))
-                .join(" "),
+            _ => {
+                let v = self.values(c, hsv, lch);
+                (0..3)
+                    .map(|i| self.channel_text(i, v[i]))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
         }
     }
 }
@@ -1143,13 +1198,41 @@ impl MastikApp {
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
         pointer_takes_over(&resp);
+        // In OKLCH, chroma across and lightness up, at the remembered hue.
+        let lch = (self.format() == Format::Oklch).then(|| self.lch_of(current));
         let p = ui.painter();
-        ui::paint_sv_plane(p, rect, hsv.h);
+        let (x, y) = match lch {
+            Some(lch) => {
+                ui::paint_lch_plane(p, rect, lch.h);
+                ((lch.c / oklch::MAX_CHROMA).min(1.0) as f32, lch.l as f32)
+            }
+            None => {
+                ui::paint_sv_plane(p, rect, hsv.h);
+                (hsv.s, hsv.v)
+            }
+        };
         mask_corners(p, rect, 5.0, color::card());
         let handle = egui::pos2(
-            rect.min.x + rect.width() * hsv.s,
-            rect.min.y + rect.height() * (1.0 - hsv.v),
+            rect.min.x + rect.width() * x,
+            rect.min.y + rect.height() * (1.0 - y),
         );
+        // An ask past sRGB: the ring stays where it was asked, and a dot on the
+        // edge shows what is stored, joined to it along the chroma axis.
+        if lch.is_some_and(|l| !l.in_gamut()) {
+            let stored = Oklch::of(current).c / oklch::MAX_CHROMA;
+            let dot = egui::pos2(rect.min.x + rect.width() * stored as f32, handle.y);
+            let dotted = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(128));
+            p.extend(egui::Shape::dashed_line(
+                &[
+                    egui::pos2(handle.x - 6.5, handle.y),
+                    egui::pos2(dot.x + 3.0, dot.y),
+                ],
+                dotted,
+                2.0,
+                2.0,
+            ));
+            p.circle_filled(dot, 3.0, egui::Color32::WHITE);
+        }
         p.circle_stroke(handle, 5.5, egui::Stroke::new(1.5, egui::Color32::WHITE));
         p.circle_stroke(
             handle,
@@ -1159,17 +1242,42 @@ impl MastikApp {
         if let Some(pos) = ui::primary_press_pos(ui, &resp) {
             let s = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
             let v = 1.0 - ((pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
-            let next = Hsv::new(hsv.h, s, v, hsv.a);
-            self.write_stop_colour(&resp, node, slot, brush, index, next);
+            match lch {
+                Some(lch) => {
+                    let next = Oklch {
+                        l: f64::from(v),
+                        c: f64::from(s) * oklch::MAX_CHROMA,
+                        h: lch.h,
+                    };
+                    self.write_stop_lch(&resp, node, slot, brush, index, next, hsv.a);
+                }
+                None => {
+                    let next = Hsv::new(hsv.h, s, v, hsv.a);
+                    self.write_stop_colour(&resp, node, slot, brush, index, next);
+                }
+            }
         }
-        // Focused, the arrows walk the plane: saturation across, brightness up.
+        // Focused, the arrows walk the plane: saturation (chroma) across,
+        // brightness (lightness) up.
         let keys = ui::arrow_keys(ui, &resp, true, true);
         if keys.any() {
             let step = key_step(keys);
-            let s = (hsv.s + f32::from(keys.x) * step).clamp(0.0, 1.0);
-            let v = (hsv.v - f32::from(keys.y) * step).clamp(0.0, 1.0);
-            let next = Hsv::new(hsv.h, s, v, hsv.a);
-            self.key_stop_colour(resp.id, node, slot, brush, index, next);
+            let s = (x + f32::from(keys.x) * step).clamp(0.0, 1.0);
+            let v = (y - f32::from(keys.y) * step).clamp(0.0, 1.0);
+            match lch {
+                Some(lch) => {
+                    let next = Oklch {
+                        l: f64::from(v),
+                        c: f64::from(s) * oklch::MAX_CHROMA,
+                        h: lch.h,
+                    };
+                    self.key_stop_lch(resp.id, node, slot, brush, index, next, hsv.a);
+                }
+                None => {
+                    let next = Hsv::new(hsv.h, s, v, hsv.a);
+                    self.key_stop_colour(resp.id, node, slot, brush, index, next);
+                }
+            }
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -1184,6 +1292,42 @@ impl MastikApp {
         width: f32,
     ) {
         let hsv = self.hsv_of(current);
+        if self.format() == Format::Oklch {
+            let lch = self.lch_of(current);
+            let (rect, resp) = self.slider_track(ui, width);
+            let p = ui.painter();
+            // OKLCH's hues at one even lightness and chroma, so the strip shows
+            // hue alone; twelve segments, since OKLCH's wheel does not bend at
+            // sRGB's six corners.
+            let ramp: Vec<(f32, egui::Color32)> = (0..=12)
+                .map(|i| {
+                    let t = i as f32 / 12.0;
+                    (t, hue_strip_colour(f64::from(t) * 360.0))
+                })
+                .collect();
+            ui::paint_ramp(p, rect, &ramp);
+            mask_corners(p, rect, TRACK_H * 0.5, color::card());
+            let t = (lch.h / 360.0) as f32;
+            slider_knob(p, rect, t, hue_strip_colour(lch.h));
+            if let Some(pos) = ui::primary_press_pos(ui, &resp) {
+                let t = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
+                let next = Oklch {
+                    h: f64::from(t) * 360.0,
+                    ..lch
+                };
+                self.write_stop_lch(&resp, node, slot, brush, index, next, hsv.a);
+            }
+            let keys = ui::arrow_keys(ui, &resp, true, false);
+            if keys.any() {
+                let t = (t + f32::from(keys.x) * key_step(keys)).clamp(0.0, 1.0);
+                let next = Oklch {
+                    h: f64::from(t) * 360.0,
+                    ..lch
+                };
+                self.key_stop_lch(resp.id, node, slot, brush, index, next, hsv.a);
+            }
+            return;
+        }
         let (rect, resp) = self.slider_track(ui, width);
         let p = ui.painter();
         // Six segments round the hue wheel.
@@ -1471,16 +1615,23 @@ impl MastikApp {
         pct_w: f32,
     ) {
         let hsv = self.hsv_of(current);
-        let values = format.values(current, hsv);
+        let lch = self.lch_of(current);
+        let values = format.values(current, hsv, lch);
         let gaps = if pct_w > 0.0 { 3.0 } else { 2.0 };
         let w = ((ui.available_width() - pct_w - ROW_GAP * gaps) / 3.0).max(1.0);
         let hairline = egui::Stroke::new(1.0, theme::color::text_a(20));
+        // An OKLCH ask past sRGB: its chroma reads amber, and says what is stored.
+        let outside = (format == Format::Oklch && !lch.in_gamut()).then(|| {
+            let stored = format.channel_text(1, Oklch::of(current).c);
+            format!("Outside sRGB, so it is drawn and stored at C {stored}, the most this lightness and hue allow")
+        });
         let mut last = egui::Rect::NOTHING;
         for (i, (name, max)) in format.channels().into_iter().enumerate() {
             let mut v = values[i];
             let start = v;
             let whole = std::cell::Cell::new(None);
             let refused = std::cell::RefCell::new(None);
+            let warn = outside.as_deref().filter(|_| format.is_chroma(i));
             // A slot of fixed width, the number centred in it: a field sized by its
             // text would widen at some values and push its neighbours along.
             let (cell, _) =
@@ -1492,7 +1643,16 @@ impl MastikApp {
                     ui.spacing_mut().button_padding.x = 0.0;
                     if previewing {
                         ui.visuals_mut().override_text_color = Some(color::accent_200());
+                    } else if warn.is_some() {
+                        ui.visuals_mut().override_text_color = Some(color::warn());
                     }
+                    // A unit a point across a byte or a degree, half that across a
+                    // percentage, and chroma's 0–0.37 at the percentage's pace.
+                    let speed = match max {
+                        m if m > 100.0 => 1.0,
+                        m => m / 200.0,
+                    };
+                    let decimals = if format.is_chroma(i) { 2 } else { 0 };
                     // Read only when the edit ends, so a number half-typed is never
                     // mistaken for a colour on the way.
                     #[expect(
@@ -1501,8 +1661,9 @@ impl MastikApp {
                     )]
                     let field = egui::DragValue::new(&mut v)
                         .range(0.0..=max)
-                        .speed(ui::scrub(if max > 100.0 { 1.0 } else { 0.5 }))
-                        .max_decimals(0)
+                        .speed(ui::scrub(speed))
+                        .max_decimals(decimals)
+                        .custom_formatter(move |n, _| format.channel_text(i, n))
                         .update_while_editing(false);
                     ui::bare_drag_value_parsed(ui, field, |s| {
                         let number = crate::expr::eval(s).filter(|n| !hex_not_number(s, *n, max));
@@ -1519,7 +1680,7 @@ impl MastikApp {
                     })
                 })
                 .inner
-                .on_hover_text(name);
+                .on_hover_text(warn.unwrap_or(name));
             // In the middle of the gap before the field.
             let x = cell.left() - ROW_GAP / 2.0;
             ui.painter().vline(x, resp.rect.y_range(), hairline);
@@ -1529,7 +1690,7 @@ impl MastikApp {
             let next = if v == start {
                 brush.clone()
             } else {
-                self.channel_brush(brush, index, current, hsv, format, i, v as f32)
+                self.channel_brush(brush, index, current, (hsv, lch), format, i, v)
             };
             // Only an edit is remembered: the valve also commits the brush a bare
             // click left as it was.
@@ -1558,31 +1719,43 @@ impl MastikApp {
         }
     }
     /// `brush` with the selected stop's channel `i` of `format` set to `v`. An HSB or
-    /// HSL edit goes through the picker's remembered HSV, so dragging a channel to an
-    /// edge of the cube and back keeps the hue, as the plane does.
+    /// HSL edit goes through the picker's remembered HSV, and an OKLCH edit through
+    /// its remembered OKLCH, so dragging a channel to an edge and back keeps the
+    /// others, as the plane does.
     #[allow(clippy::too_many_arguments)]
     fn channel_brush(
         &mut self,
         brush: &Brush,
         index: usize,
         current: Color,
-        hsv: Hsv,
+        (hsv, lch): (Hsv, Oklch),
         format: Format,
         i: usize,
-        v: f32,
+        v: f64,
     ) -> Brush {
         let colour = match format {
             Format::Rgb => {
                 let mut k = current.components;
-                k[i] = (v / 255.0).clamp(0.0, 1.0);
+                k[i] = (v as f32 / 255.0).clamp(0.0, 1.0);
                 Color::new(k)
             }
             Format::Hsb | Format::Hsl => {
-                let next = format.with_channel(hsv, i, v);
+                let next = format.with_channel(hsv, i, v as f32);
                 if let Some(p) = &mut self.picker {
                     p.intent = Some((next, next.to_color().to_rgba8().to_u8_array()));
                 }
                 next.to_color()
+            }
+            Format::Oklch => {
+                let mut next = lch;
+                match i {
+                    0 => next.l = v / 100.0,
+                    1 => next.c = v,
+                    _ => next.h = v,
+                }
+                let c = next.to_color(current.components[3]);
+                self.hold_lch(next, c);
+                c
             }
             Format::Hex => current,
         };
@@ -1605,7 +1778,7 @@ impl MastikApp {
         was: Option<Color>,
     ) {
         let (rect, resp) = ui.allocate_exact_size(
-            egui::vec2(CHOOSER_W, ui::FIELD_TOGGLE.y),
+            egui::vec2(chooser_w(ui, format), ui::FIELD_TOGGLE.y),
             egui::Sense::click(),
         );
         let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
@@ -1636,12 +1809,13 @@ impl MastikApp {
         );
         let resp = resp.on_hover_text("Colour format");
         let hsv = self.hsv_of(current);
+        let lch = self.lch_of(current);
         let mut picked = None;
         egui::Popup::menu(&resp).gap(ui::MENU_GAP).show(|ui| {
             ui::popup_rows(ui);
             ui.set_width(MENU_W);
             for f in Format::ALL {
-                let preview = f.preview(current, hsv);
+                let preview = f.preview(current, hsv, lch);
                 let row = ui::MenuRow::new("", f.label())
                     .accel(Some(&preview))
                     .checked(f == format);
@@ -1878,6 +2052,21 @@ impl MastikApp {
     fn hsv_of(&self, c: Color) -> Hsv {
         hsv_for(self.picker.as_ref().and_then(|p| p.intent), c)
     }
+    /// OKLCH for a colour, honouring what the picker last wrote ([`Picker::lch`]).
+    fn lch_of(&self, c: Color) -> Oklch {
+        lch_for(self.picker.as_ref().and_then(|p| p.lch), c)
+    }
+    /// The value row's format, the app's one choice.
+    fn format(&self) -> Format {
+        Format::from_key(&self.prefs.colour_format)
+    }
+    /// Remember `lch` as the intent behind `c`, the colour it was mapped to.
+    fn hold_lch(&mut self, lch: Oklch, c: Color) {
+        if let Some(p) = &mut self.picker {
+            p.lch = Some((lch, rgb8(c)));
+            p.hex = None;
+        }
+    }
     /// Write one stop's colour, remembering the HSV that produced it.
     fn write_stop_colour(
         &mut self,
@@ -1894,14 +2083,43 @@ impl MastikApp {
             p.intent = Some((hsv, hsv.to_color().to_rgba8().to_u8_array()));
             p.hex = None;
         }
+        self.pointer_stop(resp, node, slot, brush, index, hsv.to_color());
+    }
+    /// [`Self::write_stop_colour`] from OKLCH at `alpha`, remembering the OKLCH
+    /// asked for rather than the mapped colour's.
+    #[allow(clippy::too_many_arguments)]
+    fn write_stop_lch(
+        &mut self,
+        resp: &egui::Response,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        lch: Oklch,
+        alpha: f32,
+    ) {
+        let c = lch.to_color(alpha);
+        self.hold_lch(lch, c);
+        self.pointer_stop(resp, node, slot, brush, index, c);
+    }
+    /// Write `colour` to stop `index` through [`Self::pointer_slot`].
+    fn pointer_stop(
+        &mut self,
+        resp: &egui::Response,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        colour: Color,
+    ) {
         let mut stops = paint::stops_of(brush);
         if index >= stops.len() {
             return;
         }
-        stops[index].1 = hsv.to_color();
+        stops[index].1 = colour;
         let next = paint::with_stops(brush, stops);
         if self.pointer_slot(resp, node, slot, next) {
-            self.remember_colour(hsv.to_color());
+            self.remember_colour(colour);
         }
     }
     /// [`Self::write_stop_colour`] for an arrow key on a focused plane or track:
@@ -1922,14 +2140,45 @@ impl MastikApp {
             p.intent = Some((hsv, hsv.to_color().to_rgba8().to_u8_array()));
             p.hex = None;
         }
+        self.key_stop(control, node, slot, brush, index, hsv.to_color());
+    }
+    /// [`Self::key_stop_colour`] from OKLCH at `alpha`.
+    #[allow(clippy::too_many_arguments)]
+    fn key_stop_lch(
+        &mut self,
+        control: egui::Id,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        lch: Oklch,
+        alpha: f32,
+    ) {
+        if self.gesture_cancelled {
+            return;
+        }
+        let c = lch.to_color(alpha);
+        self.hold_lch(lch, c);
+        self.key_stop(control, node, slot, brush, index, c);
+    }
+    /// Write `colour` to stop `index` as one step of a key run.
+    fn key_stop(
+        &mut self,
+        control: egui::Id,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        index: usize,
+        colour: Color,
+    ) {
         let mut stops = paint::stops_of(brush);
         if index >= stops.len() {
             return;
         }
-        stops[index].1 = hsv.to_color();
+        stops[index].1 = colour;
         self.write_slot_step(node, slot, paint::with_stops(brush, stops), "colour-keys");
         // Remembered once the run ends, not a shade a press (`picker_ui`).
-        self.key_colour = Some((control, hsv.to_color()));
+        self.key_colour = Some((control, colour));
     }
     /// Commit a slot edit driven by a pointer gesture: the **press** shows the colour
     /// at once, a drag keeps showing it, and the release commits.
@@ -2261,6 +2510,38 @@ fn hsv_for(intent: Option<(Hsv, [u8; 4])>, c: Color) -> Hsv {
         Some((hsv, key)) if key == c.to_rgba8().to_u8_array() => hsv,
         _ => Hsv::from_color(c),
     }
+}
+
+/// [`hsv_for`] for OKLCH: the remembered OKLCH while the slot holds the colour
+/// it mapped to, its alpha aside, otherwise derived from that colour.
+fn lch_for(intent: Option<(Oklch, [u8; 3])>, c: Color) -> Oklch {
+    match intent {
+        Some((lch, key)) if key == rgb8(c) => lch,
+        _ => Oklch::of(c),
+    }
+}
+
+/// The format button's width: [`CHOOSER_W`], or what `format`'s label needs
+/// beside the chevron when that is more.
+fn chooser_w(ui: &egui::Ui, format: Format) -> f32 {
+    let label = ui.painter().layout_no_wrap(
+        format.label().into(),
+        egui::FontId::proportional(ui::CONTROL_PT),
+        theme::color::text(),
+    );
+    CHOOSER_W.max(label.size().x + CHOOSER_ROOM)
+}
+
+/// `c`'s 8-bit red, green and blue.
+fn rgb8(c: Color) -> [u8; 3] {
+    let [r, g, b, _] = c.to_rgba8().to_u8_array();
+    [r, g, b]
+}
+
+/// The hue strip's colour at OKLCH hue `h`: one lightness and chroma for every
+/// hue, mid-light and moderate so most of the wheel fits sRGB.
+fn hue_strip_colour(h: f64) -> egui::Color32 {
+    color_to_egui(Oklch { l: 0.7, c: 0.15, h }.to_color(1.0))
 }
 
 #[cfg(test)]
@@ -3173,10 +3454,11 @@ mod format_tests {
         for f in Format::ALL {
             assert_eq!(Format::from_key(f.key()), f);
         }
-        assert_eq!(Format::from_key("oklch"), Format::Hex);
+        assert_eq!(Format::from_key("lab"), Format::Hex);
     }
 
-    /// HSL and HSV convert to each other, and the menu row reads the CSS numbers.
+    /// HSL and HSV convert to each other, and the menu row reads the CSS numbers,
+    /// OKLCH's chroma to two places without its leading zero.
     #[test]
     fn hsl_and_hsv_agree() {
         let hsv = Hsv::new(223.0 / 360.0, 0.5, 0.85, 1.0);
@@ -3184,10 +3466,13 @@ mod format_tests {
         let back = hsv_of_hsl(h, s, l, 1.0);
         assert!((back.s - hsv.s).abs() < 1e-5 && (back.v - hsv.v).abs() < 1e-5);
         let blue = Color::from_rgba8(109, 140, 217, 255);
-        let hsv = Hsv::from_color(blue);
-        assert_eq!(Format::Rgb.preview(blue, hsv), "109 140 217");
-        assert_eq!(Format::Hsl.preview(blue, hsv), "223 59 64");
-        assert_eq!(Format::Hsb.preview(blue, hsv), "223 50 85");
+        let (hsv, lch) = (Hsv::from_color(blue), Oklch::of(blue));
+        assert_eq!(Format::Rgb.preview(blue, hsv, lch), "109 140 217");
+        assert_eq!(Format::Hsl.preview(blue, hsv, lch), "223 59 64");
+        assert_eq!(Format::Hsb.preview(blue, hsv, lch), "223 50 85");
+        let red = Color::from_rgba8(255, 0, 0, 255);
+        let (hsv, lch) = (Hsv::from_color(red), Oklch::of(red));
+        assert_eq!(Format::Oklch.preview(red, hsv, lch), "63 .26 29");
     }
 }
 
@@ -4296,5 +4581,195 @@ mod text_colour_route_tests {
             "each step wrote a colour of its own: {seen:?}"
         );
         assert_eq!(app.session.history.undo_depth(), depth + 1, "one undo step");
+    }
+}
+
+#[cfg(test)]
+mod oklch_tests {
+    //! The OKLCH format's plane and hue strip, driven through real frames.
+    use super::*;
+    use crate::app::MastikApp;
+    use crate::theme;
+    use mastik_core::{Operation, Transaction};
+
+    const SCREEN: egui::Vec2 = egui::vec2(1200.0, 900.0);
+
+    /// One frame of the picker; the shapes it drew.
+    fn frame(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::epaint::ClippedShape> {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events,
+                ..Default::default()
+            },
+            |ui| app.picker_ui(ui.ctx()),
+        )
+        .shapes
+    }
+
+    /// A click at `at`, the pointer moved there a frame before.
+    fn click(ctx: &egui::Context, app: &mut MastikApp, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(ctx, app, vec![egui::Event::PointerMoved(at)]);
+        frame(ctx, app, vec![button(true)]);
+        frame(ctx, app, vec![button(false)]);
+        frame(ctx, app, Vec::new());
+    }
+
+    /// A rect with a white fill, selected, the picker open on it in OKLCH.
+    fn app() -> (egui::Context, MastikApp, NodeId) {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let mut ids = mastik_core::IdSource::new(0x0C1C);
+        let root = ids.mint();
+        let mut doc = mastik_core::Document::new(root);
+        let id = ids.mint();
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id,
+                parent: root,
+                index: 0,
+                kind: mastik_core::NodeKind::Rect {
+                    size: Size::new(100.0, 100.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetFills {
+                id,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: Brush::Solid(Color::WHITE).into(),
+                    visible: true,
+                }]),
+            },
+        ]))
+        .expect("a filled rect");
+        app.session.adopt_document(doc, None);
+        app.session.selection.set_one(id);
+        app.prefs.colour_format = Format::Oklch.key().into();
+        app.picker = Some(Picker::new(
+            id,
+            PaintSlot::Fill(0),
+            egui::pos2(400.0, 200.0),
+        ));
+        (ctx, app, id)
+    }
+
+    fn fill(app: &MastikApp, id: NodeId) -> Color {
+        match app.session.doc.get(id).unwrap().paint().fills[0]
+            .brush
+            .drawn()
+        {
+            Brush::Solid(c) => *c,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The OKLCH plane's rect: the one mesh of its grid's vertex count.
+    fn plane(shapes: &[egui::epaint::ClippedShape]) -> egui::Rect {
+        shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Mesh(m) if m.vertices.len() == 25 * 25 => Some(
+                    egui::Rect::from_points(&m.vertices.iter().map(|v| v.pos).collect::<Vec<_>>()),
+                ),
+                _ => None,
+            })
+            .expect("the OKLCH plane is drawn")
+    }
+
+    /// **A hue drag after a pick past the gamut's edge keeps the chroma asked
+    /// for**, not the lowered chroma the stored colour has: at a hue whose gamut
+    /// reaches further, the colour takes more chroma than the stored one held.
+    ///
+    /// flip: `hue_slider`'s OKLCH branch reading `Oklch::of(current)` rather than
+    /// `lch_of` → fails at "the asked chroma survives the hue change".
+    #[test]
+    fn a_hue_change_keeps_the_chroma_asked_for() {
+        let (ctx, mut app, id) = app();
+        frame(&ctx, &mut app, Vec::new());
+        let rect = plane(&frame(&ctx, &mut app, Vec::new()));
+        // White has no hue, so the plane is drawn at hue 0. Lightness 0.7,
+        // chroma 0.35: well past sRGB there.
+        let (l, c) = (0.7_f32, 0.35_f32);
+        let at = egui::pos2(
+            rect.left() + rect.width() * c / oklch::MAX_CHROMA as f32,
+            rect.top() + rect.height() * (1.0 - l),
+        );
+        click(&ctx, &mut app, at);
+        let first = Oklch::of(fill(&app, id));
+        assert!(
+            (first.l - 0.7).abs() < 0.03 && first.c < 0.3,
+            "the fixture: a pick past the edge, its chroma lowered: {first:?}"
+        );
+        // Where the gamut holds most chroma at that lightness, along the strip.
+        let h2 = (0..72)
+            .map(|i| f64::from(i) * 5.0)
+            .max_by(|a, b| oklch::max_chroma(0.7, *a).total_cmp(&oklch::max_chroma(0.7, *b)))
+            .unwrap();
+        assert!(
+            oklch::max_chroma(0.7, h2) > first.c + 0.03,
+            "the fixture: hue {h2} holds more chroma"
+        );
+        let strip_y = rect.bottom() + ui::POPOVER_SECTION_GAP + (TRACK_H + 6.0) / 2.0;
+        let strip_x = rect.left() + rect.width() * (h2 / 360.0) as f32;
+        click(&ctx, &mut app, egui::pos2(strip_x, strip_y));
+        let second = Oklch::of(fill(&app, id));
+        assert!(
+            (second.h - h2).abs() < 8.0,
+            "the fixture: the strip moved the hue: {second:?}"
+        );
+        assert!(
+            second.c > first.c + 0.02,
+            "the asked chroma survives the hue change: {first:?} → {second:?}"
+        );
+        assert!(
+            (second.l - 0.7).abs() < 0.03,
+            "and the lightness: {second:?}"
+        );
+    }
+
+    /// The format button keeps its width for the four older formats and widens
+    /// for OKLCH just enough that the label ends clear of the chevron.
+    ///
+    /// flip: `chooser_w` answering `CHOOSER_W` alone → fails at "clear of the
+    /// chevron".
+    #[test]
+    fn the_format_button_fits_oklch_beside_its_chevron() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            for f in [Format::Hex, Format::Rgb, Format::Hsl, Format::Hsb] {
+                assert_eq!(chooser_w(ui, f), CHOOSER_W, "{f:?}");
+            }
+            let width = |text: &str, font: egui::FontId| {
+                ui.painter()
+                    .layout_no_wrap(text.into(), font, theme::color::text())
+                    .size()
+                    .x
+            };
+            let chevron = width(icon::CARET_DOWN, theme::icon_font(ui::COMBO_CHEVRON_PT));
+            let label = width("OKLCH", egui::FontId::proportional(ui::CONTROL_PT));
+            // The label from 6pt in, the chevron right-aligned 4pt from the end.
+            let chevron_left = chooser_w(ui, Format::Oklch) - 4.0 - chevron;
+            assert!(
+                6.0 + label + 2.0 <= chevron_left,
+                "clear of the chevron: label to {} against {chevron_left}",
+                6.0 + label
+            );
+        });
     }
 }

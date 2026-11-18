@@ -7775,6 +7775,108 @@ pub fn paint_sv_plane(painter: &egui::Painter, rect: egui::Rect, hue: f32) {
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// The colour picker's OKLCH plane at `hue` (degrees): chroma from 0 at the
+/// left to [`mastik_core::oklch::MAX_CHROMA`] at the right, lightness from 1 at
+/// the top to 0 at the bottom. The sRGB gamut's edge is a line in the text
+/// colour, and past it the plane is darkened and hatched: those numbers exist,
+/// and this screen cannot show them. Under the hatching each point shows the
+/// colour a pick there is stored as, its chroma lowered into sRGB.
+pub fn paint_lch_plane(painter: &egui::Painter, rect: egui::Rect, hue: f64) {
+    use mastik_core::oklch::{self, Oklch};
+    // Cells, each way: fine enough that the mapped colours read smooth.
+    const N: u32 = 24;
+    let at = |i: u32, j: u32| {
+        let (tx, ty) = (i as f32 / N as f32, j as f32 / N as f32);
+        egui::pos2(
+            rect.left() + rect.width() * tx,
+            rect.top() + rect.height() * ty,
+        )
+    };
+    let mut mesh = egui::Mesh::default();
+    for j in 0..=N {
+        for i in 0..=N {
+            let lch = Oklch {
+                l: 1.0 - f64::from(j) / f64::from(N),
+                c: oklch::MAX_CHROMA * f64::from(i) / f64::from(N),
+                h: hue,
+            };
+            mesh.colored_vertex(at(i, j), color_to_egui(lch.to_color(1.0)));
+        }
+    }
+    for j in 0..N {
+        for i in 0..N {
+            let k = j * (N + 1) + i;
+            mesh.add_triangle(k, k + 1, k + N + 1);
+            mesh.add_triangle(k + 1, k + N + 1, k + N + 2);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    // The edge, sampled finer than the cells so its bend stays smooth.
+    const EDGE: u32 = 64;
+    let edge: Vec<egui::Pos2> = (0..=EDGE)
+        .map(|j| {
+            let ty = j as f32 / EDGE as f32;
+            let c = oklch::max_chroma(1.0 - f64::from(ty), hue);
+            egui::pos2(
+                rect.left() + rect.width() * (c / oklch::MAX_CHROMA) as f32,
+                rect.top() + rect.height() * ty,
+            )
+        })
+        .collect();
+    // Past the edge: a wash, one quad a sample, then the hatching over it.
+    let mut wash = egui::Mesh::default();
+    let shade = egui::Color32::from_black_alpha(158);
+    for w in edge.windows(2) {
+        let k = wash.vertices.len() as u32;
+        for p in [
+            w[0],
+            egui::pos2(rect.right(), w[0].y),
+            w[1],
+            egui::pos2(rect.right(), w[1].y),
+        ] {
+            wash.colored_vertex(p, shade);
+        }
+        wash.add_triangle(k, k + 1, k + 2);
+        wash.add_triangle(k + 1, k + 2, k + 3);
+    }
+    painter.add(egui::Shape::mesh(wash));
+    // Where the edge is at height `y`, between its samples.
+    let edge_x = |y: f32| {
+        let t = ((y - rect.top()) / rect.height()).clamp(0.0, 1.0) * EDGE as f32;
+        let (j, f) = ((t.floor() as usize).min(EDGE as usize - 1), t.fract());
+        edge[j].x + (edge[j + 1].x - edge[j].x) * f
+    };
+    // Lines at 45° every 6pt, each drawn in the runs that lie past the edge.
+    const PITCH: f32 = 6.0;
+    const STEP: f32 = 1.0;
+    let hatch = egui::Stroke::new(2.0, egui::Color32::from_white_alpha(26));
+    let clipped = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+    let mut x0 = rect.left() - rect.height();
+    while x0 < rect.right() {
+        let mut run: Vec<egui::Pos2> = Vec::new();
+        let mut y = rect.top();
+        while y <= rect.bottom() + STEP {
+            let p = egui::pos2(x0 + (y - rect.top()), y.min(rect.bottom()));
+            if p.x >= edge_x(p.y) && p.x <= rect.right() + STEP {
+                run.push(p);
+            } else if run.len() > 1 {
+                clipped.add(egui::Shape::line(std::mem::take(&mut run), hatch));
+            } else {
+                run.clear();
+            }
+            y += STEP;
+        }
+        if run.len() > 1 {
+            clipped.add(egui::Shape::line(run, hatch));
+        }
+        x0 += PITCH;
+    }
+    painter.add(egui::Shape::line(
+        edge,
+        egui::Stroke::new(1.0, theme::color::text_a(191)),
+    ));
+}
+
 /// Trim the corners of `rect` back to `radius` by painting the leftover area in
 /// `bg`: egui cannot round a vertex-coloured mesh, so the ramp and SV plane are
 /// drawn square and masked. Emitted as one `Mesh`, not filled polygons: a corner

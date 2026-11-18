@@ -95,7 +95,7 @@ Ends, centres and radii are dragged on the canvas, not in the picker (`tools.md`
 The stop bar follows the row; the selected stop (`Picker::stop`) is shared with the canvas's dots.
 From the keys: a stop the focus arrives on is selected, `←`/`→` move it and `Delete` removes it (not
 below two); `Enter` on the bar adds one halfway to the selected stop's next neighbour
-(`picker::keyed_stop`). The plane takes the four arrows (saturation, brightness) and the tracks
+(`picker::keyed_stop`). The plane takes the four arrows (saturation and brightness; chroma and lightness in OKLCH) and the tracks
 `←`/`→`. A key step commits at once, and a run of them folds into one undo step
 (`MastikApp::write_slot_step`, `EditorSession::commit_run`), as a nudge's does; a text layer's
 per-character colour too (`CharWrite::Step`). The run's colour joins the recent ones once the
@@ -108,17 +108,32 @@ does not take the selection back from a stop the pointer chose.
 opacity. On a gradient the opacity is the selected stop's alpha, the only door to it (the face has
 no alpha strip); the ramp's own opacity is the inspector's fill row.
 
-- **Formats** (`picker::Format`): Hex, RGB, HSL, HSB, one choice for the whole app
-  (`Prefs::colour_format`, a string key; an unknown key reads as Hex). The chooser
-  (`format_chooser`) is a 44pt button over an `egui::Popup::menu` whose rows show the current colour
-  in each format. The inspector's paint rows stay hex.
-- **Hex is a text field** (`colour_text_field`), buffered and committed on defocus. **RGB, HSL and
-  HSB are three scrub fields** (`channel_fields`: `DragValue`s through `ui::bare_drag_value_parsed`,
-  `update_while_editing(false)`), previewing through `valve_slot` like the panel's numbers, one undo
-  step per edit. HSB is the plane's own HSV and HSL is computed from it, both through the picker's
-  `intent` (`channel_brush`), so B to 0 and back keeps the hue. A whole colour typed or pasted into
-  one channel field sets the whole colour; a hash-less hex of six or eight digits is a colour
-  before it is a number, one of three or four only past the channel's max.
+- **Formats** (`picker::Format`): Hex, RGB, HSL, HSB, OKLCH (key `oklch`), one choice for the
+  whole app (`Prefs::colour_format`, a string key; an unknown key reads as Hex). The chooser
+  (`format_chooser`) is a button over an `egui::Popup::menu`, 190 wide, whose rows show the current
+  colour in each format. The button is 52pt for the four short labels and widens by just what
+  *OKLCH* needs beside its chevron (`chooser_w`, `CHOOSER_ROOM`), so the other formats keep their
+  fields' room. The inspector's paint rows stay hex.
+- **Hex is a text field** (`colour_text_field`), buffered and committed on defocus. **RGB, HSL,
+  HSB and OKLCH are three scrub fields** (`channel_fields`: `DragValue`s through
+  `ui::bare_drag_value_parsed`, `update_while_editing(false)`), previewing through `valve_slot` like
+  the panel's numbers, one undo step per edit. HSB is the plane's own HSV and HSL is computed from
+  it, both through the picker's `intent` (`channel_brush`), so B to 0 and back keeps the hue. A whole
+  colour typed or pasted into one channel field sets the whole colour; a hash-less hex of six or
+  eight digits is a colour before it is a number, one of three or four only past the channel's max.
+- **OKLCH** (`mastik_core::oklch`, the one copy of the OKLab maths, which `contrast::nearest` uses
+  too). The fields are L 0–100, C 0–0.37 (`oklch::MAX_CHROMA`, a little past sRGB's most, so the
+  edge lies inside) to two places without the leading zero (`.19`), H 0–360. The plane is chroma
+  across and lightness up at the current hue (`ui::paint_lch_plane`); the hue strip is every hue
+  at L 0.7, C 0.15. Storage stays sRGB: an ask past the gamut is mapped by CSS Color 4's method,
+  chroma lowered by bisection until clipping moves the colour less than ΔE OK 0.02
+  (`Oklch::to_srgb_mapped`), never by clipping channels, which shifts hue and lightness. Such an
+  ask keeps its ring where it was asked, with a dot on the edge for what is stored joined to it by
+  a dotted line, and the C field turns `color::warn` with a tooltip giving the chroma stored.
+- **The picker keeps the asked L, C and H** (`Picker::lch`), keyed by the stored colour's 8-bit
+  RGB without its alpha, as `intent` is: re-derived from the stored sRGB, an out-of-gamut ask
+  would hand the next hue drag the lowered chroma and the colour would drift inward. The opacity
+  slider leaves it standing; a retarget or a close drops it.
 - **Over a *Mixed* row** (`PaintSlot::SelectionAll`) a field format falls back to the text field,
   reading *Mixed*: layers that disagree have no one channel to show.
 
@@ -142,6 +157,8 @@ conversion to hex first.
 - It reads hex (`RGB`, `RGBA`, `RRGGBB`, `RRGGBBAA`, `#` optional), `rgb()`/`rgba()` and
   `hsl()`/`hsla()` in comma or space syntax with `/ alpha`, percentages, hue in deg/rad/grad/turn,
   and the CSS named colours plus `transparent`, in any case. Channels out of range clamp, as CSS does.
+- `oklch()` reads as CSS writes it, chroma as a number or a percentage (100% = 0.4); one outside
+  sRGB is mapped by lowering its chroma, as the picker's OKLCH format is.
 - Bytes go through `Color::from_rgba8`'s arithmetic, so a hex stores the float it always did.
 - `Typed::alpha` is `Some` only when the text spelled an alpha. A typed alpha sets the alpha; without
   one a paint keeps its own and a variable cell is opaque.

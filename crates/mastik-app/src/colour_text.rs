@@ -1,5 +1,6 @@
-//! A colour typed or pasted into a text field: hex, and CSS Color 4's sRGB forms
-//! (`rgb()`, `rgba()`, `hsl()`, `hsla()` in either syntax, and the named colours).
+//! A colour typed or pasted into a text field: hex, CSS Color 4's sRGB forms
+//! (`rgb()`, `rgba()`, `hsl()`, `hsla()` in either syntax, and the named colours),
+//! and `oklch()`, mapped into sRGB by lowering its chroma.
 //!
 //! One parser behind every colour field, so the picker, the inspector rows and the
 //! variable cells never disagree about what reads as a colour.
@@ -38,6 +39,16 @@ pub(crate) fn parse(s: &str) -> Option<Typed> {
     if let Some(args) = call(&s, &["hsla", "hsl"]) {
         let (c, alpha) = channels(args)?;
         let rgb = hsl_to_rgb(hue(c[0])?, percent(c[1])?, percent(c[2])?);
+        return Some(Typed { rgb, alpha });
+    }
+    if let Some(args) = call(&s, &["oklch"]) {
+        let (c, alpha) = channels(args)?;
+        let lch = mastik_core::oklch::Oklch {
+            l: f64::from(number_or_percent(c[0], 1.0)?.clamp(0.0, 1.0)),
+            c: f64::from(number_or_percent(c[1], 0.4)?.max(0.0)),
+            h: f64::from(hue(c[2])?) * 360.0,
+        };
+        let rgb = lch.to_srgb_mapped().map(|v| v as f32);
         return Some(Typed { rgb, alpha });
     }
     if s == "transparent" {
@@ -426,6 +437,39 @@ mod tests {
             bytes("hsl(-120 100% 50%)"),
             bytes("hsl(240 100% 50%)"),
             "a hue wraps"
+        );
+    }
+
+    /// `oklch()` reads CSS's numbers and percentages (chroma's 100% is 0.4), and
+    /// a colour past sRGB lands with its chroma lowered, not clipped.
+    ///
+    /// flip: the `oklch` arm using `to_srgb` clamped per channel → fails at
+    /// "mapped, not clipped".
+    #[test]
+    fn oklch_reads_as_css_writes_it() {
+        let near = |s: &str, want: [u8; 3]| {
+            let (got, _) = bytes(s).unwrap_or_else(|| panic!("{s} reads"));
+            assert!(
+                got.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 1),
+                "{s}: {got:?}"
+            );
+        };
+        near("oklch(62.8% 0.2577 29.23)", [255, 0, 0]);
+        near("OKLCH(0.628 64.4% 29.23deg)", [255, 0, 0]);
+        assert_eq!(
+            bytes("oklch(62.8% 0.2577 29.23 / 50%)").unwrap().1,
+            Some(128)
+        );
+        let far = mastik_core::oklch::Oklch {
+            l: 0.7,
+            c: 0.4,
+            h: 250.0,
+        };
+        let mapped = far.to_color(1.0).to_rgba8().to_u8_array();
+        assert_eq!(
+            bytes("oklch(70% 0.4 250)").unwrap().0,
+            [mapped[0], mapped[1], mapped[2]],
+            "mapped, not clipped"
         );
     }
 
