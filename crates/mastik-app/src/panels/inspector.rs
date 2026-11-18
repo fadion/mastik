@@ -6679,6 +6679,8 @@ impl MastikApp {
     /// One end's dropdown: its face `face`, `width` wide, its list every marker as
     /// its glyph pointing the way that end does and its name. `at_end` picks the
     /// end, which also keys the dropdown with `salt`. Answers the marker picked.
+    /// A long name is cut on the face, or the face grows past `width` and widens
+    /// the popover with it.
     fn end_combo(
         ui: &mut egui::Ui,
         salt: impl std::hash::Hash + std::fmt::Debug,
@@ -6688,18 +6690,24 @@ impl MastikApp {
         current: Marker,
     ) -> (egui::Response, Option<Marker>) {
         let mut chosen = current;
-        let resp = egui::ComboBox::from_id_salt((salt, at_end))
-            .icon(ui::combo_chevron)
-            .width(width)
-            .selected_text(face)
-            .show_ui(ui, |ui| {
-                ui::menu_rows(ui);
-                for m in Marker::ALL {
-                    let row = ui::glyph_and_text(end_glyph(m, at_end), m.label());
-                    ui.selectable_value(&mut chosen, m, row);
-                }
+        let h = ui.spacing().interact_size.y;
+        let resp = ui
+            .allocate_ui(egui::vec2(width, h), |ui| {
+                egui::ComboBox::from_id_salt((salt, at_end))
+                    .icon(ui::combo_chevron)
+                    .width(width)
+                    .truncate()
+                    .selected_text(face)
+                    .show_ui(ui, |ui| {
+                        ui::menu_rows(ui);
+                        for m in Marker::ALL {
+                            let row = ui::glyph_and_text(end_glyph(m, at_end), m.label());
+                            ui.selectable_value(&mut chosen, m, row);
+                        }
+                    })
+                    .response
             })
-            .response;
+            .inner;
         (resp, (chosen != current).then_some(chosen))
     }
 
@@ -14158,6 +14166,34 @@ mod stroke_row_tests {
             "these controls painted {fixed:?} instead of 28 — the combos sat off the \
              fields' baseline"
         );
+    }
+
+    /// An Ends dropdown keeps its width under a name longer than it: *Open arrow* is cut.
+    /// flip: `end_combo` without `.truncate()` → fails at "the face kept its width".
+    #[test]
+    fn an_ends_dropdown_cuts_a_long_name_and_keeps_its_width() {
+        const W: f32 = 60.0;
+        let ctx = context();
+        let mut faces = Vec::new();
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            ui.set_max_width(268.0);
+            ui.horizontal(|ui| {
+                for at_end in [false, true] {
+                    let m = Marker::OpenArrow;
+                    let face = ui::glyph_and_text(end_glyph(m, at_end), m.label());
+                    let (resp, _) = MastikApp::end_combo(ui, "probe-ends", at_end, W, face, m);
+                    faces.push(resp.rect);
+                }
+            });
+        });
+        assert_eq!(faces.len(), 2, "both ends drew");
+        for r in faces {
+            assert!(
+                r.width() <= W + 0.5,
+                "the face kept its width: {} against {W}",
+                r.width()
+            );
+        }
     }
 
     /// On an open shape a click on the position dropdown opens nothing; on a closed
