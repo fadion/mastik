@@ -406,8 +406,8 @@ pub fn raster_opts(
 /// `scale` capped so a `w`×`h` box fits the format's own side limit, which for
 /// WebP is below the rasterizer's. Half a pixel short of the cap, so `ceil` of
 /// the product cannot land one past it; trim and square padding only shrink or
-/// reach the longer side.
-fn format_capped(scale: f64, w: f64, h: f64, format: ExportFormat) -> f64 {
+/// reach the longer side. Public for the CLI's one-off raster exports.
+pub fn format_capped(scale: f64, w: f64, h: f64, format: ExportFormat) -> f64 {
     match format {
         ExportFormat::Webp => scale.min((f64::from(crate::webp::MAX_SIDE) - 0.5) / w.max(h)),
         _ => scale,

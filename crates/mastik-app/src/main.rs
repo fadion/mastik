@@ -5,13 +5,14 @@
 //!
 //! ```text
 //! mastik [gui]                    launch the GUI shell (default)
-//! mastik export <file> [--svg|--pdf|--png|--json|--html|--react|--vue|--penpot|--sketch]
-//!            [-o out]
+//! mastik export <file> [--svg|--pdf|--png|--jpeg|--webp|--json|--html|--react|--vue
+//!            |--penpot|--sketch] [-o out]
 //!            [--outlines] [--frames] [--scale <n> | --width <px> | --height <px>]
-//!            [--page <name|n>]
-//!                                render a page with no GPU and no window, by
-//!                                default the first that is not a draft;
-//!                                the three sizes are --png only, and one at a time;
+//!            [--quality <1-100>] [--page <name|n>] [--layer <name|id>]...
+//!                                render a page, or some of its layers, with no
+//!                                GPU and no window, by default the first page
+//!                                that is not a draft; the three sizes are the
+//!                                rasters' only, and one at a time;
 //!                                --outlines sets an SVG's or a PDF's text as
 //!                                paths; --pdf --frames writes a page per
 //!                                top-level frame;
@@ -192,22 +193,8 @@ enum Command {
     Gui { open: Option<std::path::PathBuf> },
     /// Host documents with no window, behind the MCP endpoint (§8.2).
     Serve,
-    Export {
-        file: String,
-        format: ExportFormat,
-        out: Option<String>,
-        /// How big the raster comes out — `--scale 2`, `--width 512`, `--height 512`.
-        ///
-        /// Not an `Option`: the parser refuses all three for the formats that cannot
-        /// use one, so `Times(1.0)` here means "unscaled", never "unasked".
-        scale: ExportScale,
-        /// `--page`: a page's number from 1, or its exact name.
-        page: Option<String>,
-        /// `--outlines`: an SVG's or a PDF's text as glyph outlines.
-        text: ExportText,
-        /// `--sizes 16,32,48`: an icon file's sizes, empty for its format's set.
-        sizes: Vec<u32>,
-    },
+    /// A one-off export of a page, or of some of its layers, in one format.
+    Export(OneOff),
     /// Run the document's own export settings (§7) — every layer that carries any,
     /// at the formats and sizes the file says, into a folder.
     ///
@@ -262,6 +249,29 @@ enum Command {
     },
 }
 
+/// `mastik export <file> [format] …`: one file of one format.
+#[derive(Debug, PartialEq)]
+struct OneOff {
+    file: String,
+    format: ExportFormat,
+    out: Option<String>,
+    /// How big the raster comes out — `--scale 2`, `--width 512`, `--height 512`.
+    ///
+    /// Not an `Option`: the parser refuses all three for the formats that cannot
+    /// use one, so `Times(1.0)` here means "unscaled", never "unasked".
+    scale: ExportScale,
+    /// `--page`: a page's number from 1, or its exact name.
+    page: Option<String>,
+    /// `--outlines`: an SVG's or a PDF's text as glyph outlines.
+    text: ExportText,
+    /// `--sizes 16,32,48`: an icon file's sizes, empty for its format's set.
+    sizes: Vec<u32>,
+    /// `--layer`, each a layer's id or exact name; empty for the whole page.
+    layers: Vec<String>,
+    /// `--quality`: a JPEG's, 1 to 100; the export row's default without one.
+    quality: Option<u8>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExportFormat {
     Svg,
@@ -269,6 +279,9 @@ enum ExportFormat {
     /// `--pdf --frames`: one PDF, a page per visible top-level frame.
     PdfFrames,
     Png,
+    Jpeg,
+    /// Lossless, as the export row's WebP is.
+    Webp,
     /// A Windows icon of the page, one PNG entry per `--sizes` size.
     Ico,
     /// A macOS icon of the page, as `Ico` is.
@@ -292,6 +305,8 @@ impl ExportFormat {
             ExportFormat::Svg => "svg",
             ExportFormat::Pdf | ExportFormat::PdfFrames => "pdf",
             ExportFormat::Png => "png",
+            ExportFormat::Jpeg => "jpg",
+            ExportFormat::Webp => "webp",
             ExportFormat::Ico => "ico",
             ExportFormat::Icns => "icns",
             ExportFormat::Json => "json",
@@ -307,6 +322,34 @@ impl ExportFormat {
             self,
             ExportFormat::Json | ExportFormat::Penpot | ExportFormat::Sketch
         )
+    }
+
+    /// Whether the format is pixels, so a size flag applies.
+    fn raster(self) -> bool {
+        matches!(
+            self,
+            ExportFormat::Png | ExportFormat::Jpeg | ExportFormat::Webp
+        )
+    }
+
+    /// The flag that asks for the format, for refusals to name.
+    fn flag(self) -> &'static str {
+        match self {
+            ExportFormat::Svg => "--svg",
+            ExportFormat::Pdf => "--pdf",
+            ExportFormat::PdfFrames => "--pdf --frames",
+            ExportFormat::Png => "--png",
+            ExportFormat::Jpeg => "--jpeg",
+            ExportFormat::Webp => "--webp",
+            ExportFormat::Ico => "--ico",
+            ExportFormat::Icns => "--icns",
+            ExportFormat::Json => "--json",
+            ExportFormat::Html => "--html",
+            ExportFormat::React => "--react",
+            ExportFormat::Vue => "--vue",
+            ExportFormat::Penpot => "--penpot",
+            ExportFormat::Sketch => "--sketch",
+        }
     }
 }
 
@@ -604,9 +647,13 @@ fn parse_tokens(args: &[String]) -> Result<Command, String> {
 }
 
 fn parse_export(args: &[String]) -> Result<Command, String> {
-    const USAGE: &str = "usage: mastik export <file.mastik> [--svg|--pdf|--png|--json|--html|--react|--vue|--penpot|--sketch] \
-         [--outlines] [--scale <n>|--width <px>|--height <px>] [--page <name|n>] [-o <out>]\n       \
-         mastik export <file.mastik> --ico|--icns [--sizes 16,32,48] [--page <name|n>] [-o <out>]\n       \
+    const USAGE: &str = "usage: mastik export <file.mastik> [--svg|--pdf|--html|--react|--vue] [--outlines] \
+         [--page <name|n>] [--layer <name|id>]... [-o <out>]\n       \
+         mastik export <file.mastik> --png|--jpeg|--webp [--scale <n>|--width <px>|--height <px>] \
+         [--quality <1-100>] [--page <name|n>] [--layer <name|id>]... [-o <out>]\n       \
+         mastik export <file.mastik> --json|--penpot|--sketch [-o <out>]\n       \
+         mastik export <file.mastik> --ico|--icns [--sizes 16,32,48] [--page <name|n>] \
+         [--layer <name|id>] [-o <out>]\n       \
          mastik export <file.mastik> --pdf --frames [--outlines] [--page <name|n>] [-o <out>]\n       \
          mastik export <file.mastik> --all [--scale-override <2x|512w|512h>] [--folders] \
          [--page <name|n>] [-o <dir>]";
@@ -621,12 +668,34 @@ fn parse_export(args: &[String]) -> Result<Command, String> {
     let mut scale: Option<(&str, ExportScale)> = None;
     let mut over = None;
     let mut sizes: Option<Vec<u32>> = None;
+    let mut layers = Vec::new();
+    let mut quality = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--svg" => format = Some(ExportFormat::Svg),
             "--pdf" => format = Some(ExportFormat::Pdf),
             "--png" => format = Some(ExportFormat::Png),
+            "--jpeg" | "--jpg" => format = Some(ExportFormat::Jpeg),
+            "--webp" => format = Some(ExportFormat::Webp),
+            "--layer" => {
+                i += 1;
+                let value = args.get(i).filter(|v| !v.starts_with('-'));
+                layers.push(
+                    value
+                        .ok_or_else(|| format!("--layer wants a layer's name or id\n{USAGE}"))?
+                        .clone(),
+                );
+            }
+            "--quality" => {
+                i += 1;
+                quality = Some(
+                    args.get(i)
+                        .and_then(|v| v.parse::<u8>().ok())
+                        .filter(|q| (1..=100).contains(q))
+                        .ok_or_else(|| format!("--quality wants a number, 1 to 100\n{USAGE}"))?,
+                );
+            }
             "--ico" => format = Some(ExportFormat::Ico),
             "--icns" => format = Some(ExportFormat::Icns),
             "--sizes" => {
@@ -753,6 +822,11 @@ fn parse_export(args: &[String]) -> Result<Command, String> {
                 "--all takes each file's text setting from the document\n{USAGE}"
             ));
         }
+        if !layers.is_empty() || quality.is_some() {
+            return Err(format!(
+                "--all runs every layer's own settings, so it takes no --layer or --quality\n{USAGE}"
+            ));
+        }
         return Ok(Command::ExportAll {
             file: file.ok_or_else(|| USAGE.to_string())?,
             out,
@@ -774,16 +848,34 @@ fn parse_export(args: &[String]) -> Result<Command, String> {
     // Refused rather than ignored, as everywhere in this parser. The message names
     // the rule, since the commonest way to hit it is typing no format at all.
     if let Some((had, _)) = scale
-        && format != ExportFormat::Png
+        && !format.raster()
     {
         return Err(format!(
-            "{had} is a raster size, so it applies only to --png\n{USAGE}"
+            "{had} is a raster size, so it applies only to --png, --jpeg and --webp\n{USAGE}"
         ));
+    }
+    if quality.is_some() && format != ExportFormat::Jpeg {
+        return Err(format!("--quality applies only to --jpeg\n{USAGE}"));
     }
     if page.is_some() && format.whole_document() {
         return Err(format!(
             "--{} writes every page, so it takes no --page\n{USAGE}",
             format.extension()
+        ));
+    }
+    // A document format writes every layer, and a frames PDF a page per frame.
+    if !layers.is_empty() && (format.whole_document() || format == ExportFormat::PdfFrames) {
+        return Err(format!(
+            "{} writes whole pages, so it takes no --layer\n{USAGE}",
+            format.flag()
+        ));
+    }
+    // An icon file is one layer drawn at several sizes.
+    if layers.len() > 1 && icon.is_some() {
+        return Err(format!(
+            "{} draws one layer; got {}\n{USAGE}",
+            format.flag(),
+            layers.len()
         ));
     }
     if outlines
@@ -796,7 +888,7 @@ fn parse_export(args: &[String]) -> Result<Command, String> {
             "--outlines applies only to --svg and --pdf\n{USAGE}"
         ));
     }
-    Ok(Command::Export {
+    Ok(Command::Export(OneOff {
         file: file.ok_or_else(|| USAGE.to_string())?,
         format,
         out,
@@ -807,7 +899,9 @@ fn parse_export(args: &[String]) -> Result<Command, String> {
             false => ExportText::Live,
         },
         sizes,
-    })
+        layers,
+        quality,
+    }))
 }
 
 /// The value of `--scale`, `--width` or `--height`, shared by `export` and
@@ -904,23 +998,7 @@ fn main() {
                 Err(why.to_owned())
             }
         },
-        Ok(Command::Export {
-            file,
-            format,
-            out,
-            scale,
-            page,
-            text,
-            sizes,
-        }) => run_export(
-            &file,
-            format,
-            out.as_deref(),
-            scale,
-            page.as_deref(),
-            text,
-            &sizes,
-        ),
+        Ok(Command::Export(e)) => run_export(&e),
         Ok(Command::ExportAll {
             file,
             out,
@@ -1002,10 +1080,13 @@ fn main() {
 /// `>=` rather than `==` is deliberate and currently indistinguishable: `px`
 /// takes `ceil` of the same positive product, so `got` never exceeds `asked`.
 /// The `>=` form survives a change to `px`'s clamp, and no test can tell the two apart.
+///
+/// `limit` is the side the format holds: `png::MAX_RASTER_SIDE`, or WebP's less.
 fn clamp_note(
     view: mastik_core::kurbo::Rect,
     scale: ExportScale,
     got: (u32, u32),
+    limit: u32,
 ) -> Option<String> {
     let w = view.width().max(1.0);
     let h = view.height().max(1.0);
@@ -1017,7 +1098,7 @@ fn clamp_note(
     Some(format!(
         "{} wants {asked_w:.0} × {asked_h:.0} px, past the {} limit — wrote {} × {} ({:.3}×)",
         scale.label(),
-        mastik_export::png::MAX_RASTER_SIDE,
+        limit,
         got.0,
         got.1,
         f64::from(got.0) / w,
@@ -1050,6 +1131,64 @@ fn chosen_page(
             .collect();
         format!("no page {asked:?}; the pages are {}", names.join(", "))
     })
+}
+
+/// The layers `--layer` names, outermost and in document order: each by its id,
+/// or by its exact name on the page `--page` names, else on any page. A name
+/// two layers share is refused, listing their ids, and so are layers on two pages,
+/// whose coordinates would overlap in one file.
+fn chosen_layers(
+    doc: &mastik_core::Document,
+    asked: &[String],
+    page: Option<&str>,
+) -> Result<Vec<mastik_core::NodeId>, String> {
+    let pages: Vec<mastik_core::NodeId> = match page {
+        Some(_) => vec![chosen_page(doc, page)?],
+        None => doc.page_ids().collect(),
+    };
+    let mut found = Vec::new();
+    for a in asked {
+        if let Some(id) = mastik_core::NodeId::from_wire(a).filter(|i| doc.get(*i).is_some()) {
+            if doc.is_page(id) {
+                return Err(format!("{a} is a page; name it with --page"));
+            }
+            found.push(id);
+            continue;
+        }
+        let mut named = Vec::new();
+        let mut stack = pages.clone();
+        while let Some(id) = stack.pop() {
+            let Some(n) = doc.get(id) else { continue };
+            if !doc.is_page(id) && n.name() == a {
+                named.push(id);
+            }
+            stack.extend(n.children().iter().copied());
+        }
+        match named.as_slice() {
+            [] => {
+                let on = page.map(|p| format!(" on page {p:?}")).unwrap_or_default();
+                return Err(format!("no layer is named {a:?}{on}"));
+            }
+            [one] => found.push(*one),
+            several => {
+                let named = mastik_core::build::in_document_order(doc, several);
+                let ids: Vec<String> = named.iter().map(|i| i.to_wire()).collect();
+                return Err(format!(
+                    "{} layers are named {a:?}; name one by its id: {}",
+                    ids.len(),
+                    ids.join(", ")
+                ));
+            }
+        }
+    }
+    let mut on: Vec<_> = found.iter().filter_map(|i| doc.page_of(*i)).collect();
+    on.sort_unstable();
+    on.dedup();
+    if on.len() > 1 {
+        return Err("the layers are on different pages; export them one page at a time".into());
+    }
+    let outer = mastik_core::build::outermost(doc, &found);
+    Ok(mastik_core::build::in_document_order(doc, &outer))
 }
 
 /// `mastik diff`'s output and whether the documents differ. The text says nothing
@@ -1107,29 +1246,39 @@ fn run_tokens_export(file: &str, mode: Option<&str>, out: Option<&str>) -> Resul
 }
 
 /// Headless export (§7). Loads the document, resolves it, and writes one of the
-/// export formats of one page — no window, no GPU, no font service (text uses the
-/// bundled fallback, which keeps the output deterministic in CI).
+/// export formats of one page, or of the layers `--layer` names — no window, no
+/// GPU, no font service (text uses the bundled fallback, which keeps the output
+/// deterministic in CI).
 ///
-/// `scale` reaches only the PNG arm, and the output path is not decorated with it:
-/// `plan`'s `@2x` marker disambiguates a set of files, not this command's one output.
+/// `scale` reaches only the raster arms, and the output path is not decorated with
+/// it: `plan`'s `@2x` marker disambiguates a set of files, not this command's one
+/// output.
 ///
 /// `Width`/`Height` are resolved here, against the same box the render frames,
 /// since `--width 512` is a different multiplier on every document.
-fn run_export(
-    file: &str,
-    format: ExportFormat,
-    out: Option<&str>,
-    scale: ExportScale,
-    page: Option<&str>,
-    text: ExportText,
-    sizes: &[u32],
-) -> Result<(), String> {
+fn run_export(e: &OneOff) -> Result<(), String> {
     use mastik_core::Resolved;
 
+    let (file, format, scale, text) = (e.file.as_str(), e.format, e.scale, e.text);
     let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
     let mut doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
     let res = Resolved::settled(&mut doc);
-    let page = chosen_page(&doc, page)?;
+    let layers = chosen_layers(&doc, &e.layers, e.page.as_deref())?;
+    // The layers' page when they are asked for, so `--page` is only a scope.
+    let page = match layers.first().and_then(|l| doc.page_of(*l)) {
+        Some(page) => page,
+        None => chosen_page(&doc, e.page.as_deref())?,
+    };
+    // What the file draws: the layers, else the whole page.
+    let origins = match layers.is_empty() {
+        true => vec![page],
+        false => layers.clone(),
+    };
+    let subject = match layers.len() {
+        0 => "the page",
+        1 => "the layer",
+        _ => "the layers",
+    };
     // A drawing draws what the app's exports draw, frames' fills left out as
     // asked (`plan::for_export`); a document format carries the fill as data.
     let draws = matches!(
@@ -1138,15 +1287,19 @@ fn run_export(
             | ExportFormat::Pdf
             | ExportFormat::PdfFrames
             | ExportFormat::Png
+            | ExportFormat::Jpeg
+            | ExportFormat::Webp
             | ExportFormat::Ico
             | ExportFormat::Icns
     );
     let stripped = draws
-        .then(|| mastik_export::plan::for_export(&doc, &[page]))
+        .then(|| mastik_export::plan::for_export(&doc, &origins))
         .flatten();
     let (doc, res) = stripped.unwrap_or((doc, res));
 
-    let out_path = out
+    let out_path = e
+        .out
+        .as_deref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::Path::new(file).with_extension(format.extension()));
     // `-o` naming the document itself would replace it with the export.
@@ -1161,11 +1314,11 @@ fn run_export(
     let replaced = out_path.exists();
 
     let data = match format {
-        ExportFormat::Svg => mastik_export::svg::svg_with(&doc, &res, &[page], text)
+        ExportFormat::Svg => mastik_export::svg::svg_with(&doc, &res, &origins, text)
             .svg
             .into_bytes(),
         ExportFormat::Pdf => {
-            let export = mastik_export::pdf::pdf_of(&doc, &res, &[page], text)
+            let export = mastik_export::pdf::pdf_of(&doc, &res, &origins, text)
                 .ok_or_else(|| format!("cannot convert {file} to PDF"))?;
             if !export.approximated.is_empty() {
                 eprintln!("drawn differently: {}", export.approximated.join(", "));
@@ -1196,11 +1349,15 @@ fn run_export(
         }
         ExportFormat::Html | ExportFormat::React | ExportFormat::Vue => {
             use mastik_export::code::Target;
-            // The page holds the top-level layers, laid out as on the canvas.
-            let origins = doc
-                .get(page)
-                .map(|r| r.children().to_vec())
-                .unwrap_or_default();
+            // The layers asked for, else the page's top-level layers, laid out as
+            // on the canvas.
+            let origins = match layers.is_empty() {
+                true => doc
+                    .get(page)
+                    .map(|r| r.children().to_vec())
+                    .unwrap_or_default(),
+                false => layers.clone(),
+            };
             let target = match format {
                 ExportFormat::React => Target::React,
                 ExportFormat::Vue => Target::Vue,
@@ -1244,7 +1401,7 @@ fn run_export(
             }
             bytes
         }
-        ExportFormat::Png => {
+        ExportFormat::Png if layers.is_empty() => {
             // Frame the whole page at `scale` device pixels per world unit. The
             // 512-square is this command's answer to an empty page (`extent`
             // returns `None`; the SVG writer wants a different fallback).
@@ -1254,23 +1411,56 @@ fn run_export(
                 view,
                 scale.factor(view.width().max(1.0), view.height().max(1.0)),
             );
-            if let Some(note) = clamp_note(view, scale, vp.pixel_size) {
+            let limit = mastik_export::png::MAX_RASTER_SIDE;
+            if let Some(note) = clamp_note(view, scale, vp.pixel_size, limit) {
                 eprintln!("{note}");
             }
             mastik_export::png::png(&doc, &res, &vp, page)
         }
+        ExportFormat::Png | ExportFormat::Jpeg | ExportFormat::Webp => {
+            use mastik_core::ExportFormat as Spec;
+            let spec_format = match format {
+                ExportFormat::Jpeg => Spec::Jpeg,
+                ExportFormat::Webp => Spec::Webp,
+                _ => Spec::Png,
+            };
+            let mut spec = mastik_core::ExportSpec::new(spec_format, scale);
+            if let Some(q) = e.quality {
+                spec.quality = q;
+            }
+            let view = mastik_export::extent(&res, &origins)
+                .ok_or_else(|| format!("{file}: {subject} has nothing to draw"))?;
+            let (w, h) = (view.width().max(1.0), view.height().max(1.0));
+            let opts = mastik_export::png::RasterOpts {
+                scale: mastik_export::plan::format_capped(scale.factor(w, h), w, h, spec_format),
+                // What `plan::background_color` makes of a transparent JPEG row.
+                background: (format == ExportFormat::Jpeg)
+                    .then_some(mastik_core::peniko::Color::WHITE),
+                ..Default::default()
+            };
+            let r = mastik_export::png::raster_of(&doc, &res, &origins, &opts)
+                .ok_or_else(|| format!("{file}: {subject} has nothing to draw"))?;
+            let limit = match format {
+                ExportFormat::Webp => mastik_export::webp::MAX_SIDE,
+                _ => mastik_export::png::MAX_RASTER_SIDE,
+            };
+            if let Some(note) = clamp_note(view, scale, (r.width, r.height), limit) {
+                eprintln!("{note}");
+            }
+            mastik_export::plan::encode(&r, &spec)
+        }
         ExportFormat::Ico | ExportFormat::Icns => {
-            // The page's whole drawing, centred in a square at each size.
+            // The layer's or the page's whole drawing, centred in a square at each size.
             let format = match format {
                 ExportFormat::Ico => mastik_core::ExportFormat::Ico,
                 _ => mastik_core::ExportFormat::Icns,
             };
             let spec = mastik_core::ExportSpec {
-                sizes: sizes.to_vec(),
+                sizes: e.sizes.clone(),
                 ..mastik_core::ExportSpec::new(format, ExportScale::Times(1.0))
             };
-            let entries = mastik_export::icon::entries(&doc, &res, page, &spec)
-                .ok_or_else(|| format!("{file}: the page has nothing to draw"))?;
+            let entries = mastik_export::icon::entries(&doc, &res, origins[0], &spec)
+                .ok_or_else(|| format!("{file}: {subject} has nothing to draw"))?;
             mastik_export::icon::encode(format, &entries).unwrap_or_default()
         }
     };
@@ -1665,11 +1855,11 @@ mod tests {
         };
         assert!(matches!(
             export(&["--pdf", "--frames", "--outlines"]),
-            Ok(Command::Export {
+            Ok(Command::Export(OneOff {
                 format: ExportFormat::PdfFrames,
                 text: ExportText::Outlines,
                 ..
-            })
+            }))
         ));
         for refused in [
             &["--frames"][..],
@@ -1900,11 +2090,27 @@ mod tests {
         parse(&v)
     }
 
+    /// A one-off export of `file`'s page in `format` to `out`, as typed with no
+    /// other flag.
+    fn one_off(file: &str, format: ExportFormat, out: Option<&str>) -> OneOff {
+        OneOff {
+            file: file.into(),
+            format,
+            out: out.map(Into::into),
+            scale: ExportScale::Times(1.0),
+            page: None,
+            text: ExportText::Live,
+            sizes: Vec::new(),
+            layers: Vec::new(),
+            quality: None,
+        }
+    }
+
     #[test]
     fn export_defaults_to_svg() {
         assert_eq!(
             export(&["a.mastik"]).unwrap(),
-            Command::Export {
+            Command::Export(OneOff {
                 file: "a.mastik".into(),
                 format: ExportFormat::Svg,
                 out: None,
@@ -1912,7 +2118,9 @@ mod tests {
                 page: None,
                 text: ExportText::Live,
                 sizes: Vec::new(),
-            }
+                layers: Vec::new(),
+                quality: None,
+            })
         );
     }
 
@@ -1920,7 +2128,7 @@ mod tests {
     fn export_accepts_a_format_and_an_output_path() {
         assert_eq!(
             export(&["a.mastik", "--png", "-o", "out.png"]).unwrap(),
-            Command::Export {
+            Command::Export(OneOff {
                 file: "a.mastik".into(),
                 format: ExportFormat::Png,
                 out: Some("out.png".into()),
@@ -1928,11 +2136,13 @@ mod tests {
                 page: None,
                 text: ExportText::Live,
                 sizes: Vec::new(),
-            }
+                layers: Vec::new(),
+                quality: None,
+            })
         );
         assert_eq!(
             export(&["--json", "a.mastik"]).unwrap(),
-            Command::Export {
+            Command::Export(OneOff {
                 file: "a.mastik".into(),
                 format: ExportFormat::Json,
                 out: None,
@@ -1940,11 +2150,13 @@ mod tests {
                 page: None,
                 text: ExportText::Live,
                 sizes: Vec::new(),
-            }
+                layers: Vec::new(),
+                quality: None,
+            })
         );
         assert_eq!(
             export(&["a.mastik", "--html"]).unwrap(),
-            Command::Export {
+            Command::Export(OneOff {
                 file: "a.mastik".into(),
                 format: ExportFormat::Html,
                 out: None,
@@ -1952,7 +2164,9 @@ mod tests {
                 page: None,
                 text: ExportText::Live,
                 sizes: Vec::new(),
-            }
+                layers: Vec::new(),
+                quality: None,
+            })
         );
         for (flag, format) in [
             ("--react", ExportFormat::React),
@@ -1962,7 +2176,7 @@ mod tests {
         ] {
             assert_eq!(
                 export(&["a.mastik", flag]).unwrap(),
-                Command::Export {
+                Command::Export(OneOff {
                     file: "a.mastik".into(),
                     format,
                     out: None,
@@ -1970,7 +2184,9 @@ mod tests {
                     page: None,
                     text: ExportText::Live,
                     sizes: Vec::new(),
-                }
+                    layers: Vec::new(),
+                    quality: None,
+                })
             );
         }
     }
@@ -1982,11 +2198,11 @@ mod tests {
     fn an_icon_export_takes_sizes_its_file_can_hold() {
         assert!(matches!(
             export(&["a.mastik", "--ico", "--sizes", "16, 32,256"]),
-            Ok(Command::Export { format: ExportFormat::Ico, ref sizes, .. }) if sizes == &[16, 32, 256]
+            Ok(Command::Export(OneOff { format: ExportFormat::Ico, ref sizes, .. })) if sizes == &[16, 32, 256]
         ));
         assert!(matches!(
             export(&["a.mastik", "--icns"]),
-            Ok(Command::Export { format: ExportFormat::Icns, ref sizes, .. }) if sizes.is_empty()
+            Ok(Command::Export(OneOff { format: ExportFormat::Icns, ref sizes, .. })) if sizes.is_empty()
         ));
         for refused in [
             &["a.mastik", "--icns", "--sizes", "48"][..],
@@ -2018,7 +2234,7 @@ mod tests {
     fn outlines_apply_to_the_vector_formats_only() {
         assert_eq!(
             export(&["a.mastik", "--pdf", "--outlines"]).unwrap(),
-            Command::Export {
+            Command::Export(OneOff {
                 file: "a.mastik".into(),
                 format: ExportFormat::Pdf,
                 out: None,
@@ -2026,7 +2242,9 @@ mod tests {
                 page: None,
                 text: ExportText::Outlines,
                 sizes: Vec::new(),
-            }
+                layers: Vec::new(),
+                quality: None,
+            })
         );
         assert!(
             export(&["a.mastik", "--outlines"]).is_ok(),
@@ -2040,13 +2258,13 @@ mod tests {
         }
     }
 
-    /// `--scale` is a PNG argument and is refused wherever it cannot apply rather
-    /// than ignored, so a build script cannot think it asked for 2× and get 1×.
+    /// `--scale` is a raster argument and is refused wherever it cannot apply
+    /// rather than ignored, so a build script cannot think it asked for 2× and get 1×.
     #[test]
-    fn scale_is_a_png_argument_and_is_refused_everywhere_else() {
+    fn scale_is_a_raster_argument_and_is_refused_everywhere_else() {
         assert_eq!(
             export(&["a.mastik", "--png", "--scale", "2"]).unwrap(),
-            Command::Export {
+            Command::Export(OneOff {
                 file: "a.mastik".into(),
                 format: ExportFormat::Png,
                 out: None,
@@ -2054,12 +2272,14 @@ mod tests {
                 page: None,
                 text: ExportText::Live,
                 sizes: Vec::new(),
-            }
+                layers: Vec::new(),
+                quality: None,
+            })
         );
         // Fractional, because Figma's ladder starts at 0.5×.
         assert_eq!(
             export(&["a.mastik", "--png", "--scale", "0.5"]).unwrap(),
-            Command::Export {
+            Command::Export(OneOff {
                 file: "a.mastik".into(),
                 format: ExportFormat::Png,
                 out: None,
@@ -2067,7 +2287,9 @@ mod tests {
                 page: None,
                 text: ExportText::Live,
                 sizes: Vec::new(),
-            }
+                layers: Vec::new(),
+                quality: None,
+            })
         );
 
         // The ways it cannot apply; with no format typed the SVG default is inherited.
@@ -2079,7 +2301,16 @@ mod tests {
             vec!["a.mastik", "--height", "512"],
         ] {
             let err = export(&args).unwrap_err();
-            assert!(err.contains("applies only to --png"), "{args:?}: {err}");
+            assert!(
+                err.contains("applies only to --png, --jpeg and --webp"),
+                "{args:?}: {err}"
+            );
+        }
+        for raster in ["--jpeg", "--webp"] {
+            assert!(
+                export(&["a.mastik", raster, "--width", "512"]).is_ok(),
+                "{raster} takes a size"
+            );
         }
         // On `--all` the message names the flag that would have worked.
         let err = export(&["a.mastik", "--all", "--scale", "2"]).unwrap_err();
@@ -2111,7 +2342,7 @@ mod tests {
         let png = |args: &[&str], want: ExportScale| {
             assert_eq!(
                 export(args).unwrap(),
-                Command::Export {
+                Command::Export(OneOff {
                     file: "a.mastik".into(),
                     format: ExportFormat::Png,
                     out: None,
@@ -2119,7 +2350,9 @@ mod tests {
                     page: None,
                     text: ExportText::Live,
                     sizes: Vec::new(),
-                },
+                    layers: Vec::new(),
+                    quality: None,
+                }),
                 "{args:?}"
             );
         };
@@ -2203,7 +2436,7 @@ mod tests {
     #[test]
     fn export_rejects_missing_input_and_bad_flags() {
         assert!(export(&[]).is_err(), "no input file");
-        assert!(export(&["a.mastik", "--jpeg"]).is_err(), "unknown format");
+        assert!(export(&["a.mastik", "--gif"]).is_err(), "unknown format");
         assert!(export(&["a.mastik", "-o"]).is_err(), "-o without a value");
 
         // flip: the unconditional `args.get(i)` in the `-o` arm → the first fails;
@@ -2271,6 +2504,8 @@ mod tests {
             (ExportFormat::Pdf, "pdf"),
             (ExportFormat::PdfFrames, "frames.pdf"),
             (ExportFormat::Png, "png"),
+            (ExportFormat::Jpeg, "jpg"),
+            (ExportFormat::Webp, "webp"),
             (ExportFormat::Ico, "ico"),
             (ExportFormat::Icns, "icns"),
             (ExportFormat::Json, "json"),
@@ -2279,16 +2514,8 @@ mod tests {
             (ExportFormat::Vue, "zip"),
         ] {
             let out = dir.join(format!("out.{ext}"));
-            run_export(
-                &src,
-                format,
-                Some(&out.to_string_lossy()),
-                ExportScale::Times(1.0),
-                None,
-                ExportText::Live,
-                &[],
-            )
-            .expect("export succeeds");
+            run_export(&one_off(&src, format, Some(&out.to_string_lossy())))
+                .expect("export succeeds");
             let written = std::fs::read(&out).expect("output exists");
             assert!(!written.is_empty(), "{ext} export was empty");
         }
@@ -2299,6 +2526,182 @@ mod tests {
         // And the zip a zip.
         let zip = std::fs::read(dir.join("out.zip")).unwrap();
         assert_eq!(&zip[..4], b"PK\x03\x04", "zip signature");
+        // A JPEG a JPEG, and a WebP the page's pixels exactly, being lossless.
+        let jpg = std::fs::read(dir.join("out.jpg")).unwrap();
+        assert_eq!(&jpg[..3], b"\xff\xd8\xff", "JPEG signature");
+        let webp = image::load_from_memory(&std::fs::read(dir.join("out.webp")).unwrap())
+            .unwrap()
+            .to_rgba8();
+        let png = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(webp.dimensions(), png.dimensions());
+        assert!(webp == png, "the WebP draws what the PNG does");
+    }
+
+    /// `--layer` repeats, `--quality` is JPEG's, and a layer is refused where the
+    /// format writes whole pages; an icon takes one.
+    #[test]
+    fn export_takes_layers_and_a_quality() {
+        assert!(matches!(
+            export(&["a.mastik", "--png", "--layer", "Logo", "--layer", "5a:2"]),
+            Ok(Command::Export(OneOff { ref layers, .. })) if layers == &["Logo", "5a:2"]
+        ));
+        assert!(matches!(
+            export(&["a.mastik", "--jpeg", "--quality", "70"]),
+            Ok(Command::Export(OneOff {
+                format: ExportFormat::Jpeg,
+                quality: Some(70),
+                ..
+            }))
+        ));
+        assert!(export(&["a.mastik", "--ico", "--layer", "Logo"]).is_ok());
+        for refused in [
+            &["a.mastik", "--layer"][..],
+            &["a.mastik", "--layer", "--png"],
+            &["a.mastik", "--png", "--quality", "70"],
+            &["a.mastik", "--jpeg", "--quality", "0"],
+            &["a.mastik", "--jpeg", "--quality", "101"],
+            &["a.mastik", "--json", "--layer", "Logo"],
+            &["a.mastik", "--sketch", "--layer", "Logo"],
+            &["a.mastik", "--pdf", "--frames", "--layer", "Logo"],
+            &["a.mastik", "--ico", "--layer", "A", "--layer", "B"],
+            &["a.mastik", "--all", "--layer", "Logo"],
+        ] {
+            assert!(export(refused).is_err(), "{refused:?}");
+        }
+    }
+
+    /// A page holding Card (a 40 × 20 frame) and two 10 × 10 rects named Dot, one
+    /// inside Card and one beside it, on two pages: Card's on the first.
+    fn layered(dir: &std::path::Path) -> (String, [mastik_core::NodeId; 4]) {
+        use mastik_core::kurbo::{Affine, Size};
+        use mastik_core::{Document, IdSource, NodeKind, Operation, Transaction};
+        let mut ids = IdSource::new(0x1A7);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let (card, inner, outer, other) = (ids.mint(), ids.mint(), ids.mint(), ids.mint());
+        let page2 = ids.mint();
+        let rect = |id, parent, at: (f64, f64), name: &str| Operation::CreateNode {
+            id,
+            parent,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(10.0, 10.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate(at)),
+            name: Some(name.into()),
+        };
+        let black = |id| Operation::SetFills {
+            id,
+            fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                brush: mastik_core::peniko::Brush::Solid(mastik_core::peniko::Color::BLACK).into(),
+                visible: true,
+            }]),
+        };
+        let page = doc.first_page();
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: card,
+                parent: page,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(40.0, 20.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Card".into()),
+            },
+            rect(inner, card, (5.0, 5.0), "Dot"),
+            black(inner),
+            rect(outer, page, (100.0, 0.0), "Dot"),
+            black(outer),
+            Operation::AddPage {
+                id: page2,
+                index: 1,
+                name: "Two".into(),
+                ground: None,
+                draft: false,
+                modes: Vec::new(),
+            },
+            rect(other, page2, (0.0, 0.0), "Other"),
+            black(other),
+        ]))
+        .unwrap();
+        let file = dir.join("layered.mastik");
+        std::fs::write(&file, mastik_core::io::save(&doc).unwrap()).unwrap();
+        (
+            file.to_string_lossy().into_owned(),
+            [card, inner, outer, other],
+        )
+    }
+
+    /// `--layer` finds a layer by id or by a name only it has, scoped by `--page`;
+    /// a shared name, a page's id, a missing name and layers on two pages are
+    /// refused; a layer inside another asked for is drawn once, with it.
+    #[test]
+    fn layers_are_chosen_by_id_or_a_name_of_their_own() {
+        let dir = std::env::temp_dir().join(format!("mastik-layers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (file, [card, inner, outer, other]) = layered(&dir);
+        let doc = mastik_core::io::load(&std::fs::read(&file).unwrap()).unwrap();
+        let pick = |asked: &[&str], page: Option<&str>| {
+            let asked: Vec<String> = asked.iter().map(|a| a.to_string()).collect();
+            chosen_layers(&doc, &asked, page)
+        };
+        assert_eq!(pick(&["Card"], None), Ok(vec![card]));
+        assert_eq!(pick(&[&outer.to_wire()], None), Ok(vec![outer]));
+        assert_eq!(pick(&["Other"], Some("Two")), Ok(vec![other]));
+        assert_eq!(
+            pick(&["Card", &inner.to_wire()], None),
+            Ok(vec![card]),
+            "the dot inside Card is drawn with it"
+        );
+        let shared = pick(&["Dot"], None).unwrap_err();
+        assert!(shared.starts_with("2 layers are named \"Dot\""), "{shared}");
+        assert!(shared.contains(&inner.to_wire()) && shared.contains(&outer.to_wire()));
+        assert!(pick(&["Other"], Some("1")).is_err(), "Other is on page Two");
+        assert!(pick(&["Nothing"], None).is_err());
+        assert!(pick(&[&doc.first_page().to_wire()], None).is_err());
+        assert!(pick(&["Card", "Other"], None).is_err(), "two pages");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An export of one layer is framed on that layer alone, whatever else the
+    /// page holds, in every raster format.
+    ///
+    /// flip: `run_export` drawing the page whatever `--layer` asks → fails at
+    /// "framed on Card".
+    #[test]
+    fn a_layer_exports_on_its_own() {
+        let dir = std::env::temp_dir().join(format!("mastik-layer-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (file, _) = layered(&dir);
+        for format in [ExportFormat::Png, ExportFormat::Jpeg, ExportFormat::Webp] {
+            let out = dir.join(format!("card.{}", format.extension()));
+            run_export(&OneOff {
+                layers: vec!["Card".into()],
+                scale: ExportScale::Times(2.0),
+                ..one_off(&file, format, Some(&out.to_string_lossy()))
+            })
+            .unwrap();
+            let img = image::load_from_memory(&std::fs::read(&out).unwrap()).unwrap();
+            assert_eq!(
+                (img.width(), img.height()),
+                (80, 40),
+                "framed on Card, {format:?}"
+            );
+        }
+        let svg = dir.join("card.svg");
+        run_export(&OneOff {
+            layers: vec!["Card".into()],
+            ..one_off(&file, ExportFormat::Svg, Some(&svg.to_string_lossy()))
+        })
+        .unwrap();
+        let svg = std::fs::read_to_string(svg).unwrap();
+        assert!(svg.contains("viewBox=\"0 0 40 20\""), "{svg}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `mastik export --png` leaves out a frame's fill flagged out of exports, as
@@ -2358,15 +2761,11 @@ mod tests {
             let src = dir.join(format!("flag-{hidden}.mastik"));
             std::fs::write(&src, mastik_core::io::save(&doc).unwrap()).unwrap();
             let out = dir.join(format!("flag-{hidden}.png"));
-            run_export(
+            run_export(&one_off(
                 &src.to_string_lossy(),
                 ExportFormat::Png,
                 Some(&out.to_string_lossy()),
-                ExportScale::Times(1.0),
-                None,
-                ExportText::Live,
-                &[],
-            )
+            ))
             .expect("export succeeds");
             let png = image::load_from_memory(&std::fs::read(&out).unwrap())
                 .unwrap()
@@ -2434,15 +2833,10 @@ mod tests {
 
         let sides = |scale: ExportScale, name: &str| {
             let out = dir.join(name);
-            run_export(
-                &src,
-                ExportFormat::Png,
-                Some(&out.to_string_lossy()),
+            run_export(&OneOff {
                 scale,
-                None,
-                ExportText::Live,
-                &[],
-            )
+                ..one_off(&src, ExportFormat::Png, Some(&out.to_string_lossy()))
+            })
             .expect("export succeeds");
             let png = std::fs::read(&out).unwrap();
             // IHDR's width and height, big-endian, at a fixed offset in every PNG.
@@ -2478,13 +2872,17 @@ mod tests {
         let view = Rect::new(0.0, 0.0, 100.0, 50.0);
 
         // Served exactly: nothing to say.
-        assert_eq!(clamp_note(view, ExportScale::Times(2.0), (200, 100)), None);
+        let limit = mastik_export::png::MAX_RASTER_SIDE;
+        assert_eq!(
+            clamp_note(view, ExportScale::Times(2.0), (200, 100), limit),
+            None
+        );
 
         // Past `MAX_RASTER_SIDE` on the long side; checked against what
         // `viewport_at` actually returned.
         let big = ExportScale::Times(2000.0);
         let vp = mastik_export::png::viewport_at(view, big.factor(100.0, 50.0));
-        let note = clamp_note(view, big, vp.pixel_size).expect("2000× is past the limit");
+        let note = clamp_note(view, big, vp.pixel_size, limit).expect("2000× is past the limit");
         assert!(
             note.contains(&format!(
                 "past the {} limit",
@@ -2516,14 +2914,14 @@ mod tests {
         // spec and not the factor it resolved to.
         let wide = ExportScale::Width(200_000);
         let vp = mastik_export::png::viewport_at(view, wide.factor(100.0, 50.0));
-        let note = clamp_note(view, wide, vp.pixel_size).expect("200000w is past the limit");
+        let note = clamp_note(view, wide, vp.pixel_size, limit).expect("200000w is past the limit");
         assert!(note.starts_with("200000w "), "{note}");
 
         // Floored, not clamped: every side is lifted to a whole pixel, and silent.
         let vp = mastik_export::png::viewport_at(view, 0.01);
         assert_eq!(vp.pixel_size, (1, 1));
         assert_eq!(
-            clamp_note(view, ExportScale::Times(0.01), vp.pixel_size),
+            clamp_note(view, ExportScale::Times(0.01), vp.pixel_size, limit),
             None
         );
     }
@@ -2542,16 +2940,7 @@ mod tests {
         .unwrap();
         std::fs::write(&src, &saved).unwrap();
         let src = src.to_string_lossy().into_owned();
-        let err = run_export(
-            &src,
-            ExportFormat::Vue,
-            Some(&src),
-            ExportScale::Times(1.0),
-            None,
-            ExportText::Live,
-            &[],
-        )
-        .unwrap_err();
+        let err = run_export(&one_off(&src, ExportFormat::Vue, Some(&src))).unwrap_err();
         assert!(err.contains("refusing"), "{err}");
         assert_eq!(
             std::fs::read(&src).unwrap(),
@@ -2563,16 +2952,8 @@ mod tests {
 
     #[test]
     fn export_reports_a_missing_file_instead_of_panicking() {
-        let err = run_export(
-            "does-not-exist.mastik",
-            ExportFormat::Svg,
-            None,
-            ExportScale::Times(1.0),
-            None,
-            ExportText::Live,
-            &[],
-        )
-        .unwrap_err();
+        let err =
+            run_export(&one_off("does-not-exist.mastik", ExportFormat::Svg, None)).unwrap_err();
         assert!(err.contains("cannot read"), "{err}");
     }
 
