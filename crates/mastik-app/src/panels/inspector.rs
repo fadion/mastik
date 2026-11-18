@@ -6224,8 +6224,9 @@ impl MastikApp {
     ///
     /// The height goes in through `interact_size.y` at the full 28: a combo strokes
     /// its border inside its rect, where a `Frame` counts it outside
-    /// ([`ui::FIELD_BORDER_H`]). With `aligns` false (an open shape) the combo
-    /// opens onto a sentence instead.
+    /// ([`ui::FIELD_BORDER_H`]). With `aligns` false (an open shape) the combo is
+    /// disabled with its reason. It never opens onto other content: egui keeps a
+    /// popup's first size, so a one-line list there clipped the three rows later.
     fn align_combo(
         ui: &mut egui::Ui,
         salt: impl std::hash::Hash + std::fmt::Debug,
@@ -6241,38 +6242,31 @@ impl MastikApp {
                 Some(a) => align_label(a),
                 None => "Mixed",
             };
-            let combo = egui::ComboBox::from_id_salt(salt)
-                .icon(ui::combo_chevron)
-                .width(combo_w)
-                .selected_text(ui::glyph_and_text(icon::SQUARE_HALF, label));
-            if aligns {
-                combo.show_ui(ui, |ui| {
-                    ui::menu_rows(ui);
-                    for a in [
-                        StrokeAlign::Center,
-                        StrokeAlign::Inside,
-                        StrokeAlign::Outside,
-                    ] {
-                        if ui
-                            .selectable_label(shown == Some(a), align_label(a))
-                            .clicked()
-                        {
-                            picked = Some(a);
-                        }
-                    }
-                });
-            } else {
-                combo
+            ui::disable_unless(ui, aligns, |ui| {
+                egui::ComboBox::from_id_salt(salt)
+                    .icon(ui::combo_chevron)
+                    .width(combo_w)
+                    .selected_text(ui::glyph_and_text(icon::SQUARE_HALF, label))
                     .show_ui(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("Open shapes stroke centred")
-                                .size(ui::SMALL_PT)
-                                .color(theme::text::faint()),
-                        );
+                        ui::menu_rows(ui);
+                        for a in [
+                            StrokeAlign::Center,
+                            StrokeAlign::Inside,
+                            StrokeAlign::Outside,
+                        ] {
+                            if ui
+                                .selectable_label(shown == Some(a), align_label(a))
+                                .clicked()
+                            {
+                                picked = Some(a);
+                            }
+                        }
                     })
                     .response
-                    .on_hover_text("Only closed shapes have an inside");
-            }
+                    .on_disabled_hover_text(
+                        "Open shapes stroke centred: only closed shapes have an inside",
+                    );
+            });
         });
         picked
     }
@@ -14163,6 +14157,68 @@ mod stroke_row_tests {
             fixed.is_empty(),
             "these controls painted {fixed:?} instead of 28 — the combos sat off the \
              fields' baseline"
+        );
+    }
+
+    /// On an open shape a click on the position dropdown opens nothing; on a closed
+    /// one (the control) it opens the three rows.
+    /// flip: `align_combo`'s `disable_unless` gate always true → fails at "stays shut".
+    #[test]
+    fn an_open_shapes_position_dropdown_is_disabled() {
+        let rows_after_click = |aligns: bool| {
+            let ctx = context();
+            let at = egui::pos2(30.0, 14.0);
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            let mut texts = Vec::new();
+            for events in [
+                vec![],
+                vec![egui::Event::PointerMoved(at), press(true)],
+                vec![press(false)],
+                vec![],
+            ] {
+                let out = ctx.run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        MastikApp::align_combo(
+                            ui,
+                            "probe-open-align",
+                            aligns,
+                            120.0,
+                            Some(StrokeAlign::Center),
+                        );
+                    },
+                );
+                texts = out
+                    .shapes
+                    .iter()
+                    .filter_map(|cs| match &cs.shape {
+                        egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+            }
+            texts
+                .iter()
+                .filter(|t| *t == "Inside" || *t == "Outside")
+                .count()
+        };
+        assert_eq!(
+            rows_after_click(true),
+            2,
+            "control: a closed shape's list opens"
+        );
+        assert_eq!(
+            rows_after_click(false),
+            0,
+            "an open shape's dropdown stays shut"
         );
     }
 
