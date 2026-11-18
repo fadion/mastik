@@ -201,6 +201,8 @@ pub(crate) struct InFlight {
     pub(crate) offset_scrub: Option<f64>,
     /// The mirror flyout's copies as they were when its scrub began, likewise.
     pub(crate) mirror_copies_scrub: Option<u8>,
+    /// *Generate scale…*'s step count as it was when its scrub began, likewise.
+    pub(crate) scale_scrub: Option<usize>,
     /// The vision bar's condition and its severity as it was when the slider was
     /// pressed, likewise (`crate::vision`).
     pub(crate) vision_scrub: Option<(mastik_render::vision::Condition, f32)>,
@@ -344,6 +346,13 @@ mod in_flight_tests {
                 "mirror_copies_scrub",
                 InFlight {
                     mirror_copies_scrub: Some(6),
+                    ..Default::default()
+                },
+            ),
+            (
+                "scale_scrub",
+                InFlight {
+                    scale_scrub: Some(11),
                     ..Default::default()
                 },
             ),
@@ -3191,6 +3200,7 @@ impl MastikApp {
         self.in_flight.distort_scrub = None;
         self.in_flight.offset_scrub = None;
         self.in_flight.mirror_copies_scrub = None;
+        self.in_flight.scale_scrub = None;
         self.in_flight.vision_scrub = None;
         self.in_flight.track_drag = None;
         self.end_picker_lch();
@@ -3347,6 +3357,10 @@ impl MastikApp {
         // And the mirror flyout's copies.
         if let Some(copies) = self.in_flight.mirror_copies_scrub.take() {
             self.mirror_mut().copies = copies;
+        }
+        // And *Generate scale…*'s step count.
+        if let Some(steps) = self.in_flight.scale_scrub.take() {
+            self.restore_scale_steps(steps);
         }
         // And the vision bar's severity, never saved while the slider was held.
         if let Some((condition, from)) = self.in_flight.vision_scrub.take() {

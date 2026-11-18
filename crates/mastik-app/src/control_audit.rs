@@ -414,19 +414,7 @@ fn slider_rail(g: &Ground) -> bool {
     (g.rect.height() - ui::SLIDER_RAIL_H).abs() <= SLOP && g.stroke == Stroke::NONE
 }
 
-/// A `ui::value_field_metered`'s bar: the accent wash with no hairline, over
-/// the field's own ground.
-fn meter_bar(g: &Ground) -> bool {
-    g.fill == ui::meter_wash() && g.stroke == Stroke::NONE
-}
-
 const EXEMPT: &[Exempt] = &[
-    Exempt {
-        what: "meter bar",
-        why: "`ui::value_field_metered` washes how far its value has gone across the \
-              field, a value shown rather than a control's state",
-        is: meter_bar,
-    },
     Exempt {
         what: "slider rail",
         why: "`ui::slider` draws a hairline track with a knob riding on it, a value \

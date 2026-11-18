@@ -301,6 +301,9 @@ enum Act {
     Duplicate(VarId),
     /// *Generate scale…*'s *Generate*.
     Scale(ScaleAsk),
+    /// *Generate scale…*'s *Steps* is being scrubbed from this count, for a
+    /// right-click to put back.
+    ScaleScrub(usize),
     DuplicateMode(ModeId),
     /// A mode moved to an index of the list; index 0 makes it the default.
     MoveMode(ModeId, usize),
@@ -472,6 +475,14 @@ impl MastikApp {
         self.open_var_popover(var, Menu::Scale(var));
         if let Some(b) = self.var_browser.as_mut() {
             b.scale = None;
+        }
+    }
+
+    /// Put back the step count a right-click cancelled *Generate scale…*'s
+    /// *Steps* scrub of.
+    pub(crate) fn restore_scale_steps(&mut self, steps: usize) {
+        if let Some(d) = self.var_browser.as_mut().and_then(|b| b.scale.as_mut()) {
+            d.steps = steps;
         }
     }
 
@@ -2026,6 +2037,13 @@ impl MastikApp {
                     .name_step("Duplicate variable", icon::COPY_SIMPLE);
                 self.commit_edit(Transaction(vec![Operation::AddVariable { var: copy }]));
             }
+            // Armed after a right-click's cancel is answered, so the frame it
+            // lands on cannot re-arm it.
+            Act::ScaleScrub(before) => {
+                if !self.gesture_cancelled && self.in_flight.scale_scrub.is_none() {
+                    self.in_flight.scale_scrub = Some(before);
+                }
+            }
             Act::Scale(ask) => {
                 // `None` for a number or a kit's variable, whose rows offer it
                 // disabled.
@@ -2676,25 +2694,127 @@ impl MastikApp {
         let source = table.get(d.var).map_or("", |v| v.name.as_str());
         popover_title(ui, &format!("Generate a scale from {source}"));
         ui::menu_sep(ui);
+        // The body at a popover's section pitch, not the menu rows' 1pt.
+        let body = ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = ui::POPOVER_SECTION_GAP;
+            self.scale_body(ui, d, base, c, acts)
+        });
+        let drop = body.inner;
+        if drop.clicked() {
+            b.scale_steps = match b.scale_steps {
+                Some(_) => None,
+                None => Some(drop.rect),
+            };
+        } else if b.scale_steps.is_some() {
+            b.scale_steps = Some(drop.rect);
+        }
+        ui::menu_sep(ui);
+        // What generating would do, or why it cannot.
+        let keep = oklch::scale_subset(d.steps);
+        let steps: Vec<u16> = keep.iter().map(|i| oklch::SCALE_STEPS[*i]).collect();
+        let names = var::scale_names(table, c, &d.name, &steps);
+        let refusal = names
+            .iter()
+            .find_map(|(n, held)| match held {
+                Some(id) if table.kind_of(*id) != Some(VarKind::Color) => {
+                    Some(format!("{n} is not a colour variable."))
+                }
+                _ => var::name_refusal(table, c, n, *held),
+            })
+            .or_else(|| {
+                d.name
+                    .trim()
+                    .is_empty()
+                    .then(|| "A scale needs a name.".into())
+            });
+        let taken: Vec<&str> = names
+            .iter()
+            .filter(|(_, held)| held.is_some())
+            .map(|(n, _)| n.as_str())
+            .collect();
+        let into = table.collection(c).map_or("", |c| c.name.as_str());
+        let n = names.len();
+        let (says, ink, tip) = match (&refusal, taken.len()) {
+            (Some(why), _) => (why.clone(), color::warn(), why.clone()),
+            (None, 0) => (
+                format!("{n} variables"),
+                theme::text::faint(),
+                format!("Makes {n} colour variables in {into}"),
+            ),
+            (None, k) => (
+                format!("{n} variables · {k} updated"),
+                theme::text::faint(),
+                format!(
+                    "Makes {n} colour variables in {into}; updates {}",
+                    taken.join(", ")
+                ),
+            ),
+        };
+        let go = match refusal {
+            Some(_) => ui::FieldButton::Disabled,
+            None => ui::FieldButton::Primary,
+        };
+        let buttons = [("Cancel", ui::FieldButton::Off), ("Generate", go)];
+        match popover_footer(ui, &buttons, refusal.as_deref(), &says, ink, &tip) {
+            Some(0) => true,
+            Some(_) => {
+                acts.push(Act::Scale(ScaleAsk {
+                    var: d.var,
+                    name: d.name.trim().to_owned(),
+                    steps: d.steps,
+                    anchor: d.anchor,
+                    exact: d.exact,
+                    this_mode: d.this_mode,
+                }));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// *Generate scale…*'s body, between its title and its footer: the name and
+    /// *Steps*, *Source lands on*, the ramp and the switches. Answers the
+    /// *Source lands on* value's response, for its list to hang from.
+    fn scale_body(
+        &self,
+        ui: &mut egui::Ui,
+        d: &mut ScaleDraft,
+        base: Color,
+        c: CollectionId,
+        acts: &mut Vec<Act>,
+    ) -> egui::Response {
         let (first, last) = scale_span(&oklch::scale_subset(d.steps));
         popover_inset(ui, |ui| {
             ui::labelled(ui, &format!("Name · /{first} – /{last}"), |ui| {
-                let w = ui.available_width();
-                ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut d.name, "Name");
-                let all = oklch::SCALE_STEPS.len();
-                let lo = oklch::SCALE_MIN_STEPS;
-                let mut n = d.steps as f64;
-                ui::value_field_metered(
-                    ui,
-                    egui::vec2(w, ui::CONTROL_H),
-                    ui::Prefix::Text("Steps"),
-                    ui::Meter::Amount((d.steps - lo) as f32 / (all - lo) as f32),
-                    &mut n,
-                    ui::Scrub::whole(0.1).range(lo as f64..=all as f64),
-                    |v| v.custom_formatter(ui::number(0)),
-                )
-                .on_hover_text("How many steps: 10 drops 950, 9 and fewer spread over 100–900");
-                d.steps = (n.round() as usize).clamp(lo, all);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                    // The count takes a third: its prefix and two digits.
+                    let steps_w = (ui.available_width() - ui::CARD_COL_GAP) / 3.0;
+                    let name_w = ui.available_width() - ui::CARD_COL_GAP - steps_w;
+                    let size = |w: f32| egui::vec2(w, ui::CONTROL_H);
+                    ui::text_field(ui, size(name_w), &mut d.name, "Name");
+                    let all = oklch::SCALE_STEPS.len();
+                    let lo = oklch::SCALE_MIN_STEPS;
+                    // Before the field: `value_field` applies this frame's drag
+                    // inside the call that reports it.
+                    let before = d.steps;
+                    let mut n = d.steps as f64;
+                    let resp = ui::value_field(
+                        ui,
+                        size(steps_w),
+                        ui::Prefix::Text("Steps"),
+                        &mut n,
+                        ui::Scrub::whole(0.1).range(lo as f64..=all as f64),
+                        |v| v.custom_formatter(ui::number(0)),
+                    );
+                    if resp.dragged() {
+                        acts.push(Act::ScaleScrub(before));
+                    }
+                    resp.on_hover_text(
+                        "How many steps: 10 drop 950, 9 and fewer spread over 100–900",
+                    );
+                    d.steps = (n.round() as usize).clamp(lo, all);
+                });
             })
         });
         // Fewer steps may drop the one the source was on.
@@ -2733,87 +2853,52 @@ impl MastikApp {
             })
             .inner
         });
-        if drop.clicked() {
-            b.scale_steps = match b.scale_steps {
-                Some(_) => None,
-                None => Some(drop.rect),
-            };
-        } else if b.scale_steps.is_some() {
-            b.scale_steps = Some(drop.rect);
-        }
         let lit = keep.iter().position(|i| *i == d.anchor);
         popover_inset(ui, |ui| scale_ramp(ui, &ramp, lit));
         if popover_switch(ui, "Keep the source exact", d.exact).clicked() {
             d.exact = !d.exact;
         }
-        let collection = table.collection(c);
-        if collection.is_some_and(|c| c.modes.len() > 1)
+        let modes = self.session.doc.variables().collection(c);
+        if modes.is_some_and(|c| c.modes.len() > 1)
             && popover_switch(ui, "This mode only", d.this_mode).clicked()
         {
             d.this_mode = !d.this_mode;
         }
-        ui::menu_sep(ui);
-        // What generating would do, or why it cannot.
-        let steps: Vec<u16> = ramp.iter().map(|(s, _)| *s).collect();
-        let names = var::scale_names(table, c, &d.name, &steps);
-        let refusal = names
-            .iter()
-            .find_map(|(n, held)| match held {
-                Some(id) if table.kind_of(*id) != Some(VarKind::Color) => {
-                    Some(format!("{n} is not a colour variable."))
-                }
-                _ => var::name_refusal(table, c, n, *held),
-            })
-            .or_else(|| {
-                d.name
-                    .trim()
-                    .is_empty()
-                    .then(|| "A scale needs a name.".into())
-            });
-        let taken: Vec<&str> = names
-            .iter()
-            .filter(|(_, held)| held.is_some())
-            .map(|(n, _)| n.as_str())
-            .collect();
-        let into = collection.map_or("", |c| c.name.as_str());
-        let makes = format!("Makes {} colour variables in {into}.", names.len());
-        let says = match (&refusal, taken.len()) {
-            (Some(why), _) => why.clone(),
-            (None, 0) => makes,
-            (None, 1) => format!("{makes} 1 name exists and will be updated: {}.", taken[0]),
-            (None, n) => format!(
-                "{makes} {n} names exist and will be updated: {}.",
-                taken.join(", ")
-            ),
-        };
-        popover_line(
-            ui,
-            egui::RichText::new(says)
-                .size(ui::SMALL_PT)
-                .color(theme::text::faint()),
-        );
-        let go = match refusal {
-            Some(_) => ui::FieldButton::Disabled,
-            None => ui::FieldButton::Primary,
-        };
-        let buttons = [("Cancel", ui::FieldButton::Off), ("Generate", go)];
-        let why = refusal.as_deref().unwrap_or_default();
-        match crate::settings::footer_row_noted(ui, &buttons, Some(why).filter(|w| !w.is_empty())) {
-            Some(0) => true,
-            Some(_) => {
-                acts.push(Act::Scale(ScaleAsk {
-                    var: d.var,
-                    name: d.name.trim().to_owned(),
-                    steps: d.steps,
-                    anchor: d.anchor,
-                    exact: d.exact,
-                    this_mode: d.this_mode,
-                }));
-                true
-            }
-            None => false,
-        }
+        drop
     }
+}
+
+/// A variable popover's footer: `note` at the inset on the left, cut short of
+/// the buttons with `tip` its hover, and the buttons against the right as
+/// [`crate::settings::footer_row_noted`] lays them.
+fn popover_footer(
+    ui: &mut egui::Ui,
+    buttons: &[(&str, ui::FieldButton)],
+    why_not: Option<&str>,
+    note: &str,
+    ink: egui::Color32,
+    tip: &str,
+) -> Option<usize> {
+    let row = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(ui.available_width(), ui::CONTROL_H),
+    );
+    let pressed = crate::settings::footer_row_noted(ui, buttons, why_not);
+    let left = row.left() + POPOVER_INSET;
+    let right = row.right() - crate::settings::footer_row_w(ui, buttons) - POPOVER_INSET;
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        note.to_owned(),
+        egui::FontId::proportional(ui::CAPTION_PT),
+        ink,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - left).max(0.0));
+    let g = ui.fonts_mut(|f| f.layout_job(job));
+    let at = egui::pos2(left, row.center().y - g.size().y / 2.0);
+    let hit = egui::Rect::from_min_size(at, g.size());
+    ui.painter().galley(at, g, ink);
+    ui.interact(hit, ui.id().with("popover-foot-note"), egui::Sense::hover())
+        .on_hover_text(tip);
+    pressed
 }
 
 /// *Generate scale…*'s first choices for the colour variable `var`: its name
@@ -8213,7 +8298,10 @@ mod tests {
             last_text(&shapes, "100 · by its lightness").is_some(),
             "100"
         );
-        assert!(last_text(&shapes, "Makes 3 colour variables in Variables.").is_some());
+        assert!(
+            last_text(&shapes, "3 variables").is_some(),
+            "the foot counts three"
+        );
         assert!(last_text(&shapes, "50").is_none() && last_text(&shapes, "950").is_none());
         click_text(&ctx, &mut app, "100 · by its lightness", draw);
         let shapes = pass(&ctx, &mut app, vec![], draw);
@@ -8224,5 +8312,86 @@ mod tests {
         assert!(list.top() > value.y, "under the value: {list:?}");
         assert!(last_text(&shapes, "L 60%").is_some(), "500 is offered");
         assert!(last_text(&shapes, "L 97%").is_none(), "50 is not");
+    }
+
+    /// A right-click mid-scrub of *Generate scale…*'s *Steps* puts the count
+    /// back, as every scrubbed number does.
+    ///
+    /// flip: `cancel_gesture` not restoring `scale_scrub` → fails at "the
+    /// count is back".
+    #[test]
+    fn a_right_click_winds_a_steps_scrub_back() {
+        use crate::repeat::tests::pass;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        pass(&ctx, &mut app, Vec::new());
+        app.toggle_var_browser();
+        app.var_act(Act::NewVar(VarKind::Color));
+        let v = the_only_var(&app).id;
+        app.var_browser.as_mut().unwrap().edit = None;
+        app.open_scale(v);
+        let mut out = pass(&ctx, &mut app, Vec::new());
+        for _ in 0..10 {
+            out = pass(&ctx, &mut app, Vec::new());
+        }
+        let steps = |app: &MastikApp| {
+            app.var_browser
+                .as_ref()
+                .unwrap()
+                .scale
+                .as_ref()
+                .unwrap()
+                .steps
+        };
+        assert_eq!(steps(&app), 11, "the fixture starts at eleven");
+        let field = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Steps" => {
+                    Some(t.pos + egui::vec2(t.galley.size().x + 10.0, t.galley.size().y / 2.0))
+                }
+                _ => None,
+            })
+            .expect("the Steps field");
+        let button = |pressed, pos, button| egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        pass(&ctx, &mut app, vec![egui::Event::PointerMoved(field)]);
+        pass(
+            &ctx,
+            &mut app,
+            vec![button(true, field, egui::PointerButton::Primary)],
+        );
+        for dx in [10.0, 30.0, 60.0] {
+            let at = field - egui::vec2(dx, 0.0);
+            pass(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        }
+        assert!(steps(&app) < 11, "the drag scrubbed the count");
+        assert!(app.in_flight.scale_scrub.is_some(), "the scrub is armed");
+        let to = field - egui::vec2(60.0, 0.0);
+        pass(
+            &ctx,
+            &mut app,
+            vec![button(true, to, egui::PointerButton::Secondary)],
+        );
+        pass(
+            &ctx,
+            &mut app,
+            vec![button(false, to, egui::PointerButton::Secondary)],
+        );
+        pass(
+            &ctx,
+            &mut app,
+            vec![button(false, to, egui::PointerButton::Primary)],
+        );
+        for _ in 0..3 {
+            pass(&ctx, &mut app, Vec::new());
+        }
+        assert_eq!(steps(&app), 11, "the count is back");
     }
 }

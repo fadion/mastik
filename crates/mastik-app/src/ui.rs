@@ -5134,7 +5134,7 @@ const METER_ALPHA: u8 = 41;
 const METER_TICK_W: f32 = 1.0;
 
 /// The accent wash a metered field's bar and its zero tick share.
-pub fn meter_wash() -> egui::Color32 {
+fn meter_wash() -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(
         color::accent_400().r(),
         color::accent_400().g(),
