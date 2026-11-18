@@ -555,14 +555,20 @@ layers being asked about, and is one more kind of surface.
   its difference: `Harness::usage_is_running_total`), *Copy*, and on the last turn *Regenerate*
   (`icon::ARROW_CLOCKWISE`), which drops that turn and asks again. While nothing can be sent it is
   disabled, its tooltip the composer's reason, and a send that is not taken puts the turn back.
-- **The context line** sits right-aligned directly above the composer (`context_line`), in
-  `ui::CAPTION_PT` and `text::faint()`, `color::warn()` from 80% of the window: *Context 34% ·
-  68.0k of 200.0k* when the window is known, *Context 11.2k tokens* when not. Its tooltip says what
-  it counts. It shows nothing until the harness has reported, and not when the composer is
-  replaced by a reason. The reading lives on the live session (`Live::context`), so it goes when
-  the session ends (*New chat*, a harness change, a level change that cannot regrant) and a resumed
-  or reloaded thread shows nothing until its next call. A reading with no window keeps the window
-  already named. The placement is provisional.
+- **The context bar** (`context_bar`) is a `ui::level_bar` the composer's width, `CONTEXT_GAP`
+  (6) above it so the two read as one group, the panel's 10 plus `CONTEXT_DROP` (4) above the
+  bar. egui spaces an item from the next as it places it, so the gap is set before the bar is
+  drawn. It shows only a share, so only once a reading has a window: not before the first
+  reading, not during Claude Code's first turn (it names the window at the turn's end), and
+  never for Antigravity, OpenCode, DeepSeek or Cursor, which name none; a reason in the
+  composer's place takes it away too. Hidden, it takes no room. The numbers are its tooltip
+  (`context_reading`, the history row's pattern: strong head, plain line, dim line): *Context
+  35% full* / *90.4k of 258.4k tokens* / *What the agent's next step reads. A new chat starts
+  empty.*, the last line from `ui::LEVEL_RED` *Near the model's limit: the agent may start
+  forgetting the start of the chat. A new chat starts empty.* The reading lives on the live
+  session (`Live::context`), so it goes when the session ends (*New chat*, a harness change, a
+  level change that cannot regrant) and a resumed or reloaded thread shows no bar until its next
+  call. A reading with no window keeps the window already named.
 - **The composer** is a bare `ui::text_area` in a field ground with the scope and the chips above
   it and the hint and send button on its foot, all on one left edge; it grows to 15 lines, then
   scrolls.

@@ -719,7 +719,7 @@ impl MastikApp {
                 });
             return;
         }
-        context_line(ui, self.assistant.context());
+        context_bar(ui, self.assistant.context());
         let running = self.assistant.running();
         let stopping = self.assistant_stopping();
         let edit_id = egui::Id::new("assistant-composer");
@@ -1314,51 +1314,57 @@ fn tokens(n: u64) -> String {
     }
 }
 
-/// From this share of the window on, the context line wears `warn`.
-const CONTEXT_WARN: f64 = 0.8;
+/// The air between the context bar and the composer under it, closer than the
+/// panel's 10 so the two read as one group.
+const CONTEXT_GAP: f32 = 6.0;
 
-/// The context line's words and whether it warns: the share of the window
-/// when the harness names one, else the count alone.
-fn context_words(r: ai::Reading) -> (String, bool) {
-    match r.window.filter(|w| *w > 0) {
-        Some(w) => {
-            let share = r.used as f64 / w as f64;
-            let words = format!(
-                "Context {}% · {} of {}",
-                (share * 100.0).round() as u64,
-                tokens(r.used),
-                tokens(w)
-            );
-            (words, share >= CONTEXT_WARN)
-        }
-        None => (format!("Context {} tokens", tokens(r.used)), false),
-    }
+/// Added to the panel's 10 above the context bar, which sits that much nearer
+/// the composer than the thread.
+const CONTEXT_DROP: f32 = 4.0;
+
+/// The context bar's share and its tooltip's lines (the head, the counts, a
+/// faint note), or `None` while there is no share to show: no reading yet, or
+/// none with a window, which some harnesses name only at a turn's end and
+/// some never do.
+fn context_reading(r: Option<ai::Reading>) -> Option<(f32, String, String, String)> {
+    const AFTER: &str = "A new chat starts empty.";
+    let r = r?;
+    let w = r.window.filter(|w| *w > 0)?;
+    let share = r.used as f64 / w as f64;
+    let note = match share as f32 >= ui::LEVEL_RED {
+        true => format!(
+            "Near the model's limit: the agent may start forgetting the start of the chat. \
+             {AFTER}"
+        ),
+        false => format!("What the agent's next step reads. {AFTER}"),
+    };
+    Some((
+        share as f32,
+        format!("Context {}% full", (share * 100.0).round() as u64),
+        format!("{} of {} tokens", tokens(r.used), tokens(w)),
+        note,
+    ))
 }
 
-/// How full the conversation's context is, on its own line above the
-/// composer; nothing until the harness has said.
-fn context_line(ui: &mut egui::Ui, reading: Option<ai::Reading>) {
-    let Some(r) = reading else {
+/// How full the conversation's context is: a [`ui::level_bar`] the composer's
+/// width, [`CONTEXT_GAP`] above it, the numbers in its tooltip; nothing while
+/// [`context_reading`] has nothing to show.
+fn context_bar(ui: &mut egui::Ui, reading: Option<ai::Reading>) {
+    let Some((share, head, counts, note)) = context_reading(reading) else {
         return;
     };
-    let (words, warn) = context_words(r);
-    let ink = match warn {
-        true => color::warn(),
-        false => theme::text::faint(),
-    };
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.label(egui::RichText::new(words).size(ui::CAPTION_PT).color(ink))
-            .on_hover_text(match r.window {
-                Some(_) => {
-                    "What the agent's next step reads: the conversation so far, out of \
-                            the most its model takes. Start a new chat to begin again from empty."
-                }
-                None => {
-                    "What the agent's next step reads: the conversation so far. Its agent \
-                         does not say how much its model takes."
-                }
-            });
+    ui.add_space(CONTEXT_DROP);
+    // egui spaces an item from the next as it places it, so the gap is set
+    // before the bar, not after.
+    let panel_gap = ui.spacing().item_spacing.y;
+    ui.spacing_mut().item_spacing.y = CONTEXT_GAP;
+    let w = ui.available_width();
+    ui::level_bar(ui, egui::Id::new("assistant-context"), w, share).on_hover_ui(|ui| {
+        ui.label(egui::RichText::new(head).color(theme::text::strong()));
+        ui.label(counts);
+        ui.label(egui::RichText::new(note).color(theme::text::dim()));
     });
+    ui.spacing_mut().item_spacing.y = panel_gap;
 }
 
 /// The question `Ctrl+↑` (`up`) or `Ctrl+↓` steps to among `len` questions,
@@ -1385,27 +1391,71 @@ mod tests {
         assert_eq!(tokens(1_000_000), "1.0M");
     }
 
-    /// The context line gives the share of a named window and warns from 80%;
-    /// without a window it gives the count alone and never warns.
+    /// The context bar fills to the share of a named window and warns from
+    /// `LEVEL_RED`; it is hidden before any reading and for a reading with no
+    /// window (or a zero one).
+    /// flip: `context_reading` without its window `?` → fails at "no window".
     #[test]
-    fn the_context_line_reads_its_share() {
-        let r = |used, window| ai::Reading { used, window };
-        assert_eq!(
-            context_words(r(44_932, Some(1_000_000))),
-            ("Context 4% · 44.9k of 1.0M".to_string(), false)
+    fn the_context_bar_reads_its_share_or_hides() {
+        let r = |used, window| Some(ai::Reading { used, window });
+        let (share, head, counts, note) = context_reading(r(44_932, Some(1_000_000))).unwrap();
+        assert_eq!(share, 0.044_932);
+        assert_eq!(head, "Context 4% full");
+        assert_eq!(counts, "44.9k of 1.0M tokens");
+        assert!(
+            note.starts_with("What the agent's next step reads"),
+            "{note}"
         );
+
+        let (_, head, _, note) = context_reading(r(176_000, Some(200_000))).unwrap();
+        assert_eq!(head, "Context 88% full");
+        assert!(note.starts_with("Near the model's limit"), "{note}");
+
+        assert_eq!(context_reading(r(18_000, None)), None, "no window");
         assert_eq!(
-            context_words(r(206_720, Some(258_400))),
-            ("Context 80% · 206.7k of 258.4k".to_string(), true)
-        );
-        assert_eq!(
-            context_words(r(11_200, None)),
-            ("Context 11.2k tokens".to_string(), false)
-        );
-        assert_eq!(
-            context_words(r(10, Some(0))),
-            ("Context 10 tokens".to_string(), false),
+            context_reading(r(10, Some(0))),
+            None,
             "a zero window is no window"
+        );
+        assert_eq!(context_reading(None), None, "nothing read yet");
+    }
+
+    /// Shown, the bar sits the panel's gap plus `CONTEXT_DROP` under what is
+    /// above it and `CONTEXT_GAP` over what follows, and leaves the panel's
+    /// gap as it was; hidden, it takes no room.
+    /// flip: `context_bar` setting `CONTEXT_GAP` after the bar → fails at "over the composer".
+    #[test]
+    fn the_context_bar_sits_nearer_the_composer() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let layout = |reading: Option<ai::Reading>| {
+            let mut out = (egui::Rect::NOTHING, egui::Rect::NOTHING, 0.0);
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                ui.spacing_mut().item_spacing.y = 10.0;
+                let (above, _) =
+                    ui.allocate_exact_size(egui::vec2(376.0, 20.0), egui::Sense::empty());
+                context_bar(ui, reading);
+                let (below, _) =
+                    ui.allocate_exact_size(egui::vec2(376.0, 20.0), egui::Sense::empty());
+                out = (above, below, ui.spacing().item_spacing.y);
+            });
+            out
+        };
+        let (above, below, gap) = layout(Some(ai::Reading {
+            used: 90_400,
+            window: Some(258_400),
+        }));
+        let room = below.top() - above.bottom();
+        assert!(
+            (room - (10.0 + CONTEXT_DROP + ui::LEVEL_BAR_H + CONTEXT_GAP)).abs() < 0.51,
+            "over the composer: {room} between the two"
+        );
+        assert_eq!(gap, 10.0, "the panel's gap is left as it was");
+        let (above, below, _) = layout(None);
+        assert!(
+            (below.top() - above.bottom() - 10.0).abs() < 0.51,
+            "hidden, it takes no room"
         );
     }
 

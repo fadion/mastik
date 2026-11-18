@@ -4854,6 +4854,60 @@ pub fn combo_height(ui: &mut egui::Ui) {
     ui.spacing_mut().button_padding.y = 0.0;
 }
 
+/// Height of a [`level_bar`]: a reading, thinner than any control.
+pub const LEVEL_BAR_H: f32 = 5.0;
+
+/// How far above and below its ink a [`level_bar`] takes the pointer, since
+/// [`LEVEL_BAR_H`] is too thin to aim at.
+pub const LEVEL_BAR_HOVER_PAD: f32 = 6.0;
+
+/// Where [`level_ink`] reaches amber.
+const LEVEL_AMBER: f32 = 0.6;
+
+/// Where [`level_ink`] is red: the share a level bar's reader is warned from.
+pub const LEVEL_RED: f32 = 0.85;
+
+/// The ink of a level bar filled to `share`: [`color::saved`] toward
+/// [`color::warn`] until [`LEVEL_AMBER`], on toward [`color::danger`], red
+/// from [`LEVEL_RED`]. One colour for the whole fill, so the bar's colour is
+/// its level at a glance.
+pub fn level_ink(share: f32) -> egui::Color32 {
+    let s = share.clamp(0.0, 1.0);
+    match s {
+        _ if s >= LEVEL_RED => color::danger(),
+        _ if s >= LEVEL_AMBER => color::warn().lerp_to_gamma(
+            color::danger(),
+            (s - LEVEL_AMBER) / (LEVEL_RED - LEVEL_AMBER),
+        ),
+        _ => color::saved().lerp_to_gamma(color::warn(), s / LEVEL_AMBER),
+    }
+}
+
+/// A level bar `width` wide and [`LEVEL_BAR_H`] tall on the field hairline's ink,
+/// its ends fully round, filled from the left to `share` (`0..=1`; at 0 the
+/// track alone). A fill thinner than its height is drawn that wide, so 1% still
+/// shows. Senses hover only, as `id`, [`LEVEL_BAR_HOVER_PAD`] past its ink; the
+/// caller hangs the numbers on the response.
+pub fn level_bar(ui: &mut egui::Ui, id: egui::Id, width: f32, share: f32) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, LEVEL_BAR_H), egui::Sense::empty());
+    let ppp = ui.ctx().pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(snap(rect.min.x), snap(rect.min.y)),
+        egui::pos2(snap(rect.max.x), snap(rect.min.y) + LEVEL_BAR_H),
+    );
+    let round = egui::CornerRadius::same((LEVEL_BAR_H / 2.0).round() as u8);
+    let p = ui.painter();
+    p.rect_filled(rect, round, color::field_border());
+    if share > 0.0 {
+        let w = snap((rect.width() * share.min(1.0)).max(LEVEL_BAR_H));
+        let ink = egui::Rect::from_min_size(rect.min, egui::vec2(w, LEVEL_BAR_H));
+        p.rect_filled(ink, round, level_ink(share));
+    }
+    let band = rect.expand2(egui::vec2(0.0, LEVEL_BAR_HOVER_PAD));
+    ui.interact(band, id, egui::Sense::hover())
+}
+
 /// The arrow at the closed end of a `ComboBox` — a caret glyph at one fixed
 /// colour, in place of egui's triangle, which goes white when open.
 ///
@@ -12627,6 +12681,89 @@ mod combo_chevron_tests {
 
     fn is_triangle(shape: &egui::epaint::Shape) -> bool {
         matches!(shape, egui::epaint::Shape::Path(p) if p.points.len() == 3 && p.fill != egui::Color32::TRANSPARENT)
+    }
+}
+
+#[cfg(test)]
+mod level_bar_tests {
+    use super::*;
+
+    /// One level bar drawn in a 600-tall column: the column's cursor before and
+    /// after, the response's rect, and the painted rects in paint order.
+    fn drawn(share: f32) -> (f32, f32, egui::Rect, Vec<(egui::Rect, egui::Color32)>) {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let (mut before, mut after, mut band) = (0.0, 0.0, egui::Rect::NOTHING);
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                ui.set_min_height(600.0);
+                before = ui.cursor().top();
+                band = level_bar(ui, egui::Id::new("probe-level-bar"), 376.0, share).rect;
+                after = ui.cursor().top();
+            },
+        );
+        let rects = out
+            .shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) => Some((r.rect, r.fill)),
+                _ => None,
+            })
+            .collect();
+        (before, after, band, rects)
+    }
+
+    /// A level bar takes its 5 and no more of a tall column, and senses 6 past
+    /// it above and below; its fill is the level's ink over the full track.
+    /// flip: `level_bar` allocating `ui.available_size()` → fails at "takes its height".
+    #[test]
+    fn a_level_bar_takes_its_height_and_fills_to_its_share() {
+        let (before, after, band, rects) = drawn(0.35);
+        let spacing = 6.0; // the theme's item spacing, after the bar
+        assert!(
+            (after - before - LEVEL_BAR_H - spacing).abs() < 0.51,
+            "takes its height: {} from a 600 column",
+            after - before
+        );
+        assert!(
+            (band.height() - LEVEL_BAR_H - 2.0 * LEVEL_BAR_HOVER_PAD).abs() < 0.01,
+            "senses past its ink: {band:?}"
+        );
+        assert_eq!(rects.len(), 2, "the track, then the fill: {rects:?}");
+        assert!((rects[0].0.width() - 376.0).abs() < 0.51, "{rects:?}");
+        assert!(
+            (rects[1].0.width() - 376.0 * 0.35).abs() < 0.51,
+            "{rects:?}"
+        );
+        assert_eq!(rects[1].1, level_ink(0.35));
+    }
+
+    /// A sliver of a share is still drawn its height wide; a share of 0 is the
+    /// track alone.
+    #[test]
+    fn a_level_bars_sliver_and_empty() {
+        let (.., rects) = drawn(0.001);
+        assert!((rects[1].0.width() - LEVEL_BAR_H).abs() < 0.51, "{rects:?}");
+        let (.., rects) = drawn(0.0);
+        assert_eq!(rects.len(), 1);
+    }
+
+    /// The level's ink: green when empty, amber at 60%, red from 85% on.
+    #[test]
+    fn the_level_ink_runs_green_to_red() {
+        assert_eq!(level_ink(0.0), color::saved());
+        assert_eq!(level_ink(LEVEL_AMBER), color::warn());
+        assert_eq!(level_ink(LEVEL_RED), color::danger());
+        assert_eq!(level_ink(1.4), color::danger());
+        assert_ne!(level_ink(0.3), color::saved(), "mixed between stops");
     }
 }
 
