@@ -31,8 +31,6 @@ The design and its open questions are in `prototyping.md`.
 The MCP has grown past the CLI; these bring the headless doors level with it, cheapest first.
 The CLI's design lives in `design/export.md` *CLI*; each item adds its passage there.
 
-- **`mastik kit update <files…>`.** `accept_kit_updates` (`kit::update_all`) across many
-  documents at once, where a CLI beats an agent going call by call.
 - **`mastik run` speaks the MCP's language.** It takes JSON registry verbs only
   (`verbs::run_script`), short forms included, but no `set`, which is MCP-only. The MCP's `run_script`
   is Command Mode's Luau, so the two names mean different things. Accept `.luau` scripts, and

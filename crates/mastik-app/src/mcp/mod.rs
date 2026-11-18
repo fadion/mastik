@@ -16,7 +16,7 @@ mod diff;
 pub(crate) mod endpoint;
 mod group;
 mod inspect;
-mod kits;
+pub(crate) mod kits;
 pub(crate) mod propose;
 pub(crate) mod proxy;
 mod reads;

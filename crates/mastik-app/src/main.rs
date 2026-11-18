@@ -124,6 +124,7 @@ mod input;
 mod instances;
 mod job;
 mod keychain;
+mod kit_cli;
 mod kits;
 mod knife;
 mod lasso;
@@ -240,6 +241,8 @@ enum Command {
         input: Option<String>,
         out: String,
     },
+    /// `mastik kit update`: the kits' waiting updates taken into each document.
+    KitUpdate(kit_cli::Update),
     /// Write the document's variables and styles as DTCG `tokens.json`
     /// (`mastik_export::dtcg`), `mode` naming the mode whose values are `$value`.
     TokensExport {
@@ -444,6 +447,7 @@ commands:
   diff       what changed from one document to another
   merge      a three-way merge, as git's merge driver
   tokens     DTCG design tokens out of a document, or into one
+  kit        the kits' waiting updates, taken into documents
   run        a script of registry verbs, applied to a document
   serve      documents behind the MCP endpoint, with no window
   mcp-proxy  the MCP server an agent harness configures
@@ -452,13 +456,14 @@ commands:
 `mastik help <command>` shows what a command takes; `mastik --version` the version.";
 
 /// The commands `OVERVIEW` lists, each with what it takes.
-const COMMANDS: [(&str, &str); 10] = [
+const COMMANDS: [(&str, &str); 11] = [
     ("export", EXPORT_USAGE),
     ("render", render_cli::USAGE),
     ("check", check_cli::USAGE),
     ("diff", DIFF_USAGE),
     ("merge", MERGE_USAGE),
     ("tokens", TOKENS_USAGE),
+    ("kit", kit_cli::USAGE),
     ("run", RUN_USAGE),
     ("serve", SERVE_USAGE),
     ("mcp-proxy", MCP_PROXY_USAGE),
@@ -501,6 +506,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Some("render") => render_cli::parse(&args[1..]).map(Command::Render),
         Some("diff") => parse_diff(&args[1..]),
         Some("tokens") => parse_tokens(&args[1..]),
+        Some("kit") => kit_cli::parse(&args[1..]).map(Command::KitUpdate),
         Some("merge") => parse_merge(&args[1..]),
         Some("check") => check_cli::parse(&args[1..]).map(Command::Check),
         Some("run") => parse_run(&args[1..]),
@@ -1211,6 +1217,7 @@ fn main() {
         },
         // `diff`'s codes: 1 is "a document fails", so an unreadable one is 2.
         Ok(Command::Check(check)) => std::process::exit(check_cli::run(&check)),
+        Ok(Command::KitUpdate(update)) => std::process::exit(kit_cli::run(&update)),
         Ok(Command::Run { script, input, out }) => {
             run_script(&script, input.as_deref(), &out).map(|lines| {
                 for line in lines {

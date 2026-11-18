@@ -106,7 +106,7 @@ fn documents(lib: &Library) -> Value {
 }
 
 /// A kit's name as its file has it, not as private mode draws it.
-fn real_name(lib: &Library, k: &KitEntry) -> String {
+pub(crate) fn real_name(lib: &Library, k: &KitEntry) -> String {
     lib.entry_at(&k.path)
         .map_or_else(|| k.name.clone(), |e| e.display_name())
 }
@@ -243,6 +243,90 @@ fn insert(s: &mut EditorSession, lib: &Library, call: &Call) -> Result<Answer, S
     Ok(Answer::Json(json!({ "created": [instance.to_wire()] })))
 }
 
+/// The kit updates waiting in a document, built and not yet committed: what
+/// `accept_kit_updates` and `mastik kit update` both commit.
+pub(crate) struct Accepted {
+    /// Each kit taken and the version it was taken at, by name as its file has it.
+    pub kits: Vec<(String, String, u32)>,
+    /// The whole update, the mains made local stacked beside the page's content.
+    pub tx: mastik_core::Transaction,
+    pub changed: Vec<NodeId>,
+    pub removed: Vec<NodeId>,
+    pub made_local: Vec<NodeId>,
+}
+
+/// Why [`prepare_accept`] built nothing.
+pub(crate) enum NotAccepted {
+    /// A kit's file could not be read, or has published nothing.
+    Unreadable(String),
+    /// The core update refused, and whether a kit was picked out of several waiting.
+    Kit(KitError, bool),
+}
+
+/// The update of every waiting kit, or of the kit with id `only`, as one
+/// transaction against `s`'s document and page; `None` when nothing waits.
+pub(crate) fn prepare_accept(
+    s: &mut EditorSession,
+    lib: &Library,
+    only: Option<&str>,
+) -> Result<Option<Accepted>, NotAccepted> {
+    let all = waiting(&s.doc, lib, false);
+    let chosen: Vec<_> = all
+        .iter()
+        .filter(|w| only.is_none_or(|k| k == w.kit.id))
+        .collect();
+    if chosen.is_empty() {
+        return Ok(None);
+    }
+    let mut loaded = Vec::new();
+    for w in &chosen {
+        // Nothing is applied while one kit cannot be read: kits reach each
+        // other's mains, so a partial accept is the riskier answer.
+        let (version, p) = read_published(lib, &w.kit).map_err(NotAccepted::Unreadable)?;
+        loaded.push((w.kit.id.clone(), real_name(lib, &w.kit), version, p));
+    }
+    let kits: Vec<(&str, u32, &Published)> = loaded
+        .iter()
+        .map(|(k, _, v, p)| (k.as_str(), *v, p.as_ref()))
+        .collect();
+    let page = s.page;
+    let content = s.preview_world_bounds(page);
+    let update = mastik_core::kit::update_all(&s.doc, &mut s.ids, page, &kits)
+        .map_err(|e| NotAccepted::Kit(e, only.is_some() && all.len() > 1))?;
+    let mut tx = update.tx;
+    tx.0.extend(stack_local(&s.doc, &tx, &update.made_local, content));
+    Ok(Some(Accepted {
+        kits: loaded.into_iter().map(|(k, n, v, _)| (k, n, v)).collect(),
+        tx,
+        changed: update.changed,
+        removed: update.removed,
+        made_local: update.made_local,
+    }))
+}
+
+/// What a refused kit update says. `whole` is how to accept every kit's
+/// update instead, in the caller's terms.
+pub(crate) fn not_accepted_words(why: NotAccepted, whole: &str) -> String {
+    match why {
+        NotAccepted::Unreadable(why) => format!("Nothing was updated: {why}"),
+        NotAccepted::Kit(KitError::NeedsUpdate(_) | KitError::Modes(_), true) => {
+            format!("This update needs another kit's too; accept every kit's by {whole}")
+        }
+        NotAccepted::Kit(KitError::NeedsUpdate(_) | KitError::Modes(_), false) => {
+            "This update needs a newer version of another kit it uses, which is not in the \
+             library"
+                .to_owned()
+        }
+        NotAccepted::Kit(KitError::Circular(_), _) => {
+            "This update uses this document's own components, so it cannot be taken here".to_owned()
+        }
+        NotAccepted::Kit(..) => {
+            "The kit update could not be applied: its published components are incomplete"
+                .to_owned()
+        }
+    }
+}
+
 /// Accept the waiting updates, every kit's or one's, in one undo step.
 fn accept(s: &mut EditorSession, lib: &Library, call: &Call) -> Result<Answer, String> {
     if s.compare.is_some() {
@@ -252,52 +336,15 @@ fn accept(s: &mut EditorSession, lib: &Library, call: &Call) -> Result<Answer, S
         Some(wanted) => Some(find_kit(lib, &s.doc, wanted)?.id),
         None => None,
     };
-    let all = waiting(&s.doc, lib, false);
-    let chosen: Vec<_> = all
-        .iter()
-        .filter(|w| only.as_deref().is_none_or(|k| k == w.kit.id))
-        .collect();
-    if chosen.is_empty() {
+    let Some(update) = prepare_accept(s, lib, only.as_deref())
+        .map_err(|why| not_accepted_words(why, "leaving out `kit`"))?
+    else {
         return Ok(Answer::Json(json!({ "accepted": [] })));
-    }
-    let mut loaded = Vec::new();
-    for w in &chosen {
-        // Nothing is applied while one kit cannot be read: kits reach each
-        // other's mains, so a partial accept is the riskier answer.
-        let (version, p) =
-            read_published(lib, &w.kit).map_err(|why| format!("Nothing was updated: {why}"))?;
-        loaded.push((w.kit.id.clone(), version, p));
-    }
-    let kits: Vec<(&str, u32, &Published)> = loaded
-        .iter()
-        .map(|(k, v, p)| (k.as_str(), *v, p.as_ref()))
-        .collect();
-    let page = s.page;
-    let content = s.preview_world_bounds(page);
-    let update =
-        mastik_core::kit::update_all(&s.doc, &mut s.ids, page, &kits).map_err(|e| match e {
-            KitError::NeedsUpdate(_) | KitError::Modes(_) if only.is_some() && all.len() > 1 => {
-                "This update needs another kit's too; accept every kit's by leaving out `kit`"
-                    .to_owned()
-            }
-            KitError::NeedsUpdate(_) | KitError::Modes(_) => {
-                "This update needs a newer version of another kit it uses, which is not in the \
-                 library"
-                    .to_owned()
-            }
-            KitError::Circular(_) => {
-                "This update uses this document's own components, so it cannot be taken here"
-                    .to_owned()
-            }
-            _ => "The kit update could not be applied: its published components are incomplete"
-                .to_owned(),
-        })?;
-    let mut tx = update.tx;
-    tx.0.extend(stack_local(&s.doc, &tx, &update.made_local, content));
-    commit(s, &call.client, &call.tool, tx)?;
+    };
+    commit(s, &call.client, &call.tool, update.tx)?;
     let ids = |v: &[NodeId]| v.iter().map(|i| i.to_wire()).collect::<Vec<_>>();
     Ok(Answer::Json(json!({
-        "accepted": loaded.iter().map(|(k, v, _)| json!({ "kit": k, "version": v })).collect::<Vec<_>>(),
+        "accepted": update.kits.iter().map(|(k, _, v)| json!({ "kit": k, "version": v })).collect::<Vec<_>>(),
         "changed": ids(&update.changed),
         "removed": ids(&update.removed),
         "made_local": ids(&update.made_local),
