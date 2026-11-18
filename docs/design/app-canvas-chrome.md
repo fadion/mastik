@@ -1,8 +1,8 @@
-# Canvas chrome, the top bar's menus, the command palette, batch rename, clean up, fill with content, the assets browser, find and replace, colour review, the cheatsheet, focus, private and present mode
+# Canvas chrome, the top bar's menus, the command palette, batch rename, clean up, fill with content, the assets browser, find and replace, colour review, system health, the cheatsheet, focus, private and present mode
 
 Overlay chrome drawn during gestures (escaping clip, create box, size pill, Alt-drag ghost), the
 pixel grid, the minimap, the size preview, the contrast check mode, the vision simulation, the top bar's View/Snap/Tools menus and Settings button,
-the command palette, the batch rename box, the clean up box, the fill with content box, the assets browser and credits, the find and replace box, the colour review card, the shortcut cheatsheet, focus mode, the peek, private mode and
+the command palette, the batch rename box, the clean up box, the fill with content box, the assets browser and credits, the find and replace box, the colour review card, the system health card, the shortcut cheatsheet, focus mode, the peek, private mode and
 present mode.
 Part of §9.4.
 
@@ -376,7 +376,9 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   - the checks, which change nothing: *Check contrast* and *Simulate vision*, each toggling its
     mode (never remembered) and named *Stop checking contrast* / *Stop simulating vision* while on,
     the palette's and the bar ✕'s words (`contrast::STOP_CONTRAST`, `vision::STOP_VISION`), then
-    *Colour review…*, opening its card;
+    *Colour review…* and *System health…*, each opening its card, the second with the whole
+    document's coverage in the chord's slot (`MastikApp::document_coverage`, the coverage pass
+    alone, read once per revision);
   - a hairline, then the bulk edits, each opening its box: *Find and replace…* (`Ctrl+F`,
     `Action::FindText { replace: false }`), *Batch rename…* (`Ctrl+Shift+R`; dimmed with
     `private::DECLINE_RENAME` in private mode) and *Fill with content…* (no chord; never dimmed:
@@ -1211,7 +1213,7 @@ colour, one undo step each. The rule is `mastik_core::color_review`.
   (`ui::canvas_dialog_area`), 420 wide, movable by its title row, on the settings card's ground (`settings::card_frame`), but is
   no modal: nothing blocks the canvas and a click there leaves it open. It is at most
   `ui::canvas_popup_room` tall, its list scrolling past `ui::CANVAS_POPUP_LIST_H`; title, controls
-  and foot stay put. One card over the canvas's top shows at a time: opening it, Find, batch
+  and foot stay put. One card over the canvas's top shows at a time: opening it, Find, System health, batch
   rename, Clean up, Fill with content or the chart data window closes the others, since centred one would run under Find's corner. The census is taken again when the revision, the scope or the threshold changes.
 - **Head.** Batch rename's title row (*Colour review*, ✕). Scope *Selection · Document*, opening on *Selection* when something is selected;
   *Selection* is disabled with *Nothing is selected* when nothing is, and a card left on it says
@@ -1257,6 +1259,62 @@ colour, one undo step each. The rule is `mastik_core::color_review`.
   ‹threshold›* over how many colours the scope holds.
 - **Keys.** `Escape` is a rung of `MastikApp::escape` below Find's: the caret menu, then the naming,
   then the card.
+
+## System health (`system_health.rs`, `mastik_export::review::health`)
+
+A card reading how well the selection, the page or every page uses the design system: how much
+paint, type and spacing is bound to variables and styles, and what is left to tidy. **The card
+reads; other surfaces fix.** It never edits: each row's button opens the place that already does
+the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's `health` and
+`mastik check health` read too (`mcp.md`, `export.md`).
+
+- **Coverage** (`Health::paint`, `text`, `spacing`), over the scope's own layers. A copy (a layer
+  with a link, inside an instance) is skipped: its values are its main's, counted at the main.
+  - *Paint*: every visible fill and stroke but an image brush, bound when the brush has a
+    variable or the slot a style; every visible drop and inner shadow, bound when the effects
+    slot has a style.
+  - *Type*: every text layer, bound when it takes a text style.
+  - *Spacing and radii*: every non-zero flex or grid gap and padding, bound through its spacing
+    variable, and every non-zero corner of a rectangle or frame, through its corner variable.
+  - Percentages are rounded down, so 99.6% never reads as all of it. `review::overall` is the
+    coverage pass alone, for a summary read more often than the card is open.
+- **To tidy**, eight rows:
+
+  | Row | Reads | Button |
+  | --- | --- | --- |
+  | Raw values a variable or style holds | `raw_match`: every layer `raw_values`' matches name (its private `raw_matches`, uncapped), copies left out; `matches` commonest first | *Bind…*, *Bind other uses* for the commonest match when a variable; *Select* when a style |
+  | Near-identical colours | `near_duplicates`: `near_duplicate_colours`' groups | *Review*, Colour review, which closes this card |
+  | Off the 4-unit scale | `off_scale`: layers with their own unbound gap, padding or radius off the step, plus `spacing`'s hand-placed `off_scale` gaps | *Select* |
+  | Detached | `detached`: layers with `Node::detached_from` (`components.md`, *The verbs*) | *Select* |
+  | Main components with no instances | `unused_components`: mains in scope with no instance anywhere, a set counted once when no variant has one; vault mains skipped | *Select* |
+  | Variables nothing uses | `tokens::unused_variables`, document-wide whatever the scope | *Show*: the browser's *Unused* on its Variables tab |
+  | Unused styles | `style::unused`, document-wide | *Show*: *Unused* on its Styles tab (`MastikApp::open_unused`) |
+  | Kit updates waiting | `MastikApp::kits_waiting` | *Open*: the kit update popover |
+
+- **Doors.** *Tools ▸ System health…*, after *Colour review…*, its chord slot showing the whole
+  document's coverage; the palette (`Item::SystemHealth`, `Group::View`, unbound; aliases *design
+  system*, *tokens*, *coverage*, *unused*, *detached*, *audit*). The palette row wears
+  `icon::PULSE` (`app-chrome.md`, *Shared rules*); the Tools menu's rows are bare.
+- **Place.** `settings::movable_canvas_card`, 420 wide, the canvas left live. One card over the
+  canvas's top at a time, with Find, Colour review, batch rename, Clean up, Fill with content and
+  the chart data window: opening any of them closes it, and opening it closes them. `Escape` closes
+  it, the rung after Colour review's. In `control_audit`'s list.
+- **Head.** `card_head_noted`: *System health*, the document's title as the note. Scope
+  `batch_rename::scope_segments` (*Selection · This page · All pages*), opening on *Selection* when
+  something is selected and on *All pages* otherwise (`review::every_page`: every page but
+  drafts, the current page kept, Clean up's rule); a *Selection* left with nothing selected reads
+  every page.
+- **Bound to the system.** An eyebrow with *N% of M uses*, then three `ui::meter_readout` rows,
+  *Paint*, *Type*, *Spacing and radii*, each *bound of total*; a click selects the raw layers.
+- **To tidy.** An eyebrow with *k of 8* (rows with something to report), then every row, always,
+  so the card keeps one height: glyph, count, sentence, button. A row at zero dims, shows its zero
+  in `color::saved()` and has no button. Each row's hover says what it counts.
+- **Select.** Selects the counted layers on this page, else on the first one's page, going there;
+  locked layers are counted and left out, and the status says how many. On *Selection* the card
+  keeps reading what was selected before until the selection changes some other way (Clean up's
+  rule).
+- **Foot.** *Checked N layers on M pages*, and *Close*.
+- **Reading.** Again whenever the scope, the page, the revision or the selection changes.
 
 ## The shortcut cheatsheet (`cheatsheet.rs`)
 

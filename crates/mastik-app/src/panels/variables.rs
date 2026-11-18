@@ -191,7 +191,8 @@ pub(crate) struct Browser {
     focus: bool,
     /// *In selection*, kept pressed across selection changes.
     pub(crate) in_selection: bool,
-    /// The Styles tab's *Unused*: only the document's own styles no layer uses.
+    /// *Unused*, on either tab: only the document's own variables or styles
+    /// nothing uses (`mastik_core::tokens::unused_variables`, [`unused_styles`]).
     pub(crate) unused: bool,
     /// Collapsed group paths — a copy of the document's own set
     /// (`MastikApp::var_collapsed`), loaded for [`Self::root`] (§15 D1054).
@@ -454,8 +455,8 @@ impl MastikApp {
     }
 
     /// Open the browser on `var` with *Bind other uses…*'s popover open, as its
-    /// menu row does — for the tests and the audit, which draw no menu first.
-    #[cfg(test)]
+    /// menu row does: System health's *Bind…*, and the tests and the audit, which
+    /// draw no menu first.
     pub(crate) fn open_bind_others(&mut self, var: VarId) {
         self.open_var_popover(var, Menu::Bind(var));
     }
@@ -467,6 +468,24 @@ impl MastikApp {
         self.open_var_popover(var, Menu::Scale(var));
         if let Some(b) = self.var_browser.as_mut() {
             b.scale = None;
+        }
+    }
+
+    /// Open the browser with *Unused* on, on the Variables tab or the Styles tab:
+    /// System health's *Show*.
+    pub(crate) fn open_unused(&mut self, styles: bool) {
+        if self.var_browser.is_none() {
+            self.toggle_var_browser();
+        }
+        if let Some(b) = self.var_browser.as_mut() {
+            b.tab = match styles {
+                true => Tab::Styles,
+                false => Tab::Variables,
+            };
+            b.unused = true;
+            b.in_selection = false;
+            b.query.clear();
+            b.focus = false;
         }
     }
 
@@ -560,11 +579,16 @@ impl MastikApp {
             who.retain(|u| !doc.in_vault(*u));
             users.insert(v.id, who);
         }
-        let picked: Option<HashSet<VarId>> = b.in_selection.then(|| {
+        let unused_vars: Vec<VarId> = match b.unused {
+            true => mastik_core::tokens::unused_variables(doc),
+            false => Vec::new(),
+        };
+        let picked: Option<HashSet<VarId>> = (b.in_selection || b.unused).then(|| {
             let ids = mastik_core::subtree_nodes(doc, self.session.selection.ids());
             table
                 .iter()
-                .filter(|v| users[&v.id].iter().any(|u| ids.contains(u)))
+                .filter(|v| !b.in_selection || users[&v.id].iter().any(|u| ids.contains(u)))
+                .filter(|v| !b.unused || unused_vars.contains(&v.id))
                 .map(|v| v.id)
                 .collect()
         });
@@ -586,8 +610,8 @@ impl MastikApp {
                 .collect()
         });
         let query = b.query.trim().to_lowercase();
-        // A search, and *In selection*, span every collection.
-        let across = table.has_collections() && (!query.is_empty() || b.in_selection);
+        // A search, *In selection* and *Unused* span every collection.
+        let across = table.has_collections() && (!query.is_empty() || b.in_selection || b.unused);
         let lines = all_lines(doc, shown, across, &query, picked.as_ref(), &b.collapsed);
         let selection_line = b.in_selection.then(|| {
             let (n, one, many) = match b.tab {
@@ -657,9 +681,29 @@ impl MastikApp {
                     })
                     .collect();
                 ui.add_space(-6.0);
-                if unused_line(ui, shown.len()) {
+                if unused_line(ui, shown.len(), ("style", "styles")) {
                     let name = ui::count(shown.len(), "unused style");
                     acts.push(Act::DeleteStyles(shown, name));
+                }
+            }
+            if b.unused && matches!(b.tab, Tab::Variables) {
+                // The unused variables the list shows, so the button takes none
+                // the search or *In selection* hides; never a kit's.
+                let shown: Vec<VarId> = unused_vars
+                    .iter()
+                    .copied()
+                    .filter(|id| picked.as_ref().is_none_or(|p| p.contains(id)))
+                    .filter(|id| {
+                        query.is_empty()
+                            || table
+                                .get(*id)
+                                .is_some_and(|v| v.name.to_lowercase().contains(&query))
+                    })
+                    .collect();
+                ui.add_space(-6.0);
+                if unused_line(ui, shown.len(), ("variable", "variables")) {
+                    let name = ui::count(shown.len(), "unused variable");
+                    acts.push(Act::Delete(shown, name));
                 }
             }
             if let Some(why) = &b.refusal {
@@ -690,16 +734,22 @@ impl MastikApp {
                     "No variables yet",
                     "Add a colour or a number with + above, then type -- in a field to bind it.",
                 ),
-                Tab::Variables if lines.is_empty() && query.is_empty() && !b.in_selection => empty(
-                    ui,
-                    "No variables in this collection",
-                    "Add one with + above, or move one here from its menu.",
-                ),
+                Tab::Variables
+                    if lines.is_empty() && query.is_empty() && !b.in_selection && !b.unused =>
+                {
+                    empty(
+                        ui,
+                        "No variables in this collection",
+                        "Add one with + above, or move one here from its menu.",
+                    )
+                }
                 Tab::Variables if lines.is_empty() => empty(
                     ui,
                     "No variables match",
                     if b.in_selection {
                         "Turn off In selection to see them all."
+                    } else if b.unused {
+                        "Turn off Unused to see them all."
                     } else {
                         "Try another name."
                     },
@@ -3437,9 +3487,7 @@ fn search_row(
         if picker {
             collection_picker(ui, doc, shown, b, acts);
         }
-        let styles = matches!(b.tab, Tab::Styles);
-        let buttons = if styles { 3.0 } else { 2.0 };
-        let w = ui.available_width() - buttons * (SEARCH_H + 6.0);
+        let w = ui.available_width() - 3.0 * (SEARCH_H + 6.0);
         let hint = match b.tab {
             Tab::Variables if t.has_collections() => "Search all collections",
             Tab::Variables => "Search variables",
@@ -3469,13 +3517,13 @@ fn search_row(
         if toggle.clicked() {
             b.in_selection = !b.in_selection;
         }
-        if styles {
-            let toggle =
-                ui::field_button(ui, icon::FUNNEL, SEARCH_H, ui::FieldButton::on_if(b.unused))
-                    .on_hover_text("Unused: only this document's styles no layer uses");
-            if toggle.clicked() {
-                b.unused = !b.unused;
-            }
+        let toggle = ui::field_button(ui, icon::FUNNEL, SEARCH_H, ui::FieldButton::on_if(b.unused))
+            .on_hover_text(match b.tab {
+                Tab::Variables => "Unused: only this document's variables nothing uses",
+                Tab::Styles => "Unused: only this document's styles no layer uses",
+            });
+        if toggle.clicked() {
+            b.unused = !b.unused;
         }
         // Open, the `+` wears an open dropdown's border.
         let adding = matches!(b.menu, Some((Menu::Add, _)));
@@ -3511,15 +3559,15 @@ fn unused_styles(doc: &Document, users: &BTreeMap<StyleId, Vec<NodeId>>) -> Vec<
         .collect()
 }
 
-/// *Unused*'s line under the search row: how many unused styles the list shows,
-/// and *Delete unused*, dim with its reason when there are none. True when *Delete
-/// unused* is clicked.
-fn unused_line(ui: &mut egui::Ui, n: usize) -> bool {
+/// *Unused*'s line under the search row: how many unused styles or variables
+/// (`noun`, one and many) the list shows, and *Delete unused*, dim with its
+/// reason when there are none. True when *Delete unused* is clicked.
+fn unused_line(ui: &mut egui::Ui, n: usize, noun: (&str, &str)) -> bool {
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(match n {
-                0 => "No unused styles here".to_string(),
-                n => ui::count(n, "unused style"),
+                0 => format!("No unused {} here", noun.1),
+                n => ui::count(n, &format!("unused {}", noun.0)),
             })
             .size(ui::CAPTION_PT)
             .color(theme::text::dim()),
@@ -3531,7 +3579,7 @@ fn unused_line(ui: &mut egui::Ui, n: usize) -> bool {
             };
             let resp = crate::settings::text_button(ui, "Delete unused", state);
             let resp = match n {
-                0 => resp.on_disabled_hover_text("No style here is unused"),
+                0 => resp.on_disabled_hover_text(format!("No {} here is unused", noun.0)),
                 _ => resp.on_hover_text("Delete them in one step; Ctrl+Z brings them back"),
             };
             n > 0 && resp.clicked()

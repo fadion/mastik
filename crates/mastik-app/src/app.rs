@@ -1236,6 +1236,10 @@ pub struct MastikApp {
     pub(crate) find: crate::find::FindBox,
     /// The Colour review card, where the dialog cards open (`colour_review.rs`).
     pub(crate) colour_review: crate::colour_review::ColourReview,
+    /// The System health card, while it is open (`system_health.rs`).
+    pub(crate) system_health: Option<crate::system_health::SystemHealth>,
+    /// The whole document's coverage for the Tools menu's row, by revision.
+    pub(crate) coverage_cache: std::cell::Cell<Option<(u64, Option<usize>)>>,
     /// The Repeat card (`crate::repeat`).
     pub(crate) repeat: crate::repeat::RepeatCard,
     /// *Blend shapes…*'s card (`crate::blend`).
@@ -1311,6 +1315,7 @@ enum ToolsRow {
     CheckContrast,
     SimulateVision,
     ColourReview,
+    SystemHealth,
     FindReplace,
     BatchRename,
     FillContent,
@@ -1319,11 +1324,12 @@ enum ToolsRow {
 }
 
 impl ToolsRow {
-    const ALL: [ToolsRow; 9] = [
+    const ALL: [ToolsRow; 10] = [
         ToolsRow::Scripts,
         ToolsRow::CheckContrast,
         ToolsRow::SimulateVision,
         ToolsRow::ColourReview,
+        ToolsRow::SystemHealth,
         ToolsRow::FindReplace,
         ToolsRow::BatchRename,
         ToolsRow::FillContent,
@@ -1343,6 +1349,8 @@ impl ToolsRow {
                 (crate::vision::STOP_VISION, None),
                 // The size it would free sits in the chord's slot.
                 (ToolsRow::RemoveUnusedImages.label(), Some("999.9 MB")),
+                // The document's coverage sits there too.
+                (ToolsRow::SystemHealth.label(), Some("100%")),
             ])
             .collect()
     }
@@ -1356,6 +1364,7 @@ impl ToolsRow {
             ToolsRow::CheckContrast => Item::CheckContrast.spec().label,
             ToolsRow::SimulateVision => Item::SimulateVision.spec().label,
             ToolsRow::ColourReview => Item::ColourReview.spec().label,
+            ToolsRow::SystemHealth => Item::SystemHealth.spec().label,
             ToolsRow::FindReplace => "Find and replace…",
             ToolsRow::BatchRename => Item::BatchRename.spec().label,
             ToolsRow::CleanUp => Item::CleanUp.spec().label,
@@ -2003,6 +2012,8 @@ impl MastikApp {
             chart_read: None,
             find: Default::default(),
             colour_review: Default::default(),
+            system_health: None,
+            coverage_cache: Default::default(),
             repeat: Default::default(),
             blend: Default::default(),
             warp: None,
@@ -2588,6 +2599,7 @@ impl MastikApp {
         // Unguarded too: in focus mode it keeps to the canvas's own corner.
         self.find_ui(&ctx);
         self.colour_review_ui(&ctx);
+        self.system_health_ui(&ctx, canvas);
         self.credits_ui(&ctx);
         // Unguarded: a photo asked for before focus mode lands in it.
         self.assets_pass(&ctx);
@@ -2817,6 +2829,7 @@ impl MastikApp {
             }
             Action::SaveNamedVersion => self.save_named_version(),
             Action::ColourReview => self.open_colour_review(),
+            Action::SystemHealth => self.open_system_health(),
             Action::RotateQuarter(clockwise) => {
                 let turn = std::f64::consts::FRAC_PI_2;
                 self.rotate_selection_quarter(if clockwise { turn } else { -turn });
@@ -3410,6 +3423,7 @@ impl MastikApp {
         } else if self.colour_review.open {
             // Its open menu or the name being typed goes first, the card next press.
             self.colour_review.escape();
+        } else if self.system_health.take().is_some() {
         } else if self.credits_open {
             self.credits_open = false;
         } else if self.repeat.open {
@@ -8629,6 +8643,7 @@ impl MastikApp {
         let ctx = ui.ctx().clone();
         let (unused, freed) = self.unused_pictures();
         let freed = crate::settings::human_bytes(freed);
+        let coverage = self.document_coverage().map(|p| format!("{p}%"));
         for row in ToolsRow::ALL {
             if matches!(row, ToolsRow::FindReplace | ToolsRow::CleanUp) {
                 crate::ui::menu_sep(ui);
@@ -8644,6 +8659,7 @@ impl MastikApp {
             };
             let accel = match row {
                 ToolsRow::RemoveUnusedImages if !unused.is_empty() => Some(freed.as_str()),
+                ToolsRow::SystemHealth => coverage.as_deref(),
                 _ => row.accel(),
             };
             // A check that is on is named by what the click does, as the palette names it.
@@ -8671,6 +8687,7 @@ impl MastikApp {
                 ToolsRow::CheckContrast => self.toggle_contrast(),
                 ToolsRow::SimulateVision => self.toggle_vision(),
                 ToolsRow::ColourReview => self.open_colour_review(),
+                ToolsRow::SystemHealth => self.open_system_health(),
                 ToolsRow::FindReplace => {
                     self.dispatch(&ctx, crate::input::Action::FindText { replace: false });
                 }

@@ -1461,6 +1461,10 @@ fn sweep_on(theme: Theme) {
     let mut app = with_a_rect(&ctx);
     let found = opened(&ctx, &mut app, |_, a| a.open_clean_up());
     check("clean up", app, found);
+    let mut app = with_a_rect(&ctx);
+    // Swept: its meters and tidy rows paint a ground under the pointer only.
+    let (found, _) = swept(&ctx, &mut app, |_, a| a.open_system_health());
+    check("system health", app, found);
     let mut app = with_a_text(&ctx);
     let found = opened(&ctx, &mut app, |_, a| a.open_fill_content());
     check("fill content", app, found);

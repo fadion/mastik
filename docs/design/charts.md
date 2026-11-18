@@ -595,7 +595,7 @@ when the selection is cleared or moves to anything but a chart, so a click on th
 open, and selecting another chart alone moves it there, at its first cell
 (`the_window_stays_open_when_the_selection_moves_off`). It closes on its ✕, on
 `Escape` and when its chart is deleted. It is one card over the canvas's top among Find, Colour
-review, batch rename, Clean up and Fill with content: opening it closes them, and opening any of
+review, System health, batch rename, Clean up and Fill with content: opening it closes them, and opening any of
 them closes it. Leaving the document (a tab switch) closes it, the import box and a pending chart
 read, since they name this document's node ids.
 

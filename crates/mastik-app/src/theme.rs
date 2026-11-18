@@ -1337,6 +1337,8 @@ pub mod icon {
     pub const POINTS_ALONG: &str = "\u{f07a}";
     /// How many ridges Zig-zag draws on a segment: a run of three.
     pub const RIDGES: &str = "\u{f07b}";
+    /// *System health*: a pulse line. Not [`GAUGE`], whose dial is JPEG quality.
+    pub const PULSE: &str = "\u{f089}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1667,6 +1669,7 @@ pub mod icon {
         ("amplitude", AMPLITUDE),
         ("points-along", POINTS_ALONG),
         ("ridges", RIDGES),
+        ("pulse", PULSE),
     ];
 }
 

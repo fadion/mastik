@@ -5156,6 +5156,78 @@ pub fn value_field_metered(
     .0
 }
 
+/// A read-only [`value_field_metered`]: the field's ground and hairline, the
+/// accent wash filled from the left to `share`'s part of its whole, `label` on
+/// the left, `counts` faint and the percentage, rounded down, right-aligned after
+/// it. `width` wide and [`CONTROL_H`] tall; hovered as a button is, and
+/// clickable, for a caller that selects what the meter counts. A whole of zero
+/// draws no wash and a dash.
+pub fn meter_readout(
+    ui: &mut egui::Ui,
+    width: f32,
+    label: &str,
+    counts: &str,
+    share: (usize, usize),
+) -> egui::Response {
+    let (part, whole) = share;
+    let share = (whole > 0).then(|| (part.min(whole), whole));
+    /// The percentage's column, room for "100%" at [`CONTROL_PT`].
+    const PERCENT_W: f32 = 34.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, CONTROL_H), egui::Sense::click());
+    let p = ui.painter();
+    let round = egui::CornerRadius::same(5);
+    let ground = match resp.hovered() {
+        true => color::hover(),
+        false => color::field(),
+    };
+    p.rect_filled(rect, round, ground);
+    if let Some((part, whole)) = share.filter(|(part, _)| *part > 0) {
+        let f = part as f32 / whole as f32;
+        let bar = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * f, rect.height()));
+        let corner = egui::CornerRadius {
+            nw: 5,
+            sw: 5,
+            ne: if f >= 1.0 { 5 } else { 0 },
+            se: if f >= 1.0 { 5 } else { 0 },
+        };
+        p.rect_filled(bar, corner, meter_wash());
+    }
+    p.rect_stroke(
+        rect,
+        round,
+        egui::Stroke::new(1.0, color::field_border()),
+        egui::StrokeKind::Inside,
+    );
+    let y = rect.center().y;
+    let font = egui::FontId::proportional(CONTROL_PT);
+    p.text(
+        egui::pos2(rect.left() + FIELD_PAD_X, y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font.clone(),
+        theme::text::muted(),
+    );
+    let right = rect.right() - FIELD_PAD_X;
+    let percent = share.map_or("–".to_string(), |(part, whole)| {
+        format!("{}%", part * 100 / whole)
+    });
+    p.text(
+        egui::pos2(right, y),
+        egui::Align2::RIGHT_CENTER,
+        percent,
+        font.clone(),
+        color::text(),
+    );
+    p.text(
+        egui::pos2(right - PERCENT_W - FIELD_PAD_X, y),
+        egui::Align2::RIGHT_CENTER,
+        counts,
+        egui::FontId::proportional(CAPTION_PT),
+        theme::text::faint(),
+    );
+    resp
+}
+
 /// An overridden field's mark: the label at full brightness with a 4-pt dot beside
 /// it, and with the pointer on the field the label's slot turns into ↺, whose
 /// click is the reset. `tip` is the hover text naming the main's value.

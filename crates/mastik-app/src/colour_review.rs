@@ -237,6 +237,7 @@ impl MastikApp {
         // One card over the canvas's top at a time.
         self.close_find();
         self.batch_rename = None;
+        self.system_health = None;
         self.clean_up = None;
         self.fill_content = None;
         self.chart_data = None;

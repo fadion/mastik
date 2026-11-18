@@ -32,11 +32,6 @@ Items run cheapest first.
 
 - **The assets tools in `serve`.** `search_assets` / `place_asset` in `serve`, reading the
   person's switched-on sets and services from the preferences rather than refusing.
-- **Design system health.** One card for a document: how much paint, type and spacing is bound to
-  variables and styles against raw values, detached instances, unused styles, variables and
-  components, near-duplicate colours, and kits waiting on updates. Most of the readings exist
-  (colour review, clean up, `kits_waiting`); the card and the coverage count do not. Its checks are
-  `mastik_export::review`'s, the ones MCP's `review` and `mastik check review` run.
 - **Noise and grain.** A noise fill, and a grain effect over a layer. `non-goals.md` declined noise
   as one generator written three times to agree to the pixel; SVG's `feTurbulence` is specified to
   the algorithm, so porting that one algorithm to WGSL and the CPU backend makes the SVG writer the

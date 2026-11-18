@@ -841,6 +841,7 @@ impl MastikApp {
             push(&mut out, run);
         }
         push(&mut out, Cmd::verb(Item::ColourReview, None));
+        push(&mut out, Cmd::verb(Item::SystemHealth, None));
         push(&mut out, Cmd::verb(Item::BatchRename, None));
         push(&mut out, Cmd::verb(Item::CleanUp, None));
         let purge =

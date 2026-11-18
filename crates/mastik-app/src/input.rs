@@ -305,6 +305,9 @@ pub enum Action {
     /// *Colour review…*, unbound: the card that merges near-identical colours
     /// (`crate::colour_review`).
     ColourReview,
+    /// *System health…*, unbound: the card counting how much of the file is bound
+    /// to its system and what is left to tidy (`crate::system_health`).
+    SystemHealth,
     /// *Clean up…*, unbound: the box that takes away what draws nothing
     /// (`crate::clean_up_box`).
     CleanUp,

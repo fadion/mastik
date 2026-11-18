@@ -512,6 +512,9 @@ pub enum Item {
     CompareVersion,
     SaveNamedVersion,
     ColourReview,
+    /// *System health…*: the card reading how well the file uses its system
+    /// (`crate::system_health`).
+    SystemHealth,
     /// A quarter turn of each selected layer about its own origin, as the Transform
     /// card's buttons do; `true` is clockwise.
     RotateQuarter(bool),
@@ -1281,6 +1284,7 @@ impl Item {
                 s("Save named version…", icon::FLOPPY_DISK, None, Group::File)
             }
             Item::ColourReview => s("Colour review…", icon::PALETTE, None, Group::View),
+            Item::SystemHealth => s("System health…", icon::PULSE, None, Group::View),
             Item::RotateQuarter(false) => s(
                 "Rotate 90° counter-clockwise",
                 icon::ROTATE_LEFT,
@@ -1512,6 +1516,14 @@ impl Item {
             Item::SelectMatching => &["same", "copies", "repeated", "similar", "multi-edit"],
             Item::SelectInverse => &["invert", "others", "rest"],
             Item::CompareVersion => &["diff", "changes", "history", "before"],
+            Item::SystemHealth => &[
+                "design system",
+                "tokens",
+                "coverage",
+                "unused",
+                "detached",
+                "audit",
+            ],
             Item::ColourReview => &[
                 "color",
                 "palette",
@@ -1607,6 +1619,7 @@ impl Item {
             Item::CompareVersion => Action::CompareVersion,
             Item::SaveNamedVersion => Action::SaveNamedVersion,
             Item::ColourReview => Action::ColourReview,
+            Item::SystemHealth => Action::SystemHealth,
             Item::RotateQuarter(clockwise) => Action::RotateQuarter(clockwise),
             Item::TransformAgain => Action::TransformAgain,
             Item::Repeat(way) => Action::Repeat(way),
@@ -4016,6 +4029,7 @@ impl MastikApp {
             | Item::CompareVersion
             | Item::SaveNamedVersion
             | Item::ColourReview
+            | Item::SystemHealth
             | Item::RotateQuarter(_)
             | Item::TransformAgain
             | Item::Repeat(_)

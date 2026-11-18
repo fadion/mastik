@@ -152,6 +152,7 @@ impl MastikApp {
         // rename, Clean up or Fill with content would run under Find's corner on
         // any canvas short of a wide one.
         self.colour_review.open = false;
+        self.system_health = None;
         self.batch_rename = None;
         self.clean_up = None;
         self.fill_content = None;

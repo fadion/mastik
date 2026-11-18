@@ -677,6 +677,7 @@ selects its layer, `Shift` + a label adds it; a label is two letters, the first 
   chord, as *Outline shape*.
 - **Check contrast** — a Tools menu row and a palette verb (`Action::CheckContrast`), no chord.
 - **Simulate vision** — a Tools menu row and a palette verb (`Action::SimulateVision`), no chord.
+- **System health…** — a Tools menu row and a palette verb (`Action::SystemHealth`), no chord.
 - **Clean up…** — a Tools menu row and a palette verb (`Action::CleanUp`), no chord.
 - **Remove unused pictures** — a Tools menu row and a palette verb
   (`Action::RemoveUnusedImages`), no chord.
