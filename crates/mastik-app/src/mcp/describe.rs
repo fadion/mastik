@@ -8,8 +8,9 @@ use serde_json::{Value, json};
 /// those whose name holds `query`, then of those whose description alone does,
 /// at most [`DESCRIBED`]; with `brief`, every match's name and description only.
 /// A name that is no tool is answered in `not_found`. A chat at `level` is
-/// offered only what that level runs, and a tool named above it is answered in
-/// `beyond_access`.
+/// offered only what that level runs; a tool named above it, or one `query`
+/// matches that a higher level runs, is answered in `beyond_access` with the
+/// level it needs.
 pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Value {
     let within = |d: &Value| {
         let name = d["name"].as_str().unwrap_or_default();
@@ -44,10 +45,27 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
     let mut matching: Vec<(u8, &Value)> =
         all.iter().filter_map(|d| rank(d).map(|r| (r, d))).collect();
     matching.sort_by_key(|(r, _)| *r);
-    let (beyond_access, not_found): (Vec<&str>, Vec<&str>) = names
+    let (mut beyond_access, not_found): (Vec<&str>, Vec<&str>) = names
         .iter()
         .filter(|n| !all.iter().any(|d| d["name"] == **n))
         .partition(|n| beyond.iter().any(|d| d["name"] == **n));
+    // A query's matches above the level too, the ones some level runs: an
+    // agent that searched for a thing it may not do would otherwise conclude
+    // that no tool does it, and could not tell the person what would.
+    let mut above: Vec<(u8, &str)> = beyond
+        .iter()
+        .filter_map(|d| {
+            let name = d["name"].as_str()?;
+            let r = rank(d).filter(|&r| r > 0)?;
+            needs(name).is_some().then_some((r, name))
+        })
+        .collect();
+    above.sort_by_key(|(r, _)| *r);
+    for (_, name) in above.into_iter().take(DESCRIBED) {
+        if !beyond_access.contains(&name) {
+            beyond_access.push(name);
+        }
+    }
     let (tools, more): (Vec<Value>, usize) = if brief {
         let tools = matching
             .iter()
@@ -71,9 +89,27 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
         answer["not_found"] = json!(not_found);
     }
     if !beyond_access.is_empty() {
-        answer["beyond_access"] = json!(beyond_access);
+        let entries: Vec<Value> = beyond_access
+            .iter()
+            .map(|name| match needs(name) {
+                Some(l) => json!({ "name": name, "needs": l.label() }),
+                None => json!({ "name": name, "needs": "no chat" }),
+            })
+            .collect();
+        answer["beyond_access"] = json!(entries);
+        answer["said"] = json!(
+            "`beyond_access` runs only at the access it `needs`, above this chat's: \
+             don't call it; tell the person, who can switch the chat's access."
+        );
     }
     answer
+}
+
+/// The lowest access level that runs `tool`, `None` when no chat's does.
+fn needs(tool: &str) -> Option<access::Level> {
+    access::Level::ALL
+        .into_iter()
+        .find(|&l| access::allowed(l, tool))
 }
 
 /// Every tool's `tools/list` entry, listed or not.

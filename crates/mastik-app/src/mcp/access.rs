@@ -285,10 +285,13 @@ mod tests {
 
     /// A granted chat's mistyped tool, by name or as a `batch` step, is
     /// refused as no tool with the nearest names, not as beyond its access;
-    /// `describe_tools` finds `propose_edit` and offers a chat only its level's
-    /// tools; and a chat key no grant holds is listed nothing.
+    /// `describe_tools` finds `propose_edit`, offers a chat only its level's
+    /// tools and names those above it with the level they need; and a chat key
+    /// no grant holds is listed nothing.
     ///
-    /// flip: `refused` without its `is_tool` filter → fails at "as no tool".
+    /// flip: `refused` without its `is_tool` filter → fails at "as no tool";
+    /// `describe_tools` without its query's matches above the level → fails at
+    /// "the query's matches above Look".
     #[test]
     fn a_chat_is_told_the_truth_about_tools_it_cannot_use() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -332,7 +335,32 @@ mod tests {
             offered.iter().all(|t| allowed(Level::Look, t)),
             "{offered:?}"
         );
-        assert_eq!(found["beyond_access"], json!(["set_fills"]), "{found}");
+        let beyond = found["beyond_access"].as_array().unwrap();
+        assert_eq!(
+            beyond[0],
+            json!({ "name": "set_fills", "needs": "Edit" }),
+            "the named one first: {found}"
+        );
+        assert!(
+            beyond.iter().all(|b| b["needs"] != "Look") && beyond.len() > 1,
+            "and the query's matches above Look: {found}"
+        );
+        grants.grant("assistant-3", Level::Propose, nobody());
+        let args = json!({ "query": "photo", "brief": true });
+        let found = keyed(
+            &mut engine,
+            &mut docs,
+            4,
+            Some("assistant-3"),
+            "describe_tools",
+            args,
+        );
+        assert!(
+            ok(&found)["beyond_access"]
+                .as_array()
+                .is_some_and(|b| b.contains(&json!({ "name": "place_asset", "needs": "Edit" }))),
+            "a photo search at Propose finds the placement and the level it needs: {found:?}"
+        );
 
         let lists = grants.lists();
         assert_eq!(lists(Some("assistant-old"), None), Some(Vec::new()));
