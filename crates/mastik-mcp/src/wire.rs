@@ -39,6 +39,7 @@ coordinates, its box's left and top as `x`, `y` (or `at` in `set`). To add to a 
 `get_outline`, then `design_context` on the frame for its styles, sections and gaps, then one \
 `insert_subtree` whose layers take a sample's look with `like`, then `export_png` with a \
 `region` (and `since` your first `rev`, to see what you changed), `check_layout` and `review`. \
+A small edit to layers you know needs only the write and one `export_png` of its `region`. \
 Edit layers with `set`; run several writes as one step with `batch`, or between \
 `group_steps` begin and end. Values take short forms: a colour as \"#rrggbb\" or \"#rrggbbaa\", a fill or stroke as \
 a colour, a length as \"22px\", enum words in any case, a text's sizing and a stroke's width \
