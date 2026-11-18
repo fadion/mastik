@@ -37,54 +37,33 @@ pub(super) fn run(docs: &mut impl Documents, path: &Path, call: &Call) -> Result
 /// the app's review starts ticked applied as one undo step (removals only when
 /// asked), as *Import tokens* applies them.
 fn import_tokens(s: &mut EditorSession, client: &str, args: &Value) -> Result<Answer, String> {
-    use mastik_export::dtcg_in::{self, Change};
     let text = match args.get("tokens") {
         Some(Value::String(t)) => t.clone(),
         Some(v @ Value::Object(_)) => v.to_string(),
         _ => return Err("needs `tokens`: the DTCG file's JSON".into()),
     };
-    let file = dtcg_in::parse(&text).map_err(|r| format!("Not design tokens: {r}"))?;
-    let t = s.doc.variables();
-    let into = match args.get("collection").and_then(Value::as_str) {
-        None => t.first_collection().id,
-        Some(name) => t
-            .collections()
-            .iter()
-            .find(|c| c.name == name)
-            .map(|c| c.id)
-            .ok_or_else(|| format!("no collection called `{name}`"))?,
-    };
-    let review = dtcg_in::review(&s.doc, &file, into, &mut s.ids)
-        .map_err(|r| format!("The tokens cannot be read: {r}"))?;
+    let collection = args.get("collection").and_then(Value::as_str);
     let removals = args.get("removals").and_then(Value::as_bool) == Some(true);
-    let ticked: Vec<bool> = review
-        .rows
-        .iter()
-        .map(|r| r.ticked || (removals && r.change == Change::Removed))
-        .collect();
-    let ops = review.ops(&s.doc, &ticked)?;
-    let count = |c: Change| {
-        review
-            .rows
-            .iter()
-            .zip(&ticked)
-            .filter(|(r, on)| **on && r.change == c)
-            .count()
-    };
+    let one = crate::tokens_import::one_shot(&s.doc, &mut s.ids, &text, collection, removals)?;
     let report = json!({
-        "added": count(Change::Added),
-        "changed": count(Change::Changed),
-        "renamed": count(Change::Renamed),
-        "removed": count(Change::Removed),
-        "kit": review.rows.iter().filter(|r| r.change == Change::Kit).count(),
-        "left_out": review
+        "added": one.added,
+        "changed": one.changed,
+        "renamed": one.renamed,
+        "removed": one.removed,
+        "kit": one.kit,
+        "left_out": one
             .left_out
             .iter()
             .map(|l| json!({ "token": l.path, "type": l.ty }))
             .collect::<Vec<_>>(),
     });
-    if !ops.is_empty() {
-        commit(s, client, "import_tokens", mastik_core::Transaction(ops))?;
+    if !one.ops.is_empty() {
+        commit(
+            s,
+            client,
+            "import_tokens",
+            mastik_core::Transaction(one.ops),
+        )?;
     }
     Ok(Answer::Json(report))
 }

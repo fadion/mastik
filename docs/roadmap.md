@@ -33,9 +33,6 @@ The CLI's design lives in `design/export.md` *CLI*; each item adds its passage t
 
 - **`--help`, `help <cmd>` and `--version`.** `main.rs` `parse` treats them as a malformed
   command line; each subcommand has its own usage string, but nothing lists the commands.
-- **`mastik tokens import <file> <tokens.json> [--removals] [-o]`.** The mirror of `tokens
-  export` and of MCP `import_tokens` (`dtcg_in::Review`, every row it starts ticked): a one-shot
-  apply, not a linked file, so a tokens repository can push into documents from CI.
 - **`mastik kit update <files…>`.** `accept_kit_updates` (`kit::update_all`) across many
   documents at once, where a CLI beats an agent going call by call.
 - **`mastik run` speaks the MCP's language.** It takes JSON registry verbs only

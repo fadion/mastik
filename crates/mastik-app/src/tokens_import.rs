@@ -116,6 +116,72 @@ fn local_path(path: &Path) -> bool {
     local && !(cfg!(windows) && device)
 }
 
+/// What a one-shot import applies, with no review drawn: the MCP's
+/// `import_tokens` and `mastik tokens import`.
+pub(crate) struct OneShot {
+    /// The ops of every row the review starts ticked, removals only when asked.
+    pub ops: Vec<mastik_core::Operation>,
+    pub added: usize,
+    pub changed: usize,
+    pub renamed: usize,
+    pub removed: usize,
+    /// The rows a kit's variable or style answers, which an import leaves to the kit.
+    pub kit: usize,
+    pub left_out: Vec<dtcg_in::LeftOut>,
+}
+
+/// Read `text` as DTCG tokens and work out what a one-shot import of it into
+/// `doc` applies: the file's tokens that name no collection land in the one
+/// named `collection`, else the first.
+pub(crate) fn one_shot(
+    doc: &mastik_core::Document,
+    ids: &mut IdSource,
+    text: &str,
+    collection: Option<&str>,
+    removals: bool,
+) -> Result<OneShot, String> {
+    let file = dtcg_in::parse(text).map_err(|r| format!("Not design tokens: {r}"))?;
+    let t = doc.variables();
+    let into = match collection {
+        None => t.first_collection().id,
+        Some(name) => t
+            .collections()
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| c.id)
+            .ok_or_else(|| format!("the document has no collection called `{name}`"))?,
+    };
+    let review = dtcg_in::review(doc, &file, into, ids)
+        .map_err(|r| format!("The tokens cannot be read: {r}"))?;
+    let ticked: Vec<bool> = review
+        .rows
+        .iter()
+        .map(|r| r.ticked || (removals && r.change == Change::Removed))
+        .collect();
+    let ops = review.ops(doc, &ticked)?;
+    let count = |c: Change| {
+        review
+            .rows
+            .iter()
+            .zip(&ticked)
+            .filter(|(r, on)| **on && r.change == c)
+            .count()
+    };
+    Ok(OneShot {
+        added: count(Change::Added),
+        changed: count(Change::Changed),
+        renamed: count(Change::Renamed),
+        removed: count(Change::Removed),
+        kit: review
+            .rows
+            .iter()
+            .filter(|r| r.change == Change::Kit)
+            .count(),
+        left_out: review.left_out.clone(),
+        ops,
+    })
+}
+
 /// The linked file's text: a regular local file of UTF-8, read to at most `cap`
 /// bytes; `None` for anything else — a share, a device, a pipe, a stream with
 /// no end.

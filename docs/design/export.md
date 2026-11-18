@@ -304,6 +304,7 @@ The export crate: SVG, PDF, PNG, JPEG, WebP, ICO and ICNS, code export (HTML/CSS
   node's wire form or `add_image`'s image id), and exits 1 naming the step and the parameter when
   one is refused. Its pictures are hashed and sized as an import's are (`import_files::Pictures`).
 - `mastik tokens export <file> [--mode <name>] [-o tokens.json]` writes `dtcg::tokens` to `-o`, or to stdout without one, with each note on stderr. A `--mode` the document does not have is refused, naming the modes it has; one it has sets `$value` for its own collection only.
+- `mastik tokens import <file> <tokens.json> [--collection <name>] [--removals] [-o out.mastik]` is its mirror and the MCP `import_tokens`'s: a one-shot apply, never a link, so a tokens repository can push into documents from CI. Every row *Import tokens*' review starts ticked is applied (`tokens_import::one_shot`), the removals only with `--removals`, through an editor session's commit, and the document is written atomically over itself unless `-o` names another file. It prints the counts (`2 added, 1 changed, 0 renamed, 0 removed; wrote a.mastik`), the left-out tokens and the rows a kit holds on stderr, and writes nothing when nothing changes. A file that is not design tokens, or a `--collection` the document lacks, exits 1.
 
 ### In the app
 

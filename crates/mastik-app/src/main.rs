@@ -53,6 +53,9 @@
 //! mastik tokens export <file> [--mode <name>] [-o out.json]
 //!                                variables and styles as DTCG tokens.json,
 //!                                the default mode's values unless --mode
+//! mastik tokens import <file> <tokens.json> [--collection <name>] [--removals] [-o out]
+//!                                apply a tokens.json once, written over the
+//!                                document unless -o
 //! mastik serve                    headless: documents behind the MCP endpoint (§8.2)
 //! mastik mcp-proxy [--client <key>] [--document <path>]
 //!                                the MCP server an agent harness configures
@@ -237,6 +240,17 @@ enum Command {
     TokensExport {
         file: String,
         mode: Option<String>,
+        out: Option<String>,
+    },
+    /// Apply a DTCG `tokens.json` to the document once, every row *Import
+    /// tokens* starts ticked, written over `file` unless `out` names another.
+    TokensImport {
+        file: String,
+        tokens: String,
+        /// Where the file's tokens that name no collection land; the first else.
+        collection: Option<String>,
+        /// Also remove what the document has and the file does not.
+        removals: bool,
         out: Option<String>,
     },
     /// `mastik mcp-proxy`, with the client key the host keeps its state under,
@@ -609,10 +623,13 @@ fn run_script(script: &str, input: Option<&str>, out: &str) -> Result<Vec<String
 }
 
 fn parse_tokens(args: &[String]) -> Result<Command, String> {
-    const USAGE: &str =
-        "usage: mastik tokens export <file.mastik> [--mode <name>] [-o <tokens.json>]";
-    if args.first().map(String::as_str) != Some("export") {
-        return Err(USAGE.to_string());
+    const USAGE: &str = "usage: mastik tokens export <file.mastik> [--mode <name>] [-o <tokens.json>]\n       \
+         mastik tokens import <file.mastik> <tokens.json> [--collection <name>] [--removals] \
+         [-o <out.mastik>]";
+    match args.first().map(String::as_str) {
+        Some("export") => {}
+        Some("import") => return parse_tokens_import(&args[1..], USAGE),
+        _ => return Err(USAGE.to_string()),
     }
     let (mut file, mut mode, mut out) = (None, None, None);
     let mut i = 1;
@@ -644,6 +661,92 @@ fn parse_tokens(args: &[String]) -> Result<Command, String> {
         mode,
         out,
     })
+}
+
+/// `mastik tokens import`'s arguments, after `import`.
+fn parse_tokens_import(args: &[String], usage: &str) -> Result<Command, String> {
+    let (mut files, mut collection, mut removals, mut out) = (Vec::new(), None, false, None);
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--removals" => removals = true,
+            flag @ ("--collection" | "-o" | "--out") => {
+                i += 1;
+                let value = args.get(i).filter(|v| !v.starts_with('-'));
+                let value = value.ok_or_else(|| format!("{flag} wants a value\n{usage}"))?;
+                match flag {
+                    "--collection" => collection = Some(value.clone()),
+                    _ => out = Some(value.clone()),
+                }
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("unknown option {other}\n{usage}"));
+            }
+            other => files.push(other.to_string()),
+        }
+        i += 1;
+    }
+    match <[String; 2]>::try_from(files) {
+        Ok([file, tokens]) => Ok(Command::TokensImport {
+            file,
+            tokens,
+            collection,
+            removals,
+            out,
+        }),
+        Err(files) => Err(format!(
+            "tokens import takes a document and a tokens file; got {} of them\n{usage}",
+            files.len()
+        )),
+    }
+}
+
+/// `mastik tokens import`: the rows applied through an editor session, so they
+/// settle as the review's *Import* does, and the document written atomically,
+/// over itself unless `out` names another file. Nothing is written when nothing
+/// changes. Answers the line to print; what is left out goes to stderr.
+fn run_tokens_import(
+    file: &str,
+    tokens: &str,
+    collection: Option<&str>,
+    removals: bool,
+    out: Option<&str>,
+) -> Result<String, String> {
+    let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
+    let text = std::fs::read_to_string(tokens).map_err(|e| format!("cannot read {tokens}: {e}"))?;
+    let mut s = session::EditorSession::new();
+    s.adopt_document(doc, None);
+    let one = tokens_import::one_shot(&s.doc, &mut s.ids, &text, collection, removals)?;
+    for l in &one.left_out {
+        eprintln!("left out: {} ({})", l.path, l.ty);
+    }
+    if one.kit > 0 {
+        eprintln!(
+            "{} {} to a kit, left as the kit has it",
+            one.kit,
+            if one.kit == 1 {
+                "token belongs"
+            } else {
+                "tokens belong"
+            }
+        );
+    }
+    let counts = format!(
+        "{} added, {} changed, {} renamed, {} removed",
+        one.added, one.changed, one.renamed, one.removed
+    );
+    if one.ops.is_empty() {
+        return Ok(format!("nothing to change in {file}"));
+    }
+    s.try_commit(mastik_core::Transaction(one.ops))
+        .map_err(|e| format!("cannot apply {tokens}: {e:?}"))?;
+    let saved = mastik_core::io::save(&s.doc).map_err(|e| format!("cannot save: {e}"))?;
+    let out = out.unwrap_or(file);
+    // Atomic: the default target is the document itself.
+    atomic::write(std::path::Path::new(out), &saved)
+        .map_err(|e| format!("cannot write {out}: {e}"))?;
+    Ok(format!("{counts}; wrote {out}"))
 }
 
 fn parse_export(args: &[String]) -> Result<Command, String> {
@@ -1051,6 +1154,20 @@ fn main() {
         Ok(Command::TokensExport { file, mode, out }) => {
             run_tokens_export(&file, mode.as_deref(), out.as_deref())
         }
+        Ok(Command::TokensImport {
+            file,
+            tokens,
+            collection,
+            removals,
+            out,
+        }) => run_tokens_import(
+            &file,
+            &tokens,
+            collection.as_deref(),
+            removals,
+            out.as_deref(),
+        )
+        .map(|line| println!("{line}")),
         Ok(Command::Serve) => mcp::serve::run(),
         Ok(Command::McpProxy {
             client,
@@ -1869,6 +1986,111 @@ mod tests {
         ] {
             assert!(export(refused).is_err(), "{refused:?}");
         }
+    }
+
+    /// `tokens import` takes a document, a tokens file, a collection, removals and
+    /// an output, and refuses the rest.
+    #[test]
+    fn tokens_import_takes_a_document_and_a_tokens_file() {
+        let tokens = |s: &[&str]| {
+            let mut v = vec!["tokens".to_string(), "import".to_string()];
+            v.extend(s.iter().map(|a| a.to_string()));
+            parse(&v)
+        };
+        assert_eq!(
+            tokens(&[
+                "a.mastik",
+                "t.json",
+                "--removals",
+                "--collection",
+                "Brand",
+                "-o",
+                "b.mastik"
+            ]),
+            Ok(Command::TokensImport {
+                file: "a.mastik".into(),
+                tokens: "t.json".into(),
+                collection: Some("Brand".into()),
+                removals: true,
+                out: Some("b.mastik".into()),
+            })
+        );
+        for refused in [
+            &["a.mastik"][..],
+            &["a.mastik", "t.json", "u.json"],
+            &["a.mastik", "t.json", "--collection"],
+            &["a.mastik", "t.json", "--mode", "Dark"],
+        ] {
+            assert!(tokens(refused).is_err(), "{refused:?}");
+        }
+    }
+
+    /// An import adds the file's tokens, changes a value it moved, keeps what it
+    /// dropped unless `--removals` asks, writes nothing when nothing changes, and
+    /// leaves the document alone under `-o`.
+    ///
+    /// flip: `one_shot` ticking removals whatever is asked → fails at the first
+    /// red import's count, `1 removed`.
+    #[test]
+    fn tokens_import_applies_the_file_once() {
+        let dir = std::env::temp_dir().join(format!("mastik-tokens-in-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("a.mastik");
+        let blank = mastik_core::io::save(&mastik_core::Document::new(
+            mastik_core::IdSource::new(0xD6).mint(),
+        ))
+        .unwrap();
+        std::fs::write(&doc, &blank).unwrap();
+        let doc = doc.to_string_lossy().into_owned();
+        let write = |name: &str, text: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, text).unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        let both = write(
+            "both.json",
+            r##"{"brand": {"$type": "color", "$value": "#3366cc"},
+                "sm": {"$type": "dimension", "$value": "8px"}}"##,
+        );
+        let red = write(
+            "red.json",
+            r##"{"brand": {"$type": "color", "$value": "#ff0000"}}"##,
+        );
+        let names = || -> Vec<String> {
+            let d = mastik_core::io::load(&std::fs::read(&doc).unwrap()).unwrap();
+            let mut n: Vec<String> = d.variables().iter().map(|v| v.name.clone()).collect();
+            n.sort();
+            n
+        };
+
+        let copy = dir.join("b.mastik").to_string_lossy().into_owned();
+        run_tokens_import(&doc, &both, None, false, Some(&copy)).unwrap();
+        assert_eq!(
+            std::fs::read(&doc).unwrap(),
+            blank,
+            "-o leaves the document"
+        );
+
+        let line = run_tokens_import(&doc, &both, None, false, None).unwrap();
+        assert!(line.contains(" 0 changed"), "{line}");
+        assert_eq!(names(), ["brand", "sm"]);
+        let applied = std::fs::read(&doc).unwrap();
+        let line = run_tokens_import(&doc, &both, None, false, None).unwrap();
+        assert!(line.starts_with("nothing to change"), "{line}");
+        assert_eq!(std::fs::read(&doc).unwrap(), applied, "nothing written");
+
+        let line = run_tokens_import(&doc, &red, None, false, None).unwrap();
+        assert!(
+            line.starts_with("0 added, 1 changed, 0 renamed, 0 removed"),
+            "{line}"
+        );
+        assert_eq!(names(), ["brand", "sm"], "kept without --removals");
+        let line = run_tokens_import(&doc, &red, None, true, None).unwrap();
+        assert!(line.contains(" 1 removed"), "{line}");
+        assert_eq!(names(), ["brand"]);
+
+        assert!(run_tokens_import(&doc, &red, Some("Nope"), false, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `merge` takes three documents and an output, and refuses the rest.
