@@ -5,6 +5,8 @@
 //!
 //! ```text
 //! mastik [gui]                    launch the GUI shell (default)
+//! mastik --help | help <command> | --version
+//!                                the commands, what one takes, the version
 //! mastik export <file> [--svg|--pdf|--png|--jpeg|--webp|--json|--html|--react|--vue
 //!            |--penpot|--sketch] [-o out]
 //!            [--outlines] [--frames] [--scale <n> | --width <px> | --height <px>]
@@ -196,6 +198,9 @@ enum Command {
     Gui { open: Option<std::path::PathBuf> },
     /// Host documents with no window, behind the MCP endpoint (§8.2).
     Serve,
+    /// `--help`, `help <command>`, a command's `--help` or `--version`: the text
+    /// to print on stdout, exiting 0.
+    Help(String),
     /// A one-off export of a page, or of some of its layers, in one format.
     Export(OneOff),
     /// Run the document's own export settings (§7) — every layer that carries any,
@@ -372,9 +377,9 @@ impl ExportFormat {
 /// re-invocations — an allowlist on the first argument, since the re-invocations
 /// carry arguments too.
 ///
-/// It lists what reaches the hook, not what avoids it, so a mistyped
-/// `mastik exprot …` or `mastik --version` never reaches it and `parse` refuses it
-/// with exit 2.
+/// It lists what reaches the hook, not what avoids it, so `mastik --version` never
+/// reaches it, nor does a mistyped `mastik exprot …`, which `parse` refuses with
+/// exit 2.
 fn hook_runs(args: &[String]) -> bool {
     match args.first() {
         None => true,
@@ -415,13 +420,83 @@ fn unicode_args(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Vec<St
     .collect()
 }
 
+const DIFF_USAGE: &str = "usage: mastik diff <a.mastik> <b.mastik> [--json]";
+const MERGE_USAGE: &str =
+    "usage: mastik merge <base.mastik> <ours.mastik> <theirs.mastik> [-o <out.mastik>]";
+const RUN_USAGE: &str = "usage: mastik run <script.json> [--in <file.mastik>] -o <out.mastik>";
+const MCP_PROXY_USAGE: &str =
+    "usage: mastik mcp-proxy [--client <key>] [--document <path>] [--tools core|all]";
+const SERVE_USAGE: &str = "usage: mastik serve (an agent picks documents with use_document)";
+const GUI_USAGE: &str = "usage: mastik [gui] [<file.mastik>]";
+
+/// `mastik --help`: what the binary is and every command it takes, in the order
+/// a build script is likeliest to want them.
+const OVERVIEW: &str =
+    "Mastik, a 2D design tool. With no command, or a .mastik file, it opens the window.
+
+usage: mastik [<file.mastik>]
+       mastik <command> [arguments]
+
+commands:
+  export     a page or some layers to a file, or the document's own export settings
+  render     a component once per CSV row, or every frame once per mode
+  check      contrast, code, review, health or layout checks, for CI
+  diff       what changed from one document to another
+  merge      a three-way merge, as git's merge driver
+  tokens     DTCG design tokens out of a document, or into one
+  run        a script of registry verbs, applied to a document
+  serve      documents behind the MCP endpoint, with no window
+  mcp-proxy  the MCP server an agent harness configures
+  gui        the window
+
+`mastik help <command>` shows what a command takes; `mastik --version` the version.";
+
+/// The commands `OVERVIEW` lists, each with what it takes.
+const COMMANDS: [(&str, &str); 10] = [
+    ("export", EXPORT_USAGE),
+    ("render", render_cli::USAGE),
+    ("check", check_cli::USAGE),
+    ("diff", DIFF_USAGE),
+    ("merge", MERGE_USAGE),
+    ("tokens", TOKENS_USAGE),
+    ("run", RUN_USAGE),
+    ("serve", SERVE_USAGE),
+    ("mcp-proxy", MCP_PROXY_USAGE),
+    ("gui", GUI_USAGE),
+];
+
+/// What a command takes, `None` for one that does not exist.
+fn usage_of(command: &str) -> Option<&'static str> {
+    COMMANDS
+        .iter()
+        .find(|(name, _)| *name == command)
+        .map(|(_, usage)| *usage)
+}
+
 fn parse(args: &[String]) -> Result<Command, String> {
+    let help = |a: &String| a == "--help" || a == "-h";
+    // `mastik <command> … --help` anywhere after a command shows that command.
+    if let Some(usage) = args.first().and_then(|c| usage_of(c))
+        && args[1..].iter().any(help)
+    {
+        return Ok(Command::Help(usage.to_string()));
+    }
     match args.first().map(String::as_str) {
+        Some("--help" | "-h") if args.len() == 1 => Ok(Command::Help(OVERVIEW.to_string())),
+        Some("help") => match args.get(1..) {
+            Some([]) | None => Ok(Command::Help(OVERVIEW.to_string())),
+            Some([command]) => usage_of(command)
+                .map(|u| Command::Help(u.to_string()))
+                .ok_or_else(|| format!("no command {command}; `mastik --help` lists them")),
+            Some(_) => Err("usage: mastik help <command>".to_string()),
+        },
+        Some("--version" | "-V" | "version") if args.len() == 1 => Ok(Command::Help(format!(
+            "mastik {}",
+            env!("CARGO_PKG_VERSION")
+        ))),
         None | Some("gui") => Ok(Command::Gui { open: None }),
         Some("serve") if args.len() == 1 => Ok(Command::Serve),
-        Some("serve") => {
-            Err("usage: mastik serve (an agent picks documents with use_document)".to_string())
-        }
+        Some("serve") => Err(SERVE_USAGE.to_string()),
         Some("export") => parse_export(&args[1..]),
         Some("render") => render_cli::parse(&args[1..]).map(Command::Render),
         Some("diff") => parse_diff(&args[1..]),
@@ -438,12 +513,14 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 open: Some(std::path::absolute(file).map_err(|e| format!("mastik {file}: {e}"))?),
             }),
         },
-        Some(other) => Err(format!("unknown command: {other}")),
+        Some(other) => Err(format!(
+            "unknown command: {other}; `mastik --help` lists them"
+        )),
     }
 }
 
 fn parse_diff(args: &[String]) -> Result<Command, String> {
-    const USAGE: &str = "usage: mastik diff <a.mastik> <b.mastik> [--json]";
+    const USAGE: &str = DIFF_USAGE;
     let mut files = Vec::new();
     let mut json = false;
     for arg in args {
@@ -467,8 +544,7 @@ fn parse_diff(args: &[String]) -> Result<Command, String> {
 /// `mastik mcp-proxy [--client <key>] [--document <path>]`; the key falls back to
 /// `MASTIK_MCP_CLIENT`.
 fn parse_mcp_proxy(args: &[String]) -> Result<Command, String> {
-    const USAGE: &str =
-        "usage: mastik mcp-proxy [--client <key>] [--document <path>] [--tools core|all]";
+    const USAGE: &str = MCP_PROXY_USAGE;
     let (mut client, mut document, mut tools) = (None, None, None);
     let mut i = 0;
     while i < args.len() {
@@ -503,8 +579,7 @@ fn parse_mcp_proxy(args: &[String]) -> Result<Command, String> {
 }
 
 fn parse_merge(args: &[String]) -> Result<Command, String> {
-    const USAGE: &str =
-        "usage: mastik merge <base.mastik> <ours.mastik> <theirs.mastik> [-o <out.mastik>]";
+    const USAGE: &str = MERGE_USAGE;
     let (mut files, mut out) = (Vec::new(), None);
     let mut i = 0;
     while i < args.len() {
@@ -556,7 +631,7 @@ fn run_merge(base: &str, ours: &str, theirs: &str, out: Option<&str>) -> Result<
 }
 
 fn parse_run(args: &[String]) -> Result<Command, String> {
-    const USAGE: &str = "usage: mastik run <script.json> [--in <file.mastik>] -o <out.mastik>";
+    const USAGE: &str = RUN_USAGE;
     let (mut script, mut input, mut out) = (None, None, None);
     let mut i = 0;
     while i < args.len() {
@@ -622,10 +697,13 @@ fn run_script(script: &str, input: Option<&str>, out: &str) -> Result<Vec<String
         .collect())
 }
 
+/// What `mastik tokens` takes, for its refusals and `help tokens`.
+const TOKENS_USAGE: &str = "usage: mastik tokens export <file.mastik> [--mode <name>] [-o <tokens.json>]\n       \
+     mastik tokens import <file.mastik> <tokens.json> [--collection <name>] [--removals] \
+     [-o <out.mastik>]";
+
 fn parse_tokens(args: &[String]) -> Result<Command, String> {
-    const USAGE: &str = "usage: mastik tokens export <file.mastik> [--mode <name>] [-o <tokens.json>]\n       \
-         mastik tokens import <file.mastik> <tokens.json> [--collection <name>] [--removals] \
-         [-o <out.mastik>]";
+    const USAGE: &str = TOKENS_USAGE;
     match args.first().map(String::as_str) {
         Some("export") => {}
         Some("import") => return parse_tokens_import(&args[1..], USAGE),
@@ -749,8 +827,8 @@ fn run_tokens_import(
     Ok(format!("{counts}; wrote {out}"))
 }
 
-fn parse_export(args: &[String]) -> Result<Command, String> {
-    const USAGE: &str = "usage: mastik export <file.mastik> [--svg|--pdf|--html|--react|--vue] [--outlines] \
+/// What `mastik export` takes, for its refusals and `help export`.
+const EXPORT_USAGE: &str = "usage: mastik export <file.mastik> [--svg|--pdf|--html|--react|--vue] [--outlines] \
          [--page <name|n>] [--layer <name|id>]... [-o <out>]\n       \
          mastik export <file.mastik> --png|--jpeg|--webp [--scale <n>|--width <px>|--height <px>] \
          [--quality <1-100>] [--page <name|n>] [--layer <name|id>]... [-o <out>]\n       \
@@ -760,6 +838,9 @@ fn parse_export(args: &[String]) -> Result<Command, String> {
          mastik export <file.mastik> --pdf --frames [--outlines] [--page <name|n>] [-o <out>]\n       \
          mastik export <file.mastik> --all [--scale-override <2x|512w|512h>] [--folders] \
          [--page <name|n>] [-o <dir>]";
+
+fn parse_export(args: &[String]) -> Result<Command, String> {
+    const USAGE: &str = EXPORT_USAGE;
     let mut file = None;
     let mut format = None;
     let mut out = None;
@@ -1169,6 +1250,10 @@ fn main() {
         )
         .map(|line| println!("{line}")),
         Ok(Command::Serve) => mcp::serve::run(),
+        Ok(Command::Help(text)) => {
+            println!("{text}");
+            Ok(())
+        }
         Ok(Command::McpProxy {
             client,
             document,
@@ -1817,8 +1902,64 @@ mod tests {
         assert!(parse(&args(&["mcp-proxy", "--port", "1"])).is_err());
     }
 
+    /// `--help` and `help` list the commands, `help <command>` and a command's own
+    /// `--help` show what it takes (the usage its refusals print), and `--version`
+    /// names the version; a command `help` does not know is refused. Every listed
+    /// command is one `parse` dispatches, though nothing checks that `parse`
+    /// dispatches no command the list lacks.
+    ///
+    /// flip: `parse` checking a command's own `--help` after dispatch → fails at
+    /// `export --help`.
+    #[test]
+    fn help_lists_the_commands_and_shows_each() {
+        let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let help = |s: &[&str]| match parse(&args(s)) {
+            Ok(Command::Help(text)) => text,
+            other => panic!("{s:?} is not help: {other:?}"),
+        };
+        for overview in [&["--help"][..], &["-h"], &["help"]] {
+            assert_eq!(help(overview), OVERVIEW);
+        }
+        for (name, usage) in COMMANDS {
+            assert!(
+                OVERVIEW.contains(&format!("\n  {name} ")),
+                "{name} is listed"
+            );
+            assert_eq!(help(&["help", name]), usage);
+            assert!(
+                usage.starts_with(&format!(
+                    "usage: mastik {}",
+                    match name {
+                        "gui" => "[gui]",
+                        n => n,
+                    }
+                )),
+                "{usage}"
+            );
+            // Dispatched: a bare command is never "unknown".
+            let bare = parse(&args(&[name]));
+            assert!(
+                !bare
+                    .as_ref()
+                    .is_err_and(|e| e.starts_with("unknown command")),
+                "{name}: {bare:?}"
+            );
+        }
+        assert_eq!(
+            help(&["export", "a.mastik", "--png", "--help"]),
+            EXPORT_USAGE
+        );
+        assert_eq!(help(&["check", "-h"]), check_cli::USAGE);
+        assert_eq!(
+            help(&["--version"]),
+            format!("mastik {}", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(parse(&args(&["help", "exprot"])).is_err());
+        assert!(parse(&args(&["--version", "x"])).is_err());
+    }
+
     /// Only a GUI launch and Velopack's own re-invocations reach the install hook;
-    /// a CLI command or a malformed command line (a typo, `--version`) does not.
+    /// a CLI command, `--version`, `help` or a typo does not.
     ///
     /// flip: `hook_runs` as the negation of a three-subcommand allowlist → fails at
     /// `["exprot", "a.mastik"]`.

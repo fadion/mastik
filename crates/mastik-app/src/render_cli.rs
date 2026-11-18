@@ -10,7 +10,8 @@ use crate::session::EditorSession;
 use mastik_core::variant::{self, PropKind, PropValue, Property};
 use mastik_core::{Document, ExportFormat, ExportScale, ExportSpec, NodeId, NodeKind, Operation};
 
-const USAGE: &str = "usage: mastik render <file.mastik> --component <name> --data <rows.csv> \
+/// What `mastik render` takes, for its refusals and `help render`.
+pub(crate) const USAGE: &str = "usage: mastik render <file.mastik> --component <name> --data <rows.csv> \
      [--name-by <column>] [--png|--svg] [--scale <n>|--width <px>|--height <px>] [-o <dir>]\n       \
      mastik render <file.mastik> --all-modes [--page <name|n>] [--png|--svg] \
      [--scale <n>|--width <px>|--height <px>] [-o <dir>]";

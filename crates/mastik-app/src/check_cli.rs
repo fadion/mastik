@@ -9,7 +9,8 @@
 use mastik_core::{Document, NodeId};
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: mastik check contrast <file.mastik>... [--page <name|n>] \
+/// What `mastik check` takes, for its refusals and `help check`.
+pub(crate) const USAGE: &str = "usage: mastik check contrast <file.mastik>... [--page <name|n>] \
                      [--aaa|--apca] [--non-text] [--json]\n       \
                      mastik check code <file.mastik>... [--page <name|n>] [--json]\n       \
                      mastik check review <file.mastik>... [--page <name|n>] [--json]\n       \
