@@ -7297,7 +7297,20 @@ impl MastikApp {
             false => picked,
         };
         tools::reverse_subpaths(&mut subpaths, &which);
-        let tx = tools::rewrite_path(id, world, &subpaths, self.drawn_path(id));
+        let mut tx = tools::rewrite_path(id, world, &subpaths, self.drawn_path(id));
+        // A whole one-run path's ends trade places, so its markers go with them and
+        // an arrow still points where it did.
+        if subpaths.len() == 1
+            && !tx.0.is_empty()
+            && let Some(node) = self.session.doc.get(id)
+            && node.paint().strokes.iter().any(|s| s.start != s.end)
+        {
+            let mut strokes = node.paint().strokes.clone();
+            for s in &mut strokes {
+                std::mem::swap(&mut s.value.start, &mut s.value.end);
+            }
+            tx.0.push(mastik_core::Operation::SetStrokes { id, strokes });
+        }
         self.name_step_as(crate::menu::Item::ReverseSubpaths);
         if tx.0.is_empty() || !self.session.commit(tx) {
             return;
@@ -20773,6 +20786,35 @@ mod locked_path_verb_tests {
             depth,
             "and no undo step is spent on it"
         );
+    }
+
+    /// Reversing a one-run path swaps each stroke's ends with it, in the same undo
+    /// step, so an arrow still points the way it did.
+    /// flip: `reverse_subpaths` without its stroke swap → fails at "the ends swap".
+    #[test]
+    fn reversing_a_path_swaps_its_strokes_ends() {
+        use mastik_core::Marker;
+        let ctx = egui::Context::default();
+        let (mut app, id) = app_with_a_path(&ctx);
+        app.tool = Tool::Select;
+        app.session
+            .try_commit(Transaction(vec![Operation::SetStrokes {
+                id,
+                strokes: mastik_core::keyed_by_position([mastik_core::Stroke {
+                    end: Marker::Arrow,
+                    ..Default::default()
+                }]),
+            }]))
+            .expect("an arrow");
+        let depth = app.session.history.undo_depth();
+        app.reverse_subpaths();
+        let s = &app.session.doc.get(id).unwrap().paint().strokes[0];
+        assert_eq!(
+            (s.start, s.end),
+            (Marker::Arrow, Marker::None),
+            "the ends swap"
+        );
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "in one step");
     }
 }
 

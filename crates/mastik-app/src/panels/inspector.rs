@@ -31,8 +31,8 @@ use mastik_core::kurbo::{Affine, Cap, Join, Point, Rect, RoundedRectRadii, Size,
 use mastik_core::style::StyleSlot;
 use mastik_core::{
     Adjustment, BlendMode, DashStyle, Effect, EffectKind, Fill, GeometryPatch, GridAlign, GridAxis,
-    GuideAxis, Keyed, LayoutGrid, NodeId, NodeKind, Operation, OrientOp, PaintShown, PaintTarget,
-    Stroke, StrokeAlign, StrokeSides, TextSizing, Transaction, build,
+    GuideAxis, Keyed, LayoutGrid, Marker, NodeId, NodeKind, Operation, OrientOp, PaintShown,
+    PaintTarget, Stroke, StrokeAlign, StrokeSides, TextSizing, Transaction, build,
 };
 /// What the identity row's *Use as mask* would do to the current selection.
 ///
@@ -6354,6 +6354,8 @@ impl MastikApp {
         let aligns = self.stroke_rule(scope, mastik_core::geometry::stroke_align_applies);
         let sides_apply = self.stroke_rule(scope, mastik_core::geometry::stroke_sides_apply);
         let joins = self.stroke_rule(scope, mastik_core::geometry::stroke_join_applies);
+        // An open shape strokes centred, so its position slot holds the two ends.
+        let ends = !aligns && self.stroke_rule(scope, mastik_core::marker::applies);
         // Open, not "open or set": a collapsed row keeps its setting (`FieldButton::Set`).
         let shown = sides_apply && self.stroke_sides_open.contains(&index);
         let mut out = None;
@@ -6363,18 +6365,24 @@ impl MastikApp {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
                 let combo_w = Self::align_combo_width(ui);
-                let picked = Self::align_combo(
-                    ui,
-                    ("stroke-align", index),
-                    aligns,
-                    combo_w,
-                    Some(stroke.align),
-                );
-                if let Some(align) = picked.filter(|a| *a != stroke.align) {
-                    out = Some(Stroke {
-                        align,
-                        ..stroke.clone()
-                    });
+                if ends {
+                    if let Some(st) = Self::end_combos(ui, index, combo_w, stroke) {
+                        out = Some(st);
+                    }
+                } else {
+                    let picked = Self::align_combo(
+                        ui,
+                        ("stroke-align", index),
+                        aligns,
+                        combo_w,
+                        Some(stroke.align),
+                    );
+                    if let Some(align) = picked.filter(|a| *a != stroke.align) {
+                        out = Some(Stroke {
+                            align,
+                            ..stroke.clone()
+                        });
+                    }
                 }
                 let field_w = ui.available_width() - 28.0 * 2.0 - ui::CARD_COL_GAP * 2.0;
                 // Bound, the weight is a chip — a layer's own stroke only.
@@ -6413,7 +6421,7 @@ impl MastikApp {
                     28.0,
                     ui::FieldButton::on_if(open),
                 )
-                .on_hover_text("Dash, cap and join");
+                .on_hover_text("Dash, cap, join and ends");
                 if more.clicked() {
                     self.stroke_menu = if open { None } else { Some(index) };
                 }
@@ -6682,6 +6690,150 @@ impl MastikApp {
         let tx = self.strokes_tx(scope, next);
         self.named_valve("Stroke", icon::STROKE, resp, tx);
     }
+    /// One end's dropdown: its face `face`, `width` wide, its list every marker as
+    /// its glyph pointing the way that end does and its name. `at_end` picks the
+    /// end, which also keys the dropdown with `salt`. Answers the marker picked.
+    fn end_combo(
+        ui: &mut egui::Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug,
+        at_end: bool,
+        width: f32,
+        face: egui::WidgetText,
+        current: Marker,
+    ) -> (egui::Response, Option<Marker>) {
+        let mut chosen = current;
+        let resp = egui::ComboBox::from_id_salt((salt, at_end))
+            .icon(ui::combo_chevron)
+            .width(width)
+            .selected_text(face)
+            .show_ui(ui, |ui| {
+                ui::menu_rows(ui);
+                for m in Marker::ALL {
+                    let row = ui::glyph_and_text(end_glyph(m, at_end), m.label());
+                    ui.selectable_value(&mut chosen, m, row);
+                }
+            })
+            .response;
+        (resp, (chosen != current).then_some(chosen))
+    }
+
+    /// The stroke row's first slot on an open shape: the start and end dropdowns,
+    /// glyphs alone, sharing the position combo's width, two points apart.
+    fn end_combos(ui: &mut egui::Ui, index: usize, width: f32, stroke: &Stroke) -> Option<Stroke> {
+        const PAIR_GAP: f32 = 2.0;
+        let mut out = None;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = PAIR_GAP;
+            ui.spacing_mut().interact_size.y = ui::CONTROL_H;
+            ui.spacing_mut().button_padding.y = 0.0;
+            let w = (width - PAIR_GAP) / 2.0;
+            for (at_end, current) in [(false, stroke.start), (true, stroke.end)] {
+                let face = ui::glyph_face(end_glyph(current, at_end));
+                let (resp, picked) =
+                    Self::end_combo(ui, ("stroke-end-slot", index), at_end, w, face, current);
+                let line = if at_end {
+                    "End of the line"
+                } else {
+                    "Start of the line"
+                };
+                resp.on_hover_text(format!("{line}: {}", current.label()));
+                if let Some(m) = picked {
+                    out = Some(set_end(stroke, at_end, m));
+                }
+            }
+        });
+        out
+    }
+
+    /// The stroke popover's Ends group: the start and end dropdowns with their
+    /// words, a button that swaps them, and the Size both are drawn at. Dimmed,
+    /// with its reason, on a shape with no open end, so the popover keeps one
+    /// height; Size is dimmed while both ends are bare.
+    fn stroke_popover_ends(
+        &mut self,
+        ui: &mut egui::Ui,
+        inner: f32,
+        scope: PaintScope,
+        index: usize,
+        s: &Stroke,
+    ) -> Option<Stroke> {
+        const CELL: f32 = ui::CONTROL_H;
+        let applies = self.stroke_rule(scope, mastik_core::marker::applies);
+        let mut out = None;
+        let group = ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = ui::SECTION_LABEL_GAP;
+            if !applies {
+                ui.disable();
+            }
+            ui.label(ui::eyebrow("Ends"));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                ui.spacing_mut().interact_size.y = CELL;
+                ui.spacing_mut().button_padding.y = 0.0;
+                let w = (inner - CELL - ui::CARD_COL_GAP * 2.0) / 2.0;
+                let end = |ui: &mut egui::Ui, at_end: bool, current: Marker| {
+                    let face = ui::glyph_and_text(end_glyph(current, at_end), current.label());
+                    let (_, picked) =
+                        Self::end_combo(ui, ("stroke-end-menu", index), at_end, w, face, current);
+                    picked.map(|m| set_end(s, at_end, m))
+                };
+                if let Some(st) = end(ui, false, s.start) {
+                    out = Some(st);
+                }
+                let bare = s.start == s.end;
+                let swap = ui::field_button(
+                    ui,
+                    icon::ARROWS_LEFT_RIGHT,
+                    CELL,
+                    if bare {
+                        ui::FieldButton::Disabled
+                    } else {
+                        ui::FieldButton::Off
+                    },
+                )
+                .on_hover_text("Swap the ends");
+                if swap.clicked() && !bare {
+                    out = Some(Stroke {
+                        start: s.end,
+                        end: s.start,
+                        ..s.clone()
+                    });
+                }
+                if let Some(st) = end(ui, true, s.end) {
+                    out = Some(st);
+                }
+            });
+            ui.add_space(ui::CARD_ROW_GAP - ui::SECTION_LABEL_GAP);
+            // Under the group's own gate, which a second `disable` would fade twice.
+            ui::disable_unless(ui, !(s.start.is_none() && s.end.is_none()), |ui| {
+                let range = mastik_core::marker::SIZE_RANGE;
+                let mut percent = s.marker_size * 100.0;
+                let resp = value_field(
+                    ui,
+                    egui::vec2(inner, CELL),
+                    Prefix::Label("Size"),
+                    &mut percent,
+                    Scrub::whole(1.0).range(range.start() * 100.0..=range.end() * 100.0),
+                    |d| d.suffix("%").max_decimals(0),
+                )
+                .on_hover_text("How large both ends are drawn; 100% is three stroke widths");
+                self.stroke_valve(&resp, scope, index, move |st| {
+                    st.marker_size = mastik_core::marker::clamped_size(percent / 100.0);
+                });
+            });
+        });
+        // Through a claimant of its own, as the Join row's reason is.
+        if !applies {
+            ui.interact(
+                group.response.rect,
+                ui.id().with("dimmed-ends-group"),
+                egui::Sense::empty(),
+            )
+            .on_hover_text("Only a line, an arc, a spiral or an open path has ends");
+        }
+        out
+    }
+
     /// One stroke's dash, cap and join, behind the sliders button.
     ///
     /// An `Area`, so opening it does not push the strokes below down.
@@ -6926,6 +7078,9 @@ impl MastikApp {
                             egui::Sense::empty(),
                         )
                         .on_hover_text("Only a shape with corners takes a join");
+                    }
+                    if let Some(st) = self.stroke_popover_ends(ui, inner, scope, index, s) {
+                        out = Some(st);
                     }
                 });
             })
@@ -12936,6 +13091,32 @@ fn cap_label(c: Cap) -> &'static str {
         Cap::Round => "Rounded",
         Cap::Square => "Extended",
     }
+}
+/// The glyph of `m` at the line's end (`at_end`, pointing right) or its start
+/// (mirrored, pointing left); a bare end is one drawing for both.
+fn end_glyph(m: Marker, at_end: bool) -> &'static str {
+    match (m, at_end) {
+        (Marker::None, _) => icon::END_NONE,
+        (Marker::Arrow, true) => icon::END_ARROW,
+        (Marker::OpenArrow, true) => icon::END_OPEN_ARROW,
+        (Marker::Circle, true) => icon::END_CIRCLE,
+        (Marker::Square, true) => icon::END_SQUARE,
+        (Marker::Bar, true) => icon::END_BAR,
+        (Marker::Arrow, false) => icon::START_ARROW,
+        (Marker::OpenArrow, false) => icon::START_OPEN_ARROW,
+        (Marker::Circle, false) => icon::START_CIRCLE,
+        (Marker::Square, false) => icon::START_SQUARE,
+        (Marker::Bar, false) => icon::START_BAR,
+    }
+}
+/// `s` with the end `at_end` names (else its start) wearing `m`.
+fn set_end(s: &Stroke, at_end: bool, m: Marker) -> Stroke {
+    let mut out = s.clone();
+    match at_end {
+        true => out.end = m,
+        false => out.start = m,
+    }
+    out
 }
 fn sides_label(s: StrokeSides) -> &'static str {
     match s {

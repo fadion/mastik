@@ -899,10 +899,9 @@ pub mod icon {
     /// Colour review's merge: the target row the others fold into, and the *Merge
     /// colours* step.
     pub const ARROWS_MERGE: &str = "\u{ed3e}";
-    /// Unused: a split's grip wears [`DOTS_SIX_VERTICAL`], and a gap is
-    /// [`ARROWS_OUT_LINE_HORIZONTAL`]. Kept because dropping it means rebuilding
-    /// the font.
-    #[allow(dead_code)]
+    /// Swap the two ends of a line, the stroke popover's Ends group. Not a split's
+    /// grip, which wears [`DOTS_SIX_VERTICAL`], nor a gap,
+    /// [`ARROWS_OUT_LINE_HORIZONTAL`].
     pub const ARROWS_LEFT_RIGHT: &str = "\u{e0a0}";
     /// A box around several things: a multi-selection's identity, Compare's
     /// Overlay, a text's *Fixed size*, fitting the dash pattern to the shape's
@@ -918,6 +917,21 @@ pub mod icon {
     /// A stroke's cap: a stroke's end, rounded, against a dotted line where the
     /// path stops.
     pub const STROKE_CAP: &str = "\u{f03c}";
+    /// What a line's end wears (`mastik_core::Marker`), drawn pointing right: the
+    /// stem on the 7.5 axis, a filled head's own ink filled. The `START_*` set is
+    /// the same drawings mirrored, pointing left; a bare end is the one drawing for
+    /// both.
+    pub const END_NONE: &str = "\u{f07d}";
+    pub const END_ARROW: &str = "\u{f07e}";
+    pub const END_OPEN_ARROW: &str = "\u{f07f}";
+    pub const END_CIRCLE: &str = "\u{f080}";
+    pub const END_SQUARE: &str = "\u{f081}";
+    pub const END_BAR: &str = "\u{f082}";
+    pub const START_ARROW: &str = "\u{f083}";
+    pub const START_OPEN_ARROW: &str = "\u{f084}";
+    pub const START_CIRCLE: &str = "\u{f085}";
+    pub const START_SQUARE: &str = "\u{f086}";
+    pub const START_BAR: &str = "\u{f087}";
     // A step one way along a row: *Move left* / *Move right*, *Move earlier* /
     // *Move later*, a flex direction, batch rename's order.
     pub const ARROW_LEFT: &str = "\u{e058}";
@@ -1498,6 +1512,17 @@ pub mod icon {
         ("dash-length", DASH_LENGTH),
         ("dash-offset", DASH_OFFSET),
         ("stroke-cap", STROKE_CAP),
+        ("end-none", END_NONE),
+        ("end-arrow", END_ARROW),
+        ("end-open-arrow", END_OPEN_ARROW),
+        ("end-circle", END_CIRCLE),
+        ("end-square", END_SQUARE),
+        ("end-bar", END_BAR),
+        ("start-arrow", START_ARROW),
+        ("start-open-arrow", START_OPEN_ARROW),
+        ("start-circle", START_CIRCLE),
+        ("start-square", START_SQUARE),
+        ("start-bar", START_BAR),
         ("arrow-left", ARROW_LEFT),
         ("arrow-right", ARROW_RIGHT),
         ("text-align-left", TEXT_ALIGN_LEFT),

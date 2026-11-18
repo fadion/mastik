@@ -607,6 +607,41 @@ fn with_a_rect(ctx: &egui::Context) -> MastikApp {
     app
 }
 
+/// One stroked line with an arrow at its end, selected: the stroke row's first
+/// slot holds the two ends, and the popover's Ends group is live.
+fn with_a_line(ctx: &egui::Context) -> MastikApp {
+    let mut app = MastikApp::headless(ctx);
+    let mut ids = mastik_core::IdSource::new(0xA0E);
+    let root = ids.mint();
+    app.session.adopt_document(Document::new(root), None);
+    let id = app.session.ids.mint();
+    let parent = app.session.doc.first_page();
+    app.session
+        .try_commit(Transaction(vec![
+            Operation::CreateNode {
+                id,
+                parent,
+                index: 0,
+                kind: NodeKind::Line {
+                    end: mastik_core::kurbo::Point::new(100.0, 0.0),
+                },
+                transform: None,
+                name: Some("Arrow".into()),
+            },
+            Operation::SetStrokes {
+                id,
+                strokes: mastik_core::keyed_by_position([mastik_core::Stroke {
+                    width: 2.0,
+                    end: mastik_core::Marker::Arrow,
+                    ..Default::default()
+                }]),
+            },
+        ]))
+        .expect("a line with an arrow");
+    app.session.selection.set_one(id);
+    app
+}
+
 /// A column chart on bare canvas, selected.
 fn with_a_chart(ctx: &egui::Context) -> MastikApp {
     let mut app = MastikApp::headless(ctx);
@@ -1218,6 +1253,12 @@ fn sweep_on(theme: Theme) {
     let mut app = with_a_rect(&ctx);
     let found = opened(&ctx, &mut app, |_, a| a.stroke_menu = Some(0));
     check("stroke popover", app, found);
+    let mut app = with_a_line(&ctx);
+    let found = inspector(&ctx, &mut app);
+    check("line inspector", app, found);
+    let mut app = with_a_line(&ctx);
+    let found = opened(&ctx, &mut app, |_, a| a.stroke_menu = Some(0));
+    check("line stroke popover", app, found);
     let mut app = with_a_rect(&ctx);
     let found = opened(&ctx, &mut app, |_, a| {
         let id = a.session.selection.ids()[0];

@@ -4900,6 +4900,16 @@ pub fn glyph_and_text(glyph: &str, text: &str) -> egui::WidgetText {
     glyph_and_text_tinted(glyph, text, theme::text::faint())
 }
 
+/// A dropdown face that is a glyph alone: the glyph is the value, so it wears a
+/// value's ink, `color::text()`, where [`glyph_and_text`]'s glyph is a faint label.
+/// The stroke row's two line ends.
+pub fn glyph_face(glyph: &str) -> egui::WidgetText {
+    egui::RichText::new(glyph)
+        .font(theme::icon_font(CONTROL_GLYPH_PT))
+        .color(theme::color::text())
+        .into()
+}
+
 /// [`glyph_and_text`] with the glyph in a colour of the caller's choosing.
 ///
 /// The type family row wears `TEXT_AA` in [`theme::color::warn()`] when the family
