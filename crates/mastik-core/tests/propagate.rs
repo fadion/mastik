@@ -996,7 +996,6 @@ fn a_loaded_value_the_operations_refuse_does_not_panic_a_mains_edit() {
                 gradient: mastik_core::peniko::Gradient::new_linear((0.0, 0.0), (1.0, 0.0)),
                 transform: Affine::IDENTITY,
                 opacity,
-                noise: None,
             })
             .into(),
             visible: true,

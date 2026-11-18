@@ -646,57 +646,6 @@ pub fn grain_pixel(px: [u8; 4], n: [f32; 3], mode: mastik_core::BlendMode, amoun
     out
 }
 
-/// A noise fill over `s`, in place: each pixel's alpha is the fill's coverage,
-/// drawn white, and becomes `from` mixed towards `to` by the noise's red channel,
-/// as the SVG writer's `feColorMatrix` maps it, times that coverage.
-///
-/// `from` and `to` are straight sRGB. `fx.wgsl`'s `noise_fill` repeats this.
-pub fn noise_fill(
-    s: &mut Surface<'_>,
-    noise: &mastik_core::Noise,
-    from: [f32; 4],
-    to: [f32; 4],
-    to_local: kurbo::Affine,
-) {
-    let lattice = mastik_core::noise::Lattice::new(noise.seed);
-    let map = mastik_core::noise::LatticeMap::new(to_local, noise.base_frequency());
-    let (octaves, fractal) = (noise.octaves(), noise.fractal());
-    let row_bytes = s.w * 4;
-    let cost = s.w * s.h * 40 * octaves as usize;
-    for_row_bands(s.px, row_bytes, cost, |first, rows| {
-        for (i, px) in rows.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let (x, y) = (
-                (i % (row_bytes / 4)) as u32,
-                (first + i / (row_bytes / 4)) as u32,
-            );
-            if px[3] == 0 {
-                *px = [0; 4];
-                continue;
-            }
-            let (u, v) = map.at(x, y);
-            let t = f32::from(lattice.red(u, v, octaves, fractal)) / 255.0;
-            *px = noise_pixel(px[3], t, from, to);
-        }
-    });
-}
-
-/// One pixel of [`noise_fill`]: coverage `cover`, noise value `t` in `0..=1`.
-pub fn noise_pixel(cover: u8, t: f32, from: [f32; 4], to: [f32; 4]) -> [u8; 4] {
-    // The matrix's output is held at 8 bits before it is premultiplied, as an
-    // SVG renderer holds it.
-    let c: [f32; 4] = std::array::from_fn(|i| {
-        let v = (from[i] + t * (to[i] - from[i])).clamp(0.0, 1.0);
-        (v * 255.0 + 0.5).floor() / 255.0
-    });
-    let a = c[3] * f32::from(cover) / 255.0;
-    [
-        (c[0] * a * 255.0 + 0.5) as u8,
-        (c[1] * a * 255.0 + 0.5) as u8,
-        (c[2] * a * 255.0 + 0.5) as u8,
-        (a * 255.0 + 0.5) as u8,
-    ]
-}
-
 /// The W3C compositing spec's blend function `B(cb, cs)` for straight colours,
 /// backdrop `cb` and source `cs`: the sixteen modes `feBlend` and both backends
 /// draw. `fx.wgsl`'s `blend` repeats it.
@@ -1184,16 +1133,6 @@ mod tests {
             g,
             kurbo::Affine::translate((3.0, 4.0)),
         );
-    }
-
-    /// A noise fill maps the value from one colour to the other, held at 8 bits
-    /// and then multiplied by the coverage.
-    #[test]
-    fn a_noise_pixel_ramps_between_its_two_colours() {
-        let (from, to) = ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.5]);
-        assert_eq!(noise_pixel(255, 0.0, from, to), [255, 0, 0, 255]);
-        assert_eq!(noise_pixel(255, 1.0, from, to), [0, 0, 128, 128]);
-        assert_eq!(noise_pixel(0, 0.5, from, to), [0, 0, 0, 0]);
     }
 
     /// The blend functions are the compositing spec's at points each mode is

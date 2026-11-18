@@ -1,28 +1,16 @@
-//! Noise: the parameters of a noise fill and of a grain effect, and the one
-//! generator both draw with.
+//! Noise: the parameters of a grain effect and the generator it draws with.
 //!
 //! The generator is SVG's `feTurbulence`, ported from the specification's own
 //! reference code: the same lattice, gradients, seeding and octave sum, so the
 //! SVG writer's `<feTurbulence>` is the reference both backends are held to. The
-//! CPU backend and the app evaluate it through [`Lattice`]; `fx.wgsl` repeats
+//! CPU backend evaluates it through [`Lattice`]; `fx.wgsl` repeats
 //! [`Lattice::noise2`] and [`Lattice::rgba`] line for line over the table
 //! [`Lattice::table`] uploads.
 //!
-//! Noise lives in the layer's own units: one lattice cell is [`Noise::scale`]
-//! document units, so zooming magnifies it and a 2× export draws the same
-//! picture finer. It is seeded and stored, never random per draw.
+//! Noise lives in the layer's own units, so zooming magnifies it and a 2× export
+//! draws the same picture finer. It is seeded and stored, never random per draw.
 
 use serde::{Deserialize, Serialize};
-
-/// The smallest and largest cell a noise fill may have, in document units.
-pub const NOISE_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=2_000.0;
-
-/// How many octaves a noise fill's [`Noise::detail`] may sum: 1 to 8. Past 8
-/// each octave adds less than a level of an 8-bit pixel.
-pub const MAX_DETAIL: u32 = 8;
-
-/// How far [`Noise::stretch`] may pull a cell: ±400%, five times as wide or tall.
-pub const MAX_STRETCH: f64 = 4.0;
 
 /// The smallest and largest grain, in document units.
 pub const GRAIN_SIZE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=8.0;
@@ -35,149 +23,6 @@ pub const GRAIN_FREQUENCY: f64 = 0.85;
 /// How many octaves a grain sums: a second octave breaks up the lattice's
 /// regularity, and finer ones fall below a pixel at any size the field allows.
 pub const GRAIN_OCTAVES: u32 = 2;
-
-/// Which of `feTurbulence`'s two sums a noise draws.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NoiseKind {
-    /// `type="fractalNoise"`: the signed sum, soft and cloudy. *Clouds* in the UI.
-    #[default]
-    FractalNoise,
-    /// `type="turbulence"`: the sum of magnitudes, with sharp creases. *Veins* in
-    /// the UI.
-    Turbulence,
-}
-
-impl NoiseKind {
-    /// Both, in the order the picker's segmented control shows them.
-    pub const ALL: [NoiseKind; 2] = [NoiseKind::FractalNoise, NoiseKind::Turbulence];
-
-    /// The word the picker shows, named for what each looks like.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::FractalNoise => "Clouds",
-            Self::Turbulence => "Veins",
-        }
-    }
-
-    /// `feTurbulence`'s `type` attribute.
-    pub fn svg_type(self) -> &'static str {
-        match self {
-            Self::FractalNoise => "fractalNoise",
-            Self::Turbulence => "turbulence",
-        }
-    }
-}
-
-/// A noise fill's generator settings. The two colours it maps the noise onto
-/// are the gradient's first and last stops (`crate::GradientBrush::noise`).
-///
-/// Read through [`NoiseWire`], which holds every number to its range, so a file,
-/// a paste or an MCP write never holds a value the generator cannot draw.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(from = "NoiseWire")]
-pub struct Noise {
-    pub kind: NoiseKind,
-    /// The size of one cell in document units, `1 / baseFrequency`; held to
-    /// [`NOISE_SCALE_RANGE`].
-    pub scale: f64,
-    /// Octaves, `1..=`[`MAX_DETAIL`].
-    pub detail: u32,
-    /// `feTurbulence`'s seed. Any whole number; the generator folds it into
-    /// its own range as the specification does.
-    pub seed: i32,
-    /// How far the cells are pulled wide (positive) or tall (negative), a
-    /// fraction: 1.0 makes a cell twice as wide. Held to ±[`MAX_STRETCH`].
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub stretch: f64,
-}
-
-fn is_zero(v: &f64) -> bool {
-    *v == 0.0
-}
-
-/// A [`Noise`] as read, before its numbers are held to their ranges.
-#[derive(Deserialize)]
-struct NoiseWire {
-    #[serde(default)]
-    kind: NoiseKind,
-    scale: f64,
-    detail: u32,
-    #[serde(default)]
-    seed: i32,
-    #[serde(default)]
-    stretch: f64,
-}
-
-impl From<NoiseWire> for Noise {
-    fn from(w: NoiseWire) -> Self {
-        Noise {
-            kind: w.kind,
-            scale: w.scale,
-            detail: w.detail,
-            seed: w.seed,
-            stretch: w.stretch,
-        }
-        .clamped()
-    }
-}
-
-impl Default for Noise {
-    /// The noise a freshly picked Noise tab starts on: soft clouds of 28-unit
-    /// cells over four octaves, coarse enough to read as noise at 100%.
-    fn default() -> Self {
-        Self {
-            kind: NoiseKind::FractalNoise,
-            scale: 28.0,
-            detail: 4,
-            seed: 1,
-            stretch: 0.0,
-        }
-    }
-}
-
-impl Noise {
-    /// This noise with every number held to its range; `NaN` takes the default.
-    pub fn clamped(self) -> Self {
-        let d = Self::default();
-        let held = |v: f64, r: std::ops::RangeInclusive<f64>, or: f64| {
-            if v.is_nan() {
-                or
-            } else {
-                v.clamp(*r.start(), *r.end())
-            }
-        };
-        Self {
-            kind: self.kind,
-            scale: held(self.scale, NOISE_SCALE_RANGE, d.scale),
-            detail: self.detail.clamp(1, MAX_DETAIL),
-            seed: self.seed,
-            stretch: held(self.stretch, -MAX_STRETCH..=MAX_STRETCH, 0.0),
-        }
-    }
-
-    /// `feTurbulence`'s two base frequencies, in cycles per document unit: one
-    /// over the cell's width and height after the stretch.
-    pub fn base_frequency(&self) -> (f64, f64) {
-        let c = self.clamped();
-        let (w, h) = if c.stretch >= 0.0 {
-            (c.scale * (1.0 + c.stretch), c.scale)
-        } else {
-            (c.scale, c.scale * (1.0 - c.stretch))
-        };
-        (1.0 / w, 1.0 / h)
-    }
-
-    /// The octaves to sum, held to range.
-    pub fn octaves(&self) -> u32 {
-        self.detail.clamp(1, MAX_DETAIL)
-    }
-
-    /// Whether this draws `feTurbulence`'s fractal sum.
-    pub fn fractal(&self) -> bool {
-        self.kind == NoiseKind::FractalNoise
-    }
-}
 
 /// The lattice size of the reference code, `BSize`.
 const B_SIZE: usize = 0x100;
@@ -325,8 +170,8 @@ impl Lattice {
         ]
     }
 
-    /// [`Self::rgba`]'s first channel alone: a noise fill and a grey grain take
-    /// their value from red.
+    /// [`Self::rgba`]'s first channel alone: a grey grain takes its value from
+    /// red.
     pub fn red(&self, x: f32, y: f32, octaves: u32, fractal: bool) -> u8 {
         let level = |c| self.level(c, x, y, octaves, fractal);
         round_trip(level(0), level(3))
@@ -546,40 +391,16 @@ mod tests {
         assert!((below - above).abs() < 1e-3, "{below} against {above}");
     }
 
-    /// A noise's numbers are held to range when read, so a file's wild values
-    /// draw a noise the generator can render.
+    /// A grain's numbers are held to range when read, so a file's wild values
+    /// draw a grain the generator can render.
     #[test]
-    fn a_read_noise_is_held_to_range() {
-        let n: Noise = serde_json::from_str(
-            r#"{"kind":"turbulence","scale":1e9,"detail":40,"seed":3,"stretch":-9}"#,
-        )
-        .expect("reads");
-        assert_eq!(n.scale, *NOISE_SCALE_RANGE.end());
-        assert_eq!(n.detail, MAX_DETAIL);
-        assert_eq!(n.stretch, -MAX_STRETCH);
+    fn a_read_grain_is_held_to_range() {
         let g: Grain =
             serde_json::from_str(r#"{"amount":3,"size":0,"blend":"PassThrough"}"#).expect("reads");
         assert_eq!(
             (g.amount, g.size, g.blend),
             (1.0, 0.5, crate::BlendMode::Overlay)
         );
-    }
-
-    /// Stretch pulls cells wide when positive and tall when negative.
-    #[test]
-    fn stretch_pulls_one_axis() {
-        let wide = Noise {
-            stretch: 1.0,
-            ..Noise::default()
-        }
-        .base_frequency();
-        assert_eq!(wide, (1.0 / 56.0, 1.0 / 28.0));
-        let tall = Noise {
-            stretch: -1.0,
-            ..Noise::default()
-        }
-        .base_frequency();
-        assert_eq!(tall, (1.0 / 28.0, 1.0 / 56.0));
     }
 
     /// The map reduces a far origin into the lattice's period without moving

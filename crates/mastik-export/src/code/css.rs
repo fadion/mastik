@@ -43,13 +43,9 @@ pub(crate) fn background_layer(brush: &Brush, size: Size) -> Option<String> {
 ///
 /// CSS has no reflect, so a reflected ramp is written as a repeating one twice as
 /// long, the second half mirrored. A ramp mixed in Oklab writes `in oklab`; one
-/// mixed in any other space but sRGB goes to SVG, as does a noise fill, which no
-/// CSS gradient can draw.
+/// mixed in any other space but sRGB goes to SVG.
 pub(crate) fn gradient(brush: &GradientBrush, size: Size) -> Option<String> {
     use mastik_core::peniko::color::ColorSpaceTag;
-    if brush.noise.is_some() {
-        return None;
-    }
     let g = &brush.gradient;
     let mixing = match g.interpolation_cs {
         ColorSpaceTag::Srgb => "",
@@ -253,7 +249,6 @@ mod tests {
             },
             transform: Affine::IDENTITY,
             opacity: 1.0,
-            noise: None,
         }
     }
 

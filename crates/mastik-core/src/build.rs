@@ -118,7 +118,6 @@ pub fn brush_is_finite(brush: &crate::Brush) -> bool {
                 // `valid_opacity`, not `is_finite`: a finite out-of-range value
                 // would distort every stop and survive a round trip.
                 && valid_opacity(g.opacity)
-                && g.noise.is_none_or(|n| n.scale.is_finite() && n.stretch.is_finite())
         }
         peniko::Brush::Image(i) => i.sampler.alpha.is_finite() && image_ref_is_finite(&i.image),
     }

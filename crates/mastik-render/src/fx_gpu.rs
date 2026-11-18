@@ -43,7 +43,6 @@ enum Pass {
     Coarsen,
     Upsample,
     Sharpen,
-    NoiseFill,
     Grain,
 }
 
@@ -64,12 +63,11 @@ impl Pass {
             Self::Coarsen => "coarsen",
             Self::Upsample => "upsample",
             Self::Sharpen => "sharpen",
-            Self::NoiseFill => "noise_fill",
             Self::Grain => "grain",
         }
     }
 
-    const ALL: [Pass; 15] = [
+    const ALL: [Pass; 14] = [
         Self::Premul,
         Self::Unpremul,
         Self::Copy,
@@ -83,7 +81,6 @@ impl Pass {
         Self::Coarsen,
         Self::Upsample,
         Self::Sharpen,
-        Self::NoiseFill,
         Self::Grain,
     ];
 }
@@ -116,8 +113,8 @@ struct Params {
     k_off: u32,
     /// A sharpen's amount. Read by `Pass::Sharpen` alone.
     amount: f32,
-    /// The noise passes' numbers, `nz` in `fx.wgsl`: the lattice map's origin,
-    /// x step and y step, a grain's amount, then a noise fill's two colours.
+    /// The noise pass's numbers, `nz` in `fx.wgsl`: the lattice map's origin,
+    /// x step and y step, then a grain's amount.
     noise: [f32; 16],
     /// `nzi` in `fx.wgsl`: octaves, the fractal sum, a grain's blend code and
     /// its colour switch.
@@ -676,15 +673,12 @@ pub struct Item<'a> {
     pub layer: bool,
     /// A buffer pixel's corner → the layer's own space (`effects::buffer_to_local`).
     pub to_local: kurbo::Affine,
-    /// Set, the layer is a noise fill's coverage and `effects` is empty: the
-    /// CPU's `effects::noise_fill` rather than `effects::run`.
-    pub noise: Option<crate::scene::NoiseRamp>,
 }
 
 impl Item<'_> {
     /// Whether this layer has anything for the passes to do.
     fn has_ink(&self) -> bool {
-        self.noise.is_some() || effects::any_ink(self.effects)
+        effects::any_ink(self.effects)
     }
 }
 
@@ -726,7 +720,6 @@ pub fn run(
     effects: &[mastik_core::Keyed<Effect>],
     scale: (f64, f64),
     to_local: kurbo::Affine,
-    noise: Option<crate::scene::NoiseRamp>,
 ) -> Option<Texture> {
     let item = Item {
         slice,
@@ -735,7 +728,6 @@ pub fn run(
         scale,
         layer: true,
         to_local,
-        noise,
     };
     if !item.has_ink() {
         return None;
@@ -910,7 +902,6 @@ impl Runner<'_> {
             scale,
             layer,
             to_local,
-            noise,
         } = *item;
         let run = self;
 
@@ -928,29 +919,6 @@ impl Runner<'_> {
         );
         let mut cur = A;
         let mut alt = B;
-        if let Some(r) = noise {
-            let mut p = run.lattice(
-                r.noise.seed,
-                to_local,
-                r.noise.base_frequency(),
-                [r.noise.octaves(), u32::from(r.noise.fractal()), 0, 0],
-            );
-            p.noise[8..12].copy_from_slice(&r.from);
-            p.noise[12..16].copy_from_slice(&r.to);
-            run.slot(Pass::NoiseFill, cur, cur, alt, p);
-            run.step(
-                Pass::Unpremul,
-                At::Scratch(alt),
-                At::Scratch(alt),
-                At::Dst,
-                Params {
-                    dst_origin: (dst_at.0 as i32, dst_at.1 as i32),
-                    ..Default::default()
-                },
-                (w, h),
-            );
-            return;
-        }
         for e in effects.iter().filter(|e| e.visible) {
             match &e.kind {
                 EffectKind::Filters(f) if !f.is_neutral() => {
@@ -1181,7 +1149,7 @@ impl Runner<'_> {
     }
 
     /// A noise pass's params, the lattice of `seed` appended to the batch's
-    /// kernel buffer: `effects::grain`'s and `effects::noise_fill`'s setup.
+    /// kernel buffer: `effects::grain`'s setup.
     fn lattice(
         &mut self,
         seed: i32,

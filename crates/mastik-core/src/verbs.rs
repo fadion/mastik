@@ -647,7 +647,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
                     "Solid" | COLOUR => colour_fields(),
                     "Gradient" => struct_fields::<peniko::Gradient>().map(|f| {
                         let mut f = f.to_vec();
-                        f.extend(["transform", "opacity", "noise"]);
+                        f.extend(["transform", "opacity"]);
                         f
                     }),
                     "track" if map.contains_key("repeat") => Some(vec!["repeat", "tracks"]),

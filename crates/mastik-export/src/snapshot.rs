@@ -638,12 +638,8 @@ pub enum PaintSummary {
     /// A gradient, with enough detail for an agent to describe or recreate it
     /// rather than just know that one exists.
     Gradient {
-        /// `linear` | `radial` | `sweep`, or `noise` for a noise fill.
+        /// `linear` | `radial` | `sweep`.
         kind: String,
-        /// A noise fill's generator, its two colours the first and last stops;
-        /// absent for any other gradient.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        noise: Option<mastik_core::Noise>,
         /// The ramp's own opacity, `0..=1`, multiplied over every stop's alpha;
         /// without it a faded gradient and an opaque one read identically.
         opacity: f32,
@@ -1464,13 +1460,11 @@ fn paint_summary(doc: &Document, brush: &Brush) -> PaintSummary {
         // geometry: a squash alone would be the only placement a reader could see.
         Brush::Gradient(g) => PaintSummary::Gradient {
             kind: match g.gradient.kind {
-                _ if g.noise.is_some() => "noise",
                 mastik_core::peniko::GradientKind::Linear(_) => "linear",
                 mastik_core::peniko::GradientKind::Radial(_) => "radial",
                 mastik_core::peniko::GradientKind::Sweep(_) => "sweep",
             }
             .to_string(),
-            noise: g.noise,
             opacity: g.opacity,
             extend: match g.gradient.extend {
                 mastik_core::peniko::Extend::Pad => None,

@@ -1,5 +1,5 @@
-//! A noise fill and a grain against the reference they are ported from: the
-//! SVG writer's `feTurbulence` filters, drawn by `resvg`, an implementation of the
+//! A grain against the reference it is ported from: the SVG writer's
+//! `feTurbulence` filter, drawn by `resvg`, an implementation of the
 //! specification's own code that shares nothing with ours. The CPU backend's
 //! raster of the same document must match it; `mastik-render`'s on-device suite
 //! holds the GPU to the CPU (`tests/fx_gpu.rs`, `tests/gpu_effects.rs`).
@@ -7,17 +7,17 @@
 use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
 use mastik_core::peniko::Color;
 use mastik_core::{
-    Brush, Document, Effect, EffectKind, Fill, GradientBrush, Grain, IdSource, NodeId, NodeKind,
-    Noise, NoiseKind, Operation, Resolved, Transaction, keyed_by_position,
+    Brush, Document, Effect, EffectKind, Fill, Grain, IdSource, NodeId, NodeKind, Operation,
+    Resolved, Transaction, keyed_by_position,
 };
 use mastik_render::{ImageStore, VelloCpuRenderer, Viewport};
 
 const W: u32 = 160;
 const H: u32 = 60;
 
-/// A board holding a noise-filled rectangle and a grained solid one, each on
-/// whole units so neither rasterizer antialiases an edge inside the boxes read.
-fn document(noise: Noise, grain: Grain) -> (Document, Resolved, NodeId, NodeId) {
+/// A board holding a plain solid rectangle and a grained one, each on whole
+/// units so neither rasterizer antialiases an edge inside the boxes read.
+fn document(grain: Grain) -> (Document, Resolved, NodeId, NodeId) {
     let mut ids = IdSource::new(0x5EED);
     let root = ids.mint();
     let mut doc = Document::new(root);
@@ -56,12 +56,7 @@ fn document(noise: Noise, grain: Grain) -> (Document, Resolved, NodeId, NodeId) 
         Operation::SetFills {
             id: a,
             fills: keyed_by_position([Fill {
-                brush: Brush::Gradient(GradientBrush::noise(
-                    noise,
-                    Color::from_rgba8(223, 230, 255, 255),
-                    Color::from_rgba8(31, 41, 82, 200),
-                ))
-                .into(),
+                brush: Brush::Solid(Color::from_rgba8(31, 41, 82, 200)).into(),
                 visible: true,
             }]),
         },
@@ -134,55 +129,27 @@ fn differ(a: &[u8], b: &[u8], (x0, y0, x1, y1): (u32, u32, u32, u32)) -> (u8, f6
     (worst, over as f64 / n as f64)
 }
 
-/// The boxes' insides, a pixel in from each edge.
-const NOISE_BOX: (u32, u32, u32, u32) = (9, 11, 71, 49);
+/// The grained box's inside, a pixel in from each edge.
 const GRAIN_BOX: (u32, u32, u32, u32) = (89, 11, 151, 49);
 
-/// How far the raster may stray from the reference, per box: the grain within
-/// one level; the noise fill within three, past one on at most 15% of channels.
-/// `resvg` rounds the fill's matrix output, its premultiply and its composite at
-/// 8 bits each, where the backend rounds once, and a ramp to a translucent
-/// colour stacks those three roundings. The share bounds what the worst cannot:
-/// a shifted or wrong lattice moves most of the box by far more than a level.
+/// How far the raster may stray from the reference: within one level, past one
+/// on at most 15% of channels. The share bounds what the worst cannot: a
+/// shifted or wrong lattice moves most of the box by far more than a level.
 const GRAIN_TOLERANCE: u8 = 1;
-const NOISE_TOLERANCE: u8 = 3;
 const SHARE: f64 = 0.15;
 
-/// Each kind of noise, stretched, and a grain in a separable and a
-/// non-separable mode, through the CPU backend and through the SVG writer as
-/// `resvg` draws it.
+/// A grain in a separable and a non-separable mode, through the CPU backend and
+/// through the SVG writer as `resvg` draws it.
 ///
 /// flip: `Lattice::noise2`'s `b10` read as `sel(i + by1)` → fails at the first
-/// case's noise box, by tens of levels over most of it.
+/// case's grain box, by tens of levels over most of it.
 #[test]
 fn the_raster_draws_what_the_svg_writer_writes() {
-    for (kind, stretch, blend, colour) in [
-        (
-            NoiseKind::FractalNoise,
-            0.0,
-            mastik_core::BlendMode::Overlay,
-            false,
-        ),
-        (
-            NoiseKind::Turbulence,
-            0.5,
-            mastik_core::BlendMode::SoftLight,
-            true,
-        ),
-        (
-            NoiseKind::FractalNoise,
-            -1.0,
-            mastik_core::BlendMode::Multiply,
-            false,
-        ),
+    for (blend, colour) in [
+        (mastik_core::BlendMode::Overlay, false),
+        (mastik_core::BlendMode::SoftLight, true),
+        (mastik_core::BlendMode::Multiply, false),
     ] {
-        let noise = Noise {
-            kind,
-            scale: 12.0,
-            detail: 4,
-            seed: 37,
-            stretch,
-        };
         let grain = Grain {
             amount: 0.6,
             size: 2.0,
@@ -190,31 +157,19 @@ fn the_raster_draws_what_the_svg_writer_writes() {
             blend,
             colour,
         };
-        let (doc, res, board, page) = document(noise, grain);
+        let (doc, res, board, page) = document(grain);
         let svg = mastik_export::svg::svg(&doc, &res, page, Some(board));
         assert!(
-            svg.contains("<feTurbulence") && svg.contains(kind.svg_type()),
+            svg.contains("<feTurbulence"),
             "the writer writes the noise as feTurbulence:\n{svg}"
         );
         let (a, b) = (ours(&doc, &res, page), reference(&svg));
-        let lit = (NOISE_BOX.1..NOISE_BOX.3)
-            .map(|y| a[((y * W + 30) * 4) as usize])
-            .collect::<Vec<_>>();
+        let (worst, share) = differ(&a, &b, GRAIN_BOX);
         assert!(
-            lit.iter().max().unwrap() - lit.iter().min().unwrap() > 20,
-            "the fixture draws noise, not a flat fill: {lit:?}"
+            worst <= GRAIN_TOLERANCE && share <= SHARE,
+            "{blend:?}: the grain box differs from the reference by up to {worst}, \
+             {:.1}% of channels past one level",
+            share * 100.0
         );
-        for (name, area, tolerance) in [
-            ("noise", NOISE_BOX, NOISE_TOLERANCE),
-            ("grain", GRAIN_BOX, GRAIN_TOLERANCE),
-        ] {
-            let (worst, share) = differ(&a, &b, area);
-            assert!(
-                worst <= tolerance && share <= SHARE,
-                "{kind:?}, {blend:?}: the {name} box differs from the reference by up \
-                 to {worst}, {:.1}% of channels past one level",
-                share * 100.0
-            );
-        }
     }
 }

@@ -192,7 +192,6 @@ fn gradient(stops: [Color; 2]) -> BrushSource {
         gradient: g,
         transform: Affine::IDENTITY,
         opacity: 1.0,
-        noise: None,
     })
     .into()
 }

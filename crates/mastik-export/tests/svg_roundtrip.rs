@@ -1136,7 +1136,6 @@ fn an_elliptical_gradient_round_trips_as_the_same_ellipse() {
                     ]),
                     transform: squash,
                     opacity: 1.0,
-                    noise: None,
                 })
                 .into(),
                 visible: true,

@@ -315,7 +315,6 @@ fn check_on(name: &str, list: Vec<Effect>, px: &[u8]) {
         &list,
         SCALE,
         local(),
-        None,
     )
     .expect("the stack has ink, so it produces a texture");
     let got = readback(&g, &out);
@@ -466,7 +465,6 @@ fn check_grain(name: &str, grain: mastik_core::Grain, px: &[u8]) {
         &list,
         SCALE,
         local(),
-        None,
     )
     .expect("a grain has ink");
     use mastik_core::BlendMode as M;
@@ -516,56 +514,6 @@ fn a_colour_grain_matches_the_reference_in_every_mode() {
                 colour: true,
             },
             &two_hue_fixture(),
-        );
-    }
-}
-
-/// A noise fill of each kind over the disc's coverage, its translucent ramp end
-/// and soft edge included, against `effects::noise_fill`.
-///
-/// flip: `fx.wgsl`'s `nz_level` dropping the fractal branch's `+ 255.0` → fails
-/// at the clouds comparison.
-#[test]
-#[ignore = "requires a GPU adapter"]
-fn a_noise_fill_matches_the_reference() {
-    let Some(g) = gpu() else {
-        eprintln!("no GPU adapter; skipping noise fill");
-        return;
-    };
-    for kind in mastik_core::NoiseKind::ALL {
-        let ramp = mastik_render::scene::NoiseRamp {
-            noise: mastik_core::Noise {
-                kind,
-                scale: 9.0,
-                detail: 5,
-                seed: 37,
-                stretch: 0.6,
-            },
-            from: [0.87, 0.9, 1.0, 1.0],
-            to: [0.12, 0.16, 0.32, 0.4],
-        };
-        let px = fixture();
-        let src = upload(&g, &px);
-        let out = fx_gpu::run(
-            &g.device,
-            &g.queue,
-            &g.fx,
-            &src,
-            whole(),
-            &[],
-            SCALE,
-            local(),
-            Some(ramp),
-        )
-        .expect("a noise fill has ink");
-        let mut want = premultiply(&px);
-        let mut s = Surface::new(&mut want, W as usize, H as usize);
-        effects::noise_fill(&mut s, &ramp.noise, ramp.from, ramp.to, local());
-        compare_noise(
-            &format!("noise fill, {kind:?}"),
-            &readback(&g, &out),
-            &unpremultiply(&want),
-            NOISE_TOLERANCE,
         );
     }
 }
@@ -693,7 +641,6 @@ fn a_deeply_resampled_shadow_costs_the_buffer_and_not_the_block() {
             effects,
             SCALE,
             local(),
-            None,
         )
         .expect("the stack has ink");
         // The readback polls to completion, so this times the work rather than
@@ -860,8 +807,7 @@ fn a_stack_with_no_ink_asks_for_no_texture() {
             whole(),
             &list,
             SCALE,
-            local(),
-            None
+            local()
         )
         .is_none()
     );

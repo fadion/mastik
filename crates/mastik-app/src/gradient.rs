@@ -207,8 +207,7 @@ impl MastikApp {
                 place = Box::new(move |t| paint::sweep_dir(held, t).and_then(on_ring));
                 Guide::Ring(cs, RING_PX)
             }
-            // A noise fill has no geometry to drag on the canvas.
-            PaintKind::Solid | PaintKind::Noise | PaintKind::Image => return None,
+            PaintKind::Solid | PaintKind::Image => return None,
         };
         let dots = stops
             .iter()

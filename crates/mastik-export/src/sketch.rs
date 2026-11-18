@@ -1161,9 +1161,6 @@ impl Writer<'_> {
 
     /// A gradient as Sketch's, its points fractions of the layer's frame.
     fn gradient(&mut self, g: &mastik_core::GradientBrush, to_frac: Affine) -> Option<Value> {
-        if g.noise.is_some() {
-            self.approximate("Noise fills, drawn as their two-colour ramp");
-        }
         if g.gradient.extend != Extend::Pad {
             self.approximate("Repeating and reflected gradients, drawn padded");
         }

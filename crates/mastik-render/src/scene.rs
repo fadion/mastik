@@ -45,22 +45,6 @@ pub struct StrokePaint<'a> {
     pub dash_offset: f64,
 }
 
-impl StrokePaint<'_> {
-    /// This stroke in `brush`, unframed: a noise fill's coverage ([`draw_noise`]).
-    pub fn in_brush<'b>(&self, brush: &'b Brush) -> StrokePaint<'b> {
-        StrokePaint {
-            brush,
-            framing: None,
-            width: self.width,
-            join: self.join,
-            cap: self.cap,
-            miter_limit: self.miter_limit,
-            dashes: self.dashes.clone(),
-            dash_offset: self.dash_offset,
-        }
-    }
-}
-
 /// How a clip path's interior is decided.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ClipRule {
@@ -95,23 +79,6 @@ pub struct TextRun<'a> {
     /// image-filled headline shows one picture across it, not one per run.
     pub framing: Option<Framing>,
     pub glyphs: &'a [TextGlyph],
-}
-
-impl<'a> TextRun<'a> {
-    /// This run in `brush`, unframed: a noise fill's coverage ([`draw_noise`]).
-    pub fn in_brush<'b>(&self, brush: &'b Brush) -> TextRun<'b>
-    where
-        'a: 'b,
-    {
-        TextRun {
-            font: self.font,
-            font_size: self.font_size,
-            coords: self.coords,
-            brush,
-            framing: None,
-            glyphs: self.glyphs,
-        }
-    }
 }
 
 /// Backend-agnostic drawing sink. Paths and glyphs are LOCAL, brushes in the same
@@ -210,16 +177,6 @@ pub trait ScenePainter {
         self.push_layer(transform, None, ClipRule::NonZero, 1.0);
     }
 
-    /// Begin a layer whose drawing is a noise fill's **coverage**, white, turned
-    /// into the fill's colours on the way out (`effects::noise_fill`). `bounds` is
-    /// what the coverage can reach, in `transform`'s space. The default composites
-    /// plainly; the shipping backends override, and reach it through
-    /// [`draw_noise`].
-    fn push_noise_layer(&mut self, transform: Affine, bounds: Rect, ramp: NoiseRamp) {
-        let _ = (bounds, ramp);
-        self.push_layer(transform, None, ClipRule::NonZero, 1.0);
-    }
-
     /// [`Self::push_effect_layer`] keeping only the shadows `effects` casts, the
     /// layer itself left out (`effects::run_shadows`): one pass of a layer whose
     /// shadows blend ([`shadow_passes`]). The default keeps the layer too.
@@ -264,72 +221,6 @@ pub trait ScenePainter {
     fn backdrop_box(&mut self, transform: Affine, local: Rect) {
         let _ = (transform, local);
     }
-}
-
-/// A noise fill as the backends draw it: the generator and its two straight
-/// sRGB colours, the brush's opacity folded into their alphas.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NoiseRamp {
-    pub noise: mastik_core::Noise,
-    pub from: [f32; 4],
-    pub to: [f32; 4],
-}
-
-impl NoiseRamp {
-    /// The ramp `brush` draws, when it is a noise fill.
-    pub fn of(brush: &Brush) -> Option<Self> {
-        let Brush::Gradient(g) = brush else {
-            return None;
-        };
-        let (noise, from, to) = g.noise_ramp()?;
-        Some(Self { noise, from, to })
-    }
-}
-
-/// Draw a noise fill through `painter`: `draw` lays the coverage in the white
-/// brush it is handed, inside a [`ScenePainter::push_noise_layer`] that turns it
-/// into the ramp. The backends call this from their own `fill_path`,
-/// `stroke_path` and `draw_text`, so the walk hands a noise brush over like any
-/// other.
-pub fn draw_noise<P: ScenePainter + ?Sized>(
-    painter: &mut P,
-    transform: Affine,
-    bounds: Rect,
-    ramp: NoiseRamp,
-    draw: impl FnOnce(&mut P, &Brush),
-) {
-    let white = Brush::Solid(mastik_core::peniko::Color::WHITE);
-    painter.push_noise_layer(transform, bounds, ramp);
-    draw(painter, &white);
-    painter.pop_layer();
-}
-
-/// What a stroke of `stroke` along `path` can cover, in the path's space: its
-/// box grown by the width a mitre can throw.
-pub fn stroke_reach(path: &BezPath, stroke: &StrokePaint<'_>) -> Rect {
-    path.bounding_box().inflate(
-        stroke.width * stroke.miter_limit.max(1.0),
-        stroke.width * stroke.miter_limit.max(1.0),
-    )
-}
-
-/// What a glyph run can cover, in its own space: its glyph origins grown by two
-/// font sizes, more than any glyph's ascent, descent or side bearing.
-pub fn text_reach(run: &TextRun<'_>) -> Rect {
-    let reach = f64::from(run.font_size) * 2.0;
-    let mut r = Rect::new(
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    );
-    for g in run.glyphs {
-        r = r.union_pt(Point::new(f64::from(g.x), f64::from(g.y)));
-    }
-    if r.x0 > r.x1 {
-        return Rect::ZERO;
-    }
-    r.inflate(reach, reach)
 }
 
 /// Walk `page` and drive `painter`.

@@ -81,8 +81,6 @@ struct FxFrame {
     layer: bool,
     /// A buffer pixel's corner → the layer's own space, where noise lives.
     to_local: Affine,
-    /// Set, the layer is a noise fill's coverage (`push_noise_layer`).
-    noise: Option<scene::NoiseRamp>,
 }
 
 /// A subtree that has to be rasterized, filtered and handed back as an image
@@ -106,8 +104,6 @@ pub struct EffectJob {
     layer: bool,
     /// As [`FxFrame::to_local`].
     to_local: Affine,
-    /// As [`FxFrame::noise`].
-    noise: Option<scene::NoiseRamp>,
     /// The atlas slot the enclosing scene draws.
     ///
     /// Built with a **fake, empty blob**, as `Renderer::register_texture` does:
@@ -236,12 +232,6 @@ impl ScenePainter for GpuScenePainter<'_> {
         framing: Option<mastik_core::Framing>,
         rule: ClipRule,
     ) {
-        if let Some(ramp) = scene::NoiseRamp::of(brush) {
-            let bounds = kurbo::Shape::bounding_box(path);
-            return scene::draw_noise(self, transform, bounds, ramp, |p, white| {
-                p.fill_path(transform, path, white, None, rule)
-            });
-        }
         let Some((backend, bt)) = self.resolve(brush, framing) else {
             return;
         };
@@ -255,12 +245,6 @@ impl ScenePainter for GpuScenePainter<'_> {
     }
 
     fn stroke_path(&mut self, transform: Affine, path: &BezPath, stroke: &StrokePaint<'_>) {
-        if let Some(ramp) = scene::NoiseRamp::of(stroke.brush) {
-            let bounds = scene::stroke_reach(path, stroke);
-            return scene::draw_noise(self, transform, bounds, ramp, |p, white| {
-                p.stroke_path(transform, path, &stroke.in_brush(white))
-            });
-        }
         let mut k = Stroke::new(stroke.width)
             .with_join(stroke.join)
             .with_caps(stroke.cap)
@@ -276,12 +260,6 @@ impl ScenePainter for GpuScenePainter<'_> {
     }
 
     fn draw_text(&mut self, transform: Affine, run: &TextRun<'_>) {
-        if let Some(ramp) = scene::NoiseRamp::of(run.brush) {
-            let bounds = scene::text_reach(run);
-            return scene::draw_noise(self, transform, bounds, ramp, |p, white| {
-                p.draw_text(transform, &run.in_brush(white))
-            });
-        }
         // Type filled with an unresolvable image draws nothing, as a shape does.
         let Some((backend, bt)) = self.resolve(run.brush, run.framing) else {
             return;
@@ -461,15 +439,7 @@ impl ScenePainter for GpuScenePainter<'_> {
             level: self.fx.len(),
             layer: true,
             to_local: crate::effects::buffer_to_local(saved_base * transform, (x0, y0), k),
-            noise: None,
         });
-    }
-
-    fn push_noise_layer(&mut self, transform: Affine, bounds: Rect, ramp: scene::NoiseRamp) {
-        self.push_effect_layer(transform, bounds, &[]);
-        if let Some(f) = self.fx.last_mut() {
-            f.noise = Some(ramp);
-        }
     }
 
     fn push_shadow_layer(
@@ -544,7 +514,6 @@ impl ScenePainter for GpuScenePainter<'_> {
             level: frame.level,
             layer: frame.layer,
             to_local: frame.to_local,
-            noise: frame.noise,
             image,
         });
     }
@@ -1054,7 +1023,6 @@ impl VelloGpuRenderer {
                         scale: jobs[i].scale,
                         layer: jobs[i].layer,
                         to_local: jobs[i].to_local,
-                        noise: jobs[i].noise,
                     })
                     .collect();
                 fx_gpu::run_batch(

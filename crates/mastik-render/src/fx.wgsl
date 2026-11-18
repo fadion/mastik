@@ -54,10 +54,9 @@ struct Params {
     k_off: u32,
     // A sharpen's amount, 1.0 for 100%. Appended, for the reason on `src_size`.
     amount: f32,
-    // The noise passes' numbers (`fx_gpu::Params::noise`): [0] the lattice
-    // map's origin and x step, [1] its y step and a grain's amount, [2] and [3]
-    // a noise fill's two straight colours. Appended, for the reason on
-    // `src_size`.
+    // The noise pass's numbers (`fx_gpu::Params::noise`): [0] the lattice map's
+    // origin and x step, [1] its y step and a grain's amount. Appended, for the
+    // reason on `src_size`.
     nz: array<vec4<f32>, 4>,
     // Octaves, 1 for the fractal sum, the grain's blend mode
     // (`effects::blend_code`), 1 for a colour grain.
@@ -448,24 +447,6 @@ fn nz_at(c: vec2<i32>) -> vec2<f32> {
         p.nz[0].x + x * p.nz[0].z + y * p.nz[1].x,
         p.nz[0].y + x * p.nz[0].w + y * p.nz[1].y,
     );
-}
-
-// `effects::noise_fill`: the coverage's alpha becomes the ramp's colour.
-@compute @workgroup_size(8, 8)
-fn noise_fill(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let c = vec2<i32>(gid.xy);
-    if (!inside(c)) { return; }
-    let cover = load_a(c).a;
-    if (cover <= 0.0) {
-        textureStore(dst, c, vec4<f32>(0.0));
-        return;
-    }
-    let uv = nz_at(c);
-    let t = nz_round_trip(nz_level(0u, uv), nz_level(3u, uv)) / 255.0;
-    let ramp = clamp(p.nz[2] + t * (p.nz[3] - p.nz[2]), vec4<f32>(0.0), vec4<f32>(1.0));
-    let col = floor(ramp * 255.0 + 0.5) / 255.0;
-    let a = col.a * cover;
-    textureStore(dst, c, q(vec4<f32>(col.rgb * a, a)));
 }
 
 fn bl_screen(b: f32, s: f32) -> f32 {

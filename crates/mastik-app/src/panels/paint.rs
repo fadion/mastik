@@ -217,10 +217,6 @@ pub enum PaintKind {
     Radial,
     /// A sweep (conic) gradient, labelled *Angular*.
     Sweep,
-    /// A noise fill (`mastik_core::GradientBrush::noise`): two colours laid over
-    /// `feTurbulence`. Converts to and from every other picker kind, its two
-    /// colours the stops.
-    Noise,
     /// A picture. Deliberately not a picker kind: the others convert into one
     /// another, an image is picked from a file dialog, and offering it would turn a
     /// photograph into a gradient on click.
@@ -242,7 +238,6 @@ impl PaintKind {
             PaintKind::Linear => "Linear",
             PaintKind::Radial => "Radial",
             PaintKind::Sweep => "Angular",
-            PaintKind::Noise => "Noise",
             PaintKind::Image => "Image",
         }
     }
@@ -545,7 +540,6 @@ impl PaintSlot {
 pub fn kind_of(brush: &Brush) -> PaintKind {
     match brush {
         Brush::Gradient(g) => match g.gradient.kind {
-            _ if g.noise.is_some() => PaintKind::Noise,
             GradientKind::Radial(_) => PaintKind::Radial,
             GradientKind::Linear(_) => PaintKind::Linear,
             GradientKind::Sweep(_) => PaintKind::Sweep,
@@ -717,15 +711,6 @@ pub fn default_brush(kind: PaintKind, stops: Vec<(f32, Color)>, box_size: Size) 
         PaintKind::Sweep => Brush::Gradient(
             Gradient::new_sweep(Point::new(w * 0.5, h * 0.5), 0.0, std::f32::consts::TAU).into(),
         ),
-        // The first stop to the last, over the default noise.
-        PaintKind::Noise => {
-            let end = |s: Option<&(f32, Color)>| s.map_or(Color::BLACK, |s| s.1);
-            return Brush::Gradient(mastik_core::GradientBrush::noise(
-                mastik_core::Noise::default(),
-                end(stops.first()),
-                end(stops.last()),
-            ));
-        }
         // No default image exists (an image is an id). Unreachable today; a later
         // caller gets a grey solid rather than a panic in release, and a debug
         // assert so a test finds it first.
@@ -735,29 +720,6 @@ pub fn default_brush(kind: PaintKind, stops: Vec<(f32, Color)>, box_size: Size) 
         }
     };
     with_stops(&brush, stops)
-}
-
-/// The noise `brush` draws, when it is a noise fill.
-pub fn noise_of(brush: &Brush) -> Option<mastik_core::Noise> {
-    match brush {
-        Brush::Gradient(g) => g.noise,
-        _ => None,
-    }
-}
-
-/// `brush` with `edit` applied to its noise, held to range; a brush that is no
-/// noise fill is returned unchanged.
-pub fn with_noise(brush: &Brush, edit: impl FnOnce(&mut mastik_core::Noise)) -> Brush {
-    let Brush::Gradient(g) = brush else {
-        return brush.clone();
-    };
-    let Some(mut noise) = g.noise else {
-        return brush.clone();
-    };
-    edit(&mut noise);
-    let mut g = g.clone();
-    g.noise = Some(noise.clamped());
-    Brush::Gradient(g)
 }
 
 /// The picture `brush` shows, or `None` for a brush that is not one.

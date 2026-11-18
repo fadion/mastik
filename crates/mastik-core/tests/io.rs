@@ -3420,7 +3420,6 @@ fn no_operation_may_write_a_number_that_is_not_finite() {
                         ),
                         transform: mastik_core::kurbo::Affine::IDENTITY,
                         opacity: 1.0,
-                        noise: None,
                     })
                     .into(),
                     visible: true,
@@ -3436,7 +3435,6 @@ fn no_operation_may_write_a_number_that_is_not_finite() {
                         gradient: peniko::Gradient::new_linear((0.0, 0.0), (1.0, 0.0)),
                         transform: mastik_core::kurbo::Affine::new([f64::INFINITY; 6]),
                         opacity: 1.0,
-                        noise: None,
                     })
                     .into(),
                     visible: true,
