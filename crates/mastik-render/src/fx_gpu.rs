@@ -716,6 +716,7 @@ const SCRATCH: usize = 5;
 /// A one-off: [`run_batch`] over a pool of its own, dropped on return. The canvas
 /// goes through `VelloGpuRenderer::resolve_effects` instead; this is for
 /// `tests/fx_gpu.rs`, which compares one stack's bytes against the CPU reference.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     device: &Device,
     queue: &Queue,
