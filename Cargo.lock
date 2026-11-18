@@ -2592,6 +2592,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "moxcms",
  "png",
+ "resvg",
  "roxmltree 0.20.0",
  "serde",
  "serde_json",

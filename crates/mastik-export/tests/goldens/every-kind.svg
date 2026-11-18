@@ -1,17 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="400" height="320" viewBox="10 10 400 320">
   <defs>
-    <filter id="fx-601d_3" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB" x="0.5139" y="1.5139" width="134.9721" height="94.9721">
+    <filter id="fx-601d_3" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB" x="-19.4861" y="-18.4861" width="134.9721" height="94.9721">
       <feGaussianBlur in="SourceGraphic" stdDeviation="1" result="fx2"/>
       <feGaussianBlur in="fx2" stdDeviation="0.75" result="fx3b"/>
       <feComposite in="fx2" in2="fx3b" operator="arithmetic" k1="0" k2="1.6" k3="-0.6" k4="0" result="fx3"/>
-      <feColorMatrix in="fx3" type="matrix" values="1.0485 -0.3325 0.274 0 0.05 0.0104 1.0779 -0.0984 0 0.05 -0.2755 0.1072 1.1583 0 0.05 0 0 0 1 0" result="fx5"/>
-      <feColorMatrix in="fx5" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="fxa0"/>
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" seed="7" result="fx4t"/>
+      <feColorMatrix in="fx4t" type="matrix" values="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="fx4n"/>
+      <feBlend in="fx4n" in2="fx3" mode="overlay" result="fx4b"/>
+      <feComposite in="fx4b" in2="fx3" operator="in" result="fx4c"/>
+      <feComposite in="fx4c" in2="fx3" operator="arithmetic" k1="0" k2="0.25" k3="0.75" k4="0" result="fx4"/>
+      <feColorMatrix in="fx4" type="matrix" values="1.0485 -0.3325 0.274 0 0.05 0.0104 1.0779 -0.0984 0 0.05 -0.2755 0.1072 1.1583 0 0.05 0 0 0 1 0" result="fx6"/>
+      <feColorMatrix in="fx6" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="fxa0"/>
       <feMorphology in="fxa0" operator="dilate" radius="1" result="fxm0"/>
       <feOffset in="fxm0" dx="3" dy="4" result="fxo0"/>
       <feGaussianBlur in="fxo0" stdDeviation="3" result="fxb0"/>
       <feFlood flood-color="#000000" flood-opacity="0.3529" result="fxf0"/>
       <feComposite in="fxf0" in2="fxb0" operator="in" result="fxc0"/>
-      <feColorMatrix in="fx5" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="fxa1"/>
+      <feColorMatrix in="fx6" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="fxa1"/>
       <feComponentTransfer in="fxa1" result="fxt1">
         <feFuncA type="table" tableValues="1 0"/>
       </feComponentTransfer>
@@ -22,7 +27,7 @@
       <feComposite in="fxc1" in2="fxa1" operator="in" result="fxk1"/>
       <feMerge>
         <feMergeNode in="fxc0"/>
-        <feMergeNode in="fx5"/>
+        <feMergeNode in="fx6"/>
         <feMergeNode in="fxk1"/>
       </feMerge>
     </filter>
@@ -37,9 +42,9 @@
       <clipPath id="clip-601d_2"><rect x="0" y="0" width="400" height="320"/></clipPath>
       <g data-name="Board" transform="matrix(1 0 0 1 10 10)" clip-path="url(#clip-601d_2)">
         <rect x="0" y="0" width="400" height="320" fill="#fafafc"/>
-        <g filter="url(#fx-601d_3)">
+        <g transform="matrix(1 0 0 1 20 20)"><g filter="url(#fx-601d_3)"><g transform="matrix(1 0 0 1 -20 -20)">
           <path data-name="Rounded" transform="matrix(1 0 0 1 20 20)" d="M12.8,0 L83.6,0 C85.8402,0 86.9603,0 87.816,0.436 C88.5686,0.8195 89.1805,1.4314 89.564,2.184 C90,3.0397 90,4.1598 90,6.4 L90,50 L19.2,50 C12.4794,50 9.1191,50 6.5521,48.6921 C4.2942,47.5416 2.4584,45.7058 1.3079,43.4479 C0,40.8809 0,37.5206 0,30.8 L0,12.8 C0,8.3196 0,6.0794 0.8719,4.3681 C1.6389,2.8628 2.8628,1.6389 4.3681,0.8719 C6.0794,0 8.3196,0 12.8,0 Z" fill="#3c78dc" stroke="#141e3c" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="6,3" stroke-dashoffset="1"/>
-        </g>
+        </g></g></g>
         <ellipse data-name="Ellipse 1" transform="matrix(1 0 0 1 140 20)" cx="35" cy="22.5" rx="35" ry="22.5" fill="url(#grad-601d_4-fill-0)"/>
         <g data-name="Polygon 1" transform="matrix(1 0 0 1 240 20)">
           <path d="M32.6833,1.3416 L56.6833,13.3416 C58.716,14.358 60,16.4356 60,18.7082 L60,41.2918 C60,43.5644 58.716,45.642 56.6833,46.6584 L32.6833,58.6584 C30.9941,59.5029 29.0059,59.5029 27.3167,58.6584 L3.3167,46.6584 C1.284,45.642 0,43.5644 0,41.2918 L0,18.7082 C0,16.4356 1.284,14.358 3.3167,13.3416 L27.3167,1.3416 C29.0059,0.4971 30.9941,0.4971 32.6833,1.3416 Z" fill="#1ea06e"/>

@@ -2174,6 +2174,7 @@ impl Paint {
                     transform,
                     // Already baked into the stops above; carrying it would apply it twice.
                     opacity: 1.0,
+                    noise: None,
                 })
             }
         }

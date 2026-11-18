@@ -26,15 +26,6 @@ The design and its open questions are in `prototyping.md`.
   export. They are specification, not conversation: no replies, no authors, no resolved state,
   which keeps them apart from the comment tool `non-goals.md` declines.
 
-## Now · Misc
-
-Items run cheapest first.
-
-- **Noise and grain.** A noise fill, and a grain effect over a layer. `non-goals.md` declined noise
-  as one generator written three times to agree to the pixel; SVG's `feTurbulence` is specified to
-  the algorithm, so porting that one algorithm to WGSL and the CPU backend makes the SVG writer the
-  reference rather than a third copy.
-
 ## Later · Platform and dependencies
 
 - **egui 0.36** is blocked by vello requiring wgpu 29 (check — last asked 2026-09-03). Re-derive

@@ -648,29 +648,37 @@ impl MastikApp {
         }
         const SOLID: usize = 0;
         const GRADIENT: usize = 1;
-        const VARIABLES: usize = 2;
-        let tabs = if key.is_some() { 3 } else { 2 };
+        const NOISE: usize = 2;
+        const VARIABLES: usize = 3;
+        let tabs = if key.is_some() { 4 } else { 3 };
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = TAB_GAP;
             let selected = match (on_vars, kind) {
                 (true, _) => VARIABLES,
                 (false, PaintKind::Solid) => SOLID,
+                (false, PaintKind::Noise) => NOISE,
                 (false, _) => GRADIENT,
             };
             let track = inner_w - ui::CLOSE_BUTTON_W - TAB_GAP;
-            let live = |i: usize| i != GRADIENT || gradients;
+            // A noise fill is a gradient brush, so the slots that take one take both.
+            let live = |i: usize| !matches!(i, GRADIENT | NOISE) || gradients;
             let label = |i: usize| match i {
                 SOLID => "Solid",
                 GRADIENT => "Gradient",
+                NOISE => "Noise",
                 _ => "Variables",
             };
-            let picked = ui::segmented_enabled(
+            let picked = ui::segmented_tipped(
                 ui,
                 track,
                 ui::SEGMENT_CELL_H,
                 tabs,
                 selected,
                 live,
+                |i| match i {
+                    NOISE if !gradients => "Only fills and strokes take noise",
+                    _ => "",
+                },
                 |p, i, rect, on| match live(i) {
                     true => segment_label(p, rect, label(i), on),
                     false => ui::segment_label_disabled(p, rect, label(i)),
@@ -693,6 +701,7 @@ impl MastikApp {
                     // chip's menu picks another.
                     let to = match (i, kind) {
                         (SOLID, _) => PaintKind::Solid,
+                        (NOISE, _) => PaintKind::Noise,
                         (_, k) if k.is_gradient() => k,
                         _ => PaintKind::Linear,
                     };
@@ -729,9 +738,18 @@ impl MastikApp {
             self.variables_face(ui, k, bound, inner_w, h);
             return close;
         }
+        if kind == PaintKind::Noise {
+            let h = ui
+                .ctx()
+                .data(|d| d.get_temp::<f32>(solid_h))
+                .unwrap_or(ui::CONTROL_H + ui::POPOVER_SECTION_GAP + 226.0);
+            self.noise_face(ui, node, slot, brush, inner_w, face_top + h);
+            return close;
+        }
         // Geometry controls, then the stop bar — gradients only.
         match kind {
-            PaintKind::Solid => {}
+            // Drawn by `noise_face` above.
+            PaintKind::Solid | PaintKind::Noise => {}
             PaintKind::Linear => self.linear_controls(ui, node, slot, brush, box_size),
             PaintKind::Radial => self.radial_controls(ui, node, slot, brush, box_size),
             PaintKind::Sweep => self.sweep_controls(ui, node, slot, brush, box_size),
@@ -774,6 +792,165 @@ impl MastikApp {
         }
         close
     }
+    // --- noise ---------------------------------------------------------------
+    /// The Noise face: the noise at its real scale where the Solid face's plane
+    /// is, Clouds or Veins, Scale and Detail, Seed and Stretch, then which of the
+    /// two colours the value row edits. Padded to `bottom`, the Solid face's foot,
+    /// so the picker keeps its height across tabs.
+    fn noise_face(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: NodeId,
+        slot: PaintSlot,
+        brush: &Brush,
+        inner_w: f32,
+        bottom: f32,
+    ) {
+        let Some(noise) = paint::noise_of(brush) else {
+            return;
+        };
+        // The preview takes what the five rows under it leave of the Solid face:
+        // their heights and the six gaps the face's six rows take.
+        let gap = ui.spacing().item_spacing.y;
+        let below = 2.0 * ui::SEGMENT_CELL_H + 3.0 * ROW_H + 6.0 * gap;
+        let preview_h = (bottom - ui.cursor().top() - below).max(40.0);
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(inner_w, preview_h), egui::Sense::hover());
+        let p = ui.painter();
+        ui::paint_checkerboard(p, rect, 6.0);
+        if let Some(tex) = crate::noise_preview::texture(
+            ui.ctx(),
+            egui::Id::new("picker-noise-preview"),
+            brush,
+            rect.size(),
+        ) {
+            p.image(tex, rect, crate::thumbs::FULL_UV, egui::Color32::WHITE);
+        }
+        mask_corners(p, rect, 5.0, color::card());
+
+        let kinds = mastik_core::NoiseKind::ALL;
+        let at = kinds.iter().position(|k| *k == noise.kind).unwrap_or(0);
+        let picked = ui::segmented_tipped(
+            ui,
+            inner_w,
+            ui::SEGMENT_CELL_H,
+            kinds.len(),
+            at,
+            |_| true,
+            |i| match kinds[i] {
+                mastik_core::NoiseKind::FractalNoise => "Soft, cloudy noise",
+                mastik_core::NoiseKind::Turbulence => "Noise with sharp creases",
+            },
+            |p, i, rect, on| segment_label(p, rect, kinds[i].label(), on),
+        );
+        if let Some(i) = picked.filter(|i| *i != at) {
+            let next = paint::with_noise(brush, |n| n.kind = kinds[i]);
+            self.write_slot(node, slot, next);
+        }
+
+        let half = (inner_w - ROW_GAP) * 0.5;
+        let cell = egui::vec2(half, ROW_H);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = ROW_GAP;
+            let range = mastik_core::noise::NOISE_SCALE_RANGE;
+            let mut scale = noise.scale;
+            let resp = ui::value_field(
+                ui,
+                cell,
+                ui::Prefix::Text("Scale"),
+                &mut scale,
+                ui::Scrub::fine(0.25, 1).range(range),
+                |d| d.suffix(" px").max_decimals(1),
+            )
+            .on_hover_text("The size of one cell, in the layer's units");
+            let next = paint::with_noise(brush, |n| n.scale = scale);
+            self.valve_slot(&resp, node, slot, next);
+            let mut detail = f64::from(noise.detail);
+            let resp = ui::value_field(
+                ui,
+                cell,
+                ui::Prefix::Text("Detail"),
+                &mut detail,
+                ui::Scrub::whole(0.05).range(1.0..=f64::from(mastik_core::noise::MAX_DETAIL)),
+                |d| d.max_decimals(0),
+            )
+            .on_hover_text("How many finer layers of noise are summed, 1 to 8");
+            let next = paint::with_noise(brush, |n| n.detail = detail.round() as u32);
+            self.valve_slot(&resp, node, slot, next);
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = ROW_GAP;
+            let mut seed = f64::from(noise.seed);
+            let resp = ui::value_field(
+                ui,
+                cell,
+                ui::Prefix::Text("Seed"),
+                &mut seed,
+                ui::Scrub::whole(0.25).range(f64::from(i32::MIN)..=f64::from(i32::MAX)),
+                |d| d.max_decimals(0),
+            )
+            .on_hover_text("Which noise: another number draws it anew");
+            let next = paint::with_noise(brush, |n| n.seed = seed.round() as i32);
+            self.valve_slot(&resp, node, slot, next);
+            let top = mastik_core::noise::MAX_STRETCH * 100.0;
+            let mut stretch = noise.stretch * 100.0;
+            let resp = ui::value_field(
+                ui,
+                cell,
+                ui::Prefix::Text("Stretch"),
+                &mut stretch,
+                ui::Scrub::whole(0.5).range(-top..=top),
+                |d| d.suffix("%").max_decimals(0),
+            )
+            .on_hover_text("Pull the cells wide, or tall when negative");
+            let next = paint::with_noise(brush, |n| n.stretch = stretch / 100.0);
+            self.valve_slot(&resp, node, slot, next);
+        });
+
+        // Which colour the value row edits: the ramp's two ends.
+        let stops = paint::stops_of(brush);
+        let chips = ramp(brush);
+        let last = stops.len() - 1;
+        let index = self.picker.as_ref().map_or(0, |p| p.stop.min(last));
+        let end = usize::from(index > 0);
+        let picked = ui::segmented_tipped(
+            ui,
+            inner_w,
+            ui::SEGMENT_CELL_H,
+            2,
+            end,
+            |_| true,
+            |i| match i {
+                0 => "Edit the colour the noise's low values take",
+                _ => "Edit the colour the noise's high values take",
+            },
+            |p, i, rect, on| {
+                let at = if i == 0 { 0 } else { last };
+                let chip = egui::Rect::from_center_size(
+                    egui::pos2(rect.left() + 12.0, rect.center().y),
+                    egui::vec2(10.0, 10.0),
+                );
+                ui::paint_swatch(p, chip, color::field(), ui::Swatch::Solid(chips[at].1));
+                let words = format!("{}  {}", ["From", "To"][i], hex_of(stops[at].1));
+                let text =
+                    egui::Rect::from_min_max(egui::pos2(chip.right() + 4.0, rect.top()), rect.max);
+                segment_label(p, text, &words, on);
+            },
+        );
+        let index = match picked.unwrap_or(end) {
+            0 => 0,
+            _ => last,
+        };
+        if let Some(p) = &mut self.picker {
+            p.stop = index;
+        }
+        self.hex_row(ui, node, slot, brush, index, stops[index].1, inner_w);
+        let short = bottom - ui.cursor().top();
+        if short > 0.0 {
+            ui.add_space(short);
+        }
+    }
+
     // --- gradient geometry -------------------------------------------------
     /// Kind chip, angle field, the two stop-order controls and the ends button.
     fn linear_controls(
@@ -3194,6 +3371,83 @@ mod mixed_hex_tests {
             .unwrap_or_else(|| panic!("the row draws {text:?} at least {} times", nth + 1))
     }
 
+    /// The Noise tab turns a fill into a noise fill from its colour, keeps the
+    /// picker's height, fits every tab's word in its cell, and its Veins cell
+    /// retypes the noise.
+    ///
+    /// flip: `picker_body` mapping the Noise tab to `PaintKind::Linear` → fails
+    /// at "a noise fill".
+    #[test]
+    fn the_noise_tab_makes_a_noise_fill_at_the_pickers_height() {
+        let ctx = egui::Context::default();
+        let (mut app, b) = on_b(&ctx, Format::Hex);
+        let click = |ctx: &egui::Context, app: &mut MastikApp, at: egui::Pos2| {
+            frame(ctx, app, vec![egui::Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                frame(
+                    ctx,
+                    app,
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    }],
+                );
+            }
+        };
+        let foot = |ctx: &egui::Context| {
+            ctx.memory(|m| m.area_rect(layer_id()).map(|r| r.bottom()))
+                .expect("the picker is up")
+        };
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        let solid_foot = foot(&ctx);
+        let tabs = text_rects(&ctx, &mut app);
+        let cell = |word: &str| {
+            tabs.iter()
+                .find(|(t, _)| t == word)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("the {word} tab is drawn"))
+        };
+        let (noise, vars) = (cell("Noise"), cell("Variables"));
+        assert!(
+            vars.left() > noise.right(),
+            "Variables clears Noise's word: {vars:?} against {noise:?}"
+        );
+        click(&ctx, &mut app, noise.center());
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        let brush = app.session.doc.get(b).unwrap().paint().fills[0]
+            .brush
+            .literal()
+            .cloned()
+            .expect("a literal paint");
+        assert_eq!(paint::kind_of(&brush), PaintKind::Noise, "a noise fill");
+        let noise_foot = foot(&ctx);
+        assert!(
+            (solid_foot - noise_foot).abs() < 1.5,
+            "the picker keeps its height: {solid_foot} against {noise_foot}"
+        );
+        let veins = text_rects(&ctx, &mut app)
+            .into_iter()
+            .find(|(t, _)| t == "Veins")
+            .expect("the Veins cell")
+            .1;
+        click(&ctx, &mut app, veins.center());
+        let brush = app.session.doc.get(b).unwrap().paint().fills[0]
+            .brush
+            .literal()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            paint::noise_of(&brush).map(|n| n.kind),
+            Some(mastik_core::NoiseKind::Turbulence)
+        );
+    }
+
     /// On a gradient the opacity field is the selected stop's alpha: a stop made
     /// transparent reads 0% and is made visible there, the ramp's opacity untouched.
     /// flip: `hex_row`'s field reading and writing `paint::alpha_of`/`with_alpha`
@@ -3578,6 +3832,7 @@ mod radial_centre_tests {
             },
             transform: Affine::IDENTITY,
             opacity: 1.0,
+            noise: None,
         });
         // Through the panel's own writer, so the fixture is a brush the app can
         // actually produce rather than one hand-assembled to suit the assertion.

@@ -626,6 +626,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
             "drop_shadow" | "inner_shadow" => struct_fields::<crate::effect::Shadow>()?.to_vec(),
             "layer_blur" | "background_blur" => vec!["radius"],
             "sharpen" => vec!["amount", "radius"],
+            "grain" => vec!["amount", "size", "seed", "blend", "colour"],
             "filters" => struct_fields::<crate::effect::Filters>()?.to_vec(),
             _ => return None,
         };
@@ -646,7 +647,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
                     "Solid" | COLOUR => colour_fields(),
                     "Gradient" => struct_fields::<peniko::Gradient>().map(|f| {
                         let mut f = f.to_vec();
-                        f.extend(["transform", "opacity"]);
+                        f.extend(["transform", "opacity", "noise"]);
                         f
                     }),
                     "track" if map.contains_key("repeat") => Some(vec!["repeat", "tracks"]),

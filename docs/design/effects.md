@@ -19,6 +19,7 @@ pub enum EffectKind {
     InnerShadow(Shadow),
     LayerBlur { radius: f64 },      // the RADIUS as typed, not the deviation
     Sharpen { amount: f64, radius: f64 },  // unsharp mask; amount 0..=MAX_SHARPEN (2.0), radius a blur's
+    Grain(Grain),                   // noise blended with the layer, inside its alpha (mastik_core::noise)
     BackgroundBlur { radius: f64 }, // blurs what lies behind, inside the outline; same units
     Filters(Filters),
 }
@@ -35,6 +36,14 @@ impl Shadow { pub fn blends(&self) -> bool; }   // mode is not Normal
 pub struct Filters { pub brightness: f64, pub contrast: f64, pub saturation: f64, pub hue: f64 }
                                     // factors, 1.0 neutral; hue in DEGREES, 0.0 neutral
 
+pub struct Grain {                  // mastik_core::noise
+    pub amount: f64,                // 0..=1
+    pub size: f64,                  // one grain in document units, GRAIN_SIZE_RANGE (0.5..=8)
+    pub seed: i32,
+    pub blend: BlendMode,           // Overlay by default, never PassThrough; absent from the file at Overlay
+    pub colour: bool,               // three channels of noise rather than grey
+}
+
 pub const BLUR_DEVIATION: f64 = 0.5;   // deviation = radius x this
 pub const BLUR_CUTOFF: f64 = 3.0;      // deviations worth rasterizing (vello_common's number)
 pub fn deviation(radius: f64) -> f64;  // what the three writers take
@@ -45,9 +54,10 @@ pub fn backdrop_radius(effects: &[Effect]) -> Option<f64>;   // visible backgrou
 pub fn escaped(bounds: Rect, escape: Insets, world: Affine) -> Rect;   // local escape -> world box
 ```
 
-- **Six effects**: drop shadow, inner shadow, layer blur, sharpen, background blur and colour filters. All but the background blur draw alike on the canvas, the raster export and the SVG writer; SVG cannot express a backdrop, so the SVG writer leaves a background blur out and reports it (§7). A layer's own blend mode composites outside its effect layer, so its shadows blend with it (§5.3, §6.2).
+- **Seven effects**: drop shadow, inner shadow, layer blur, sharpen, grain, background blur and colour filters. All but the background blur draw alike on the canvas, the raster export and the SVG writer; SVG cannot express a backdrop, so the SVG writer leaves a background blur out and reports it (§7). A layer's own blend mode composites outside its effect layer, so its shadows blend with it (§5.3, §6.2).
 - **A background blur shows what lies behind the layer, blurred, inside its outline** (`scene::paint_backdrop`, §6.2). It is no pass over the layer's own pixels, and is drawn behind everything the layer draws, so its place in the list changes nothing. Its radius is a layer blur's, in the same units, bound through the same slot, carried by `retyped` and held to the same cap. Several visible ones compose into one radius, `backdrop_radius` = `sqrt(r1^2 + r2^2)`, since blurs in sequence convolve. A mask draws none, nor does any layer inside a mask group: their ink is drawn into the mask layer, where a backdrop would become mask, so `paint_node_pass` skips them (the walk counts the ink masks it is inside) and `spread_through_backdrops` skips any glass with a mask among its ancestors.
 - **A sharpen is an unsharp mask over the layer's own drawing**: `original + amount × (original − blur)` per premultiplied channel, clamped as SVG's arithmetic `feComposite` clamps (alpha to 0–1, then each colour to the alpha), a pass of stage 1 beside the layer blur whose passes it reuses (§6.4). An effect rather than a picture's adjustment, since it reads neighbouring pixels, so it works on any layer. Amount is 0–200% (`MAX_SHARPEN`, refused past it by `Document::apply` and clamped on load with the radius); the radius is a layer blur's, in the same units, bound through the blur slot (the amount binds nothing). It shares nothing with the blurs on a retype: its radius is a pixel or two where a blur's is a dozen, so it starts on `DEFAULT_SHARPEN_RADIUS` (1.5) at 60%. Where the layer is transparent the mask is negative and clamps to nothing, so it escapes `ZERO`; but its blur reads past the pixel it draws, so an effect layer's buffer is clipped with `buffer_escape` (the stack's escape grown by each visible sharpen's reach), or a layer cut by the target would draw a bright rim along the cut.
+- **A grain is noise blended with the layer's own drawing, inside its alpha**, a stage-1 pass in list order like the sharpen (§6.4, *Noise*). Its noise lives in the layer's own space, so it turns and scales with the layer. Per pixel, so it escapes `ZERO`; it binds no number, shares nothing on a retype, and stays under level of detail as `Filters` do. `Grain` deserializes through a wire type that clamps every number and reads Pass through as Overlay, so a file, a paste or an MCP write never holds a value out of range (`blur_within_cap` asks `g == g.clamped()`).
 - **A shadow carries its own blend mode**, so a Multiply shadow darkens a coloured ground: a drop shadow blends with what lies under the layer, an inner one with the layer and what shows through it. A Normal container isolates its children, not its shadows; a layer in any other mode composites its shadows by that mode, so the layer's mode wins over the shadow's. One of the sixteen modes, never Pass through (a shadow is no container): `build::effect_is_finite` refuses it at both doors and the loader's `effect::clamp_blur` reads it as Normal. `EffectKind::retyped` carries it between drop and inner. The canvas draws such a stack in passes (§6.2); the SVG writer cannot (§7).
 - **`visible` sits beside the payload** (as on `Fill`) so hiding a shadow does not throw away its tuned numbers.
 - **A shadow's opacity is its colour's alpha**, with no second field. The rule is "one door": `paint::alpha_of` / `with_alpha` are the single pair that read and write a brush's alpha. (A gradient fill's opacity is its own field because scaling stops is not invertible through zero, §15 D767.)
@@ -62,7 +72,9 @@ pub fn escaped(bounds: Rect, escape: Insets, world: Affine) -> Rect;   // local 
 
 ## 6.4 The effect passes (`effects.rs`)
 
-**One implementation of the pixel arithmetic, read by both backends.** `vello` 0.9 has no filters beyond `draw_blurred_rounded_rect`, and `vello_cpu` 0.2.0 implements only `GaussianBlur` and `DropShadow` as single-primitive graphs (no `ColorMatrix`, no `Composite`, so no colour filters and no inner shadow). Leaning on the library for the two it has would mean two blur implementations on two backends that §3 keeps identical. So `effects.rs` is the specification, the CPU backend is the reference, and `fx.wgsl` has one entry point per step of `effects::run`, in the same order, over the same premultiplied 8-bit values. The gaussian kernel is built on the host by `effects::kernel` and passed to the shader as a buffer. `tests/fx_gpu.rs` runs both over one buffer and compares bytes.
+**One implementation of the pixel arithmetic, read by both backends.** `vello` 0.9 has no filters beyond `draw_blurred_rounded_rect`, and `vello_cpu` 0.2.0 implements only `GaussianBlur` and `DropShadow` as single-primitive graphs (no `ColorMatrix`, no `Composite`, so no colour filters and no inner shadow). Leaning on the library for the two it has would mean two blur implementations on two backends that §3 keeps identical. So `effects.rs` is the specification, the CPU backend is the reference, and `fx.wgsl` has one entry point per step of `effects::run`, in the same order, over the same premultiplied 8-bit values. The gaussian kernel is built on the host by `effects::kernel` and passed to the shader as a buffer. `tests/fx_gpu.rs` runs both over one buffer and compares bytes; the noise passes are held within a tolerance instead (*Noise*, below).
+
+`run` takes `scale` (device pixels per document unit on each axis) and `to_local`, the map from a buffer pixel's corner into the layer's own space (`effects::buffer_to_local`, which both backends call, so their noise lands on one lattice); both are carried on both backends' effect frames and the GPU's `EffectJob`.
 
 **The CPU convolution may be reorganized for speed only if it stays byte-identical.** `effects::convolve` sums each pixel's taps in kernel order with the edge taps skipped, which pins the floating-point result; within that, the vertical pass accumulates whole rows, a pass past `THREADED_COST` splits its rows across threads (`for_row_bands`), and a shadow's silhouette, whose colour is zero until the tint, is coarsened, blurred and upsampled in alpha alone (`Channels::Alpha`). `the_blur_is_the_direct_convolution_byte_for_byte` holds it to the direct loop.
 
@@ -77,7 +89,7 @@ Two conventions:
 
 ### Staging
 
-`run` is two stages, and the SVG writer is arranged the same way. `Filters`, `LayerBlur` and `Sharpen` transform the layer's own appearance in list order; then every shadow is cast from *that* result and merged behind or over it. An inner shadow after a drop shadow must not take its silhouette from layer-plus-shadow. `effect::stack_escape` is the same decision for bounds: reordering the stages here means changing it too, and nothing fails if only one moves. A background blur is no stage: `run` and `fx_gpu` skip it and `any_ink` answers `false` for it, so a stack holding only one pushes no effect layer. Its backdrop is blurred by an effect layer of its own carrying a layer blur (§6.2).
+`run` is two stages, and the SVG writer is arranged the same way. `Filters`, `LayerBlur`, `Sharpen` and `Grain` transform the layer's own appearance in list order; then every shadow is cast from *that* result and merged behind or over it. An inner shadow after a drop shadow must not take its silhouette from layer-plus-shadow. `effect::stack_escape` is the same decision for bounds: reordering the stages here means changing it too, and nothing fails if only one moves. A background blur is no stage: `run` and `fx_gpu` skip it and `any_ink` answers `false` for it, so a stack holding only one pushes no effect layer. Its backdrop is blurred by an effect layer of its own carrying a layer blur (§6.2).
 
 `run_shadows` is `run` with the layer left out: the output starts empty instead of as the graphic, so only the shadows cast remain. It draws a blending shadow's own pass (§6.2); the GPU spells it `layer = false` (`FxFrame`, `EffectJob`, `fx_gpu::Item`), starting `out` with a zero `Tint` instead of a `Copy` of the graphic.
 
@@ -102,9 +114,23 @@ The silhouette both shadow kinds are cast from is the graphic's own alpha. `255 
 
 `effects::sharpen` keeps the layer, blurs a copy through the layer blur's own passes, and combines the two per pixel with the clamp SVG's arithmetic `feComposite` applies (alpha to 0–1, colour to the alpha); `fx.wgsl`'s `sharpen` entry does the same over `src_a` (the layer, kept in the `O0` scratch slot, free until stage 2) and `src_b` (its blur), the amount in `Params::amount`. The clamp must be in all three writers: left at 1, a colour past its alpha survives into any later pass that mixes premultiplied pixels and rings differently. The blurred copy is only subtracted, so past the budget it is taken on the coarse grid by `effect::shadow_downscale`'s answer, as a shadow's silhouette is; it never licenses `buffer_downscale`, since the output stays sharp. The SVG writer emits `feGaussianBlur` (`result="fx{n}b"`) and `feComposite operator="arithmetic"` with `k2 = 1 + a`, `k3 = −a`. CSS has no unsharp mask: `css_blocker` sends the layer to inline SVG (*a sharpen*), which carries the filter. Penpot, Sketch and DTCG leave it out and report it.
 
+### Noise
+
+**The generator is SVG's `feTurbulence`, ported**: `mastik_core::noise::Lattice` is the specification's reference code (Park–Miller seeding, the 256-cell lattice, four channels, the octave sum, fractal or turbulence) in `f32`, and `fx.wgsl` repeats it line for line over the table `Lattice::table` uploads into the kernel buffer. The algorithm is specified, so the SVG writer's `<feTurbulence>` is the reference both backends are held to, not a third copy. Three details are what make them agree, and each looks removable:
+
+- **The 8-bit premultiply round trip.** `Lattice::rgba` and `red` premultiply each level by the noise's own alpha and read it back straight, each step rounded to 8 bits, as every SVG renderer does before `feColorMatrix` reads its input.
+- **Pixel corners.** `LatticeMap` maps a buffer pixel's corner, not its centre, into lattice space, since SVG renderers sample there; its origin is reduced modulo 256 cells in `f64`, so a layer far from the origin keeps its precision.
+- **`GRAIN_FREQUENCY` (0.85).** A grain's base frequency is 0.85 / size, not 1 / size: the noise is zero on every lattice point, and at 1 every pixel corner of an unscaled layer on whole units is one, so the grain would vanish. A grain sums `GRAIN_OCTAVES` (2) of fractal noise.
+
+**A grain** (`effects::grain`, `fx.wgsl`'s `grain`): the noise made opaque (grey from red, or its three channels), blended over the layer by the W3C blend function (`effects::blend`, all sixteen modes; `fx.wgsl`'s `blend` repeats it), cut to the layer's alpha, then `amount × that + (1 − amount) × layer` clamped as an arithmetic `feComposite`; alpha unchanged. The SVG writer: `feTurbulence` → `feColorMatrix` (grey or colour, alpha 1) → `feBlend in=noise in2=graphic` → `feComposite operator="in"` the graphic → arithmetic `feComposite` with `k2 = amount`, `k3 = 1 − amount`. A stack holding a visible grain is filtered in the layer's own space (§7). Folded filters refuse a stack with a grain (§6.2).
+
+**A noise fill** (`effects::noise_fill`, `fx.wgsl`'s `noise_fill`) is a paint, not an effect (images.md, *The brush*): each pixel's alpha is the fill's coverage, drawn white, and becomes `from` mixed towards `to` by the noise's red channel, times that coverage. Each backend's `fill_path`, `stroke_path` and `draw_text`, handed a noise brush, calls `scene::draw_noise`, which opens `ScenePainter::push_noise_layer` (an effect-style buffer) and turns coverage into the ramp on pop; the scene walk does not know about noise. The SVG writer paints the element `#ffffff` under `filter="url(#nz-<node>-<slot>)"`: `feTurbulence` (base frequency at nine places, since it multiplies every coordinate), `feColorMatrix` whose four rows all read red and lay it from `from` to `to`, `feComposite operator="in"` `SourceAlpha`; the region is the node's ink box in its own space.
+
+**Tolerances, not bytes.** The shader may fuse a multiply and an add where the CPU rounds between them, so a lattice sum on a rounding boundary lands a level apart and the round trip and ramp can carry it to a second. `tests/fx_gpu.rs` (`a_grain_matches_the_reference`, `a_colour_grain_matches_the_reference_in_every_mode`, `a_noise_fill_matches_the_reference`) holds the GPU within 2 levels premultiplied, 8 for Hue, Saturation, Color and Luminosity (`SetSat` divides by a near-grey pixel's channel spread), with at most one channel in a hundred differing; `gpu_effects::both_backends_draw_the_same_noise_fill_and_grain` within 2. `mastik-export/tests/noise_reference.rs · the_raster_draws_what_the_svg_writer_writes` draws the SVG writer's file through `resvg` and holds the CPU raster to it: a grain within 1 level, a noise fill within 3 with at most 15% of channels past 1, since `resvg` rounds the matrix output, the premultiply and the composite at 8 bits each.
+
 ### Tests
 
-CPU pixel tests in `mastik-render/tests/effects.rs` (shadow colour/position, alpha falloff, blur past the layer edge, filters change colour not extent, spread, inner shadow within the ink and on all four edges at (0,0), a sharpen's rim and no rim where the target cuts it, no-ink stack equals no stack). The SVG suite reads the filter graph. Neither would notice if only the other were right.
+CPU pixel tests in `mastik-render/tests/effects.rs` (shadow colour/position, alpha falloff, blur past the layer edge, filters change colour not extent, spread, inner shadow within the ink and on all four edges at (0,0), a sharpen's rim and no rim where the target cuts it, no-ink stack equals no stack). The SVG suite reads the filter graph. Neither would notice if only the other were right; for noise, `noise_reference.rs` compares the two pictures.
 
 ## Traps
 
@@ -114,3 +140,4 @@ CPU pixel tests in `mastik-render/tests/effects.rs` (shadow colour/position, alp
 - Do not store the blur deviation; store the radius.
 - A lone alpha door (`paint::alpha_of`) is the invariant, not "no opacity field".
 - `filter_matrix` coefficient order is shared with `fx.wgsl`.
+- The noise generator follows `feTurbulence` as SVG renderers run it, not as it would be written fresh: the 8-bit premultiply round trip, sampling at pixel corners and `GRAIN_FREQUENCY` below 1 all look removable and each moves the picture off the exported file (*Noise*).

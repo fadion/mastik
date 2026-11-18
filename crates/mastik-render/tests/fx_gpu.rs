@@ -11,7 +11,7 @@
 //! `cargo test -p mastik-render --test fx_gpu -- --ignored`.
 
 use mastik_core::effect::{Effect, EffectKind, Filters, Shadow};
-use mastik_core::kurbo::Vec2;
+use mastik_core::kurbo::{Affine, Vec2};
 use mastik_core::peniko::Color;
 use mastik_core::{Keyed, keyed_by_position};
 use mastik_render::effects::{self, Surface};
@@ -30,6 +30,12 @@ fn whole() -> Slice {
 const W: u32 = 64;
 const H: u32 = 48;
 const SCALE: (f64, f64) = (1.0, 1.0);
+
+/// Where the fixture's pixel corners land in the layer's space: off the origin
+/// and off the lattice, so a noise pass reads a map with every term in it.
+fn local() -> Affine {
+    Affine::translate((37.25, -11.5)) * Affine::scale_non_uniform(1.5, 0.75)
+}
 
 /// Round half-up to an 8-bit level — the shader's `q`, and the CPU reference's
 /// `+ 0.5` cast, written once so the two ends of the comparison agree about the
@@ -232,7 +238,7 @@ fn readback(g: &Gpu, tex: &wgpu::Texture) -> Vec<u8> {
 fn reference(src: &[u8], effects_list: &[Keyed<Effect>]) -> Vec<u8> {
     let mut buf = premultiply(src);
     let mut s = Surface::new(&mut buf, W as usize, H as usize);
-    effects::run(&mut s, effects_list, SCALE);
+    effects::run(&mut s, effects_list, SCALE, local());
     unpremultiply(&buf)
 }
 
@@ -300,8 +306,18 @@ fn check_on(name: &str, list: Vec<Effect>, px: &[u8]) {
     };
     let list = keyed_by_position(list);
     let src = upload(&g, px);
-    let out = fx_gpu::run(&g.device, &g.queue, &g.fx, &src, whole(), &list, SCALE)
-        .expect("the stack has ink, so it produces a texture");
+    let out = fx_gpu::run(
+        &g.device,
+        &g.queue,
+        &g.fx,
+        &src,
+        whole(),
+        &list,
+        SCALE,
+        local(),
+        None,
+    )
+    .expect("the stack has ink, so it produces a texture");
     let got = readback(&g, &out);
     compare(name, &got, &reference(px, &list), TOLERANCE);
 }
@@ -402,6 +418,156 @@ fn a_resampled_sharpen_matches_the_reference() {
         })],
         &two_hue_fixture(),
     );
+}
+
+/// The noise passes' slack: the shader may fuse a multiply and an add where the
+/// CPU rounds between them, so a lattice sum can land one 8-bit level apart
+/// where it sits on a rounding boundary, and the premultiply round trip and the
+/// ramp can carry that level to a second. Such pixels are rare; `compare_noise`
+/// also bounds how many differ at all.
+const NOISE_TOLERANCE: u8 = 2;
+
+/// The slack for the four non-separable blend modes: `SetSat` divides by the
+/// source's channel spread, which for a near-grey noise pixel is a level or two,
+/// so one level's difference in one channel turns the hue by several.
+const HUE_TOLERANCE: u8 = 8;
+
+/// [`compare`] at `tolerance` on the **premultiplied** pixels, and no more than
+/// one channel in a hundred off by anything: a wrong lattice index or a swapped
+/// operand moves most of the buffer, a fused rounding a handful of pixels.
+///
+/// Premultiplied because a level's difference on a pixel at alpha 27 reads back
+/// straight as nine, and what is composited is the premultiplied value.
+fn compare_noise(name: &str, got: &[u8], want: &[u8], tolerance: u8) {
+    let (got, want) = (&premultiply(got), &premultiply(want));
+    compare(name, got, want, tolerance);
+    let off = got.iter().zip(want).filter(|(a, b)| a != b).count();
+    assert!(
+        off * 100 <= got.len(),
+        "{name}: {off} of {} channels differ, past one in a hundred",
+        got.len()
+    );
+}
+
+/// `check_on` for a noise pass, compared by [`compare_noise`].
+fn check_grain(name: &str, grain: mastik_core::Grain, px: &[u8]) {
+    let Some(g) = gpu() else {
+        eprintln!("no GPU adapter; skipping {name}");
+        return;
+    };
+    let list = keyed_by_position([Effect::new(EffectKind::Grain(grain))]);
+    let src = upload(&g, px);
+    let out = fx_gpu::run(
+        &g.device,
+        &g.queue,
+        &g.fx,
+        &src,
+        whole(),
+        &list,
+        SCALE,
+        local(),
+        None,
+    )
+    .expect("a grain has ink");
+    use mastik_core::BlendMode as M;
+    let tolerance = match grain.blend {
+        M::Hue | M::Saturation | M::Color | M::Luminosity => HUE_TOLERANCE,
+        _ => NOISE_TOLERANCE,
+    };
+    compare_noise(name, &readback(&g, &out), &reference(px, &list), tolerance);
+}
+
+/// A grey grain at Overlay over the two-hue disc, its soft edge included, against
+/// the CPU pass.
+///
+/// flip: `fx.wgsl`'s `noise2` reading `nz_sel(i + by1)` for `b10` → fails at the
+/// comparison over most of the disc.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_grain_matches_the_reference() {
+    check_grain(
+        "grain",
+        mastik_core::Grain {
+            amount: 0.6,
+            size: 1.5,
+            seed: 9,
+            ..mastik_core::Grain::default()
+        },
+        &two_hue_fixture(),
+    );
+}
+
+/// A colour grain in each family of blend modes, the four non-separable ones
+/// included, so every arm of `fx.wgsl`'s `blend` is read against `effects::blend`.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_colour_grain_matches_the_reference_in_every_mode() {
+    for mode in mastik_core::BlendMode::ALL {
+        if mode == mastik_core::BlendMode::PassThrough {
+            continue;
+        }
+        check_grain(
+            &format!("colour grain, {mode:?}"),
+            mastik_core::Grain {
+                amount: 0.8,
+                size: 3.0,
+                seed: -4,
+                blend: mode,
+                colour: true,
+            },
+            &two_hue_fixture(),
+        );
+    }
+}
+
+/// A noise fill of each kind over the disc's coverage, its translucent ramp end
+/// and soft edge included, against `effects::noise_fill`.
+///
+/// flip: `fx.wgsl`'s `nz_level` dropping the fractal branch's `+ 255.0` → fails
+/// at the clouds comparison.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_noise_fill_matches_the_reference() {
+    let Some(g) = gpu() else {
+        eprintln!("no GPU adapter; skipping noise fill");
+        return;
+    };
+    for kind in mastik_core::NoiseKind::ALL {
+        let ramp = mastik_render::scene::NoiseRamp {
+            noise: mastik_core::Noise {
+                kind,
+                scale: 9.0,
+                detail: 5,
+                seed: 37,
+                stretch: 0.6,
+            },
+            from: [0.87, 0.9, 1.0, 1.0],
+            to: [0.12, 0.16, 0.32, 0.4],
+        };
+        let px = fixture();
+        let src = upload(&g, &px);
+        let out = fx_gpu::run(
+            &g.device,
+            &g.queue,
+            &g.fx,
+            &src,
+            whole(),
+            &[],
+            SCALE,
+            local(),
+            Some(ramp),
+        )
+        .expect("a noise fill has ink");
+        let mut want = premultiply(&px);
+        let mut s = Surface::new(&mut want, W as usize, H as usize);
+        effects::noise_fill(&mut s, &ramp.noise, ramp.from, ramp.to, local());
+        compare_noise(
+            &format!("noise fill, {kind:?}"),
+            &readback(&g, &out),
+            &unpremultiply(&want),
+            NOISE_TOLERANCE,
+        );
+    }
 }
 
 #[test]
@@ -518,8 +684,18 @@ fn a_deeply_resampled_shadow_costs_the_buffer_and_not_the_block() {
     let src = upload(&g, &fixture());
     let once = |effects: &[Keyed<Effect>]| {
         let at = std::time::Instant::now();
-        let out = fx_gpu::run(&g.device, &g.queue, &g.fx, &src, whole(), effects, SCALE)
-            .expect("the stack has ink");
+        let out = fx_gpu::run(
+            &g.device,
+            &g.queue,
+            &g.fx,
+            &src,
+            whole(),
+            effects,
+            SCALE,
+            local(),
+            None,
+        )
+        .expect("the stack has ink");
         // The readback polls to completion, so this times the work rather than
         // the submission.
         let _ = readback(&g, &out);
@@ -675,5 +851,18 @@ fn a_stack_with_no_ink_asks_for_no_texture() {
         Effect::new(EffectKind::Filters(Filters::default())),
     ];
     let list = keyed_by_position(list);
-    assert!(fx_gpu::run(&g.device, &g.queue, &g.fx, &src, whole(), &list, SCALE).is_none());
+    assert!(
+        fx_gpu::run(
+            &g.device,
+            &g.queue,
+            &g.fx,
+            &src,
+            whole(),
+            &list,
+            SCALE,
+            local(),
+            None
+        )
+        .is_none()
+    );
 }

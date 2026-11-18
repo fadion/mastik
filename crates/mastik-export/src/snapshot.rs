@@ -367,7 +367,7 @@ pub struct SeriesSummary {
 pub struct EffectSummary {
     /// The effect's item id, which `bind_variable` names an effect's number by.
     pub id: mastik_core::ItemId,
-    /// `"DropShadow"`, `"InnerShadow"`, `"LayerBlur"`, `"Sharpen"`,
+    /// `"DropShadow"`, `"InnerShadow"`, `"LayerBlur"`, `"Sharpen"`, `"Grain"`,
     /// `"BackgroundBlur"` or `"Filters"`.
     pub kind: String,
     /// Shadows only: offset, blur radius, spread, and the colour whose alpha is
@@ -384,7 +384,8 @@ pub struct EffectSummary {
     /// as `PaintSummary::Solid` splits a fill's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
-    /// Shadows only: the blend mode as the menu names it, absent at Normal.
+    /// Shadows and grain: the blend mode as the menu names it, absent at a
+    /// shadow's Normal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blend: Option<String>,
     /// `Filters` only: factors with 1.0 neutral, and degrees for the hue.
@@ -396,9 +397,17 @@ pub struct EffectSummary {
     pub saturation: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hue: Option<f64>,
-    /// `Sharpen` only: 1.0 is 100%. Its radius is `blur`.
+    /// `Sharpen` and `Grain`: 1.0 is 100%. A sharpen's radius is `blur`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<f64>,
+    /// `Grain` only: the size of one grain in document units, its seed, and
+    /// whether it is in colour rather than grey.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<bool>,
 }
 
 /// A node's kind-specific geometry, as drawn. Lengths and coordinates are at
@@ -629,8 +638,12 @@ pub enum PaintSummary {
     /// A gradient, with enough detail for an agent to describe or recreate it
     /// rather than just know that one exists.
     Gradient {
-        /// `linear` | `radial` | `sweep`.
+        /// `linear` | `radial` | `sweep`, or `noise` for a noise fill.
         kind: String,
+        /// A noise fill's generator, its two colours the first and last stops;
+        /// absent for any other gradient.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        noise: Option<mastik_core::Noise>,
         /// The ramp's own opacity, `0..=1`, multiplied over every stop's alpha;
         /// without it a faded gradient and an opaque one read identically.
         opacity: f32,
@@ -1176,6 +1189,9 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
         saturation: None,
         hue: None,
         amount: None,
+        size: None,
+        seed: None,
+        colour: None,
     };
     match &e.kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
@@ -1201,6 +1217,14 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
             amount: Some(round4(*amount)),
             blur: Some(round4(*radius)),
             ..base("Sharpen")
+        },
+        EffectKind::Grain(g) => EffectSummary {
+            amount: Some(round4(g.amount)),
+            size: Some(round4(g.size)),
+            seed: Some(g.seed),
+            colour: Some(g.colour),
+            blend: Some(g.blend.label().to_string()),
+            ..base("Grain")
         },
         EffectKind::BackgroundBlur { radius } => EffectSummary {
             blur: Some(round4(*radius)),
@@ -1440,11 +1464,13 @@ fn paint_summary(doc: &Document, brush: &Brush) -> PaintSummary {
         // geometry: a squash alone would be the only placement a reader could see.
         Brush::Gradient(g) => PaintSummary::Gradient {
             kind: match g.gradient.kind {
+                _ if g.noise.is_some() => "noise",
                 mastik_core::peniko::GradientKind::Linear(_) => "linear",
                 mastik_core::peniko::GradientKind::Radial(_) => "radial",
                 mastik_core::peniko::GradientKind::Sweep(_) => "sweep",
             }
             .to_string(),
+            noise: g.noise,
             opacity: g.opacity,
             extend: match g.gradient.extend {
                 mastik_core::peniko::Extend::Pad => None,

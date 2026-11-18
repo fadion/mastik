@@ -265,6 +265,8 @@ struct FxFrame {
     /// How many device pixels one buffer pixel covers (`effect::buffer_downscale`);
     /// `1.0` unless the layer is heavily blurred.
     downscale: f64,
+    /// A buffer pixel's corner → the layer's own space, where noise lives.
+    to_local: Affine,
     /// How many ordinary layers are open inside this one; what tells `pop_layer`
     /// which kind of layer it is closing (see [`CpuPainter::opened_ordinary`]).
     depth: usize,
@@ -273,7 +275,7 @@ struct FxFrame {
 }
 
 /// What an [`FxFrame`]'s buffer goes through on the way out.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 enum Pass {
     /// The effect stack, the layer included.
     Effects,
@@ -282,6 +284,9 @@ enum Pass {
     /// Turned into its luminance as alpha and composited `DestIn`: a luminance
     /// mask, which `vello_cpu` has no drawn-layer form of.
     Luminance,
+    /// A noise fill's coverage, drawn white, turned into its two colours
+    /// (`effects::noise_fill`).
+    Noise(scene::NoiseRamp),
 }
 
 /// Premultiplied RGBA to a luminance mask in place: each pixel becomes black at
@@ -428,6 +433,12 @@ impl ScenePainter for CpuPainter<'_> {
         framing: Option<mastik_core::Framing>,
         rule: ClipRule,
     ) {
+        if let Some(ramp) = scene::NoiseRamp::of(brush) {
+            let bounds = kurbo::Shape::bounding_box(path);
+            return scene::draw_noise(self, transform, bounds, ramp, |p, white| {
+                p.fill_path(transform, path, white, None, rule)
+            });
+        }
         let base = self.base;
         self.ctx().set_transform(base * transform);
         let Some(alpha) = self.apply_paint(brush, framing) else {
@@ -445,6 +456,12 @@ impl ScenePainter for CpuPainter<'_> {
     }
 
     fn stroke_path(&mut self, transform: Affine, path: &BezPath, stroke: &StrokePaint<'_>) {
+        if let Some(ramp) = scene::NoiseRamp::of(stroke.brush) {
+            let bounds = scene::stroke_reach(path, stroke);
+            return scene::draw_noise(self, transform, bounds, ramp, |p, white| {
+                p.stroke_path(transform, path, &stroke.in_brush(white))
+            });
+        }
         let base = self.base;
         self.ctx().set_transform(base * transform);
         let Some(alpha) = self.apply_paint(stroke.brush, stroke.framing) else {
@@ -462,6 +479,12 @@ impl ScenePainter for CpuPainter<'_> {
     }
 
     fn draw_text(&mut self, transform: Affine, run: &TextRun<'_>) {
+        if let Some(ramp) = scene::NoiseRamp::of(run.brush) {
+            let bounds = scene::text_reach(run);
+            return scene::draw_noise(self, transform, bounds, ramp, |p, white| {
+                p.draw_text(transform, &run.in_brush(white))
+            });
+        }
         let base = self.base;
         self.ctx().set_transform(base * transform);
         // The `None` return must be honoured: paint is context state, so ignoring
@@ -641,9 +664,17 @@ impl ScenePainter for CpuPainter<'_> {
             // Buffer pixels per document unit — see the `scale` field.
             scale: (scale.0 / k, scale.1 / k),
             downscale: k,
+            to_local: crate::effects::buffer_to_local(saved_base * transform, (x0, y0), k),
             depth: 0,
             pass: Pass::Effects,
         });
+    }
+
+    fn push_noise_layer(&mut self, transform: Affine, bounds: Rect, ramp: scene::NoiseRamp) {
+        self.push_effect_layer(transform, bounds, &[]);
+        if let Some(f) = self.fx.last_mut() {
+            f.pass = Pass::Noise(ramp);
+        }
     }
 
     /// Redirect the mask's drawing into a buffer the size of the enclosing target,
@@ -661,6 +692,7 @@ impl ScenePainter for CpuPainter<'_> {
             saved_base: self.base,
             scale: (1.0, 1.0),
             downscale: 1.0,
+            to_local: Affine::IDENTITY,
             depth: 0,
             pass: Pass::Luminance,
         });
@@ -710,13 +742,22 @@ impl ScenePainter for CpuPainter<'_> {
         match frame.pass {
             Pass::Effects => {
                 let mut surface = crate::effects::Surface::new(data, w, h);
-                crate::effects::run(&mut surface, &frame.effects, frame.scale);
+                crate::effects::run(&mut surface, &frame.effects, frame.scale, frame.to_local);
             }
             Pass::Shadows => {
                 let mut surface = crate::effects::Surface::new(data, w, h);
-                crate::effects::run_shadows(&mut surface, &frame.effects, frame.scale);
+                crate::effects::run_shadows(
+                    &mut surface,
+                    &frame.effects,
+                    frame.scale,
+                    frame.to_local,
+                );
             }
             Pass::Luminance => luminance_to_alpha(data),
+            Pass::Noise(r) => {
+                let mut surface = crate::effects::Surface::new(data, w, h);
+                crate::effects::noise_fill(&mut surface, &r.noise, r.from, r.to, frame.to_local);
+            }
         }
 
         let mask = frame.pass == Pass::Luminance;

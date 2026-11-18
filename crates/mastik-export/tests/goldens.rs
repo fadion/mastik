@@ -72,6 +72,7 @@ fn effect_name(k: &mastik_core::EffectKind) -> &'static str {
         E::InnerShadow(_) => "inner-shadow",
         E::LayerBlur { .. } => "layer-blur",
         E::Sharpen { .. } => "sharpen",
+        E::Grain(_) => "grain",
         E::BackgroundBlur { .. } => "background-blur",
         E::Filters(_) => "filters",
     }
@@ -465,6 +466,11 @@ fn golden_document() -> (Document, Resolved) {
                     amount: 0.6,
                     radius: 1.5,
                 }),
+                mastik_core::Effect::new(mastik_core::EffectKind::Grain(mastik_core::Grain {
+                    amount: 0.25,
+                    seed: 7,
+                    ..mastik_core::Grain::default()
+                })),
                 mastik_core::Effect::new(mastik_core::EffectKind::BackgroundBlur { radius: 5.0 }),
                 mastik_core::Effect::new(mastik_core::EffectKind::Filters(mastik_core::Filters {
                     brightness: 1.1,

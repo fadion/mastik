@@ -1454,6 +1454,7 @@ fn gradient(p: &Value, kind: &str, size: Size, alpha: f32) -> crate::Brush {
         gradient: gradient.with_stops(stops.as_slice()),
         transform,
         opacity: alpha,
+        noise: None,
     })
 }
 

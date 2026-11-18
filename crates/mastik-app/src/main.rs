@@ -139,6 +139,7 @@ mod meter;
 mod minimap;
 mod mirror;
 mod navigate;
+mod noise_preview;
 mod one_window;
 #[cfg(target_os = "macos")]
 mod open_event;

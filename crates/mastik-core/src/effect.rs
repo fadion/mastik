@@ -4,14 +4,14 @@
 //! order is the compositing order. [`Effect`] mirrors [`crate::Fill`]: a payload
 //! and a `visible` flag.
 //!
-//! **Six effects**: drop shadow, inner shadow, layer blur, sharpen, background
-//! blur and colour filters. All but the background blur agree across the canvas
-//! (vello on wgpu), the raster export (`vello_cpu`) and the SVG writer; a background
-//! blur cannot be written to SVG (`BackgroundImage` was never implemented by any
-//! renderer), so that writer leaves it out and reports it, as it reports a
-//! [`Shadow::blend`] it draws Normal. A layer's mode is `crate::Node::blend`.
-//! **Noise** is a non-goal: one generator written three times would have to
-//! agree to the pixel, and it belongs in the fill list.
+//! **Seven effects**: drop shadow, inner shadow, layer blur, sharpen, grain,
+//! background blur and colour filters. All but the background blur agree across
+//! the canvas (vello on wgpu), the raster export (`vello_cpu`) and the SVG writer;
+//! a background blur cannot be written to SVG (`BackgroundImage` was never
+//! implemented by any renderer), so that writer leaves it out and reports it, as
+//! it reports a [`Shadow::blend`] it draws Normal. A layer's mode is
+//! `crate::Node::blend`. Grain draws `feTurbulence` (`crate::noise`), whose
+//! specified algorithm is what lets three writers agree on it.
 
 use crate::item::Keyed;
 use kurbo::{Insets, Vec2};
@@ -62,6 +62,7 @@ pub fn blur_within_cap(effect: &Effect) -> bool {
         EffectKind::Sharpen { amount, radius } => {
             ok(*radius) && (0.0..=MAX_SHARPEN).contains(amount)
         }
+        EffectKind::Grain(g) => *g == g.clamped(),
         EffectKind::Filters(_) => true,
     }
 }
@@ -90,6 +91,7 @@ pub(crate) fn clamp_blur(effect: &mut Effect) {
             // `max` first: it answers 0 for `NaN`, where `clamp` would keep it.
             *amount = amount.max(0.0).clamp(0.0, MAX_SHARPEN);
         }
+        EffectKind::Grain(g) => *g = g.clamped(),
         EffectKind::Filters(_) => {}
     }
 }
@@ -300,7 +302,7 @@ impl Effect {
             EffectKind::LayerBlur { radius }
             | EffectKind::BackgroundBlur { radius }
             | EffectKind::Sharpen { radius, .. } => [None, None, Some(*radius), None],
-            EffectKind::Filters(_) => [None; 4],
+            EffectKind::Grain(_) | EffectKind::Filters(_) => [None; 4],
         }
     }
 
@@ -380,6 +382,10 @@ pub enum EffectKind {
         /// The blur the mask is taken over, in a layer blur's units.
         radius: f64,
     },
+    /// Noise blended with the layer's own drawing, children included, inside its
+    /// alpha: a pass of the layer's appearance in list order, like
+    /// [`Self::Sharpen`].
+    Grain(crate::noise::Grain),
     /// Blurs what lies behind the layer, inside the layer's own outline: what was
     /// drawn before it within the nearest enclosing layer that isolates (CSS's
     /// backdrop root), never the layer itself.
@@ -413,6 +419,8 @@ impl EffectKind {
             // Where the layer is transparent the mask is negative and clamps to
             // nothing, so no ink lands outside; where it reads is `buffer_escape`.
             Self::Sharpen { .. } => Insets::ZERO,
+            // Per-pixel and inside the layer's alpha.
+            Self::Grain(_) => Insets::ZERO,
             // Drawn inside the layer's outline: the blur reads outside it but
             // lands nowhere else.
             Self::BackgroundBlur { .. } => Insets::ZERO,
@@ -428,6 +436,7 @@ impl EffectKind {
             Self::InnerShadow(_) => "Inner shadow",
             Self::LayerBlur { .. } => "Layer blur",
             Self::Sharpen { .. } => "Sharpen",
+            Self::Grain(_) => "Grain",
             Self::BackgroundBlur { .. } => "Background blur",
             Self::Filters(_) => "Filters",
         }
@@ -439,8 +448,9 @@ impl EffectKind {
     /// [`crate::Adjustment::ALL`], so a panel cannot offer five of the six or
     /// name one differently from the snapshot. A function rather than a `const`
     /// because every variant carries a payload. Sharpen sits beside the layer
-    /// blur whose passes it reuses.
-    pub fn all_defaults() -> [Self; 6] {
+    /// blur whose passes it reuses, and Grain after it, the other kind that works
+    /// on the layer's own pixels.
+    pub fn all_defaults() -> [Self; 7] {
         [
             Self::DropShadow(Shadow::default()),
             Self::InnerShadow(Shadow::default()),
@@ -451,6 +461,7 @@ impl EffectKind {
                 amount: DEFAULT_SHARPEN_AMOUNT,
                 radius: DEFAULT_SHARPEN_RADIUS,
             },
+            Self::Grain(crate::noise::Grain::default()),
             Self::BackgroundBlur {
                 radius: DEFAULT_BLUR_RADIUS,
             },
@@ -506,6 +517,11 @@ impl EffectKind {
                 },
             },
             Self::BackgroundBlur { .. } => Self::BackgroundBlur { radius: blur },
+            // A grain shares nothing with the others: its size is a pixel or two.
+            Self::Grain(_) => match self {
+                Self::Grain(g) => Self::Grain(*g),
+                _ => Self::Grain(crate::noise::Grain::default()),
+            },
             Self::Filters(_) => match self {
                 Self::Filters(f) => Self::Filters(*f),
                 _ => Self::Filters(Filters::default()),
@@ -522,7 +538,7 @@ impl EffectKind {
         match self {
             Self::DropShadow(s) | Self::InnerShadow(s) => s.blur,
             Self::LayerBlur { radius } | Self::BackgroundBlur { radius } => *radius,
-            Self::Sharpen { .. } | Self::Filters(_) => DEFAULT_BLUR_RADIUS,
+            Self::Sharpen { .. } | Self::Grain(_) | Self::Filters(_) => DEFAULT_BLUR_RADIUS,
         }
     }
 }
@@ -1201,7 +1217,7 @@ mod tests {
             color: Color::from_rgba8(10, 20, 30, 40),
             blend: crate::BlendMode::Normal,
         };
-        let [drop, inner, blur, sharpen, backdrop, filters] = EffectKind::all_defaults();
+        let [drop, inner, blur, sharpen, grain, backdrop, filters] = EffectKind::all_defaults();
 
         // Two shadows share everything they have, so nothing is lost either way.
         let EffectKind::InnerShadow(s) = EffectKind::DropShadow(tuned.clone()).retyped(&inner)
@@ -1271,6 +1287,18 @@ mod tests {
             panic!("retyping filters to filters gave something else");
         };
         assert_eq!(kept.brightness, 1.5, "and filters keep their own");
+
+        // A grain shares nothing either, and keeps its own.
+        let tuned_grain = EffectKind::Grain(crate::noise::Grain {
+            amount: 0.4,
+            ..crate::noise::Grain::default()
+        });
+        assert_eq!(tuned_grain.retyped(&grain), tuned_grain);
+        assert_eq!(
+            EffectKind::LayerBlur { radius: 3.0 }.retyped(&grain),
+            grain,
+            "a blur's radius is no grain's size"
+        );
     }
 
     /// A sharpen lands no ink outside the layer, but its buffer is clipped with
@@ -1383,6 +1411,7 @@ mod tests {
                 EffectKind::Sharpen { amount, radius } => {
                     assert!(*amount > 0.0 && *radius > 0.0, "{kind:?}");
                 }
+                EffectKind::Grain(g) => assert!(g.amount > 0.0, "{kind:?}"),
                 // Neutral on purpose: off-neutral channels would change the
                 // artwork the instant the row was added.
                 EffectKind::Filters(f) => assert!(f.is_neutral(), "{kind:?}"),

@@ -1078,6 +1078,7 @@ impl Writer<'_> {
                     self.approximate("A second blur, left out");
                 }
                 EffectKind::Sharpen { .. } => self.approximate("Sharpen, left out"),
+                EffectKind::Grain(_) => self.approximate("Grain, left out"),
                 EffectKind::Filters(_) => self.approximate("Colour filters, left out"),
             }
         }
@@ -1160,6 +1161,9 @@ impl Writer<'_> {
 
     /// A gradient as Sketch's, its points fractions of the layer's frame.
     fn gradient(&mut self, g: &mastik_core::GradientBrush, to_frac: Affine) -> Option<Value> {
+        if g.noise.is_some() {
+            self.approximate("Noise fills, drawn as their two-colour ramp");
+        }
         if g.gradient.extend != Extend::Pad {
             self.approximate("Repeating and reflected gradients, drawn padded");
         }
