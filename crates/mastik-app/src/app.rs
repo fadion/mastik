@@ -2706,7 +2706,7 @@ impl MastikApp {
             let slot = match p.slot {
                 PaintSlot::Fill(_) => Some(StyleSlot::Fills),
                 PaintSlot::Stroke(_) => Some(StyleSlot::Strokes),
-                PaintSlot::Effect(_) => Some(StyleSlot::Effects),
+                PaintSlot::Effect(..) => Some(StyleSlot::Effects),
                 _ => None,
             };
             let styled = slot.is_some_and(|s| {

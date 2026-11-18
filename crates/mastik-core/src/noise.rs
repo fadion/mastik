@@ -1,28 +1,262 @@
-//! Noise: the parameters of a grain effect and the generator it draws with.
+//! Noise: the parameters of the noise effect and the generator it draws with.
 //!
 //! The generator is SVG's `feTurbulence`, ported from the specification's own
 //! reference code: the same lattice, gradients, seeding and octave sum, so the
 //! SVG writer's `<feTurbulence>` is the reference both backends are held to. The
-//! CPU backend evaluates it through [`Lattice`]; `fx.wgsl` repeats
-//! [`Lattice::noise2`] and [`Lattice::rgba`] line for line over the table
-//! [`Lattice::table`] uploads.
+//! CPU backend evaluates it through [`Lattice`] and [`Noise::shade`]; `fx.wgsl`
+//! repeats [`Lattice::noise2`], [`Lattice::rgba`] and the shading line for line
+//! over the table [`Lattice::table`] uploads.
 //!
 //! Noise lives in the layer's own units, so zooming magnifies it and a 2× export
 //! draws the same picture finer. It is seeded and stored, never random per draw.
 
+use peniko::Color;
 use serde::{Deserialize, Serialize};
 
-/// The smallest and largest grain, in document units.
-pub const GRAIN_SIZE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=8.0;
+/// The smallest and largest noise grain, in document units, on either axis.
+pub const NOISE_SIZE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=50.0;
 
 /// The base frequency of a grain of size 1, in cycles per document unit. Not 1:
 /// the noise is zero on every lattice point, and at 1 every pixel corner of an
-/// unscaled layer on whole units is one, so the grain would vanish.
-pub const GRAIN_FREQUENCY: f64 = 0.85;
+/// unscaled layer on whole units is one, so the noise would vanish.
+pub const NOISE_FREQUENCY: f64 = 0.85;
 
-/// How many octaves a grain sums: a second octave breaks up the lattice's
-/// regularity, and finer ones fall below a pixel at any size the field allows.
-pub const GRAIN_OCTAVES: u32 = 2;
+/// How many octaves noise sums: a second octave breaks up the lattice's
+/// regularity; more would only blur the grain into clouds.
+pub const NOISE_OCTAVES: u32 = 2;
+
+/// How far the noise's value is pulled from mid-grey before it picks between
+/// the two colours: `feTurbulence`'s fractal sum sits mostly within a quarter of
+/// its range, so unstretched the colours would meet as a faint mix of both.
+/// `fx.wgsl`'s `NZ_CONTRAST` repeats it.
+pub const NOISE_CONTRAST: f32 = 3.0;
+
+/// The steepness of the step the SVG writer cuts density with, an
+/// `feFuncA type="linear"`: steep enough that the levels either side of the
+/// floor land past 0 and 1 and clamp there.
+pub const DENSITY_SLOPE: f64 = 1000.0;
+
+/// Noise over a layer, inside its alpha: two colours picked by the noise's
+/// value, or three channels of it in colour (`multi`), blended with the layer.
+///
+/// Read through [`NoiseWire`], which fills what is left out with the default and
+/// holds every number to its range, so a file, a paste or an MCP write never
+/// holds a value the generator cannot draw.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "NoiseWire")]
+pub struct Noise {
+    /// One grain's width and height in document units, each held to
+    /// [`NOISE_SIZE_RANGE`].
+    pub size: [f64; 2],
+    /// The share of the layer the noise covers, `0..=1`; at 1 it covers all of it.
+    #[serde(skip_serializing_if = "is_one")]
+    pub density: f64,
+    /// `feTurbulence`'s seed. Any whole number; the generator folds it into its
+    /// own range as the specification does.
+    pub seed: i32,
+    /// How the noise mixes with the layer. Never Pass through.
+    #[serde(skip_serializing_if = "is_normal")]
+    pub blend: crate::BlendMode,
+    /// The colour at the noise's low end and at its high end. A transparent
+    /// second colour is a one-colour noise.
+    pub colors: [Color; 2],
+    /// Set, the noise takes three channels of colour of its own at
+    /// [`Self::opacity`], and `colors` wait unused.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub multi: bool,
+    /// How strongly a multicolour noise shows, `0..=1`.
+    pub opacity: f64,
+}
+
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
+}
+
+fn is_normal(b: &crate::BlendMode) -> bool {
+    *b == crate::BlendMode::Normal
+}
+
+/// A [`Noise`] as read: any field may be left out.
+#[derive(Deserialize)]
+#[serde(default)]
+struct NoiseWire {
+    size: [f64; 2],
+    density: f64,
+    seed: i32,
+    blend: crate::BlendMode,
+    colors: [Color; 2],
+    multi: bool,
+    opacity: f64,
+}
+
+impl Default for NoiseWire {
+    fn default() -> Self {
+        let d = Noise::default();
+        Self {
+            size: d.size,
+            density: d.density,
+            seed: d.seed,
+            blend: d.blend,
+            colors: d.colors,
+            multi: d.multi,
+            opacity: d.opacity,
+        }
+    }
+}
+
+impl From<NoiseWire> for Noise {
+    fn from(w: NoiseWire) -> Self {
+        Noise {
+            size: w.size,
+            density: w.density,
+            seed: w.seed,
+            blend: w.blend,
+            colors: w.colors,
+            multi: w.multi,
+            opacity: w.opacity,
+        }
+        .clamped()
+    }
+}
+
+impl Default for Noise {
+    /// A fresh noise: one-unit black grain at 40% fading to clear, visible on
+    /// any fill without reading as damage.
+    fn default() -> Self {
+        Self {
+            size: [1.0, 1.0],
+            density: 1.0,
+            seed: 1,
+            blend: crate::BlendMode::Normal,
+            colors: [
+                Color::from_rgba8(0, 0, 0, 102),
+                Color::from_rgba8(0, 0, 0, 0),
+            ],
+            multi: false,
+            opacity: 0.3,
+        }
+    }
+}
+
+impl Noise {
+    /// This noise with its numbers held to range and Pass through read as
+    /// Normal; `NaN` takes the default.
+    pub fn clamped(self) -> Self {
+        let d = Self::default();
+        let held = |v: f64, r: std::ops::RangeInclusive<f64>, or: f64| match v.is_nan() {
+            true => or,
+            false => v.clamp(*r.start(), *r.end()),
+        };
+        let colour = |c: Color, or: Color| match c.components.iter().all(|v| v.is_finite()) {
+            true => {
+                let mut c = c;
+                c.components = c.components.map(|v| v.clamp(0.0, 1.0));
+                c
+            }
+            false => or,
+        };
+        Self {
+            size: [
+                held(self.size[0], NOISE_SIZE_RANGE, d.size[0]),
+                held(self.size[1], NOISE_SIZE_RANGE, d.size[1]),
+            ],
+            density: held(self.density, 0.0..=1.0, d.density),
+            seed: self.seed,
+            blend: match self.blend {
+                crate::BlendMode::PassThrough => d.blend,
+                b => b,
+            },
+            colors: [
+                colour(self.colors[0], d.colors[0]),
+                colour(self.colors[1], d.colors[1]),
+            ],
+            multi: self.multi,
+            opacity: held(self.opacity, 0.0..=1.0, d.opacity),
+        }
+    }
+
+    /// Whether this noise changes any pixel: some density, and a colour or a
+    /// multicolour opacity that shows.
+    pub fn has_ink(&self) -> bool {
+        self.density > 0.0
+            && match self.multi {
+                true => self.opacity > 0.0,
+                false => self.colors.iter().any(|c| c.components[3] > 0.0),
+            }
+    }
+
+    /// `feTurbulence`'s base frequencies, in cycles per document unit:
+    /// [`NOISE_FREQUENCY`] over each axis's size.
+    pub fn base_frequency(&self) -> (f64, f64) {
+        let [w, h] = self.clamped().size;
+        (NOISE_FREQUENCY / w, NOISE_FREQUENCY / h)
+    }
+
+    /// The lowest alpha level of the noise a pixel must reach to be covered, so
+    /// that [`Self::density`]'s share of pixels is; `None` at full density, where
+    /// no pixel is cut. The noise's alpha channel is not uniform, so the floor
+    /// is read off its measured distribution ([`alpha_share`]).
+    pub fn density_floor(&self) -> Option<u8> {
+        let d = self.clamped().density;
+        if d >= 1.0 {
+            return None;
+        }
+        let share = alpha_share();
+        (0..=255u8).rev().find(|&l| share[usize::from(l)] >= d)
+    }
+
+    /// One pixel of noise as it is drawn over the layer, from the four levels
+    /// [`Lattice::rgba`] gives: the straight colour laid on, and how much of it
+    /// shows, both held at 8 bits as an SVG renderer holds a matrix's output.
+    /// `None` where [`Self::density_floor`] leaves the pixel uncovered.
+    ///
+    /// A one-colour noise reads only red and alpha, so the caller may pass
+    /// [`Lattice::red_alpha`]'s two with green and blue as zero.
+    pub fn shade(&self, rgba: [u8; 4], floor: Option<u8>) -> Option<([f32; 3], f32)> {
+        if floor.is_some_and(|f| rgba[3] < f) {
+            return None;
+        }
+        let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5).floor() / 255.0;
+        let k = NOISE_CONTRAST;
+        let u = |c: u8| q(k * f32::from(c) / 255.0 + 0.5 - 0.5 * k);
+        if self.multi {
+            return Some(([u(rgba[0]), u(rgba[1]), u(rgba[2])], q(self.opacity as f32)));
+        }
+        let t = u(rgba[0]);
+        let [from, to] = self.colors.map(|c| c.components);
+        let mix = |i: usize| q(from[i] + (to[i] - from[i]) * t);
+        Some(([mix(0), mix(1), mix(2)], mix(3)))
+    }
+}
+
+/// `share[l]`, the share of pixels whose noise alpha level is `l` or above,
+/// measured once over a field of the lattice: the distribution is the same for
+/// every seed and every size, since both only move and scale the field.
+fn alpha_share() -> &'static [f64; 256] {
+    static SHARE: std::sync::OnceLock<[f64; 256]> = std::sync::OnceLock::new();
+    SHARE.get_or_init(|| {
+        let lattice = Lattice::new(1);
+        let mut count = [0u64; 256];
+        const SIDE: u32 = 256;
+        for i in 0..SIDE {
+            for j in 0..SIDE {
+                // Steps off the lattice's grid, so no sample lands on a lattice
+                // point, where the noise is zero.
+                let (x, y) = (i as f32 * 0.618_034 + 0.25, j as f32 * 0.414_214 + 0.125);
+                let a = lattice.level(3, x, y, NOISE_OCTAVES, true);
+                count[usize::from(a)] += 1;
+            }
+        }
+        let total = f64::from(SIDE * SIDE);
+        let mut share = [0.0; 256];
+        let mut above = 0u64;
+        for l in (0..256).rev() {
+            above += count[l];
+            share[l] = above as f64 / total;
+        }
+        share
+    })
+}
 
 /// The lattice size of the reference code, `BSize`.
 const B_SIZE: usize = 0x100;
@@ -170,11 +404,12 @@ impl Lattice {
         ]
     }
 
-    /// [`Self::rgba`]'s first channel alone: a grey grain takes its value from
-    /// red.
-    pub fn red(&self, x: f32, y: f32, octaves: u32, fractal: bool) -> u8 {
+    /// [`Self::rgba`] with green and blue left zero: all a one-colour noise
+    /// reads, at half the cost.
+    pub fn red_alpha(&self, x: f32, y: f32, octaves: u32, fractal: bool) -> [u8; 4] {
         let level = |c| self.level(c, x, y, octaves, fractal);
-        round_trip(level(0), level(3))
+        let a = level(3);
+        [round_trip(level(0), a), 0, 0, a]
     }
 
     /// One channel of `feTurbulence`'s output as an 8-bit level, the reference's
@@ -243,111 +478,6 @@ impl LatticeMap {
     }
 }
 
-/// A grain over a layer: noise blended with the layer's own pixels, inside its
-/// alpha.
-///
-/// Read through [`GrainWire`], which holds its numbers to range.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(from = "GrainWire")]
-pub struct Grain {
-    /// How strongly the grain shows, `0..=1`.
-    pub amount: f64,
-    /// The size of one grain in document units, held to [`GRAIN_SIZE_RANGE`].
-    pub size: f64,
-    pub seed: i32,
-    /// How the grain mixes with the layer. Never Pass through.
-    #[serde(default = "overlay", skip_serializing_if = "is_overlay")]
-    pub blend: crate::BlendMode,
-    /// Whether the grain takes three channels of colour rather than one grey.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub colour: bool,
-}
-
-fn overlay() -> crate::BlendMode {
-    crate::BlendMode::Overlay
-}
-
-fn is_overlay(b: &crate::BlendMode) -> bool {
-    *b == crate::BlendMode::Overlay
-}
-
-/// A [`Grain`] as read.
-#[derive(Deserialize)]
-struct GrainWire {
-    amount: f64,
-    size: f64,
-    #[serde(default)]
-    seed: i32,
-    #[serde(default = "overlay")]
-    blend: crate::BlendMode,
-    #[serde(default)]
-    colour: bool,
-}
-
-impl From<GrainWire> for Grain {
-    fn from(w: GrainWire) -> Self {
-        Grain {
-            amount: w.amount,
-            size: w.size,
-            seed: w.seed,
-            blend: w.blend,
-            colour: w.colour,
-        }
-        .clamped()
-    }
-}
-
-/// The amount a freshly added grain starts on, 18%: visible on a flat fill
-/// without reading as damage.
-pub const DEFAULT_GRAIN_AMOUNT: f64 = 0.18;
-
-impl Default for Grain {
-    fn default() -> Self {
-        Self {
-            amount: DEFAULT_GRAIN_AMOUNT,
-            size: 1.0,
-            seed: 1,
-            blend: crate::BlendMode::Overlay,
-            colour: false,
-        }
-    }
-}
-
-impl Grain {
-    /// This grain with its numbers held to range and Pass through read as
-    /// Overlay; `NaN` takes the default.
-    pub fn clamped(self) -> Self {
-        let d = Self::default();
-        Self {
-            amount: if self.amount.is_nan() {
-                d.amount
-            } else {
-                self.amount.clamp(0.0, 1.0)
-            },
-            size: if self.size.is_nan() {
-                d.size
-            } else {
-                self.size
-                    .clamp(*GRAIN_SIZE_RANGE.start(), *GRAIN_SIZE_RANGE.end())
-            },
-            seed: self.seed,
-            blend: if self.blend == crate::BlendMode::PassThrough {
-                d.blend
-            } else {
-                self.blend
-            },
-            colour: self.colour,
-        }
-    }
-
-    /// `feTurbulence`'s base frequency for this grain, the same on both axes:
-    /// [`GRAIN_FREQUENCY`] over the size.
-    pub fn base_frequency(&self) -> (f64, f64) {
-        let f = GRAIN_FREQUENCY / self.clamped().size;
-        (f, f)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,15 +521,93 @@ mod tests {
         assert!((below - above).abs() < 1e-3, "{below} against {above}");
     }
 
-    /// A grain's numbers are held to range when read, so a file's wild values
-    /// draw a grain the generator can render.
+    /// A noise's numbers are held to range when read, and what is left out takes
+    /// the default, so a file's wild values or an agent's bare `{}` draw a noise
+    /// the generator can render.
     #[test]
-    fn a_read_grain_is_held_to_range() {
-        let g: Grain =
-            serde_json::from_str(r#"{"amount":3,"size":0,"blend":"PassThrough"}"#).expect("reads");
+    fn a_read_noise_is_held_to_range() {
+        let n: Noise = serde_json::from_str(
+            r#"{"size":[0,900],"density":3,"opacity":-1,"blend":"PassThrough"}"#,
+        )
+        .expect("reads");
+        assert_eq!(n.size, [0.5, 50.0]);
+        assert_eq!((n.density, n.opacity), (1.0, 0.0));
+        assert_eq!(n.blend, crate::BlendMode::Normal);
+        let bare: Noise = serde_json::from_str("{}").expect("reads");
+        assert_eq!(bare, Noise::default());
+        let json = serde_json::to_string(&Noise::default()).expect("writes");
+        assert!(
+            !json.contains("density") && !json.contains("blend") && !json.contains("multi"),
+            "the defaults that are the common case stay out of the file: {json}"
+        );
+    }
+
+    /// The density floor covers the share of pixels it names: measured over a
+    /// field the floor was not read from, a 30% density covers about 30%.
+    ///
+    /// flip: `density_floor` searching upward (`(0..=255)` without `.rev()`) →
+    /// fails at the 30% share, which comes out 100%.
+    #[test]
+    fn density_covers_its_share_of_pixels() {
+        let n = Noise {
+            density: 0.3,
+            ..Noise::default()
+        };
+        let floor = n.density_floor();
+        assert!(floor.is_some(), "a partial density cuts");
         assert_eq!(
-            (g.amount, g.size, g.blend),
-            (1.0, 0.5, crate::BlendMode::Overlay)
+            Noise::default().density_floor(),
+            None,
+            "full density never cuts"
+        );
+        let lattice = Lattice::new(42);
+        let (mut covered, mut all) = (0u32, 0u32);
+        for i in 0..200 {
+            for j in 0..200 {
+                let (x, y) = (i as f32 * 0.731 + 0.3, j as f32 * 0.537 + 0.2);
+                let px = lattice.red_alpha(x, y, NOISE_OCTAVES, true);
+                all += 1;
+                covered += u32::from(n.shade(px, floor).is_some());
+            }
+        }
+        let share = f64::from(covered) / f64::from(all);
+        assert!((share - 0.3).abs() < 0.03, "30% density covered {share:.3}");
+    }
+
+    /// A one-colour noise lays the first colour at the low end and the second at
+    /// the high end, stretched by the contrast so both ends are reached; a
+    /// multicolour one takes its three channels at its opacity.
+    #[test]
+    fn shade_picks_between_the_two_colours() {
+        let n = Noise {
+            colors: [
+                Color::from_rgba8(255, 0, 0, 255),
+                Color::from_rgba8(0, 0, 255, 0),
+            ],
+            ..Noise::default()
+        };
+        assert_eq!(n.shade([0, 0, 0, 255], None), Some(([1.0, 0.0, 0.0], 1.0)));
+        assert_eq!(
+            n.shade([255, 0, 0, 255], None),
+            Some(([0.0, 0.0, 1.0], 0.0))
+        );
+        let ([r, _, b], m) = n.shade([128, 0, 0, 255], None).expect("covered");
+        assert!((r - 0.5).abs() < 0.02 && (b - 0.5).abs() < 0.02 && (m - 0.5).abs() < 0.02);
+        let multi = Noise {
+            multi: true,
+            opacity: 0.5,
+            ..Noise::default()
+        };
+        assert_eq!(
+            multi
+                .shade([0, 255, 128, 255], None)
+                .map(|(c, m)| (c[0], c[1], m)),
+            Some((0.0, 1.0, 128.0 / 255.0))
+        );
+        assert_eq!(
+            n.shade([0, 0, 0, 10], Some(11)),
+            None,
+            "below the floor, uncovered"
         );
     }
 

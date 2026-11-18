@@ -43,7 +43,7 @@ enum Pass {
     Coarsen,
     Upsample,
     Sharpen,
-    Grain,
+    Noise,
 }
 
 impl Pass {
@@ -63,7 +63,7 @@ impl Pass {
             Self::Coarsen => "coarsen",
             Self::Upsample => "upsample",
             Self::Sharpen => "sharpen",
-            Self::Grain => "grain",
+            Self::Noise => "noise_fx",
         }
     }
 
@@ -81,7 +81,7 @@ impl Pass {
         Self::Coarsen,
         Self::Upsample,
         Self::Sharpen,
-        Self::Grain,
+        Self::Noise,
     ];
 }
 
@@ -114,10 +114,11 @@ struct Params {
     /// A sharpen's amount. Read by `Pass::Sharpen` alone.
     amount: f32,
     /// The noise pass's numbers, `nz` in `fx.wgsl`: the lattice map's origin,
-    /// x step and y step, then a grain's amount.
+    /// x step and y step, a multicolour noise's opacity, the density floor (−1
+    /// for none), then the two straight colours.
     noise: [f32; 16],
-    /// `nzi` in `fx.wgsl`: octaves, the fractal sum, a grain's blend code and
-    /// its colour switch.
+    /// `nzi` in `fx.wgsl`: octaves, the fractal sum, the noise's blend code and
+    /// its multicolour switch.
     noise_i: [u32; 4],
 }
 
@@ -952,21 +953,25 @@ impl Runner<'_> {
                     run.slot(Pass::Sharpen, O0, cur, alt, p);
                     std::mem::swap(&mut cur, &mut alt);
                 }
-                EffectKind::Grain(g) if g.amount > 0.0 => {
-                    let g = g.clamped();
+                EffectKind::Noise(n) if n.has_ink() => {
+                    let n = n.clamped();
                     let mut p = run.lattice(
-                        g.seed,
+                        n.seed,
                         to_local,
-                        g.base_frequency(),
+                        n.base_frequency(),
                         [
-                            mastik_core::noise::GRAIN_OCTAVES,
+                            mastik_core::noise::NOISE_OCTAVES,
                             1,
-                            effects::blend_code(g.blend),
-                            u32::from(g.colour),
+                            effects::blend_code(n.blend),
+                            u32::from(n.multi),
                         ],
                     );
-                    p.noise[6] = g.amount as f32;
-                    run.slot(Pass::Grain, cur, cur, alt, p);
+                    p.noise[6] = n.opacity as f32;
+                    // No floor is −1, below every level.
+                    p.noise[7] = n.density_floor().map_or(-1.0, f32::from);
+                    p.noise[8..12].copy_from_slice(&n.colors[0].components);
+                    p.noise[12..16].copy_from_slice(&n.colors[1].components);
+                    run.slot(Pass::Noise, cur, cur, alt, p);
                     std::mem::swap(&mut cur, &mut alt);
                 }
                 _ => {}
@@ -1149,7 +1154,7 @@ impl Runner<'_> {
     }
 
     /// A noise pass's params, the lattice of `seed` appended to the batch's
-    /// kernel buffer: `effects::grain`'s setup.
+    /// kernel buffer: `effects::noise`'s setup.
     fn lattice(
         &mut self,
         seed: i32,

@@ -593,19 +593,21 @@ pub fn buffer_to_local(
     layer_to_device.inverse() * kurbo::Affine::translate(origin) * kurbo::Affine::scale(k)
 }
 
-/// A grain over `s`, in place: `feTurbulence` blended with the layer by
-/// `g.blend` and mixed in at `g.amount`, inside the layer's alpha.
+/// Noise over `s`, in place: each pixel's colour from [`mastik_core::Noise::shade`]
+/// blended with the layer by `n.blend` and mixed in by how much of it shows,
+/// inside the layer's alpha.
 ///
-/// The SVG writer's chain, step for step: the noise made opaque (grey from red,
-/// or its three channels), blended over the layer, cut to the layer's alpha,
-/// then `amount × that + (1 − amount) × layer` as an arithmetic `feComposite`,
-/// clamped as that primitive is. `to_local` maps a buffer pixel's corner into the
-/// layer's space; `fx.wgsl`'s `grain` repeats this.
-pub fn grain(s: &mut Surface<'_>, g: &mastik_core::Grain, to_local: kurbo::Affine) {
-    let g = g.clamped();
-    let lattice = mastik_core::noise::Lattice::new(g.seed);
-    let map = mastik_core::noise::LatticeMap::new(to_local, g.base_frequency());
-    let (amount, mode, colour) = (g.amount as f32, g.blend, g.colour);
+/// The SVG writer's chain, step for step: the colour made opaque, blended over
+/// the layer, cut to the layer's alpha, then `m × that + (1 − m) × layer` where
+/// `m` is the shade's strength (`in` and `out` composites summed), clamped as
+/// the arithmetic primitive is. `to_local` maps a buffer pixel's corner into the
+/// layer's space; `fx.wgsl`'s `noise_fx` repeats this.
+pub fn noise(s: &mut Surface<'_>, n: &mastik_core::Noise, to_local: kurbo::Affine) {
+    let n = n.clamped();
+    let lattice = mastik_core::noise::Lattice::new(n.seed);
+    let map = mastik_core::noise::LatticeMap::new(to_local, n.base_frequency());
+    let floor = n.density_floor();
+    let octaves = mastik_core::noise::NOISE_OCTAVES;
     let row_bytes = s.w * 4;
     let cost = s.w * s.h * 160;
     for_row_bands(s.px, row_bytes, cost, |first, rows| {
@@ -618,19 +620,20 @@ pub fn grain(s: &mut Surface<'_>, g: &mastik_core::Grain, to_local: kurbo::Affin
                 continue;
             }
             let (u, v) = map.at(x, y);
-            let n = if colour {
-                let c = lattice.rgba(u, v, mastik_core::noise::GRAIN_OCTAVES, true);
-                [c[0], c[1], c[2]].map(|c| f32::from(c) / 255.0)
-            } else {
-                [f32::from(lattice.red(u, v, mastik_core::noise::GRAIN_OCTAVES, true)) / 255.0; 3]
+            let levels = match n.multi {
+                true => lattice.rgba(u, v, octaves, true),
+                false => lattice.red_alpha(u, v, octaves, true),
             };
-            *px = grain_pixel(*px, n, mode, amount);
+            if let Some((colour, m)) = n.shade(levels, floor) {
+                *px = noise_pixel(*px, colour, n.blend, m);
+            }
         }
     });
 }
 
-/// One pixel of [`grain`]: premultiplied `px`, the straight noise `n`.
-pub fn grain_pixel(px: [u8; 4], n: [f32; 3], mode: mastik_core::BlendMode, amount: f32) -> [u8; 4] {
+/// One pixel of [`noise`]: premultiplied `px`, the straight colour `n` shown at
+/// `amount`.
+pub fn noise_pixel(px: [u8; 4], n: [f32; 3], mode: mastik_core::BlendMode, amount: f32) -> [u8; 4] {
     let a = f32::from(px[3]) / 255.0;
     let s: [f32; 3] = std::array::from_fn(|c| f32::from(px[c]) / 255.0);
     let cb = s.map(|c| (c / a).clamp(0.0, 1.0));
@@ -773,12 +776,11 @@ pub fn device_sigma(radius: f64, scale_x: f64, scale_y: f64) -> (f32, f32) {
 /// Apply a whole effect stack to a rasterized layer, in place.
 ///
 /// `scale` is device pixels per document unit along each axis, and `to_local`
-/// maps a buffer pixel's corner into the layer's own space, where a grain's
-/// noise lives.
+/// maps a buffer pixel's corner into the layer's own space, where noise lives.
 ///
 /// **The statement of §6.4's two stages**, which the SVG writer (`svg::effect_def`)
 /// and the bounds (`effect::stack_escape`) follow: `Filters`, `LayerBlur`,
-/// `Sharpen` and `Grain` transform the layer's own appearance in list order, then
+/// `Sharpen` and `Noise` transform the layer's own appearance in list order, then
 /// every shadow is cast from *that* and merged behind or in front. Not one fold: an
 /// inner shadow after a drop shadow would take its silhouette from the layer plus
 /// the shadow. Reorder the stages and both followers must move too; nothing fails
@@ -822,7 +824,7 @@ fn run_keeping(
                 let (sx, sy) = device_sigma(*radius, scale.0, scale.1);
                 sharpen(s, *amount as f32, sx, sy);
             }
-            EffectKind::Grain(g) if g.amount > 0.0 => grain(s, g, to_local),
+            EffectKind::Noise(n) if n.has_ink() => noise(s, n, to_local),
             _ => {}
         }
     }
@@ -1058,7 +1060,7 @@ pub fn any_ink(effects: &[Keyed<Effect>]) -> bool {
                 }
                 EffectKind::LayerBlur { radius } => *radius > 0.0,
                 EffectKind::Sharpen { amount, radius } => *amount > 0.0 && *radius > 0.0,
-                EffectKind::Grain(g) => g.amount > 0.0,
+                EffectKind::Noise(n) => n.has_ink(),
                 EffectKind::BackgroundBlur { .. } => false,
                 EffectKind::Filters(f) => !f.is_neutral(),
             }
@@ -1076,14 +1078,14 @@ mod tests {
         rgba.iter().copied().cycle().take(w * h * 4).collect()
     }
 
-    /// A grain keeps every pixel's alpha and every transparent pixel, and moves
-    /// an opaque flat field into a spread of values; at Normal and 100% an opaque
-    /// pixel is the noise itself.
+    /// Noise keeps every pixel's alpha and every transparent pixel, and moves an
+    /// opaque flat field into a spread of values; at Normal and 100% an opaque
+    /// pixel is the noise's colour itself.
     ///
-    /// flip: `grain_pixel` writing the blended alpha `a·(2 − a)` → fails at the
+    /// flip: `noise_pixel` writing the blended alpha `a·(2 − a)` → fails at the
     /// alpha assertion.
     #[test]
-    fn a_grain_stays_inside_the_layers_alpha() {
+    fn noise_stays_inside_the_layers_alpha() {
         let (w, h) = (32, 8);
         let mut px: Vec<u8> = (0..w * h)
             .flat_map(|i| match i % 3 {
@@ -1093,11 +1095,11 @@ mod tests {
             })
             .collect();
         let before = px.clone();
-        let grain = mastik_core::Grain {
-            amount: 0.7,
-            ..mastik_core::Grain::default()
+        let noise = mastik_core::Noise {
+            colors: [Color::BLACK, Color::WHITE],
+            ..mastik_core::Noise::default()
         };
-        grain_pass(&mut px, w, h, &grain);
+        noise_pass(&mut px, w, h, &noise);
         for (a, b) in px.as_chunks::<4>().0.iter().zip(before.as_chunks::<4>().0) {
             assert_eq!(a[3], b[3], "the alpha is the layer's");
             assert!(a[0] <= a[3], "and the colour within it: {a:?}");
@@ -1114,10 +1116,10 @@ mod tests {
             .collect();
         assert!(
             opaque.iter().max().unwrap() - opaque.iter().min().unwrap() > 20,
-            "a flat field takes the grain: {opaque:?}"
+            "a flat field takes the noise: {opaque:?}"
         );
         assert_eq!(
-            grain_pixel(
+            noise_pixel(
                 [10, 20, 30, 255],
                 [0.2, 0.4, 0.6],
                 mastik_core::BlendMode::Normal,
@@ -1127,11 +1129,33 @@ mod tests {
         );
     }
 
-    fn grain_pass(px: &mut [u8], w: usize, h: usize, g: &mastik_core::Grain) {
-        grain(
+    fn noise_pass(px: &mut [u8], w: usize, h: usize, n: &mastik_core::Noise) {
+        noise(
             &mut Surface::new(px, w, h),
-            g,
+            n,
             kurbo::Affine::translate((3.0, 4.0)),
+        );
+    }
+
+    /// A partial density leaves some opaque pixels untouched and changes others.
+    ///
+    /// flip: `noise` ignoring `density_floor` (passing `None` to `shade`) → fails
+    /// at the untouched count.
+    #[test]
+    fn a_partial_density_leaves_pixels_untouched() {
+        let (w, h) = (64, 64);
+        let mut px = solid(w, h, [128, 128, 128, 255]);
+        let n = mastik_core::Noise {
+            density: 0.25,
+            colors: [Color::BLACK, Color::BLACK],
+            ..mastik_core::Noise::default()
+        };
+        noise_pass(&mut px, w, h, &n);
+        let untouched = px.as_chunks::<4>().0.iter().filter(|p| p[0] == 128).count();
+        let share = untouched as f64 / (w * h) as f64;
+        assert!(
+            (0.6..0.9).contains(&share),
+            "about three quarters stay as they were: {share:.2}"
         );
     }
 

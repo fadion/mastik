@@ -1,4 +1,4 @@
-//! A grain against the reference it is ported from: the SVG writer's
+//! The noise effect against the reference it is ported from: the SVG writer's
 //! `feTurbulence` filter, drawn by `resvg`, an implementation of the
 //! specification's own code that shares nothing with ours. The CPU backend's
 //! raster of the same document must match it; `mastik-render`'s on-device suite
@@ -7,7 +7,7 @@
 use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
 use mastik_core::peniko::Color;
 use mastik_core::{
-    Brush, Document, Effect, EffectKind, Fill, Grain, IdSource, NodeId, NodeKind, Operation,
+    Brush, Document, Effect, EffectKind, Fill, IdSource, NodeId, NodeKind, Noise, Operation,
     Resolved, Transaction, keyed_by_position,
 };
 use mastik_render::{ImageStore, VelloCpuRenderer, Viewport};
@@ -15,9 +15,10 @@ use mastik_render::{ImageStore, VelloCpuRenderer, Viewport};
 const W: u32 = 160;
 const H: u32 = 60;
 
-/// A board holding a plain solid rectangle and a grained one, each on whole
-/// units so neither rasterizer antialiases an edge inside the boxes read.
-fn document(grain: Grain) -> (Document, Resolved, NodeId, NodeId) {
+/// A board holding a translucent rectangle and an opaque one, both under
+/// `noise`, each on whole units so neither rasterizer antialiases an edge
+/// inside the boxes read.
+fn document(noise: Noise) -> (Document, Resolved, NodeId, NodeId) {
     let mut ids = IdSource::new(0x5EED);
     let root = ids.mint();
     let mut doc = Document::new(root);
@@ -33,6 +34,17 @@ fn document(grain: Grain) -> (Document, Resolved, NodeId, NodeId) {
         },
         transform: Some(Affine::translate(at)),
         name: None,
+    };
+    let solid = |id, c: Color| Operation::SetFills {
+        id,
+        fills: keyed_by_position([Fill {
+            brush: Brush::Solid(c).into(),
+            visible: true,
+        }]),
+    };
+    let effects = |id| Operation::SetEffects {
+        id,
+        effects: keyed_by_position([Effect::new(EffectKind::Noise(noise))]),
     };
     doc.apply(&Transaction(vec![
         Operation::CreateNode {
@@ -53,24 +65,10 @@ fn document(grain: Grain) -> (Document, Resolved, NodeId, NodeId) {
             id: board,
             fills: keyed_by_position([]),
         },
-        Operation::SetFills {
-            id: a,
-            fills: keyed_by_position([Fill {
-                brush: Brush::Solid(Color::from_rgba8(31, 41, 82, 200)).into(),
-                visible: true,
-            }]),
-        },
-        Operation::SetFills {
-            id: b,
-            fills: keyed_by_position([Fill {
-                brush: Brush::Solid(Color::from_rgba8(255, 138, 92, 255)).into(),
-                visible: true,
-            }]),
-        },
-        Operation::SetEffects {
-            id: b,
-            effects: keyed_by_position([Effect::new(EffectKind::Grain(grain))]),
-        },
+        solid(a, Color::from_rgba8(31, 41, 82, 200)),
+        solid(b, Color::from_rgba8(255, 138, 92, 255)),
+        effects(a),
+        effects(b),
     ]))
     .unwrap();
     let res = Resolved::rebuild(&doc);
@@ -129,47 +127,78 @@ fn differ(a: &[u8], b: &[u8], (x0, y0, x1, y1): (u32, u32, u32, u32)) -> (u8, f6
     (worst, over as f64 / n as f64)
 }
 
-/// The grained box's inside, a pixel in from each edge.
-const GRAIN_BOX: (u32, u32, u32, u32) = (89, 11, 151, 49);
+/// The boxes' insides, a pixel in from each edge.
+const TRANSLUCENT_BOX: (u32, u32, u32, u32) = (9, 11, 71, 49);
+const OPAQUE_BOX: (u32, u32, u32, u32) = (89, 11, 151, 49);
 
-/// How far the raster may stray from the reference: within one level, past one
-/// on at most 15% of channels. The share bounds what the worst cannot: a
-/// shifted or wrong lattice moves most of the box by far more than a level.
-const GRAIN_TOLERANCE: u8 = 1;
+/// How far the raster may stray from the reference: within two levels, past
+/// one on at most 15% of channels. `resvg` rounds each composite of the mix at 8
+/// bits where the backend rounds once. The share bounds what the worst cannot:
+/// a shifted or wrong lattice moves most of the box by far more than a level.
+const TOLERANCE: u8 = 2;
 const SHARE: f64 = 0.15;
 
-/// A grain in a separable and a non-separable mode, through the CPU backend and
-/// through the SVG writer as `resvg` draws it.
+/// Two colours at Normal, cut by density; multicolour at Soft light; two
+/// translucent colours stretched at Multiply. Each through the CPU backend and
+/// through the SVG writer as `resvg` draws it. Separable modes only: a hue mode
+/// over a translucent layer turns by many levels on `resvg`'s 8-bit straight
+/// backdrop, which `tests/fx_gpu.rs` covers against the GPU instead.
 ///
 /// flip: `Lattice::noise2`'s `b10` read as `sel(i + by1)` → fails at the first
-/// case's grain box, by tens of levels over most of it.
+/// case's boxes, by tens of levels over most of them.
 #[test]
 fn the_raster_draws_what_the_svg_writer_writes() {
-    for (blend, colour) in [
-        (mastik_core::BlendMode::Overlay, false),
-        (mastik_core::BlendMode::SoftLight, true),
-        (mastik_core::BlendMode::Multiply, false),
-    ] {
-        let grain = Grain {
-            amount: 0.6,
-            size: 2.0,
-            seed: 9,
-            blend,
-            colour,
-        };
-        let (doc, res, board, page) = document(grain);
+    let base = Noise {
+        size: [2.0, 2.0],
+        seed: 9,
+        ..Noise::default()
+    };
+    let cases = [
+        Noise {
+            density: 0.4,
+            colors: [Color::from_rgba8(10, 20, 30, 255), Color::WHITE],
+            ..base
+        },
+        Noise {
+            multi: true,
+            opacity: 0.7,
+            blend: mastik_core::BlendMode::SoftLight,
+            ..base
+        },
+        Noise {
+            size: [1.0, 5.0],
+            colors: [
+                Color::from_rgba8(200, 20, 120, 180),
+                Color::from_rgba8(20, 200, 220, 60),
+            ],
+            blend: mastik_core::BlendMode::Multiply,
+            ..base
+        },
+    ];
+    for noise in cases {
+        let (doc, res, board, page) = document(noise);
         let svg = mastik_export::svg::svg(&doc, &res, page, Some(board));
         assert!(
             svg.contains("<feTurbulence"),
             "the writer writes the noise as feTurbulence:\n{svg}"
         );
         let (a, b) = (ours(&doc, &res, page), reference(&svg));
-        let (worst, share) = differ(&a, &b, GRAIN_BOX);
+        let lit = (OPAQUE_BOX.0..OPAQUE_BOX.2)
+            // Green: the orange's red is at its top, where Soft light leaves it.
+            .map(|x| a[((30 * W + x) * 4 + 1) as usize])
+            .collect::<Vec<_>>();
         assert!(
-            worst <= GRAIN_TOLERANCE && share <= SHARE,
-            "{blend:?}: the grain box differs from the reference by up to {worst}, \
-             {:.1}% of channels past one level",
-            share * 100.0
+            lit.iter().max().unwrap() - lit.iter().min().unwrap() > 20,
+            "the fixture draws noise, not a flat fill: {lit:?}"
         );
+        for (name, area) in [("translucent", TRANSLUCENT_BOX), ("opaque", OPAQUE_BOX)] {
+            let (worst, share) = differ(&a, &b, area);
+            assert!(
+                worst <= TOLERANCE && share <= SHARE,
+                "{noise:?}: the {name} box differs from the reference by up to {worst}, \
+                 {:.1}% of channels past one level",
+                share * 100.0
+            );
+        }
     }
 }

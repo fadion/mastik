@@ -143,8 +143,14 @@ pub fn effect_is_finite(effect: &crate::Effect) -> bool {
             radius.is_finite()
         }
         crate::EffectKind::Sharpen { amount, radius } => amount.is_finite() && radius.is_finite(),
-        crate::EffectKind::Grain(g) => {
-            g.amount.is_finite() && g.size.is_finite() && g.blend != crate::BlendMode::PassThrough
+        crate::EffectKind::Noise(n) => {
+            n.size.iter().all(|v| v.is_finite())
+                && n.density.is_finite()
+                && n.opacity.is_finite()
+                && n.colors
+                    .iter()
+                    .all(|c| c.components.iter().all(|v| v.is_finite()))
+                && n.blend != crate::BlendMode::PassThrough
         }
         crate::EffectKind::Filters(f) => {
             f.brightness.is_finite()

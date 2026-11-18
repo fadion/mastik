@@ -507,6 +507,71 @@ fn an_effects_and_a_colours_unknown_field_is_refused() {
     assert!(refused.contains("alpha"), "the colour's: {refused}");
 }
 
+/// A noise effect takes its short forms: flat, one `color` that fades to clear
+/// with its `opacity` folded in, `size` as one number, `colors` as hex, and
+/// anything left out at its default; a field it has no place for is refused.
+/// flip: `loosen_noise` without its `color` arm → fails at the one-colour read.
+#[test]
+fn a_noise_takes_its_short_forms() {
+    use mastik_core::peniko::Color;
+    let (mut doc, mut ids, page) = blank();
+    let f = frame_on(&mut doc, &mut ids, page);
+    let n = json!([f.to_wire()]);
+    let noise = |doc: &mut Document, ids: &mut IdSource, effect: Value| {
+        run(
+            doc,
+            ids,
+            "set_effects",
+            json!({ "nodes": n, "effects": [effect] }),
+        );
+        match &doc.get(f).unwrap().effects()[0].kind {
+            mastik_core::EffectKind::Noise(n) => *n,
+            other => panic!("not a noise: {other:?}"),
+        }
+    };
+    let one = noise(
+        &mut doc,
+        &mut ids,
+        json!({ "kind": "Noise", "color": "#ff0000", "opacity": 0.5, "size": 3, "density": 0.4 }),
+    );
+    assert_eq!(one.size, [3.0, 3.0]);
+    assert_eq!(one.density, 0.4);
+    assert_eq!(
+        one.colors[0],
+        Color::from_rgba8(255, 0, 0, 255).with_alpha(0.5)
+    );
+    assert_eq!(
+        one.colors[1].components[3], 0.0,
+        "the second end is the colour clear"
+    );
+    let two = noise(
+        &mut doc,
+        &mut ids,
+        json!({ "kind": { "type": "noise", "colors": ["#000000", "#ffffff80"], "multi": false } }),
+    );
+    assert_eq!(two.colors[1], Color::from_rgba8(255, 255, 255, 128));
+    let bare = noise(&mut doc, &mut ids, json!({ "kind": "noise" }));
+    assert_eq!(bare, mastik_core::Noise::default());
+    // What `get_node` answers reads back as the noise it describes.
+    let summary = json!({ "id": "0:4", "kind": "Noise", "size": [1.0, 2.0], "density": 0.5,
+                          "seed": 7, "colors": ["#00000066", "#00000000"], "multi": false,
+                          "blend": "Soft light" });
+    let read = noise(&mut doc, &mut ids, summary);
+    assert_eq!((read.size, read.seed), ([1.0, 2.0], 7));
+    assert_eq!(read.blend, mastik_core::BlendMode::SoftLight);
+    let refused = why(
+        &doc,
+        &mut ids,
+        "set_effects",
+        json!({ "nodes": n, "effects": [{ "kind": "Noise", "densty": 0.5 }] }),
+    );
+    assert!(refused.contains("densty"), "the noise's: {refused}");
+    assert!(
+        refused.contains("density") && !refused.contains("spread"),
+        "the hint names a noise's fields, not a shadow's: {refused}"
+    );
+}
+
 /// What `get_node` writes reads back: a line height as `"120%"`, an effect's
 /// blend by its label.
 /// flip: `css_length` refusing a `%` → fails at "a percent line height".

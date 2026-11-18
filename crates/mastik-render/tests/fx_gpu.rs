@@ -419,12 +419,12 @@ fn a_resampled_sharpen_matches_the_reference() {
     );
 }
 
-/// The noise passes' slack: the shader may fuse a multiply and an add where the
+/// The noise pass's slack: the shader may fuse a multiply and an add where the
 /// CPU rounds between them, so a lattice sum can land one 8-bit level apart
-/// where it sits on a rounding boundary, and the premultiply round trip and the
-/// ramp can carry that level to a second. Such pixels are rare; `compare_noise`
-/// also bounds how many differ at all.
-const NOISE_TOLERANCE: u8 = 2;
+/// where it sits on a rounding boundary, and `NOISE_CONTRAST`'s stretch turns
+/// that level into three. Such pixels are rare; `compare_noise` also bounds how
+/// many differ at all.
+const NOISE_TOLERANCE: u8 = 3;
 
 /// The slack for the four non-separable blend modes: `SetSat` divides by the
 /// source's channel spread, which for a near-grey noise pixel is a level or two,
@@ -449,12 +449,12 @@ fn compare_noise(name: &str, got: &[u8], want: &[u8], tolerance: u8) {
 }
 
 /// `check_on` for a noise pass, compared by [`compare_noise`].
-fn check_grain(name: &str, grain: mastik_core::Grain, px: &[u8]) {
+fn check_noise(name: &str, noise: mastik_core::Noise, px: &[u8]) {
     let Some(g) = gpu() else {
         eprintln!("no GPU adapter; skipping {name}");
         return;
     };
-    let list = keyed_by_position([Effect::new(EffectKind::Grain(grain))]);
+    let list = keyed_by_position([Effect::new(EffectKind::Noise(noise))]);
     let src = upload(&g, px);
     let out = fx_gpu::run(
         &g.device,
@@ -466,52 +466,58 @@ fn check_grain(name: &str, grain: mastik_core::Grain, px: &[u8]) {
         SCALE,
         local(),
     )
-    .expect("a grain has ink");
+    .expect("the noise has ink");
     use mastik_core::BlendMode as M;
-    let tolerance = match grain.blend {
+    let tolerance = match noise.blend {
         M::Hue | M::Saturation | M::Color | M::Luminosity => HUE_TOLERANCE,
         _ => NOISE_TOLERANCE,
     };
     compare_noise(name, &readback(&g, &out), &reference(px, &list), tolerance);
 }
 
-/// A grey grain at Overlay over the two-hue disc, its soft edge included, against
-/// the CPU pass.
+/// A two-colour noise at Overlay, stretched and at partial density, over the
+/// two-hue disc, its soft edge included, against the CPU pass.
 ///
 /// flip: `fx.wgsl`'s `noise2` reading `nz_sel(i + by1)` for `b10` → fails at the
 /// comparison over most of the disc.
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn a_grain_matches_the_reference() {
-    check_grain(
-        "grain",
-        mastik_core::Grain {
-            amount: 0.6,
-            size: 1.5,
+fn a_noise_matches_the_reference() {
+    check_noise(
+        "noise",
+        mastik_core::Noise {
+            size: [1.5, 4.0],
+            density: 0.6,
             seed: 9,
-            ..mastik_core::Grain::default()
+            blend: mastik_core::BlendMode::Overlay,
+            colors: [
+                mastik_core::peniko::Color::from_rgba8(20, 30, 200, 230),
+                mastik_core::peniko::Color::from_rgba8(250, 240, 20, 40),
+            ],
+            ..mastik_core::Noise::default()
         },
         &two_hue_fixture(),
     );
 }
 
-/// A colour grain in each family of blend modes, the four non-separable ones
+/// A multicolour noise in each family of blend modes, the four non-separable ones
 /// included, so every arm of `fx.wgsl`'s `blend` is read against `effects::blend`.
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn a_colour_grain_matches_the_reference_in_every_mode() {
+fn a_multicolour_noise_matches_the_reference_in_every_mode() {
     for mode in mastik_core::BlendMode::ALL {
         if mode == mastik_core::BlendMode::PassThrough {
             continue;
         }
-        check_grain(
-            &format!("colour grain, {mode:?}"),
-            mastik_core::Grain {
-                amount: 0.8,
-                size: 3.0,
+        check_noise(
+            &format!("multicolour noise, {mode:?}"),
+            mastik_core::Noise {
+                size: [3.0, 3.0],
                 seed: -4,
                 blend: mode,
-                colour: true,
+                multi: true,
+                opacity: 0.8,
+                ..mastik_core::Noise::default()
             },
             &two_hue_fixture(),
         );

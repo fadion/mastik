@@ -608,6 +608,12 @@ fn attempt<T: serde::de::DeserializeOwned>(v: &Value) -> Result<T, Miss> {
     }
 }
 
+/// A noise effect's kind's fields, its tag first: `mastik_core::Noise`'s, which
+/// serde reads through a wire type that hides them.
+const NOISE_KIND_FIELDS: &[&str] = &[
+    "type", "size", "density", "seed", "blend", "colors", "multi", "opacity",
+];
+
 /// The path of a field `serde_ignored` cannot see: one inside a gradient brush,
 /// whose `#[serde(flatten)]` drops what it does not read; inside an untagged
 /// grid track (`minmax` or `repeat`); inside an effect's internally tagged
@@ -626,7 +632,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
             "drop_shadow" | "inner_shadow" => struct_fields::<crate::effect::Shadow>()?.to_vec(),
             "layer_blur" | "background_blur" => vec!["radius"],
             "sharpen" => vec!["amount", "radius"],
-            "grain" => vec!["amount", "size", "seed", "blend", "colour"],
+            "noise" => NOISE_KIND_FIELDS[1..].to_vec(),
             "filters" => struct_fields::<crate::effect::Filters>()?.to_vec(),
             _ => return None,
         };
@@ -680,6 +686,8 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
             Value::Array(items) => {
                 let item_key = match key {
                     "columns" | "rows" | "tracks" => "track",
+                    // A noise's two colours, walked as a shadow's one.
+                    "colors" => COLOUR,
                     _ => "",
                 };
                 for (i, item) in items.iter().enumerate() {
@@ -830,16 +838,19 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
         });
         let (model, from) = from.unwrap_or((model, 0));
         let below = &above[from..];
+        let whole = model_fields(model, below, walk_ref(v, &above[..from]));
         // The model's example shows some fields filled in, in the short forms
         // (`gap` for `row_gap` and `column_gap`); the type's own list adds the rest.
+        // Not inside a noise's kind: the example is a shadow, whose fields it lacks.
+        let noise_kind = model == "[Effect]" && below.len() == 2 && whole.is_some();
         let mut fields = example(model)
+            .filter(|_| !noise_kind)
             .and_then(|e| walk_ref(&e, below).cloned())
             .and_then(|e| match e {
                 Value::Object(map) => Some(map.keys().cloned().collect::<Vec<_>>()),
                 _ => None,
             })
             .unwrap_or_default();
-        let whole = model_fields(model, below, walk_ref(v, &above[..from]));
         for f in whole.unwrap_or_default() {
             if !fields.iter().any(|k| k == f) {
                 fields.push((*f).to_owned());
@@ -885,6 +896,10 @@ fn model_fields(
         ("[Stroke]", [Some(Step::Index(_))]) => struct_fields::<Stroke>(),
         ("[Fill]", [Some(Step::Index(_))]) => struct_fields::<Fill>(),
         ("[Effect]", [Some(Step::Index(_))]) => struct_fields::<Effect>(),
+        ("[Effect]", [Some(Step::Index(i)), Some(Step::Key(k))]) if k == "kind" => {
+            let kind = at?.get(*i)?.get("kind")?;
+            (kind.get("type")?.as_str()? == "noise").then_some(NOISE_KIND_FIELDS)
+        }
         ("ParagraphStyle", []) => struct_fields::<ParagraphStyle>(),
         ("TextStyle", []) => struct_fields::<TextStyle>(),
         ("BlockStyle", []) => struct_fields::<BlockStyle>(),

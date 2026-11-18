@@ -55,11 +55,12 @@ struct Params {
     // A sharpen's amount, 1.0 for 100%. Appended, for the reason on `src_size`.
     amount: f32,
     // The noise pass's numbers (`fx_gpu::Params::noise`): [0] the lattice map's
-    // origin and x step, [1] its y step and a grain's amount. Appended, for the
-    // reason on `src_size`.
+    // origin and x step, [1] its y step, a multicolour noise's opacity and the
+    // density floor (−1 for none), [2] and [3] the two straight colours.
+    // Appended, for the reason on `src_size`.
     nz: array<vec4<f32>, 4>,
-    // Octaves, 1 for the fractal sum, the grain's blend mode
-    // (`effects::blend_code`), 1 for a colour grain.
+    // Octaves, 1 for the fractal sum, the noise's blend mode
+    // (`effects::blend_code`), 1 for a multicolour noise.
     nzi: vec4<u32>,
 };
 
@@ -544,10 +545,23 @@ fn blend(m: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
     }
 }
 
-// `effects::grain`: the opaque noise blended over the layer, cut to its alpha,
-// mixed in at the amount.
+// `mastik_core::noise::NOISE_CONTRAST`.
+const NZ_CONTRAST: f32 = 3.0;
+
+// A value held at 8 bits, as an SVG renderer holds a matrix's output.
+fn nz_q(v: f32) -> f32 {
+    return floor(clamp(v, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+}
+
+// `Noise::shade`'s stretch of one level about mid-grey.
+fn nz_stretch(level: f32) -> f32 {
+    return nz_q(NZ_CONTRAST * level / 255.0 + 0.5 - 0.5 * NZ_CONTRAST);
+}
+
+// `effects::noise`: the shade's colour made opaque, blended over the layer, cut
+// to its alpha, mixed in by how much of it shows.
 @compute @workgroup_size(8, 8)
-fn grain(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn noise_fx(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c = vec2<i32>(gid.xy);
     if (!inside(c)) { return; }
     let s = load_a(c);
@@ -557,19 +571,36 @@ fn grain(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let uv = nz_at(c);
     let na = nz_level(3u, uv);
-    var n = vec3<f32>(nz_round_trip(nz_level(0u, uv), na) / 255.0);
+    // Below the density floor the pixel is left as it is.
+    if (na < p.nz[1].w) {
+        textureStore(dst, c, s);
+        return;
+    }
+    let t = nz_stretch(nz_round_trip(nz_level(0u, uv), na));
+    var n = vec3<f32>(0.0);
+    var m = 0.0;
     if (p.nzi.w == 1u) {
         n = vec3<f32>(
-            nz_round_trip(nz_level(0u, uv), na),
-            nz_round_trip(nz_level(1u, uv), na),
-            nz_round_trip(nz_level(2u, uv), na),
-        ) / 255.0;
+            t,
+            nz_stretch(nz_round_trip(nz_level(1u, uv), na)),
+            nz_stretch(nz_round_trip(nz_level(2u, uv), na)),
+        );
+        m = nz_q(p.nz[1].z);
+    } else {
+        // `from` is a reserved word in WGSL.
+        let lo = p.nz[2];
+        let hi = p.nz[3];
+        n = vec3<f32>(
+            nz_q(lo.x + (hi.x - lo.x) * t),
+            nz_q(lo.y + (hi.y - lo.y) * t),
+            nz_q(lo.z + (hi.z - lo.z) * t),
+        );
+        m = nz_q(lo.w + (hi.w - lo.w) * t);
     }
     let a = s.a;
     let cb = clamp(s.rgb / a, vec3<f32>(0.0), vec3<f32>(1.0));
     let b = blend(p.nzi.z, cb, n);
     let over = a * ((1.0 - a) * n + a * b);
-    let amount = p.nz[1].z;
-    let v = amount * over + (1.0 - amount) * s.rgb;
+    let v = m * over + (1.0 - m) * s.rgb;
     textureStore(dst, c, q(vec4<f32>(clamp(v, vec3<f32>(0.0), vec3<f32>(a)), a)));
 }

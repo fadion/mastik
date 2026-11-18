@@ -293,13 +293,14 @@ pub enum PaintSlot {
     /// (`build::GradientUse::at`), and `build::repaint` changes every use. A place
     /// still holds the paint after the edit, so no retargeting is needed.
     GroupGradient(mastik_core::PaintAt),
-    /// One effect's colour (a drop or inner shadow's), by index in the layer's
-    /// effect stack (§5.3a).
+    /// One effect's colour, by index in the layer's effect stack (§5.3a) and which
+    /// of its colours ([`effect_colour`]): a shadow's one at 0, a noise's first or
+    /// second at 0 or 1.
     ///
     /// The alpha here is the shadow's opacity with no second spelling, so the row is
     /// the Fill row's (chip, hex, percentage). A stale index reads back `None` from
     /// `slot_brush` and closes the picker, as for every index-keyed slot.
-    Effect(usize),
+    Effect(usize, usize),
     /// One layout grid's colour, by index in the frame's list (`mastik_core::layout`).
     ///
     /// The only slot whose paint is chrome rather than ink: `RenderOverrides` cannot
@@ -514,7 +515,7 @@ impl PaintSlot {
                 | PaintSlot::GroupColor(_)
                 | PaintSlot::TextDecoration(_)
                 | PaintSlot::TextColor
-                | PaintSlot::Effect(_)
+                | PaintSlot::Effect(..)
                 | PaintSlot::Grid(_)
                 | PaintSlot::Duotone(..)
                 | PaintSlot::VarCell(..)
@@ -535,6 +536,30 @@ impl PaintSlot {
                 | PaintSlot::Duotone(..)
         )
     }
+}
+
+/// Colour `end` of an effect, as [`PaintSlot::Effect`] names it: a shadow's one
+/// at 0, a two-colour noise's first or second. `None` for a kind or an end with
+/// no colour, a multicolour noise's included, which closes a picker left open on it.
+pub fn effect_colour(kind: &mastik_core::EffectKind, end: usize) -> Option<Color> {
+    use mastik_core::EffectKind as E;
+    match kind {
+        E::DropShadow(s) | E::InnerShadow(s) if end == 0 => Some(s.color),
+        E::Noise(n) if !n.multi => n.colors.get(end).copied(),
+        _ => None,
+    }
+}
+
+/// Write `colour` as [`effect_colour`] reads it; `false` where there is no such
+/// colour to write.
+pub fn set_effect_colour(kind: &mut mastik_core::EffectKind, end: usize, colour: Color) -> bool {
+    use mastik_core::EffectKind as E;
+    match kind {
+        E::DropShadow(s) | E::InnerShadow(s) if end == 0 => s.color = colour,
+        E::Noise(n) if !n.multi && end < 2 => n.colors[end] = colour,
+        _ => return false,
+    }
+    true
 }
 
 pub fn kind_of(brush: &Brush) -> PaintKind {

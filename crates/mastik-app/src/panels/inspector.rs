@@ -524,7 +524,7 @@ fn effect_glyph(kind: &EffectKind) -> &'static str {
         EffectKind::InnerShadow(_) => icon::DROP_HALF,
         EffectKind::LayerBlur { .. } => icon::LAYER_BLUR,
         EffectKind::Sharpen { .. } => icon::SHARPEN,
-        EffectKind::Grain(_) => icon::GRAIN,
+        EffectKind::Noise(_) => icon::GRAIN,
         EffectKind::BackgroundBlur { .. } => icon::SQUARE_DOTS,
         EffectKind::Filters(_) => icon::SUN,
     }
@@ -549,8 +549,8 @@ fn effects_step_glyph(before: &[Keyed<Effect>], after: &[Keyed<Effect>]) -> &'st
 /// The number at the right-hand end of an effect row.
 ///
 /// A shadow's alpha, a blur's radius, a sharpen's amount and radius
-/// (`60% · 1.5`), a grain's amount, or how many filter channels are off neutral
-/// ([`mastik_core::Filters::changed`]).
+/// (`60% · 1.5`), a noise's density, or how many filter channels are off
+/// neutral ([`mastik_core::Filters::changed`]).
 fn effect_summary(kind: &EffectKind) -> String {
     match kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
@@ -562,7 +562,7 @@ fn effect_summary(kind: &EffectKind) -> String {
         EffectKind::Sharpen { amount, radius } => {
             format!("{:.0}% · {}", amount * 100.0, ui::number(2)(*radius, 0..=2))
         }
-        EffectKind::Grain(g) => format!("{:.0}%", g.amount * 100.0),
+        EffectKind::Noise(n) => format!("{:.0}%", n.density * 100.0),
         EffectKind::Filters(f) => f.changed().to_string(),
     }
 }
@@ -582,8 +582,9 @@ fn effect_hint(kind: &EffectKind) -> &'static str {
             "Crisper edges, an unsharp mask over a small blur. The numbers are the amount and \
              the radius"
         }
-        EffectKind::Grain(_) => {
-            "Noise blended over the layer, inside its edges. The number is the amount"
+        EffectKind::Noise(_) => {
+            "Noise in one or two colours, or many, over the layer and inside its edges. The \
+             number is its density"
         }
         EffectKind::BackgroundBlur { .. } => {
             "Blurs what lies behind the layer, inside its outline. The number is the radius"
@@ -810,7 +811,7 @@ pub(super) fn popup_rule(ui: &mut egui::Ui) {
 }
 
 /// An effect's blend mode combo, `width` wide and [`ui::CONTROL_H`] tall: a
-/// shadow's and a grain's. Pass through is left out, since an effect is no
+/// shadow's and a noise's. Pass through is left out, since an effect is no
 /// container. Answers the mode picked, when it differs from `current`.
 fn effect_blend_combo(
     ui: &mut egui::Ui,
@@ -10250,7 +10251,7 @@ impl MastikApp {
             let n = effects.len();
             let moved = |i| paint::reordered_index(n, from, to, i);
             self.remap_slots(anchor, |slot| match slot {
-                PaintSlot::Effect(i) => moved(i).map(PaintSlot::Effect),
+                PaintSlot::Effect(i, end) => moved(i).map(|i| PaintSlot::Effect(i, end)),
                 untouched => Some(untouched),
             });
             return;
@@ -10356,7 +10357,9 @@ impl MastikApp {
     /// the lists that reorder.
     fn remap_effect_slots(&mut self, anchor: NodeId, gone: usize) {
         self.remap_slots(anchor, |slot| match slot {
-            PaintSlot::Effect(i) => paint::removed_index(gone, i).map(PaintSlot::Effect),
+            PaintSlot::Effect(i, end) => {
+                paint::removed_index(gone, i).map(|i| PaintSlot::Effect(i, end))
+            }
             untouched => Some(untouched),
         });
     }
@@ -10691,9 +10694,9 @@ impl MastikApp {
         let ctx = ui.ctx().clone();
         let mut close = false;
         let mut retype: Option<EffectKind> = None;
-        // A shadow's or a grain's blend mode, picked from its combo.
+        // A shadow's or a noise's blend mode, picked from its combo.
         let mut shadow_blend: Option<BlendMode> = None;
-        let mut grain_colour: Option<bool> = None;
+        let mut noise_multi: Option<bool> = None;
         // The kind combo's list is its own `Area` above this one, so a pick there
         // misses `contains_pointer`; asked by layer order.
         let over_overlay = ctx
@@ -10805,7 +10808,7 @@ impl MastikApp {
                             self.slot_color_row(
                                 ui,
                                 id,
-                                PaintSlot::Effect(index),
+                                PaintSlot::Effect(index, 0),
                                 egui::vec2(inner, CELL),
                                 s.color,
                                 true,
@@ -10878,48 +10881,55 @@ impl MastikApp {
                                 }
                             });
                         }
-                        EffectKind::Grain(g) => {
-                            let g = *g;
+                        EffectKind::Noise(n) => {
+                            let n = *n;
                             let cell = egui::vec2(half, CELL);
+                            let range = mastik_core::noise::NOISE_SIZE_RANGE;
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = COL;
+                                for (axis, prefix, hint) in [
+                                    (0, "W", "How wide one grain is, in the layer's units"),
+                                    (1, "H", "How tall one grain is, in the layer's units"),
+                                ] {
+                                    let range = range.clone();
+                                    let mut size = n.size[axis];
+                                    let resp = ui::value_field(
+                                        ui,
+                                        cell,
+                                        Prefix::Text(prefix),
+                                        &mut size,
+                                        Scrub::fine(0.05, 1).range(range.clone()),
+                                        |d| d.max_decimals(1),
+                                    )
+                                    .on_hover_text(hint);
+                                    self.effect_valve(&resp, subjects, index, move |k| {
+                                        if let EffectKind::Noise(n) = k {
+                                            n.size[axis] =
+                                                size.clamp(*range.start(), *range.end());
+                                        }
+                                    });
+                                }
+                            });
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = COL;
                                 // A plain field, as a sharpen's amount: meters are
                                 // the photo adjustments'.
-                                let mut shown = g.amount * 100.0;
+                                let mut shown = n.density * 100.0;
                                 let resp = ui::value_field(
                                     ui,
                                     cell,
-                                    Prefix::Text("Amount"),
+                                    Prefix::Text("Density"),
                                     &mut shown,
                                     Scrub::whole(0.25).range(0.0..=100.0),
                                     |d| d.suffix("%").max_decimals(0),
                                 )
-                                .on_hover_text("How strongly the grain shows");
+                                .on_hover_text("How much of the layer the noise covers");
                                 self.effect_valve(&resp, subjects, index, move |k| {
-                                    if let EffectKind::Grain(g) = k {
-                                        g.amount = (shown / 100.0).clamp(0.0, 1.0);
+                                    if let EffectKind::Noise(n) = k {
+                                        n.density = (shown / 100.0).clamp(0.0, 1.0);
                                     }
                                 });
-                                let range = mastik_core::noise::GRAIN_SIZE_RANGE;
-                                let mut size = g.size;
-                                let resp = ui::value_field(
-                                    ui,
-                                    cell,
-                                    Prefix::Text("Size"),
-                                    &mut size,
-                                    Scrub::fine(0.05, 1).range(range.clone()),
-                                    |d| d.max_decimals(1),
-                                )
-                                .on_hover_text("How large one grain is, in the layer's units");
-                                self.effect_valve(&resp, subjects, index, move |k| {
-                                    if let EffectKind::Grain(g) = k {
-                                        g.size = size.clamp(*range.start(), *range.end());
-                                    }
-                                });
-                            });
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = COL;
-                                let mut seed = f64::from(g.seed);
+                                let mut seed = f64::from(n.seed);
                                 let resp = ui::value_field(
                                     ui,
                                     cell,
@@ -10929,26 +10939,58 @@ impl MastikApp {
                                         .range(f64::from(i32::MIN)..=f64::from(i32::MAX)),
                                     |d| d.max_decimals(0),
                                 )
-                                .on_hover_text("Which grain: another number scatters it anew");
+                                .on_hover_text("Which noise: another number scatters it anew");
                                 self.effect_valve(&resp, subjects, index, move |k| {
-                                    if let EffectKind::Grain(g) = k {
-                                        g.seed = seed.round() as i32;
+                                    if let EffectKind::Noise(n) = k {
+                                        n.seed = seed.round() as i32;
                                     }
                                 });
-                                if let Some(mode) = effect_blend_combo(
-                                    ui,
-                                    ("grain-blend", index),
-                                    half,
-                                    g.blend,
-                                    "Blend mode: how the grain mixes with the layer",
-                                ) {
-                                    shadow_blend = Some(mode);
-                                }
                             });
-                            let toggled = ui::switch_row(ui, "Colour grain", g.colour, CELL)
-                                .on_hover_text("Grain in three colours rather than grey");
+                            if n.multi {
+                                let mut shown = n.opacity * 100.0;
+                                let resp = ui::value_field(
+                                    ui,
+                                    egui::vec2(inner, CELL),
+                                    Prefix::Text("Opacity"),
+                                    &mut shown,
+                                    Scrub::whole(0.25).range(0.0..=100.0),
+                                    |d| d.suffix("%").max_decimals(0),
+                                )
+                                .on_hover_text("How strongly the colours show");
+                                self.effect_valve(&resp, subjects, index, move |k| {
+                                    if let EffectKind::Noise(n) = k {
+                                        n.opacity = (shown / 100.0).clamp(0.0, 1.0);
+                                    }
+                                });
+                            } else {
+                                for (end, colour, tip) in [
+                                    (0, n.colors[0], "Edit the noise's first colour"),
+                                    (1, n.colors[1], "Edit the noise's second colour"),
+                                ] {
+                                    self.slot_color_row(
+                                        ui,
+                                        id,
+                                        PaintSlot::Effect(index, end),
+                                        egui::vec2(inner, CELL),
+                                        colour,
+                                        true,
+                                        tip,
+                                    );
+                                }
+                            }
+                            if let Some(mode) = effect_blend_combo(
+                                ui,
+                                ("noise-blend", index),
+                                inner,
+                                n.blend,
+                                "Blend mode: how the noise mixes with the layer",
+                            ) {
+                                shadow_blend = Some(mode);
+                            }
+                            let toggled = ui::switch_row(ui, "Multicolour", n.multi, CELL)
+                                .on_hover_text("Noise in colours of its own rather than two");
                             if toggled.clicked() {
-                                grain_colour = Some(!g.colour);
+                                noise_multi = Some(!n.multi);
                             }
                         }
                         EffectKind::BackgroundBlur { radius } => {
@@ -11090,9 +11132,9 @@ impl MastikApp {
                     s.blend = mode;
                     Some("Shadow blend")
                 }
-                Some(EffectKind::Grain(g)) => {
-                    g.blend = mode;
-                    Some("Grain blend")
+                Some(EffectKind::Noise(n)) => {
+                    n.blend = mode;
+                    Some("Noise blend")
                 }
                 _ => None,
             };
@@ -11102,15 +11144,19 @@ impl MastikApp {
                 self.write_effects(subjects, effects);
             }
         }
-        if let Some(on) = grain_colour {
+        if let Some(on) = noise_multi {
             let mut effects = match self.session.display_node(id) {
                 Some(n) => n.effects().to_vec(),
                 None => return,
             };
-            if let Some(EffectKind::Grain(g)) = effects.get_mut(index).map(|e| &mut e.kind) {
-                g.colour = on;
-                self.session
-                    .name_step(if on { "Colour grain" } else { "Grey grain" }, icon::GRAIN);
+            if let Some(EffectKind::Noise(n)) = effects.get_mut(index).map(|e| &mut e.kind) {
+                n.multi = on;
+                let step = if on {
+                    "Multicolour noise"
+                } else {
+                    "Two-colour noise"
+                };
+                self.session.name_step(step, icon::GRAIN);
                 self.write_effects(subjects, effects);
             }
         }
@@ -11289,12 +11335,11 @@ impl MastikApp {
             PaintSlot::Fill(i) => node.paint().fills.get(i).map(|f| on_box(drawn(&f.brush))),
             PaintSlot::Stroke(i) => node.paint().strokes.get(i).map(|s| on_box(drawn(&s.brush))),
             // `None` for a colourless kind closes a picker whose row was retyped.
-            PaintSlot::Effect(i) => match node.effects().get(i).map(|e| &e.kind) {
-                Some(EffectKind::DropShadow(s) | EffectKind::InnerShadow(s)) => {
-                    Some(Brush::Solid(s.color))
-                }
-                _ => None,
-            },
+            PaintSlot::Effect(i, end) => node
+                .effects()
+                .get(i)
+                .and_then(|e| paint::effect_colour(&e.kind, end))
+                .map(Brush::Solid),
             // Through `grid_paint` first: `DisplayNode` has no grids, so the buffer
             // is the preview; the committed list says whether the row exists.
             PaintSlot::Grid(i) => self.session.doc.get(id)?.grids().get(i).map(|g| {
@@ -11598,10 +11643,11 @@ impl MastikApp {
                 ),
                 None => Transaction(Vec::new()),
             },
-            // A shadow's colour, alpha included, on every selected layer's own list. A
-            // subject whose entry `i` is not a shadow is skipped: the detached picker
-            // can outlive the card's agreement and must change one colour, not copy the stack.
-            PaintSlot::Effect(i) => match paint::stops_of(&brush).first() {
+            // A shadow's colour or one of a noise's, alpha included, on every selected
+            // layer's own list. A subject whose entry `i` has no such colour is skipped:
+            // the detached picker can outlive the card's agreement and must change one
+            // colour, not copy the stack.
+            PaintSlot::Effect(i, end) => match paint::stops_of(&brush).first() {
                 Some((_, colour)) => {
                     // The anchor through `display_node`, so a live preview is what
                     // the picker edits; other subjects committed.
@@ -11609,9 +11655,7 @@ impl MastikApp {
                         .session
                         .display_node(id)
                         .and_then(|n| n.effects().get(i).map(|e| e.kind.clone()))
-                        .is_some_and(|k| {
-                            matches!(k, EffectKind::DropShadow(_) | EffectKind::InnerShadow(_))
-                        });
+                        .is_some_and(|k| paint::effect_colour(&k, end).is_some());
                     // Retyped or removed under the picker, which `slot_brush`
                     // closes next frame; write nothing meanwhile.
                     if !anchor_ok {
@@ -11627,11 +11671,9 @@ impl MastikApp {
                                 } else {
                                     self.session.doc.get(*s)?.effects().to_vec()
                                 };
-                                match effects.get_mut(i).map(|e| &mut e.kind) {
-                                    Some(
-                                        EffectKind::DropShadow(sh) | EffectKind::InnerShadow(sh),
-                                    ) => sh.color = *colour,
-                                    _ => return None,
+                                let kind = &mut effects.get_mut(i)?.kind;
+                                if !paint::set_effect_colour(kind, end, *colour) {
+                                    return None;
                                 }
                                 Some(Operation::SetEffects { id: *s, effects })
                             })
@@ -11809,7 +11851,7 @@ impl MastikApp {
             PaintSlot::GroupColor(_) | PaintSlot::GroupGradient(_) => {
                 ("Group colors", icon::PALETTE)
             }
-            PaintSlot::Effect(i) => {
+            PaintSlot::Effect(i, _) => {
                 let glyph = (self.session.selection.ids().first())
                     .and_then(|id| self.session.display_node(*id))
                     .and_then(|n| n.effects().get(i).map(|e| effect_glyph(&e.kind)));
@@ -18887,7 +18929,7 @@ mod effects_panel_tests {
     }
 
     /// A shadow's chip opens the detached picker on its own slot and the picker writes back to it:
-    /// `PaintSlot::Effect(i)` must reach both `slot_brush` and `slot_transaction`.
+    /// `PaintSlot::Effect(i, end)` must reach both `slot_brush` and `slot_transaction`.
     #[test]
     fn a_shadows_chip_opens_the_picker_on_its_own_slot_and_the_picker_writes_there() {
         let mut card = Card::new(vec![EffectKind::DropShadow(Default::default())]);
@@ -18905,9 +18947,9 @@ mod effects_panel_tests {
         card.click(chip.center());
         let picker = card.app.picker.as_ref().expect("the chip opens the picker");
         assert_eq!(picker.node, card.id);
-        assert_eq!(picker.slot, PaintSlot::Effect(0));
+        assert_eq!(picker.slot, PaintSlot::Effect(0, 0));
 
-        let now = card.app.slot_brush(card.id, PaintSlot::Effect(0));
+        let now = card.app.slot_brush(card.id, PaintSlot::Effect(0, 0));
         assert_eq!(
             now,
             Some(Brush::Solid(mastik_core::Shadow::default().color)),
@@ -18915,7 +18957,7 @@ mod effects_panel_tests {
         );
         let red = mastik_core::peniko::Color::from_rgba8(255, 0, 0, 128);
         card.app
-            .write_slot(card.id, PaintSlot::Effect(0), Brush::Solid(red));
+            .write_slot(card.id, PaintSlot::Effect(0, 0), Brush::Solid(red));
         let EffectKind::DropShadow(s) = &card.committed()[0].kind else {
             panic!("the kind changed");
         };
@@ -19014,8 +19056,8 @@ mod effects_panel_tests {
                 &["Amount", "Radius"],
             ),
             (
-                EffectKind::Grain(Default::default()),
-                &["Amount", "Size", "Seed", "Colour grain"],
+                EffectKind::Noise(Default::default()),
+                &["W", "H", "Density", "Seed", "Multicolour"],
             ),
             (
                 EffectKind::Filters(Default::default()),
@@ -19041,13 +19083,13 @@ mod effects_panel_tests {
                     kind.label()
                 );
             }
-            let hex = painted.iter().any(|t| t == "000000");
-            assert_eq!(
-                hex,
-                matches!(kind, EffectKind::DropShadow(_) | EffectKind::InnerShadow(_)),
-                "{}'s popover and its colour row",
-                kind.label()
-            );
+            let hex = painted.iter().filter(|t| *t == "000000").count();
+            let rows = match kind {
+                EffectKind::DropShadow(_) | EffectKind::InnerShadow(_) => 1,
+                EffectKind::Noise(_) => 2,
+                _ => 0,
+            };
+            assert_eq!(hex, rows, "{}'s popover and its colour rows", kind.label());
         }
     }
 
@@ -19064,27 +19106,28 @@ mod effects_panel_tests {
         assert_ne!(icon::SHARPEN, icon::LAYER_BLUR);
     }
 
-    /// A grain's row reads its amount and wears its own glyph, not background
+    /// A noise's row reads its density and wears its own glyph, not background
     /// blur's dots.
     #[test]
-    fn a_grain_row_reads_its_amount() {
-        let kind = EffectKind::Grain(mastik_core::Grain {
-            amount: 0.18,
+    fn a_noise_row_reads_its_density() {
+        let kind = EffectKind::Noise(mastik_core::Noise {
+            density: 0.6,
             ..Default::default()
         });
-        assert_eq!(effect_summary(&kind), "18%");
+        assert_eq!(effect_summary(&kind), "60%");
         assert_eq!(effect_glyph(&kind), icon::GRAIN);
         assert_ne!(icon::GRAIN, icon::SQUARE_DOTS);
     }
 
-    /// The grain's blend combo writes its mode as one named step, as a
-    /// shadow's does, and its switch turns the grain to colour.
+    /// The noise's blend combo writes its mode as one named step, as a shadow's
+    /// does; its switch makes it multicolour, trading the two colour rows for an
+    /// opacity field.
     ///
     /// flip: the popover's blend arm writing only a shadow's mode → fails at "the
     /// pick landed".
     #[test]
-    fn a_grains_blend_and_colour_write_through() {
-        let mut card = Card::new(vec![EffectKind::Grain(Default::default())]);
+    fn a_noises_blend_and_multicolour_write_through() {
+        let mut card = Card::new(vec![EffectKind::Noise(Default::default())]);
         card.app.effect_menu = Some((card.id, 0));
         let out = card.settle();
         let at = |out: &egui::FullOutput, pick: &dyn Fn(&str) -> bool| {
@@ -19096,17 +19139,17 @@ mod effects_panel_tests {
                 .center()
         };
         let face = at(&out, &|t| {
-            t.starts_with(icon::INTERSECT_THREE) && t.ends_with("Overlay")
+            t.starts_with(icon::INTERSECT_THREE) && t.ends_with("Normal")
         });
         card.click(face);
         let out = card.settle();
         card.click(at(&out, &|t| t == "Multiply"));
-        let grain = |card: &mut Card| match &card.committed()[0].kind {
-            EffectKind::Grain(g) => *g,
+        let noise = |card: &mut Card| match &card.committed()[0].kind {
+            EffectKind::Noise(n) => *n,
             other => panic!("the kind changed: {other:?}"),
         };
         assert_eq!(
-            grain(&mut card).blend,
+            noise(&mut card).blend,
             BlendMode::Multiply,
             "the pick landed"
         );
@@ -19116,13 +19159,50 @@ mod effects_panel_tests {
                 .history
                 .current_note_mut()
                 .map(|n| n.label.clone()),
-            Some("Grain blend · Multiply".into())
+            Some("Noise blend · Multiply".into())
         );
         let out = card.settle();
-        card.click(at(&out, &|t| t == "Colour grain"));
+        card.click(at(&out, &|t| t == "Multicolour"));
         assert!(
-            grain(&mut card).colour,
-            "the switch turned the grain to colour"
+            noise(&mut card).multi,
+            "the switch made the noise multicolour"
+        );
+        let out = card.settle();
+        let painted: Vec<String> = ink(&out).into_iter().map(|(t, _)| t).collect();
+        assert!(
+            painted.iter().any(|t| t == "Opacity") && !painted.iter().any(|t| t == "000000"),
+            "an opacity field where the colour rows were: {painted:?}"
+        );
+    }
+
+    /// A write to a noise's second colour slot changes the second colour alone,
+    /// and the slot reads it back.
+    ///
+    /// flip: `set_effect_colour` writing `colors[0]` for every end → fails at
+    /// "the second colour took the write".
+    #[test]
+    fn a_noises_second_colour_is_its_own_slot() {
+        let card = Card::new(vec![EffectKind::Noise(Default::default())]);
+        let mut app = card.app;
+        let red = mastik_core::peniko::Color::from_rgba8(255, 0, 0, 255);
+        app.write_slot(card.id, PaintSlot::Effect(0, 1), Brush::Solid(red));
+        let Some(EffectKind::Noise(n)) = app
+            .session
+            .doc
+            .get(card.id)
+            .map(|n| n.effects()[0].kind.clone())
+        else {
+            panic!("the noise is gone");
+        };
+        assert_eq!(n.colors[1], red, "the second colour took the write");
+        assert_eq!(
+            n.colors[0],
+            mastik_core::Noise::default().colors[0],
+            "the first colour stays"
+        );
+        assert_eq!(
+            app.slot_brush(card.id, PaintSlot::Effect(0, 1)),
+            Some(Brush::Solid(red))
         );
     }
 
@@ -19298,14 +19378,14 @@ mod effects_panel_tests {
         let fields = card.row_fields();
         card.app.picker = Some(super::super::Picker::new(
             card.id,
-            PaintSlot::Effect(1),
+            PaintSlot::Effect(1, 0),
             egui::pos2(400.0, 200.0),
         ));
         card.click(close_button(fields[0]));
         let picker = card.app.picker.as_ref().expect("the picker is still open");
         assert_eq!(
             picker.slot,
-            PaintSlot::Effect(0),
+            PaintSlot::Effect(0, 0),
             "the second shadow is index 0 now, and the picker followed it"
         );
 
@@ -19313,7 +19393,7 @@ mod effects_panel_tests {
         let fields = card.row_fields();
         card.app.picker = Some(super::super::Picker::new(
             card.id,
-            PaintSlot::Effect(1),
+            PaintSlot::Effect(1, 0),
             egui::pos2(400.0, 200.0),
         ));
         card.click(close_button(fields[1]));
@@ -19710,7 +19790,7 @@ mod effects_multi_tests {
 
         card.app.picker = Some(crate::panels::picker::Picker::new(
             a,
-            PaintSlot::Effect(0),
+            PaintSlot::Effect(0, 0),
             egui::pos2(400.0, 300.0),
         ));
         for _ in 0..2 {
@@ -19729,7 +19809,7 @@ mod effects_multi_tests {
              drawing no rows at all over this disagreement"
         );
 
-        card.app.write_slot(a, PaintSlot::Effect(0), red.clone());
+        card.app.write_slot(a, PaintSlot::Effect(0, 0), red.clone());
 
         assert_eq!(
             card.app.session.doc.get(b).expect("b").effects(),
@@ -19749,7 +19829,7 @@ mod effects_multi_tests {
             card.app.shared_effects(&[a, b]).is_some(),
             "control fixture: these two agree"
         );
-        card.app.write_slot(a, PaintSlot::Effect(0), red);
+        card.app.write_slot(a, PaintSlot::Effect(0, 0), red);
         let painted = |app: &MastikApp, id: NodeId| match &app
             .session
             .doc
@@ -24211,7 +24291,7 @@ mod paint_write_tests {
             "the fixture: the second layer carries an effect the anchor does not"
         );
 
-        let tx = app.slot_transaction(a, PaintSlot::Effect(0), Brush::Solid(blue));
+        let tx = app.slot_transaction(a, PaintSlot::Effect(0, 0), Brush::Solid(blue));
         app.session.commit(tx);
 
         assert_eq!(
@@ -24236,7 +24316,7 @@ mod paint_write_tests {
                 mastik_core::EffectKind::LayerBlur { radius: 4.0 },
             )]),
         }]));
-        let tx = app.slot_transaction(a, PaintSlot::Effect(0), Brush::Solid(red));
+        let tx = app.slot_transaction(a, PaintSlot::Effect(0, 0), Brush::Solid(red));
         assert!(
             tx.0.is_empty(),
             "a colour aimed at a row that is no longer a shadow builds nothing, \
@@ -24862,16 +24942,16 @@ mod slot_decision_tests {
         }]));
 
         assert_eq!(
-            app.slot_brush(id, PaintSlot::Effect(0)),
+            app.slot_brush(id, PaintSlot::Effect(0, 0)),
             Some(Brush::Solid(red)),
             "the control: a shadow's row has a colour and gives it"
         );
         assert!(
-            app.slot_brush(id, PaintSlot::Effect(1)).is_none(),
+            app.slot_brush(id, PaintSlot::Effect(1, 0)).is_none(),
             "a layer blur has no colour, so the row answers nothing"
         );
         assert!(
-            app.slot_brush(id, PaintSlot::Effect(9)).is_none(),
+            app.slot_brush(id, PaintSlot::Effect(9, 0)).is_none(),
             "and so does a row that is not there — the same answer by a \
              different door"
         );
@@ -26560,7 +26640,7 @@ mod effect_reorder_tests {
         // As the first row's grip leaves it on the press, its shadow's picker open.
         app.picker = Some(crate::panels::Picker::new(
             id,
-            PaintSlot::Effect(0),
+            PaintSlot::Effect(0, 0),
             egui::pos2(900.0, 300.0),
         ));
         app.in_flight.effect_drag = Some(paint::EffectDrag {
@@ -26592,7 +26672,7 @@ mod effect_reorder_tests {
         assert_eq!(app.session.history.undo_depth(), depth + 1, "one undo step");
         assert_eq!(
             app.picker.as_ref().map(|p| p.slot),
-            Some(PaintSlot::Effect(2)),
+            Some(PaintSlot::Effect(2, 0)),
             "the picker follows its effect"
         );
     }

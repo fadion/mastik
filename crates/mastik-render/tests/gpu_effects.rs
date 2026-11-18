@@ -609,28 +609,29 @@ fn both_backends_draw_the_same_shadow() {
     }
 }
 
-/// A grain draws the same picture through both whole paths: each backend lays
-/// the layer in a buffer of its own and both land the noise on one lattice.
-/// Within two levels a channel, the passes' own slack (`tests/fx_gpu.rs`,
+/// Noise draws the same picture through both whole paths: each backend lays the
+/// layer in a buffer of its own and both land the noise on one lattice. Within
+/// three levels a channel, the passes' own slack (`tests/fx_gpu.rs`,
 /// `NOISE_TOLERANCE`).
 #[test]
 #[ignore = "requires a GPU adapter"]
-fn both_backends_draw_the_same_grain() {
+fn both_backends_draw_the_same_noise() {
     let Some(mut g) = gpu() else {
         return;
     };
-    let grain = Effect::new(EffectKind::Grain(mastik_core::Grain {
-        amount: 1.0,
-        colour: true,
-        ..mastik_core::Grain::default()
+    let noise = Effect::new(EffectKind::Noise(mastik_core::Noise {
+        multi: true,
+        opacity: 1.0,
+        density: 0.7,
+        ..mastik_core::Noise::default()
     }));
-    let (doc, res) = document(vec![grain], 1.0);
+    let (doc, res) = document(vec![noise], 1.0);
     let gpu_px = render_gpu(&mut g, &doc, &res);
     let cpu_px = render_cpu(&doc, &res);
     let row: Vec<u8> = (32..68).map(|x| at(&gpu_px, x, 50).0).collect();
     assert!(
         row.iter().max().unwrap() - row.iter().min().unwrap() > 10,
-        "the grain is drawn, not a flat fill: {row:?}"
+        "the noise is drawn, not a flat fill: {row:?}"
     );
     let worst = gpu_px
         .iter()
@@ -638,7 +639,7 @@ fn both_backends_draw_the_same_grain() {
         .map(|(a, b)| a.abs_diff(*b))
         .max()
         .unwrap_or(0);
-    assert!(worst <= 2, "the two backends differ by {worst} somewhere");
+    assert!(worst <= 3, "the two backends differ by {worst} somewhere");
 }
 
 /// A luminance mask draws the same on both backends: a red square under an opaque

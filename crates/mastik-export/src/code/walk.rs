@@ -1564,7 +1564,7 @@ impl Walk<'_> {
                 // CSS `filter` has no unsharp mask.
                 EffectKind::Sharpen { .. } => return Some("a sharpen".into()),
                 // Nor a noise.
-                EffectKind::Grain(_) => return Some("a grain".into()),
+                EffectKind::Noise(_) => return Some("noise".into()),
                 EffectKind::Filters(_) => return Some("colour filters".into()),
             }
         }

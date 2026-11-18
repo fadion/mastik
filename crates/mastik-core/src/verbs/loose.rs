@@ -8,7 +8,9 @@
 //! butt cap, no dashes). A text kind's `style` leaves out what
 //! [`TextStyle::default`](crate::TextStyle) has, and its `sizing` is `Auto` unless
 //! given; a star's points and inner ratio are 5 and 0.382 unless given. A layout
-//! grid leaves out what a new grid on its axis has.
+//! grid leaves out what a new grid on its axis has. A noise effect leaves out
+//! what a new noise has, takes its `size` as one number for both axes and its
+//! `colors` as hex, and a one-colour noise as `color` alone.
 //!
 //! What `get_node` and CSS write is taken too: a length as `"22px"`, `"1.2em"`,
 //! `"120%"` or `"auto"`; a sizing as `{"type": "AutoHeight", "width": w}`; a fill as
@@ -254,6 +256,7 @@ fn loosen_effect(item: &mut Value, errs: &mut Vec<String>) {
             inner.remove("opacity");
         }
         blend_by_label(&mut inner);
+        loosen_noise(&mut inner);
         map.insert("kind".into(), Value::Object(inner));
         map.insert("visible".into(), visible);
     } else if let Some(Value::Object(kind)) = map.get_mut("kind") {
@@ -262,7 +265,74 @@ fn loosen_effect(item: &mut Value, errs: &mut Vec<String>) {
             kind.insert("type".into(), Value::String(t));
         }
         blend_by_label(kind);
+        loosen_noise(kind);
         map.entry("visible").or_insert(Value::Bool(true));
+    }
+}
+
+/// A noise effect's short forms: `size` as one number for both axes, `colors` as
+/// hex, and a one-colour noise as `color` alone, which fades to that colour
+/// clear. Anything else is the model's own shape.
+fn loosen_noise(kind: &mut Map<String, Value>) {
+    if kind.get("type").and_then(Value::as_str) != Some("noise") {
+        return;
+    }
+    if let Some(Value::Number(n)) = kind.get("size") {
+        let n = n.clone();
+        kind.insert("size".into(), Value::Array(vec![Value::Number(n); 2]));
+    }
+    if !kind.contains_key("colors")
+        && let Some(c) = kind.get("color").and_then(any_colour)
+    {
+        kind.remove("color");
+        kind.insert(
+            "colors".into(),
+            serde_json::to_value([c, c.with_alpha(0.0)]).unwrap_or_default(),
+        );
+    }
+    if let Some(Value::Array(colors)) = kind.get_mut("colors") {
+        for c in colors.iter_mut() {
+            if let Value::String(s) = c
+                && let Some(colour) = hex_colour(s)
+            {
+                *c = serde_json::to_value(colour).unwrap_or_default();
+            }
+        }
+    }
+}
+
+/// A noise effect written in [`loosen_noise`]'s short forms where they read back
+/// the same.
+fn tighten_noise(item: &mut Value) {
+    let Some(Value::Object(kind)) = item.get_mut("kind") else {
+        return;
+    };
+    if kind.get("type").and_then(Value::as_str) != Some("noise") {
+        return;
+    }
+    if let Some(Value::Array(size)) = kind.get("size")
+        && let [a, b] = size.as_slice()
+        && a == b
+    {
+        let a = a.clone();
+        kind.insert("size".into(), a);
+    }
+    let colors = kind
+        .get("colors")
+        .and_then(|v| serde_json::from_value::<[peniko::Color; 2]>(v.clone()).ok());
+    let Some([from, to]) = colors else {
+        return;
+    };
+    let one = to == from.with_alpha(0.0);
+    match (nearest_hex_of(from), nearest_hex_of(to)) {
+        (Some(f), _) if one => {
+            kind.remove("colors");
+            kind.insert("color".into(), Value::String(f));
+        }
+        (Some(f), Some(t)) => {
+            kind.insert("colors".into(), serde_json::json!([f, t]));
+        }
+        _ => {}
     }
 }
 
@@ -564,6 +634,7 @@ pub(crate) fn tighten(key: &str, v: &mut Value) {
                     "fills" => tighten_paint(item, false),
                     "strokes" => tighten_paint(item, true),
                     "grids" => tighten_grid(item),
+                    "effects" => tighten_noise(item),
                     _ => {}
                 }
             }
@@ -684,5 +755,45 @@ mod tests {
         let mut v = wide.clone();
         tighten("Solid", &mut v);
         assert_eq!(v, wide, "past sRGB stays as it is");
+    }
+
+    /// A noise is written in its short forms, one `color` and one `size` for a
+    /// default one and hex `colors` for two, and each reads back as it was.
+    ///
+    /// flip: `tighten_noise`'s one-colour test reading `to == from` → fails at
+    /// the default's `color`.
+    #[test]
+    fn a_noise_is_written_short_and_reads_back() {
+        let two = crate::Noise {
+            size: [2.0, 3.0],
+            colors: [
+                peniko::Color::from_rgba8(255, 0, 0, 255),
+                peniko::Color::from_rgba8(0, 0, 255, 128),
+            ],
+            ..crate::Noise::default()
+        };
+        for (noise, short) in [
+            (
+                crate::Noise::default(),
+                serde_json::json!({ "type": "noise", "size": 1.0, "seed": 1, "opacity": 0.3,
+                                    "color": "#00000066" }),
+            ),
+            (
+                two,
+                serde_json::json!({ "type": "noise", "size": [2.0, 3.0], "seed": 1,
+                                    "opacity": 0.3, "colors": ["#ff0000", "#0000ff80"] }),
+            ),
+        ] {
+            let effect = crate::Effect::new(crate::EffectKind::Noise(noise));
+            let mut v = serde_json::json!([serde_json::to_value(&effect).unwrap()]);
+            tighten("effects", &mut v);
+            let kind = &v[0]["kind"];
+            for (k, want) in short.as_object().unwrap() {
+                assert_eq!(&kind[k], want, "{k} in {kind}");
+            }
+            loosen("effects", &mut v);
+            let back: Vec<crate::Effect> = serde_json::from_value(v).expect("reads back");
+            assert_eq!(back[0].kind, effect.kind);
+        }
     }
 }

@@ -476,9 +476,9 @@ impl MastikApp {
             // catch-all below is not enough: the anchor stays contained after a
             // Shift-click widens the selection, so the picker would survive a
             // widening the card did not and replace another layer's whole stack.
-            // `Effect(i)` is scoped to one node's list, unlike the selection-scoped
+            // `Effect(i, _)` is scoped to one node's list, unlike the selection-scoped
             // slots above.
-            PaintSlot::Effect(_) => {
+            PaintSlot::Effect(..) => {
                 !self.session.selection.contains(node)
                     || self.shared_effects(self.session.selection.ids()).is_none()
             }
@@ -3969,7 +3969,7 @@ mod grid_orphan_tests {
     //! the picker would survive a widening the *card* did not: `shared_grids`
     //! answers `None` once two frames' grid lists differ and the card draws a
     //! sentence instead of rows. A hex typed into it would then recolour **B's**
-    //! grid, on a row no longer drawn. Same argument as the `Effect(i)` arm.
+    //! grid, on a row no longer drawn. Same argument as the `Effect(i, _)` arm.
     //!
     //! (Plain backticks, not `[links]`: this module is `cfg(test)`.)
 

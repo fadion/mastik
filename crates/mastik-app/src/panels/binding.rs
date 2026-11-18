@@ -3270,7 +3270,7 @@ mod tests {
         );
         assert!(text_at(&shapes, "brand/500").is_some());
         assert!(
-            paint_item(PaintSlot::Effect(0)).is_none(),
+            paint_item(PaintSlot::Effect(0, 0)).is_none(),
             "an effect's colour is not a bindable slot"
         );
     }

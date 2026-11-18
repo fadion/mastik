@@ -159,7 +159,7 @@ pub use node::{
     MaskMode, Node, NodeKind, Paint, Pivot, Side, Stroke, StrokeAlign, StrokeSides, TextRef,
     TextSizing, link_host, miter_degrees_of_ratio, miter_ratio_of_degrees, web_link,
 };
-pub use noise::Grain;
+pub use noise::Noise;
 pub use op::{ApplyOutcome, Described, DirtySet, GeometryPatch, OpError, Operation, Transaction};
 pub use query::{
     boolean_placeholder, chart_part_at, group_chain, hit_test, inside_loop, is_effectively_locked,

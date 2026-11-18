@@ -573,7 +573,7 @@ impl Writer<'_> {
                     self.approximate("A second blur of the same kind, left out");
                 }
                 EffectKind::Sharpen { .. } => self.approximate("Sharpen, left out"),
-                EffectKind::Grain(_) => self.approximate("Grain, left out"),
+                EffectKind::Noise(_) => self.approximate("Noise, left out"),
                 EffectKind::Filters(_) => self.approximate("Colour filters, left out"),
             }
         }

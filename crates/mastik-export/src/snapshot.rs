@@ -367,7 +367,7 @@ pub struct SeriesSummary {
 pub struct EffectSummary {
     /// The effect's item id, which `bind_variable` names an effect's number by.
     pub id: mastik_core::ItemId,
-    /// `"DropShadow"`, `"InnerShadow"`, `"LayerBlur"`, `"Sharpen"`, `"Grain"`,
+    /// `"DropShadow"`, `"InnerShadow"`, `"LayerBlur"`, `"Sharpen"`, `"Noise"`,
     /// `"BackgroundBlur"` or `"Filters"`.
     pub kind: String,
     /// Shadows only: offset, blur radius, spread, and the colour whose alpha is
@@ -381,11 +381,10 @@ pub struct EffectSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// The shadow's opacity, which in the model is the colour's alpha, split out
-    /// as `PaintSummary::Solid` splits a fill's.
+    /// as `PaintSummary::Solid` splits a fill's; a multicolour noise's opacity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
-    /// Shadows and grain: the blend mode as the menu names it, absent at a
-    /// shadow's Normal.
+    /// Shadows and noise: the blend mode as the menu names it, absent at Normal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blend: Option<String>,
     /// `Filters` only: factors with 1.0 neutral, and degrees for the hue.
@@ -397,17 +396,22 @@ pub struct EffectSummary {
     pub saturation: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hue: Option<f64>,
-    /// `Sharpen` and `Grain`: 1.0 is 100%. A sharpen's radius is `blur`.
+    /// `Sharpen` only: 1.0 is 100%. Its radius is `blur`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<f64>,
-    /// `Grain` only: the size of one grain in document units, its seed, and
-    /// whether it is in colour rather than grey.
+    /// `Noise` only: one grain's width and height in document units, the share
+    /// of the layer it covers, its seed, its two colours as `#rrggbbaa` (left
+    /// out when `multi`), and whether it is multicolour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub size: Option<f64>,
+    pub size: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub colour: Option<bool>,
+    pub colors: Option<[String; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi: Option<bool>,
 }
 
 /// A node's kind-specific geometry, as drawn. Lengths and coordinates are at
@@ -1186,8 +1190,10 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
         hue: None,
         amount: None,
         size: None,
+        density: None,
         seed: None,
-        colour: None,
+        colors: None,
+        multi: None,
     };
     match &e.kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
@@ -1214,13 +1220,20 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
             blur: Some(round4(*radius)),
             ..base("Sharpen")
         },
-        EffectKind::Grain(g) => EffectSummary {
-            amount: Some(round4(g.amount)),
-            size: Some(round4(g.size)),
-            seed: Some(g.seed),
-            colour: Some(g.colour),
-            blend: Some(g.blend.label().to_string()),
-            ..base("Grain")
+        EffectKind::Noise(n) => EffectSummary {
+            size: Some(n.size.map(round4)),
+            density: Some(round4(n.density)),
+            seed: Some(n.seed),
+            colors: (!n.multi).then(|| {
+                n.colors.map(|c| {
+                    let [r, g, b, a] = c.to_rgba8().to_u8_array();
+                    format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+                })
+            }),
+            opacity: n.multi.then_some(n.opacity as f32),
+            multi: Some(n.multi),
+            blend: (n.blend != mastik_core::BlendMode::Normal).then(|| n.blend.label().to_string()),
+            ..base("Noise")
         },
         EffectKind::BackgroundBlur { radius } => EffectSummary {
             blur: Some(round4(*radius)),

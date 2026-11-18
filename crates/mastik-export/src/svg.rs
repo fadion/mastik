@@ -584,40 +584,8 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
                 );
                 graphic = r;
             }
-            // `effects::grain`: the opaque noise blended over the layer, cut to its
-            // alpha, then mixed in at the amount by an arithmetic `feComposite`.
-            EffectKind::Grain(g) if g.amount > 0.0 => {
-                let g = g.clamped();
-                out.push_str(&turbulence(
-                    g.base_frequency(),
-                    mastik_core::noise::GRAIN_OCTAVES,
-                    g.seed,
-                    &format!("{r}t"),
-                ));
-                let values = match g.colour {
-                    true => "1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 0 1",
-                    false => "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1",
-                };
-                let _ = writeln!(
-                    out,
-                    "      <feColorMatrix in=\"{r}t\" type=\"matrix\" values=\"{values}\" result=\"{r}n\"/>"
-                );
-                let _ = writeln!(
-                    out,
-                    "      <feBlend in=\"{r}n\" in2=\"{graphic}\" mode=\"{}\" result=\"{r}b\"/>",
-                    g.blend.css(),
-                );
-                let _ = writeln!(
-                    out,
-                    "      <feComposite in=\"{r}b\" in2=\"{graphic}\" operator=\"in\" result=\"{r}c\"/>"
-                );
-                let _ = writeln!(
-                    out,
-                    "      <feComposite in=\"{r}c\" in2=\"{graphic}\" operator=\"arithmetic\" \
-                     k1=\"0\" k2=\"{}\" k3=\"{}\" k4=\"0\" result=\"{r}\"/>",
-                    fmt_unit(g.amount),
-                    fmt_unit(1.0 - g.amount),
-                );
+            EffectKind::Noise(n) if n.has_ink() => {
+                noise_graph(&mut out, &graphic, n, &r);
                 graphic = r;
             }
             _ => {}
@@ -663,13 +631,102 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
     out
 }
 
-/// Whether `effects` holds a visible grain, whose noise lives in the layer's own
+/// `effects::noise` as primitives over `graphic`, its result named `r`.
+///
+/// `feTurbulence`; a matrix stretching each channel about mid-grey into an
+/// opaque `u`, as `Noise::shade` does; from `u`, the colour laid on (`n`, `u`
+/// itself for a multicolour noise) and how much of it shows (`m`'s alpha), cut
+/// by the density floor on the turbulence's own alpha. Then the opaque colour
+/// blended over the layer and cut to it, mixed with the layer by `m` as `in` and
+/// `out` composites summed.
+fn noise_graph(out: &mut String, graphic: &str, n: &mastik_core::Noise, r: &str) {
+    let n = n.clamped();
+    out.push_str(&turbulence(
+        n.base_frequency(),
+        mastik_core::noise::NOISE_OCTAVES,
+        n.seed,
+        &format!("{r}t"),
+    ));
+    let k = f64::from(mastik_core::noise::NOISE_CONTRAST);
+    let (k, c) = (fmt_unit(k), fmt_unit(0.5 - 0.5 * k));
+    let mut matrix = |input: &str, values: String, result: &str| {
+        let _ = writeln!(
+            out,
+            "      <feColorMatrix in=\"{input}\" type=\"matrix\" values=\"{values}\" result=\"{result}\"/>"
+        );
+    };
+    matrix(
+        &format!("{r}t"),
+        format!("{k} 0 0 0 {c}  0 {k} 0 0 {c}  0 0 {k} 0 {c}  0 0 0 0 1"),
+        &format!("{r}u"),
+    );
+    let colour = match n.multi {
+        true => {
+            matrix(
+                &format!("{r}u"),
+                format!(
+                    "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 {}",
+                    fmt_unit(n.opacity)
+                ),
+                &format!("{r}m"),
+            );
+            format!("{r}u")
+        }
+        false => {
+            let [from, to] = n.colors.map(|c| c.components.map(f64::from));
+            let row =
+                |i: usize| format!("{} 0 0 0 {}", fmt_unit(to[i] - from[i]), fmt_unit(from[i]));
+            matrix(
+                &format!("{r}u"),
+                format!("{}  {}  {}  0 0 0 0 1", row(0), row(1), row(2)),
+                &format!("{r}n"),
+            );
+            matrix(
+                &format!("{r}u"),
+                format!("0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  {}", row(3)),
+                &format!("{r}m"),
+            );
+            format!("{r}n")
+        }
+    };
+    let mut strength = format!("{r}m");
+    if let Some(floor) = n.density_floor() {
+        // A step on the turbulence's alpha: 1 from the floor's level up, 0 below.
+        let slope = mastik_core::noise::DENSITY_SLOPE;
+        let edge = (f64::from(floor) - 0.5) / 255.0;
+        let _ = writeln!(
+            out,
+            "      <feComponentTransfer in=\"{r}t\" result=\"{r}g\">\n        \
+             <feFuncA type=\"linear\" slope=\"{}\" intercept=\"{}\"/>\n      \
+             </feComponentTransfer>",
+            fmt(slope),
+            fmt_fixed(-slope * edge, 4),
+        );
+        let _ = writeln!(
+            out,
+            "      <feComposite in=\"{r}m\" in2=\"{r}g\" operator=\"in\" result=\"{r}k\"/>"
+        );
+        strength = format!("{r}k");
+    }
+    let _ = writeln!(
+        out,
+        "      <feBlend in=\"{colour}\" in2=\"{graphic}\" mode=\"{}\" result=\"{r}b\"/>\n      \
+         <feComposite in=\"{r}b\" in2=\"{graphic}\" operator=\"in\" result=\"{r}c\"/>\n      \
+         <feComposite in=\"{r}c\" in2=\"{strength}\" operator=\"in\" result=\"{r}x\"/>\n      \
+         <feComposite in=\"{graphic}\" in2=\"{strength}\" operator=\"out\" result=\"{r}y\"/>\n      \
+         <feComposite in=\"{r}x\" in2=\"{r}y\" operator=\"arithmetic\" \
+         k1=\"0\" k2=\"1\" k3=\"1\" k4=\"0\" result=\"{r}\"/>",
+        n.blend.css(),
+    );
+}
+
+/// Whether `effects` holds a visible noise, which lives in the layer's own
 /// space: its filter is then written inside the layer's transform rather than in
 /// the parent's space every other stack is written in.
-fn grained(effects: &[Keyed<Effect>]) -> bool {
+fn noised(effects: &[Keyed<Effect>]) -> bool {
     effects
         .iter()
-        .any(|e| e.visible && matches!(&e.kind, EffectKind::Grain(g) if g.amount > 0.0))
+        .any(|e| e.visible && matches!(&e.kind, EffectKind::Noise(n) if n.has_ink()))
 }
 
 /// One fractal `<feTurbulence>` primitive named `result`, its base frequencies at
@@ -798,9 +855,9 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
     let transform = outer * res.used_local_of(node);
     // As drawn: a bound effect number takes its variable's value.
     let effects = doc.resolved_effects(id, node.effects());
-    // A grain's filter is written in the layer's own space (`emit_node`), and
+    // A noise's filter is written in the layer's own space (`emit_node`), and
     // `ink_in` under the identity is that space.
-    let space = match grained(&effects) {
+    let space = match noised(&effects) {
         true => Affine::IDENTITY,
         false => transform,
     };
@@ -1608,11 +1665,11 @@ fn emit_node(
     }
     let wrap_pad = "  ".repeat(depth);
     let depth = depth + usize::from(fx);
-    // A grained stack is filtered in the layer's own space, where its noise
+    // A stack with noise is filtered in the layer's own space, where the noise
     // lives: the wrapper takes the layer's transform and undoes it inside, so the
     // artwork lands where it always does.
     let own = outer * res.used_local_of(node);
-    let local = fx && grained(&drawn_fx) && mastik_core::build::affine_is_invertible(own);
+    let local = fx && noised(&drawn_fx) && mastik_core::build::affine_is_invertible(own);
     if local {
         let _ = writeln!(
             out,

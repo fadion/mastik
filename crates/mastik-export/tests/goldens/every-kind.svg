@@ -5,10 +5,18 @@
       <feGaussianBlur in="fx2" stdDeviation="0.75" result="fx3b"/>
       <feComposite in="fx2" in2="fx3b" operator="arithmetic" k1="0" k2="1.6" k3="-0.6" k4="0" result="fx3"/>
       <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" seed="7" result="fx4t"/>
-      <feColorMatrix in="fx4t" type="matrix" values="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1" result="fx4n"/>
-      <feBlend in="fx4n" in2="fx3" mode="overlay" result="fx4b"/>
+      <feColorMatrix in="fx4t" type="matrix" values="3 0 0 0 -1  0 3 0 0 -1  0 0 3 0 -1  0 0 0 0 1" result="fx4u"/>
+      <feColorMatrix in="fx4u" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0 1" result="fx4n"/>
+      <feColorMatrix in="fx4u" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -0.4 0 0 0 0.4" result="fx4m"/>
+      <feComponentTransfer in="fx4t" result="fx4g">
+        <feFuncA type="linear" slope="1000" intercept="-496.0784"/>
+      </feComponentTransfer>
+      <feComposite in="fx4m" in2="fx4g" operator="in" result="fx4k"/>
+      <feBlend in="fx4n" in2="fx3" mode="normal" result="fx4b"/>
       <feComposite in="fx4b" in2="fx3" operator="in" result="fx4c"/>
-      <feComposite in="fx4c" in2="fx3" operator="arithmetic" k1="0" k2="0.25" k3="0.75" k4="0" result="fx4"/>
+      <feComposite in="fx4c" in2="fx4k" operator="in" result="fx4x"/>
+      <feComposite in="fx3" in2="fx4k" operator="out" result="fx4y"/>
+      <feComposite in="fx4x" in2="fx4y" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" result="fx4"/>
       <feColorMatrix in="fx4" type="matrix" values="1.0485 -0.3325 0.274 0 0.05 0.0104 1.0779 -0.0984 0 0.05 -0.2755 0.1072 1.1583 0 0.05 0 0 0 1 0" result="fx6"/>
       <feColorMatrix in="fx6" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="fxa0"/>
       <feMorphology in="fxa0" operator="dilate" radius="1" result="fxm0"/>

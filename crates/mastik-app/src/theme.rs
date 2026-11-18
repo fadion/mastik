@@ -1337,9 +1337,9 @@ pub mod icon {
     pub const POINTS_ALONG: &str = "\u{f07a}";
     /// How many ridges Zig-zag draws on a segment: a run of three.
     pub const RIDGES: &str = "\u{f07b}";
-    /// The **grain** effect's row glyph: eight scattered dots of two sizes, loose
-    /// where [`SQUARE_DOTS`]' grid (background blur) and [`LAYER_BLUR`]'s are
-    /// ordered.
+    /// The **noise** effect's row glyph, named for its drawing: eight scattered
+    /// dots of two sizes, loose where [`SQUARE_DOTS`]' grid (background blur) and
+    /// [`LAYER_BLUR`]'s are ordered.
     pub const GRAIN: &str = "\u{f088}";
     /// *System health*: a pulse line. Not [`GAUGE`], whose dial is JPEG quality.
     pub const PULSE: &str = "\u{f089}";

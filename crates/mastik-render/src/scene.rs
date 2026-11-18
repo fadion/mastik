@@ -2399,8 +2399,8 @@ fn drawn_too_large(painted: &Painted<'_>, leaf: bool, world: Affine) -> bool {
 /// A matrix is affine, so it commutes with the convex mix of inks inside the
 /// layer, and the shadows are cast from alpha it never changes. What breaks that
 /// is refused: a container (its children are not its inks), a non-solid ink, a
-/// layer blur, a sharpen or a grain (its mixing happens before or after the filter
-/// in list order, and neither a sharpen's clamp nor a grain commutes with it), and
+/// layer blur, a sharpen or noise (its mixing happens before or after the filter
+/// in list order, and neither a sharpen's clamp nor noise commutes with it), and
 /// a clamp on any ink while the layer holds more than one colour.
 fn folded_filters(
     stack: &[mastik_core::Keyed<Effect>],
@@ -2420,7 +2420,7 @@ fn folded_filters(
             && match e.kind {
                 EffectKind::LayerBlur { radius } => radius > 0.0,
                 EffectKind::Sharpen { amount, radius } => amount > 0.0 && radius > 0.0,
-                EffectKind::Grain(g) => g.amount > 0.0,
+                EffectKind::Noise(n) => n.has_ink(),
                 _ => false,
             }
     });
@@ -2508,7 +2508,7 @@ fn stretch(device: Affine) -> f64 {
 /// `effects` without each shadow and layer blur whose reach is under one device
 /// pixel through `device` (the node's local-to-device transform): drawn, it would
 /// move the edge by less than a pixel, and it costs an offscreen buffer. `Filters`
-/// and a grain recolour every pixel and always stay. A shadow tucked under a translucent layer
+/// and noise recolour every pixel and always stay. A shadow tucked under a translucent layer
 /// is what the cut can lose.
 fn detail_effects(
     effects: std::borrow::Cow<'_, [mastik_core::Keyed<Effect>]>,
@@ -2525,7 +2525,7 @@ fn detail_effects(
             EffectKind::LayerBlur { radius }
             | EffectKind::BackgroundBlur { radius }
             | EffectKind::Sharpen { radius, .. } => reach(*radius),
-            EffectKind::Filters(_) | EffectKind::Grain(_) => return false,
+            EffectKind::Filters(_) | EffectKind::Noise(_) => return false,
         };
         local * stretch < 1.0
     };

@@ -759,12 +759,18 @@
         },
         {
           "id": "0:4",
-          "kind": "Grain",
-          "blend": "Overlay",
-          "amount": 0.25,
-          "size": 1.0,
+          "kind": "Noise",
+          "size": [
+            1.0,
+            1.0
+          ],
+          "density": 0.5,
           "seed": 7,
-          "colour": false
+          "colors": [
+            "#00000066",
+            "#00000000"
+          ],
+          "multi": false
         },
         {
           "id": "0:5",
