@@ -10893,13 +10893,13 @@ impl MastikApp {
                             let cell = egui::vec2(half, CELL);
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = COL;
-                                // A one-way amount, filling from the left as Opacity's does.
+                                // A plain field, as a sharpen's amount: meters are
+                                // the photo adjustments'.
                                 let mut shown = g.amount * 100.0;
-                                let resp = ui::value_field_metered(
+                                let resp = ui::value_field(
                                     ui,
                                     cell,
                                     Prefix::Text("Amount"),
-                                    ui::Meter::Amount(g.amount as f32),
                                     &mut shown,
                                     Scrub::whole(0.25).range(0.0..=100.0),
                                     |d| d.suffix("%").max_decimals(0),
