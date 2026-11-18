@@ -2383,7 +2383,7 @@ fn head_badge(ui: &mut egui::Ui, word: &str) {
 }
 
 /// A [`HeadDrop`]: [`SMALL_PT`] text and a 10-pt caret 4 pt after it, muted at
-/// the default and strong otherwise or under the pointer. A card's header
+/// the default and strong otherwise, one tier brighter under the pointer. A card's header
 /// carries one (the blend mode); a popup row may too, its list a [`drop_list`].
 pub fn head_drop(ui: &mut egui::Ui, d: HeadDrop<'_>) -> egui::Response {
     let font = egui::FontId::proportional(SMALL_PT);
@@ -2394,10 +2394,11 @@ pub fn head_drop(ui: &mut egui::Ui, d: HeadDrop<'_>) -> egui::Response {
         .x;
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(text_w + 14.0, 18.0), egui::Sense::click());
-    let ink = if d.strong || resp.hovered() {
-        theme::text::strong()
-    } else {
-        theme::text::muted()
+    // Hover lifts the ink one tier from either, so a changed value answers it too.
+    let ink = match (d.strong, resp.hovered()) {
+        (true, true) => color::text(),
+        (true, false) | (false, true) => theme::text::strong(),
+        (false, false) => theme::text::muted(),
     };
     let p = ui.painter();
     let mid = rect.center().y;
