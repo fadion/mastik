@@ -26,6 +26,36 @@ The design and its open questions are in `prototyping.md`.
   export. They are specification, not conversation: no replies, no authors, no resolved state,
   which keeps them apart from the comment tool `non-goals.md` declines.
 
+## Now · CLI
+
+The MCP has grown past the CLI; these bring the headless doors level with it, cheapest first.
+The CLI's design lives in `design/export.md` *CLI*; each item adds its passage there.
+
+- **`--help`, `help <cmd>` and `--version`.** `main.rs` `parse` treats them as a malformed
+  command line; each subcommand has its own usage string, but nothing lists the commands.
+- **`mastik check layout <file> [--page]`.** `check_layout` (`mastik_export::context`) is the
+  one MCP check with no CLI door, and the most CI-shaped: no render, findings that are defects.
+  A parser arm in `parse_check` and a printer.
+- **`--json` on every `check`.** Review, health, contrast and layout print text for a person;
+  `Health::to_json` already exists for the MCP. Structured output lets CI annotate a PR.
+- **Several documents per `check`.** Each takes exactly one file, so a folder in CI needs a
+  shell loop that combines exit codes. Take many paths, report per file, exit with the worst.
+- **Export by layer.** `mastik export` renders a whole page; the MCP's `export_png` and
+  `run_exports` take `ids`. Add `--layer <name|id>` (repeatable), and close the one-off
+  command's missing `--jpeg` and `--webp`.
+- **`mastik tokens import <file> <tokens.json> [--removals] [-o]`.** The mirror of `tokens
+  export` and of MCP `import_tokens` (`dtcg_in::Review`, every row it starts ticked): a one-shot
+  apply, not a linked file, so a tokens repository can push into documents from CI.
+- **`mastik kit update <files…>`.** `accept_kit_updates` (`kit::update_all`) across many
+  documents at once, where a CLI beats an agent going call by call.
+- **`mastik run` speaks the MCP's language.** It takes JSON registry verbs only
+  (`verbs::run_script`): no `set`, which is MCP-only, and no short forms. The MCP's `run_script`
+  is Command Mode's Luau, so the two names mean different things. Accept `.luau` scripts, and
+  decide whether MCP `batch` steps replay too.
+- **A read command** (`mastik inspect <file> outline|context|components|variables|styles`)
+  mirroring `get_outline`, `design_context` and the `list_*` reads. Last, since `export --json`
+  with `jq` covers scripts and agents use the MCP.
+
 ## Later · Platform and dependencies
 
 - **egui 0.36** is blocked by vello requiring wgpu 29 (check — last asked 2026-09-03). Re-derive
