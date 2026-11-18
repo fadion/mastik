@@ -35,8 +35,8 @@ pub(super) const WAIT: std::time::Duration = std::time::Duration::from_secs(25);
 /// without one.
 const THUMB_BUDGET: usize = 64 * 1024;
 
-/// Why a host answers no asset tool.
-pub(super) const NO_DESK: &str = "The assets browser answers only while the Mastik window is open, where its sets and services are switched on.";
+/// Why a host that lends no assets browser answers no asset tool.
+pub(super) const NO_DESK: &str = "This host has no assets browser to search.";
 
 /// A call's answer, or that it waits on a download.
 pub(super) enum Step {
@@ -44,7 +44,7 @@ pub(super) enum Step {
     Wait,
 }
 
-/// What the window lends the asset tools.
+/// What a host lends the asset tools: the window, or `serve`.
 pub(crate) trait Desk {
     fn prefs(&self) -> &crate::prefs::AssetPrefs;
     fn assets(&mut self) -> &mut Assets;

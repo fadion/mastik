@@ -74,8 +74,8 @@ pub(crate) trait Documents {
     /// window ends the person's text edit there first, so the typing lands as
     /// its own step rather than being lost under the agent's.
     fn before_write(&mut self, _path: &Path) {}
-    /// The assets browser's providers, which the window lends and `serve`, with
-    /// no sets or services switched on, does not.
+    /// The assets browser's providers: the window's, or `serve`'s read from the
+    /// preferences.
     fn desk(&mut self) -> Option<&mut dyn assets::Desk> {
         None
     }
@@ -343,13 +343,9 @@ impl Engine {
         self.proposals.iter().find(|p| p.id == id)
     }
 
-    /// Answer one call. A chat granted a level, by its key or by the process
-    /// calling, acts under the chat's key, is refused a tool above its level,
-    /// and has the call written to the agent log. A chat's key this window
-    /// holds no grant for (a chat of an earlier run, or one ended long ago) is
-    /// refused rather than answered as an ungranted client's. A call that would
-    /// wait on a download is refused here; the window answers it later
-    /// ([`Self::handle_or_wait`]).
+    /// [`Self::handle_or_wait`] for a test that wants an answer now: a call that
+    /// would wait on a download is refused.
+    #[cfg(test)]
     pub(crate) fn handle(&mut self, docs: &mut impl Documents, call: Call) -> Output {
         self.handle_or_wait(docs, call).unwrap_or_else(|| {
             // The one `handle_or_wait` just kept.
@@ -358,8 +354,13 @@ impl Engine {
         })
     }
 
-    /// [`Self::handle`], or `None` when the call waits on a download: it is kept,
-    /// and [`Self::run_later`] answers it on its own reply.
+    /// Answer one call, or `None` when it waits on a download: it is kept, and
+    /// [`Self::run_later`] answers it on its own reply. A chat granted a level,
+    /// by its key or by the process calling, acts under the chat's key, is
+    /// refused a tool above its level, and has the call written to the agent
+    /// log. A chat's key this window holds no grant for (a chat of an earlier
+    /// run, or one ended long ago) is refused rather than answered as an
+    /// ungranted client's.
     pub(crate) fn handle_or_wait(
         &mut self,
         docs: &mut impl Documents,
@@ -437,7 +438,8 @@ impl Engine {
         }
     }
 
-    /// [`Self::handle`] with nothing kept: `self.waiting` says whether it waits.
+    /// [`Self::handle_or_wait`] with nothing kept: `self.waiting` says whether
+    /// it waits.
     fn handle_now(&mut self, docs: &mut impl Documents, mut call: Call) -> Output {
         parse_json_text(&mut call);
         let Some((key, level)) = self.grants.resolve(call.key.as_deref(), call.pid) else {
