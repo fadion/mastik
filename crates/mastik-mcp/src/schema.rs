@@ -584,7 +584,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "search_assets",
-        doc: "Search the icon sets, icon kits or photo services the person switched on: icons with set, variant, size, aliases and licence; photos with alt text, credit and a thumbnail. Answers `asset` ids for `place_asset`.",
+        doc: "Search the icon sets, icon kits or photo services (Unsplash, Pexels, Openverse) the person switched on: icons with set, variant, size, aliases and licence; photos with alt text, credit and a thumbnail. Answers `asset` ids for `place_asset`.",
         params: &[
             param(
                 "queries",

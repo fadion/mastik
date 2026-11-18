@@ -113,8 +113,9 @@ fn level_rules(level: Level) -> &'static str {
              step's name) and `calls`, a list of `{\"verb\", \"args\"}` like a `batch`'s \
              steps: the write tools and `set`, with `as` and `\"@label\"` for what an \
              earlier call made. Mastik checks them and draws a card the person applies. \
-             Nothing changes until they apply it. A photo or icon from `search_assets` goes in as a `place_asset` call \
-             with its own arguments. Say in one line what the proposal does; don't repeat \
+             Nothing changes until they apply it. A photo or icon from `search_assets` goes \
+             in as a `place_asset` call: `asset`, then `fill` (layers a photo fills) or \
+             `parent` with `x`, `y` and `size`. Say in one line what the proposal does; don't repeat \
              its rows."
         }
         Level::Edit => {

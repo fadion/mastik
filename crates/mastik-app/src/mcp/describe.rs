@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 /// `describe_tools`: the full definition of each tool named in `names`, then of
 /// those whose name holds `query`, then of those whose description alone does,
+/// then of those holding each of its words, then of those whose name holds one,
 /// at most [`DESCRIBED`]; with `brief`, every match's name and description only.
 /// A name that is no tool is answered in `not_found`. A chat at `level` is
 /// offered only what that level runs; a tool named above it, or one `query`
@@ -27,7 +28,19 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
         .and_then(Value::as_str)
         .map(str::to_lowercase);
     let brief = args.get("brief").and_then(Value::as_bool).unwrap_or(false);
-    // 0 named, 1 a name holding the query, 2 a description holding it.
+    // A query of several words is also looked for word by word, since an agent
+    // writes "unsplash photo" where no text holds the two together.
+    let words: Vec<String> = query
+        .as_deref()
+        .map(|q| {
+            q.split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 1)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    // 0 named, 1 a name holding the query, 2 a description holding it, 3 every
+    // word in the name or description, 4 a word in the name.
     let rank = |d: &Value| {
         let name = d["name"].as_str().unwrap_or_default();
         if names.contains(&name) {
@@ -37,10 +50,18 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
         if name.contains(q) {
             return Some(1);
         }
-        d["description"]
-            .as_str()
-            .is_some_and(|t| t.to_lowercase().contains(q))
-            .then_some(2)
+        let about = d["description"].as_str().unwrap_or_default().to_lowercase();
+        if about.contains(q) {
+            return Some(2);
+        }
+        if words.len() > 1
+            && words
+                .iter()
+                .all(|w| name.contains(w.as_str()) || about.contains(w.as_str()))
+        {
+            return Some(3);
+        }
+        (words.len() > 1 && words.iter().any(|w| name.contains(w.as_str()))).then_some(4)
     };
     let mut matching: Vec<(u8, &Value)> =
         all.iter().filter_map(|d| rank(d).map(|r| (r, d))).collect();
@@ -271,5 +292,26 @@ mod tests {
             "a brief line is short: {longest:?}"
         );
         assert_eq!(answer["not_found"], json!(["no_such_tool"]), "not found");
+    }
+
+    /// A query of words no text holds together still finds the tools holding
+    /// each word: "unsplash photo" finds the photo search.
+    ///
+    /// flip: `describe_tools` without its word-by-word rank → fails at "found".
+    #[test]
+    fn describe_tools_matches_a_query_word_by_word() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        let found = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "describe_tools",
+            json!({ "query": "unsplash photo", "brief": true }),
+        );
+        let tools = ok(&found)["tools"].as_array().unwrap().clone();
+        assert!(
+            tools.iter().any(|t| t["name"] == "search_assets"),
+            "found: {tools:?}"
+        );
     }
 }
