@@ -173,17 +173,17 @@ comes from the committed document.
 
 ### Effects (§5.3a)
 
-- **Rows.** One per effect: kind glyph, name, one headline number and ✕, with the eye outside the field. The headline is a shadow's alpha %, a blur's radius, a sharpen's amount and radius (`60% · 1.5`), a grain's amount, or the count of off-neutral channels for Filters. `+` adds a drop shadow.
+- **Rows.** One per effect: kind glyph, name, one headline number and ✕, with the eye outside the field. The headline is a shadow's alpha %, a blur's radius, a sharpen's amount and radius (`60% · 1.5`), a noise's density, or the count of off-neutral channels for Filters. `+` adds a drop shadow.
 - **Sharpen's popover** holds one row of two half-width fields, as a shadow's Blur and Spread: *Amount*, a plain `ui::value_field` in percent (0–200%), and *Radius*, the layer blur's field. Metered fields are for photo adjustments only: the picture card's Adjustments tab and the Filters effect. Its glyph is `icon::SHARPEN`, a cut gem, not the layer blur's soft dots.
-- **Grain's popover**, below Sharpen in the kind list: *Amount* (a plain field, 0–100%, as a sharpen's) and *Size*; *Seed* and the blend combo; then the *Colour grain* switch. The blend combo is the shadow's, one helper (`inspector::effect_blend_combo`), and its pick is one step, *Grain blend · Mode*; the switch's steps are *Colour grain* and *Grey grain*. Its glyph is `icon::GRAIN`, eight scattered dots in two sizes.
+- **Noise's popover**, below Sharpen in the kind list: *W* | *H* (one grain's size); *Density* (a plain field, 0–100%, as a sharpen's amount) | *Seed*; then two colour rows (chip, hex, %), each its own slot, `PaintSlot::Effect(index, 0)` and `(index, 1)`, or, when multicolour, one *Opacity* field; the blend combo; the *Multicolour* switch. The blend combo is the shadow's, one helper (`inspector::effect_blend_combo`), and its pick is one step, *Noise blend · Mode*; the switch's steps are *Multicolour noise* and *Two-colour noise*. Its glyph is `icon::GRAIN`, eight scattered dots in two sizes, named for its drawing.
 - **Order.** Model order, first at the top: effects are a pipeline (§6.4). Fill draws upside down because paints stack in space.
 - **Popover.** A card whose title is a kind combo; retyping carries shared fields over (`EffectKind::retyped`). It sits in the shared popover lane and dismisses through `panels::dismissed_by_click`.
-- **Shadow colour** is a Fill row (chip, hex, %) on `PaintSlot::Effect(i)`; the % *is* the alpha.
+- **Shadow colour** is a Fill row (chip, hex, %) on `PaintSlot::Effect(i, 0)`; the % *is* the alpha. The slot's second number is which colour of the effect, 0 for a shadow's; `paint::effect_colour` / `set_effect_colour` read and write it.
 - **Shadow blend** is a shadow popover's last row: a full-width combo, the intersect-three glyph before the mode as the Language combo leads with its glyph, its tooltip naming it, listing the sixteen modes in families, no Pass through. A pick writes the effect list through `write_effects` as one step, *Shadow blend · Mode*. It has no hover preview, unlike the Appearance header's menu.
 - **A Filters row** uses `ui::value_field_metered`, a bar growing from the middle, plus a per-channel reset. Ranges are 0…200%, symmetric about the 100% neutral, so the meter reads `factor − 1.0`.
 - Opens on a layer with effects and shuts on one without, through its own `synced_selection` *Effects* entry.
-- **Multi-selection.** Export's shape: one agreed stack, or *"These layers have different effects"*, where `+` replaces every stack. The `Effect(i)` write reads each subject's own list rather than cloning the anchor's, because the detached picker can outlive an agreeing state.
-- **Rows drag-reorder** as fills and strokes do (`paint::EffectDrag`). Order changes pixels only among `Filters`, `LayerBlur`, `Sharpen` and `Grain`, and between two shadows on the same side.
+- **Multi-selection.** Export's shape: one agreed stack, or *"These layers have different effects"*, where `+` replaces every stack. The `Effect(i, _)` write reads each subject's own list rather than cloning the anchor's, because the detached picker can outlive an agreeing state.
+- **Rows drag-reorder** as fills and strokes do (`paint::EffectDrag`). Order changes pixels only among `Filters`, `LayerBlur`, `Sharpen` and `Noise`, and between two shadows on the same side.
 
 ### Credit (§5.3)
 
@@ -327,4 +327,4 @@ The document's families this machine can never have, and a replace-all for each
 - **Synced-selection edges.** `paint_subject_changed` consumes its edge. Each card that opens and closes on the subject (Fill, Stroke, Effects, Export, Layout grid) needs its own `synced_selection` entry.
 - **Inherited spacing.** A scope's `item_spacing` does not apply before its first item. Spacing inside `paint_unit` must be explicit.
 - **Committed-tree reads.** Template lighting, grid agreement and Group Colors keys read the committed document. Reading the preview mid-drag gives the wrong answer.
-- **Effect write from the picker.** `PaintSlot::Effect(i)` must read each subject's own list, never clone the anchor's. The picker outlives the card's agreement.
+- **Effect write from the picker.** `PaintSlot::Effect(i, _)` must read each subject's own list, never clone the anchor's. The picker outlives the card's agreement.
