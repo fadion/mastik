@@ -31,11 +31,6 @@ Items run cheapest first.
   carries a credited placement, and downloads the photo when the person applies it, since
   `propose_edit` replays only registry verbs. And `search_assets` / `place_asset` in `serve`,
   reading the person's switched-on sets and services from the preferences rather than refusing.
-- **Arrowheads on lines.** A start and an end decoration on `Line`, `Arc` and open `Path` (none,
-  arrow, open arrow, circle, square, bar), sized from the stroke width and drawn as their own
-  shapes, not as stroke ink, so a `Stroke` stays ink at one width. Hit-testing, `ink_bounds` and
-  *Outline stroke* include them. SVG writes `<marker>`; code export writes the SVG fallback. The
-  Figma, Sketch and Penpot readers and writers map their own arrow kinds.
 - **Design system health.** One card for a document: how much paint, type and spacing is bound to
   variables and styles against raw values, detached instances, unused styles, variables and
   components, near-duplicate colours, and kits waiting on updates. Most of the readings exist

@@ -51,7 +51,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 
 ## Effects and paint
 
-- **Variable-width profiles and separate start/end caps** — a `Stroke` is ink at one width along an outline (§15 D126). Arrowheads are open work as decorations drawn beside the stroke (`roadmap.md`).
+- **Variable-width profiles and separate start/end caps** — a `Stroke` is ink at one width along an outline (§15 D126). A line's arrowheads are markers, shapes of their own in the stroke's paint, not ink (`core-model.md`, `Stroke`).
 - **A cap on the number of fills or strokes** (§15 D133).
 - **A pool of reusable effect-pass renderers** — the build cost is a one-off hitch, and a pool conflicts with a correctness rule (§15 D779).
 - **Reading `Filters` (brightness/contrast) back from SVG** — the combined matrix doesn't identify its inputs (§15 D411).

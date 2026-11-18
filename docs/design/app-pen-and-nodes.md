@@ -281,7 +281,9 @@ exceptions as the mirror's leave an edit as it is.
   meanings; another layer switches subject. Confined to the edited node (`canvas::pen_scope`). Escape
   disarms the bias one rung above the points.
 - `Shift+D` (`canvas::reverse_subpaths`) reverses the runs the selected points are on, or every run;
-  also works on a selected path outside point editing (non-zero fill makes winding matter).
+  also works on a selected path outside point editing (non-zero fill makes winding matter). On a
+  one-run path it swaps each stroke's start and end markers in the same step, so an arrow still
+  points where it did.
 - **Join paths** (layer menu, `canvas::join_layers`; subject `join_layers_subject`) joins two path
   layers: exactly two `NodeKind::Path` selected, both unlocked, each with an open subpath of two or
   more anchors (a line-tool `Line` is not offered). The key layer, else the first selected, is kept

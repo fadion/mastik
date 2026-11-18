@@ -246,7 +246,7 @@ layer. The empty state is only for nothing painted at all.
 - The eye reads *any* paint on. `+` is inert (`ui::HeadAction::inert`, with the reason). The ✕ clears every target.
 - **Slot after agreement.** The stand-in rides `PaintSlot::SelectionAll(PaintTarget)`. When a write brings the targets into agreement, `write_slot`/`valve_slot` call `retarget_mixed_paint` to move the picker and hex buffer to `Selection(target, 0)`.
 
-**Stroke properties over a scope.** `stroke_properties` works over a selection. Three controls are
+**Stroke properties over a scope.** `stroke_properties` works over a selection. Four controls are
 offered only when every target qualifies, through `MastikApp::stroke_rule(scope, applies)`:
 
 | Control | Shown when every target | Predicate |
@@ -254,11 +254,12 @@ offered only when every target qualifies, through `MastikApp::stroke_rule(scope,
 | alignment | has a closed outline | `geometry::stroke_align_applies` |
 | sides | is a rect | `stroke_sides_apply` |
 | join | has a corner | `stroke_join_applies` |
+| ends | has an open end | `marker::applies` |
 
 **Mixed stroke unit** (`mixed_stroke_properties`), laid out by the same `inspector::paint_unit`: the
 position dropdown (`inspector::align_combo`, shared) shows *Mixed* as its text but never lists it and
 lights no cell, both falling out of `Option<StrokeAlign>`; weight is *Mixed*, absolute, starting from
-0, written through `set_stroke_weight`; the dash/cap/join popup and sides selector are present and
+0, written through `set_stroke_weight`; the dash, cap, join and ends popup and sides selector are present and
 `FieldButton::Disabled`, with tooltips.
 
 **Paint rows** carry a grip and an eye. `RowCtx::grip: Option<(PaintList, usize)>`: canvas ground,
@@ -266,7 +267,7 @@ guide colour, decorations and Group Colors pass `None`; a frame's fill is a real
 
 - **Hidden rows** draw at `HIDDEN_OPACITY` (60%). The swatch is painted at full opacity inside a nested `set_opacity(1.0)`, because `mask_corners` paints ground-coloured slivers that would turn translucent.
 - **Grip.** Drawn on a list of one too, but `RowCtx::reorderable = false` stops it sensing and drops its tooltip (`ui::grip(ui, enabled, row_h)`). The grab band is the field's whole left end up to the glyph's right edge.
-- **Stroke unit.** A colour row, then position + weight + options + sides (`1.2fr 1fr 28px 28px`), then sides rows when open. `paint_unit` sets `item_spacing.y` to 0 and allocates both gaps: rows one `CARD_ROW_GAP` apart, strokes two apart, nothing after the last. The sides rows add explicit `add_space` and their own scope. The position dropdown is set to the full 28 through `interact_size.y`/`button_padding.y`.
+- **Stroke unit.** A colour row, then position + weight + options + sides (`1.2fr 1fr 28px 28px`), then sides rows when open. `paint_unit` sets `item_spacing.y` to 0 and allocates both gaps: rows one `CARD_ROW_GAP` apart, strokes two apart, nothing after the last. The sides rows add explicit `add_space` and their own scope. The position dropdown is set to the full 28 through `interact_size.y`/`button_padding.y`. On an open shape, where the position could only say centred, its slot holds the two ends instead (`end_combos`): a start and an end dropdown, 2pt apart and sharing its width, each face the end's glyph alone (`ui::glyph_face`), tooltips *Start of the line: ‹choice›* and *End of the line: ‹choice›*.
 - **Drop targets.** `paint::Slots` records the spans actually laid out; drops resolve from those, never by dividing by a pitch.
 - **Live reorder.** `MastikApp::paint_order` runs before drawing and returns the indices in dropped order, so there is no insertion line. `inspector::carried_unit` lifts the carried entry into an `Order::Tooltip` layer and translates its shapes, layout untouched (§15 D59, D61). The stroke options popup closes when a drag starts. Helpers: `paint::PaintDrag`, `display_order`, `landing`, `reordered`, `reordered_index`, `removed_index`. The layers tree deliberately does not reuse them (§15 D306). The **Effects card's rows** reorder the same way by the same grip (`paint::EffectDrag`, `MastikApp::effect_order`, `finish_effect_drag`), but its stack is drawn in model order, first at the top, so it uses `forward_order` and `forward_landing`; the row's popover closes at the grab, a picker on a shadow's colour follows its effect, and the write goes to every agreeing subject (`write_effects`).
 - **Weight** scrubs in whole units (`ui::Scrub::whole(0.5)`) and types any number. `ui::MAX_STROKE_WIDTH` (10 000) caps weight, per-side widths and dash numbers; it is `mastik_core::node::MAX_STROKE_WIDTH`, the limit the model clamps a stroke to (invariant 8). It is the master: `inspector::set_stroke_weight` re-broadcasts to all four sides of a `Custom` set, zeroes included; named single sides are left alone.
@@ -278,12 +279,13 @@ two strokes would otherwise occlude each other, and the rows travel with a reord
 - Shown when `sides_apply && stroke_sides_open.contains(&index)`. The button opens and closes it without touching the stroke, and shows `FieldButton::Set` while the sides hold a value. "All sides" is in the dropdown.
 - **Index-keyed chrome.** `forget_stroke_chrome` drops it (popup, open sides, dash buffer) on a subject change only. `remap_paint_indices(anchor, list, map)` renumbers it on reorder or removal: popup, sides, dash buffer, detached picker and hex buffer.
 
-**Dash/cap/join popover** (`app::POPOVER_W`, 272): four modes, each showing only its own fields.
+**Dash, cap, join and ends popover** (`app::POPOVER_W`, 272): four dash modes, each showing only its own fields, then cap, join and ends.
 
 - The mode comes from `Stroke::dash_style()`. `pattern_for` carries numbers across switches; a mode with nothing to inherit falls back to multiples of the width.
 - **Dash offset** (`Stroke::dash_offset`, SVG's `stroke-dashoffset`) is one full-width field under each patterned mode's own row, absent for *Solid*: signed, capped at ±`MAX_STROKE_WIDTH`, valved like the other dash numbers.
 - Cap and join are common to all modes. Cap is a named combo, *Straight / Rounded / Extended* (`cap_label`). The join row is `Ui::disable`d where the kind has no corner: dimmed, not reset. Mitre angle shows only when `joins && join == Miter`.
 - **Custom list.** A buffered comma-separated field applied on `ui::defocus_commits`. Unparseable, all-zero or single-number input leaves the model alone. It writes only when the text differs from what `dash_list_text` would print.
+- **Ends** (`stroke_popover_ends`) follows Join under the eyebrow *Ends*: the start dropdown (glyph and word), a swap button (`icon::ARROWS_LEFT_RIGHT`, *Swap the ends*, disabled while the ends match), the end dropdown, then *Size* (a percent field, 25–1000%, disabled while both ends are None). Each list is every marker as glyph and name, the end's glyphs pointing right and the start's mirrored. Where the shape has no open end the whole group is dimmed with *Only a line, an arc, a spiral or an open path has ends*, so the popover keeps one height.
 - The popover stays open when a cap is chosen: the dismiss test asks whether the click landed on a layer floating above.
 
 ### Group Colors

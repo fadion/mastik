@@ -156,7 +156,8 @@ Lock and the proportion lock are dropped deliberately. None of the four has a ch
 - **The geometry is the ink as drawn** (`build::stroke_ink`, mirroring `scene::paint_strokes`): the
   drawn width (`Document::resolved_paint`), per-side strokes, dash patterns
   (`geometry::dash_fit_pieces`, `resolved_dashes`, cut with `kurbo::dash`), caps, joins and mitre
-  limit. An inside or outside stroke is laid at twice the width, then intersected with or subtracted
+  limit, the path trimmed under its arrowheads and its markers united with the band into one
+  shape. An inside or outside stroke is laid at twice the width, then intersected with or subtracted
   from the shape.
 - **It is polygon arithmetic, as *Offset path* is** (`build::stroke_polygons`, then `refit`): each
   laid path flattened finer the wider the stroke, and finer for a thin one, stroked by i_overlay with
