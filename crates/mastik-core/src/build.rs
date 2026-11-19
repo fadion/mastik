@@ -4417,6 +4417,26 @@ pub fn shared_fills(doc: &Document, ids: &[NodeId]) -> PaintShown<Keyed<Fill>> {
     )
 }
 
+/// [`shared_fills`] as drawn: a text whose style sets a colour ([`coloured_texts`])
+/// draws in it over its fills, so its list is that colour alone.
+pub fn drawn_fills(doc: &Document, ids: &[NodeId]) -> PaintShown<Keyed<Fill>> {
+    paint_shown(
+        paint_targets(doc, ids)
+            .into_iter()
+            .filter_map(|id| doc.get(id))
+            .map(|n| match n.kind() {
+                NodeKind::Text { style, .. } => match style.color {
+                    Some(c) => crate::item::keyed_by_position([Fill {
+                        brush: Brush::Solid(c).into(),
+                        visible: true,
+                    }]),
+                    None => n.paint().fills.clone(),
+                },
+                _ => n.paint().fills.clone(),
+            }),
+    )
+}
+
 /// The stroke list every paint target in scope shares — or a disagreement.
 /// [`shared_fills`]' twin, over the same targets.
 pub fn shared_strokes(doc: &Document, ids: &[NodeId]) -> PaintShown<Keyed<Stroke>> {

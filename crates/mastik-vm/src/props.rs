@@ -849,7 +849,9 @@ pub(crate) fn read(doc: &Document, res: &Resolved, id: NodeId, prop: &str) -> Re
         "opacity" => Val::Num((f64::from(doc.drawn_opacity(id)) * 1e6).round() / 1e6),
         "fill" => paint_value(read(doc, res, id, "fills")?, "fill"),
         "stroke" => paint_value(read(doc, res, id, "strokes")?, "stroke"),
-        "fills" => match build::shared_fills(doc, &[id]) {
+        // As drawn: a text in its style colour reads that colour, which a write
+        // back stores as its fill.
+        "fills" => match build::drawn_fills(doc, &[id]) {
             PaintShown::Mixed => Val::Mixed("the layers inside it differ".into()),
             PaintShown::List(list) => short_list(
                 "fills",
@@ -896,8 +898,11 @@ pub(crate) fn read(doc: &Document, res: &Resolved, id: NodeId, prop: &str) -> Re
         },
         "gap" => doc.resolved_display(id).map_or(Val::Nil, |d| gap(&d)),
         "padding" => doc.resolved_display(id).map_or(Val::Nil, |d| padding(&d)),
-        "layout_item" => serde_json::to_value(doc.resolved_item(id))
-            .map_or(Val::Nil, |v| short("layout_item", v)),
+        // As authored with its bound limits drawn, never the width a query
+        // frame is laid at, which a write back would store.
+        "layout_item" => {
+            serde_json::to_value(doc.bound_item(id)).map_or(Val::Nil, |v| short("layout_item", v))
+        }
         "name" => Val::Str(node.name().to_owned()),
         "visible" => Val::Bool(node.visible()),
         "locked" => Val::Bool(node.locked()),
