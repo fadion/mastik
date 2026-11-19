@@ -380,7 +380,8 @@ impl History {
     /// on a copy the later steps are undone, then this one, then the later ones
     /// redone, and that must be the document its inverse gives applied now. The
     /// step stays in the history, so undoing the new one brings it back. A picture
-    /// a later step purged comes back with the layers that name it.
+    /// a later step purged comes back with the layers that name it, and a picture
+    /// this step added stays while a later step's layer names it.
     pub fn revert(
         &mut self,
         doc: &mut Document,
@@ -414,7 +415,7 @@ impl History {
             return Err(self.tangled(at));
         }
         let mut tx = step.clone();
-        tx.0.extend(carried_pictures(&unwound, &reverted));
+        tx.0.extend(carried_pictures(&[&unwound, doc], &reverted));
         let outcome = doc.apply_restoring(&tx).map_err(RevertError::Op)?;
         note.reverts = Some(serial);
         self.next_serial += 1;
@@ -613,19 +614,24 @@ impl Step {
     }
 }
 
-/// The pictures a revert brings back with its layers: those `unwound` (the
-/// document with the later steps and this one undone) holds, `reverted` lacks,
-/// and `reverted` names. A later step that purged a picture only the reverted
-/// step's layers named would otherwise leave them naming nothing.
-fn carried_pictures(unwound: &Document, reverted: &Document) -> Vec<Operation> {
-    let gone: Vec<Operation> = unwound
-        .images()
-        .filter(|(id, _)| reverted.image(id).is_none())
-        .map(|(id, entry)| Operation::AddImage {
-            id: id.clone(),
-            entry: entry.clone(),
-        })
-        .collect();
+/// The pictures a revert keeps or brings back: those one of `sources` holds,
+/// `reverted` lacks, and `reverted` still names. The sources are the document
+/// with the later steps and this one undone, where a picture a later step
+/// purged is found, and the live document, where a picture the reverted step
+/// added is found while a later step's layer, such as a duplicate, names it.
+fn carried_pictures(sources: &[&Document], reverted: &Document) -> Vec<Operation> {
+    let mut gone: Vec<Operation> = Vec::new();
+    for (id, entry) in sources.iter().flat_map(|d| d.images()) {
+        let seen = gone
+            .iter()
+            .any(|op| matches!(op, Operation::AddImage { id: had, .. } if had == id));
+        if reverted.image(id).is_none() && !seen {
+            gone.push(Operation::AddImage {
+                id: id.clone(),
+                entry: entry.clone(),
+            });
+        }
+    }
     if gone.is_empty() {
         return gone;
     }

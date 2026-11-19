@@ -1361,4 +1361,66 @@ mod tests {
         assert!(app.session.doc.get(rect).is_none());
         assert!(!app.session.doc.has_image(&picture));
     }
+
+    /// Taking back the step that added a picture keeps the picture while a later
+    /// step's layer still names it, and undoing that revert leaves the table as
+    /// it was.
+    /// flip: `History::revert` carrying only from the unwound document →
+    /// fails at "the copy keeps its picture".
+    #[test]
+    fn a_revert_of_a_placed_picture_keeps_it_for_a_later_copy() {
+        let ctx = egui::Context::default();
+        let (mut app, _, _) =
+            app_with(&ctx, mastik_core::ImageFit::Fill, mastik_core::whole_crop());
+        let page = app.session.doc.first_page();
+        let placed = ImageId("sha256:placed".into());
+        let mut ids = IdSource::new(0x91D);
+        let (layer, copy) = (ids.mint(), ids.mint());
+        let make = |id: NodeId| {
+            vec![
+                Operation::CreateNode {
+                    id,
+                    parent: page,
+                    index: 0,
+                    kind: NodeKind::Rect {
+                        size: Size::new(20.0, 20.0),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: Some(Affine::IDENTITY),
+                    name: None,
+                },
+                Operation::SetFills {
+                    id,
+                    fills: mastik_core::keyed_by_position([Fill {
+                        brush: image_brush(placed.clone()).into(),
+                        visible: true,
+                    }]),
+                },
+            ]
+        };
+        let mut first = vec![Operation::AddImage {
+            id: placed.clone(),
+            entry: ImageEntry {
+                source: ImageSource::Embedded(vec![0u8; 64].into()),
+                format: ImageFormat::Png,
+                width: 1,
+                height: 1,
+            },
+        }];
+        first.extend(make(layer));
+        assert!(app.session.commit(Transaction(first)));
+        let placing = app.session.history.last_serial();
+        assert!(app.session.commit(Transaction(make(copy))));
+        app.session.revert(placing).expect("the revert is exact");
+        assert!(app.session.doc.get(layer).is_none(), "the layer goes");
+        assert!(app.session.doc.get(copy).is_some(), "the copy stays");
+        assert!(
+            app.session.doc.has_image(&placed),
+            "the copy keeps its picture"
+        );
+        app.session.undo();
+        assert!(app.session.doc.get(layer).is_some());
+        assert!(app.session.doc.has_image(&placed));
+    }
 }
