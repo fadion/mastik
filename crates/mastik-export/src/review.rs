@@ -218,10 +218,14 @@ fn layers(n: usize) -> String {
 
 /// `overlap`: two siblings whose boxes share more than a sliver, neither holding
 /// the other. Texts are `check_layout`'s (`text_overlap`, `text_covered`); a
-/// background holds what lies on it and is passed over.
+/// background holds what lies on it and is passed over, and a boolean's operands
+/// overlap to make its shape.
 pub fn overlaps(scope: &Scope<'_>) -> Vec<Finding> {
     let mut out = Vec::new();
     for &parent in &scope.layers {
+        if matches!(scope.kind(parent), Some(NodeKind::Boolean { .. })) {
+            continue;
+        }
         let kids: Vec<(NodeId, Rect)> = scope
             .children(parent)
             .into_iter()
@@ -545,6 +549,7 @@ pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
 /// `space/md` for a gap), then any, since an unscoped variable binds every
 /// number field. An unscoped one whose name says the other field
 /// (`radius/card` for a gap) is no fit: its value matching is a coincidence.
+/// A scope admitting both fields counts as none.
 fn fitting<'v>(
     numbers: &[(&'v mastik_core::Variable, f64)],
     x: f64,
@@ -552,21 +557,25 @@ fn fitting<'v>(
 ) -> Option<&'v mastik_core::Variable> {
     const CORNER: &[&str] = &["radius", "radii", "corner", "round"];
     const SPACING: &[&str] = &["space", "spacing", "gap", "padding", "gutter", "inset"];
-    let (words, other): (&[&str], &[&str]) = match field {
-        Field::Corner => (CORNER, SPACING),
-        Field::Spacing => (SPACING, CORNER),
-        _ => (&[], &[]),
+    let (words, other, other_field): (&[&str], &[&str], Option<Field>) = match field {
+        Field::Corner => (CORNER, SPACING, Some(Field::Spacing)),
+        Field::Spacing => (SPACING, CORNER, Some(Field::Corner)),
+        _ => (&[], &[], None),
     };
     let names = |v: &mastik_core::Variable, words: &[&str]| {
         let name = v.name.to_lowercase();
         words.iter().any(|w| name.contains(w))
     };
+    // A scope says what a variable is for only where it keeps the other field
+    // out: one admitting every number field, as a token import writes, says nothing.
+    let scoped =
+        |v: &mastik_core::Variable| v.scope.is_some() && other_field.is_none_or(|f| !v.binds(f));
     numbers
         .iter()
         .filter(|(v, y)| *y == x && v.binds(field))
         .map(|(v, _)| *v)
-        .filter(|v| v.scope.is_some() || names(v, words) || !names(v, other))
-        .min_by_key(|v| (v.scope.is_none(), !names(v, words)))
+        .filter(|v| scoped(v) || names(v, words) || !names(v, other))
+        .min_by_key(|v| (!scoped(v), !names(v, words)))
 }
 
 /// [`raw_values`]' matches with every layer each names: keyed `s<style>` for a
@@ -1306,6 +1315,22 @@ mod tests {
             layer(&p, "pair", 300.0, 0.0, frame(200.0, 200.0, "#ffffff")),
             layer("@pair", "a", 0.0, 0.0, rect(100.0, 100.0, "#dddddd", 7.0)),
             layer("@pair", "b", 50.0, 50.0, rect(100.0, 100.0, "#dddddd", 7.0)),
+            // A boolean's operands overlap to make its shape: no finding.
+            layer(
+                &p,
+                "mark",
+                300.0,
+                300.0,
+                json!({ "kind": { "Boolean": { "op": "Union" } }, "fills": ["#dddddd"] }),
+            ),
+            layer("@mark", "m1", 0.0, 0.0, rect(100.0, 100.0, "#dddddd", 0.0)),
+            layer(
+                "@mark",
+                "m2",
+                50.0,
+                50.0,
+                rect(100.0, 100.0, "#dddddd", 0.0),
+            ),
             layer(&p, "row", 0.0, 500.0, frame(300.0, 100.0, "#ffffff")),
             json!({ "verb": "set_display", "args": { "nodes": ["@row"],
                 "display": { "Flex": { "direction": "Row", "gap": 15 } } } }),
@@ -1353,7 +1378,8 @@ mod tests {
     ///
     /// flip: `spacing` taking a rhythm's gap only within 0.5 of the others →
     /// fails at "rhythm"; `busy_grounds` judging busy at a half share → fails at
-    /// "busy_ground". The fixture has no radius far from 8, so `radii`'s
+    /// "busy_ground"; `overlaps` reading a boolean's operands → fails at
+    /// "overlap". The fixture has no radius far from 8, so `radii`'s
     /// nearness test is not pinned here.
     #[test]
     fn every_check_finds_its_case() {
@@ -1471,8 +1497,8 @@ mod tests {
     /// which no merge changes, is no finding.
     ///
     /// flip: `fitting` taking the first equal variable → fails at "the gap's";
-    /// without its filter on the other field's names → fails at "a radius
-    /// offered for a gap";
+    /// without its filter on the other field's names, or counting a scope of
+    /// every field as one → fails at "a radius offered for a gap";
     /// `near_duplicate_colours` reading `default_target` as a census index →
     /// fails at "the target"; `rewrite` counting a place written its own colour
     /// → fails at "a text of the variable's colour"; `raw_values` not telling a
@@ -1516,7 +1542,10 @@ mod tests {
                 "style": { "font_size": 14, "color": "#3f6212" } } } }),
             ),
             json!({ "verb": "add_variable", "args": { "kind": "number", "name": "radius/xl",
-                "value": { "number": 24 } } }),
+                "value": { "number": 24 } }, "as": "xl" }),
+            // As a token import writes it: a scope naming every number field.
+            json!({ "verb": "set_scope", "args": { "variable": "@xl",
+                "scope": ["size", "limits", "spacing", "corner", "strokeWidth", "effect", "type"] } }),
             layer(&p, "wide", 0.0, 300.0, frame(300.0, 100.0, "#f2f4ff")),
             json!({ "verb": "set_display", "args": { "nodes": ["@wide"],
                 "display": { "Flex": { "direction": "Row", "gap": 24 } } } }),
