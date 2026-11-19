@@ -524,7 +524,7 @@ impl Engine {
         // Before the arguments are checked, which would refuse a name as no id.
         let path = self.client(&call).document.clone();
         if let Some(s) = path.and_then(|p| docs.session(&p))
-            && let Err(why) = page_by_name(s, &mut call.args)
+            && let Err(why) = pages_by_name(s, &call.tool, &mut call.args)
         {
             return Output::error(why);
         }
@@ -969,6 +969,24 @@ fn node(args: &Value, name: &str) -> Result<Option<NodeId>, String> {
     }
 }
 
+/// [`page_by_name`] for `tool`'s `args`, and for each step of a `batch` or call
+/// of a `propose_edit`, its refusal naming the step.
+fn pages_by_name(s: &EditorSession, tool: &str, args: &mut Value) -> Result<(), String> {
+    page_by_name(s, args)?;
+    let (list, what) = match tool {
+        "batch" => ("steps", "step"),
+        "propose_edit" => ("calls", "call"),
+        _ => return Ok(()),
+    };
+    let steps = args.get_mut(list).and_then(Value::as_array_mut);
+    for (n, step) in steps.into_iter().flatten().enumerate() {
+        if let Some(args) = step.get_mut("args") {
+            page_by_name(s, args).map_err(|why| format!("{what} {}: {why}", n + 1))?;
+        }
+    }
+    Ok(())
+}
+
 /// A `page` argument given as a page's name, as an agent reads it in the
 /// preamble or a tree, written as that page's id; one no page has, or several
 /// do, is refused naming the pages with their ids. An id is left as it is.
@@ -976,7 +994,8 @@ fn page_by_name(s: &EditorSession, args: &mut Value) -> Result<(), String> {
     let Some(Value::String(name)) = args.get("page") else {
         return Ok(());
     };
-    if NodeId::from_wire(name).is_some() {
+    // An id, or a batch's or proposal's label for an earlier step's page.
+    if NodeId::from_wire(name).is_some() || name.starts_with('@') {
         return Ok(());
     }
     let pages: Vec<(NodeId, &str)> = s
@@ -1047,6 +1066,19 @@ fn page_of(s: &EditorSession, id: Option<NodeId>) -> Result<NodeId, String> {
             .page_of(id)
             .ok_or_else(|| format!("no layer `{}`", id.to_wire())),
     }
+}
+
+/// The page an `export_png` `region` is a rectangle of: `id`'s when it names a
+/// page, else the person's. A layer's `id` beside a `region` is refused.
+fn region_page(s: &EditorSession, id: Option<NodeId>) -> Result<NodeId, String> {
+    if let Some(id) = id.filter(|id| !is_page(s, *id)) {
+        return Err(format!(
+            "`{}` is a layer: `region` is a rectangle of a page, so pass the page \
+             or no `id`; or export the layer alone without `region`",
+            id.to_wire()
+        ));
+    }
+    page_of(s, id)
 }
 
 /// `export_png`'s `region`, `[x, y, w, h]` in page coordinates; `None` when
@@ -1463,14 +1495,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
             }
             let max = max.max(16) as f64;
             if let Some(region) = region(args)? {
-                if let Some(id) = id.filter(|id| !is_page(s, *id)) {
-                    return Err(format!(
-                        "`{}` is a layer: `region` is a rectangle of a page, so pass the page \
-                         or no `id`; or export the layer alone without `region`",
-                        id.to_wire()
-                    ));
-                }
-                let page = page_of(s, id)?;
+                let page = region_page(s, id)?;
                 let scale = (max / region.width().max(region.height())).min(2.0);
                 let vp = png_viewport("`region`", region, scale, max)?;
                 return Ok(Answer::Image(mastik_export::png::png(
@@ -2771,10 +2796,12 @@ mod tests {
         );
     }
 
-    /// A `page` given as the page's name reads as its id, in any case; one no
-    /// page has is refused with the pages and their ids.
+    /// A `page` given as the page's name reads as its id, in any case, a batch
+    /// step's too; one no page has is refused with the pages and their ids.
     ///
-    /// flip: `page_by_name` returning before its lookup → fails at "by name".
+    /// flip: `page_by_name` returning before its lookup → fails at "by name";
+    /// `pages_by_name` reading the call's own `page` alone → fails at "a batch
+    /// step by name".
     #[test]
     fn a_page_is_found_by_its_name() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -2802,6 +2829,12 @@ mod tests {
             out.is_error && why.contains(&page.to_wire()),
             "the pages named: {why}"
         );
+        let draft = json!({ "steps": [
+            { "tool": "set_page_draft", "args": { "page": name, "draft": true } },
+        ] });
+        let out = call(&mut engine, &mut docs, 1, "batch", draft);
+        assert!(!out.is_error, "a batch step by name: {:?}", out.content);
+        assert!(docs.session.doc.pages()[0].draft, "the page is a draft");
     }
 
     /// `export_png`'s `region` draws that rectangle of the page, up to 2×, and

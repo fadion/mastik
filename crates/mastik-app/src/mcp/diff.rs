@@ -17,33 +17,10 @@ use std::collections::HashMap;
 /// it among its neighbours.
 const MARGIN: f64 = 16.0;
 
-/// `doc` as it stood when `top` was the step on top of the history: the steps
-/// done since taken back, or the steps undone since brought back. `None` when
-/// the history no longer holds the way there.
+/// The session's document as it stood when `top` was the step on top of the
+/// history (`History::state_at`).
 fn document_at(s: &EditorSession, top: Option<u64>) -> Option<Document> {
-    let mut doc = s.doc.clone();
-    if s.history.current() == top {
-        return Some(doc);
-    }
-    let done: Vec<mastik_core::StepView<'_>> = s.history.done().collect();
-    let back = match top {
-        None => Some(0),
-        Some(t) => done.iter().position(|v| v.serial == t).map(|i| i + 1),
-    };
-    if let Some(from) = back {
-        for v in done[from..].iter().rev() {
-            doc.apply_restoring(v.inverse).ok()?;
-        }
-        return Some(doc);
-    }
-    let t = top?;
-    for v in s.history.undone() {
-        doc.apply_restoring(v.inverse).ok()?;
-        if v.serial == t {
-            return Some(doc);
-        }
-    }
-    None
+    s.history.state_at(&s.doc, top)
 }
 
 /// `export_png` drawing the document at revision `since` and now, the same
@@ -109,9 +86,14 @@ pub(super) fn export_png_since(
             .reduce(|a, b| a.union(b))
     };
     let (page, view) = match (region(args)?, id) {
-        (Some(r), id) => (super::page_of(s, id.filter(|i| is_page(s, *i)))?, Some(r)),
+        (Some(r), id) => (super::region_page(s, id)?, Some(r)),
         (None, Some(id)) if !is_page(s, id) => {
-            let page = super::page_of(s, Some(id))?;
+            // A layer removed since is on the page it was on then.
+            let page = s
+                .doc
+                .page_of(id)
+                .or_else(|| old.page_of(id))
+                .ok_or_else(|| format!("no layer `{}`", id.to_wire()))?;
             let then = mastik_export::extent(&old_res, &[id]);
             let now = mastik_export::extent(&s.resolved, &[id]);
             (page, then.into_iter().chain(now).reduce(|a, b| a.union(b)))
@@ -162,23 +144,33 @@ pub(super) fn export_png_since(
         files.push(Content::Text("before".into()));
         files.push(image(mastik_export::png::png(&old, &old_res, &vp, page)));
     }
-    files.push(Content::Text("after".into()));
-    files.push(image(mastik_export::png::png(
-        &s.doc,
-        &s.resolved,
-        &vp,
-        page,
-    )));
+    let after = s.doc.get(page).is_some();
+    if after {
+        files.push(Content::Text("after".into()));
+        files.push(image(mastik_export::png::png(
+            &s.doc,
+            &s.resolved,
+            &vp,
+            page,
+        )));
+    }
     let r = |v: f64| (v * 10.0).round() / 10.0;
+    let shown: Vec<&str> = [(before, "before"), (after, "after")]
+        .into_iter()
+        .filter_map(|(drawn, name)| drawn.then_some(name))
+        .collect();
     let mut report = json!({
         "since": since,
         "page": page.to_wire(),
         "box": [r(view.x0), r(view.y0), r(view.width()), r(view.height())],
         "layers": counts,
-        "images": if before { json!(["before", "after"]) } else { json!(["after"]) },
+        "images": shown,
     });
     if !before {
         report["before"] = json!("the page did not exist then");
+    }
+    if !after {
+        report["after"] = json!("the page is gone now");
     }
     Ok(Answer::Files(report, files))
 }
@@ -278,5 +270,42 @@ mod tests {
             json!({ "since": 7 }),
         );
         assert!(unknown.is_error, "a revision never shown");
+    }
+
+    /// `since` refuses a `region` beside a layer's `id` as the plain export
+    /// does, and draws a layer removed since by its box then, on its page.
+    ///
+    /// flip: `export_png_since` reading a region's page without `region_page` →
+    /// fails at "a region with a layer"; finding the layer's page in the
+    /// document now alone → fails at the removed layer's `ok`.
+    #[test]
+    fn since_refuses_a_region_with_a_layer_and_draws_one_removed() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let card = rect(&mut engine, &mut docs, 1, "Card");
+        let read = call(&mut engine, &mut docs, 1, "get_selection", json!({}));
+        let base = ok(&read)["rev"].clone();
+        rect(&mut engine, &mut docs, 1, "Other");
+        let args = json!({ "since": base, "id": card, "region": [0, 0, 400, 300] });
+        let out = call(&mut engine, &mut docs, 1, "export_png", args);
+        assert!(out.is_error, "a region with a layer");
+        assert!(
+            format!("{:?}", out.content).contains("is a layer"),
+            "{:?}",
+            out.content
+        );
+
+        let gone = json!({ "nodes": [card] });
+        ok(&call(&mut engine, &mut docs, 1, "delete_node", gone));
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "export_png",
+            json!({ "since": base, "id": card }),
+        );
+        let report = ok(&out).clone();
+        assert_eq!(report["layers"]["removed"], 1, "{report}");
+        assert_eq!(images(&out), 2, "the card then, its place now");
     }
 }

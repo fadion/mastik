@@ -166,14 +166,23 @@ struct ScaleDraft {
     name: String,
     /// *Steps*: how many it makes, `oklch::SCALE_MIN_STEPS` to 11.
     steps: usize,
-    /// The step the source lands on, an index of `oklch::SCALE_STEPS` among
-    /// those `steps` keeps.
+    /// The step asked for the source to land on, an index of
+    /// `oklch::SCALE_STEPS`; it lands on the kept step nearest it
+    /// (`ScaleDraft::landed`), so a count that drops it and brings it back
+    /// leaves the ask as it was.
     anchor: usize,
     /// *Keep the source exact*.
     exact: bool,
     /// *This mode only*: a name already taken is updated in the source's mode
     /// alone.
     this_mode: bool,
+}
+
+impl ScaleDraft {
+    /// The step the source lands on: the kept step nearest the one asked.
+    fn landed(&self) -> usize {
+        oklch::nearest_kept(&oklch::scale_subset(self.steps), self.anchor)
+    }
 }
 
 /// What *Generate scale…*'s *Generate* asks for.
@@ -1675,12 +1684,13 @@ impl MastikApp {
                 .map_or_else(Vec::new, |d| oklch::scale_subset(d.steps));
             let card = ui::drop_list(id, drop, 160.0).show(ctx, (keep.len(), 0), |ui| {
                 let Some(d) = b.scale.as_mut() else { return };
+                let landed = d.landed();
                 for i in keep {
                     let note = format!("L {:.0}%", oklch::step_lightness(i) * 100.0);
                     let label = oklch::SCALE_STEPS[i].to_string();
                     let row = ui::MenuRow::new("", &label)
                         .note(&note)
-                        .selected(i == d.anchor);
+                        .selected(i == landed);
                     if ui::menu_row(ui, row, MENU_ROW_H).clicked() {
                         d.anchor = i;
                         b.scale_steps = None;
@@ -2055,11 +2065,11 @@ impl MastikApp {
                 let span = scale_span(&keep);
                 let only = ask.this_mode.then_some(mode);
                 let ids = &mut self.session.ids;
-                match var::scale_ops(table, ids, c, &ask.name, &ramp, only) {
+                match var::scale_ops(table, ids, c, &ask.name, &ramp, only, Some(ask.var)) {
                     Ok((ops, made, updated)) => {
                         self.session.name_step("Generate scale", icon::SCALE);
                         if self.commit_edit(Transaction(ops)) {
-                            let said = var::scale_said(&ask.name, made, updated, span);
+                            let said = var::scale_said(&ask.name, made, &updated, span);
                             self.session.info(said);
                         }
                     }
@@ -2729,9 +2739,10 @@ impl MastikApp {
                     .is_empty()
                     .then(|| "A scale needs a name.".into())
             });
+        // The source is never rewritten, so it is no update.
         let taken: Vec<&str> = names
             .iter()
-            .filter(|(_, held)| held.is_some())
+            .filter(|(_, held)| held.is_some_and(|h| h != d.var))
             .map(|(n, _)| n.as_str())
             .collect();
         let into = table.collection(c).map_or("", |c| c.name.as_str());
@@ -2764,7 +2775,7 @@ impl MastikApp {
                     var: d.var,
                     name: d.name.trim().to_owned(),
                     steps: d.steps,
-                    anchor: d.anchor,
+                    anchor: d.landed(),
                     exact: d.exact,
                     this_mode: d.this_mode,
                 }));
@@ -2819,43 +2830,44 @@ impl MastikApp {
                 });
             })
         });
-        // Fewer steps may drop the one the source was on.
+        // Fewer steps may drop the one asked; the source lands on the nearest
+        // kept, and the ask stays for a count that keeps it again.
         let keep = oklch::scale_subset(d.steps);
-        d.anchor = oklch::nearest_kept(&keep, d.anchor);
-        let ramp = oklch::scale_kept(base, d.anchor, d.exact, &keep);
+        let landed = d.landed();
+        let ramp = oklch::scale_kept(base, landed, d.exact, &keep);
         // The step the source lands on, chosen from a list under its value.
+        let source = self.session.doc.variables().get(d.var);
+        let named = source
+            .and_then(|v| var::named_step(&v.name, &d.name))
+            .map(|i| oklch::nearest_kept(&keep, i));
         let nearest = oklch::nearest_kept(&keep, oklch::nearest_step(base));
-        let step = oklch::SCALE_STEPS[d.anchor];
-        let shown = match d.anchor == nearest {
-            true => format!("{step} · by its lightness"),
-            false => step.to_string(),
+        let step = oklch::SCALE_STEPS[landed];
+        let (shown, chosen) = match (named == Some(landed), landed == nearest) {
+            (true, _) => (format!("{step} · by its name"), false),
+            (false, true) => (format!("{step} · by its lightness"), false),
+            (false, false) => (step.to_string(), true),
         };
         let drop = popover_inset(ui, |ui| {
+            // The switch rows' height and label, as the two under it.
             let (row, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), MENU_ROW_H),
+                egui::vec2(ui.available_width(), crate::settings::SWITCH_H),
                 egui::Sense::hover(),
             );
-            ui.painter().text(
-                egui::pos2(row.left(), row.center().y),
-                egui::Align2::LEFT_CENTER,
-                "Source lands on",
-                egui::FontId::proportional(ui::SWITCH_ROW_LABEL_PT),
-                ui::switch_row_ink(true),
-            );
+            ui::paint_switch_row_label(ui.painter(), row, "Source lands on", true);
             let layout = egui::Layout::right_to_left(egui::Align::Center);
             ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(layout), |ui| {
                 ui::head_drop(
                     ui,
                     ui::HeadDrop {
                         text: &shown,
-                        strong: d.anchor != nearest,
+                        strong: chosen,
                         tooltip: "The step the source colour becomes",
                     },
                 )
             })
             .inner
         });
-        let lit = keep.iter().position(|i| *i == d.anchor);
+        let lit = keep.iter().position(|i| *i == landed);
         popover_inset(ui, |ui| scale_ramp(ui, &ramp, lit));
         if popover_switch(ui, "Keep the source exact", d.exact).clicked() {
             d.exact = !d.exact;
@@ -2904,15 +2916,17 @@ fn popover_footer(
 }
 
 /// *Generate scale…*'s first choices for the colour variable `var`: its name
-/// less a numeric step, all eleven steps, landing on the step nearest its
-/// lightness, exact.
+/// less a numeric step, all eleven steps, landing on the step its name stands
+/// at or else the step nearest its lightness (`variable::scale_anchor`), exact.
 fn scale_draft(table: &var::Variables, var: VarId) -> Option<ScaleDraft> {
     let (_, _, base) = var::scale_source(table, var)?;
+    let name = &table.get(var)?.name;
+    let stem = var::scale_stem(name);
     Some(ScaleDraft {
         var,
-        name: var::scale_stem(&table.get(var)?.name).to_owned(),
+        name: stem.to_owned(),
         steps: oklch::SCALE_STEPS.len(),
-        anchor: oklch::nearest_step(base),
+        anchor: var::scale_anchor(name, stem, base),
         exact: true,
         this_mode: false,
     })
@@ -2945,12 +2959,7 @@ fn scale_ramp(ui: &mut egui::Ui, ramp: &[(u16, Color)], lit: Option<usize>) {
         // swatch in use.
         ui::paint_colour_chip(p, chip, ui::color_to_egui(*colour));
         if lit == Some(i) {
-            p.rect_stroke(
-                chip,
-                (chip.width().min(chip.height()) * 0.25).round(),
-                egui::Stroke::new(1.5, theme::color::accent_200()),
-                egui::StrokeKind::Outside,
-            );
+            ui::paint_chip_ring(p, chip, ui::colour_chip_radius(chip));
         }
         let ink = match lit == Some(i) {
             true => theme::color::text(),
@@ -2963,17 +2972,25 @@ fn scale_ramp(ui: &mut egui::Ui, ramp: &[(u16, Color)], lit: Option<usize>) {
             egui::FontId::proportional(ui::CAPTION_PT),
             ink,
         );
-        let rgb = mastik_core::contrast::rgb(*colour);
         let level = mastik_core::contrast::Level::Aa;
+        let (white, black) = step_contrast(*colour);
         let tip = format!(
             "{} · {} on white · {} on black",
             ui::hex_of(*colour),
-            level.format(mastik_core::contrast::ratio(rgb, [1.0; 3])),
-            level.format(mastik_core::contrast::ratio(rgb, [0.0; 3])),
+            level.format(white),
+            level.format(black),
         );
         ui.interact(chip, ui.id().with(("scale-step", i)), egui::Sense::hover())
             .on_hover_text(tip);
     }
+}
+
+/// A scale step's contrast on white and on black, a translucent step drawn over
+/// each first, as text in it would be.
+fn step_contrast(colour: Color) -> (f64, f64) {
+    use mastik_core::contrast::{drawn, ratio};
+    let on = |ground: [f64; 3]| ratio(drawn(colour, 1.0, ground, ground), ground);
+    (on([1.0; 3]), on([0.0; 3]))
 }
 
 /// *Scope…*: which fields `v` may bind. *Every … field* on is no scope — every
@@ -7517,10 +7534,11 @@ mod tests {
         );
     }
 
-    /// *Generate scale…* starts from `blue/500` as `blue`, on the step nearest
-    /// the source's lightness, with the source kept exact.
+    /// *Generate scale…* starts from `blue/500` as `blue`, on the step its name
+    /// stands at whatever its lightness, with the source kept exact.
     ///
-    /// flip: `scale_draft` naming the draft `v.name` whole → fails at the name.
+    /// flip: `scale_draft` naming the draft `v.name` whole → fails at the name;
+    /// its anchor by lightness alone → fails at the anchor.
     #[test]
     fn a_scale_draft_starts_from_the_name_less_its_step() {
         let (_ctx, mut app) = app();
@@ -7532,8 +7550,67 @@ mod tests {
         assert_eq!(table.get(v).unwrap().name, "blue/500", "the fixture");
         let d = scale_draft(table, v).expect("a colour variable drafts");
         assert_eq!(d.name, "blue");
-        // A new colour variable is white, lightest of all.
-        assert_eq!((d.anchor, d.exact, d.this_mode), (0, true, false));
+        // A new colour variable is white, lightest of all, but named a 500.
+        assert_eq!((d.anchor, d.exact, d.this_mode), (5, true, false));
+    }
+
+    /// A scale step's contrast is read as it draws: a 20% black over white is a
+    /// light grey on white.
+    /// flip: `step_contrast` taking the colour's straight channels → fails at
+    /// "under 2".
+    #[test]
+    fn a_translucent_steps_contrast_is_read_as_drawn() {
+        let (white, black) = step_contrast(Color::from_rgba8(0, 0, 0, 51));
+        assert!(white < 2.0, "under 2 on white: {white}");
+        assert!(black < 1.1, "black over black: {black}");
+        let (white, _) = step_contrast(Color::from_rgb8(0, 0, 0));
+        assert!(white > 20.0, "an opaque black: {white}");
+    }
+
+    /// *Steps* scrubbed to a count that drops the asked step and back lands the
+    /// source on that step again: the ask is kept, only where it lands moves.
+    ///
+    /// flip: `scale_body` writing the landed step back into `anchor` → fails at
+    /// "back on 500".
+    #[test]
+    fn a_count_that_drops_the_step_and_back_keeps_it() {
+        let (ctx, mut app) = app();
+        app.toggle_var_browser();
+        app.var_act(Act::NewVar(VarKind::Color));
+        let v = the_only_var(&app).id;
+        app.var_act(Act::Name(v, "blue/500".into()));
+        app.var_browser.as_mut().unwrap().edit = None;
+        app.open_scale(v);
+        let draw: fn(&mut MastikApp, &egui::Context) = |a, c| a.var_browser_ui(c);
+        for _ in 0..2 {
+            pass(&ctx, &mut app, vec![], draw);
+        }
+        let steps = |app: &mut MastikApp, n: usize| {
+            app.var_browser
+                .as_mut()
+                .unwrap()
+                .scale
+                .as_mut()
+                .unwrap()
+                .steps = n;
+            let mut shapes = vec![];
+            for _ in 0..2 {
+                shapes = pass(&ctx, app, vec![], draw);
+            }
+            shapes
+        };
+        let shapes = steps(&mut app, 11);
+        assert!(
+            last_text(&shapes, "500 · by its name").is_some(),
+            "the fixture: on 500"
+        );
+        let shapes = steps(&mut app, 8);
+        assert!(last_text(&shapes, "400").is_some(), "8 drop 500");
+        let shapes = steps(&mut app, 11);
+        assert!(
+            last_text(&shapes, "500 · by its name").is_some(),
+            "back on 500"
+        );
     }
 
     /// **The scope popover's boxes sit level with their labels**, inset from the

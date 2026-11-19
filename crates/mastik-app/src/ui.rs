@@ -7555,6 +7555,24 @@ pub fn switch_row_ink(on: bool) -> egui::Color32 {
     }
 }
 
+/// A [`switch_row`]'s label painted in `rect`, at its left edge, centred down
+/// it, in the row's size and its [`switch_row_ink`] for `on`: for a row in a
+/// column of switch rows that ends in another control. Answers the label's rect.
+pub fn paint_switch_row_label(
+    p: &egui::Painter,
+    rect: egui::Rect,
+    label: &str,
+    on: bool,
+) -> egui::Rect {
+    p.text(
+        egui::pos2(rect.left(), rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(SWITCH_ROW_LABEL_PT),
+        switch_row_ink(on),
+    )
+}
+
 /// A row of a toggle list: a label, and a [`paint_switch`] against the right margin.
 ///
 /// Returns the row's response, so `clicked()` is the toggle and a hover tooltip
@@ -7625,14 +7643,8 @@ fn switch_row_inner(
         );
     }
     let inner = rect;
-    let words = ui.painter().text(
-        egui::pos2(inner.left(), inner.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(SWITCH_ROW_LABEL_PT),
-        // A mixed row takes the off tier: the feature is not on for the range.
-        switch_row_ink(on.unwrap_or(false)),
-    );
+    // A mixed row takes the off tier: the feature is not on for the range.
+    let words = paint_switch_row_label(ui.painter(), inner, label, on.unwrap_or(false));
     if marked {
         override_dot(ui.painter(), words.right_top() + egui::vec2(4.0, 3.0));
     }
@@ -7828,7 +7840,7 @@ fn checker_texture(ctx: &egui::Context) -> egui::TextureId {
 /// ground to mask against (they sit on a hover wash) the checkerboard's own cells
 /// are rounded at the corners instead.
 pub fn paint_colour_chip(p: &egui::Painter, rect: egui::Rect, c: egui::Color32) {
-    let r = (rect.width().min(rect.height()) * 0.25).round();
+    let r = colour_chip_radius(rect);
     if c.a() < 255 {
         let cell = rect.width() * 0.5;
         let r8 = r as u8;
@@ -7860,6 +7872,23 @@ pub fn paint_colour_chip(p: &egui::Painter, rect: egui::Rect, c: egui::Color32) 
         r,
         egui::Stroke::new(1.0, swatch_hairline()),
         egui::StrokeKind::Inside,
+    );
+}
+
+/// The corner radius [`paint_colour_chip`] rounds a chip in `rect` by.
+pub fn colour_chip_radius(rect: egui::Rect) -> f32 {
+    (rect.width().min(rect.height()) * 0.25).round()
+}
+
+/// The ring round the colour chip in use among a row of them (a swatch row's
+/// current colour, a scale's source step): 1.5pt of `accent_200` outside the
+/// chip's `rect`, following its corner `radius`.
+pub fn paint_chip_ring(p: &egui::Painter, rect: egui::Rect, radius: impl Into<egui::CornerRadius>) {
+    p.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.5, theme::color::accent_200()),
+        egui::StrokeKind::Outside,
     );
 }
 

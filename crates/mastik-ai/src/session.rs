@@ -97,6 +97,8 @@ pub enum Refusal {
     },
     Spawn(String),
     ConfigNotWritten(String),
+    /// A turn's picture could not be written where the agent reads it.
+    PictureNotWritten(String),
     /// A turn is already running.
     Busy,
 }
@@ -132,6 +134,11 @@ impl std::fmt::Display for Refusal {
                 f,
                 "Mastik could not set up the configuration that restricts the agent ({e}), so it \
                  did not start it."
+            ),
+            Refusal::PictureNotWritten(e) => write!(
+                f,
+                "Mastik could not write a picture of the attached layers for the agent ({e}), so \
+                 it did not send the message."
             ),
             Refusal::Busy => f.write_str("A turn is already running; wait for it or stop it."),
         }
@@ -361,11 +368,15 @@ impl Session {
         };
         let mut st = inner.lock();
         // Per-turn: the argv is known now, so its length is checked now.
-        let per_turn = (!inner.harness.is_persistent()).then(|| {
-            let spec = inner.turn_spec(&st, &turn.text, st.resume.clone(), st.turn + 1, &images);
-            let args = inner.with_prefix(harness::turn_args(inner.harness, &spec));
-            (spec, args)
-        });
+        let per_turn = match inner.harness.is_persistent() {
+            true => None,
+            false => {
+                let spec =
+                    inner.turn_spec(&st, &turn.text, st.resume.clone(), st.turn + 1, &images)?;
+                let args = inner.with_prefix(harness::turn_args(inner.harness, &spec));
+                Some((spec, args))
+            }
+        };
         if let Some((_, args)) = &per_turn {
             inner.check_argv(args, inner.system(&st))?;
         }
@@ -702,7 +713,9 @@ impl Inner {
 
     /// The spec of one turn. Its images are written into the working folder,
     /// where Copilot's path check and OpenCode's external-folder rule find them
-    /// inside the workspace.
+    /// inside the workspace. One that cannot be written refuses the turn: the
+    /// turn's text names its pictures in order, which holds only when every one
+    /// arrives.
     fn turn_spec(
         &self,
         st: &State,
@@ -710,22 +723,23 @@ impl Inner {
         resume: Option<String>,
         turn: u64,
         images: &[Vec<u8>],
-    ) -> TurnSpec {
+    ) -> Result<TurnSpec, Refusal> {
         let images = images
             .iter()
             .enumerate()
-            .filter_map(|(i, png)| {
+            .map(|(i, png)| {
                 let p = self.cwd.join(format!("mastik-turn-{turn}-{i}.png"));
-                std::fs::write(&p, png).ok()?;
-                Some(p.to_string_lossy().into_owned())
+                std::fs::write(&p, png)
+                    .map_err(|e| Refusal::PictureNotWritten(format!("{}: {e}", p.display())))?;
+                Ok(p.to_string_lossy().into_owned())
             })
-            .collect();
-        TurnSpec {
+            .collect::<Result<_, Refusal>>()?;
+        Ok(TurnSpec {
             prompt: text.to_string(),
             resume,
             images,
             ..self.granted_spec(st)
-        }
+        })
     }
 
     fn session_argv(&self, st: &State, resume: Option<String>) -> Vec<String> {
@@ -1600,6 +1614,7 @@ mod tests {
             },
             Refusal::Spawn("x".into()),
             Refusal::ConfigNotWritten("x".into()),
+            Refusal::PictureNotWritten("x".into()),
             Refusal::Busy,
         ];
         for r in all {
@@ -2372,7 +2387,10 @@ mod tests {
         s.send(Turn::default()).unwrap();
         until_idle(&mut s);
         assert!(s.set_access(vec!["get_node".into(), "set_name".into()], "sys".into()));
-        let spec = s.inner.turn_spec(&s.inner.lock(), "", None, 9, &[]);
+        let spec = s
+            .inner
+            .turn_spec(&s.inner.lock(), "", None, 9, &[])
+            .unwrap();
         assert!(
             spec.mcp_overrides
                 .iter()
@@ -2387,6 +2405,26 @@ mod tests {
         .unwrap();
         let evs = until_idle(&mut s);
         assert!(said(&evs).starts_with("again"), "resumed: {evs:?}");
+        drop(s);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A turn's picture that cannot be written refuses the turn rather than
+    /// leaving it out, since the turn names its pictures in order.
+    /// flip: `turn_spec` skipping an image it cannot write → fails at the refusal.
+    #[test]
+    fn a_picture_not_written_refuses_the_turn() {
+        let (s, root) = fake_session(Harness::Codex, "codex");
+        let blocked = s.inner.cwd.join("mastik-turn-9-0.png");
+        std::fs::create_dir_all(&blocked).unwrap();
+        let spec = s
+            .inner
+            .turn_spec(&s.inner.lock(), "", None, 9, &[vec![1, 2, 3], vec![4]]);
+        assert!(
+            matches!(spec, Err(Refusal::PictureNotWritten(_))),
+            "refused: {:?}",
+            spec.map(|s| s.images)
+        );
         drop(s);
         let _ = std::fs::remove_dir_all(&root);
     }

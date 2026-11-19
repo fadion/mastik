@@ -15,8 +15,8 @@ use mastik_mcp::tools::{ASSISTANT, CORE, PHASE_1, PHASE_2, PHASE_3};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
-/// How far a chat may act on the document.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// How far a chat may act on the document, ordered from the least.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Level {
     /// Read and export.
     Look,
@@ -297,12 +297,13 @@ mod tests {
     /// A granted chat's mistyped tool, by name or as a `batch` step, is
     /// refused as no tool with the nearest names, not as beyond its access;
     /// `describe_tools` finds `propose_edit`, offers a chat only its level's
-    /// tools and names those above it with the level they need; and a chat key
-    /// no grant holds is listed nothing.
+    /// tools and names those above it with the level they need, not one a higher
+    /// level drops; and a chat key no grant holds is listed nothing.
     ///
     /// flip: `refused` without its `is_tool` filter → fails at "as no tool";
     /// `describe_tools` without its query's matches above the level → fails at
-    /// "the query's matches above Look".
+    /// "the query's matches above Look"; keeping a match whatever level it needs
+    /// → fails at "nothing above Edit".
     #[test]
     fn a_chat_is_told_the_truth_about_tools_it_cannot_use() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -380,6 +381,20 @@ mod tests {
                 .as_array()
                 .is_some_and(|b| b.contains(&json!({ "name": "place_asset", "needs": "Propose" }))),
             "and at Look names the level that can: {found:?}"
+        );
+        grants.grant("assistant-4", Level::Edit, nobody());
+        let args = json!({ "query": "edit", "brief": true });
+        let found = keyed(
+            &mut engine,
+            &mut docs,
+            6,
+            Some("assistant-4"),
+            "describe_tools",
+            args,
+        );
+        assert!(
+            ok(&found).get("beyond_access").is_none(),
+            "nothing above Edit, `propose_edit` below it: {found:?}"
         );
 
         let lists = grants.lists();

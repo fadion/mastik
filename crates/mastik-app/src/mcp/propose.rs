@@ -67,8 +67,8 @@ fn proposable(verb: &str) -> bool {
 pub(super) const PLACE: &str = "place_asset";
 
 /// Why a proposal's placement cannot be laid down: read back from a saved
-/// thread, it no longer holds its asset.
-const NOT_HELD: &str = "its photo or icon is no longer at hand, since Mastik was closed after it was proposed; ask for the proposal again";
+/// thread after the host let it go, it no longer holds its asset.
+const NOT_HELD: &str = "its photo or icon is no longer at hand, since Mastik keeps one only while it runs; ask for the proposal again";
 
 /// A proposal's call's name: its `verb`, or its `tool` as a `batch` step
 /// names it, since an agent copies one shape for the other.
@@ -131,7 +131,9 @@ fn run(
     let mut subjects: Vec<NodeId> = Vec::new();
     let mut made = 0;
     let mut held = p.held.iter();
-    let mut labels = std::collections::HashMap::new();
+    // As a batch takes its steps: `"@page"` is the first page.
+    let mut labels =
+        std::collections::HashMap::from([("page".to_owned(), s.doc.first_page().to_wire())]);
     for (i, (verb, args)) in p.calls.iter().enumerate() {
         let depth = s.history.undo_depth();
         let mut args = args.clone();
@@ -334,27 +336,48 @@ pub(crate) fn stale(session: &EditorSession, p: &Proposal) -> Option<String> {
         .map(|(_, was)| was.name().to_owned())
 }
 
-/// The undo step applying `p` made, found again in a history whose serials
-/// were minted afresh (a reopened document, a thread loaded again): the one done
-/// step that is a `propose_edit` by `p`'s chat under `p`'s title. `None` when
-/// none or several are, since a guess could undo the wrong step.
-pub(crate) fn applied_step(session: &EditorSession, p: &Proposal) -> Option<Applied> {
-    let agent = p.key.as_deref().map(super::keyed_agent);
-    let mut found = session
-        .history
-        .done()
-        .enumerate()
-        .filter(|(_, s)| {
-            s.note.label == p.title
-                && s.note.agent == agent
-                && matches!(&s.note.origin, mastik_core::Origin::Mcp { tool, .. } if tool == "propose_edit")
+/// The undo step applying each of `applied` made, in their order, found again
+/// in a history whose serials were minted afresh (a reopened document, a thread
+/// loaded again): the done steps that are a `propose_edit` by a proposal's chat
+/// under its title. The cards sharing a chat and title take those steps in the
+/// order they were proposed, one each, only when there are as many steps as
+/// cards; else none of them takes one, since a card whose own step is gone
+/// would take another's, and a guess could undo the wrong step.
+pub(crate) fn applied_steps(
+    session: &EditorSession,
+    applied: &[&Proposal],
+) -> Vec<Option<Applied>> {
+    let steps_of = |p: &Proposal| -> Vec<Applied> {
+        let agent = p.key.as_deref().map(super::keyed_agent);
+        session
+            .history
+            .done()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.note.label == p.title
+                    && s.note.agent == agent
+                    && matches!(&s.note.origin, mastik_core::Origin::Mcp { tool, .. } if tool == "propose_edit")
+            })
+            .map(|(i, s)| Applied {
+                serial: s.serial,
+                depth: i + 1,
+            })
+            .collect()
+    };
+    applied
+        .iter()
+        .map(|p| {
+            let mut alike: Vec<u64> = applied
+                .iter()
+                .filter(|q| q.title == p.title && q.key == p.key)
+                .map(|q| q.id)
+                .collect();
+            alike.sort_unstable();
+            let steps = steps_of(p);
+            let at = alike.iter().position(|id| *id == p.id)?;
+            (steps.len() == alike.len()).then(|| steps[at])
         })
-        .map(|(i, s)| Applied {
-            serial: s.serial,
-            depth: i + 1,
-        });
-    let one = found.next()?;
-    found.next().is_none().then_some(one)
+        .collect()
 }
 
 /// Whether the step `a` made is still the last one done, so undoing it takes
@@ -372,11 +395,15 @@ pub(crate) fn can_undo(session: &EditorSession, a: &Applied) -> bool {
 }
 
 /// Take back the step `a` made: an undo while it is the last step, else alone
-/// under the later steps, refused with why when they changed what it changed.
+/// under the later steps, refused with why when they changed what it changed,
+/// or when the document takes no undo now (compare, a script running).
 pub(crate) fn undo(session: &mut EditorSession, a: &Applied) -> Result<(), String> {
     if is_last(session, a) {
-        session.undo();
-        return Ok(());
+        // A refused undo has said why on the status line.
+        return match session.undo() {
+            true => Ok(()),
+            false => Err(session.status().text.clone()),
+        };
     }
     session.revert(a.serial)
 }
@@ -516,11 +543,15 @@ mod tests {
 
     /// A proposal saved and read back is the same proposal, so a restored card
     /// still finds a changed layer; its applied step is found again by its
-    /// note, and not where two steps would answer.
+    /// note, and not where two steps would answer for it alone. Two cards of one
+    /// title take their steps in order; once the first's step is gone, the
+    /// second's is neither's.
     ///
-    /// flip: `applied_step` taking the first match → fails at "two steps".
+    /// flip: `applied_steps` giving cards steps when the counts differ → fails
+    /// at "two steps".
     #[test]
     fn a_saved_proposal_reads_back_and_finds_its_step() {
+        let applied_step = |s: &EditorSession, p: &Proposal| applied_steps(s, &[p])[0];
         let (mut engine, mut docs) = (Engine::default(), One::new());
         open(&mut engine, &mut docs, 1);
         let card = rect(&mut engine, &mut docs, 1, "Card");
@@ -548,8 +579,28 @@ mod tests {
             .proposal(answer["proposal"].as_u64().unwrap())
             .unwrap()
             .clone();
-        apply(&mut docs.session, &again).unwrap();
+        let second = apply(&mut docs.session, &again).unwrap();
         assert_eq!(applied_step(&docs.session, &back), None, "two steps");
+        assert_eq!(
+            applied_steps(&docs.session, &[&back, &again]),
+            [Some(applied), Some(second)],
+            "in order"
+        );
+
+        // The first is taken back and its step dropped from the history (the
+        // person's undo, then an edit), the second applied again: one step for
+        // two cards.
+        for _ in 0..3 {
+            assert!(docs.session.undo());
+        }
+        let args = json!({ "node": card, "name": "Other" });
+        ok(&call(&mut engine, &mut docs, 1, "set_name", args));
+        apply(&mut docs.session, &again).unwrap();
+        assert_eq!(
+            applied_steps(&docs.session, &[&back, &again]),
+            [None, None],
+            "the gone step's card takes none"
+        );
     }
 
     /// The card's *Undo* takes back an applied proposal alone under a later edit
@@ -643,22 +694,27 @@ mod tests {
         apply(&mut docs.session, &p).expect("a proposal that only creates applies");
     }
 
-    /// A proposal takes a batch's shape (`tool`, `as`) and `set`: a later call
-    /// names what an earlier one made by its label, on the trial and again on
-    /// the apply, whose own new layer it then sets, as one step.
+    /// A proposal takes a batch's shape (`tool`, `as`, `"@page"`) and `set`: a
+    /// later call names what an earlier one made by its label, on the trial and
+    /// again on the apply, whose own new layer it then sets, as one step.
     ///
     /// flip: `run` not recording a call's `as` → fails at "proposed"; `run`
-    /// sending `set` through `write` → fails at "proposed" too.
+    /// sending `set` through `write` → fails at "proposed" too; `run` starting
+    /// without `page` among its labels → fails at "proposed".
     #[test]
     fn a_proposal_takes_a_batch_shape_labels_and_set() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
         open(&mut engine, &mut docs, 1);
-        let page = docs.session.page.to_wire();
+        assert_eq!(
+            docs.session.page,
+            docs.session.doc.first_page(),
+            "the fixture's page is the first"
+        );
         let out = propose(
             &mut engine,
             &mut docs,
             json!([
-                { "tool": "create_text", "args": { "parent": page, "text": "Hi" }, "as": "t" },
+                { "tool": "create_text", "args": { "parent": "@page", "text": "Hi" }, "as": "t" },
                 { "verb": "set", "args": { "nodes": ["@t"], "props": { "opacity": 0.5 } } },
             ]),
         );

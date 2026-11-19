@@ -1012,13 +1012,13 @@ impl MastikApp {
     }
 
     /// The proposal called `id`: the thread's copy, else the window's MCP
-    /// host's while it keeps it.
+    /// host's while it keeps it. A thread read back from its file holds no
+    /// photo or icon, so the host's copy, still holding them, wins over it.
     fn held_proposal(&self, id: u64) -> Option<&crate::mcp::propose::Proposal> {
-        self.assistant
-            .proposals
-            .iter()
-            .find(|p| p.id == id)
-            .or_else(|| self.mcp.as_ref().and_then(|h| h.proposal(id)))
+        held_copy(
+            self.assistant.proposals.iter().find(|p| p.id == id),
+            self.mcp.as_ref().and_then(|h| h.proposal(id)),
+        )
     }
 
     /// Apply a proposal from its card, as one undo step marked as the
@@ -1069,6 +1069,8 @@ impl MastikApp {
                 self.assistant.applied.remove(&id);
                 self.assistant.save();
             }
+            // A refused undo already says why, as an error.
+            Err(why) if self.session.status().text == why => {}
             Err(why) => self.session.info(why),
         }
     }
@@ -1305,11 +1307,26 @@ fn cached_share(cached: u64, total: u64) -> Option<u64> {
     (total > 0 && cached > 0).then_some(share)
 }
 
-/// A token count as the foot shows it: `850`, `3.1k`, `1.0M`.
+/// Of a proposal's thread copy `own` and its MCP host's `host`, the one to
+/// apply: the thread's, unless it holds no asset where the host's does, as a
+/// thread read back from its file after a tab switch does.
+fn held_copy<'a>(
+    own: Option<&'a crate::mcp::propose::Proposal>,
+    host: Option<&'a crate::mcp::propose::Proposal>,
+) -> Option<&'a crate::mcp::propose::Proposal> {
+    match own {
+        Some(own) if own.held.is_empty() && host.is_some_and(|h| !h.held.is_empty()) => host,
+        Some(own) => Some(own),
+        None => host,
+    }
+}
+
+/// A token count as the foot shows it: `850`, `3.1k`, `1.0M`. A count that
+/// rounds to a thousand thousands reads in millions, never `1000.0k`.
 fn tokens(n: u64) -> String {
     match n {
         0..1000 => n.to_string(),
-        1000..1_000_000 => format!("{:.1}k", n as f64 / 1000.0),
+        1000..999_950 => format!("{:.1}k", n as f64 / 1000.0),
         _ => format!("{:.1}M", n as f64 / 1_000_000.0),
     }
 }
@@ -1340,7 +1357,8 @@ fn context_reading(r: Option<ai::Reading>) -> Option<(f32, String, String, Strin
     };
     Some((
         share as f32,
-        format!("Context {}% full", (share * 100.0).round() as u64),
+        // Rounded down, as `ui::meter_readout` reads a share: never full before it is.
+        format!("Context {}% full", r.used * 100 / w),
         format!("{} of {} tokens", tokens(r.used), tokens(w)),
         note,
     ))
@@ -1384,17 +1402,133 @@ fn recall_step(recall: Option<usize>, up: bool, len: usize) -> Option<usize> {
 mod tests {
     use super::*;
 
+    /// A card read back from its thread's file, holding no asset, applies the
+    /// host's copy that still holds it; otherwise the thread's own.
+    /// flip: `held_copy` taking the thread's copy first → fails at "the host's".
+    #[test]
+    fn a_card_read_back_applies_the_hosts_held_copy() {
+        use crate::mcp::assets::Held;
+        use crate::mcp::propose::Proposal;
+        let credit: mastik_core::Credit = serde_json::from_value(serde_json::json!({
+            "kind": "icon", "text": "Icon", "author": "A", "provider": "P", "licence": "MIT",
+        }))
+        .unwrap();
+        let bare = Proposal {
+            id: 7,
+            key: None,
+            document: std::path::PathBuf::new(),
+            title: "Add an icon".into(),
+            changes: Vec::new(),
+            calls: Vec::new(),
+            labels: Vec::new(),
+            rev: 0,
+            writes: Vec::new(),
+            before: Vec::new(),
+            client: String::new(),
+            held: Vec::new(),
+        };
+        let holding = Proposal {
+            held: vec![Held::Icon {
+                name: "star".into(),
+                svg: "<svg/>".into(),
+                credit,
+            }],
+            ..bare.clone()
+        };
+        let chosen = held_copy(Some(&bare), Some(&holding)).unwrap();
+        assert_eq!(chosen.held.len(), 1, "the host's");
+        let chosen = held_copy(Some(&holding), Some(&bare)).unwrap();
+        assert_eq!(chosen.held.len(), 1, "the thread's own");
+        assert!(held_copy(Some(&bare), None).is_some_and(|p| p.held.is_empty()));
+    }
+
+    /// While a script runs, an applied card's *Undo* is refused and the card
+    /// stays applied, its step still in the history.
+    /// flip: `propose::undo` answering `Ok` whatever `undo` did → fails at
+    /// "still applied".
+    #[test]
+    fn a_cards_undo_during_a_run_keeps_it_applied() {
+        use mastik_mcp::queue::Call;
+        use serde_json::{Value, json};
+        let dir = std::env::temp_dir().join(format!(
+            "mastik-assistant-held-undo-{}",
+            crate::session::random_actor()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("card.mastik");
+        let mut ids = mastik_core::IdSource::new(crate::session::random_actor());
+        let doc = mastik_core::Document::new(ids.mint());
+        let page = doc.first_page().to_wire();
+        std::fs::write(&file, mastik_core::io::save(&doc).unwrap()).unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let mut engine = crate::mcp::Engine::default();
+        let mut call = |app: &mut MastikApp, tool: &str, args: Value| {
+            let (reply, _answer) = std::sync::mpsc::sync_channel(1);
+            let out = engine.handle(app, Call::new(1, None, tool, args, reply));
+            assert!(!out.is_error, "{tool}: {:?}", out.content);
+            out.structured.unwrap()
+        };
+        let document = json!({ "document": file.display().to_string() });
+        call(&mut app, "use_document", document);
+        app.activate_tab(app.tab_of_path(&file).unwrap());
+        let made = call(
+            &mut app,
+            "create_text",
+            json!({ "parent": page, "text": "Hello" }),
+        );
+        let id = made["created"][0].as_str().unwrap().to_owned();
+        let proposed = call(
+            &mut app,
+            "propose_edit",
+            json!({
+                "title": "Rename the greeting",
+                "calls": [{ "verb": "set_name", "args": { "node": id, "name": "Greeting" } }],
+            }),
+        );
+        let pid = proposed["proposal"].as_u64().unwrap();
+        app.assistant
+            .proposals
+            .push(engine.proposal(pid).expect("held").clone());
+        app.assistant_apply(pid);
+        assert!(
+            app.assistant.applied.contains_key(&pid),
+            "the fixture: applied"
+        );
+        let depth = app.session.history.undo_depth();
+
+        let wait = crate::command::running::INLINE.replace(std::time::Duration::ZERO);
+        app.run_bar_line("while true do end");
+        crate::command::running::INLINE.set(wait);
+        assert!(
+            app.session.script_run.is_some(),
+            "the fixture: a run in flight"
+        );
+        app.assistant_undo(pid);
+        assert!(app.assistant.applied.contains_key(&pid), "still applied");
+        assert_eq!(app.session.history.undo_depth(), depth, "nothing undone");
+        app.stop_script_run();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A token count reads in its unit, and one just under a million that rounds
+    /// to it reads in millions.
+    /// flip: the `k` arm running to 1,000,000 → fails at 999,960.
     #[test]
     fn token_counts_read_short() {
         assert_eq!(tokens(850), "850");
         assert_eq!(tokens(3100), "3.1k");
+        assert_eq!(tokens(999_940), "999.9k");
+        assert_eq!(tokens(999_960), "1.0M");
         assert_eq!(tokens(1_000_000), "1.0M");
     }
 
     /// The context bar fills to the share of a named window and warns from
     /// `LEVEL_RED`; it is hidden before any reading and for a reading with no
-    /// window (or a zero one).
-    /// flip: `context_reading` without its window `?` → fails at "no window".
+    /// window (or a zero one). Its percentage rounds down.
+    /// flip: `context_reading` without its window `?` → fails at "no window";
+    /// rounding the percentage to nearest → fails at "rounded down".
     #[test]
     fn the_context_bar_reads_its_share_or_hides() {
         let r = |used, window| Some(ai::Reading { used, window });
@@ -1410,6 +1544,8 @@ mod tests {
         let (_, head, _, note) = context_reading(r(176_000, Some(200_000))).unwrap();
         assert_eq!(head, "Context 88% full");
         assert!(note.starts_with("Near the model's limit"), "{note}");
+        let (_, head, _, _) = context_reading(r(199_100, Some(200_000))).unwrap();
+        assert_eq!(head, "Context 99% full", "rounded down, never full early");
 
         assert_eq!(context_reading(r(18_000, None)), None, "no window");
         assert_eq!(

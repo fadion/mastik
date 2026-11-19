@@ -4029,6 +4029,25 @@ pub fn scale_stem(name: &str) -> &str {
     }
 }
 
+/// The step, an index of [`crate::oklch::SCALE_STEPS`], the variable `name`
+/// stands at in a scale under `stem`: `blue/500` under `blue` is 500's. `None`
+/// for a name that is no step of it.
+pub fn named_step(name: &str, stem: &str) -> Option<usize> {
+    let (group, leaf) = split_name(name);
+    if group != stem.trim() {
+        return None;
+    }
+    let step: u16 = leaf.parse().ok()?;
+    crate::oklch::SCALE_STEPS.iter().position(|s| *s == step)
+}
+
+/// The step a scale under `stem` from the colour `base` of the variable `name`
+/// lands it on unless told otherwise: the step its name stands at, so a scale
+/// from `amber/500` keeps it at 500, else the step nearest its lightness.
+pub fn scale_anchor(name: &str, stem: &str, base: Color) -> usize {
+    named_step(name, stem).unwrap_or_else(|| crate::oklch::nearest_step(base))
+}
+
 /// Where a scale from the colour variable `var` comes from: its collection,
 /// that collection's default mode, and its colour there. `None` for a
 /// variable of another kind or a kit's.
@@ -4067,9 +4086,10 @@ pub fn scale_names(
 /// *Generate scale* in collection `c`: `colours`, each a step of
 /// [`crate::oklch::SCALE_STEPS`] and its colour, as the colour variables
 /// `stem/<step>` in every mode. A name already holding a colour variable is
-/// updated instead, in `only` when given and in every mode otherwise; refused
-/// when a name holds another kind or cannot name a variable. Answers the ops and
-/// how many variables were made and updated.
+/// updated instead, in `only` when given and in every mode otherwise, but for
+/// the scale's `source`, which is never rewritten; refused when a name holds
+/// another kind or cannot name a variable. Answers the ops, how many variables
+/// were made, and the names of those updated.
 pub fn scale_ops(
     table: &Variables,
     ids: &mut crate::IdSource,
@@ -4077,7 +4097,8 @@ pub fn scale_ops(
     stem: &str,
     colours: &[(u16, Color)],
     only: Option<ModeId>,
-) -> Result<(Vec<crate::Operation>, usize, usize), String> {
+    source: Option<VarId>,
+) -> Result<(Vec<crate::Operation>, usize, Vec<String>), String> {
     if table.collection(c).is_none() {
         return Err("No collection has that id.".into());
     }
@@ -4087,10 +4108,13 @@ pub fn scale_ops(
     let steps: Vec<u16> = colours.iter().map(|(s, _)| *s).collect();
     let names = scale_names(table, c, stem, &steps);
     let (mut ops, modes) = columns_for_new(table, c, ids.mint_mode());
-    let (mut made, mut updated) = (0, 0);
+    let (mut made, mut updated) = (0, Vec::new());
     for ((name, held), (_, colour)) in names.into_iter().zip(colours) {
         if let Some(why) = name_refusal(table, c, &name, held) {
             return Err(why);
+        }
+        if held.is_some() && held == source {
+            continue;
         }
         let Some(id) = held else {
             made += 1;
@@ -4111,23 +4135,33 @@ pub fn scale_ops(
         if table.kind_of(id) != Some(VarKind::Color) {
             return Err(format!("{name} is not a colour variable."));
         }
-        updated += 1;
         for m in modes.iter().filter(|m| only.is_none_or(|o| o == **m)) {
             ops.extend(set_cell_ops(table, id, *m, Cell::Color(*colour))?);
         }
+        updated.push(name);
     }
     Ok((ops, made, updated))
 }
 
-/// The line *Generate scale* says when done: what it made and updated, and the
-/// names it spans, `first` to `last`.
-pub fn scale_said(stem: &str, made: usize, updated: usize, (first, last): (u16, u16)) -> String {
+/// The line *Generate scale* says when done: what it made, the variables it
+/// updated by name (three at most, else how many), and the names it spans,
+/// `first` to `last`.
+pub fn scale_said(
+    stem: &str,
+    made: usize,
+    updated: &[String],
+    (first, last): (u16, u16),
+) -> String {
     let stem = stem.trim();
     let plural = |n: usize| if n == 1 { "variable" } else { "variables" };
-    let what = match (made, updated) {
+    let names = match updated.len() {
+        1..=3 => updated.join(", "),
+        n => format!("{n} {}", plural(n)),
+    };
+    let what = match (made, updated.len()) {
         (m, 0) => format!("Made {m} {}", plural(m)),
-        (0, u) => format!("Updated {u} {}", plural(u)),
-        (m, u) => format!("Made {m} {} and updated {u}", plural(m)),
+        (0, _) => format!("Updated {names}"),
+        (m, _) => format!("Made {m} {} and updated {names}", plural(m)),
     };
     format!("{what} · {stem}/{first} – {stem}/{last}")
 }

@@ -973,15 +973,14 @@ impl MastikApp {
         self.assistant.msgs = saved.msgs;
         // An applied card's undo step is found again in the document's
         // history, whose serials were minted afresh.
-        self.assistant.applied = saved
+        let applied: Vec<&crate::mcp::propose::Proposal> = saved
             .proposals
             .iter()
             .filter(|k| k.applied)
-            .map(|k| {
-                let step = crate::mcp::propose::applied_step(&self.session, &k.proposal);
-                (k.proposal.id, step)
-            })
+            .map(|k| &k.proposal)
             .collect();
+        let steps = crate::mcp::propose::applied_steps(&self.session, &applied);
+        self.assistant.applied = applied.iter().map(|p| p.id).zip(steps).collect();
         self.assistant.proposals = saved.proposals.into_iter().map(|k| k.proposal).collect();
         self.assistant.file = file;
         let a = &mut self.assistant;

@@ -1938,11 +1938,13 @@ fn a_variable_value_takes_the_only_mode_unnamed() {
 
 /// `generate_scale` from `blue/500` makes `blue/50` to `blue/950` beside it from
 /// its default mode's value, the same ramp in every mode, and the source's own
-/// name is updated to itself rather than refused. A run again updates all
-/// eleven; a name held by a number is refused, and so is a step that is none.
+/// name is left as it is rather than refused. A run again updates the other
+/// ten and never the source; a name held by a number is refused, and so is a
+/// step that is none.
 ///
 /// flip: `variable::scale_names` answering no holder → fails at the first
-/// script, on "blue/500 already exists".
+/// script, on "blue/500 already exists"; `scale_ops` updating its source →
+/// fails at "the source kept".
 #[test]
 fn a_scale_is_generated_from_a_variable_in_every_mode() {
     let (mut doc, mut ids, _) = blank();
@@ -1973,13 +1975,22 @@ fn a_scale_is_generated_from_a_variable_in_every_mode() {
     };
     assert_eq!(
         colour(&scale[5].cells[&dark]),
+        Color::from_rgb8(0xcc, 0x33, 0x66),
+        "the source keeps its own value in every mode"
+    );
+    let first = *scale[4].cells.keys().find(|m| **m != dark).unwrap();
+    assert_eq!(
+        scale[4].cells[&dark], scale[4].cells[&first],
+        "every mode takes the default mode's ramp"
+    );
+    let l = |v: &mastik_core::Variable| mastik_core::oklch::Oklch::of(colour(&v.cells[&first])).l;
+    assert_eq!(
+        colour(&scale[5].cells[&first]),
         Color::from_rgb8(0x2f, 0x6b, 0xff),
-        "every mode takes the default mode's ramp; exact keeps the source"
+        "exact keeps the source on its step"
     );
     for w in scale.windows(2) {
-        let l =
-            |v: &&mastik_core::Variable| mastik_core::oklch::Oklch::of(colour(&v.cells[&dark])).l;
-        assert!(l(&w[0]) > l(&w[1]));
+        assert!(l(w[0]) > l(w[1]));
     }
 
     script(
@@ -1988,6 +1999,12 @@ fn a_scale_is_generated_from_a_variable_in_every_mode() {
         json!([{ "verb": "generate_scale", "args": { "variable": made[0][0], "exact": false } }]),
     );
     assert_eq!(doc.variables().iter().count(), 11, "updated, none added");
+    let source = doc.variables().by_name("blue/500").unwrap();
+    assert_eq!(
+        colour(&source.cells[&first]),
+        Color::from_rgb8(0x2f, 0x6b, 0xff),
+        "the source kept"
+    );
     let bad_step = refused_step(
         &mut doc,
         &mut ids,
@@ -2008,6 +2025,59 @@ fn a_scale_is_generated_from_a_variable_in_every_mode() {
         number.contains("red/50 is not a colour variable"),
         "{number}"
     );
+}
+
+/// `generate_scale` from `amber/500`, lighter than a 500 by its lightness, keeps
+/// it at 500 by its name and leaves it as it is, and says which variables it
+/// updated by name.
+///
+/// flip: the verb's default anchor by lightness alone → fails at "anchored by
+/// its name".
+#[test]
+fn a_scale_anchors_on_its_sources_named_step() {
+    let (mut doc, mut ids, _) = blank();
+    let amber = Color::from_rgb8(0xf5, 0x9e, 0x0b);
+    let made = script(
+        &mut doc,
+        &mut ids,
+        json!([
+            { "verb": "add_variable", "args": { "kind": "color", "name": "amber/500", "value": { "color": "#f59e0b" } }, "as": "v" },
+            { "verb": "add_variable", "args": { "kind": "color", "name": "amber/300", "value": { "color": "#000000" } } },
+        ]),
+    );
+    assert_ne!(
+        mastik_core::oklch::nearest_step(amber),
+        5,
+        "the fixture: by lightness it is no 500"
+    );
+    let res = Resolved::rebuild(&doc);
+    let done = verbs::call(
+        &mut Ctx {
+            doc: &doc,
+            res: &res,
+            ids: &mut ids,
+            images: None,
+            contrast: None,
+        },
+        "generate_scale",
+        &json!({ "variable": made[0][0] }),
+    )
+    .unwrap();
+    let said = done.said.clone().unwrap_or_default();
+    assert!(
+        said.contains("updated amber/300"),
+        "names what it updated: {said}"
+    );
+    doc.apply(&done.tx).unwrap();
+    let table = doc.variables();
+    let value = |name: &str| match table.by_name(name).unwrap().cells.values().next() {
+        Some(mastik_core::Cell::Color(c)) => *c,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(value("amber/500"), amber, "the source kept");
+    assert_ne!(value("amber/300"), amber, "anchored by its name");
+    let l = |n: &str| mastik_core::oklch::Oklch::of(value(n)).l;
+    assert!(l("amber/300") > l("amber/500") && l("amber/500") > l("amber/700"));
 }
 
 /// `generate_scale` with `steps` makes only the kept steps, refuses an anchor
@@ -4291,10 +4361,12 @@ fn insert_chart_makes_a_chart_on_a_sample_or_a_table() {
 
 /// `set_chart` changes the kind and patches the mapping and the options, leaving
 /// what the patch does not name; a null clears or resets what it names. It asks
-/// for something to change, and a chart.
+/// for something to change, and a chart. Its options' `text` and `padding` are
+/// the chart's own, not the layer short forms of those names.
 ///
 /// flip: `patched` replacing the whole value with the patch → fails at "the
-/// category is kept".
+/// category is kept"; `settled_model` loosening a chart's `text` as a style →
+/// fails at the `text` and `padding` step's run.
 #[test]
 fn set_chart_patches_the_kind_mapping_and_options() {
     use mastik_core::chart::{ChartKind, ColumnId, Stacking};
@@ -4336,6 +4408,21 @@ fn set_chart_patches_the_kind_mapping_and_options() {
         json!({ "node": c.to_wire(), "mapping": { "category": null } }),
     );
     assert_eq!(chart_of(&doc, c).mapping.category, None, "a null clears");
+
+    // A chart's own `text` and `padding`, not a text style's or a frame's.
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": c.to_wire(), "options": { "text": { "weight": 600, "tick_size": 10 },
+                "padding": 24 } }),
+    );
+    let got = chart_of(&doc, c);
+    assert_eq!(
+        (got.options.text.weight, got.options.text.tick_size),
+        (600, 10.0)
+    );
+    assert_eq!(got.options.padding, 24.0, "the chart's padding");
 
     let none = json!({ "node": c.to_wire() });
     assert!(matches!(
@@ -6668,8 +6755,10 @@ fn import_svg_says_what_it_approximated() {
 
 /// `set_layout_grids` completes a grid given in part from a new grid on its
 /// axis, `grids_value` reads it back in that short form, and a layer that is no
-/// frame is refused.
-/// flip: `loose::loosen_grid` leaving the fields out → fails at the commit.
+/// frame or an axis that names neither is refused.
+/// flip: `loose::loosen_grid` leaving the fields out → fails at the commit;
+/// `loose::grid_axis` reading any other word as the columns → fails at "a word
+/// that is no axis".
 #[test]
 fn layout_grids_are_written_short_and_read_back() {
     let (mut doc, mut ids, page) = blank();
@@ -6715,6 +6804,21 @@ fn layout_grids_are_written_short_and_read_back() {
         refused_param(&doc, &mut ids, "set_layout_grids", args),
         "nodes"
     );
+    // An axis that names neither is refused, not read as the columns.
+    let args = json!({ "nodes": [f.to_wire()], "grids": [{ "axis": "horizontal", "count": 8 }] });
+    assert_eq!(
+        refused_param(&doc, &mut ids, "set_layout_grids", args),
+        "grids",
+        "a word that is no axis"
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_layout_grids",
+        json!({ "nodes": [f.to_wire()], "grids": [{ "axis": "row", "count": 8 }] }),
+    );
+    let stored = doc.get(f).unwrap().grids();
+    assert_eq!(stored[0].value.axis, mastik_core::layout::GridAxis::Rows);
 }
 
 /// `set_guides` keeps a listed guide by its id and moves it, adds one with no
@@ -6955,6 +7059,171 @@ fn a_tree_inserts_back_as_what_it_read() {
     assert_eq!(
         mastik_core::component::instance_root(&doc, another),
         Some(another)
+    );
+}
+
+/// An instance read alone, whose main lies outside the read, inserts back as
+/// it read when its overrides are a new layer's defaults: square corners on a
+/// rounded main, an upright label of an italic main, no flex where the main
+/// has one. A path read even-odd, exporting without its fill and with its
+/// proportions locked, inserts back so.
+/// flip: `copy_defaults` without `explicit_kind` → fails at "the square
+/// corners"; `tree` without `keep_copy_italics` → fails at "the upright label";
+/// `full_tree` without its `fill_rule` → fails at "the even-odd path".
+#[test]
+fn a_copy_read_alone_keeps_its_default_overrides() {
+    let (mut doc, mut ids, page) = blank();
+    let rounded = json!({ "Artboard": { "size": { "width": 120, "height": 40 },
+        "corner_radii": { "top_left": 12, "top_right": 12, "bottom_right": 12, "bottom_left": 12 } } });
+    let steps = json!([
+        { "verb": "create_node", "args": { "parent": page.to_wire(), "kind": rounded, "name": "Button" }, "as": "main" },
+        { "verb": "create_text", "args": { "parent": "@main", "text": "Go" }, "as": "label" },
+        { "verb": "set_text_style", "args": { "nodes": ["@label"], "style": { "italic": true } } },
+        { "verb": "set_display", "args": { "nodes": ["@main"], "display": { "Flex": {} } } },
+        { "verb": "make_component", "args": { "nodes": ["@main"] } },
+        { "verb": "create_instance", "args": { "main": "@main", "parent": "@page", "x": 200, "y": 0 }, "as": "inst" },
+        { "verb": "set_geometry", "args": { "node": "@inst", "geometry": { "CornerRadius": 0 } } },
+        { "verb": "set_display", "args": { "nodes": ["@inst"] } },
+    ]);
+    let made = script(&mut doc, &mut ids, steps);
+    let inst = NodeId::from_wire(&made[5][0]).unwrap();
+    let inst_label = doc.get(inst).unwrap().children()[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_text_style",
+        json!({ "nodes": [inst_label.to_wire()], "style": { "italic": false } }),
+    );
+    assert!(
+        doc.get(inst).unwrap().display().is_none(),
+        "the fixture's flex removed"
+    );
+    assert_eq!(
+        doc.get(inst)
+            .unwrap()
+            .kind()
+            .corner_radii()
+            .map(|r| r.top_left),
+        Some(0.0),
+        "the fixture's corners squared"
+    );
+
+    let read = verbs::tree(&doc, inst).expect("the instance");
+    let back = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": read }),
+    )[0];
+    let b = doc.get(back).unwrap();
+    assert_eq!(
+        b.kind().corner_radii().map(|r| r.top_left),
+        Some(0.0),
+        "the square corners"
+    );
+    assert!(b.display().is_none(), "no flex");
+    let NodeKind::Text { style, .. } = doc.get(b.children()[0]).unwrap().kind() else {
+        panic!("a label");
+    };
+    assert!(!style.italic, "the upright label");
+    let name = |mut v: Value| {
+        v.as_object_mut().unwrap().remove("name");
+        v
+    };
+    assert_eq!(
+        verbs::tree(&doc, back).map(name),
+        verbs::tree(&doc, inst).map(name),
+        "reads back as it read"
+    );
+
+    let ring = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": { "Path": { "path": "M0 0 L40 0 L40 40 L0 40 Z M10 10 L30 10 L30 30 L10 30 Z" } } }),
+    )[0];
+    let ops = vec![
+        mastik_core::Operation::SetFillRule {
+            id: ring,
+            rule: mastik_core::FillRule::EvenOdd,
+        },
+        mastik_core::Operation::SetFillHiddenInExport {
+            id: ring,
+            hidden: true,
+        },
+        mastik_core::Operation::SetProportionsLocked {
+            id: ring,
+            locked: true,
+        },
+    ];
+    doc.apply(&mastik_core::Transaction(ops)).unwrap();
+    let read = verbs::tree(&doc, ring).expect("the ring");
+    let back = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": read }),
+    )[0];
+    let b = doc.get(back).unwrap();
+    assert_eq!(
+        b.fill_rule(),
+        mastik_core::FillRule::EvenOdd,
+        "the even-odd path"
+    );
+    assert!(
+        b.fill_hidden_in_export() && b.proportions_locked(),
+        "its flags"
+    );
+}
+
+/// A tree copy written in the loose forms takes its main's completion: a
+/// label's kind in lowercase keeps the main's family, and a card's
+/// `corner_radius` is its own corners.
+/// flip: `expand_copies` without `name_variant` → fails at "the main's family";
+/// without its `corner_radius` move → the card is refused.
+#[test]
+fn a_loose_tree_copy_takes_its_mains_completion() {
+    let (mut doc, mut ids, page) = blank();
+    let rounded = json!({ "Artboard": { "size": { "width": 120, "height": 40 },
+        "corner_radii": { "top_left": 12, "top_right": 12, "bottom_right": 12, "bottom_left": 12 } } });
+    let steps = json!([
+        { "verb": "create_node", "args": { "parent": page.to_wire(), "kind": rounded, "name": "Card" }, "as": "card" },
+        { "verb": "create_text", "args": { "parent": "@card", "text": "Go" }, "as": "label" },
+        { "verb": "set_text_style", "args": { "nodes": ["@label"], "style": { "font_family": "Georgia", "font_size": 30 } } },
+        { "verb": "make_component", "args": { "nodes": ["@card"] } },
+    ]);
+    let made = script(&mut doc, &mut ids, steps);
+    let (card, label) = (&made[0][0], &made[1][0]);
+    let tree = json!({ "kind": frame(300.0, 300.0), "children": [
+        { "copy_of": card, "corner_radius": 0, "children": [
+            { "copy_of": label, "kind": { "text": { "content": "Stop", "sizing": "Auto",
+                "style": { "weight": 700 } } } },
+        ] },
+    ] });
+    let root = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": tree }),
+    )[0];
+    let kids = doc.get(root).unwrap().children().to_vec();
+    let text = doc.get(kids[0]).unwrap().children()[0];
+    let NodeKind::Text { style, .. } = doc.get(text).unwrap().kind() else {
+        panic!("a label");
+    };
+    assert_eq!(
+        (style.font_family.as_str(), style.font_size, style.weight),
+        ("Georgia", 30.0, 700),
+        "the main's family"
+    );
+    assert_eq!(
+        doc.get(kids[0])
+            .unwrap()
+            .kind()
+            .corner_radii()
+            .map(|r| r.top_left),
+        Some(0.0),
+        "the card's own corners"
     );
 }
 

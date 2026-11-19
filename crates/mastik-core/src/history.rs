@@ -429,6 +429,32 @@ impl History {
         self.undo.iter().any(|s| s.note.reverts == Some(serial))
     }
 
+    /// Join into one step `agent`'s steps above serial `after` that lie on top of
+    /// the history, answering how many joined and how many of its steps were left
+    /// apart. A step of anyone else's among them ends the run, so only the steps
+    /// above the latest such step join; a revert, or a step one took back, ends
+    /// it too, since joining would hide which step was taken back.
+    pub fn join_agent_run(&mut self, after: u64, agent: &str) -> (usize, usize) {
+        let (mut joined, mut separate, mut run_ended) = (0, 0, false);
+        for step in self.undo.iter().rev() {
+            if step.serial <= after {
+                break;
+            }
+            let mine = step.note.agent.as_deref() == Some(agent);
+            let plain = step.note.reverts.is_none() && !self.is_reverted(step.serial);
+            match (run_ended, mine && plain) {
+                (false, true) => joined += 1,
+                (false, false) => run_ended = true,
+                (true, true) => separate += 1,
+                (true, false) => {}
+            }
+        }
+        if joined > 1 {
+            self.join_last(joined);
+        }
+        (joined, separate)
+    }
+
     /// [`RevertError::Tangled`] for the step at `at`, naming the latest later step
     /// that names a layer it does.
     fn tangled(&self, at: usize) -> RevertError {
@@ -480,6 +506,35 @@ impl History {
     /// with what only the applied edit can tell (a created node's name).
     pub fn current_note_mut(&mut self) -> Option<&mut StepNote> {
         self.undo.last_mut().map(|s| &mut s.note)
+    }
+
+    /// `doc`, the document this history stands at, as it stood when `top` was
+    /// the step on top ([`Self::current`]; `None` the bottom): the steps done
+    /// since taken back, or the steps undone since brought back. `None` when the
+    /// history no longer holds the way there.
+    pub fn state_at(&self, doc: &Document, top: Option<u64>) -> Option<Document> {
+        let mut doc = doc.clone();
+        if self.current() == top {
+            return Some(doc);
+        }
+        let back = match top {
+            None => Some(0),
+            Some(t) => self.undo.iter().position(|s| s.serial == t).map(|i| i + 1),
+        };
+        if let Some(from) = back {
+            for s in self.undo[from..].iter().rev() {
+                doc.apply_restoring(&s.tx).ok()?;
+            }
+            return Some(doc);
+        }
+        let t = top?;
+        for s in self.redo.iter().rev() {
+            doc.apply_restoring(&s.tx).ok()?;
+            if s.serial == t {
+                return Some(doc);
+            }
+        }
+        None
     }
 
     /// At most `keep` steps of this history, to keep between sessions: the most
@@ -633,6 +688,63 @@ mod tests {
         assert!(doc.get(rect).is_none(), "made and moved, both undone");
         history.redo(&mut doc).unwrap();
         assert_eq!(x_of(&doc, rect), 5.0);
+    }
+
+    /// An agent's steps above a serial join where they lie on top: a step of
+    /// anyone else's ends the run, and the agent's steps under it stay apart.
+    /// flip: `join_agent_run` taking every step as the agent's → fails at the
+    /// answer.
+    #[test]
+    fn an_agents_run_joins_above_anyone_elses_step() {
+        let (mut doc, mut history, rect) = doc_with_rect();
+        let after = history.last_serial();
+        let by = |agent: Option<&str>| StepNote {
+            agent: agent.map(str::to_owned),
+            ..StepNote::default()
+        };
+        for (x, agent) in [
+            (1.0, Some("a")),
+            (2.0, None),
+            (3.0, Some("a")),
+            (4.0, Some("a")),
+        ] {
+            history
+                .commit_noted(&mut doc, move_to(rect, x), by(agent))
+                .unwrap();
+        }
+        let depth = history.undo_depth();
+        assert_eq!(history.join_agent_run(after, "a"), (2, 1));
+        assert_eq!(history.undo_depth(), depth - 1, "the top two are one");
+        history.undo(&mut doc).unwrap();
+        assert_eq!(x_of(&doc, rect), 2.0, "both taken back");
+    }
+
+    /// The document at an earlier top is rebuilt from the done steps, and at a
+    /// later one from the undone steps; a serial the history does not hold has
+    /// none.
+    /// flip: `state_at` walking the undone steps from the far end → fails at
+    /// "the undone step brought back".
+    #[test]
+    fn the_state_at_a_step_is_rebuilt_either_way() {
+        let (mut doc, mut history, rect) = doc_with_rect();
+        history.commit(&mut doc, move_to(rect, 5.0)).unwrap();
+        let five = history.current();
+        history.commit(&mut doc, move_to(rect, 9.0)).unwrap();
+        let nine = history.current();
+        history.commit(&mut doc, move_to(rect, 12.0)).unwrap();
+        let at = |h: &History, doc: &Document, top| h.state_at(doc, top).map(|d| x_of(&d, rect));
+        assert_eq!(at(&history, &doc, five), Some(5.0), "a done step's");
+        // Down past the layer's making, so the steps only come back in order.
+        while history.can_undo() {
+            history.undo(&mut doc).unwrap();
+        }
+        assert!(doc.get(rect).is_none(), "the fixture: the layer unmade");
+        assert_eq!(
+            at(&history, &doc, nine),
+            Some(9.0),
+            "the undone step brought back"
+        );
+        assert_eq!(history.state_at(&doc, Some(9_999)), None);
     }
 
     /// A run of overwrites is one undo step, and undoing it lands where the run
