@@ -253,12 +253,14 @@ impl MastikApp {
 
     /// Say [`PICK_STATUS`] again before it fades or once another message has
     /// replaced it: while the wait lasts the card is hidden and the canvas takes
-    /// no other press, so the status line is all that says how to get out.
+    /// no other press, so the status line is all that says how to get out. An
+    /// error is left up for its whole hold, so a failed save is read.
     fn keep_pick_status(&mut self) {
         let status = self.session.status();
         let fading = status.at.elapsed() + std::time::Duration::from_secs(1)
             >= crate::app::status_hold(status);
-        if status.text != PICK_STATUS || fading {
+        let other = status.text != PICK_STATUS && status.kind != crate::session::StatusKind::Error;
+        if other || fading {
             self.session.info(PICK_STATUS);
         }
     }
@@ -677,6 +679,27 @@ mod tests {
         app.session.info("Something else");
         let _ = ctx.run_ui(Default::default(), |ui| app.blend_ui(ui.ctx()));
         assert_eq!(app.session.status().text, PICK_STATUS, "said again");
+    }
+
+    /// An error said while *Pick a path…* waits stays up past the next frames.
+    /// flip: `keep_pick_status` re-saying over any other text → fails at "the
+    /// error stays".
+    #[test]
+    fn the_pick_wait_leaves_an_error_up() {
+        let ctx = egui::Context::default();
+        let (mut app, _, _, _) = with_spine(&ctx);
+        app.open_blend();
+        app.blend.picking = true;
+        app.session.fail("Save failed: x");
+        for _ in 0..3 {
+            let _ = ctx.run_ui(Default::default(), |ui| app.blend_ui(ui.ctx()));
+            app.session.next_status_pass();
+        }
+        assert!(
+            app.session.status().text.starts_with("Save failed: x"),
+            "the error stays: {}",
+            app.session.status().text
+        );
     }
 
     /// The card is as tall on a straight line as along a path: the *Along* row and
