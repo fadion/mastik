@@ -97,10 +97,6 @@ Ideas worth weighing, not yet decided or scheduled.
 - `vello_hybrid` as a third backend if low-end GPUs demand it.
 - **PNG goldens** — wait on an aarch64/NEON measurement (§15 D304); per-`vello_cpu` too (D414).
   `num_threads` is still a default.
-- **Chrome hairline base** in `rulers::snap_across_axis` (guides) is unruled (§15 D479). The pixel
-  grid no longer calls it: it places lines from its lattice, which
-  `the_lattice_picks_the_pixels_the_snapped_lines_did` holds to the pixels `snap_across_axis` picks,
-  so ruling the base means moving the lattice with it.
 - **`Ctrl+Alt` is `AltGr`** on many European layouts (`shortcuts.md` §12, §15 D987).
 - **One font-availability question for panel and snapshot** — only worth it if the snapshot ever
   reads a live `FontService`.

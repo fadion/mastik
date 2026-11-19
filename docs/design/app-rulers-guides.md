@@ -98,7 +98,8 @@ scoped, copied, drawn and inspected, and the canvas's press-priority ladder. Sna
 - **The default colour and the thickness are per-user** (`prefs::CanvasPrefs`, the Settings modal's
   *Canvas* section). A guide with `color: None` draws in `guide_colour` (`Guide::color_or`), which
   starts at `DEFAULT_GUIDE_COLOR`; the document never stores the default. Every width keeps a solid
-  core at display scales 1.0–2.0 (`snap_across_axis`).
+  core at display scales 1.0–2.0, and a guide is drawn within half a device pixel of where it is
+  (`ui::hairline_in_column`, the chrome rules' snap).
 
 - A frame-scoped guide shows a dotted continuation beyond its frame on hover/selection, same width and
   colour; none for page-wide guides or guides in rotated frames (`rulers::upright`). The solid segment is

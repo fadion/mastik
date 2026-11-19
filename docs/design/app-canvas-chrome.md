@@ -63,9 +63,9 @@ marks the original that stays. Toggles live with the key.
 - Not drawn under the ruler bars.
 - Both inks place a line by one rule, `grid_ink::on_line` over `MastikApp::grid_placed`'s
   `Lattice` (world 0's texel modulo the pitch, the zoom as pitch, the artwork area as the region):
-  a line takes the device pixel holding its position, a half rounding up, so switching *Adaptive*
-  never moves a line. It picks the pixels `rulers::snap_across_axis` gave a one-device-pixel line
-  (`the_lattice_picks_the_pixels_the_snapped_lines_did`).
+  a line takes the device pixel holding its position, one on a pixel edge going right
+  (`grid_ink::TIE`), so switching *Adaptive* never moves a line. It picks the pixel a guide on the
+  same unit takes (`ui::hairline_in_column`, `the_lattice_picks_the_pixels_the_snapped_lines_did`).
 - Showing the grid and snapping to it are separate switches.
 
 ## The minimap (`minimap.rs`)

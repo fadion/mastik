@@ -56,14 +56,20 @@ pub fn adapt_rgba8([r, g, b, a]: [u8; 4]) -> [u8; 4] {
 }
 
 /// Whether texel `at` is a grid line on an axis whose lines lie at `origin +
-/// k × pitch` texels: the line rounds to the texel holding its position, a half
-/// rounding up. `grid_ink.wgsl` runs this rule; the app's egui grid calls it too.
+/// k × pitch` texels: the line lands in the texel holding its position, the one
+/// whose centre is nearest it, as a guide's line does (`ui::hairline_in_column`).
+/// A line on a texel edge goes right, by [`TIE`], as the guide's does.
+/// `grid_ink.wgsl` runs this rule; the app's egui grid calls it too.
 pub fn on_line(origin: f32, pitch: f32, at: u32) -> bool {
     // Lines are at least `VISIBLE_AT_ZOOM` texels apart, so the nearest index is the only candidate.
     let x = at as f32;
     let k = ((x - origin) / pitch).round_ties_even();
-    (origin + k * pitch + 0.5).floor() == x
+    (origin + k * pitch + TIE).floor() == x
 }
+
+/// How far past a texel edge a line on it is counted; the app's guides read it
+/// (`ui::HAIRLINE_TIE`) and `grid_ink.wgsl` spells it.
+pub const TIE: f32 = 1e-3;
 
 /// Where the lattice falls in a canvas texture, in texels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -282,9 +288,10 @@ mod tests {
         }
     }
 
-    /// A line lands on the texel holding its position and a half rounds up; the
-    /// nearest-index search finds lines on either side of zero.
-    /// flip: `round_ties_even` → `floor` in `on_line` → fails at "just inside".
+    /// A line lands on the texel holding its position, one on a texel edge going
+    /// right; the nearest-index search finds lines on either side of zero.
+    /// flip: `round_ties_even` → `floor` in `on_line` → fails at "just inside";
+    /// `TIE` dropped → fails at "on the edge".
     #[test]
     fn a_line_lands_on_the_texel_holding_it() {
         let lattice = Lattice {
@@ -292,16 +299,19 @@ mod tests {
             pitch: [8.5, 10.0],
             region: [0, 0, 40, 40],
         };
-        // 3.5 → 4, 12 → 12, 20.5 → 21, 29 → 29, 37.5 → 38.
+        // 3.5 → 3, 12 → 12, 20.5 → 20, 29 → 29, 37.5 → 37.
         assert_eq!(
             lattice.columns().collect::<Vec<_>>(),
-            [4, 12, 21, 29, 38],
+            [3, 12, 20, 29, 37],
             "columns"
         );
         assert_eq!(lattice.rows().collect::<Vec<_>>(), [0, 10, 20, 30], "rows");
-        // Lines a little either side of texel 0's left edge both round into it.
-        assert!(on_line(9.6, 10.0, 0), "just outside");
+        // A line just left of texel 0 is texel −1's; just right of it, texel 0's.
+        assert!(!on_line(9.6, 10.0, 0), "just outside");
+        assert!(on_line(9.6, 10.0, 9), "the texel holding it");
         assert!(on_line(0.4, 10.0, 0), "just inside");
+        // A hair short of texel 0's left edge, within float noise, still goes right.
+        assert!(on_line(9.9995, 10.0, 0), "on the edge");
     }
 
     /// The shader carries `color.rs`'s transfer and this module's constants.
@@ -311,6 +321,7 @@ mod tests {
         let wgsl = include_str!("grid_ink.wgsl");
         let mut lines: Vec<String> = crate::color::wgsl_transfer_lines().into();
         lines.extend([
+            format!("const TIE: f32 = {TIE:?};"),
             format!("const STEP: f32 = {STEP:?};"),
             format!("const DARKEN_ABOVE: f32 = {DARKEN_ABOVE:?};"),
             format!(

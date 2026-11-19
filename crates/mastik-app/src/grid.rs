@@ -179,9 +179,9 @@ mod tests {
             .collect()
     }
 
-    /// The device columns the egui grid drew before it went through `on_line`:
-    /// each world unit's screen position put through `rulers::snap_across_axis`
-    /// at one device pixel, kept while inside the area. Per axis, the pixel under
+    /// The device columns a one-device-pixel line snapped as a guide is
+    /// (`ui::hairline_in_column`) lands on: each world unit's screen position,
+    /// kept while inside the area. Per axis, the pixel under
     /// each line, the line's exact device position, and whether it was kept.
     fn snapped_columns(
         app: &MastikApp,
@@ -206,7 +206,7 @@ mod tests {
         ] {
             for i in (lo.floor() as i64)..=(hi.ceil() as i64) {
                 let p = app.to_screen(Point::new(i as f64, i as f64), rect, ppp);
-                let v = crate::rulers::snap_across_axis([p.x, p.y][axis], ppp, width);
+                let v = crate::ui::hairline_in_column([p.x, p.y][axis], ppp, width);
                 let kept = v >= min && v <= max;
                 out[axis].push(((v * ppp - 0.5).round() as i64, exact(i as f64, axis), kept));
             }
@@ -215,14 +215,15 @@ mod tests {
     }
 
     /// Over a sweep of zooms, positions, canvas offsets and display scales, the
-    /// lattice puts every line on the device pixel `snap_across_axis` put it on,
-    /// so the shader and the egui lines draw the grid the egui path always drew.
-    /// A line within a thousandth of a pixel of a pixel edge is a tie each path
-    /// settles by float rounding, and is skipped; so is a pixel a fractional
+    /// lattice puts every line on the device pixel a guide's snap puts it on, the
+    /// one holding the line, so the grid and a guide on the same unit share a pixel.
+    /// A line within a ten-thousandth of a pixel of the tie point, just short of a
+    /// pixel edge by `ui::HAIRLINE_TIE`, is a tie each path settles by float
+    /// rounding, and is skipped; so is a pixel a fractional
     /// canvas edge leaves outside the texture.
     ///
-    /// flip: `on_line` rounding with `floor(origin + k × pitch)` → fails at "the
-    /// same pixels".
+    /// flip: `on_line` rounding with `floor(origin + k × pitch + 0.5)` → fails at
+    /// "the same pixels".
     #[test]
     fn the_lattice_picks_the_pixels_the_snapped_lines_did() {
         let ctx = egui::Context::default();
@@ -274,7 +275,8 @@ mod tests {
                             for axis in 0..2 {
                                 // A tie may also fall either side of the area's edge.
                                 let tie = |(_, at, _): &(i64, f64, bool)| {
-                                    ((at + 0.5) - (at + 0.5).round()).abs() < 1e-3
+                                    let at = at + f64::from(crate::ui::HAIRLINE_TIE);
+                                    (at - at.round()).abs() < 1e-4
                                 };
                                 ties += snapped[axis].iter().filter(|c| tie(c)).count();
                                 let want: Vec<i64> = snapped[axis]

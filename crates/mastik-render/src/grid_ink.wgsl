@@ -18,6 +18,8 @@ struct Params {
 @group(0) @binding(1) var dst: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> p: Params;
 
+// `grid_ink::TIE`: a line on a texel edge goes right.
+const TIE: f32 = 0.001;
 const STEP: f32 = 10.0;
 const DARKEN_ABOVE: f32 = 45.0;
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
@@ -57,7 +59,7 @@ fn luminance_at(l_in: f32) -> f32 {
 fn on_line(origin: f32, pitch: f32, at: u32) -> bool {
     let x = f32(at);
     let k = round((x - origin) / pitch);
-    return floor(origin + k * pitch + 0.5) == x;
+    return floor(origin + k * pitch + TIE) == x;
 }
 
 fn adapt(c: vec3<f32>) -> vec3<f32> {

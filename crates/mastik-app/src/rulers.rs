@@ -160,27 +160,6 @@ fn guide_stroke_width(base: f32, selected: bool) -> f32 {
     }
 }
 
-/// A coordinate snapped onto the device-pixel grid, so a hairline stays a
-/// hairline.
-///
-/// A line whose device width is odd wants its centre on a pixel centre and an
-/// even one on a pixel edge; backwards turns a 1px line into a 2px grey smear.
-/// The parity is `floor(width × ppp)`, decided by
-/// `the_two_guide_weights_keep_a_solid_core_at_every_scale`: reading the point
-/// width is wrong at 150%/175%, and `round` leaves a resting guide with no solid
-/// pixel (1.5 rounds to 2, giving `[0.75, 0.75]`).
-///
-/// `ui::hairline_on_pixel_centre` is the shared parity predicate. The base differs
-/// from `ui::hairline_in_column` on purpose: a chrome rule must stay inside its 1pt
-/// allocation (floor), while a guide takes the nearest grid line (round).
-pub(crate) fn snap_across_axis(v: f32, ppp: f32, width: f32) -> f32 {
-    let snapped = (v * ppp).round() / ppp;
-    match crate::ui::hairline_on_pixel_centre(ppp, width) {
-        true => snapped + 0.5 / ppp,
-        false => snapped,
-    }
-}
-
 /// The two dashed runs that carry a guide's line out to the edges of the canvas,
 /// past the ends of its frame.
 ///
@@ -644,7 +623,8 @@ impl MastikApp {
     ) {
         let ink = guide_ink(colour, selected, fade);
         let width = guide_stroke_width(self.prefs.canvas.guide_width(), selected);
-        let at = |v: f32| snap_across_axis(v, ppp, width);
+        // On the nearest pixel position of the line's parity, as a chrome rule is.
+        let at = |v: f32| crate::ui::hairline_in_column(v, ppp, width);
         // Snapped across the line only; rounding along it would shorten a scoped
         // guide.
         let snap_across = |p: egui::Pos2| match line.axis {
@@ -2117,7 +2097,7 @@ mod guide_geometry_tests {
                 guide_stroke_width(base, false),
                 guide_stroke_width(base, true),
             ] {
-                let at = snap_across_axis(100.3, ppp, width);
+                let at = crate::ui::hairline_in_column(100.3, ppp, width);
                 let cov = coverage(at, ppp, width);
                 let core = cov.iter().copied().fold(0.0f32, f32::max);
                 assert!(
@@ -2212,23 +2192,21 @@ mod guide_geometry_tests {
         // 150%: the point-width test fringes the selected guide's 3 pixels over 4.
         let ppp = 1.5;
         assert_eq!(coverage(by_point_width(100.3, ppp, 2.0), ppp, 2.0).len(), 4);
-        assert_eq!(
-            coverage(snap_across_axis(100.3, ppp, 2.0), ppp, 2.0).len(),
-            3
-        );
+        let snapped = |v: f32, ppp: f32, width: f32| crate::ui::hairline_in_column(v, ppp, width);
+        assert_eq!(coverage(snapped(100.3, ppp, 2.0), ppp, 2.0).len(), 3);
 
         // The rounded-device test takes the core off the resting one.
         assert!(
             core(by_rounded_device(100.3, ppp, 1.0), ppp, 1.0) < 0.8,
             "rounding used to leave the 1pt guide with no solid pixel; if this \
-             passes, the two rules now agree and the comment on \
-             `snap_across_axis` is wrong"
+             passes, the two rules now agree and `ui::hairline_on_pixel_centre`'s \
+             floor is no longer what keeps it"
         );
-        assert!(core(snap_across_axis(100.3, ppp, 1.0), ppp, 1.0) > 0.999);
+        assert!(core(snapped(100.3, ppp, 1.0), ppp, 1.0) > 0.999);
 
         let ppp = 1.75;
         assert!(core(by_rounded_device(100.3, ppp, 1.0), ppp, 1.0) < 0.9);
-        assert!(core(snap_across_axis(100.3, ppp, 1.0), ppp, 1.0) > 0.999);
+        assert!(core(snapped(100.3, ppp, 1.0), ppp, 1.0) > 0.999);
     }
 }
 
@@ -2303,6 +2281,57 @@ mod guide_grab_tests {
                 .any(|s| s.color == color::SELECT && s.width == 4.0),
             "one point thicker, in blue: {picked:?}"
         );
+    }
+
+    /// A guide is drawn within half a device pixel of where it is, resting (an odd
+    /// device width at 100%) and picked (even), swept across a pixel at each
+    /// ordinary display scale.
+    ///
+    /// flip: `draw_guide_inner` snapping with a nearest-edge base for both parities
+    /// (`round`, then half a pixel for an odd width) → fails at 100%, a whole pixel out.
+    #[test]
+    fn a_guide_is_drawn_within_half_a_device_pixel_of_its_place() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        for step in 0..20 {
+            let position = 300.0 + f64::from(step) / 20.0;
+            let (mut app, id, rect, _) = app_with_guide(&ctx, GuideAxis::Vertical, position);
+            app.prefs.canvas.guide_thickness = 1;
+            for ppp in [1.0f32, 1.25, 1.5, 1.75, 2.0] {
+                for picked in [false, true] {
+                    match picked {
+                        true => app.session.selection.set_guide(id),
+                        false => app.session.selection.clear(),
+                    }
+                    let out = ctx.run_ui(Default::default(), |ui| {
+                        app.draw_rulers_and_guides(ui.painter(), rect, ppp, None);
+                    });
+                    let exact = app.to_screen(Point::new(position, 0.0), rect, ppp).x;
+                    let drawn: Vec<f32> = out
+                        .shapes
+                        .iter()
+                        .filter_map(|s| match &s.shape {
+                            egui::Shape::LineSegment { points, .. }
+                                if points[0].x == points[1].x
+                                    && (points[0].x - exact).abs() < 2.0 =>
+                            {
+                                Some(points[0].x)
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    assert!(!drawn.is_empty(), "fixture: the guide is painted");
+                    for x in drawn {
+                        let out_by = (x - exact).abs() * ppp;
+                        assert!(
+                            out_by <= 0.5 + 1e-3,
+                            "ppp {ppp}, picked {picked}, guide at {position}: drawn at \
+                             {x} against {exact}, {out_by} device px out"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Pressing a guide anywhere in its pick band leaves it where it was. Swept

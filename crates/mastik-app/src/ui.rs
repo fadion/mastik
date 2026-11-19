@@ -6996,19 +6996,26 @@ pub fn hairline_on_pixel_centre(ppp: f32, width: f32) -> bool {
 
 /// A hairline's coordinate snapped to the nearest grid position of the right
 /// parity, so it covers whole physical pixels and stays inside its column
-/// (within half a device pixel). Used by [`rule`], `inspector::popup_rule` and
-/// `settings::section`.
+/// (within half a device pixel). Used by [`rule`], `inspector::popup_rule`,
+/// `settings::section` and the canvas guides.
 ///
 /// The two arms are not interchangeable: `floor + 0.5` is the nearest pixel centre
 /// and `round` the nearest edge, each up to a whole pixel out for the other's
-/// parity. `rulers::snap_across_axis` rounds for both: guides have no column.
+/// parity. A line exactly on a pixel edge is a tie the odd arm breaks rightward by
+/// [`HAIRLINE_TIE`], so float noise cannot flip it; the pixel grid's
+/// `grid_ink::on_line` breaks it the same way.
 pub fn hairline_in_column(centre: f32, ppp: f32, width: f32) -> f32 {
     let device = centre * ppp;
     match hairline_on_pixel_centre(ppp, width) {
-        true => (device.floor() + 0.5) / ppp,
+        true => ((device + HAIRLINE_TIE).floor() + 0.5) / ppp,
         false => device.round() / ppp,
     }
 }
+
+/// How far past a pixel edge, in device pixels, a line on it is counted: more
+/// than the float noise a screen position carries, far less than anything seen.
+/// The pixel grid's own, so the grid and a guide on one unit share a pixel.
+pub const HAIRLINE_TIE: f32 = mastik_render::grid_ink::TIE;
 
 /// The 1px rule the Align row uses to part its three groups, allocated at the
 /// row's full height and painted 16px tall (a `Separator` would claim the whole
