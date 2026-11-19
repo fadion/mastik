@@ -469,7 +469,7 @@ fn rail_id(node: NodeId) -> String {
 /// node's parent's, see [`origin_outer`]).
 ///
 /// SVG's default region clips any shadow reaching past a tenth of the layer, so it
-/// is written from [`Resolved::ink_bounds`], padded by [`inner_working_pad`].
+/// is written from [`Resolved::ink_bounds`], padded by [`working_pad`].
 fn effect_region(
     res: &Resolved,
     id: NodeId,
@@ -477,7 +477,7 @@ fn effect_region(
     effects: &[Keyed<Effect>],
 ) -> Option<Rect> {
     // `None` drops the filter and keeps the artwork, like `ScenePainter::push_effect_layer`.
-    Some(ink_in(res, id, id, transform)? + Insets::uniform(inner_working_pad(effects)))
+    Some(ink_in(res, id, id, transform)? + Insets::uniform(working_pad(effects)))
 }
 
 /// `ink_of`'s ink box in the space `outer` maps `frame`'s local space into, the
@@ -505,20 +505,25 @@ fn region_attrs(r: Rect) -> String {
     )
 }
 
-/// How far outside the layer this stack's inner shadows must be able to look.
-/// `EffectKind::escape` is `ZERO` for one, but an inner shadow is cast from
-/// everything outside the layer and SVG makes results outside the region
-/// transparent, so a region at the ink bounds draws nothing.
+/// How far outside the layer this stack's inner shadows and sharpens must be able
+/// to look. `EffectKind::escape` is `ZERO` for both, but an inner shadow is cast
+/// from everything outside the layer and SVG makes results outside the region
+/// transparent, so a region at the ink bounds draws nothing. A sharpen's blur at
+/// a region that ends on the layer's edge rings far harder in `resvg` than on the
+/// canvas; the pad adds no ink, since the composite clamps alpha below zero away.
 ///
 /// Uniform and generous on purpose: too small silently crops, and the final
-/// `feComposite operator="in"` confines the result. `0.0` with no inner shadow.
-fn inner_working_pad(effects: &[Keyed<Effect>]) -> f64 {
+/// `feComposite operator="in"` confines an inner shadow. `0.0` with neither.
+fn working_pad(effects: &[Keyed<Effect>]) -> f64 {
     effects
         .iter()
         .filter(|e| e.visible)
         .filter_map(|e| match &e.kind {
             EffectKind::InnerShadow(s) => {
                 Some(mastik_core::effect::reach(s.blur) + s.spread.abs() + s.offset.hypot())
+            }
+            EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
+                Some(mastik_core::effect::reach(*radius))
             }
             _ => None,
         })

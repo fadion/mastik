@@ -3851,7 +3851,7 @@ fn two_shadows_are_both_cast_from_the_layer_itself() {
 /// The fixture's rect is 80×40 at world (30, 30) with a 2px centred stroke, so
 /// its box is 29…111 by 29…71 and the unpadded region was exactly that. Asserted
 /// on the region being *outside* the box rather than on the pad's own value,
-/// which is `inner_working_pad`'s business and deliberately generous.
+/// which is `working_pad`'s business and deliberately generous.
 ///
 /// ⚠️ Flipped by dropping the `+ Insets::uniform(...)` in `effect_region`, where
 /// `x` comes back to 29 and this fails on the first half of the condition.
