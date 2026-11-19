@@ -373,7 +373,23 @@ fn photos(
         {
             Poll::Waiting => waiting = true,
             Poll::Ready(Ok(page)) => pages.push((q, page)),
-            Poll::Ready(Err(e)) => return Err(photo_error(&e, service)),
+            Poll::Ready(Err(e)) => {
+                // A search asks one service: the others switched on are the way on.
+                let others: Vec<String> = SERVICES
+                    .iter()
+                    .filter(|s| s.key != service.key)
+                    .filter(|s| desk.prefs().photo_services.iter().any(|k| k == s.key))
+                    .map(|s| format!("`{}`", s.key))
+                    .collect();
+                let mut said = photo_error(&e, service);
+                if !others.is_empty() {
+                    said.push_str(&format!(
+                        " Or search another: `source` {}.",
+                        others.join(", ")
+                    ));
+                }
+                return Err(said);
+            }
         }
     }
     if waiting {
@@ -1083,6 +1099,30 @@ mod tests {
         );
         assert_eq!(alias["results"][0]["found"], json!(1), "found by alias");
         assert_eq!(alias["results"][1]["found"], json!(0));
+    }
+
+    /// A photo search a service refuses names the other services switched on,
+    /// since a search asks one.
+    ///
+    /// flip: `photos` answering the service's error alone → fails at "the other
+    /// service".
+    #[test]
+    fn a_refused_photo_search_names_the_other_services() {
+        let (mut app, mut engine, ..) = fixture("limited");
+        app.prefs.assets.photo_services = vec!["unsplash".into(), "pexels".into()];
+        app.prefs.assets.service = "unsplash".into();
+        let key = ("unsplash", "coffee".to_owned(), Orientation::Any);
+        app.assets
+            .agent_land_search(key, Err(crate::assets::photos::PhotoError::Limited));
+        let out = now(
+            &mut engine,
+            &mut app,
+            "search_assets",
+            json!({ "queries": ["coffee"], "kind": "photos" }),
+        );
+        let why = format!("{:?}", out.content);
+        assert!(out.is_error && why.contains("hourly limit"), "{why}");
+        assert!(why.contains("`pexels`"), "the other service: {why}");
     }
 
     /// An icon lands as the panel's insert does: a group named after it, its
