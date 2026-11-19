@@ -1049,6 +1049,19 @@ fn page_of(s: &EditorSession, id: Option<NodeId>) -> Result<NodeId, String> {
     }
 }
 
+/// The page an `export_png` `region` is a rectangle of: `id`'s when it names a
+/// page, else the person's. A layer's `id` beside a `region` is refused.
+fn region_page(s: &EditorSession, id: Option<NodeId>) -> Result<NodeId, String> {
+    if let Some(id) = id.filter(|id| !is_page(s, *id)) {
+        return Err(format!(
+            "`{}` is a layer: `region` is a rectangle of a page, so pass the page \
+             or no `id`; or export the layer alone without `region`",
+            id.to_wire()
+        ));
+    }
+    page_of(s, id)
+}
+
 /// `export_png`'s `region`, `[x, y, w, h]` in page coordinates; `None` when
 /// absent. One with no area is refused: it has nothing to draw.
 fn region(args: &Value) -> Result<Option<mastik_core::kurbo::Rect>, String> {
@@ -1463,14 +1476,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
             }
             let max = max.max(16) as f64;
             if let Some(region) = region(args)? {
-                if let Some(id) = id.filter(|id| !is_page(s, *id)) {
-                    return Err(format!(
-                        "`{}` is a layer: `region` is a rectangle of a page, so pass the page \
-                         or no `id`; or export the layer alone without `region`",
-                        id.to_wire()
-                    ));
-                }
-                let page = page_of(s, id)?;
+                let page = region_page(s, id)?;
                 let scale = (max / region.width().max(region.height())).min(2.0);
                 let vp = png_viewport("`region`", region, scale, max)?;
                 return Ok(Answer::Image(mastik_export::png::png(

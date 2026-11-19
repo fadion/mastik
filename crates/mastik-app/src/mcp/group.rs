@@ -83,30 +83,10 @@ pub(super) fn close(docs: &mut impl Documents, group: Group) {
 }
 
 /// Join the group's steps into one named by it: the client's steps above
-/// `after` lying on top of the history. A step of the person's or another
-/// client's among them ends the run, so only the steps above the latest such
-/// step join, and the others stay as they are (`separate`). A revert, or a step
-/// one took back, ends it too: joining would hide which step was taken back.
+/// `after` lying on top of the history, as `History::join_agent_run` decides;
+/// the client's steps under a step of anyone else's stay apart (`separate`).
 fn join(s: &mut EditorSession, group: Group) -> Value {
-    let mut joined = 0;
-    let mut separate = 0;
-    let mut run_ended = false;
-    for step in s.history.done().rev() {
-        if step.serial <= group.after {
-            break;
-        }
-        let mine = step.note.agent.as_deref() == Some(group.agent.as_str());
-        let plain = step.note.reverts.is_none() && !s.history.is_reverted(step.serial);
-        match (run_ended, mine && plain) {
-            (false, true) => joined += 1,
-            (false, false) => run_ended = true,
-            (true, true) => separate += 1,
-            (true, false) => {}
-        }
-    }
-    if joined > 1 {
-        s.history.join_last(joined);
-    }
+    let (joined, separate) = s.history.join_agent_run(group.after, &group.agent);
     if joined > 0
         && let Some(note) = s.history.current_note_mut()
     {

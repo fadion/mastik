@@ -17,7 +17,7 @@ use crate::id::{IdSource, NodeId};
 use crate::item::{Keyed, PastTheEnd, rekey_by_position};
 use crate::node::{
     BlendMode, BlockStyle, BoolOp, CharSpans, Fill, NodeKind, ParagraphStyle, Pivot, Stroke,
-    TextStyle,
+    TextSizing, TextStyle,
 };
 use crate::op::{GeometryPatch, OpError, Operation, Transaction};
 use crate::resolve::Resolved;
@@ -4873,6 +4873,14 @@ pub static VERBS: &[Verb] = &[
         run: |ctx, a| {
             let id = a.node("node")?;
             let mut geometry = a.model::<GeometryPatch>("geometry")?;
+            let negative = match &geometry {
+                GeometryPatch::TextSizing(TextSizing::AutoHeight(w)) => *w < 0.0,
+                GeometryPatch::TextSizing(TextSizing::Fixed(s)) => s.width < 0.0 || s.height < 0.0,
+                _ => false,
+            };
+            if negative {
+                return Err(a.invalid("geometry", "a size is not negative"));
+            }
             keep_radii(ctx, a, id, &mut geometry)?;
             if bakes_rounding(ctx, id, &geometry) {
                 return Err(a.invalid(

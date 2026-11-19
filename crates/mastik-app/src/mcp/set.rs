@@ -260,17 +260,22 @@ fn placed_at(
 }
 
 /// The `set_size` step that makes `id` `w` wide and `h` high, a side not given
-/// kept at its box's. A width alone on an auto or auto-height text wraps it at
-/// that width and keeps it growing down, as the inspector's W does, where
-/// `set_size` would fix its height.
+/// kept at its box's. A width alone on a text takes the sizing the inspector's W
+/// gives it (`edit::resized_text_sizing`): an auto or auto-height text wraps at
+/// that width and keeps growing down, where `set_size` would fix its height.
 fn sized(s: &EditorSession, id: NodeId, w: Option<f64>, h: Option<f64>) -> Result<Value, String> {
     if let (Some(w), None) = (w, h)
         && let Some(mastik_core::NodeKind::Text { sizing, .. }) = s.doc.get(id).map(|n| n.kind())
-        && !matches!(sizing, mastik_core::TextSizing::Fixed(_))
+        && let sizing @ mastik_core::TextSizing::AutoHeight(_) =
+            mastik_core::edit::resized_text_sizing(
+                *sizing,
+                mastik_core::kurbo::Size::new(w, 0.0),
+                false,
+            )
     {
         return Ok(
             json!({ "tool": "set_geometry", "args": { "node": id.to_wire(),
-            "geometry": { "TextSizing": { "AutoHeight": w } } } }),
+            "geometry": { "TextSizing": sizing } } }),
         );
     }
     let now = match (w, h) {
@@ -811,9 +816,11 @@ mod tests {
     }
 
     /// `set`'s `width` alone on an auto-height text wraps it at that width and
-    /// keeps it growing down, as the inspector's W does.
+    /// keeps it growing down, as the inspector's W does; a negative one is refused.
     ///
-    /// flip: `sized` without its text arm → fails at "still auto-height".
+    /// flip: `sized` without its text arm → fails at "still auto-height";
+    /// `set_geometry` without its negative-size check → fails at "a negative
+    /// width is refused".
     #[test]
     fn set_width_keeps_an_auto_height_text_growing() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -846,6 +853,28 @@ mod tests {
             sizing,
             mastik_core::TextSizing::AutoHeight(1000.0),
             "still auto-height"
+        );
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "set",
+            json!({ "nodes": [id], "props": { "width": -120 } }),
+        );
+        assert!(out.is_error, "a negative width is refused");
+        assert!(
+            format!("{:?}", out.content).contains("not negative"),
+            "as set_size refuses it: {:?}",
+            out.content
+        );
+        let sizing = match docs.session.doc.get(nid).unwrap().kind() {
+            mastik_core::NodeKind::Text { sizing, .. } => *sizing,
+            _ => panic!("a text"),
+        };
+        assert_eq!(
+            sizing,
+            mastik_core::TextSizing::AutoHeight(1000.0),
+            "unchanged"
         );
     }
 
