@@ -109,7 +109,7 @@ pub(super) fn set(
         props,
         "size",
         ["width", "height"],
-        "`size` is {width, height}",
+        "`size` is {width, height} in px; a layer hugs or fills by its `item`: {\"width\": \"FitContent\"}, {\"width\": {\"Percent\": 100}} or {\"grow\": 1}",
     )?;
     let at = sides(
         props,
@@ -771,6 +771,10 @@ mod tests {
             (bounds(&docs).width(), bounds(&docs).height()),
             (60.0, 10.0)
         );
+        // A size written as a word is pointed at the item, which hugs and fills.
+        let hug = set(&mut docs, json!({ "size": { "width": "hug" } }));
+        let why = format!("{:?}", hug.content);
+        assert!(hug.is_error && why.contains("FitContent"), "{why}");
 
         ok(&set(
             &mut docs,

@@ -876,6 +876,20 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
     if model == "LayoutItem" && matches!(named.as_deref(), Some("position" | "absolute")) {
         return format!("{said}; a layout item has no position: {OUT_OF_FLOW}");
     }
+    // `fill` has no one meaning, so it is refused; the refusal names what does it.
+    let word = miss
+        .why
+        .strip_prefix("unknown variant `")
+        .and_then(|w| w.split('`').next())
+        .map(str::to_lowercase);
+    if matches!(named.as_deref(), Some("width" | "height"))
+        && matches!(word.as_deref(), Some("fill" | "stretch" | "fill_container"))
+    {
+        return format!(
+            "{said}; a layer fills its parent across the flow by {{\"Percent\": 100}} (a frame's \
+             `Auto` is its stored size, which a stretch never changes) and along it by `grow`: 1"
+        );
+    }
     if model == "Tree"
         && (miss.why.starts_with("unknown field `corner_radius`")
             || miss.why.starts_with("unknown field `corner_radii`"))

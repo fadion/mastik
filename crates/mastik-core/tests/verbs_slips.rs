@@ -260,6 +260,26 @@ fn styles_flex_corners_and_paths_take_the_names_agents_write() {
     assert!(set.is_ok(), "the path: {set:?}");
 }
 
+/// A width written `Fill` is refused naming the size that fills, since a frame
+/// is never stretched.
+///
+/// flip: `explain` without its fill arm → fails at "the fill's".
+#[test]
+fn a_fill_width_is_shown_the_size_that_fills() {
+    let (doc, mut ids, page) = blank();
+    let frame = json!({ "Artboard": { "size": { "width": 10, "height": 10 } } });
+    let refused = why(
+        &doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": { "kind": frame, "item": { "width": "Fill" } } }),
+    );
+    assert!(
+        refused.contains("\"Percent\": 100"),
+        "the fill's: {refused}"
+    );
+}
+
 /// A layout item written with a `position`, in a tree or alone, is refused
 /// with the insets that take a child out of its frame's flow.
 ///
