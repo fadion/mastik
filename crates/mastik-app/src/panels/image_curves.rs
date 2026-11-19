@@ -921,6 +921,61 @@ mod card_tests {
         assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
     }
 
+    /// A point added by a drag between two others stays held through the drag
+    /// and after it lands: the card reads the previewed curve, which holds it.
+    /// flip: `Held::on` finding no inner point → fails at "held mid-drag".
+    #[test]
+    fn an_added_and_dragged_point_stays_held() {
+        let ctx = egui::Context::default();
+        let (mut app, rect) = editing(&ctx);
+        let graph = graph_rect(&mut app, &ctx, rect);
+        let at = |f: f32| egui::pos2(graph.left() + graph.width() * f, graph.center().y);
+        for f in [0.2, 0.8] {
+            drag(&mut app, &ctx, at(f), &[at(f) + egui::vec2(0.0, 4.0)]);
+        }
+        assert_eq!(adjust_of(&app, rect).curve.len(), 2, "fixture: two points");
+        let mid = at(0.5);
+        let held = |app: &MastikApp| {
+            let a = adjust_of(app, rect);
+            ctx.data(|d| d.get_temp::<Option<Held>>(egui::Id::new(("image-curve-pick", rect))))
+                .flatten()
+                .map(|h| (h, a.curve.len()))
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, &ctx, vec![egui::Event::PointerMoved(mid)]);
+        frame(&mut app, &ctx, vec![button(mid, true)]);
+        for dy in [10.0, 20.0, 30.0] {
+            frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(mid - egui::vec2(0.0, dy))],
+            );
+            let (h, _) = held(&app).expect("held mid-drag");
+            assert_eq!(h.handle, Handle::Inner(1), "held mid-drag");
+        }
+        frame(
+            &mut app,
+            &ctx,
+            vec![button(mid - egui::vec2(0.0, 30.0), false)],
+        );
+        frame(&mut app, &ctx, Vec::new());
+        let a = adjust_of(&app, rect);
+        assert_eq!(a.curve.len(), 3, "fixture: added");
+        let held = ctx
+            .data(|d| d.get_temp::<Option<Held>>(egui::Id::new(("image-curve-pick", rect))))
+            .flatten();
+        assert_eq!(
+            held.and_then(|h| h.on(&a)),
+            Some(Handle::Inner(1)),
+            "held after"
+        );
+    }
+
     /// A point dragged well off the graph goes, as one step. flip: `off` measured
     /// against a reach four times `OFF_GRAPH` → fails at "removed".
     #[test]
