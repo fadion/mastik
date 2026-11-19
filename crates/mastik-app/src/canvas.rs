@@ -4380,7 +4380,45 @@ impl MastikApp {
             pixel: self.snap_grid,
             zoom,
             tolerance_px: f64::from(self.prefs.canvas.snap_px()),
+            // The moved layers' centres, which only `snapped_move` knows.
+            visual: Vec::new(),
         }
+    }
+
+    /// The visual centres of the selection's outermost layers, which a move snaps
+    /// by while the Align card aligns by them ([`snap::Snapping::visual`]): weighed
+    /// on the committed document once per revision and selection, and not at all
+    /// past [`VISUAL_MARKS_MAX`] layers to weigh, as the canvas's marks.
+    fn visual_snap_centres(&self) -> Vec<Point> {
+        if !self.align_visual {
+            return Vec::new();
+        }
+        let rev = self.session.revision();
+        let ids = self.session.selection.ids();
+        let mut cache = self.visual_snap.borrow_mut();
+        if let Some(m) = cache.as_ref()
+            && m.rev == rev
+            && m.ids == ids
+        {
+            return m.marks.clone();
+        }
+        let (doc, res) = (&self.session.doc, &self.session.resolved);
+        let members = mastik_core::build::outermost(doc, ids);
+        let marks: Vec<Point> = match visual_marks_weight(doc, res, &members) > VISUAL_MARKS_MAX {
+            true => Vec::new(),
+            false => members
+                .iter()
+                .filter_map(|id| mastik_core::centroid::visual_centre(doc, res, *id))
+                .map(|c| c.at())
+                .collect(),
+        };
+        *cache = Some(VisualMarks {
+            rev,
+            ids: ids.to_vec(),
+            key: None,
+            marks: marks.clone(),
+        });
+        marks
     }
 
     /// [`Self::snapping`] for a dragged **point** near `near`, with the outlines it can
@@ -4589,6 +4627,11 @@ impl MastikApp {
             None => self.session.selection.ids().to_vec(),
         };
         let mut snapping = self.snapping(&moving);
+        snapping.visual = self
+            .visual_snap_centres()
+            .into_iter()
+            .map(|c| c - bounds.center())
+            .collect();
         if self.snap_shapes {
             // The rest of a row may be off-screen; a gap copied from it still counts.
             let view = self.session.camera.viewport(self.canvas_px).view;
@@ -22131,6 +22174,70 @@ mod select_drag_tests {
         assert!(
             (delta.x + 100.0).abs() < 1e-9,
             "the gap set off-screen is the one taken, not {delta:?}"
+        );
+    }
+
+    /// While the Align card aligns by visual centre, a moved triangle snaps its
+    /// centroid onto a neighbour's centre; with the toggle off it does not.
+    /// flip: `snapped_move` leaving `Snapping::visual` empty → fails at "by its centroid".
+    #[test]
+    fn a_move_snaps_by_the_visual_centre_while_the_toggle_is_on() {
+        let ctx = egui::Context::default();
+        // `a` at 0..100 and `b` at 200..300, centre 250.
+        let (mut app, _, _) = app_with_two_rects(&ctx);
+        app.canvas_px = (800, 600);
+        app.session.camera.zoom = 1.0;
+        app.session.camera.center = Point::new(350.0, 50.0);
+        let root = app.session.doc.first_page();
+        let play = app.session.ids.mint();
+        let mut path = mastik_core::kurbo::BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((90.0, 50.0));
+        path.line_to((0.0, 100.0));
+        path.close_path();
+        assert!(app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: play,
+                parent: root,
+                index: 2,
+                kind: NodeKind::Path {
+                    path,
+                    corner_radii: Vec::new(),
+                    corner_smoothing: 0.0,
+                    mirror: mastik_core::symmetry::PathMirror::NONE,
+                },
+                transform: Some(Affine::translate((500.0, 0.0))),
+                name: None,
+            },
+            Operation::SetFills {
+                id: play,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: mastik_core::Brush::Solid(mastik_core::peniko::Color::BLACK).into(),
+                    visible: true,
+                }]),
+            },
+        ])));
+        app.session.selection.set(vec![play]);
+        let centre =
+            mastik_core::centroid::visual_centre(&app.session.doc, &app.session.resolved, play)
+                .expect("a centre")
+                .at();
+        assert!(
+            (centre.x - 530.0).abs() < 1e-6,
+            "a third in from the flat side: {centre:?}"
+        );
+
+        // The box lands at 217..307, every feature 7 or more from `b`'s; the
+        // centroid at 247 is 3 short of its centre.
+        let raw = Vec2::new(-283.0, 0.0);
+        assert_eq!(app.snapped_move(raw, false).0.x, -283.0, "off, by its box");
+        app.align_visual = true;
+        let (delta, marks) = app.snapped_move(raw, false);
+        assert!((delta.x + 280.0).abs() < 1e-6, "by its centroid: {delta:?}");
+        assert!(
+            marks.guides.iter().any(|g| (g.at - 250.0).abs() < 1e-6),
+            "the line on the centre: {:?}",
+            marks.guides
         );
     }
 

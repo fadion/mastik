@@ -1286,6 +1286,10 @@ pub struct MastikApp {
     /// The visual centres the canvas marks while [`Self::align_visual`] is on:
     /// weighing unions every layer's ink, too slow to redo each frame.
     pub(crate) visual_marks: Option<crate::canvas::VisualMarks>,
+    /// The moved layers' visual centres a move snaps by while [`Self::align_visual`]
+    /// is on, weighed once per revision and selection rather than each frame of the
+    /// drag (`MastikApp::visual_snap_centres`).
+    pub(crate) visual_snap: std::cell::RefCell<Option<crate::canvas::VisualMarks>>,
     /// The four *Snap* menu toggles, read only by [`MastikApp::snapping`].
     pub(crate) snap_shapes: bool,
     pub(crate) snap_guides: bool,
@@ -2039,6 +2043,7 @@ impl MastikApp {
             show_pivot: false,
             align_visual: false,
             visual_marks: None,
+            visual_snap: Default::default(),
             snap_shapes: view.snap_shapes,
             snap_guides: view.snap_guides,
             snap_grid: view.snap_grid,

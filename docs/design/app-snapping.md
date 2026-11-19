@@ -54,6 +54,13 @@ for Move and Resize, never stashed on `Drag`.
 
 ### Move (`snap_rect`)
 
+- **The moving box's features** are its near edge, centre and far edge on each axis
+  (`Snapping::features`), plus, while the Align card aligns by visual centre (`tools.md`), each
+  moved layer's visual centre (`Snapping::visual`), so a move snaps by the same centre the toggle
+  aligns by. `canvas::visual_snap_centres` weighs the selection's outermost layers on the committed
+  document once per revision and selection (`MastikApp::visual_snap`), not each frame of the drag,
+  and not at all past `canvas::VISUAL_MARKS_MAX` layers to weigh, as the canvas's diamonds.
+
 - **Equal gaps** (`snap::spacing_candidates`), two per axis: centre the box between its two
   neighbours, or match the rhythm past the end of a run. Only boxes that **share a band** with the
   moving one; nothing against a neighbour it overlaps on that axis; nothing under `snap::MIN_GAP`

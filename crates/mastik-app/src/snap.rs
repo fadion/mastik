@@ -81,6 +81,10 @@ pub struct Snapping {
     /// How close, in screen pixels, an edge must come before it snaps — the
     /// Settings preference, [`TOLERANCE_PX`] by default.
     pub tolerance_px: f64,
+    /// The moved layers' visual centres (`mastik_core::centroid`), as offsets from
+    /// the moving box's centre, each a snap feature beside the box's own centre
+    /// ([`snap_rect`]). Empty unless the Align card aligns by visual centre.
+    pub visual: Vec<Vec2>,
 }
 
 impl Snapping {
@@ -109,6 +113,24 @@ impl Snapping {
             pixel: false,
             zoom,
             tolerance_px: TOLERANCE_PX,
+            visual: Vec::new(),
+        }
+    }
+
+    /// The features of `r` a move snaps by along `axis` (`Horizontal` for the xs,
+    /// as [`spacing_candidates`] reads it): near edge, centre, far edge, then each
+    /// of [`Self::visual`].
+    fn features(&self, r: Rect, axis: Axis) -> Vec<f64> {
+        let c = r.center();
+        match axis {
+            Axis::Horizontal => [r.min_x(), c.x, r.max_x()]
+                .into_iter()
+                .chain(self.visual.iter().map(|v| c.x + v.x))
+                .collect(),
+            Axis::Vertical => [r.min_y(), c.y, r.max_y()]
+                .into_iter()
+                .chain(self.visual.iter().map(|v| c.y + v.y))
+                .collect(),
         }
     }
 }
@@ -422,23 +444,23 @@ pub fn snap_rect(moving: Rect, axes: (bool, bool), s: &Snapping) -> Snap {
     let tolerance = s.tolerance();
     let mut snap = Snap::default();
 
-    // Candidate features on each axis: near edge, centre, far edge.
-    let moving_x = [moving.min_x(), moving.center().x, moving.max_x()];
-    let moving_y = [moving.min_y(), moving.center().y, moving.max_y()];
+    // Candidate features on each axis: near edge, centre, far edge, visual centres.
+    let moving_x = s.features(moving, Axis::Horizontal);
+    let moving_y = s.features(moving, Axis::Vertical);
 
     let mut best_x: Option<(f64, f64, Matched)> = None; // (distance, delta, what)
     let mut best_y: Option<(f64, f64, Matched)> = None;
 
     for target in &s.targets {
         if axes.0 {
-            for m in moving_x {
+            for &m in &moving_x {
                 for t in [target.min_x(), target.center().x, target.max_x()] {
                     consider(&mut best_x, m, t, tolerance, Matched::Node(*target), false);
                 }
             }
         }
         if axes.1 {
-            for m in moving_y {
+            for &m in &moving_y {
                 for t in [target.min_y(), target.center().y, target.max_y()] {
                     consider(&mut best_y, m, t, tolerance, Matched::Node(*target), false);
                 }
@@ -450,7 +472,7 @@ pub fn snap_rect(moving: Rect, axes: (bool, bool), s: &Snapping) -> Snap {
     // settles the heat in either block order, so neither mechanism is pinned alone;
     // read the flag as the rule and this position as convention.
     if axes.1 {
-        for m in moving_y {
+        for &m in &moving_y {
             for t in &s.baselines {
                 consider(&mut best_y, m, *t, tolerance, Matched::Baseline(*t), false);
             }
@@ -458,14 +480,14 @@ pub fn snap_rect(moving: Rect, axes: (bool, bool), s: &Snapping) -> Snap {
     }
     // Guides last, allowed to equal the best so far: that is their tie.
     if axes.0 {
-        for m in moving_x {
+        for &m in &moving_x {
             for t in &s.guides.x {
                 consider(&mut best_x, m, *t, tolerance, Matched::RulerGuide, true);
             }
         }
     }
     if axes.1 {
-        for m in moving_y {
+        for &m in &moving_y {
             for t in &s.guides.y {
                 consider(&mut best_y, m, *t, tolerance, Matched::RulerGuide, true);
             }
@@ -494,7 +516,7 @@ pub fn snap_rect(moving: Rect, axes: (bool, bool), s: &Snapping) -> Snap {
             Matched::Node(target) => {
                 // The feature that matched, so the line sits on it.
                 let at = nearest_of(
-                    [snapped.min_x(), snapped.center().x, snapped.max_x()],
+                    &s.features(snapped, Axis::Horizontal),
                     [target.min_x(), target.center().x, target.max_x()],
                 );
                 snap.marks.guides.push(Guide {
@@ -530,7 +552,7 @@ pub fn snap_rect(moving: Rect, axes: (bool, bool), s: &Snapping) -> Snap {
         match what {
             Matched::Node(target) => {
                 let at = nearest_of(
-                    [snapped.min_y(), snapped.center().y, snapped.max_y()],
+                    &s.features(snapped, Axis::Vertical),
                     [target.min_y(), target.center().y, target.max_y()],
                 );
                 snap.marks.guides.push(Guide {
@@ -1072,9 +1094,9 @@ fn consider_delta_with(
 }
 
 /// The coordinate where a moving feature and a target feature coincide.
-fn nearest_of(moving: [f64; 3], target: [f64; 3]) -> f64 {
+fn nearest_of(moving: &[f64], target: [f64; 3]) -> f64 {
     let mut best = (f64::INFINITY, target[0]);
-    for m in moving {
+    for &m in moving {
         for t in target {
             let d = (m - t).abs();
             if d < best.0 {
@@ -1199,6 +1221,36 @@ mod tests {
         assert_eq!(snap.marks.guides.len(), 1);
         assert_eq!(snap.marks.guides[0].axis, Axis::Vertical);
         assert!((snap.marks.guides[0].at - 100.0).abs() < 1e-9);
+    }
+
+    /// A visual centre is a feature beside the box's: one 10 right of the box centre
+    /// snaps onto a target's edge, and the line is drawn there.
+    /// flip: `Snapping::features` without the visual centres → fails at "by the
+    /// visual centre".
+    #[test]
+    fn a_visual_centre_snaps_as_the_box_centre_does() {
+        // The box's 102, 127 and 152 are 8 or more from the target's 140, 160 and
+        // 180, out of reach; its visual centre at 137 is 3 short of 140.
+        let moving = r(102.0, 300.0, 152.0, 350.0);
+        let target = r(140.0, 0.0, 180.0, 50.0);
+        let mut s = shapes(&[target], 1.0);
+        s.visual = vec![Vec2::new(10.0, 0.0)];
+        let snap = snap_rect(moving, FREE, &s);
+        assert!(
+            (snap.adjust.x - 3.0).abs() < 1e-9,
+            "by the visual centre: {:?}",
+            snap.adjust
+        );
+        assert!(
+            (snap.marks.guides[0].at - 140.0).abs() < 1e-9,
+            "{:?}",
+            snap.marks.guides
+        );
+        // Without it, nothing of the box is within reach on x.
+        assert_eq!(
+            snap_rect(moving, FREE, &shapes(&[target], 1.0)).adjust.x,
+            0.0
+        );
     }
 
     #[test]

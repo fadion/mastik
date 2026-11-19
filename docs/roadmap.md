@@ -8,9 +8,6 @@ true.
 
 ## Now · Misc
 
-- **A centroid snap during a move.** While the Align card's visual-centre toggle is on, a moved
-  layer's visual centre (`mastik_core::centroid`) is a snap source in `snap::snap_rect` beside its
-  box's centre, so a move snaps by the same centre the toggle aligns by.
 - **A placed transform origin for a multi-selection.** One layer, a group among them, takes a
   placed pivot (`SetPivot`, `tools.md` *Transform origin*); several always turn about their union
   centre (`Handles::pivot`). The marker and the origin fields are offered over several layers
