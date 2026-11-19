@@ -188,12 +188,23 @@ pub fn nearest_step(c: Color) -> usize {
 /// ends, capped at each step's sRGB edge so the hue holds.
 ///
 /// With `exact`, the anchor's step is `base` itself and the lightness runs
-/// evenly to it from each end instead.
+/// evenly to it from each end instead. A `base` past an end (darker than 24%,
+/// lighter than 97%) moves that end on past it by the even line's step per
+/// step, as far as black or white, so the ramp never runs backwards.
 pub fn scale(base: Color, anchor: usize, exact: bool) -> [(u16, Color); SCALE_STEPS.len()] {
     let from = Oklch::of(base);
     let last = SCALE_STEPS.len() - 1;
     let anchor = anchor.min(last);
     let (light, dark) = SCALE_LIGHTNESS;
+    let step = (light - dark) / last as f64;
+    let light = match from.l < light {
+        true => light,
+        false => (from.l + step * anchor as f64).min(1.0),
+    };
+    let dark = match from.l > dark {
+        true => dark,
+        false => (from.l - step * (last - anchor) as f64).max(0.0),
+    };
     let alpha = base.components[3];
     std::array::from_fn(|i| {
         if exact && i == anchor {
@@ -374,14 +385,29 @@ mod tests {
     }
 
     /// With `exact`, the anchor's step is the source itself and the lightness
-    /// still falls step by step through it.
+    /// still falls step by step through it, a source past either end of the
+    /// even line too; one at black or white holds there, never turning back.
+    /// flip: `scale` keeping its ends at 97% and 24% for a source past them →
+    /// fails at `#0f172a`.
     #[test]
     fn an_exact_scale_passes_through_its_source() {
-        let base = Color::from_rgb8(0x2f, 0x6b, 0xff);
-        let steps = scale(base, 5, true);
-        assert_eq!(steps[5].1, base);
-        let ls = steps.map(|(_, c)| Oklch::of(c).l);
-        assert!(ls.windows(2).all(|w| w[0] > w[1]), "{ls:?}");
+        let falls = |hex: u32, anchor: usize, strictly: bool| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            let base = Color::from_rgb8(r, g, b);
+            let steps = scale(base, anchor, true);
+            assert_eq!(steps[anchor].1, base);
+            let ls = steps.map(|(_, c)| Oklch::of(c).l);
+            let down = |w: &[f64]| match strictly {
+                true => w[0] > w[1],
+                false => w[0] >= w[1] - 1e-9,
+            };
+            assert!(ls.windows(2).all(down), "#{hex:06x} at {anchor}: {ls:?}");
+        };
+        falls(0x2f6bff, 5, true);
+        falls(0x0f172a, 9, true);
+        falls(0xfafafa, 1, true);
+        falls(0x000000, 5, false);
+        falls(0xffffff, 0, false);
     }
 
     /// Every count keeps its steps lightest first and symmetric about 500

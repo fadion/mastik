@@ -1938,11 +1938,13 @@ fn a_variable_value_takes_the_only_mode_unnamed() {
 
 /// `generate_scale` from `blue/500` makes `blue/50` to `blue/950` beside it from
 /// its default mode's value, the same ramp in every mode, and the source's own
-/// name is updated to itself rather than refused. A run again updates all
-/// eleven; a name held by a number is refused, and so is a step that is none.
+/// name is left as it is rather than refused. A run again updates the other
+/// ten and never the source; a name held by a number is refused, and so is a
+/// step that is none.
 ///
 /// flip: `variable::scale_names` answering no holder → fails at the first
-/// script, on "blue/500 already exists".
+/// script, on "blue/500 already exists"; `scale_ops` updating its source →
+/// fails at "the source kept".
 #[test]
 fn a_scale_is_generated_from_a_variable_in_every_mode() {
     let (mut doc, mut ids, _) = blank();
@@ -1973,13 +1975,22 @@ fn a_scale_is_generated_from_a_variable_in_every_mode() {
     };
     assert_eq!(
         colour(&scale[5].cells[&dark]),
+        Color::from_rgb8(0xcc, 0x33, 0x66),
+        "the source keeps its own value in every mode"
+    );
+    let first = *scale[4].cells.keys().find(|m| **m != dark).unwrap();
+    assert_eq!(
+        scale[4].cells[&dark], scale[4].cells[&first],
+        "every mode takes the default mode's ramp"
+    );
+    let l = |v: &mastik_core::Variable| mastik_core::oklch::Oklch::of(colour(&v.cells[&first])).l;
+    assert_eq!(
+        colour(&scale[5].cells[&first]),
         Color::from_rgb8(0x2f, 0x6b, 0xff),
-        "every mode takes the default mode's ramp; exact keeps the source"
+        "exact keeps the source on its step"
     );
     for w in scale.windows(2) {
-        let l =
-            |v: &&mastik_core::Variable| mastik_core::oklch::Oklch::of(colour(&v.cells[&dark])).l;
-        assert!(l(&w[0]) > l(&w[1]));
+        assert!(l(w[0]) > l(w[1]));
     }
 
     script(
@@ -1988,6 +1999,12 @@ fn a_scale_is_generated_from_a_variable_in_every_mode() {
         json!([{ "verb": "generate_scale", "args": { "variable": made[0][0], "exact": false } }]),
     );
     assert_eq!(doc.variables().iter().count(), 11, "updated, none added");
+    let source = doc.variables().by_name("blue/500").unwrap();
+    assert_eq!(
+        colour(&source.cells[&first]),
+        Color::from_rgb8(0x2f, 0x6b, 0xff),
+        "the source kept"
+    );
     let bad_step = refused_step(
         &mut doc,
         &mut ids,
@@ -2008,6 +2025,59 @@ fn a_scale_is_generated_from_a_variable_in_every_mode() {
         number.contains("red/50 is not a colour variable"),
         "{number}"
     );
+}
+
+/// `generate_scale` from `amber/500`, lighter than a 500 by its lightness, keeps
+/// it at 500 by its name and leaves it as it is, and says which variables it
+/// updated by name.
+///
+/// flip: the verb's default anchor by lightness alone → fails at "anchored by
+/// its name".
+#[test]
+fn a_scale_anchors_on_its_sources_named_step() {
+    let (mut doc, mut ids, _) = blank();
+    let amber = Color::from_rgb8(0xf5, 0x9e, 0x0b);
+    let made = script(
+        &mut doc,
+        &mut ids,
+        json!([
+            { "verb": "add_variable", "args": { "kind": "color", "name": "amber/500", "value": { "color": "#f59e0b" } }, "as": "v" },
+            { "verb": "add_variable", "args": { "kind": "color", "name": "amber/300", "value": { "color": "#000000" } } },
+        ]),
+    );
+    assert_ne!(
+        mastik_core::oklch::nearest_step(amber),
+        5,
+        "the fixture: by lightness it is no 500"
+    );
+    let res = Resolved::rebuild(&doc);
+    let done = verbs::call(
+        &mut Ctx {
+            doc: &doc,
+            res: &res,
+            ids: &mut ids,
+            images: None,
+            contrast: None,
+        },
+        "generate_scale",
+        &json!({ "variable": made[0][0] }),
+    )
+    .unwrap();
+    let said = done.said.clone().unwrap_or_default();
+    assert!(
+        said.contains("updated amber/300"),
+        "names what it updated: {said}"
+    );
+    doc.apply(&done.tx).unwrap();
+    let table = doc.variables();
+    let value = |name: &str| match table.by_name(name).unwrap().cells.values().next() {
+        Some(mastik_core::Cell::Color(c)) => *c,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(value("amber/500"), amber, "the source kept");
+    assert_ne!(value("amber/300"), amber, "anchored by its name");
+    let l = |n: &str| mastik_core::oklch::Oklch::of(value(n)).l;
+    assert!(l("amber/300") > l("amber/500") && l("amber/500") > l("amber/700"));
 }
 
 /// `generate_scale` with `steps` makes only the kept steps, refuses an anchor

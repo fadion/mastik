@@ -3885,7 +3885,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "generate_scale",
-        doc: "Make `name/50`…`name/950` from a colour variable's default-mode value, even in OKLCH lightness; a name taken by a colour variable is updated",
+        doc: "Make `name/50`…`name/950` from a colour variable's default-mode value, even in OKLCH lightness; a name taken by a colour variable is updated, the source never",
         params: &[
             req("variable", ParamKind::Id("variable"), "the colour variable"),
             opt(
@@ -3897,7 +3897,7 @@ pub static VERBS: &[Verb] = &[
             opt(
                 "anchor",
                 ParamKind::Index,
-                "the step it lands on; by lightness unless given",
+                "the step it lands on; the step its name stands at, else by lightness, unless given",
             ),
             opt(
                 "exact",
@@ -3916,8 +3916,16 @@ pub static VERBS: &[Verb] = &[
                 return Err(a.invalid("steps", "3 to 11"));
             }
             let keep = crate::oklch::scale_subset(count);
+            let name = table.get(id).map(|v| v.name.as_str()).unwrap_or_default();
+            let stem = a
+                .text("name")
+                .unwrap_or_else(|| crate::variable::scale_stem(name))
+                .to_owned();
             let anchor = match a.index("anchor") {
-                None => crate::oklch::nearest_kept(&keep, crate::oklch::nearest_step(base)),
+                None => crate::oklch::nearest_kept(
+                    &keep,
+                    crate::variable::scale_anchor(name, &stem, base),
+                ),
                 Some(s) => keep
                     .iter()
                     .copied()
@@ -3928,18 +3936,13 @@ pub static VERBS: &[Verb] = &[
                         a.invalid("anchor", format!("one of {}", kept.join(", ")))
                     })?,
             };
-            let name = table.get(id).map(|v| v.name.as_str()).unwrap_or_default();
-            let stem = a
-                .text("name")
-                .unwrap_or_else(|| crate::variable::scale_stem(name))
-                .to_owned();
             let exact = a.bool("exact").unwrap_or(true);
             let ramp = crate::oklch::scale_kept(base, anchor, exact, &keep);
             let (ops, made, updated) =
-                crate::variable::scale_ops(table, ctx.ids, c, &stem, &ramp, None)
+                crate::variable::scale_ops(table, ctx.ids, c, &stem, &ramp, None, Some(id))
                     .map_err(|why| a.invalid("name", why))?;
             let span = (steps[keep[0]], steps[keep[keep.len() - 1]]);
-            let said = crate::variable::scale_said(&stem, made, updated, span);
+            let said = crate::variable::scale_said(&stem, made, &updated, span);
             Ok(Done::ops(ops).saying(said))
         },
     },

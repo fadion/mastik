@@ -712,7 +712,16 @@ pub fn convert(brush: &Brush, kind: PaintKind, box_size: Size) -> Brush {
         stops = vec![(0.0, c), (1.0, c.with_alpha(0.0))];
     }
     // The kind changed, so old geometry is discarded and `default_brush` reframes it.
-    default_brush(kind, stops, box_size)
+    let mut out = default_brush(kind, stops, box_size);
+    // A gradient keeps how it mixes, and its ends where the new kind has them
+    // (a sweep has none).
+    if let (Brush::Gradient(was), Brush::Gradient(now)) = (brush, &mut out) {
+        now.gradient.interpolation_cs = was.gradient.interpolation_cs;
+        if kind != PaintKind::Sweep {
+            now.gradient.extend = was.gradient.extend;
+        }
+    }
+    out
 }
 
 /// A brush of `kind` with `stops`, framed on `box_size`.
@@ -1485,6 +1494,22 @@ mod tests {
         // ...and collapsing to solid keeps the first.
         let flat = convert(&radial, PaintKind::Solid, BOX);
         assert_eq!(stops_of(&flat), vec![stops[0]]);
+    }
+
+    /// A gradient switched to another kind keeps *Smooth (Oklab)* and its ends,
+    /// but for a sweep, which has no ends.
+    /// flip: `convert` returning `default_brush` alone → fails at "smooth kept".
+    #[test]
+    fn switching_kind_keeps_smooth_and_ends() {
+        let solid = Brush::Solid(Color::from_rgba8(0x22, 0x44, 0xff, 255));
+        let linear = convert(&solid, PaintKind::Linear, BOX);
+        let linear = with_ends(&with_smooth(&linear, true), Extend::Repeat);
+        let radial = convert(&linear, PaintKind::Radial, BOX);
+        assert!(smooth_of(&radial), "smooth kept");
+        assert_eq!(ends_of(&radial), Extend::Repeat, "its ends kept");
+        let sweep = convert(&radial, PaintKind::Sweep, BOX);
+        assert!(smooth_of(&sweep));
+        assert_eq!(ends_of(&sweep), Extend::Pad, "a sweep has no ends");
     }
 
     fn solid_components(b: &Brush) -> [f32; 4] {

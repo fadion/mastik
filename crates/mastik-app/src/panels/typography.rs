@@ -5612,13 +5612,7 @@ fn feature_choice_row(
             egui::vec2(ui.available_width(), FEATURE_ROW_H),
             egui::Sense::empty(),
         );
-        ui.painter().text(
-            egui::pos2(rect.left(), rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            &label.name,
-            egui::FontId::proportional(ui::SWITCH_ROW_LABEL_PT),
-            ui::switch_row_ink(value > 0),
-        );
+        ui::paint_switch_row_label(ui.painter(), rect, &label.name, value > 0);
         resp.on_hover_text(label.hover.as_str());
         ui.allocate_space(egui::vec2(0.0, CHOICE_LABEL_GAP));
         ui.spacing_mut().interact_size.y = CELL;

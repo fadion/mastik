@@ -1990,12 +1990,7 @@ impl MastikApp {
                 // Ring the one already in use, compared as bytes: a recent colour
                 // and the document's may differ below the eighth bit.
                 if hex_of(*col) == hex_of(current) {
-                    p.rect_stroke(
-                        rect,
-                        radius,
-                        egui::Stroke::new(1.5, color::accent_200()),
-                        egui::StrokeKind::Outside,
-                    );
+                    ui::paint_chip_ring(p, rect, radius);
                 }
                 if resp.clicked() {
                     chosen = Some(*col);
