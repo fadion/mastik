@@ -333,6 +333,33 @@ impl Session {
         Ok(session)
     }
 
+    /// A session on `harness` that never starts a process, for callers' tests:
+    /// it takes a grant as a started one does, and dropping it touches nothing.
+    #[cfg(feature = "test-support")]
+    pub fn idle(harness: Harness) -> Session {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let none = PathBuf::from("mastik-ai-idle-session-has-no-folder");
+        let inner = Arc::new(Inner {
+            harness,
+            program: none.clone(),
+            claude: ClaudeFlags::ALL,
+            run_folder: none.clone(),
+            cwd: none.clone(),
+            env: Vec::new(),
+            base: TurnSpec::default(),
+            mcp_exe: String::new(),
+            mcp_args: Vec::new(),
+            run_root: none,
+            prep: Prep::None,
+            tracker: Tracker::new(),
+            events: Mutex::new(tx),
+            wake: Arc::new(|| {}),
+            in_flight: AtomicBool::new(false),
+            state: Mutex::new(State::default()),
+        });
+        Session { inner, events: rx }
+    }
+
     /// Change the session's grant to `allowed_tools`, with `system_prompt` the
     /// system prompt that states it, keeping the conversation. Every later
     /// turn's command line takes it, and the next turn first rewrites the files

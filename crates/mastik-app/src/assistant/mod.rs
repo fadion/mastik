@@ -1631,8 +1631,10 @@ impl MastikApp {
             return false;
         }
         live.started.level = level;
-        let (key, owner) = (live.key.clone(), live.session.owner());
-        self.assistant_grant(&key, level, owner);
+        // The host's grants, which the session holds until it ends.
+        if let Some(g) = &live.grants {
+            g.grant(&live.key, level, live.session.owner());
+        }
         self.assistant.level_news = Some(level);
         true
     }
@@ -1698,6 +1700,46 @@ impl MastikApp {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Lowering a live chat's level keeps its session and changes the host's
+    /// grant for its key at once, so its next write is refused.
+    ///
+    /// flip: `assistant_regrant` returning before the grant → fails at "the
+    /// host's grant"; `assistant_follow_level` comparing the wanted level with
+    /// itself → fails at "the session's level".
+    #[test]
+    fn a_lowered_level_regrants_the_live_session() {
+        use crate::mcp::access::{Grants, Level, allowed};
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let grants = Grants::default();
+        let key = client_key(7);
+        grants.grant(&key, Level::Edit, Arc::new(|_| false));
+        app.assistant.level = Some(Level::Edit);
+        app.assistant.live = Some(Live {
+            session: ai::Session::idle(ai::Harness::Codex),
+            started: Started {
+                harness: ai::Harness::Codex,
+                program: None,
+                model: String::new(),
+                effort: String::new(),
+                instructions: String::new(),
+                level: Level::Edit,
+                doc: None,
+            },
+            key: key.clone(),
+            grants: Some(grants.clone()),
+            replay: String::new(),
+            context: None,
+        });
+        app.assistant_set_level(Level::Look);
+        let live = app.assistant.live.as_ref().expect("the session is kept");
+        assert_eq!(live.started.level, Level::Look, "the session's level");
+        let (_, now) = grants.resolve(Some(&key), None).expect("a grant");
+        assert_eq!(now, Some(Level::Look), "the host's grant");
+        assert!(!allowed(Level::Look, "set"), "a write is refused at Look");
+        assert_eq!(app.assistant.level_news, Some(Level::Look));
+    }
 
     /// The proxy knows a chat's own key, and only that, as an assistant's.
     #[test]

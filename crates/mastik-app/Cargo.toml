@@ -92,6 +92,10 @@ objc2-foundation.workspace = true
 objc2-app-kit.workspace = true
 raw-window-handle.workspace = true
 
+# `ai::Session::idle`, so the assistant's tests can hold a live session.
+[dev-dependencies]
+mastik-ai = { path = "../mastik-ai", features = ["test-support"] }
+
 # The same question on the two Unix platforms that ship: the library's local
 # dates, through `localtime_r` (`library::clock::local_offset`, §15 D959), and the
 # resource meter's CPU time and memory (`meter.rs`).

@@ -14,6 +14,11 @@ serde_json.workspace = true
 # `mastik-core` and `mastik-mcp` already use.
 base64 = "0.22.1"
 
+# `Session::idle`, a session with no process, for callers' tests: the app's
+# access regrant runs against one. Never enabled outside dev-dependencies.
+[features]
+test-support = []
+
 # Process start times, parent pids and process groups, for the leftover sweep,
 # `Session::owns_process` and killing a harness's whole tree.
 [target.'cfg(unix)'.dependencies]
