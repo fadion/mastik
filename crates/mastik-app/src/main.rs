@@ -121,6 +121,7 @@ mod gradient;
 mod grid;
 mod import;
 mod input;
+mod inspect_cli;
 mod instances;
 mod job;
 mod keychain;
@@ -238,6 +239,8 @@ enum Command {
     /// `mastik run`: a Luau script or a JSON batch, as the MCP runs them, applied
     /// to a document or a new one and written to `-o`.
     Run(run_cli::Run),
+    /// `mastik inspect`: one of the MCP's reads of a document, as JSON.
+    Inspect(inspect_cli::Inspect),
     /// `mastik kit update`: the kits' waiting updates taken into each document.
     KitUpdate(kit_cli::Update),
     /// Write the document's variables and styles as DTCG `tokens.json`
@@ -440,6 +443,7 @@ commands:
   export     a page or some layers to a file, or the document's own export settings
   render     a component once per CSV row, or every frame once per mode
   check      contrast, code, review, health or layout checks, for CI
+  inspect    a document's outline, context, components, variables or styles, as JSON
   diff       what changed from one document to another
   merge      a three-way merge, as git's merge driver
   tokens     DTCG design tokens out of a document, or into one
@@ -452,10 +456,11 @@ commands:
 `mastik help <command>` shows what a command takes; `mastik --version` the version.";
 
 /// The commands `OVERVIEW` lists, each with what it takes.
-const COMMANDS: [(&str, &str); 11] = [
+const COMMANDS: [(&str, &str); 12] = [
     ("export", EXPORT_USAGE),
     ("render", render_cli::USAGE),
     ("check", check_cli::USAGE),
+    ("inspect", inspect_cli::USAGE),
     ("diff", DIFF_USAGE),
     ("merge", MERGE_USAGE),
     ("tokens", TOKENS_USAGE),
@@ -503,6 +508,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Some("diff") => parse_diff(&args[1..]),
         Some("tokens") => parse_tokens(&args[1..]),
         Some("kit") => kit_cli::parse(&args[1..]).map(Command::KitUpdate),
+        Some("inspect") => inspect_cli::parse(&args[1..]).map(Command::Inspect),
         Some("merge") => parse_merge(&args[1..]),
         Some("check") => check_cli::parse(&args[1..]).map(Command::Check),
         Some("run") => run_cli::parse(&args[1..]).map(Command::Run),
@@ -1147,6 +1153,7 @@ fn main() {
         // `diff`'s codes: 1 is "a document fails", so an unreadable one is 2.
         Ok(Command::Check(check)) => std::process::exit(check_cli::run(&check)),
         Ok(Command::KitUpdate(update)) => std::process::exit(kit_cli::run(&update)),
+        Ok(Command::Inspect(inspect)) => inspect_cli::run(&inspect).map(|text| println!("{text}")),
         Ok(Command::Run(run)) => run_cli::run(&run).map(|(lines, said)| {
             for line in lines {
                 println!("{line}");

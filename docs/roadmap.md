@@ -26,15 +26,6 @@ The design and its open questions are in `prototyping.md`.
   export. They are specification, not conversation: no replies, no authors, no resolved state,
   which keeps them apart from the comment tool `non-goals.md` declines.
 
-## Now · CLI
-
-The MCP has grown past the CLI; these bring the headless doors level with it, cheapest first.
-The CLI's design lives in `design/export.md` *CLI*; each item adds its passage there.
-
-- **A read command** (`mastik inspect <file> outline|context|components|variables|styles`)
-  mirroring `get_outline`, `design_context` and the `list_*` reads. Last, since `export --json`
-  with `jq` covers scripts and agents use the MCP.
-
 ## Later · Platform and dependencies
 
 - **egui 0.36** is blocked by vello requiring wgpu 29 (check — last asked 2026-09-03). Re-derive

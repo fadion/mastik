@@ -1323,16 +1323,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
             json(rows(children))
         }
         "get_outline" => {
-            let root = match node(args, "id")? {
-                Some(id) if s.doc.get(id).is_none() => {
-                    return Err(format!("no layer `{}`", id.to_wire()));
-                }
-                Some(id) => id,
-                None => s.page,
-            };
-            let depth = index(args, "depth").unwrap_or(2);
-            let limit = index(args, "limit").unwrap_or(200) as usize;
-            let answer = reads::outline(s, root, depth, limit);
+            let answer = outline_of(s, args)?;
             within_budget(
                 &answer.to_string(),
                 "This outline",
@@ -1575,24 +1566,48 @@ fn undo(s: &mut EditorSession, agent: &str) -> Result<Answer, String> {
     }
 }
 
-/// A `batch` or `run_script` call run straight on `s`, outside any client's
-/// connection: `mastik run`'s two kinds of script, answered as the MCP answers
-/// them. `args` carries no `base_rev`, the one thing that reads a connection.
+/// An MCP call run straight on `s`, outside any client's
+/// connection: `mastik run`'s two kinds of script and `mastik inspect`'s reads,
+/// answered as the MCP answers them, without its answer budget. `args` carries
+/// no `base_rev`, the one thing that reads a connection.
 pub(crate) fn run_offline(
     s: &mut EditorSession,
     tool: &str,
     args: &Value,
 ) -> Result<Value, String> {
-    const CLIENT: &str = "mastik run";
+    const CLIENT: &str = "mastik";
     let conn = Connection::default();
     let answer = match tool {
         "batch" => writes::batch(&conn, s, CLIENT, args)?,
-        _ => run_script(&conn, s, CLIENT, args)?,
+        "run_script" => run_script(&conn, s, CLIENT, args)?,
+        "get_outline" => return outline_of(s, args),
+        "design_context" => context::run(s, tool, args)?,
+        "list_components" => {
+            return Ok(reads::named(reads::components(&s.doc), "components", args));
+        }
+        "list_variables" => return Ok(reads::named(reads::variables(&s.doc), "variables", args)),
+        "list_styles" => return Ok(reads::named(reads::styles(&s.doc), "styles", args)),
+        other => return Err(format!("`{other}` is not run outside a connection")),
     };
     match answer {
         Answer::Json(v) => Ok(v),
         _ => Err(format!("`{tool}` answers JSON")),
     }
+}
+
+/// `get_outline`'s answer: the layers below `id`, else the current page, to
+/// `depth` levels (2) and `limit` rows (200).
+fn outline_of(s: &EditorSession, args: &Value) -> Result<Value, String> {
+    let root = match node(args, "id")? {
+        Some(id) if s.doc.get(id).is_none() => {
+            return Err(format!("no layer `{}`", id.to_wire()));
+        }
+        Some(id) => id,
+        None => s.page,
+    };
+    let depth = index(args, "depth").unwrap_or(2);
+    let limit = index(args, "limit").unwrap_or(200) as usize;
+    Ok(reads::outline(s, root, depth, limit))
 }
 
 /// The most printed lines `run_script` answers; the earlier ones are counted.
