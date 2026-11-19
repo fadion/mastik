@@ -1001,12 +1001,9 @@ impl Runner<'_> {
             if sh.color.components[3] <= 0.0 {
                 continue;
             }
-            // Rounded on the host, exactly as `effects::shadow_layer` rounds it,
-            // so the two backends shift by the same whole number of pixels.
-            let off = (
-                (sh.offset.x * scale.0).round() as i32,
-                (sh.offset.y * scale.1).round() as i32,
-            );
+            // Rounded on the host by the CPU's own function, so the two backends
+            // shift by the same whole number of pixels.
+            let off = effects::shadow_shift(sh.offset, scale, to_local);
             // `inner` does not reach this pass: the silhouette is the graphic's
             // alpha for both kinds and the complement happens at `Pass::Tint`, so
             // every pass between reads outside the buffer as transparent.

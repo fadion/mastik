@@ -14,7 +14,7 @@
 //! glyph outlines the canvas draws, which no viewer can re-shape.
 
 use mastik_core::geometry::Dots;
-use mastik_core::kurbo::{Affine, BezPath, Insets, Rect, Shape};
+use mastik_core::kurbo::{Affine, BezPath, Insets, Rect, Shape, Vec2};
 use mastik_core::peniko::{Color, Extend, GradientKind};
 use mastik_core::{
     BlendMode, Decoration, Document, Effect, EffectKind, ExportSpec, ExportText, Fill, Framing,
@@ -530,7 +530,10 @@ fn inner_working_pad(effects: &[Keyed<Effect>]) -> f64 {
 /// Two stages, as `mastik_render::effects::run`: the layer's own appearance, then
 /// every shadow cast from that. `color-interpolation-filters="sRGB"` is mandatory;
 /// the `linearRGB` default would differ from the canvas.
-fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
+///
+/// `space` maps the layer's own space into the filter's; its linear part carries
+/// each shadow's offset, which turns with the layer as on the canvas.
+fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect, space: Affine) -> String {
     let mut out = format!(
         "    <filter id=\"{name}\" filterUnits=\"userSpaceOnUse\" \
          color-interpolation-filters=\"sRGB\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\">\n",
@@ -607,7 +610,12 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
         if s.color.components[3] <= 0.0 {
             continue;
         }
-        let r = shadow_graph(&mut out, &graphic, s, n, inner);
+        let [a, b, c, d, _, _] = space.as_coeffs();
+        let offset = Vec2::new(
+            a * s.offset.x + c * s.offset.y,
+            b * s.offset.x + d * s.offset.y,
+        );
+        let r = shadow_graph(&mut out, &graphic, s, offset, n, inner);
         if inner { &mut over } else { &mut behind }.push(r);
     }
 
@@ -744,9 +752,17 @@ fn turbulence(freq: (f64, f64), octaves: u32, seed: i32, result: &str) -> String
     )
 }
 
-/// The primitives for one shadow, returning its result's name. An inner shadow
-/// inverts the silhouette and clips the result back into the layer's alpha.
-fn shadow_graph(out: &mut String, graphic: &str, s: &Shadow, n: usize, inner: bool) -> String {
+/// The primitives for one shadow, returning its result's name; `offset` is the
+/// shadow's offset in the filter's space. An inner shadow inverts the silhouette
+/// and clips the result back into the layer's alpha.
+fn shadow_graph(
+    out: &mut String,
+    graphic: &str,
+    s: &Shadow,
+    offset: Vec2,
+    n: usize,
+    inner: bool,
+) -> String {
     let a = format!("fxa{n}");
     let t = format!("fxt{n}");
     // The layer's alpha as a black silhouette — `SourceAlpha`, but from `graphic`
@@ -788,8 +804,8 @@ fn shadow_graph(out: &mut String, graphic: &str, s: &Shadow, n: usize, inner: bo
     let _ = writeln!(
         out,
         "      <feOffset in=\"{src}\" dx=\"{}\" dy=\"{}\" result=\"{o}\"/>",
-        fmt(s.offset.x),
-        fmt(s.offset.y),
+        fmt(offset.x),
+        fmt(offset.y),
     );
     let mut shape = o;
     if s.blur > 0.0 {
@@ -864,7 +880,10 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
     if mastik_render::effects::any_ink(&effects)
         && let Some(region) = effect_region(res, id, space, &effects)
     {
-        defs.add(effect_id(id), effect_def(&effect_id(id), &effects, region));
+        defs.add(
+            effect_id(id),
+            effect_def(&effect_id(id), &effects, region, space),
+        );
     }
     // A rail is a def because `<textPath>` can name nothing else; it is in the
     // text node's own space, as the referencing element carries the transform.

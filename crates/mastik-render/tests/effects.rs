@@ -36,6 +36,16 @@ fn render_kind(kind: NodeKind, effects: Vec<Effect>) -> (Vec<u8>, usize) {
 /// `render_kind` onto a page cut to `width` pixels from its left edge, which
 /// can cut the layer at the target's edge.
 fn render_in(kind: NodeKind, effects: Vec<Effect>, width: u32) -> (Vec<u8>, usize) {
+    render_placed(kind, Affine::translate((30.0, 30.0)), effects, width)
+}
+
+/// `render_in` with the layer's transform chosen.
+fn render_placed(
+    kind: NodeKind,
+    transform: Affine,
+    effects: Vec<Effect>,
+    width: u32,
+) -> (Vec<u8>, usize) {
     let mut ids = IdSource::new(1);
     let root = ids.mint();
     let mut doc = Document::new(root);
@@ -46,7 +56,7 @@ fn render_in(kind: NodeKind, effects: Vec<Effect>, width: u32) -> (Vec<u8>, usiz
             parent: root,
             index: 0,
             kind,
-            transform: Some(Affine::translate((30.0, 30.0))),
+            transform: Some(transform),
             name: None,
         },
         Operation::SetFills {
@@ -120,6 +130,54 @@ fn a_drop_shadow_lands_below_the_layer_in_its_own_colour() {
         (255, 255, 255, 255),
         "and the layer itself is untouched, drawn over its own shadow"
     );
+}
+
+/// A shadow's offset is in the layer's own space: turned 90° the offset (20, 0)
+/// points down, mirrored it points left, and in both it is drawn.
+/// flip: `effects::shadow_shift` returning `offset × scale` → fails at "turned".
+#[test]
+fn a_shadow_turns_and_mirrors_with_its_layer() {
+    let rect = || NodeKind::Rect {
+        size: Size::new(40.0, 40.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    };
+    let shadow = || {
+        Effect::new(EffectKind::DropShadow(Shadow {
+            offset: Vec2::new(20.0, 0.0),
+            blur: 0.0,
+            spread: 0.0,
+            color: Color::from_rgba8(255, 0, 0, 255),
+            blend: mastik_core::BlendMode::Normal,
+        }))
+    };
+    // Both cover x 30..70, y 30..70.
+    let turned = Affine::translate((70.0, 30.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2);
+    let mirrored = Affine::translate((70.0, 30.0)) * Affine::scale_non_uniform(-1.0, 1.0);
+    let (px, w) = render_placed(rect(), turned, vec![shadow()], 100);
+    assert_eq!(
+        at(&px, w, 50, 50),
+        (255, 255, 255, 255),
+        "the fixture covers the middle"
+    );
+    assert_eq!(
+        at(&px, w, 50, 80),
+        (255, 0, 0, 255),
+        "turned: the shadow is below"
+    );
+    assert_eq!(at(&px, w, 80, 50).3, 0, "turned: nothing to the right");
+    let (px, w) = render_placed(rect(), mirrored, vec![shadow()], 100);
+    assert_eq!(
+        at(&px, w, 50, 50),
+        (255, 255, 255, 255),
+        "the fixture covers the middle"
+    );
+    assert_eq!(
+        at(&px, w, 20, 50),
+        (255, 0, 0, 255),
+        "mirrored: the shadow is left"
+    );
+    assert_eq!(at(&px, w, 80, 50).3, 0, "mirrored: nothing to the right");
 }
 
 /// The blur is what makes a shadow a shadow, so its falloff is the assertion.

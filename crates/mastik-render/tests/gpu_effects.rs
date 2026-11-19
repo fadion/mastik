@@ -28,6 +28,11 @@ fn viewport() -> Viewport {
 
 /// The same fixture `tests/effects.rs` uses: a white 40×40 square at (30, 30).
 fn document(effects: Vec<Effect>, opacity: f32) -> (Document, Resolved) {
+    document_placed(Affine::translate((30.0, 30.0)), effects, opacity)
+}
+
+/// `document` with the square's transform chosen.
+fn document_placed(transform: Affine, effects: Vec<Effect>, opacity: f32) -> (Document, Resolved) {
     let mut ids = IdSource::new(1);
     let root = ids.mint();
     let mut doc = Document::new(root);
@@ -42,7 +47,7 @@ fn document(effects: Vec<Effect>, opacity: f32) -> (Document, Resolved) {
                 corner_radii: Default::default(),
                 corner_smoothing: 0.0,
             },
-            transform: Some(Affine::translate((30.0, 30.0))),
+            transform: Some(transform),
             name: None,
         },
         Operation::SetFills {
@@ -308,6 +313,42 @@ fn the_canvas_draws_a_drop_shadow() {
         over_the_top.3, 0,
         "and nothing is cast on the side the offset leaves: {over_the_top:?}"
     );
+}
+
+/// The GPU turns and mirrors a shadow's offset with its layer, as
+/// `tests/effects.rs · a_shadow_turns_and_mirrors_with_its_layer` asks of the CPU.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn the_canvas_turns_a_shadow_with_its_layer() {
+    let Some(mut g) = gpu() else {
+        return;
+    };
+    let shadow = || {
+        Effect::new(EffectKind::DropShadow(Shadow {
+            offset: Vec2::new(20.0, 0.0),
+            blur: 0.0,
+            spread: 0.0,
+            color: Color::from_rgba8(255, 0, 0, 255),
+            blend: mastik_core::BlendMode::Normal,
+        }))
+    };
+    // The square, cast by each at x 30..70, y 30..70.
+    let turned = Affine::translate((70.0, 30.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2);
+    let mirrored = Affine::translate((70.0, 30.0)) * Affine::scale_non_uniform(-1.0, 1.0);
+    for (name, t, shadow_at) in [
+        ("turned", turned, (50, 80)),
+        ("mirrored", mirrored, (20, 50)),
+    ] {
+        let (doc, res) = document_placed(t, vec![shadow()], 1.0);
+        let px = render_gpu(&mut g, &doc, &res);
+        assert_eq!(at(&px, 50, 50), (255, 255, 255, 255), "{name}: the square");
+        assert_eq!(
+            at(&px, shadow_at.0, shadow_at.1),
+            (255, 0, 0, 255),
+            "{name}: its shadow"
+        );
+        assert_eq!(at(&px, 80, 50).3, 0, "{name}: nothing to the right");
+    }
 }
 
 /// `n` photographs of `w`×`h`, each on its own 25 × 25 rect, laid out along the
