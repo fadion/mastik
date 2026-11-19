@@ -71,7 +71,7 @@ pub(crate) struct ColourReview {
     pub(crate) selection: bool,
     /// The selection a reticle made, and the one the card keeps reviewing while
     /// it stands: selecting a colour's users is no change of scope.
-    reticle: Option<(Vec<NodeId>, Vec<NodeId>)>,
+    pub(crate) reticle: Option<(Vec<NodeId>, Vec<NodeId>)>,
     unfolded: Unfolded,
     /// The target picked in each group, by its anchor.
     targets: HashMap<Key, Key>,

@@ -334,6 +334,14 @@ impl MastikApp {
                 // selection, else every page.
                 self.open_colour_review();
                 self.colour_review.selection = c.scope == Scope::Selection;
+                // A pinned *Selection* goes on reviewing the roots it counted
+                // while the selection a row made stands.
+                if c.scope == Scope::Selection
+                    && let Some((roots, _)) = &c.pin
+                {
+                    let made = self.session.selection.ids().to_vec();
+                    self.colour_review.reticle = Some((made, roots.clone()));
+                }
                 return true;
             }
             Row::OffScale => {
@@ -720,5 +728,32 @@ mod tests {
         app.kit_review.off.insert(gone);
         app.open_row(&mut c, Row::Kits);
         assert!(app.kit_review.off.is_empty(), "ticked afresh");
+    }
+
+    /// On a pinned *Selection*, *Review* opens Colour review on the roots the
+    /// card counted, not on the layers a row's *Select* picked.
+    ///
+    /// flip: `open_row` leaving Colour review without the card's pin → fails at
+    /// "the counted roots".
+    #[test]
+    fn review_on_a_pinned_selection_reviews_what_the_card_counted() {
+        let ctx = egui::Context::default();
+        let (mut app, gone) = fixture(&ctx);
+        let page = app.session.page;
+        let roots: Vec<NodeId> = app.session.doc.get(page).unwrap().children().to_vec();
+        app.session.selection.set(roots.clone());
+        app.open_system_health();
+        run(&mut app, &ctx);
+        let mut c = app.system_health.take().unwrap();
+        assert_eq!(c.scope, Scope::Selection, "fixture: on the selection");
+        app.select_counted(&mut c, vec![gone], "no component");
+        assert!(c.pin.is_some(), "fixture: the card is pinned");
+        assert!(app.open_row(&mut c, Row::NearDuplicates));
+        assert!(app.colour_review.selection);
+        assert_eq!(
+            app.colour_review.reticle,
+            Some((vec![gone], c.pin.as_ref().unwrap().0.clone())),
+            "the counted roots"
+        );
     }
 }
