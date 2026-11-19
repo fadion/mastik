@@ -1252,6 +1252,72 @@ fn an_effect_stack_round_trips_as_the_same_stack() {
     );
 }
 
+/// A sharpen comes back a sharpen with its amount and radius, ahead of the shadow
+/// cast from it, as the stack was.
+/// flip: the export writing `k3` as `-amount * 0.9` → fails at "one node carries the
+/// stack" (the whole filter is refused).
+#[test]
+fn a_sharpen_round_trips_ahead_of_its_shadow() {
+    use mastik_core::{Effect, EffectKind, Shadow};
+
+    let mut ids = IdSource::new(0x5A5B);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let rect = ids.mint();
+    doc.apply(&Transaction(vec![
+        Operation::CreateNode {
+            id: rect,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(80.0, 40.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((20.0, 20.0))),
+            name: None,
+        },
+        Operation::SetEffects {
+            id: rect,
+            effects: keyed_by_position([
+                Effect::new(EffectKind::Sharpen {
+                    amount: 0.75,
+                    radius: 1.5,
+                }),
+                Effect::new(EffectKind::DropShadow(Shadow {
+                    offset: mastik_core::kurbo::Vec2::new(0.0, 4.0),
+                    blur: 8.0,
+                    spread: 0.0,
+                    color: Color::from_rgba8(0, 0, 0, 128),
+                    blend: mastik_core::BlendMode::Normal,
+                })),
+            ]),
+        },
+    ]))
+    .expect("a sharpened rect with a shadow");
+    let res = Resolved::rebuild(&doc);
+
+    let (back, got) = reimport(&svg_of(&doc, &res, &[rect]));
+    let stacks: Vec<_> = got
+        .iter()
+        .map(|id| back.get(*id).unwrap().effects())
+        .filter(|fx| !fx.is_empty())
+        .collect();
+    assert_eq!(stacks.len(), 1, "one node carries the stack");
+    let fx = stacks[0];
+    assert!(
+        matches!(fx[0].kind, EffectKind::Sharpen { amount, radius }
+            if (amount - 0.75).abs() < 1e-6 && (radius - 1.5).abs() < 0.01),
+        "the sharpen: {:?}",
+        fx.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(fx.get(1).map(|e| &e.kind), Some(EffectKind::DropShadow(_))),
+        "then the shadow"
+    );
+    assert_eq!(fx.len(), 2);
+}
+
 /// A picture round-trips into nothing, and the loss is reported: the writer emits
 /// an image fill as a `<pattern>` and the reader has no pattern support, so this
 /// pins that `skipped` names the pattern, that the artboard's own `<clipPath>` is

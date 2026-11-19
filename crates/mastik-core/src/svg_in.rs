@@ -26,7 +26,8 @@
 //! `isolation`; `viewBox`; `<clipPath>` and
 //! `<mask>` as **mask nodes**; `<use>` and `<symbol>` as deep copies; `<image>` as a
 //! rect with an image fill; `<text>` placed by its baseline; and a `<filter>` as an
-//! **effect stack** — a lone `<feGaussianBlur>`, a lone `<feDropShadow>`, and the
+//! **effect stack** — a lone `<feGaussianBlur>`, a lone `<feDropShadow>`, this app's
+//! sharpen (a blur and the arithmetic composite that sharpens by it), and the
 //! silhouette-offset-blur-flood *shadow chain*, drop or inner, in any number and in
 //! the order the markup lays them out (see [`FilterRead`]).
 //!
@@ -2555,8 +2556,9 @@ impl<'a, 'input> Gradients<'a, 'input> {
 
 /// The filter shapes this model can hold, read out of a `<filter>` element.
 ///
-/// Read: a lone `<feGaussianBlur>`, a lone `<feDropShadow>`, and the shadow chain
-/// that `mastik_export::svg::shadow_graph` emits. [`crate::effect::EffectKind::Filters`]
+/// Read: a lone `<feGaussianBlur>`, a lone `<feDropShadow>`, the sharpen pair
+/// ([`sharpen_amount`]), and the shadow chain that `mastik_export::svg::shadow_graph`
+/// emits. [`crate::effect::EffectKind::Filters`]
 /// cannot be read back: its `feColorMatrix` does not determine the brightness and
 /// contrast that made it. A filter is all or nothing, since a half-read one is wrong
 /// silently.
@@ -2630,6 +2632,18 @@ fn effects_of<'a>(
             // A shadow's blur was consumed by `shadow_chain`; this one blurs the drawing.
             let (dev, uneven) = deviation_of(p.attribute("stdDeviation")?)?;
             out.uneven |= uneven;
+            if let Some(amount) = prims.get(i + 1).and_then(|c| sharpen_amount(p, *c))
+                && dev > 0.0
+            {
+                out.effects.push(crate::effect::Effect::new(
+                    crate::effect::EffectKind::Sharpen {
+                        amount,
+                        radius: dev / crate::effect::BLUR_DEVIATION,
+                    },
+                ));
+                i += 2;
+                continue;
+            }
             // A zero deviation is the identity, not a skip.
             if dev > 0.0 {
                 out.effects.push(crate::effect::Effect::new(
@@ -2654,6 +2668,31 @@ fn effects_of<'a>(
         }
     }
     Some(out)
+}
+
+/// The amount of the sharpen `mastik_export::svg` writes as `blur` then `comp`:
+/// an arithmetic composite of the blur's input with its result, `k2 = 1 + a`,
+/// `k3 = −a`, `k1 = k4 = 0`. Anything else, another tool's unsharp mask with other
+/// coefficients included, is `None` and read as what it is.
+fn sharpen_amount(blur: roxmltree::Node<'_, '_>, comp: roxmltree::Node<'_, '_>) -> Option<f64> {
+    if !comp.has_tag_name("feComposite")
+        || comp.attribute("operator") != Some("arithmetic")
+        || comp.attribute("in") != blur.attribute("in")
+        || comp.attribute("in2") != Some(blur.attribute("result")?)
+    {
+        return None;
+    }
+    // An absent `k` is zero, per SVG.
+    let k = |name| comp.attribute(name).map_or(Some(0.0), parse_len);
+    let (k1, k2, k3, k4) = (k("k1")?, k("k2")?, k("k3")?, k("k4")?);
+    let amount = -k3;
+    // `1 + a` and `-a` round alike at any precision, so the sum is 1 to float noise.
+    (k1 == 0.0
+        && k4 == 0.0
+        && amount > 0.0
+        && amount <= crate::effect::MAX_SHARPEN
+        && (k2 + k3 - 1.0).abs() < 1e-9)
+        .then_some(amount)
 }
 
 /// Whether `p` begins a shadow chain rather than acting on the layer itself.
@@ -4087,6 +4126,50 @@ mod tests {
                  <rect width="50" height="20" filter="url(#f)"/>
                </svg>"##
         ))
+    }
+
+    /// The export's sharpen (a blur, then `k2 = 1 + a`, `k3 = −a` over it) reads
+    /// back as a `Sharpen`; other coefficients or wiring are no sharpen.
+    /// flip: `effects_of` without its `sharpen_amount` arm → fails at "the export's pair".
+    #[test]
+    fn the_exports_sharpen_pair_reads_back_and_nothing_else_does() {
+        let pair = |k2: &str, k3: &str, in2: &str| {
+            filtered(&format!(
+                r#"<feGaussianBlur in="SourceGraphic" stdDeviation="2" result="fx0b"/>
+                   <feComposite in="SourceGraphic" in2="{in2}" operator="arithmetic" k1="0" k2="{k2}" k3="{k3}" k4="0" result="fx0"/>"#
+            ))
+        };
+        let (doc, out) = pair("1.6", "-0.6", "fx0b");
+        let fx = stack_of(&doc, &out);
+        let radius = 2.0 / crate::effect::BLUR_DEVIATION;
+        assert!(
+            matches!(
+                fx.as_slice(),
+                [crate::effect::Effect { kind: EffectKind::Sharpen { amount, radius: r }, .. }]
+                    if (amount - 0.6).abs() < 1e-12 && (r - radius).abs() < 1e-12
+            ),
+            "the export's pair: {fx:?}"
+        );
+        assert!(out.skipped.is_empty(), "{:?}", out.skipped);
+        for (k2, k3, in2, why) in [
+            ("1.5", "-0.4", "fx0b", "coefficients not summing to one"),
+            ("0", "1", "fx0b", "a negative amount"),
+            ("4", "-3", "fx0b", "past the largest amount"),
+            (
+                "1.6",
+                "-0.6",
+                "SourceGraphic",
+                "a composite not over the blur",
+            ),
+        ] {
+            let (doc, out) = pair(k2, k3, in2);
+            assert!(
+                !stack_of(&doc, &out)
+                    .iter()
+                    .any(|e| matches!(e.kind, EffectKind::Sharpen { .. })),
+                "{why}"
+            );
+        }
     }
 
     /// The stack's `n`th shadow, drop or inner, with which it is.
