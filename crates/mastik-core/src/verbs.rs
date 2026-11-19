@@ -7551,20 +7551,25 @@ fn expand_copies(doc: &Document, v: &mut Value) {
             as_copy(child);
         }
     }
-    fn walk(doc: &Document, read: &FxHashSet<String>, v: &mut Value, nested: bool) {
+    /// `above` is the main of the copy this layer sits in, if any.
+    fn walk(doc: &Document, read: &FxHashSet<String>, v: &mut Value, above: Option<NodeId>) {
         let Value::Object(map) = v else { return };
-        let main = map
+        let source = map
             .get("copy_of")
             .and_then(Value::as_str)
             .filter(|id| !read.contains(*id))
             .and_then(NodeId::from_wire)
-            .and_then(|id| full_tree(doc, id, false));
-        let copy = main.is_some();
+            .filter(|id| doc.get(*id).is_some());
+        let main = source.and_then(|id| full_tree(doc, id, false));
         if let Some(Value::Object(mut main)) = main {
             for k in MAIN_ONLY {
                 main.remove(k);
             }
-            if !nested {
+            // Its place is its main's only as a copy of that main's own child;
+            // a layer copied in from elsewhere lands where a new layer does.
+            let own_child = above.is_some()
+                && source.and_then(|s| doc.get(s)).and_then(|n| n.parent()) == above;
+            if !own_child {
                 main.remove("transform");
             }
             if !map.contains_key("children")
@@ -7584,12 +7589,12 @@ fn expand_copies(doc: &Document, v: &mut Value) {
             .into_iter()
             .flatten()
         {
-            walk(doc, read, child, nested || copy);
+            walk(doc, read, child, source);
         }
     }
     let mut read = FxHashSet::default();
     read_ids(v, &mut read);
-    walk(doc, &read, v, false);
+    walk(doc, &read, v, None);
 }
 
 /// Why a script stopped: the step, counted from 1, and what went wrong there.

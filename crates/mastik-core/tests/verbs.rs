@@ -6896,7 +6896,9 @@ fn a_tree_inserts_back_as_what_it_read() {
 /// label's content keeps the main's display, fills and the label's look. A
 /// copy whose fills were cleared reads back saying so, and inserts that way.
 /// flip: `insert_subtree` without `expand_copies` → the kind-less copy is refused.
-/// flip: `full_tree` without its copy defaults → fails at "the cleared fills".
+/// flip: `full_tree` without its copy defaults → fails at "the cleared fills";
+/// `expand_copies` giving every nested copy its source's place → fails at "a
+/// copy from elsewhere at the origin".
 #[test]
 fn a_tree_copy_takes_what_it_leaves_out_from_its_main() {
     let (mut doc, mut ids, page) = blank();
@@ -6966,6 +6968,29 @@ fn a_tree_copy_takes_what_it_leaves_out_from_its_main() {
         unreachable!()
     };
     assert_eq!(content, "Stop", "its override");
+
+    // A layer copied in from elsewhere lands where a new layer does, not at
+    // its source's place in another frame.
+    let elsewhere = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": rect(10.0, 10.0), "transform": [1, 0, 0, 1, 500, 500] }),
+    )[0];
+    let tree = json!({ "copy_of": main.to_wire(), "children": [
+        { "copy_of": label.to_wire() }, { "copy_of": elsewhere.to_wire() },
+    ] });
+    let made = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": tree }),
+    );
+    assert_eq!(
+        doc.get(made[2]).unwrap().transform(),
+        Affine::IDENTITY,
+        "a copy from elsewhere at the origin"
+    );
 
     run(
         &mut doc,

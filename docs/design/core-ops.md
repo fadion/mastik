@@ -241,7 +241,9 @@ it created. A verb never commits; its caller does, as every edit is committed.
   inside one) that no layer of the tree was read as takes everything it leaves out from that
   layer, its `kind` too and its `children` as copies when it gives none, so the fields it writes
   are its overrides (`verbs::expand_copies`, after `like`, whose sample's look is then the copy's
-  own); a copy falling back to a new layer's defaults would override its main's look with
+  own). It takes its source's `transform` only as a copy of a child of the main its parent copy
+  copies; any other copy (the tree's top, or a layer copied in from another frame) lands at the
+  identity, as a new layer does, never at its source's place elsewhere. A copy falling back to a new layer's defaults would override its main's look with
   nothing. A layer with neither `kind` nor such a `copy_of` is refused. A child outside a flex or grid parent is
   placed by its `transform`, and one inside leaves the flow by its `insets`, as CSS `position: absolute`; a tree child written with `at`, `x`, `y` or `position` is refused with both forms.
 - **Model parameters read short forms** (`verbs::loose`): hex colours and paints and text styles
