@@ -704,6 +704,29 @@ fn paint_reaches_through_a_group_and_stops_at_a_frame() {
     let _ = inside_frame;
 }
 
+/// A layer named beside the frame holding it is a target too, and a shape named
+/// beside the group that hands it over is written once.
+///
+/// flip: `paint_targets` walking the outermost layers alone → fails at "the
+/// child named beside its frame".
+#[test]
+fn paint_reaches_a_layer_named_beside_its_frame() {
+    let mut f = Fixture::new();
+    let inside_frame = f.add(f.artboard, rect());
+    let g = f.add(f.artboard, NodeKind::Group);
+    let inside_group = f.add(g, rect());
+    assert_eq!(
+        build::paint_targets(&f.doc, &[f.artboard, inside_frame]),
+        vec![f.artboard, inside_frame],
+        "the child named beside its frame"
+    );
+    assert_eq!(
+        build::paint_targets(&f.doc, &[g, inside_group]),
+        vec![inside_group],
+        "once"
+    );
+}
+
 /// A frame's fill *is* a fill, so one gesture can colour a frame and a shape
 /// together — which is what "a fill applies to all selected frames and shapes" has
 /// to mean.

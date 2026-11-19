@@ -4334,11 +4334,17 @@ pub fn coloured_texts(doc: &Document, ids: &[NodeId]) -> Vec<NodeId> {
 /// The nodes a bulk paint edit over `ids` actually writes to.
 ///
 /// A group is organisation, so an edit passes through it; a frame has paint of its
-/// own, so the walk stops there. Hence a walk apart from [`subtree_nodes`].
+/// own, so the walk stops there. Hence a walk apart from [`subtree_nodes`]. Every
+/// layer named is walked, not the outermost alone: a frame stops the walk, so a
+/// layer named beside the frame holding it would otherwise be dropped unsaid.
 pub fn paint_targets(doc: &Document, ids: &[NodeId]) -> Vec<NodeId> {
     let mut out = Vec::new();
-    let mut stack: Vec<NodeId> = outermost(doc, ids).into_iter().rev().collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack: Vec<NodeId> = ids.iter().rev().copied().collect();
     while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
         let Some(node) = doc.get(id) else { continue };
         match node.kind() {
             NodeKind::Group | NodeKind::Root => {
