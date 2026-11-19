@@ -154,8 +154,11 @@ model keeps a list's mark, since Lua's `{}` is a list and an object alike. Enum 
 case and dashes (`"row-reverse"` is `"RowReverse"`). `sel:adjust` steps any number, a px length
 included.
 
-A name people guess (`alpha`, `colour`, `radius`, `weight`, `tracking`, `shadow`) raises with the
-property it means as the fix.
+A property no layer has raises with the one it most likely means as the fix
+(`run::nearest_property`): for a name people guess (`alpha`, `colour`, `radius`, `weight`,
+`tracking`, `shadow`) the property it means, else the nearest within two edits (*No property
+“x” — did you mean y?*). With nothing near, it lists the properties a layer has (*No property
+“text_style”; a layer has x, y, width, …*), so the next guess is not blind.
 
 **A verb call**: a collection given first fills the verb's subject (its first layer parameter),
 and so does a plain list of layers and collections (`{a, b}`), each layer once in its order

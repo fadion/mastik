@@ -1349,7 +1349,16 @@ fn no_property(lua: &Lua, name: &str) -> mlua::Error {
     let near = nearest_property(name);
     let message = match &near {
         Some(n) => format!("No property “{name}” — did you mean {n}?"),
-        None => format!("No property “{name}”"),
+        // Nothing near: the names there are, so the next guess is not blind.
+        None => {
+            let mut names: Vec<&str> = Vec::new();
+            for p in props::PROPERTIES {
+                if !names.contains(&p.name) {
+                    names.push(p.name);
+                }
+            }
+            format!("No property “{name}”; a layer has {}", names.join(", "))
+        }
     };
     raise_at(lua, message, Some(name), near)
 }

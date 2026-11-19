@@ -291,6 +291,13 @@ fn globals_are_strict() {
     let err = run_line(&mut h, &e, ".widht").unwrap_err();
     assert_eq!(err.message, "No property “widht” — did you mean width?");
     assert_eq!(err.span, Some(1..6), "placed in the line as typed");
+    // Nothing near: the properties there are, so the next guess is not blind.
+    let err = run_line(&mut h, &e, ".text_style").unwrap_err();
+    assert!(
+        err.message.contains("a layer has") && err.message.contains("font_family"),
+        "{}",
+        err.message
+    );
     let err = run_script(&mut h, &e, "total = 5").unwrap_err();
     assert!(
         err.message.starts_with("No global “total”"),
