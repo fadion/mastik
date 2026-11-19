@@ -7,6 +7,11 @@
 //! window and restores both. Requests are carried one at a time: the hosts send
 //! nothing unasked, and a pipe handle cannot read and write at once.
 //!
+//! A host's tools can differ from the last one's (a rebuilt `serve`), so the
+//! proxy advertises `listChanged` and, on a reconnect, sends the agent
+//! `notifications/tools/list_changed` only when the new host's list differs from
+//! the one the agent last read.
+//!
 //! `--client <key>` puts a key in `initialize`, under which the host keeps the
 //! client's document and revisions across its connections; `--document` names
 //! the document every call acts on until the agent picks another.
@@ -107,6 +112,8 @@ struct Link {
     write: Box<dyn Write + Send>,
     /// Whether the remembered document was named on this link yet.
     restored: bool,
+    /// Whether this link's host lists other tools than the agent last read.
+    tools_moved: bool,
 }
 
 /// How an exchange broke: before the host could have read the line, or after,
@@ -146,6 +153,8 @@ struct Remembered {
     initialize: Option<String>,
     initialized: Option<String>,
     document: Option<String>,
+    /// The fingerprint of the last `tools/list` result the agent read.
+    tools: Option<u64>,
 }
 
 /// Run the proxy until the agent closes its stdin, keying the host's state by
@@ -255,7 +264,18 @@ fn carry(
             let l = match link.as_mut() {
                 Some(l) => l,
                 None => match connect(&kept, method.as_deref(), hosts) {
-                    Ok(l) => link.insert(l),
+                    Ok(l) => {
+                        let l = link.insert(l);
+                        if std::mem::take(&mut l.tools_moved) {
+                            let note = json!({
+                                "jsonrpc": "2.0",
+                                "method": "notifications/tools/list_changed",
+                            });
+                            writeln!(stdout, "{note}").map_err(|e| e.to_string())?;
+                            stdout.flush().map_err(|e| e.to_string())?;
+                        }
+                        l
+                    }
                     Err(why) => {
                         answer = Err(why);
                         break;
@@ -310,6 +330,14 @@ fn carry(
         {
             kept.document = Some(doc.to_owned());
         }
+        let answer = match method.as_deref() {
+            Some("initialize") => advertise_list_changed(answer),
+            Some("tools/list") => {
+                kept.tools = tools_print(&answer);
+                answer
+            }
+            _ => answer,
+        };
         writeln!(stdout, "{answer}").map_err(|e| e.to_string())?;
         stdout.flush().map_err(|e| e.to_string())?;
     }
@@ -332,6 +360,36 @@ fn document_pointer(message: &Option<Value>) -> Option<&'static str> {
         }
         _ => None,
     }
+}
+
+/// The host's `initialize` answer with `listChanged` set: a host's own list never
+/// changes, but the proxy's does when it reconnects to another host.
+fn advertise_list_changed(answer: String) -> String {
+    let Ok(mut v) = serde_json::from_str::<Value>(&answer) else {
+        return answer;
+    };
+    let Some(result) = v.get_mut("result").and_then(Value::as_object_mut) else {
+        return answer;
+    };
+    let caps = result.entry("capabilities").or_insert_with(|| json!({}));
+    let Some(caps) = caps.as_object_mut() else {
+        return answer;
+    };
+    let tools = caps.entry("tools").or_insert_with(|| json!({}));
+    let Some(tools) = tools.as_object_mut() else {
+        return answer;
+    };
+    tools.insert("listChanged".into(), json!(true));
+    v.to_string()
+}
+
+/// A fingerprint of a `tools/list` answer's result, `None` for an error.
+fn tools_print(answer: &str) -> Option<u64> {
+    use std::hash::{Hash as _, Hasher as _};
+    let v: Value = serde_json::from_str(answer).ok()?;
+    let mut hash = std::hash::DefaultHasher::new();
+    v.get("result")?.to_string().hash(&mut hash);
+    Some(hash.finish())
 }
 
 /// `asked` named absolutely when it is a relative path that exists from here,
@@ -441,7 +499,9 @@ fn window_listed() -> bool {
 
 /// Connect to the best host `hosts` offers, and replay the
 /// handshake, unless `now` is the handshake itself; [`restore`] names the
-/// document before the link's first tool call.
+/// document before the link's first tool call. When the agent has read a tool
+/// list and `now` does not read it again, the new host's list is compared with
+/// it.
 fn connect(kept: &Remembered, now: Option<&str>, hosts: &mut impl Hosts) -> Result<Link, String> {
     let (host, (read, write)) = hosts.connect()?;
     let mut link = Link {
@@ -449,6 +509,7 @@ fn connect(kept: &Remembered, now: Option<&str>, hosts: &mut impl Hosts) -> Resu
         read: BufReader::new(read),
         write,
         restored: false,
+        tools_moved: false,
     };
     if now == Some("initialize") {
         return Ok(link);
@@ -459,6 +520,13 @@ fn connect(kept: &Remembered, now: Option<&str>, hosts: &mut impl Hosts) -> Resu
     }
     if let Some(done) = &kept.initialized {
         link.exchange(done, false).map_err(fail)?;
+    }
+    if let Some(read) = kept.tools
+        && now != Some("tools/list")
+    {
+        let list = json!({ "jsonrpc": "2.0", "id": "mastik-proxy-tools", "method": "tools/list" });
+        let answer = link.exchange(&list.to_string(), true).map_err(fail)?;
+        link.tools_moved = answer.as_deref().and_then(tools_print) != Some(read);
     }
     Ok(link)
 }
@@ -610,6 +678,9 @@ mod tests {
         window: Arc<AtomicBool>,
         /// Each host's lines, by the order it was connected to.
         seen: Vec<Arc<Mutex<Vec<Value>>>>,
+        /// The one tool each host lists, by the order it was connected to;
+        /// `"same"` past the end.
+        lists: Vec<&'static str>,
     }
 
     impl Fake {
@@ -618,6 +689,7 @@ mod tests {
                 next: hosts.into(),
                 window: Arc::default(),
                 seen: Vec::new(),
+                lists: Vec::new(),
             }
         }
 
@@ -654,6 +726,7 @@ mod tests {
             let (from_proxy, to_host) = std::io::pipe().map_err(|e| e.to_string())?;
             let (from_host, mut to_proxy) = std::io::pipe().map_err(|e| e.to_string())?;
             let seen = Arc::new(Mutex::new(Vec::new()));
+            let listed = self.lists.get(self.seen.len()).copied().unwrap_or("same");
             self.seen.push(seen.clone());
             let window = self.window.clone();
             std::thread::spawn(move || {
@@ -671,8 +744,12 @@ mod tests {
                     let document = message
                         .pointer("/params/arguments/document")
                         .or_else(|| message.pointer("/params/arguments/args/document"));
-                    let result =
-                        json!({ "isError": false, "structuredContent": { "document": document } });
+                    let result = match message["method"].as_str() {
+                        Some("tools/list") => json!({ "tools": [{ "name": listed }] }),
+                        _ => {
+                            json!({ "isError": false, "structuredContent": { "document": document } })
+                        }
+                    };
                     if tool.is_some() && tool == script.window_on {
                         window.store(true, Ordering::SeqCst);
                     }
@@ -905,6 +982,10 @@ mod tests {
         ];
         let answers = drive(&lines, &mut hosts, None);
         let resent = hosts.calls(1).iter().any(|(t, _)| t == "set_name");
+        assert!(
+            !hosts.methods(1).contains(&"tools/list".to_owned()),
+            "no list compared when the agent never read one"
+        );
         assert!(!resent, "never sent again: {:?}", hosts.calls(1));
         let lost = &answers[1];
         assert_eq!(lost["id"], 2);
@@ -912,5 +993,84 @@ mod tests {
         assert!(why.contains("may have applied"), "{lost}");
         assert_eq!(answers[2]["id"], 3);
         assert!(answers[2].get("error").is_none());
+    }
+
+    /// The `list_changed` notifications the agent got among `answers`.
+    fn list_changes(answers: &[Value]) -> usize {
+        answers
+            .iter()
+            .filter(|a| a["method"] == "notifications/tools/list_changed")
+            .count()
+    }
+
+    /// An agent that read the tools on one host hears `list_changed` once when
+    /// the proxy moves to a host listing others, before that request's answer;
+    /// the `initialize` it gets advertises `listChanged`.
+    ///
+    /// flip: `connect` comparing nothing (`tools_moved` left false) → fails at
+    /// "told the list changed".
+    #[test]
+    fn a_host_with_other_tools_sends_list_changed() {
+        let answers = moved_between(["old", "new"]);
+        assert_eq!(
+            answers[0]["result"]["capabilities"]["tools"]["listChanged"],
+            true
+        );
+        assert_eq!(
+            list_changes(&answers),
+            1,
+            "told the list changed: {answers:?}"
+        );
+        let at = answers
+            .iter()
+            .position(|a| a.get("method").is_some())
+            .unwrap();
+        assert_eq!(answers[at + 1]["id"], 4, "before the request's answer");
+    }
+
+    /// A host listing the same tools as the last sends no `list_changed`, so a
+    /// reconnect alone never costs the agent a fresh `tools/list`.
+    ///
+    /// flip: `connect` setting `tools_moved` on every reconnect → fails at "the
+    /// same tools".
+    #[test]
+    fn a_host_with_the_same_tools_sends_nothing() {
+        let answers = moved_between(["same", "same"]);
+        assert_eq!(list_changes(&answers), 0, "the same tools: {answers:?}");
+    }
+
+    /// The agent reads the tools on `serve`, then a window listing `lists[1]`
+    /// takes over; what the agent was answered.
+    fn moved_between(lists: [&'static str; 2]) -> Vec<Value> {
+        let mut hosts = Fake::new(vec![
+            Scripted {
+                host: Host::Serve,
+                drop_on: None,
+                window_on: Some("get_selection"),
+            },
+            Scripted {
+                host: Host::Window,
+                drop_on: None,
+                window_on: None,
+            },
+        ]);
+        hosts.lists = lists.to_vec();
+        let [init, done] = handshake();
+        let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+        let lines = [
+            init,
+            done,
+            list,
+            tool_call(3, "get_selection", json!({})),
+            tool_call(4, "get_document", json!({})),
+        ];
+        let answers = drive(&lines, &mut hosts, None);
+        assert_eq!(answers[1]["result"]["tools"][0]["name"], lists[0]);
+        assert!(
+            hosts.methods(1).contains(&"tools/list".to_owned()),
+            "the window's list was read: {:?}",
+            hosts.methods(1)
+        );
+        answers
     }
 }
