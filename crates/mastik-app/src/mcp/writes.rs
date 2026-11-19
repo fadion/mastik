@@ -77,7 +77,9 @@ pub(super) fn write(
         && let Some(tree) = args.get("tree")
     {
         let mut named = Map::new();
-        named_paths(tree, "", &mut done.created.iter(), &mut named);
+        if let Some(root) = done.created.first() {
+            named_paths(&s.doc, tree, "", *root, &mut named);
+        }
         // Each id once: `created` keeps the root, which a batch label names,
         // and the layers no name reaches.
         let ids: std::collections::HashSet<&Value> = named.values().collect();
@@ -134,17 +136,17 @@ fn property_name(s: &EditorSession, args: &Value, item: &str) -> Option<String> 
 }
 
 /// Each layer of `tree` the caller named, by the `/`-joined names of it and its
-/// named ancestors, with the id `created` minted for it: `insert_subtree` mints
-/// in the tree's order, each layer before its children.
-fn named_paths<'a>(
+/// named ancestors, with the id of `id`, the layer it made, each child matched
+/// to the made layer's child at its place. Read from the document, not from the
+/// order ids were minted in: a copy written without children is given its
+/// main's, which the written tree does not hold.
+fn named_paths(
+    doc: &mastik_core::Document,
     tree: &Value,
     above: &str,
-    created: &mut impl Iterator<Item = &'a NodeId>,
+    id: NodeId,
     named: &mut Map<String, Value>,
 ) {
-    let Some(id) = created.next() else {
-        return;
-    };
     let path = match tree.get("name").and_then(Value::as_str) {
         Some(name) => {
             let path = match above {
@@ -158,13 +160,15 @@ fn named_paths<'a>(
         }
         None => above.to_owned(),
     };
-    for child in tree
+    let made = doc.get(id).map(|n| n.children()).unwrap_or_default();
+    for (child, made) in tree
         .get("children")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .zip(made)
     {
-        named_paths(child, &path, created, named);
+        named_paths(doc, child, &path, *made, named);
     }
 }
 
@@ -562,12 +566,51 @@ mod tests {
         assert_eq!(n.unwrap().name(), "Heading");
     }
 
+    /// A layer named after a copy written without children is answered by its
+    /// own id, though the copy was given its main's children.
+    ///
+    /// flip: `named_paths` pairing the written tree with ids in the order they
+    /// were minted → fails at "the layer after the copy".
+    #[test]
+    fn insert_subtree_names_the_layers_after_a_copy() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let page = docs.session.doc.first_page().to_wire();
+        let kind = mastik_core::verbs::example("NodeKind").unwrap();
+        let main = json!({ "name": "Tile", "kind": { "Group": null }, "component": true,
+            "children": [{ "kind": kind }, { "kind": kind }] });
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "insert_subtree",
+            json!({ "parent": page, "tree": main }),
+        );
+        let main = ok(&out)["named"]["Tile"].clone();
+        let tree = json!({ "name": "Row", "kind": { "Group": null }, "children": [
+            { "copy_of": main },
+            { "name": "After", "kind": kind },
+        ]});
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "insert_subtree",
+            json!({ "parent": page, "tree": tree }),
+        );
+        let answer = ok(&out).clone();
+        let after = answer["named"]["Row/After"].as_str().unwrap();
+        let after = NodeId::from_wire(after).unwrap();
+        assert_eq!(
+            docs.session.doc.get(after).unwrap().name(),
+            "After",
+            "the layer after the copy: {answer}"
+        );
+    }
+
     /// `insert_subtree` answers each named layer by its path of names, an unnamed
     /// layer between them taking its id but no entry, and `created` holds the root
     /// and the unnamed layers, so each id is said once.
-    ///
-    /// flip: `named_paths` taking an id only for a named layer → fails at the
-    /// title's name.
     #[test]
     fn insert_subtree_answers_each_named_layer_by_path() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
