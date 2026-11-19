@@ -600,7 +600,7 @@ fn target(args: &Value) -> Result<Target, String> {
 /// The colour `args` give an icon's ink, `#rrggbb` or `#rrggbbaa`, else black
 /// as the panel draws it.
 fn icon_ink(args: &Value) -> Result<&str, String> {
-    let Some(v) = args.get("color") else {
+    let Some(v) = args.get("colour") else {
         return Ok(panel::ICON_INK);
     };
     v.as_str()
@@ -609,7 +609,7 @@ fn icon_ink(args: &Value) -> Result<&str, String> {
                 matches!(h.len(), 6 | 8) && h.bytes().all(|b| b.is_ascii_hexdigit())
             })
         })
-        .ok_or_else(|| format!("`color`: {v} is not a colour; write \"#rrggbb\""))
+        .ok_or_else(|| format!("`colour`: {v} is not a colour; write \"#rrggbb\""))
 }
 
 /// The refusal of an icon asked to fill layers.
@@ -645,8 +645,8 @@ pub(crate) fn hold(
             Err("A kit's icon is an instance of its component, placed at Edit access".into())
         }
         Asset::Photo { service, id } => {
-            if args.get("color").is_some() {
-                return Err("`color` inks an icon; a photo has no ink".into());
+            if args.get("colour").is_some() {
+                return Err("`colour` inks an icon; a photo has no ink".into());
             }
             let desk = docs.desk().ok_or(NO_DESK)?;
             if !desk.prefs().photo_services.contains(&service) {
@@ -726,9 +726,9 @@ pub(super) fn place(docs: &mut impl Documents, path: &Path, call: &Call) -> Resu
             if t.fill.is_some() {
                 return Err(ICON_FILLS_NOTHING.into());
             }
-            if args.get("color").is_some() {
+            if args.get("colour").is_some() {
                 return Err(
-                    "`color` inks an icon from a set; a kit's icon is an instance, recoloured with `set` once placed".into(),
+                    "`colour` inks an icon from a set; a kit's icon is an instance, recoloured with `set` once placed".into(),
                 );
             }
             let parent = t.parent.ok_or(NO_PARENT)?;
@@ -1186,7 +1186,7 @@ mod tests {
         assert!(why.is_error, "an icon fills nothing");
     }
 
-    /// An icon placed with `color` is drawn in that ink, and a `color` that is
+    /// An icon placed with `colour` is drawn in that ink, and a `colour` that is
     /// no hex colour is refused.
     ///
     /// flip: `hold` ignoring `icon_ink` → fails at "inked red".
@@ -1198,7 +1198,7 @@ mod tests {
             &mut engine,
             &mut app,
             "place_asset",
-            json!({ "asset": "icon:font-awesome/bell/Solid", "parent": page, "color": "#ff0000" }),
+            json!({ "asset": "icon:font-awesome/bell/Solid", "parent": page, "colour": "#ff0000" }),
         );
         let root = NodeId::from_wire(made["created"][0].as_str().unwrap()).unwrap();
         let s = Documents::session(&mut app, &file).unwrap();
@@ -1222,7 +1222,7 @@ mod tests {
             &mut engine,
             &mut app,
             "place_asset",
-            json!({ "asset": "icon:font-awesome/bell/Solid", "parent": page, "color": "red" }),
+            json!({ "asset": "icon:font-awesome/bell/Solid", "parent": page, "colour": "red" }),
         );
         assert!(why.is_error, "a colour name is refused");
     }

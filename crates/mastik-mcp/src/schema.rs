@@ -490,7 +490,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "run_script",
-        doc: "Run a Luau script as one undo step, for loops and edits over many layers in one call; a raise or its 1 s budget changes nothing. `sel` holds `nodes`; a layer's box (world space), paints, effects, text style, layout, `name`, `text`, `children` read and write; a write tool is a function (`align(sel, \"left\")`); `random(seed)` draws. Answers what it printed, made and changed.",
+        doc: "Run a Luau script as one undo step, for loops and edits over many layers in one call; a raise or its 1 s budget changes nothing. `sel` is the list `nodes` names (`sel[1]`); a layer's box (world space), paints, effects, text style, layout, `name`, `text`, `children` read and write; a write tool is a function (`align(sel, \"left\")`); `random(seed)` draws. Answers what it printed, made and changed.",
         params: &[
             param("source", ParamKind::Text, true, "The script."),
             param("nodes", ParamKind::Nodes, false, "The layers `sel` holds."),
@@ -498,7 +498,7 @@ pub static TOOLS: &[Tool] = &[
                 "layers",
                 ParamKind::Model("Args"),
                 false,
-                "More layers by a name the script uses, {\"card\": <id>}.",
+                "More layers, each a global of its name, {\"card\": <id>} as `card`.",
             ),
             param(
                 "params",
@@ -680,7 +680,7 @@ pub static TOOLS: &[Tool] = &[
                 "An icon's side or a photo's width.",
             ),
             param(
-                "color",
+                "colour",
                 ParamKind::Text,
                 false,
                 "A set icon's ink, \"#rrggbb\"; else black.",
@@ -931,9 +931,9 @@ fn model_type(model: &str) -> Option<&'static str> {
         "Steps" | "Region" | "Quad" | "[CharAttr]" | "[Effect]" | "[ExportSpec]" | "[Fill]"
         | "[Guide]" | "[Hex]" | "[LayoutGrid]" | "[Name]" | "[Node]" | "[ParaAttr]"
         | "[Stroke]" => Some("array"),
-        "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "KitModeMap" | "DtcgFile"
-        | "BlockStyle" | "ParagraphStyle" | "TextStyle" | "LayoutItem" | "RepeatLine"
-        | "RepeatGrid" => Some("object"),
+        "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "ChartColours"
+        | "KitModeMap" | "DtcgFile" | "BlockStyle" | "ParagraphStyle" | "TextStyle"
+        | "LayoutItem" | "RepeatLine" | "RepeatGrid" => Some("object"),
         _ => None,
     }
 }
@@ -1182,7 +1182,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 112_600;
+        const ALL_BUDGET: usize = 112_850;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

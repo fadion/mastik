@@ -776,7 +776,14 @@ without one (`menu::KIND_VERBS`).
   mapping and options, a null setting a key back to its value in the whole
   struct's default (`Options::default()`, not a nested struct's own); a changed `palette` goes
   through `chart::with_palette` and a changed `dark` through `chart::with_dark`, so the colours
-  move with them as on the card; `set_chart_data` replaces
+  move with them as on the card; an unknown option is refused listing the options' fields
+  (`verbs::settle`, `verbs::model_fields`). `set_chart`'s `colours` colours the series and marks
+  by name (`verbs::chart_colour`): each key a series column's name or id, or on a chart coloured
+  by name (`chart::named_marks`) a slice's, group's or node's name, each value `"#rrggbb"` or a
+  colour variable by id or name, which binds, written through `chart::with_series_fill` or
+  `with_node_fill`, so an agent brands a chart without flattening it and losing its live data. A
+  name the chart draws nothing under is refused listing the ones it does, so a typo is not kept
+  as a style nothing reads, and a variable that is no colour is refused. `set_chart_data` replaces
   the table by *Import*'s rule (`Chart::with_table`; a mapping of which nothing survives is
   guessed) and drops the link; `flatten_chart` is `chart::flatten_ops` for each chart. Any other verb writing a part is refused at the commit by
   `chart::guard`.

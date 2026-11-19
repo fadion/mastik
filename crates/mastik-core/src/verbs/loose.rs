@@ -723,6 +723,31 @@ fn loosen_paint(item: &mut Value, stroke: bool, errs: &mut Vec<String>) {
         solid.insert("Solid".into(), Value::String(s.clone()));
         map.insert("brush".into(), Value::Object(solid));
     }
+    // A width per side, as CSS's `border-width` takes one: the stroke's `sides`,
+    // a side left out none, its own width the widest.
+    if stroke
+        && !map.contains_key("sides")
+        && let Some(Value::Object(per)) = map.get("width")
+    {
+        const SIDES: [&str; 4] = ["top", "right", "bottom", "left"];
+        if per.keys().all(|k| SIDES.contains(&k.as_str())) {
+            let widths: Map<String, Value> = SIDES
+                .iter()
+                .map(|s| {
+                    (
+                        (*s).to_owned(),
+                        per.get(*s).cloned().unwrap_or(Value::from(0.0)),
+                    )
+                })
+                .collect();
+            let widest = widths
+                .values()
+                .filter_map(Value::as_f64)
+                .fold(0.0, f64::max);
+            map.insert("sides".into(), serde_json::json!({ "Custom": widths }));
+            map.insert("width".into(), Value::from(widest));
+        }
+    }
     if stroke {
         for (k, d) in stroke_defaults() {
             map.entry(k).or_insert(d);

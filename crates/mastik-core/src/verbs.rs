@@ -521,7 +521,7 @@ fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
             checked(read_model::<crate::chart::Mapping>(&without_nulls(v)).map(|_| ()))
         }
         "ChartOptions" => {
-            checked(read_model::<crate::chart::Options>(&without_nulls(v)).map(|_| ()))
+            checked(settle::<crate::chart::Options>(model, without_nulls(v)).map(|_| ()))
         }
         other => checked(check_other(other, v)),
     }
@@ -540,6 +540,13 @@ fn check_other(model: &str, v: &Value) -> Result<(), String> {
             _ => Err("expected true, false or a string".into()),
         },
         // MCP's own tools: their handlers read the rest.
+        "ChartColours"
+            if v.as_object()
+                .is_some_and(|m| m.values().all(Value::is_string)) =>
+        {
+            Ok(())
+        }
+        "ChartColours" => Err("expected an object of colours by series or mark name".into()),
         "KitModeMap" if v.is_object() => Ok(()),
         "KitModeMap" => Err("expected an object of mode ids".into()),
         "DtcgFile" if v.is_object() || v.is_string() => Ok(()),
@@ -975,6 +982,7 @@ fn model_fields(
         ("BlockStyle", []) => struct_fields::<BlockStyle>(),
         ("LayoutItem", []) => struct_fields::<crate::container::LayoutItem>(),
         ("Insets", []) => struct_fields::<Insets>(),
+        ("ChartOptions", []) => struct_fields::<crate::chart::Options>(),
         ("Display", [_]) => match at.and_then(Value::as_object).map(|m| m.keys().next()) {
             Some(Some(k)) if k == "Flex" => struct_fields::<Flex>(),
             Some(Some(k)) if k == "Grid" => struct_fields::<Grid>(),
@@ -1326,6 +1334,7 @@ pub fn example(model: &str) -> Option<Value> {
             "bars": { "stacking": "Stacked", "radius": 4.0 },
             "legend": { "position": "Bottom" },
         }),
+        "ChartColours" => serde_json::json!({ "Revenue": "#3b82f6" }),
         _ => return None,
     })
     .map(|mut v| {
@@ -6266,12 +6275,20 @@ pub static VERBS: &[Verb] = &[
                 ParamKind::Model("ChartOptions"),
                 "the options to change, nested as the chart holds them; a null resets one",
             ),
+            opt(
+                "colours",
+                ParamKind::Model("ChartColours"),
+                "by series, slice, group or node name: \"#rrggbb\" or a colour variable",
+            ),
         ],
         run: |ctx, a| {
             let (id, mut chart) = chart_of(ctx, a)?;
-            if a.get("kind").is_none() && a.get("mapping").is_none() && a.get("options").is_none() {
+            if ["kind", "mapping", "options", "colours"]
+                .iter()
+                .all(|p| a.get(p).is_none())
+            {
                 return Err(VerbError::Nothing(
-                    "`set_chart` changes `kind`, `mapping` or `options`",
+                    "`set_chart` changes `kind`, `mapping`, `options` or `colours`",
                 ));
             }
             if let Some(word) = a.choice("kind") {
@@ -6290,6 +6307,11 @@ pub static VERBS: &[Verb] = &[
                     chart = crate::chart::with_palette(&chart, chart.options.palette);
                 }
                 chart = crate::chart::with_dark(&chart, dark);
+            }
+            if let Some(Value::Object(colours)) = a.get("colours") {
+                for (mark, colour) in colours {
+                    chart = chart_colour(ctx.doc, a, &chart, mark, colour)?;
+                }
             }
             chart_valid(a, &chart)?;
             Ok(Done::ops(vec![Operation::SetChart {
@@ -6359,6 +6381,82 @@ fn chart_of(ctx: &Ctx<'_>, a: &Args<'_>) -> Result<(NodeId, crate::chart::Chart)
         .chart()
         .ok_or_else(|| a.invalid("node", "not a chart"))?;
     Ok((id, chart.clone()))
+}
+
+/// `chart` with `mark` drawn in `colour`: a series column by its name or id, or
+/// a mark the chart colours by name (a slice, a group, a node), the colour
+/// `"#rrggbb"` or a colour variable by id or name, bound. A name the chart
+/// draws nothing under is refused listing the ones it does, so a typo is not
+/// kept as a style nothing reads.
+fn chart_colour(
+    doc: &Document,
+    a: &Args<'_>,
+    chart: &crate::chart::Chart,
+    mark: &str,
+    colour: &Value,
+) -> Result<crate::chart::Chart, VerbError> {
+    use crate::variable::BrushSource;
+    let bad = |why: String| a.invalid("colours", why);
+    let text = colour
+        .as_str()
+        .ok_or_else(|| bad(format!("`{mark}`: a colour is \"#rrggbb\" or a variable")))?;
+    let fill = match loose::hex_colour(text) {
+        Some(c) => BrushSource::Literal(crate::Brush::Solid(c)),
+        None => {
+            let id = serde_json::from_value::<VarId>(Value::from(text))
+                .ok()
+                .filter(|id| doc.variables().get(*id).is_some())
+                .or_else(|| {
+                    id_named(doc, "variable", text)
+                        .ok()
+                        .and_then(|v| serde_json::from_value(v).ok())
+                })
+                .ok_or_else(|| {
+                    bad(format!(
+                        "`{mark}`: `{text}` is no \"#rrggbb\" colour and no variable"
+                    ))
+                })?;
+            if doc.variables().get(id).map(|v| v.kind) != Some(VarKind::Color) {
+                return Err(bad(format!("`{mark}`: `{text}` is not a colour variable")));
+            }
+            BrushSource::Bound {
+                var: id,
+                alpha: 1.0,
+            }
+        }
+    };
+    if let Some(marks) = crate::chart::named_marks(chart) {
+        if !marks.iter().any(|(n, _)| n == mark) {
+            let names: Vec<_> = marks.iter().map(|(n, _)| format!("`{n}`")).collect();
+            return Err(bad(format!(
+                "this chart colours by name; `{mark}` is none of {}",
+                names.join(", ")
+            )));
+        }
+        return Ok(crate::chart::with_node_fill(chart, mark, fill));
+    }
+    let column = chart
+        .mapping
+        .series
+        .iter()
+        .copied()
+        .find(|c| {
+            c.0.to_string() == mark || chart.table.column(*c).is_some_and(|col| col.name == mark)
+        })
+        .ok_or_else(|| {
+            let names: Vec<_> = chart
+                .mapping
+                .series
+                .iter()
+                .filter_map(|c| chart.table.column(*c))
+                .map(|c| format!("`{}`", c.name))
+                .collect();
+            bad(format!(
+                "`{mark}` is no series; the series are {}",
+                names.join(", ")
+            ))
+        })?;
+    Ok(crate::chart::with_series_fill(chart, column, fill))
 }
 
 /// `chart`, refused as `SetChart` would refuse it, the reason said as a fault of

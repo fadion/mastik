@@ -35,5 +35,8 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
 - **Resetting an instance root resets only that root.** Resetting an instance puts the whole
   instance back as its main has it, as the menu's *Reset all* does; a layer inside it is reset
   by naming that layer.
+- **A tree's `corner_radius` taken in one tree and refused in another.** A frame's or
+  rectangle's `corner_radius` is a documented short form that moves into its kind; a layer whose
+  kind has no corners, or that gives them, is refused pointing at the kind.
 - **`@@` collapsed anywhere in a batch string.** Only a string starting with `@` is a reference,
   and the batch's `steps` says to double that leading `@`; a mid-string `@@` stays as written.

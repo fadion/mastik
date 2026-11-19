@@ -639,12 +639,13 @@ fn a_model_argument_is_refused_with_its_path() {
     );
 }
 
-/// A field a stroke or a paragraph has no place for is refused with every
-/// field it has, which no example shows whole, and a tree's corners point to
-/// its `kind`.
+/// A field a stroke, a paragraph or a chart's options have no place for is
+/// refused with every field there, which no example shows whole, and a tree's
+/// corners point to its `kind`.
 ///
 /// flip: `model_fields` answering `None` for a stroke → fails at "a stroke's
-/// `dashes`", whose example leaves them out.
+/// `dashes`", whose example leaves them out; for chart options → fails at "a
+/// chart option's fields".
 #[test]
 fn an_unknown_field_is_refused_with_every_field_there_is() {
     let (doc, mut ids, page) = blank();
@@ -669,6 +670,10 @@ fn an_unknown_field_is_refused_with_every_field_there_is() {
         json!({ "parent": page.to_wire(), "tree": spaced }),
     );
     assert!(why.contains("`spacing`"), "a paragraph's `spacing`: {why}");
+    // Checked before the chart is looked for, so any layer reaches it.
+    let colours = json!({ "node": page.to_wire(), "options": { "series_colors": {} } });
+    let why = refused_why(&doc, &mut ids, "set_chart", colours);
+    assert!(why.contains("`legend`"), "a chart option's fields: {why}");
     // An ellipse has no corners to take it; a frame's or rectangle's moves in.
     let ellipse = json!({ "Ellipse": { "size": { "width": 10, "height": 10 } } });
     let rounded = json!({ "kind": ellipse, "corner_radius": 8 });
@@ -4346,6 +4351,111 @@ fn set_chart_patches_the_kind_mapping_and_options() {
     );
     let plain = json!({ "node": page.to_wire(), "kind": "pie" });
     assert_eq!(refused_param(&doc, &mut ids, "set_chart", plain), "node");
+}
+
+/// `set_chart`'s `colours` draws a series by its column's name in a hex colour
+/// or bound to a colour variable, a pie's slice by its name, and refuses a name
+/// the chart draws nothing under.
+///
+/// flip: `chart_colour` writing every name as a node's style → fails at "the
+/// series' hex".
+#[test]
+fn set_chart_colours_series_and_slices() {
+    use mastik_core::BrushSource;
+    let (mut doc, mut ids, page) = blank();
+    let c = run(
+        &mut doc,
+        &mut ids,
+        "insert_chart",
+        json!({ "parent": page.to_wire(), "kind": "column" }),
+    )[0];
+    let chart = chart_of(&doc, c);
+    let [first, second, ..] = chart.mapping.series[..] else {
+        panic!("the sample has two series")
+    };
+    let name = |col| chart.table.column(col).unwrap().name.clone();
+    let made = script(
+        &mut doc,
+        &mut ids,
+        json!([{ "verb": "add_variable", "args": { "kind": "color", "name": "brand",
+            "value": { "color": "#0e9f6e" } } }]),
+    );
+    let brand = made[0][0].clone();
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": c.to_wire(), "colours": { name(first): "#ff0000", name(second): "brand" } }),
+    );
+    let got = chart_of(&doc, c);
+    let fill = |col| {
+        got.series
+            .iter()
+            .find(|s| s.column == col)
+            .map(|s| s.fill.clone())
+    };
+    let red = BrushSource::Literal(Brush::Solid(Color::from_rgb8(255, 0, 0)));
+    assert_eq!(fill(first), Some(red), "the series' hex");
+    assert!(
+        matches!(fill(second), Some(BrushSource::Bound { var, .. }) if serde_json::to_value(var).unwrap() == json!(brand)),
+        "the series bound: {:?}",
+        fill(second)
+    );
+    let typo = json!({ "node": c.to_wire(), "colours": { "Nope": "#ff0000" } });
+    assert_eq!(refused_param(&doc, &mut ids, "set_chart", typo), "colours");
+
+    let pie = run(
+        &mut doc,
+        &mut ids,
+        "insert_chart",
+        json!({ "parent": page.to_wire(), "kind": "pie" }),
+    )[0];
+    let slice = mastik_core::chart::named_marks(&chart_of(&doc, pie)).unwrap()[0]
+        .0
+        .clone();
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": pie.to_wire(), "colours": { slice.clone(): "#00ff00" } }),
+    );
+    let got = chart_of(&doc, pie);
+    assert!(
+        got.nodes.iter().any(|n| n.name == slice),
+        "the slice's style"
+    );
+}
+
+/// A stroke's `width` written per side, as CSS's `border-width`, is its `sides`,
+/// a side left out drawing none.
+///
+/// flip: `loosen_paint` without its per-side width → the stroke is refused.
+#[test]
+fn a_stroke_width_per_side_is_its_sides() {
+    let (mut doc, mut ids, page) = blank();
+    let r = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(100.0, 40.0) }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_strokes",
+        json!({ "nodes": [r.to_wire()], "strokes": [{ "brush": "#000000", "width": { "bottom": 2 } }] }),
+    );
+    let stroke = &doc.get(r).unwrap().paint().strokes[0].value;
+    assert_eq!(
+        stroke.sides,
+        mastik_core::StrokeSides::Custom {
+            top: 0.0,
+            right: 0.0,
+            bottom: 2.0,
+            left: 0.0
+        }
+    );
+    assert_eq!(stroke.width, 2.0);
 }
 
 /// `set_chart` turning a chart dark moves its starting ink with it, as the
