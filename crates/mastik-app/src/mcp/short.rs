@@ -53,6 +53,15 @@ pub(crate) fn shorten(out: &mut Output, known: &[u64]) {
 /// copies back is what was there.
 const WORDS: [&str; 4] = ["text", "name", "description", "source"];
 
+/// A layer's `styles`, each slot (`text` among them) naming a style by its id,
+/// so no slot's value is stored words.
+fn shorten_style_links(v: &mut Value, known: &[u64]) {
+    match v {
+        Value::Object(map) => map.values_mut().for_each(|s| shorten_value(s, known)),
+        other => shorten_value(other, known),
+    }
+}
+
 fn shorten_value(v: &mut Value, known: &[u64]) {
     match v {
         Value::String(s) => {
@@ -67,7 +76,9 @@ fn shorten_value(v: &mut Value, known: &[u64]) {
                 let Some(mut value) = map.remove(&key) else {
                     continue;
                 };
-                if !(WORDS.contains(&key.as_str()) && value.is_string()) {
+                if key == "styles" {
+                    shorten_style_links(&mut value, known);
+                } else if !(WORDS.contains(&key.as_str()) && value.is_string()) {
                     shorten_value(&mut value, known);
                 }
                 let key = shorten_text(&key, known).unwrap_or(key);
@@ -206,6 +217,7 @@ mod tests {
     /// written short.
     ///
     /// flip: `shorten_value` without its `WORDS` arm → fails at "a text stays";
+    /// without its `styles` arm → fails at "a text style's link";
     /// `expand_sources` skipping a step → fails at "a batch step's source".
     #[test]
     fn stored_words_keep_their_ids_in_full() {
@@ -234,6 +246,13 @@ mod tests {
         assert_eq!(answer["text"], "see aa:3", "a text stays");
         assert_eq!(answer["name"], "aa:4");
         assert_eq!(answer["source"], "x = aa:5");
+        let mut tree = serde_json::json!({ "styles": { "text": "aa:27", "fills": "aa:28" } });
+        shorten_value(&mut tree, &known);
+        assert_eq!(
+            tree["styles"],
+            serde_json::json!({ "text": "naa_27", "fills": "naa_28" }),
+            "a text style's link"
+        );
     }
 
     /// An answer's text copy, the half most harnesses hand the model, keeps a
