@@ -26,6 +26,7 @@ use crate::svg_in::ImageSink;
 use crate::typography::{CharAttr, Length, ParaAttr};
 use crate::variable::{Cell, CollectionId, ModeId, VarId, VarKind};
 use kurbo::Affine;
+use rustc_hash::FxHashSet;
 use serde_json::{Map, Value};
 
 mod loose;
@@ -2274,7 +2275,7 @@ pub static VERBS: &[Verb] = &[
             req(
                 "tree",
                 ParamKind::Model("Tree"),
-                "the root layer, its properties and its `children`, bottom first; a child is placed by `transform` [1, 0, 0, 1, x, y]; a layer's `like` names one whose fills, strokes, effects, opacity and blend it takes where it gives none, a text also a text's style and paragraph",
+                "the root layer, its properties and its `children`, bottom first; a child is placed by `transform` [1, 0, 0, 1, x, y]; a `copy_of` layer takes what it leaves out, `kind` and `children` too, from its main, so write only overrides; a layer's `like` names one whose fills, strokes, effects, opacity and blend it takes where it gives none, a text also a text's style and paragraph",
             ),
             opt(
                 "index",
@@ -2302,6 +2303,7 @@ pub static VERBS: &[Verb] = &[
                 raw = parsed;
             }
             expand_like(ctx.doc, &mut raw).map_err(|why| a.invalid("tree", why))?;
+            expand_copies(ctx.doc, &mut raw);
             loose::loosen("tree", &mut raw);
             let raw = settle::<Tree>("Tree", raw).map_err(|why| a.invalid("tree", why))?;
             let tree: Tree = serde_json::from_value(raw).map_err(|e| a.invalid("tree", e))?;
@@ -6522,7 +6524,9 @@ fn guide_ops(
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Tree {
-    pub kind: NodeKind,
+    /// Left out only by a layer naming its main in `copy_of`, which takes the
+    /// main's ([`expand_copies`]).
+    pub kind: Option<NodeKind>,
     /// The layer this one was read from, where another layer of the tree
     /// refers to it (`copy_of`, `swap`, a property's `bound`).
     pub id: Option<String>,
@@ -6631,12 +6635,21 @@ fn tree_ops(
     let id = *ids
         .next()
         .ok_or(VerbError::Nothing("a tree layer has no id"))?;
+    let kind = tree.kind.clone().ok_or_else(|| {
+        let why = match &tree.copy_of {
+            Some(main) => {
+                format!("`copy_of` `{main}` is no layer here, so the copy needs its `kind`")
+            }
+            None => "a layer gives its `kind`, or names its main in `copy_of`".to_owned(),
+        };
+        a.invalid("tree", why)
+    })?;
     let ops = &mut done.tx.0;
     ops.push(Operation::CreateNode {
         id,
         parent,
         index,
-        kind: tree.kind.clone(),
+        kind: kind.clone(),
         transform: tree.transform,
         name: tree.name.clone(),
     });
@@ -6659,7 +6672,7 @@ fn tree_ops(
         }
         // As `build::set_blend_all` lands it, for a layer it cannot see yet.
         let blend = match blend_of(word) {
-            m if m.allowed_on(&tree.kind) => m,
+            m if m.allowed_on(&kind) => m,
             _ => BlendMode::Normal,
         };
         ops.push(Operation::SetBlend { id, blend });
@@ -6875,7 +6888,7 @@ fn binding_ops(
             F::Fill(_) | F::Stroke(_) | F::StrokeWidth(_) | F::Effect(..) | F::Limit(_) => {
                 return Err(a.invalid(
                     "tree",
-                    "a fill's, stroke's, effect's or limit's binding travels in that item",
+                    "a fill's, stroke's, effect's or limit's binding travels in that item: a bound fill is `{\"brush\": {\"var\": \"<variable id>\"}}` in `fills`",
                 ));
             }
         }
@@ -7084,6 +7097,55 @@ fn full_tree(doc: &Document, id: NodeId, drawn: bool) -> Option<Value> {
             "bindings",
             serde_json::to_value(bindings).unwrap_or_default(),
         );
+    }
+    // A copy's field left at a new layer's default where its source's is not is
+    // an override `insert_subtree` would otherwise fill back from the source.
+    if let Some(src) = n.link().and_then(|s| doc.get(s)) {
+        let none = || Value::Array(Vec::new());
+        if paint.fills.is_empty() && !src.paint().fills.is_empty() {
+            put("fills", none());
+        }
+        if paint.strokes.is_empty() && !src.paint().strokes.is_empty() {
+            put("strokes", none());
+        }
+        if n.effects().is_empty() && !src.effects().is_empty() {
+            put("effects", none());
+        }
+        if n.exports().is_empty() && !src.exports().is_empty() {
+            put("exports", none());
+        }
+        if visible && !src.visible() {
+            put("visible", Value::Bool(true));
+        }
+        if opacity == 1.0 && src.opacity() != 1.0 {
+            put("opacity", Value::from(1.0));
+        }
+        if n.blend() != src.blend() && n.blend() == BlendMode::default_for(n.kind()) {
+            put("blend", Value::from(n.blend().label()));
+        }
+        if !n.clip() && src.clip() {
+            put("clip", Value::Bool(false));
+        }
+        if *n.item() == LayoutItem::default() && *src.item() != LayoutItem::default() {
+            put("item", serde_json::to_value(n.item()).unwrap_or_default());
+        }
+        if *n.insets() == Insets::default() && *src.insets() != Insets::default() {
+            put(
+                "insets",
+                serde_json::to_value(n.insets()).unwrap_or_default(),
+            );
+        }
+        if n.styles() == crate::style::StyleRefs::default()
+            && src.styles() != crate::style::StyleRefs::default()
+        {
+            put(
+                "styles",
+                serde_json::to_value(n.styles()).unwrap_or_default(),
+            );
+        }
+        if n.children().is_empty() && !src.children().is_empty() {
+            put("children", none());
+        }
     }
     if n.component() {
         put("component", Value::Bool(true));
@@ -7327,6 +7389,99 @@ fn blend_of(label: &str) -> BlendMode {
         .into_iter()
         .find(|m| m.label() == label)
         .unwrap_or(BlendMode::Normal)
+}
+
+/// Fill in a tree's copies: a layer whose `copy_of` names a document layer no
+/// layer of the tree was read as takes what it leaves out from that layer, its
+/// kind whole, and its children as copies of that layer's when it gives none,
+/// so the fields it writes are its overrides. A copy taking a new layer's
+/// defaults instead would override its main's look with nothing. Runs after
+/// [`expand_like`], whose sample's look is the copy's own. Recurses into
+/// `children`.
+fn expand_copies(doc: &Document, v: &mut Value) {
+    fn read_ids(v: &Value, out: &mut FxHashSet<String>) {
+        if let Some(id) = v.get("id").and_then(Value::as_str) {
+            out.insert(id.to_owned());
+        }
+        for child in v
+            .get("children")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            read_ids(child, out);
+        }
+    }
+    /// What a main has that is its own and not a copy's.
+    const MAIN_ONLY: [&str; 9] = [
+        "id",
+        "component",
+        "set",
+        "variant",
+        "props",
+        "description",
+        "doc_link",
+        "guides",
+        "copy_of",
+    ];
+    /// `main`, a [`full_tree`] read, as a copy of it: each layer links to the
+    /// one it was read from.
+    fn as_copy(main: &mut Value) {
+        let Value::Object(map) = main else { return };
+        if let Some(Value::String(id)) = map.remove("id") {
+            for k in MAIN_ONLY {
+                map.remove(k);
+            }
+            map.insert("copy_of".into(), Value::String(id));
+        }
+        for child in map
+            .get_mut("children")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            as_copy(child);
+        }
+    }
+    fn walk(doc: &Document, read: &FxHashSet<String>, v: &mut Value, nested: bool) {
+        let Value::Object(map) = v else { return };
+        let main = map
+            .get("copy_of")
+            .and_then(Value::as_str)
+            .filter(|id| !read.contains(*id))
+            .and_then(NodeId::from_wire)
+            .and_then(|id| full_tree(doc, id, false));
+        let copy = main.is_some();
+        if let Some(Value::Object(mut main)) = main {
+            for k in MAIN_ONLY {
+                main.remove(k);
+            }
+            if !nested {
+                main.remove("transform");
+            }
+            if !map.contains_key("children")
+                && let Some(children) = main.get_mut("children")
+            {
+                for child in children.as_array_mut().into_iter().flatten() {
+                    as_copy(child);
+                }
+            }
+            for (k, val) in main {
+                map.entry(k).or_insert(val);
+            }
+        }
+        for child in map
+            .get_mut("children")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            walk(doc, read, child, nested || copy);
+        }
+    }
+    let mut read = FxHashSet::default();
+    read_ids(v, &mut read);
+    walk(doc, &read, v, false);
 }
 
 /// Why a script stopped: the step, counted from 1, and what went wrong there.

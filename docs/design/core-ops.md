@@ -237,7 +237,12 @@ it created. A verb never commits; its caller does, as every edit is committed.
   text's style and paragraph, where it gives none, expanded before the tree is read, since only
   the verb sees the document. A text that gives its own fills does not take the style's `color`,
   which would draw over them. A sample with nothing to give, a text's that is no text or one
-  with no paint, is refused. A child outside a flex or grid parent is
+  with no paint, is refused. A layer whose `copy_of` names a document layer (a main or a layer
+  inside one) that no layer of the tree was read as takes everything it leaves out from that
+  layer, its `kind` too and its `children` as copies when it gives none, so the fields it writes
+  are its overrides (`verbs::expand_copies`, after `like`, whose sample's look is then the copy's
+  own); a copy falling back to a new layer's defaults would override its main's look with
+  nothing. A layer with neither `kind` nor such a `copy_of` is refused. A child outside a flex or grid parent is
   placed by its `transform`, and one inside leaves the flow by its `insets`, as CSS `position: absolute`; a tree child written with `at`, `x`, `y` or `position` is refused with both forms.
 - **Model parameters read short forms** (`verbs::loose`): hex colours and paints and text styles
   without their default fields, and what `get_node` and CSS write (lengths in `px`/`em`, flat

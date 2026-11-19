@@ -6743,3 +6743,96 @@ fn a_tree_inserts_back_as_what_it_read() {
         Some(another)
     );
 }
+
+/// A tree layer naming `copy_of` takes what it leaves out from its main: one
+/// with no kind and no children is the main whole, and one giving only a
+/// label's content keeps the main's display, fills and the label's look. A
+/// copy whose fills were cleared reads back saying so, and inserts that way.
+/// flip: `insert_subtree` without `expand_copies` → the kind-less copy is refused.
+/// flip: `full_tree` without its copy defaults → fails at "the cleared fills".
+#[test]
+fn a_tree_copy_takes_what_it_leaves_out_from_its_main() {
+    let (mut doc, mut ids, page) = blank();
+    let main = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": {
+            "kind": frame(120.0, 40.0),
+            "name": "Button",
+            "fills": ["#3366cc"],
+            "display": { "Flex": { "gap": 8, "padding": 10 } },
+            "component": true,
+            "children": [{
+                "kind": { "Text": { "content": "Go", "sizing": "Auto",
+                    "style": { "font_family": "Inter", "font_size": 15 } } },
+                "name": "Label",
+                "fills": ["#ffffff"],
+            }],
+        } }),
+    );
+    let (main, label) = (main[0], main[1]);
+    let whole = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": { "copy_of": main.to_wire() } }),
+    );
+    let w = doc.get(whole[0]).unwrap();
+    assert_eq!(w.link(), Some(main), "an instance");
+    assert_eq!(w.name(), "Button");
+    let fills = |doc: &Document, id: NodeId| -> Vec<Fill> {
+        let paint = doc.get(id).unwrap().paint();
+        paint.fills.iter().map(|k| k.value.clone()).collect()
+    };
+    assert_eq!(fills(&doc, whole[0]), fills(&doc, main));
+    assert_eq!(whole.len(), 2, "with the main's label");
+    assert_eq!(doc.get(whole[1]).unwrap().link(), Some(label));
+
+    let tree = json!({
+        "kind": frame(120.0, 40.0),
+        "copy_of": main.to_wire(),
+        "children": [{
+            "copy_of": label.to_wire(),
+            "kind": { "Text": { "content": "Stop", "sizing": "Auto",
+                "style": { "font_family": "Inter", "font_size": 15 } } },
+        }],
+    });
+    let made = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": tree }),
+    );
+    let (copy, copy_label) = (made[0], made[1]);
+    assert_eq!(
+        doc.get(copy).unwrap().display(),
+        doc.get(main).unwrap().display(),
+        "the main's display"
+    );
+    assert_eq!(
+        fills(&doc, copy_label),
+        fills(&doc, label),
+        "the label's fills"
+    );
+    let NodeKind::Text { content, .. } = doc.get(copy_label).unwrap().kind() else {
+        unreachable!()
+    };
+    assert_eq!(content, "Stop", "its override");
+
+    run(
+        &mut doc,
+        &mut ids,
+        "set_fills",
+        json!({ "nodes": [copy.to_wire()], "fills": [] }),
+    );
+    let read = verbs::tree(&doc, copy).expect("the copy");
+    assert_eq!(read["fills"], json!([]), "the cleared fills");
+    let back = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": read }),
+    )[0];
+    assert!(doc.get(back).unwrap().paint().fills.is_empty());
+}
