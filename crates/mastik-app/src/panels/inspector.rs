@@ -3871,7 +3871,8 @@ impl MastikApp {
                 (None, false) => ui::FieldButton::Off,
             };
             let tip = app.repeat_refusal().unwrap_or("Repeat…");
-            if ui::field_button_sized(ui, icon::REPEAT_AROUND, bw, state)
+            let glyph = crate::repeat::way_glyph(app.repeat_door_way());
+            if ui::field_button_sized(ui, glyph, bw, state)
                 .on_hover_text(tip)
                 .clicked()
                 && state != ui::FieldButton::Disabled

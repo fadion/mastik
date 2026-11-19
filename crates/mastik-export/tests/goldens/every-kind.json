@@ -374,6 +374,7 @@
         "601d:21",
         "601d:23",
         "601d:24",
+        "601d:25",
         "601d:14"
       ],
       "local_transform": [
@@ -654,6 +655,130 @@
             "alpha": 1.0
           },
           "width": 2.0
+        }
+      ]
+    },
+    {
+      "id": "601d:25",
+      "kind": "group",
+      "name": "Knockout",
+      "page": "601d:1",
+      "parent": "601d:2",
+      "children": [
+        "601d:26",
+        "601d:27"
+      ],
+      "artboard": "601d:2",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        240.0,
+        175.0
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        250.0,
+        185.0
+      ],
+      "world_bounds": [
+        250.0,
+        185.0,
+        60.0,
+        50.0
+      ]
+    },
+    {
+      "id": "601d:26",
+      "kind": "ellipse",
+      "name": "Hole",
+      "page": "601d:1",
+      "parent": "601d:25",
+      "artboard": "601d:2",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        15.0,
+        10.0
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        265.0,
+        195.0
+      ],
+      "world_bounds": [
+        265.0,
+        195.0,
+        30.0,
+        30.0
+      ],
+      "mask": true,
+      "mask_mode": "Shape",
+      "mask_inverted": true,
+      "geometry": {
+        "type": "Ellipse",
+        "width": 30.0,
+        "height": 30.0
+      }
+    },
+    {
+      "id": "601d:27",
+      "kind": "rect",
+      "name": "Ramp",
+      "page": "601d:1",
+      "parent": "601d:25",
+      "artboard": "601d:2",
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        250.0,
+        185.0
+      ],
+      "world_bounds": [
+        250.0,
+        185.0,
+        60.0,
+        50.0
+      ],
+      "geometry": {
+        "type": "Rect",
+        "width": 60.0,
+        "height": 50.0
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Gradient",
+            "kind": "linear",
+            "opacity": 1.0,
+            "stops": [
+              {
+                "offset": 0.0,
+                "color": "#e62828",
+                "alpha": 1.0
+              },
+              {
+                "offset": 1.0,
+                "color": "#283ce6",
+                "alpha": 1.0
+              }
+            ],
+            "extend": "reflect",
+            "smooth": true
+          }
         }
       ]
     },
@@ -990,7 +1115,7 @@
         28.5,
         108.5,
         123.0,
-        33.0
+        33.6828
       ],
       "geometry": {
         "type": "Line",
@@ -1006,7 +1131,8 @@
             "color": "#5a5a64",
             "alpha": 1.0
           },
-          "width": 3.0
+          "width": 3.0,
+          "end": "Arrow"
         }
       ]
     },

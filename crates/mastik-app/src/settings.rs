@@ -1058,41 +1058,28 @@ impl MastikApp {
     /// Returns the family picked, for the draft. A family that can never be had
     /// wears its glyph in `warn()`, as in the panel.
     fn default_font_row(&mut self, ui: &mut egui::Ui, current: &str) -> Option<String> {
-        let mut chosen = None;
         let missing = self.fonts.family_status(current) == crate::fonts::FamilyStatus::Missing;
         let head = if missing {
             ui::glyph_and_text_tinted(icon::TEXT_AA, current, color::warn())
         } else {
             ui::glyph_and_text(icon::TEXT_AA, current)
         };
-        // Allocated right to left for `font_cache_row`'s reason.
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = COL_GAP;
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (picked, combo) = self.family_dropdown(
-                    ui,
-                    "settings-default-font",
-                    egui::vec2(PREF_CONTROL_W, FIELD_H),
-                    head,
-                    current,
+        labelled_row(ui, "Default font", |ui| {
+            let (picked, combo) = self.family_dropdown(
+                ui,
+                "settings-default-font",
+                egui::vec2(PREF_CONTROL_W, FIELD_H),
+                head,
+                current,
+            );
+            if missing {
+                combo.on_hover_text(
+                    "This font is not installed and cannot be downloaded — \
+                     new text starts in Inter",
                 );
-                chosen = picked;
-                if missing {
-                    combo.on_hover_text(
-                        "This font is not installed and cannot be downloaded — \
-                         new text starts in Inter",
-                    );
-                }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new("Default font")
-                            .size(LABEL_PT)
-                            .color(ui::switch_row_ink(true)),
-                    );
-                });
-            });
-        });
-        chosen
+            }
+            picked
+        })
     }
 }
 
@@ -1937,8 +1924,8 @@ impl MastikApp {
     }
 }
 
-/// A row's label on the left and its controls on the right, laid as
-/// *Default font*'s row is: `controls` adds them right to left, first at the edge.
+/// A row's label on the left, in a switch row's size and ink, and its controls on
+/// the right: `controls` adds them right to left, first at the edge.
 pub(crate) fn labelled_row<R>(
     ui: &mut egui::Ui,
     label: &str,

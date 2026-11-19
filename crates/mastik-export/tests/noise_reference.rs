@@ -2,7 +2,8 @@
 //! `feTurbulence` filter, drawn by `resvg`, an implementation of the
 //! specification's own code that shares nothing with ours. The CPU backend's
 //! raster of the same document must match it; `mastik-render`'s on-device suite
-//! holds the GPU to the CPU (`tests/fx_gpu.rs`, `tests/gpu_effects.rs`).
+//! holds the GPU to the CPU (`tests/fx_gpu.rs`, `tests/gpu_effects.rs`). The
+//! sharpen is held to its `feGaussianBlur` and `feComposite` the same way.
 
 use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
 use mastik_core::peniko::Color;
@@ -375,5 +376,110 @@ fn a_mirrored_shadow_falls_where_the_canvas_casts_it() {
         svg.contains(r#"<g transform="matrix(-1 0 0 1 150 10)"><g filter="#)
             && svg.contains(r#"dx="6" dy="4""#),
         "noise: the offset as authored, under the layer's transform:\n{svg}"
+    );
+}
+
+/// How far a sharpen may stray from the reference: `resvg`'s three boxes miss a
+/// gaussian's tail by a level or so, and a sharpen of `amount` multiplies that by
+/// `1 + amount`.
+const SHARPEN_TOLERANCE: u8 = 5;
+
+/// A sharpen draws what the writer's blur and arithmetic composite draw, across
+/// the rectangle's edges where it rings. Only deviations `resvg` blurs by boxes of
+/// an odd width (2.5 and 3.5): below 2 its IIR blur strays from a gaussian by
+/// several levels on its own, and an even box shifts by half a pixel. The layer's
+/// alpha clamps to 1 inside and 0 outside, so the band also holds the clamp order.
+/// flip: `working_pad` without its sharpen arm → fails at "differs", by tens of
+/// levels on the edge pixels.
+#[test]
+fn a_sharpen_draws_what_the_svg_writer_writes() {
+    // The 40×24 rectangle at x 8..48, y 10..34, and the band round it.
+    let band = (2, 4, 54, 40);
+    for radius in [5.0, 7.0] {
+        let (a, svg) = raster(
+            Affine::translate((8.0, 10.0)),
+            vec![Effect::new(EffectKind::Sharpen {
+                amount: 1.5,
+                radius,
+            })],
+        );
+        assert!(
+            svg.contains(r#"operator="arithmetic" k1="0" k2="2.5" k3="-1.5""#),
+            "radius {radius}: the writer writes the sharpen as a composite:\n{svg}"
+        );
+        // Green just inside the left edge and mid-box: the edge overshoots.
+        let green = |x: u32| a[((20 * W + x) * 4 + 1) as usize];
+        assert!(
+            green(8) > green(28) + 40,
+            "radius {radius}: the fixture rings: {} against {}",
+            green(8),
+            green(28)
+        );
+        let (worst, share) = differ(&a, &reference(&svg), band);
+        assert!(
+            worst <= SHARPEN_TOLERANCE && share <= SHARE,
+            "radius {radius}: the sharpen differs from the reference by up to {worst}, \
+             {:.1}% of channels past one level",
+            share * 100.0
+        );
+    }
+
+    // Translucent, dark then light across a hard stop at x 28: the light side's
+    // overshoot passes its alpha but not 1, so only a clamp to the alpha holds it.
+    let (mut doc, _, board, page) = single(
+        Affine::translate((8.0, 10.0)),
+        vec![Effect::new(EffectKind::Sharpen {
+            amount: 1.5,
+            radius: 5.0,
+        })],
+    );
+    let rect = doc
+        .node_ids()
+        .find(|id| matches!(doc.get(*id).unwrap().kind(), NodeKind::Rect { .. }))
+        .expect("the rectangle");
+    let (dark, light) = (
+        Color::from_rgba8(40, 40, 40, 150),
+        Color::from_rgba8(200, 200, 200, 150),
+    );
+    let two_tone = mastik_core::peniko::Gradient::new_linear((0.0, 0.0), (40.0, 0.0)).with_stops([
+        (0.0, dark),
+        (0.5, dark),
+        (0.5, light),
+        (1.0, light),
+    ]);
+    doc.apply(&Transaction(vec![
+        Operation::SetFills {
+            id: rect,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Gradient(two_tone.into()).into(),
+                visible: true,
+            }]),
+        },
+        // Over a ground, where a colour past its alpha would add light.
+        Operation::SetFills {
+            id: board,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Solid(Color::from_rgb8(90, 110, 130)).into(),
+                visible: true,
+            }]),
+        },
+    ]))
+    .unwrap();
+    let res = Resolved::rebuild(&doc);
+    let svg = mastik_export::svg::svg(&doc, &res, page, Some(board));
+    let a = ours(&doc, &res, page);
+    let px = |x: u32| &a[((20 * W + x) * 4) as usize..((20 * W + x) * 4 + 4) as usize];
+    assert!(
+        px(28)[0] > px(40)[0] + 20,
+        "the fixture: the light side overshoots: {:?} against {:?}",
+        px(28),
+        px(40)
+    );
+    let (worst, share) = differ(&a, &reference(&svg), band);
+    assert!(
+        worst <= SHARPEN_TOLERANCE && share <= SHARE,
+        "two-tone: the sharpen differs from the reference by up to {worst}, \
+         {:.1}% of channels past one level",
+        share * 100.0
     );
 }

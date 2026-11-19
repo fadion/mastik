@@ -469,7 +469,7 @@ fn rail_id(node: NodeId) -> String {
 /// node's parent's, see [`origin_outer`]).
 ///
 /// SVG's default region clips any shadow reaching past a tenth of the layer, so it
-/// is written from [`Resolved::ink_bounds`], padded by [`inner_working_pad`].
+/// is written from [`Resolved::ink_bounds`], padded by [`working_pad`].
 fn effect_region(
     res: &Resolved,
     id: NodeId,
@@ -477,7 +477,7 @@ fn effect_region(
     effects: &[Keyed<Effect>],
 ) -> Option<Rect> {
     // `None` drops the filter and keeps the artwork, like `ScenePainter::push_effect_layer`.
-    Some(ink_in(res, id, id, transform)? + Insets::uniform(inner_working_pad(effects)))
+    Some(ink_in(res, id, id, transform)? + Insets::uniform(working_pad(effects)))
 }
 
 /// `ink_of`'s ink box in the space `outer` maps `frame`'s local space into, the
@@ -505,20 +505,25 @@ fn region_attrs(r: Rect) -> String {
     )
 }
 
-/// How far outside the layer this stack's inner shadows must be able to look.
-/// `EffectKind::escape` is `ZERO` for one, but an inner shadow is cast from
-/// everything outside the layer and SVG makes results outside the region
-/// transparent, so a region at the ink bounds draws nothing.
+/// How far outside the layer this stack's inner shadows and sharpens must be able
+/// to look. `EffectKind::escape` is `ZERO` for both, but an inner shadow is cast
+/// from everything outside the layer and SVG makes results outside the region
+/// transparent, so a region at the ink bounds draws nothing. A sharpen's blur at
+/// a region that ends on the layer's edge rings far harder in `resvg` than on the
+/// canvas; the pad adds no ink, since the composite clamps alpha below zero away.
 ///
 /// Uniform and generous on purpose: too small silently crops, and the final
-/// `feComposite operator="in"` confines the result. `0.0` with no inner shadow.
-fn inner_working_pad(effects: &[Keyed<Effect>]) -> f64 {
+/// `feComposite operator="in"` confines an inner shadow. `0.0` with neither.
+fn working_pad(effects: &[Keyed<Effect>]) -> f64 {
     effects
         .iter()
         .filter(|e| e.visible)
         .filter_map(|e| match &e.kind {
             EffectKind::InnerShadow(s) => {
                 Some(mastik_core::effect::reach(s.blur) + s.spread.abs() + s.offset.hypot())
+            }
+            EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
+                Some(mastik_core::effect::reach(*radius))
             }
             _ => None,
         })
@@ -3902,6 +3907,49 @@ mod sweep_tests {
         assert!(
             (first - (std::f64::consts::FRAC_PI_2 + 4.5f64.to_radians())).abs() < 1e-3,
             "the second wedge starts a wedge past the quarter: {first}"
+        );
+    }
+
+    /// A turned sweep's wedges are laid out in the gradient's own space and the
+    /// pattern carries the brush's transform; an unturned one carries none.
+    /// flip: `sweep_def` writing no `patternTransform` → fails at "turned".
+    #[test]
+    fn a_turned_sweep_carries_its_transform() {
+        let (red, blue) = (Color::from_rgb8(255, 0, 0), Color::from_rgb8(0, 0, 255));
+        let write = |transform: Affine| {
+            let g = Gradient::new_sweep(Point::new(50.0, 50.0), 0.0, std::f32::consts::TAU)
+                .with_stops([(0.0, red), (1.0, blue)]);
+            let mut brush: GradientBrush = g.into();
+            brush.transform = transform;
+            let GradientKind::Sweep(p) = brush.gradient.kind else {
+                unreachable!()
+            };
+            sweep_def(
+                "g",
+                &brush,
+                &brush.gradient,
+                &p,
+                Some(Rect::new(0.0, 0.0, 100.0, 100.0)),
+            )
+        };
+        let plain = write(Affine::IDENTITY);
+        assert!(!plain.contains("patternTransform"), "the control: {plain}");
+        let turned = write(Affine::rotate_about(
+            std::f64::consts::FRAC_PI_2,
+            Point::new(50.0, 50.0),
+        ));
+        let tile = turned.split("<pattern").nth(1).expect("a pattern");
+        assert!(
+            tile.starts_with(
+                r#" id="g" patternUnits="userSpaceOnUse" patternTransform="matrix(0 1 -1 0 100 0)""#
+            ),
+            "turned: {tile}"
+        );
+        // The wedges themselves are the unturned ones: the turn is the pattern's.
+        assert_eq!(
+            wedge_turns(&turned)[1],
+            wedge_turns(&plain)[1],
+            "laid out in the gradient's space"
         );
     }
 }
