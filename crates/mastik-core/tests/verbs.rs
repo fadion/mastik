@@ -669,7 +669,9 @@ fn an_unknown_field_is_refused_with_every_field_there_is() {
         json!({ "parent": page.to_wire(), "tree": spaced }),
     );
     assert!(why.contains("`spacing`"), "a paragraph's `spacing`: {why}");
-    let rounded = json!({ "kind": frame(10.0, 10.0), "corner_radius": 8 });
+    // An ellipse has no corners to take it; a frame's or rectangle's moves in.
+    let ellipse = json!({ "Ellipse": { "size": { "width": 10, "height": 10 } } });
+    let rounded = json!({ "kind": ellipse, "corner_radius": 8 });
     let why = refused_why(
         &doc,
         &mut ids,

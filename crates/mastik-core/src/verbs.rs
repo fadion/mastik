@@ -921,8 +921,12 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
         return format!("{said}; write it with its fields, as `{}`", compact(&form));
     }
     // A kind missing a field is shown that kind, not the model's example of another.
+    // Kinds alone, named as the model spells a variant: a style's `text` is no kind.
     if miss.why.contains("missing field")
-        && let Some(form) = named.as_deref().and_then(|n| kind_example(&plain(n)))
+        && let Some(n) = named
+            .as_deref()
+            .filter(|n| n.starts_with(char::is_uppercase))
+        && let Some(form) = kind_example(&plain(n))
     {
         return format!("{said}; for example `{}`", compact(&form));
     }

@@ -223,6 +223,38 @@ fn hug_bare_spacing_and_a_kinds_own_form_are_read() {
     );
 }
 
+/// A text style's value is completed as a layer's style is, a flex takes
+/// `align` and `justify`, a tree's rectangle `corner_radius`, and a path's
+/// geometry `{"path": …}` without its variant.
+///
+/// flip: `loosen_in` without its style-value `text` arm → fails at "the style";
+/// its `Flex` arm without `align` → fails at "the tree".
+#[test]
+fn styles_flex_corners_and_paths_take_the_names_agents_write() {
+    let (mut doc, mut ids, page) = blank();
+    let style = json!({ "slot": "text", "name": "Display",
+        "value": { "text": { "font_family": "Inter", "font_size": 64, "line_height": "68px" } } });
+    let made = answer(&doc, &mut ids, "add_style", &style);
+    assert!(made.is_ok(), "the style: {made:?}");
+    let rect = json!({ "Rect": { "size": { "width": 10, "height": 10 } } });
+    let tree = json!({ "parent": page.to_wire(), "tree": {
+        "kind": { "Artboard": { "size": { "width": 100, "height": 40 } } },
+        "display": { "Flex": { "align": "Center", "justify": "SpaceBetween" } },
+        "children": [{ "kind": rect, "corner_radius": 4 }] } });
+    let made = answer(&doc, &mut ids, "insert_subtree", &tree);
+    assert!(made.is_ok(), "the tree: {made:?}");
+    let path = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": { "Path": { "path": "M0 0 L10 0 L10 10 Z" } } }),
+    )
+    .created[0];
+    let patch = json!({ "node": path.to_wire(), "geometry": { "path": "M0 0 L20 0 L20 20 Z" } });
+    let set = answer(&doc, &mut ids, "set_geometry", &patch);
+    assert!(set.is_ok(), "the path: {set:?}");
+}
+
 /// A layout item written with a `position`, in a tree or alone, is refused
 /// with the insets that take a child out of its frame's flow.
 ///

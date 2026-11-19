@@ -542,6 +542,12 @@ fn loosen_in(key: &str, v: &mut Value, errs: &mut Vec<String>) {
         ("Path", Value::String(s)) => *v = serde_json::json!({ "path": s.clone() }),
         // A geometry given as path data alone is a path's outline.
         ("geometry", Value::String(s)) => *v = serde_json::json!({ "Path": { "path": s.clone() } }),
+        // And as a path's own fields, `{"path": …}` without the variant around them.
+        ("geometry", Value::Object(map))
+            if map.len() == 1 && (map.contains_key("path") || map.contains_key("svg")) =>
+        {
+            *v = serde_json::json!({ "Path": v.clone() });
+        }
         _ => {}
     }
     if let Value::Object(map) = v {
@@ -560,10 +566,23 @@ fn loosen_in(key: &str, v: &mut Value, errs: &mut Vec<String>) {
                     .or_insert_with(|| Value::Array(Vec::new()));
             }
             "style" => complete_style(map),
+            // A text style's value (`add_style`'s `{"text": {…}}`); a layer's
+            // `Text` kind holds a `content`.
+            "text" if !map.contains_key("content") => complete_style(map),
             "Flex" | "Grid" => {
                 if let Some(gap) = map.remove("gap") {
                     map.entry("row_gap").or_insert_with(|| gap.clone());
                     map.entry("column_gap").or_insert(gap);
+                }
+                // The short names agents carry over from other tools' auto layout;
+                // a grid's are ambiguous between items and content.
+                for (short, field) in [("align", "align_items"), ("justify", "justify_content")] {
+                    if key == "Flex"
+                        && !map.contains_key(field)
+                        && let Some(v) = map.remove(short)
+                    {
+                        map.insert(field.into(), v);
+                    }
                 }
             }
             "insets" => {
@@ -579,6 +598,25 @@ fn loosen_in(key: &str, v: &mut Value, errs: &mut Vec<String>) {
                 }
             }
             _ => {}
+        }
+        // A tree layer's `corner_radius`, the name `set` takes, is its kind's corners.
+        let cornered = map
+            .get("kind")
+            .and_then(Value::as_object)
+            .and_then(|k| {
+                k.iter()
+                    .find(|(v, _)| matches!(v.as_str(), "Rect" | "Artboard"))
+            })
+            .and_then(|(v, inner)| {
+                (inner.is_object() && inner.get("corner_radii").is_none()).then(|| v.clone())
+            });
+        if let Some(variant) = cornered
+            && let Some(r) = map.remove("corner_radius")
+            && let Some(Value::Object(inner)) = map
+                .get_mut("kind")
+                .and_then(|k| k.get_mut(variant.as_str()))
+        {
+            inner.insert("corner_radii".into(), r);
         }
         if let Some(Value::String(name)) = map.get("corner")
             && let Some(k) = corner_index(name)
