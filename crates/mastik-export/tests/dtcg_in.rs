@@ -619,3 +619,14 @@ fn style_references_bind_variables() {
     assert_eq!(f[0].brush.var(), Some(d.bg));
     let _ = d.dark;
 }
+
+/// A file starting with a byte-order mark, as Windows PowerShell's `>` writes
+/// one, reads as the same file without it. flip: `parse` not skipping the mark
+/// → refused as "not JSON".
+#[test]
+fn a_byte_order_mark_is_skipped() {
+    let text = json!({ "space": { "$type": "dimension", "$value": "8px" } }).to_string();
+    let plain = parse(&text).expect("tokens");
+    let marked = parse(&format!("\u{feff}{text}")).expect("the same tokens");
+    assert_eq!(format!("{marked:?}"), format!("{plain:?}"));
+}

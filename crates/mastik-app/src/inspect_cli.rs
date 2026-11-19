@@ -155,4 +155,52 @@ mod tests {
         assert!(answer.to_string().contains("\"Card\""), "{answer}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// `--layer` narrows a read to that layer: the outline lists Card's child and
+    /// not Other's, and the context answers about Card. flip: `run` not putting
+    /// the layer in as `id` → fails at "not Other's".
+    #[test]
+    fn a_layer_narrows_the_outline_and_the_context() {
+        use mastik_core::{NodeKind, Operation, Transaction};
+        let dir = std::env::temp_dir().join(format!("mastik-inspect-layer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut ids = mastik_core::IdSource::new(1);
+        let mut doc = mastik_core::Document::new(ids.mint());
+        let page = doc.first_page();
+        let [card, other, inside, outside] = [(); 4].map(|_| ids.mint());
+        let rect = || NodeKind::Rect {
+            size: mastik_core::kurbo::Size::new(10.0, 10.0),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        };
+        let make = |id, parent, index, kind, name: &str| Operation::CreateNode {
+            id,
+            parent,
+            index,
+            kind,
+            transform: None,
+            name: Some(name.into()),
+        };
+        doc.apply(&Transaction(vec![
+            make(card, page, 0, NodeKind::Group, "Card"),
+            make(inside, card, 0, rect(), "Inside"),
+            make(other, page, 1, NodeKind::Group, "Other"),
+            make(outside, other, 0, rect(), "Outside"),
+        ]))
+        .unwrap();
+        let file = dir.join("a.mastik");
+        std::fs::write(&file, mastik_core::io::save(&doc).unwrap()).unwrap();
+        let path = file.to_str().unwrap();
+        let read = |what: &str| -> String {
+            let i = inspect(&[path, what, "--layer", "Card"]).unwrap();
+            run(&i).unwrap()
+        };
+        let outline = read("outline");
+        assert!(outline.contains("\"Inside\""), "{outline}");
+        assert!(!outline.contains("\"Outside\""), "not Other's: {outline}");
+        let context = read("context");
+        assert!(context.contains(&card.to_wire()), "about Card: {context}");
+        assert!(!context.contains(&other.to_wire()), "{context}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

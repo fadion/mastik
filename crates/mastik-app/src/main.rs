@@ -488,8 +488,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
         return Ok(Command::Help(usage.to_string()));
     }
     match args.first().map(String::as_str) {
-        Some("--help" | "-h") if args.len() == 1 => Ok(Command::Help(OVERVIEW.to_string())),
-        Some("help") => match args.get(1..) {
+        // `--help export` is `help export`.
+        Some("help" | "--help" | "-h") => match args.get(1..) {
             Some([]) | None => Ok(Command::Help(OVERVIEW.to_string())),
             Some([command]) => usage_of(command)
                 .map(|u| Command::Help(u.to_string()))
@@ -500,7 +500,12 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "mastik {}",
             env!("CARGO_PKG_VERSION")
         ))),
-        None | Some("gui") => Ok(Command::Gui { open: None }),
+        None => Ok(Command::Gui { open: None }),
+        Some("gui") => match &args[1..] {
+            [] => Ok(Command::Gui { open: None }),
+            [file] if names_a_document(file) => open_in_window(file),
+            _ => Err(GUI_USAGE.to_string()),
+        },
         Some("serve") if args.len() == 1 => Ok(Command::Serve),
         Some("serve") => Err(SERVE_USAGE.to_string()),
         Some("export") => parse_export(&args[1..]),
@@ -513,18 +518,23 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Some("check") => check_cli::parse(&args[1..]).map(Command::Check),
         Some("run") => run_cli::parse(&args[1..]).map(Command::Run),
         Some("mcp-proxy") => parse_mcp_proxy(&args[1..]),
-        // Absolute, so the session's save path and `prefs.last_document` survive a
-        // different working directory next launch.
         Some(file) if names_a_document(file) => match args.get(1) {
+            Some(extra) if help(extra) => Ok(Command::Help(GUI_USAGE.to_string())),
             Some(extra) => Err(format!("mastik {file}: unexpected argument {extra}")),
-            None => Ok(Command::Gui {
-                open: Some(std::path::absolute(file).map_err(|e| format!("mastik {file}: {e}"))?),
-            }),
+            None => open_in_window(file),
         },
         Some(other) => Err(format!(
             "unknown command: {other}; `mastik --help` lists them"
         )),
     }
+}
+
+/// The window, opening `file`. Absolute, so the session's save path and
+/// `prefs.last_document` survive a different working directory next launch.
+fn open_in_window(file: &str) -> Result<Command, String> {
+    Ok(Command::Gui {
+        open: Some(std::path::absolute(file).map_err(|e| format!("mastik {file}: {e}"))?),
+    })
 }
 
 fn parse_diff(args: &[String]) -> Result<Command, String> {
@@ -1897,6 +1907,31 @@ mod tests {
         );
         assert!(parse(&args(&["help", "exprot"])).is_err());
         assert!(parse(&args(&["--version", "x"])).is_err());
+    }
+
+    /// The help's own command lines parse as it says: `gui <file>` opens the file
+    /// and refuses anything else, `--help export` is `help export`, and a
+    /// document's `--help` is the window's usage. flip: `gui` ignoring what
+    /// follows → fails at "gui opens the file".
+    #[test]
+    fn the_usage_lines_parse_as_the_help_says() {
+        let args = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        match parse(&args(&["gui", "a.mastik"])) {
+            Ok(Command::Gui { open: Some(p) }) => assert!(p.ends_with("a.mastik")),
+            other => panic!("gui opens the file: {other:?}"),
+        }
+        assert_eq!(
+            parse(&args(&["gui", "--bogus"])).err().as_deref(),
+            Some(GUI_USAGE)
+        );
+        assert!(matches!(
+            parse(&args(&["--help", "export"])),
+            Ok(Command::Help(u)) if u == EXPORT_USAGE
+        ));
+        assert!(matches!(
+            parse(&args(&["a.mastik", "--help"])),
+            Ok(Command::Help(u)) if u == GUI_USAGE
+        ));
     }
 
     /// Only a GUI launch and Velopack's own re-invocations reach the install hook;

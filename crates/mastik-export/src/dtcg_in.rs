@@ -290,8 +290,10 @@ struct Raw<'a> {
 
 /// Read a `tokens.json`. Refused when it is not JSON, holds no token, or a
 /// value cannot be read; a token of a type with no home here is kept in
-/// [`File::left_out`] rather than refused.
+/// [`File::left_out`] rather than refused. A leading byte-order mark is skipped:
+/// Windows PowerShell's `>` writes one.
 pub fn parse(text: &str) -> Result<File, Refusal> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let root: J = serde_json::from_str(text).map_err(|e| Refusal {
         reason: format!("this is not JSON ({e})"),
         path: String::new(),
