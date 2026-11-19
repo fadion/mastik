@@ -111,8 +111,8 @@ type Searched = Result<Page, PhotoError>;
 /// How long an agent's photo search is answered from memory: the hourly limit
 /// is the person's, and an agent asks again often.
 const AGENT_SEARCH_KEEP: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-/// How many agent searches are kept, the oldest landed one forgotten first; a
-/// pending one never is.
+/// How many agent searches a new one leaves kept, the oldest landed ones
+/// forgotten first; a pending one never is, so more can be kept while they wait.
 const AGENT_SEARCHES: usize = 32;
 /// The longest side of a thumbnail an agent is shown, in pixels: enough to tell
 /// photos apart at a fraction of a full picture's tokens.
@@ -752,8 +752,9 @@ impl Assets {
 
     /// An agent's photo search, answered from memory for [`AGENT_SEARCH_KEEP`],
     /// else asked for: one page, the service's first. The key is taken as
-    /// [`Assets::search_photos`] takes it. A refusal is answered once and
-    /// forgotten, so a key added or a connection back is asked again.
+    /// [`Assets::search_photos`] takes it. A refusal is answered once, and every
+    /// refusal remembered is forgotten with it, so a key added or a connection
+    /// back is asked again.
     pub(crate) fn agent_search(
         &mut self,
         key: SearchKey,
@@ -766,12 +767,15 @@ impl Assets {
         if let Some(at) = self.agents.searches.iter().position(|s| s.0 == key) {
             return match &self.agents.searches[at].2 {
                 Some(Ok(page)) => Poll::Ready(Ok(page.clone())),
-                Some(Err(_)) => self
-                    .agents
-                    .searches
-                    .remove(at)
-                    .2
-                    .map_or(Poll::Waiting, Poll::Ready),
+                Some(Err(_)) => {
+                    let answer = self.agents.searches.remove(at).2;
+                    // Every other refusal goes too: a call of several queries
+                    // reads only the first, and a key added since serves them all.
+                    self.agents
+                        .searches
+                        .retain(|s| !matches!(s.2, Some(Err(_))));
+                    answer.map_or(Poll::Waiting, Poll::Ready)
+                }
                 None => Poll::Waiting,
             };
         }
@@ -779,8 +783,9 @@ impl Assets {
             return Poll::Ready(Err(PhotoError::Unreachable));
         };
         // Only a landed search is forgotten: dropping a pending one loses its
-        // page, and the call waiting on it asks again, evicting the next.
-        if self.agents.searches.len() >= AGENT_SEARCHES
+        // page, and the call waiting on it asks again, evicting the next. Pending
+        // ones that landed since can leave more than the cap to forget.
+        while self.agents.searches.len() >= AGENT_SEARCHES
             && let Some(landed) = self.agents.searches.iter().position(|s| s.2.is_some())
         {
             self.agents.searches.remove(landed);
@@ -1176,8 +1181,8 @@ mod tests {
         assert!(matches!(a.agent_search(key(n), None), Poll::Waiting));
         assert_eq!(
             a.agents.searches.len(),
-            n,
-            "a new search forgets a landed one"
+            AGENT_SEARCHES,
+            "a new search forgets the landed ones past the cap"
         );
     }
 
@@ -1204,6 +1209,34 @@ mod tests {
         assert!(
             matches!(a.agent_search(key, None), Poll::Waiting),
             "asked again"
+        );
+    }
+
+    /// Answering one refusal forgets every other, so the next call of a
+    /// several-query search asks each query again.
+    ///
+    /// flip: `agent_search` forgetting only the refusal it answers → fails at
+    /// "tea asked again".
+    #[test]
+    fn answering_a_refusal_forgets_every_other() {
+        let ctx = egui::Context::default();
+        let mut a = Assets::default();
+        let key = |q: &str| ("unsplash", q.to_owned(), photos::Orientation::Any);
+        for q in ["coffee", "tea"] {
+            assert!(matches!(a.agent_search(key(q), None), Poll::Waiting));
+            let _ = a.done_tx.send(Done::AgentPhotos {
+                key: key(q),
+                page: Err(PhotoError::NoKey),
+            });
+        }
+        a.pass(&ctx);
+        assert!(matches!(
+            a.agent_search(key("coffee"), None),
+            Poll::Ready(Err(PhotoError::NoKey))
+        ));
+        assert!(
+            matches!(a.agent_search(key("tea"), None), Poll::Waiting),
+            "tea asked again"
         );
     }
 }
