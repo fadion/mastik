@@ -17,5 +17,11 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   the first is put right.
 - **Photo thumbnails not labelled with their asset.** Each thumbnail follows a text naming its
   asset id, and `said` says where thumbnails stop at the answer's 64 KB.
+- **A boolean of a stroked path cuts with its stroke.** Booleans combine fill geometry, as every
+  design tool's do; `outline_stroke` turns a stroke into a shape a boolean cuts with.
+- **A rate-limited photo download retried.** The service's limit is the person's; the refusal
+  says the source answered HTTP 429, and another photo is the way on.
+- **An instance root following its main's layout item.** An instance root's placement is its
+  own (`SetLayoutItem` among it, `components.md`), as its transform is.
 - **A DTCG `lineHeight` written as `"64px"`.** The DTCG format defines a typography token's
   `lineHeight` as a number, the multiplier; the refusal says so.
