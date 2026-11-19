@@ -953,3 +953,37 @@ fn an_imported_file_saves_and_loads() {
     let bytes = mastik_core::io::save(&r.doc).unwrap();
     mastik_core::io::load(&bytes).expect("the document loads");
 }
+
+/// An arrow `strokeCap` marks both ends of a line with its marker and a butt
+/// cap, and the one cap put on both ends is reported.
+/// flip: `markers` reading `LINE_ARROW` as `Arrow` → fails at the open arrow.
+#[test]
+fn an_arrow_cap_marks_both_ends() {
+    use mastik_core::Marker;
+    let line = |id: &str, cap: &str| {
+        node(
+            id,
+            "LINE",
+            (0.0, 0.0, 40.0, 0.0),
+            json!({ "strokes": [solid(rgb(0.0, 0.0, 0.0))], "strokeWeight": 2, "strokeCap": cap }),
+        )
+    };
+    let r = import(fetched(
+        vec![line("4:1", "LINE_ARROW"), line("4:2", "TRIANGLE_FILLED")],
+        json!({}),
+        &[],
+    ));
+    let ends = |id: &str| {
+        let s = &r.doc.get(one(&r.doc, id)).unwrap().paint().strokes[0].value;
+        (s.start, s.end, s.cap)
+    };
+    let butt = mastik_core::kurbo::Cap::Butt;
+    assert_eq!(ends("4:1"), (Marker::OpenArrow, Marker::OpenArrow, butt));
+    assert_eq!(ends("4:2"), (Marker::Arrow, Marker::Arrow, butt));
+    let row = r
+        .report
+        .iter()
+        .find(|u| u.what == "Arrow caps")
+        .expect("the caps are reported");
+    assert!(row.count.starts_with("2 "), "{}", row.count);
+}

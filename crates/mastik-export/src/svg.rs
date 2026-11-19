@@ -2410,9 +2410,34 @@ fn emit_strokes(
         // A solid stroke's heads are `<marker>`s; any other paint inside a marker
         // would be laid out against the marker's own box, so those heads are
         // filled paths in the stroke's space instead, as are the heads of a line
-        // too short to keep any stroke to hang them on.
+        // too short to keep any stroke to hang them on, and of a head whose
+        // subpath the trim swallowed: SVG hangs `marker-start` and `marker-end` on
+        // the written path's first and last vertex, which is then another
+        // subpath's.
+        let carrier = |at_end: bool| match &pieces {
+            Some(parts) => match at_end {
+                true => parts.last(),
+                false => parts.first(),
+            }
+            .map(|(p, _)| p),
+            None => trimmed.as_ref().or(shape.as_ref()),
+        };
+        let hung = placed.iter().all(|p| {
+            let vertex = carrier(p.at_end).and_then(|c| match p.at_end {
+                true => c
+                    .segments()
+                    .last()
+                    .map(|g| mastik_core::kurbo::ParamCurve::end(&g)),
+                false => c
+                    .segments()
+                    .next()
+                    .map(|g| mastik_core::kurbo::ParamCurve::start(&g)),
+            });
+            vertex.is_some_and(|v| (v - p.base).hypot() <= 1e-6 * p.base.to_vec2().hypot().max(1.0))
+        });
         let solid = matches!(s.brush.drawn(), Brush::Solid(_))
-            && trimmed.as_ref().is_none_or(|t| !t.is_empty());
+            && trimmed.as_ref().is_none_or(|t| !t.is_empty())
+            && hung;
         let (mut marker_start, mut marker_end) = (String::new(), String::new());
         if solid {
             for p in &placed {

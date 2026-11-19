@@ -5084,3 +5084,112 @@ fn a_lines_heads_export_as_markers() {
         "the tip on the end: {out}"
     );
 }
+
+/// A path whose first subpath is shorter than its start arrow's trim loses that
+/// subpath from the stroke, so `marker-start` would land on the next one's
+/// start; the head is written as a filled path at the outline's own start
+/// instead. Without the second subpath the head is a marker again.
+/// flip: `emit_strokes` choosing markers without asking where each head's
+/// subpath begins → fails at "no marker-start".
+#[test]
+fn a_head_whose_subpath_the_trim_swallows_stays_on_its_end() {
+    use mastik_core::kurbo::BezPath;
+    use mastik_core::{IdSource, Marker, NodeKind, Stroke};
+    let write = |two: bool| {
+        let mut ids = IdSource::new(0xA77);
+        let root = ids.mint();
+        let mut doc = mastik_core::Document::new(root);
+        let node = ids.mint();
+        let mut path = BezPath::new();
+        if two {
+            path.move_to((0.0, 0.0));
+            path.line_to((2.0, 0.0));
+        }
+        path.move_to((10.0, 10.0));
+        path.line_to((50.0, 10.0));
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: node,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Path {
+                    path,
+                    corner_radii: Vec::new(),
+                    corner_smoothing: 0.0,
+                    mirror: mastik_core::symmetry::PathMirror::NONE,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetStrokes {
+                id: node,
+                strokes: keyed_by_position([Stroke {
+                    brush: mastik_core::peniko::Brush::Solid(mastik_core::peniko::Color::BLACK)
+                        .into(),
+                    width: 2.0,
+                    start: Marker::Arrow,
+                    ..Default::default()
+                }]),
+            },
+        ]))
+        .unwrap();
+        let res = Resolved::rebuild(&doc);
+        svg_of(&doc, &res, &[node])
+    };
+    let one = write(false);
+    assert!(
+        one.contains("marker-start=\"url(#mk-"),
+        "the control: {one}"
+    );
+    let two = write(true);
+    assert!(!two.contains("marker-start"), "no marker-start: {two}");
+    // The arrow points left from the outline's start at (0, 0): its base is
+    // three widths back at x 6 across y ±3.
+    assert!(
+        two.contains("M0,0 L6,3 L6,-3") || two.contains("M0,0 L6,-3 L6,3"),
+        "the head at the outline's start: {two}"
+    );
+}
+
+/// A gradient stroke's heads are filled paths in the stroke's space carrying
+/// the gradient, not `<marker>`s, whose own box the gradient would be laid out in.
+/// flip: `emit_strokes`' `solid` true for any brush → fails at "no marker".
+#[test]
+fn a_gradient_strokes_heads_are_filled_paths() {
+    use mastik_core::kurbo::Point;
+    use mastik_core::peniko::{Color, Gradient};
+    use mastik_core::{Brush, Marker, NodeKind, Stroke};
+    let mut f = common::fixture();
+    let line = f
+        .doc
+        .node_ids()
+        .find(|id| matches!(f.doc.get(*id).unwrap().kind(), NodeKind::Line { .. }))
+        .expect("the fixture's line");
+    let gradient = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(60.0, 0.0)).with_stops([
+        (0.0_f32, Color::from_rgba8(255, 0, 0, 255)),
+        (1.0_f32, Color::from_rgba8(0, 0, 255, 255)),
+    ]);
+    f.doc
+        .apply(&Transaction(vec![Operation::SetStrokes {
+            id: line,
+            strokes: keyed_by_position([Stroke {
+                brush: Brush::Gradient(gradient.into()).into(),
+                width: 2.0,
+                end: Marker::Arrow,
+                ..Default::default()
+            }]),
+        }]))
+        .expect("markers");
+    f.res = Resolved::rebuild(&f.doc);
+    let out = svg_of(&f.doc, &f.res, &[line]);
+    assert!(!out.contains("<marker"), "no marker: {out}");
+    // The arrow at the 60-long line's end, its base three widths back.
+    let head = out
+        .lines()
+        .find(|l| l.contains("M60,0 L54,"))
+        .unwrap_or_else(|| panic!("the head as a path: {out}"));
+    assert!(
+        head.contains("fill=\"url(#grad-"),
+        "in the gradient: {head}"
+    );
+}

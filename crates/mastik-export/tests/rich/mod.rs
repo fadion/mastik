@@ -159,6 +159,58 @@ pub fn pinned_icon() -> Fixture {
     Fixture { doc, res }
 }
 
+/// A board holding two lines: *Arrows*, an open arrow at its start and an arrow
+/// at its end; *Bars*, a bar at its start and a circle at its end at 200%.
+pub fn line_ends() -> Fixture {
+    use mastik_core::{Marker, Stroke};
+    let mut ids = IdSource::new(0x11E);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let [board, arrows, bars] = [(); 3].map(|_| ids.mint());
+    let line = |id, y: f64, name: &str| Operation::CreateNode {
+        id,
+        parent: board,
+        index: 0,
+        kind: NodeKind::Line {
+            end: Point::new(80.0, 0.0),
+        },
+        transform: Some(Affine::translate((10.0, y))),
+        name: Some(name.into()),
+    };
+    let ends = |id, start, end, marker_size| Operation::SetStrokes {
+        id,
+        strokes: keyed_by_position([Stroke {
+            brush: Brush::Solid(Color::BLACK).into(),
+            width: 2.0,
+            start,
+            end,
+            marker_size,
+            ..Default::default()
+        }]),
+    };
+    doc.apply(&Transaction(vec![
+        Operation::CreateNode {
+            id: board,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Artboard {
+                size: Size::new(100.0, 100.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: Some("Board".into()),
+        },
+        line(arrows, 30.0, "Arrows"),
+        line(bars, 60.0, "Bars"),
+        ends(arrows, Marker::OpenArrow, Marker::Arrow, 1.0),
+        ends(bars, Marker::Bar, Marker::Circle, 2.0),
+    ]))
+    .expect("the lines");
+    let res = Resolved::rebuild(&doc);
+    Fixture { doc, res }
+}
+
 /// A page with a flex row, a component and an instance whose label is
 /// overridden, a fill bound to a colour variable, a text style, a mask over a
 /// picture, a turned rect, a radial gradient and a hidden, locked layer.

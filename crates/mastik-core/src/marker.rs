@@ -102,11 +102,16 @@ impl Marker {
     }
 
     /// How far back from the end the stroke stops, in stroke widths, at `size`
-    /// and with a chevron's `join`: far enough that the stroke's end and its cap
-    /// stay inside the head.
-    pub fn trim(self, size: f64, join: kurbo::Join) -> f64 {
+    /// and with the stroke's `cap` and a chevron's `join`: far enough that the
+    /// stroke's end and its cap stay behind the tip. A small arrow's half-length
+    /// is shorter than a round or square cap's half-width reach, so the cap sets it.
+    pub fn trim(self, size: f64, cap: kurbo::Cap, join: kurbo::Join) -> f64 {
+        let cap_reach = match cap {
+            kurbo::Cap::Butt => 0.0,
+            kurbo::Cap::Round | kurbo::Cap::Square => 0.5,
+        };
         match self {
-            Marker::Arrow => SPAN * size / 2.0,
+            Marker::Arrow => (SPAN * size / 2.0).max(cap_reach),
             Marker::OpenArrow => join_reach(join) + 0.5,
             Marker::None | Marker::Circle | Marker::Square | Marker::Bar => 0.0,
         }
@@ -354,7 +359,7 @@ pub fn placed(shape: &BezPath, width: f64, markers: Markers) -> Vec<Placed> {
     }
     let subs = crate::geometry::subpaths(shape);
     let (first, last) = marked_ends(&subs);
-    let trim = |m: Marker| m.trim(markers.size, markers.join) * width;
+    let trim = |m: Marker| m.trim(markers.size, markers.cap, markers.join) * width;
     let mut out = Vec::new();
     let mut place = |i: usize, marker: Marker, at_end: bool| {
         if marker.is_none() {
@@ -418,7 +423,7 @@ pub fn ink(shape: &BezPath, width: f64, markers: Markers) -> Option<BezPath> {
 /// `shape` cut back under the heads that trim ([`Marker::trim`]) at `width`. A
 /// subpath both heads would wholly cover is left out.
 pub fn trimmed(shape: &BezPath, width: f64, markers: Markers) -> Cow<'_, BezPath> {
-    let trim = |m: Marker| m.trim(markers.size, markers.join) * width;
+    let trim = |m: Marker| m.trim(markers.size, markers.cap, markers.join) * width;
     let (start, end) = (trim(markers.start), trim(markers.end));
     if !width.is_finite() || width <= 0.0 || (start <= 0.0 && end <= 0.0) {
         return Cow::Borrowed(shape);
@@ -557,6 +562,35 @@ mod tests {
                     .expect("drawn")
                     .area();
                 assert_eq!(area.signum(), wound.signum(), "{m:?} {cap:?}");
+            }
+        }
+    }
+
+    /// A small arrow on a round- or square-capped stroke trims far enough that
+    /// the cap stays behind the tip; a butt cap keeps the half-head trim.
+    /// flip: `Marker::trim` without the cap's reach → fails at "Round".
+    #[test]
+    fn a_small_arrow_keeps_the_cap_behind_its_tip() {
+        let path = line(Point::new(100.0, 0.0));
+        for (cap, reach) in [
+            (kurbo::Cap::Round, 1.0),
+            (kurbo::Cap::Square, 1.0),
+            (kurbo::Cap::Butt, 0.0),
+        ] {
+            let markers = Markers {
+                end: Marker::Arrow,
+                size: 0.25,
+                cap,
+                ..Markers::NONE
+            };
+            // Two wide: the cap reaches a width's half, 1, past the stroke's end.
+            let end = trimmed(&path, 2.0, markers).bounding_box().x1;
+            assert!(
+                end + reach <= 100.0 + 1e-9,
+                "{cap:?}: the stroke ends at {end}"
+            );
+            if cap == kurbo::Cap::Butt {
+                assert!((end - (100.0 - 0.75)).abs() < 1e-6, "half the head: {end}");
             }
         }
     }

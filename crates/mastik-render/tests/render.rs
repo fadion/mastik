@@ -684,6 +684,68 @@ fn outline_view_strokes_every_outline_as_a_hairline_and_drops_layers() {
     }
 }
 
+/// A line's arrowhead is drawn, in the stroke's colour, on the canvas's CPU
+/// path: inside the head's triangle off the stroke's band, and nothing there
+/// without the head.
+/// flip: `paint_strokes` without its `fill_path(heads)` → fails at "the head".
+#[test]
+fn a_lines_arrowhead_is_drawn() {
+    use mastik_core::kurbo::Point;
+    use mastik_core::{Marker, Stroke};
+    let draw = |end: Marker| {
+        let mut ids = IdSource::new(5);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let line = ids.mint();
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: line,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Line {
+                    end: Point::new(80.0, 0.0),
+                },
+                transform: Some(Affine::translate((10.0, 50.0))),
+                name: None,
+            },
+            Operation::SetStrokes {
+                id: line,
+                strokes: keyed_by_position([Stroke {
+                    brush: Brush::Solid(Color::from_rgba8(20, 200, 90, 255)).into(),
+                    width: 4.0,
+                    end,
+                    ..Default::default()
+                }]),
+            },
+        ]))
+        .unwrap();
+        let res = Resolved::rebuild(&doc);
+        let vp = Viewport {
+            view: Rect::new(0.0, 0.0, 100.0, 100.0),
+            pixel_size: (100, 100),
+        };
+        let (px, w, _) = mastik_render::VelloCpuRenderer::new().render_to_rgba(
+            &doc,
+            &res,
+            &vp,
+            &mastik_render::ImageStore::default(),
+            doc.first_page(),
+        );
+        let at = |x: usize, y: usize| {
+            let i = (y * w as usize + x) * 4;
+            [px[i], px[i + 1], px[i + 2], px[i + 3]]
+        };
+        // The tip at x 90, the head 12 long and 12 across; the stroke is y 48..52.
+        // (80, 46) is wholly inside the head and off the stroke's band.
+        (at(80, 46), at(50, 50))
+    };
+    let (head, shaft) = draw(Marker::Arrow);
+    assert_eq!(shaft, [20, 200, 90, 255], "the fixture strokes its line");
+    assert_eq!(head, [20, 200, 90, 255], "the head");
+    let (none, _) = draw(Marker::None);
+    assert_eq!(none[3], 0, "the control: nothing there without a head");
+}
+
 /// Outline mode outlines an inverted alpha or luminance mask's fill as it does a
 /// plain one's: the mask is a layer of the document, not a knock-out.
 /// flip: `push_ink_mask` opening `push_erase_layer` for an inverted mask → fails
