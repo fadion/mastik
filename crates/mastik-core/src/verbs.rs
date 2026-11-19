@@ -234,7 +234,7 @@ fn loosened<'v>(p: &Param, v: &'v Value) -> std::borrow::Cow<'v, Value> {
             // A short form written wrong is left as written, for the check to
             // refuse with its reason.
             let written = v.clone();
-            if loose::loosen_strict(model_key(model, p.name), &mut v).is_err() {
+            if loosen_model(model, model_key(model, p.name), &mut v).is_err() {
                 return std::borrow::Cow::Owned(written);
             }
             // What `settle` puts right reaches the verb, not only the check.
@@ -469,12 +469,37 @@ pub fn check_model(model: &str, v: &Value) -> Result<(), String> {
     settled_model(model, v).map(|_| ())
 }
 
+/// [`loose::loosen_strict`] for a value of the model type `model`, as the field
+/// `key`. A chart's own `text` and `padding` are not a text style or a frame's
+/// padding, the layer short forms of those names: only what is inside them loosens.
+fn loosen_model(model: &str, key: &str, v: &mut Value) -> Result<(), String> {
+    let own: Vec<(&str, Value)> = match (model, v.as_object_mut()) {
+        ("ChartOptions", Some(map)) => ["text", "padding"]
+            .into_iter()
+            .filter_map(|k| map.remove(k).map(|v| (k, v)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    loose::loosen_strict(key, v)?;
+    for (k, mut field) in own {
+        if let Value::Object(inner) = &mut field {
+            for (name, value) in inner.iter_mut() {
+                loose::loosen_strict(name, value)?;
+            }
+        }
+        if let Some(map) = v.as_object_mut() {
+            map.insert(k.to_owned(), field);
+        }
+    }
+    Ok(())
+}
+
 /// `v` in the model's own shape: its short forms expanded and the slips
 /// [`settle`] puts right put right, or why it does not read as the model.
 fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
     let mut loose = v.clone();
     if model != "DtcgFile" {
-        loose::loosen_strict(model_key(model, ""), &mut loose)?;
+        loosen_model(model, model_key(model, ""), &mut loose)?;
     }
     let v = &loose;
     macro_rules! reads {
@@ -831,9 +856,18 @@ fn repair(v: &mut Value, miss: &Miss) -> bool {
     let Some(bad) = words.next() else {
         return false;
     };
-    let wanted = alias(&plain(bad)).to_owned();
-    let mut hits = words.filter(|w| plain(w) == wanted);
-    let (Some(good), None) = (hits.next(), hits.next()) else {
+    // The word as written first, and its alias only when no variant is that word:
+    // an alias is not told which enum it repairs (`fit` is an image fit's own).
+    let words: Vec<&str> = words.collect();
+    let one = |wanted: &str| {
+        let mut hits = words.iter().filter(|w| plain(w) == wanted);
+        match (hits.next(), hits.next()) {
+            (Some(good), None) => Some(*good),
+            _ => None,
+        }
+    };
+    let written = plain(bad);
+    let Some(good) = one(&written).or_else(|| one(alias(&written))) else {
         return false;
     };
     match walk_mut(v, &miss.steps) {

@@ -1050,3 +1050,17 @@ fn bound_fields_fills_and_blurs_take_the_names_agents_write() {
     );
     assert!(refused.contains("`fills`"), "what it takes: {refused}");
 }
+
+/// A variant's own word wins over an alias another enum's word has: an image
+/// fill's lowercase `fit` reads as `ImageFit::Fit`, not as hugging contents.
+/// flip: `repair` trying the alias before the written word → fails at the read.
+#[test]
+fn a_variants_own_word_wins_over_an_alias() {
+    let fill = mastik_core::Fill {
+        brush: mastik_core::image::image_brush(mastik_core::ImageId("sha256:x".into())).into(),
+        visible: true,
+    };
+    let mut v = serde_json::to_value(vec![fill]).unwrap();
+    v[0]["brush"]["Image"]["image"]["fit"] = json!("fit");
+    verbs::check_model("[Fill]", &v).unwrap_or_else(|e| panic!("reads as Fit: {e}"));
+}

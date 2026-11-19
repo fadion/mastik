@@ -4291,10 +4291,12 @@ fn insert_chart_makes_a_chart_on_a_sample_or_a_table() {
 
 /// `set_chart` changes the kind and patches the mapping and the options, leaving
 /// what the patch does not name; a null clears or resets what it names. It asks
-/// for something to change, and a chart.
+/// for something to change, and a chart. Its options' `text` and `padding` are
+/// the chart's own, not the layer short forms of those names.
 ///
 /// flip: `patched` replacing the whole value with the patch → fails at "the
-/// category is kept".
+/// category is kept"; `settled_model` loosening a chart's `text` as a style →
+/// fails at the `text` and `padding` step's run.
 #[test]
 fn set_chart_patches_the_kind_mapping_and_options() {
     use mastik_core::chart::{ChartKind, ColumnId, Stacking};
@@ -4336,6 +4338,21 @@ fn set_chart_patches_the_kind_mapping_and_options() {
         json!({ "node": c.to_wire(), "mapping": { "category": null } }),
     );
     assert_eq!(chart_of(&doc, c).mapping.category, None, "a null clears");
+
+    // A chart's own `text` and `padding`, not a text style's or a frame's.
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": c.to_wire(), "options": { "text": { "weight": 600, "tick_size": 10 },
+                "padding": 24 } }),
+    );
+    let got = chart_of(&doc, c);
+    assert_eq!(
+        (got.options.text.weight, got.options.text.tick_size),
+        (600, 10.0)
+    );
+    assert_eq!(got.options.padding, 24.0, "the chart's padding");
 
     let none = json!({ "node": c.to_wire() });
     assert!(matches!(
@@ -6668,8 +6685,10 @@ fn import_svg_says_what_it_approximated() {
 
 /// `set_layout_grids` completes a grid given in part from a new grid on its
 /// axis, `grids_value` reads it back in that short form, and a layer that is no
-/// frame is refused.
-/// flip: `loose::loosen_grid` leaving the fields out → fails at the commit.
+/// frame or an axis that names neither is refused.
+/// flip: `loose::loosen_grid` leaving the fields out → fails at the commit;
+/// `loose::grid_axis` reading any other word as the columns → fails at "a word
+/// that is no axis".
 #[test]
 fn layout_grids_are_written_short_and_read_back() {
     let (mut doc, mut ids, page) = blank();
@@ -6715,6 +6734,21 @@ fn layout_grids_are_written_short_and_read_back() {
         refused_param(&doc, &mut ids, "set_layout_grids", args),
         "nodes"
     );
+    // An axis that names neither is refused, not read as the columns.
+    let args = json!({ "nodes": [f.to_wire()], "grids": [{ "axis": "horizontal", "count": 8 }] });
+    assert_eq!(
+        refused_param(&doc, &mut ids, "set_layout_grids", args),
+        "grids",
+        "a word that is no axis"
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_layout_grids",
+        json!({ "nodes": [f.to_wire()], "grids": [{ "axis": "row", "count": 8 }] }),
+    );
+    let stored = doc.get(f).unwrap().grids();
+    assert_eq!(stored[0].value.axis, mastik_core::layout::GridAxis::Rows);
 }
 
 /// `set_guides` keeps a listed guide by its id and moves it, adds one with no

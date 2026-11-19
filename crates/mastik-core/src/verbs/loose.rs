@@ -345,11 +345,15 @@ fn loosen_effect(item: &mut Value, errs: &mut Vec<String>) {
         _ => None,
     };
     if let Some(kind) = flat_kind {
+        // A noise written as its kind alone, as a tree read writes it, has an
+        // `opacity` of its own (a multicolour noise's), not one to fold.
+        let own_opacity = kind == "noise" && !map.contains_key("kind");
         let visible = map.remove("visible").unwrap_or(Value::Bool(true));
         map.remove("kind");
         let mut inner = std::mem::take(map);
         inner.insert("type".into(), Value::String(kind));
-        if let Some(o) = inner.get("opacity")
+        if !own_opacity
+            && let Some(o) = inner.get("opacity")
             && let Some(o) = unit("opacity", o, errs)
             && let Some(c) = inner.get("color").and_then(any_colour)
         {
@@ -770,16 +774,17 @@ fn loosen_text_style(text: &mut Map<String, Value>) {
 }
 
 /// The axis a layout grid's `axis` names, in any case and either number; the
-/// columns when it names none.
-fn grid_axis(map: &Map<String, Value>) -> crate::layout::GridAxis {
+/// columns when it has none. `None` for any other word, which is left for serde
+/// to refuse rather than read as either axis.
+fn grid_axis(map: &Map<String, Value>) -> Option<crate::layout::GridAxis> {
     use crate::layout::GridAxis;
-    match map
-        .get("axis")
-        .and_then(Value::as_str)
-        .map(str::to_lowercase)
-    {
-        Some(word) if word.starts_with("row") => GridAxis::Rows,
-        _ => GridAxis::Columns,
+    let Some(axis) = map.get("axis") else {
+        return Some(GridAxis::Columns);
+    };
+    match axis.as_str().map(str::to_lowercase).as_deref() {
+        Some("rows" | "row") => Some(GridAxis::Rows),
+        Some("columns" | "column") => Some(GridAxis::Columns),
+        _ => None,
     }
 }
 
@@ -799,10 +804,12 @@ fn loosen_grid(item: &mut Value) {
         return;
     };
     let axis = grid_axis(map);
-    for (k, d) in grid_default(axis) {
+    for (k, d) in grid_default(axis.unwrap_or_default()) {
         match k.as_str() {
             "axis" => {
-                map.insert(k, d);
+                if axis.is_some() {
+                    map.insert(k, d);
+                }
             }
             _ => {
                 map.entry(k).or_insert(d);
@@ -816,7 +823,10 @@ fn tighten_grid(item: &mut Value) {
     let Value::Object(map) = item else {
         return;
     };
-    for (k, d) in grid_default(grid_axis(map)) {
+    let Some(axis) = grid_axis(map) else {
+        return;
+    };
+    for (k, d) in grid_default(axis) {
         if k != "axis" && map.get(&k) == Some(&d) {
             map.remove(&k);
         }
@@ -987,10 +997,12 @@ mod tests {
     }
 
     /// A noise is written in its short forms, one `color` and one `size` for a
-    /// default one and hex `colors` for two, and each reads back as it was.
+    /// default one and hex `colors` for two, and each reads back as it was, the
+    /// effect whole or its kind alone.
     ///
     /// flip: `tighten_noise`'s one-colour test reading `to == from` → fails at
-    /// the default's `color`.
+    /// the default's `color`; `loosen_effect` folding a lone noise kind's
+    /// `opacity` → fails at "the kind written alone".
     #[test]
     fn a_noise_is_written_short_and_reads_back() {
         let two = crate::Noise {
@@ -1020,9 +1032,13 @@ mod tests {
             for (k, want) in short.as_object().unwrap() {
                 assert_eq!(&kind[k], want, "{k} in {kind}");
             }
+            let mut alone = serde_json::json!([kind.clone()]);
             loosen("effects", &mut v);
             let back: Vec<crate::Effect> = serde_json::from_value(v).expect("reads back");
             assert_eq!(back[0].kind, effect.kind);
+            loosen("effects", &mut alone);
+            let back: Vec<crate::Effect> = serde_json::from_value(alone).expect("reads back");
+            assert_eq!(back[0].kind, effect.kind, "the kind written alone");
         }
     }
 }
