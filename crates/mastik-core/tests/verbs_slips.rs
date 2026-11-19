@@ -168,6 +168,28 @@ fn a_tree_child_placed_with_at_is_shown_transform() {
     );
 }
 
+/// A fill written wrong inside a tree is shown the fill example, with its
+/// gradient, not the whole tree's.
+///
+/// flip: `explain` showing the parameter's own model's example → fails at
+/// "the fill example".
+#[test]
+fn a_tree_fill_written_wrong_is_shown_fills() {
+    let (doc, mut ids, page) = blank();
+    let rect = json!({ "Rect": { "size": { "width": 1, "height": 1 } } });
+    let why = why(
+        &doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": { "kind": rect,
+            "fills": [{ "brush": { "LinearGradient": { "stops": [] } } }] } }),
+    );
+    assert!(
+        why.contains("\"Gradient\"") && !why.contains("\"Card\""),
+        "the fill example: {why}"
+    );
+}
+
 /// A layout item written with a `position`, in a tree or alone, is refused
 /// with the insets that take a child out of its frame's flow.
 ///

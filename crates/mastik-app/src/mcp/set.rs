@@ -260,8 +260,19 @@ fn placed_at(
 }
 
 /// The `set_size` step that makes `id` `w` wide and `h` high, a side not given
-/// kept at its box's.
+/// kept at its box's. A width alone on an auto or auto-height text wraps it at
+/// that width and keeps it growing down, as the inspector's W does, where
+/// `set_size` would fix its height.
 fn sized(s: &EditorSession, id: NodeId, w: Option<f64>, h: Option<f64>) -> Result<Value, String> {
+    if let (Some(w), None) = (w, h)
+        && let Some(mastik_core::NodeKind::Text { sizing, .. }) = s.doc.get(id).map(|n| n.kind())
+        && !matches!(sizing, mastik_core::TextSizing::Fixed(_))
+    {
+        return Ok(
+            json!({ "tool": "set_geometry", "args": { "node": id.to_wire(),
+            "geometry": { "TextSizing": { "AutoHeight": w } } } }),
+        );
+    }
     let now = match (w, h) {
         (Some(_), Some(_)) => mastik_core::kurbo::Size::ZERO,
         _ => mastik_core::query::local_box(&s.doc, &s.resolved, id)
@@ -793,6 +804,45 @@ mod tests {
             assert!(out.is_error, "{guess} is refused");
             assert!(text.contains(&format!("Did you mean `{meant}`")), "{text}");
         }
+    }
+
+    /// `set`'s `width` alone on an auto-height text wraps it at that width and
+    /// keeps it growing down, as the inspector's W does.
+    ///
+    /// flip: `sized` without its text arm → fails at "still auto-height".
+    #[test]
+    fn set_width_keeps_an_auto_height_text_growing() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let page = docs.session.doc.first_page().to_wire();
+        let tree = json!({ "name": "Head", "kind": { "Text": {
+            "content": "Design lives in the margins of everything we make",
+            "sizing": { "AutoHeight": 300 }, "style": { "font_size": 48 } } }, "fills": ["#111111"] });
+        let made = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "insert_subtree",
+            json!({ "parent": page, "tree": tree }),
+        );
+        let id = ok(&made)["created"][0].as_str().unwrap().to_owned();
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            1,
+            "set",
+            json!({ "nodes": [id], "props": { "width": 1000 } }),
+        ));
+        let nid = NodeId::from_wire(&id).unwrap();
+        let sizing = match docs.session.doc.get(nid).unwrap().kind() {
+            mastik_core::NodeKind::Text { sizing, .. } => *sizing,
+            _ => panic!("a text"),
+        };
+        assert_eq!(
+            sizing,
+            mastik_core::TextSizing::AutoHeight(1000.0),
+            "still auto-height"
+        );
     }
 
     /// `set`'s `text` on an instance names `set_instance_property` with the

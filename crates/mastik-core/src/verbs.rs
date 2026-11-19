@@ -918,7 +918,18 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
     if without_fields && let Some(form) = named.as_deref().and_then(|n| kind_example(&plain(n))) {
         return format!("{said}; write it with its fields, as `{}`", compact(&form));
     }
-    match example(model) {
+    // The example of the nearest field holding a model of its own: a fill written
+    // wrong inside a tree is shown fills, not the whole tree.
+    let nearest = miss
+        .steps
+        .iter()
+        .rev()
+        .find_map(|s| match s {
+            Some(Step::Key(k)) => field_model(k),
+            _ => None,
+        })
+        .unwrap_or(model);
+    match example(nearest) {
         Some(e) if miss.why.contains("single key") => {
             format!("{said}: one key naming the variant, as `{}`", compact(&e))
         }
