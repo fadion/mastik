@@ -35,6 +35,12 @@ The design and its open questions are in `prototyping.md`.
 
 Ideas worth weighing, not yet decided or scheduled.
 
+- **A copied layer holding mains: new mains or instances.** A copy of a main is an instance,
+  but a duplicate, paste or Alt-drag of a frame that holds mains (a finished screen whose
+  buttons are mains) makes new mains of them, as `component::settle_copy` decides only for a
+  copied root. An agent copying a screen expects instances; a copied component sheet would
+  then hold no mains.
+
 - **A control channel into the running app.** Loopback only: read UI state, drive tools with
   synthetic pointer and key events, and screenshot the window. Agents never launch the GUI because
   the window takes the user's mouse and keyboard; a window that accepts input only through the
