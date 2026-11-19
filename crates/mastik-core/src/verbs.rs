@@ -3897,7 +3897,7 @@ pub static VERBS: &[Verb] = &[
             opt(
                 "anchor",
                 ParamKind::Index,
-                "the step it lands on; the step its name stands at, else by lightness, unless given",
+                "the step it lands on: its name's, else by lightness",
             ),
             opt(
                 "exact",
