@@ -2663,14 +2663,22 @@ impl MastikApp {
     /// `Ctrl+Z`, and the top bar's button — [`EditorSession::undo`] plus the
     /// app-side state that has to go with it.
     pub(crate) fn undo(&mut self) {
+        let step = self.session.history.current();
         if self.session.undo() {
+            if let Some(serial) = step {
+                self.session.selection.rewind_turn(serial, true);
+            }
             self.document_rewound();
         }
     }
 
     /// `Ctrl+Shift+Z`; moves the document under state that indexes into it, like undo.
     pub(crate) fn redo(&mut self) {
+        let step = self.session.history.undone().next().map(|v| v.serial);
         if self.session.redo() {
+            if let Some(serial) = step {
+                self.session.selection.rewind_turn(serial, false);
+            }
             self.document_rewound();
         }
     }
@@ -2694,6 +2702,9 @@ impl MastikApp {
         if let Some(depth) = depth
             && self.session.jump_to(depth)
         {
+            if self.session.selection.has_turns() {
+                self.session.selection.clear_turns();
+            }
             self.document_rewound();
         }
     }

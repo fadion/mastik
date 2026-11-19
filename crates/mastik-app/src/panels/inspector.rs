@@ -3775,12 +3775,14 @@ impl MastikApp {
         if let Some(p) = self.selection_pivot_world() {
             let roots = build::outermost(doc, self.session.selection.ids());
             let tx = tools::rotate_selection(doc, res, &roots, p, angle);
+            let before = self.selection_turn_state();
             if self.commit_edit(tx) {
                 let was = self.session.selection.frame();
                 self.session
                     .selection
                     .set_frame(tools::turn_about(p, angle) * was);
                 self.keep_selection_pivot(p);
+                self.note_selection_turn(before);
             }
             return;
         }
@@ -12368,9 +12370,11 @@ impl MastikApp {
             Some(p) => build::flip_about(doc, res, &ids, axis, p),
             None => build::flip(doc, res, &ids, axis),
         };
+        let before = self.selection_turn_state();
         if !tx.0.is_empty() && self.commit_edit(tx) {
             if let Some(p) = about {
                 self.keep_selection_pivot(p);
+                self.note_selection_turn(before);
             }
             self.session.info(match axis {
                 Axis::X => "Flipped horizontally",

@@ -208,7 +208,15 @@ pub struct Selection {
     /// [`Self::frame`] is and dropped with it: a set has no stored origin in the
     /// document, and a selection is not saved.
     pivot: Option<(Vec<NodeId>, Vec2)>,
+    /// The frame and placed origin each turn or mirror of this set left, before
+    /// and after, under the history step that made it: undo and redo do not move
+    /// [`Self::frame`] or [`Self::pivot`], and a mirror re-stores the origin as the
+    /// opposite fraction, so without these an undo names another corner.
+    turns: Vec<(u64, [TurnState; 2])>,
 }
+
+/// A set's frame orientation and placed origin, as [`Selection::note_turn`] files them.
+pub type TurnState = (Affine, Option<Vec2>);
 
 impl Selection {
     pub fn ids(&self) -> &[NodeId] {
@@ -362,6 +370,38 @@ impl Selection {
     fn forget_frame(&mut self) {
         self.frame = None;
         self.pivot = None;
+        self.turns.clear();
+    }
+
+    /// Record that history step `serial` took this set's frame and placed origin
+    /// from `before` to what they are now.
+    pub fn note_turn(&mut self, serial: u64, before: (Affine, Option<Vec2>)) {
+        let after = (self.frame(), self.pivot());
+        self.turns.retain(|(s, _)| *s != serial);
+        self.turns.push((serial, [before, after]));
+    }
+
+    /// Put back the frame and origin step `serial` found (`undone`) or left: what
+    /// an undo or a redo of a turn or a mirror owes the set. Any other step leaves
+    /// them alone.
+    pub fn rewind_turn(&mut self, serial: u64, undone: bool) {
+        let Some((_, sides)) = self.turns.iter().find(|(s, _)| *s == serial) else {
+            return;
+        };
+        let (frame, pivot) = sides[usize::from(!undone)];
+        self.frame = Some((self.ids.clone(), frame));
+        self.pivot = pivot.map(|f| (self.ids.clone(), f));
+    }
+
+    /// Whether any turn or mirror of this set is recorded: a history jump across
+    /// one cannot tell which side it lands on.
+    pub fn has_turns(&self) -> bool {
+        !self.turns.is_empty()
+    }
+
+    /// Put the frame upright and the origin on the centre.
+    pub fn clear_turns(&mut self) {
+        self.forget_frame();
     }
 
     /// Drop ids that are no longer on `page` (after a delete, an undo or a move

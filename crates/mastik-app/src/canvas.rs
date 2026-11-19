@@ -10474,6 +10474,21 @@ impl MastikApp {
         self.session.selection.set_pivot((!centred).then_some(f));
     }
 
+    /// The set's frame and placed origin as they are, for [`Self::note_selection_turn`]
+    /// once a turn or mirror has committed.
+    pub(crate) fn selection_turn_state(&self) -> (Affine, Option<Vec2>) {
+        let s = &self.session.selection;
+        (s.frame(), s.pivot())
+    }
+
+    /// File the frame and origin the step just committed left against that step,
+    /// so its undo and redo put them back (`Selection::rewind_turn`).
+    pub(crate) fn note_selection_turn(&mut self, before: (Affine, Option<Vec2>)) {
+        if let Some(serial) = self.session.history.current() {
+            self.session.selection.note_turn(serial, before);
+        }
+    }
+
     /// The transform box for the selection: one layer's rotated box, or the
     /// **oriented** box over a set, from the preview. A lone line has none
     /// ([`Self::line_ends`] replaces it), refused on the kind ([`lone_line`]) so it
@@ -22449,6 +22464,57 @@ mod select_drag_tests {
             app.session.selection.pivot(),
             None,
             "a new selection, a new origin"
+        );
+    }
+
+    /// Undoing a flip or a quarter turn about a set's placed origin puts the origin
+    /// (and the turned frame) back where the step found them, and redo brings the
+    /// step's own back. flip: `undo` not calling `rewind_turn` → fails at "after
+    /// undoing the flip".
+    #[test]
+    fn undoing_a_turn_about_a_sets_origin_keeps_the_origin() {
+        let ctx = egui::Context::default();
+        let (mut app, a, b) = app_with_two_rects(&ctx);
+        app.session.selection.set(vec![a, b]);
+        app.session.selection.set_pivot(Some(Vec2::ZERO));
+        let at = |app: &MastikApp| app.selection_pivot_world().expect("still placed");
+        assert!(
+            at(&app).distance(Point::ZERO) < 1e-6,
+            "placed: {:?}",
+            at(&app)
+        );
+
+        app.flip(mastik_core::build::Axis::X);
+        assert_eq!(
+            app.session.selection.pivot(),
+            Some(Vec2::new(1.0, 0.0)),
+            "re-stored"
+        );
+        app.undo();
+        assert!(
+            at(&app).distance(Point::ZERO) < 1e-6,
+            "the origin is on its corner after undoing the flip: {:?}",
+            at(&app)
+        );
+        app.redo();
+        assert_eq!(
+            app.session.selection.pivot(),
+            Some(Vec2::new(1.0, 0.0)),
+            "redo"
+        );
+        app.undo();
+
+        app.rotate_selection_quarter(std::f64::consts::FRAC_PI_2);
+        app.undo();
+        assert_eq!(
+            app.session.selection.frame(),
+            Affine::IDENTITY,
+            "the frame upright again"
+        );
+        assert!(
+            at(&app).distance(Point::ZERO) < 1e-6,
+            "after undoing the turn: {:?}",
+            at(&app)
         );
     }
 
