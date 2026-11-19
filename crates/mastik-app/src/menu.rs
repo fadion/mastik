@@ -1304,21 +1304,13 @@ impl Item {
                 None,
                 Group::Transform,
             ),
-            Item::Repeat(Way::Around) => s(
-                "Repeat around origin…",
-                icon::REPEAT_AROUND,
-                None,
-                Group::Transform,
-            ),
-            Item::Repeat(Way::Line) => s(
-                "Repeat in a line…",
-                icon::REPEAT_LINE,
-                None,
-                Group::Transform,
-            ),
-            Item::Repeat(Way::Grid) => s(
-                "Repeat in a grid…",
-                icon::REPEAT_GRID,
+            Item::Repeat(way) => s(
+                match way {
+                    Way::Around => "Repeat around origin…",
+                    Way::Line => "Repeat in a line…",
+                    Way::Grid => "Repeat in a grid…",
+                },
+                crate::repeat::way_glyph(way),
                 None,
                 Group::Transform,
             ),

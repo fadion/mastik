@@ -30,6 +30,16 @@ const WAYS: [(Way, &str); 3] = [
 /// Why a line's gap and direction are disabled among an auto layout's items.
 const LAYOUT_SPACES: &str = "The frame's auto layout spaces the copies";
 
+/// The glyph each way wears wherever it is named: its palette row, its undo step
+/// and the Transform card's button while that button opens on it.
+pub(crate) fn way_glyph(way: Way) -> &'static str {
+    match way {
+        Way::Around => icon::REPEAT_AROUND,
+        Way::Line => icon::REPEAT_LINE,
+        Way::Grid => icon::REPEAT_GRID,
+    }
+}
+
 /// The card's settings, kept closed rather than dropped so it reopens on the way
 /// and the numbers last used.
 pub(crate) struct RepeatCard {
@@ -194,15 +204,20 @@ struct LinkedRefusal {
 }
 
 impl MastikApp {
-    /// Open the card on the selection, on the way last used where the selection
-    /// takes it, or say why it cannot repeat.
+    /// Open the card on the selection, on [`Self::repeat_door_way`], or say why it
+    /// cannot repeat.
     pub(crate) fn open_repeat(&mut self) {
-        let way = match self.repeat_refusal_for(self.repeat.way) {
+        self.open_repeat_on(self.repeat_door_way());
+    }
+
+    /// The way a plain open lands on, and the Transform card's button wears: the
+    /// way last used where the selection takes it, else a line.
+    pub(crate) fn repeat_door_way(&self) -> Way {
+        match self.repeat_refusal_for(self.repeat.way) {
             None => self.repeat.way,
             // A line goes wherever any way goes.
             Some(_) => Way::Line,
-        };
-        self.open_repeat_on(way);
+        }
     }
 
     /// Open the card on `way`, or say why the selection cannot be repeated so.
@@ -418,12 +433,7 @@ impl MastikApp {
             Err(e) => return self.session.fail(format!("Cannot repeat: {e}")),
         };
         self.session.clear_gesture_preview();
-        let glyph = match way {
-            Way::Around => icon::REPEAT_AROUND,
-            Way::Line => icon::REPEAT_LINE,
-            Way::Grid => icon::REPEAT_GRID,
-        };
-        self.session.name_step("Repeat", glyph);
+        self.session.name_step("Repeat", way_glyph(way));
         if !self.commit_edit(tx) {
             return;
         }
@@ -1221,6 +1231,56 @@ pub(crate) mod tests {
         app.session.selection.set_one(tick);
         app.open_repeat();
         assert_eq!(app.repeat.way, Way::Grid, "the way last used");
+    }
+
+    /// The Transform card's *Repeat…* button wears the glyph of the way it opens
+    /// on: the way last used, a ring's never standing in for a line or a grid.
+    /// flip: the button drawn with `icon::REPEAT_AROUND` whatever the way → fails
+    /// at "the grid's glyph".
+    #[test]
+    fn the_transform_cards_repeat_button_wears_the_way_it_opens_on() {
+        let ctx = egui::Context::default();
+        let (mut app, _, _) = tick_app(&ctx);
+        let mut kitten = eframe::Frame::_new_kittest();
+        // The glyphs drawn in the inspector's lane.
+        let mut drawn = |app: &mut MastikApp| {
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                let time = ctx.input(|i| i.time) + 0.1;
+                shapes = ctx
+                    .run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1320.0, 820.0),
+                            )),
+                            time: Some(time),
+                            ..Default::default()
+                        },
+                        |ui| eframe::App::ui(app, ui, &mut kitten),
+                    )
+                    .shapes;
+            }
+            shapes
+                .into_iter()
+                .filter_map(|c| match c.shape {
+                    egui::Shape::Text(t) if t.pos.x > 900.0 => Some(t.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let has = |texts: &[String], glyph: &str| texts.iter().any(|t| t == glyph);
+        let around = drawn(&mut app);
+        assert!(
+            has(&around, icon::REPEAT_AROUND),
+            "the fixture: the button is drawn, on the ring at first"
+        );
+        app.repeat.way = Way::Grid;
+        let grid = drawn(&mut app);
+        assert!(
+            has(&grid, icon::REPEAT_GRID) && !has(&grid, icon::REPEAT_AROUND),
+            "the grid's glyph"
+        );
     }
 
     /// The grid's fields read the size the preview tiles: rows held to what the

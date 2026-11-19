@@ -668,7 +668,8 @@ grid, committed grouped with the originals. The three ways are `repeat::Pattern`
   (`Item::Repeat(Way)`, group Transform, `icon::REPEAT_AROUND`, `REPEAT_LINE`, `REPEAT_GRID`,
   unbound), each opening the card on its way, and the Transform card's fifth button (`inspector.md`,
   tooltip *Repeat…*), On while the card is up, which opens it on the way last used (`RepeatCard::way`)
-  where the selection takes it, else on a line. A layer menu carries no Transform rows, so the card is
+  where the selection takes it, else on a line (`repeat_door_way`). Each way wears its glyph
+  (`repeat::way_glyph`) on its palette row, its undo step and that button while it opens on it. A layer menu carries no Transform rows, so the card is
   the door.
 
 **The card** is an inspector-lane popover: an `Order::Foreground` `Area` from
