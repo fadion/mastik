@@ -822,9 +822,7 @@ fn effect_blend_combo(
 ) -> Option<BlendMode> {
     let mut picked = None;
     ui.scope(|ui| {
-        // The control's height whole: a combo strokes inside its own rect.
-        ui.spacing_mut().interact_size.y = ui::CONTROL_H;
-        ui.spacing_mut().button_padding.y = 0.0;
+        ui::combo_height(ui);
         egui::ComboBox::from_id_salt(salt)
             .icon(ui::combo_chevron)
             .width(width)
@@ -9250,8 +9248,7 @@ impl MastikApp {
                                 ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
                                 let mut picked: Option<(CropShape, bool)> = None;
                                 ui.scope(|ui| {
-                                    ui.spacing_mut().interact_size.y = CELL;
-                                    ui.spacing_mut().button_padding.y = 0.0;
+                                    ui::combo_height(ui);
                                     egui::ComboBox::from_id_salt(("crop-shape", id))
                                         .icon(ui::combo_chevron)
                                         .width(inner - CELL - ui::CARD_COL_GAP)
@@ -10750,8 +10747,7 @@ impl MastikApp {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = COL;
                         ui.scope(|ui| {
-                            ui.spacing_mut().interact_size.y = CELL;
-                            ui.spacing_mut().button_padding.y = 0.0;
+                            ui::combo_height(ui);
                             egui::ComboBox::from_id_salt(("effect-kind", index))
                                 .icon(ui::combo_chevron)
                                 // `width` is what a combo paints, not what it reserves.
@@ -24709,6 +24705,33 @@ mod slot_decision_tests {
     use crate::app::MastikApp;
     use mastik_core::kurbo::Size;
     use mastik_core::{Effect, EffectKind, PaintTarget};
+
+    /// The swap button turns a fixed shape portrait in its ratio and its word, a
+    /// square has no second shape, and Original reads the picture as turned.
+    /// flip: `ratio` ignoring `portrait` → fails at "4:3 turned".
+    #[test]
+    fn a_crop_shape_turns_portrait_and_original_follows_the_picture() {
+        assert_eq!(
+            CropShape::FourThree.ratio(true, (1.0, 1.0)),
+            Some(0.75),
+            "4:3 turned"
+        );
+        assert_eq!(CropShape::FourThree.label(true), "3:4");
+        assert_eq!(
+            CropShape::FourThree.ratio(false, (1.0, 1.0)),
+            Some(4.0 / 3.0)
+        );
+        assert_eq!(
+            CropShape::Square.ratio(true, (1.0, 1.0)),
+            Some(1.0),
+            "no turn"
+        );
+        assert!(!CropShape::Square.turns());
+        // A 4 × 3 picture turned a quarter is 3 × 4 to the card.
+        assert_eq!(CropShape::Original.ratio(false, (3.0, 4.0)), Some(0.75));
+        assert_eq!(CropShape::Original.ratio(false, (0.0, 4.0)), None);
+        assert_eq!(CropShape::Free.ratio(true, (3.0, 4.0)), None);
+    }
 
     /// Three rects at (0,0), (200,0) and (400,0), 20 × 20 each, all selected.
     fn three(ctx: &egui::Context) -> (MastikApp, Vec<NodeId>) {
