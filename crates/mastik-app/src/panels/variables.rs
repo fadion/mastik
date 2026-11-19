@@ -183,6 +183,22 @@ impl ScaleDraft {
     fn landed(&self) -> usize {
         oklch::nearest_kept(&oklch::scale_subset(self.steps), self.anchor)
     }
+
+    /// The step the source variable `source` must land on, exact, when its name
+    /// is a step this scale keeps (`variable::scale_pinned`): the scale never
+    /// rewrites it, so the asks give way there.
+    fn pinned(&self, source: &str) -> Option<usize> {
+        var::scale_pinned(source, &self.name, &oklch::scale_subset(self.steps))
+    }
+
+    /// Where the source lands and whether exact: [`Self::pinned`]'s step, else
+    /// the asks.
+    fn lands(&self, source: &str) -> (usize, bool) {
+        match self.pinned(source) {
+            Some(at) => (at, true),
+            None => (self.landed(), self.exact),
+        }
+    }
 }
 
 /// What *Generate scale…*'s *Generate* asks for.
@@ -2712,7 +2728,9 @@ impl MastikApp {
             self.scale_body(ui, d, base, c, acts)
         });
         let drop = body.inner;
-        if drop.clicked() {
+        if d.pinned(source).is_some() {
+            b.scale_steps = None;
+        } else if drop.clicked() {
             b.scale_steps = match b.scale_steps {
                 Some(_) => None,
                 None => Some(drop.rect),
@@ -2746,7 +2764,10 @@ impl MastikApp {
             .map(|(n, _)| n.as_str())
             .collect();
         let into = table.collection(c).map_or("", |c| c.name.as_str());
-        let n = names.len();
+        let n = names
+            .iter()
+            .filter(|(_, held)| *held != Some(d.var))
+            .count();
         let (says, ink, tip) = match (&refusal, taken.len()) {
             (Some(why), _) => (why.clone(), color::warn(), why.clone()),
             (None, 0) => (
@@ -2771,12 +2792,13 @@ impl MastikApp {
         match popover_footer(ui, &buttons, refusal.as_deref(), &says, ink, &tip) {
             Some(0) => true,
             Some(_) => {
+                let (anchor, exact) = d.lands(source);
                 acts.push(Act::Scale(ScaleAsk {
                     var: d.var,
                     name: d.name.trim().to_owned(),
                     steps: d.steps,
-                    anchor: d.landed(),
-                    exact: d.exact,
+                    anchor,
+                    exact,
                     this_mode: d.this_mode,
                 }));
                 true
@@ -2831,12 +2853,20 @@ impl MastikApp {
             })
         });
         // Fewer steps may drop the one asked; the source lands on the nearest
-        // kept, and the ask stays for a count that keeps it again.
+        // kept, and the ask stays for a count that keeps it again. A source
+        // named for a kept step lands there exact, whatever was asked.
         let keep = oklch::scale_subset(d.steps);
-        let landed = d.landed();
-        let ramp = oklch::scale_kept(base, landed, d.exact, &keep);
-        // The step the source lands on, chosen from a list under its value.
         let source = self.session.doc.variables().get(d.var);
+        let source_name = source.map_or("", |v| v.name.as_str());
+        let (landed, exact) = d.lands(source_name);
+        let pinned = d.pinned(source_name).map(|at| {
+            format!(
+                "{source_name} is this scale's {}, so it keeps its colour there",
+                oklch::SCALE_STEPS[at]
+            )
+        });
+        let ramp = oklch::scale_kept(base, landed, exact, &keep);
+        // The step the source lands on, chosen from a list under its value.
         let named = source
             .and_then(|v| var::named_step(&v.name, &d.name))
             .map(|i| oklch::nearest_kept(&keep, i));
@@ -2856,21 +2886,39 @@ impl MastikApp {
             ui::paint_switch_row_label(ui.painter(), row, "Source lands on", true);
             let layout = egui::Layout::right_to_left(egui::Align::Center);
             ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(layout), |ui| {
-                ui::head_drop(
-                    ui,
-                    ui::HeadDrop {
-                        text: &shown,
-                        strong: chosen,
-                        tooltip: "The step the source colour becomes",
-                    },
-                )
+                ui.add_enabled_ui(pinned.is_none(), |ui| {
+                    ui::head_drop(
+                        ui,
+                        ui::HeadDrop {
+                            text: &shown,
+                            strong: chosen,
+                            tooltip: "The step the source colour becomes",
+                        },
+                    )
+                })
+                .inner
+                .on_disabled_hover_text(pinned.as_deref().unwrap_or_default())
             })
             .inner
         });
         let lit = keep.iter().position(|i| *i == landed);
         popover_inset(ui, |ui| scale_ramp(ui, &ramp, lit));
-        if popover_switch(ui, "Keep the source exact", d.exact).clicked() {
+        let exact_row = popover_inset(ui, |ui| {
+            ui.add_enabled_ui(pinned.is_none(), |ui| {
+                ui::switch_row(
+                    ui,
+                    "Keep the source exact",
+                    exact,
+                    crate::settings::SWITCH_H,
+                )
+            })
+            .inner
+        });
+        if exact_row.clicked() {
             d.exact = !d.exact;
+        }
+        if let Some(why) = &pinned {
+            exact_row.on_disabled_hover_text(why);
         }
         let modes = self.session.doc.variables().collection(c);
         if modes.is_some_and(|c| c.modes.len() > 1)
@@ -7571,7 +7619,8 @@ mod tests {
     /// source on that step again: the ask is kept, only where it lands moves.
     ///
     /// flip: `scale_body` writing the landed step back into `anchor` → fails at
-    /// "back on 500".
+    /// "back on 500"; `ScaleDraft::landed` ignoring the count → fails at "8 drop
+    /// 500".
     #[test]
     fn a_count_that_drops_the_step_and_back_keeps_it() {
         let (ctx, mut app) = app();
@@ -7605,12 +7654,66 @@ mod tests {
             "the fixture: on 500"
         );
         let shapes = steps(&mut app, 8);
-        assert!(last_text(&shapes, "400").is_some(), "8 drop 500");
+        assert!(
+            last_text(&shapes, "400 · by its name").is_some(),
+            "8 drop 500"
+        );
         let shapes = steps(&mut app, 11);
         assert!(
             last_text(&shapes, "500 · by its name").is_some(),
             "back on 500"
         );
+    }
+
+    /// A source named for a step its scale keeps lands there exact whatever was
+    /// asked, since the scale never rewrites it: the popover shows and generates
+    /// that ramp, falling all the way, and counts the ten it makes.
+    ///
+    /// flip: `ScaleDraft::lands` ignoring `pinned` → fails at "the source's own
+    /// step".
+    #[test]
+    fn a_source_on_its_own_step_lands_there_exact() {
+        let (ctx, mut app) = app();
+        app.toggle_var_browser();
+        app.var_act(Act::NewVar(VarKind::Color));
+        let v = the_only_var(&app).id;
+        app.var_act(Act::Name(v, "blue/500".into()));
+        let mode = app.session.doc.variables().first_collection().modes[0].id;
+        app.var_act(Act::Cell(v, mode, "#2f6bff".into(), None));
+        app.var_browser.as_mut().unwrap().edit = None;
+        assert!(
+            matches!(
+                app.session.doc.variables().get(v).unwrap().cells[&mode],
+                Cell::Color(c) if c == Color::from_rgb8(0x2f, 0x6b, 0xff)
+            ),
+            "the fixture's blue"
+        );
+        app.open_scale(v);
+        let draw: fn(&mut MastikApp, &egui::Context) = |a, c| a.var_browser_ui(c);
+        for _ in 0..2 {
+            pass(&ctx, &mut app, vec![], draw);
+        }
+        let d = app.var_browser.as_mut().unwrap().scale.as_mut().unwrap();
+        // An ask off the source's step, not exact.
+        (d.anchor, d.exact) = (3, false);
+        let mut shapes = vec![];
+        for _ in 0..2 {
+            shapes = pass(&ctx, &mut app, vec![], draw);
+        }
+        assert!(
+            last_text(&shapes, "500 · by its name").is_some(),
+            "the source's own step"
+        );
+        assert!(last_text(&shapes, "10 variables").is_some(), "ten made");
+        click_text(&ctx, &mut app, "Generate", draw);
+        let table = app.session.doc.variables();
+        let l = |s: u16| match table.by_name(&format!("blue/{s}")).map(|v| &v.cells[&mode]) {
+            Some(Cell::Color(c)) => oklch::Oklch::of(*c).l,
+            other => panic!("blue/{s}: {other:?}"),
+        };
+        for w in oklch::SCALE_STEPS.windows(2) {
+            assert!(l(w[0]) > l(w[1]), "{} lighter than {}", w[0], w[1]);
+        }
     }
 
     /// **The scope popover's boxes sit level with their labels**, inset from the

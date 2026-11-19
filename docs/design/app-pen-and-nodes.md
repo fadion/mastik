@@ -482,7 +482,9 @@ pushing a square's corner, not `GRID_FOUR`, which is the View menu's grid.
   whole units too and a second fit moves nothing. An anchor on an odd-width axis stays on the half
   unit. Fitting selected points mirrors them about the axis where it is. A radial path keeps its
   centre, which a grid does not move; the first anchor of each orbit that may move is fitted and
-  turned onto the rest, which land off the grid, and the same anchor decides on every press, so a
+  turned onto the rest, which land off the grid, and the same anchor decides on every press. A
+  leader on a slanted mirror line slides from its grid point back onto the line, where a second
+  press could snap it elsewhere: an orbit a second fit would move again is left as it was, so a
   second fit moves nothing. Points are counted from what is written.
 - **Box shapes** (rectangle, ellipse, polygon, star, spiral) keep their kind: their world box is
   rounded (`fit_rect`), a tie growing outward, and no side with any length ends shorter than one

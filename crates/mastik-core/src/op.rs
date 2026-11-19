@@ -292,6 +292,12 @@ pub enum Operation {
         id: NodeId,
         url: String,
     },
+    /// A variant layer's lineage key (`Node::lineage`), never drawn; `None` makes
+    /// its own id its key. Only a tree inserted whole writes one, as it was read.
+    SetLineage {
+        id: NodeId,
+        lineage: Option<NodeId>,
+    },
     /// A layer's credit (`crate::credit`), never drawn; `None` drops it. Refused
     /// unless every address is in [`crate::web_link`]'s form.
     SetCredit {
@@ -707,6 +713,7 @@ impl Operation {
             | Operation::SetSwap { id, .. }
             | Operation::SetVariantSet { id, .. }
             | Operation::SetVariant { id, .. }
+            | Operation::SetLineage { id, .. }
             | Operation::SetProperties { id, .. }
             | Operation::SetModes { id, .. }
             | Operation::SetQueries { id, .. }
@@ -936,6 +943,7 @@ impl Operation {
             // components machinery, never drawn (§15 D982).
             | Operation::SetVariantSet { .. }
             | Operation::SetVariant { .. }
+            | Operation::SetLineage { .. }
             | Operation::SetProperties { .. }
             | Operation::AddGuide { .. }
             | Operation::RemoveGuide { .. }
@@ -1417,6 +1425,9 @@ impl Operation {
             }
             Operation::SetVariant { id, values } => {
                 node(id).is_some_and(|n| n.variant() == values.as_slice())
+            }
+            Operation::SetLineage { id, lineage } => {
+                node(id).is_some_and(|n| n.lineage == *lineage)
             }
             Operation::SetProperties { id, props } => {
                 node(id).is_some_and(|n| n.props() == props.as_slice())
@@ -1900,6 +1911,7 @@ mod changes_ink_tests {
             Operation::SetSwap { id, swap: None },
             Operation::SetVariantSet { id, set: None },
             Operation::SetVariant { id, values: vec![] },
+            Operation::SetLineage { id, lineage: None },
             Operation::SetProperties { id, props: vec![] },
             Operation::AddGuide {
                 guide: crate::guide::Guide {
@@ -2023,7 +2035,7 @@ mod changes_ink_tests {
                 source: "print(1)".into(),
             },
         ];
-        assert_eq!(invisible.len(), 48, "the whole false arm");
+        assert_eq!(invisible.len(), 49, "the whole false arm");
         for op in &invisible {
             assert!(
                 !op.changes_ink(),

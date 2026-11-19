@@ -1072,18 +1072,9 @@ impl Document {
         &self,
         t: &crate::variable::Variables,
         id: NodeId,
-        mut item: crate::container::LayoutItem,
+        item: crate::container::LayoutItem,
     ) -> crate::container::LayoutItem {
-        for (k, var) in item.limit_vars.into_iter().enumerate() {
-            let Some(v) = var else { continue };
-            let x = match self.resolve_var_in(t, id, v) {
-                Some(crate::variable::Value::Number(x)) => {
-                    x.clamp(0.0, crate::build::GEOMETRY_LIMIT)
-                }
-                _ => 0.0,
-            };
-            *item.limit_mut(k) = crate::container::Dimension::Px(x);
-        }
+        let mut item = self.limits_bound_in(t, id, item);
         // **Inline-size containment** for a frame with width queries, as CSS lays
         // a query container: a width that would come from its content is its
         // padding alone, so what the queries pick can never move the width they
@@ -1096,6 +1087,37 @@ impl Document {
             }
         }
         item
+    }
+
+    /// `item` with only the limits its `limit_vars` binds read from table `t`
+    /// ([`Self::limits_drawn_in`] without the width layout derives).
+    fn limits_bound_in(
+        &self,
+        t: &crate::variable::Variables,
+        id: NodeId,
+        mut item: crate::container::LayoutItem,
+    ) -> crate::container::LayoutItem {
+        for (k, var) in item.limit_vars.into_iter().enumerate() {
+            let Some(v) = var else { continue };
+            let x = match self.resolve_var_in(t, id, v) {
+                Some(crate::variable::Value::Number(x)) => {
+                    x.clamp(0.0, crate::build::GEOMETRY_LIMIT)
+                }
+                _ => 0.0,
+            };
+            *item.limit_mut(k) = crate::container::Dimension::Px(x);
+        }
+        item
+    }
+
+    /// `id`'s layout item as authored, its bound limits at their variables'
+    /// values: what a script reads and writes back. Never the width a query
+    /// frame is laid at ([`Self::resolved_item`]), which no edit should store.
+    pub fn bound_item(&self, id: NodeId) -> crate::container::LayoutItem {
+        match self.nodes.get(&id) {
+            Some(n) => self.limits_bound_in(&self.variables, id, n.item),
+            None => Default::default(),
+        }
     }
 
     /// `id`'s layout item as it is laid out: its bound limits resolved
@@ -1770,6 +1792,15 @@ impl Document {
                 Ok(Operation::SetVariant {
                     id: *id,
                     values: old,
+                })
+            }
+            // Nothing is dirtied: a key only pairs layers on a variant switch.
+            Operation::SetLineage { id, lineage } => {
+                let node = self.nodes.get_mut(id).ok_or(OpError::NoSuchNode(*id))?;
+                let old = std::mem::replace(&mut node.lineage, *lineage);
+                Ok(Operation::SetLineage {
+                    id: *id,
+                    lineage: old,
                 })
             }
             Operation::SetProperties { id, props } => {

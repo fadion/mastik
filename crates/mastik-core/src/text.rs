@@ -4766,7 +4766,9 @@ mod tests {
 
     /// A blob named by two of its faces registers once, as a collection file's
     /// faces arrive, and the bundled Inter every engine holds is never handed on.
-    /// flip: `register_font_data` registering every entry → fails at "once".
+    /// flip: `register_font_data` registering every entry → fails at "once". Its
+    /// blob has one face, so `registered_font_data`'s key is pinned by
+    /// `a_collection_blob_is_handed_on_once`.
     #[test]
     fn font_data_registers_each_blob_once() {
         std::thread::spawn(|| {
@@ -4793,6 +4795,70 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// A collection file registered once is handed on once, not once per face.
+    /// flip: `registered_font_data` keyed by blob and face index → fails at "one
+    /// entry for the collection".
+    #[test]
+    fn a_collection_blob_is_handed_on_once() {
+        std::thread::spawn(|| {
+            let faces = || {
+                ENGINE.with(|e| {
+                    let c = &mut e.borrow_mut().font_cx.collection;
+                    c.family_id("Inter")
+                        .and_then(|id| c.family(id))
+                        .map_or(0, |f| f.fonts().len())
+                })
+            };
+            let start = faces();
+            register_font_data(&[FontData::new(
+                Blob::from(two_face_collection(INTER_UPRIGHT)),
+                0,
+            )]);
+            assert!(
+                faces() - start >= 2,
+                "fixture: both faces registered: {}",
+                faces() - start
+            );
+            assert_eq!(
+                registered_font_data().len(),
+                1,
+                "one entry for the collection"
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// A TrueType collection of two faces sharing `sfnt`'s tables: a `ttcf`
+    /// header, two copies of its table directory with each offset moved past
+    /// them, then the font's bytes.
+    fn two_face_collection(sfnt: &[u8]) -> Vec<u8> {
+        let be32 = |at: usize| u32::from_be_bytes(sfnt[at..at + 4].try_into().unwrap());
+        let tables = usize::from(u16::from_be_bytes([sfnt[4], sfnt[5]]));
+        let dir = 12 + 16 * tables;
+        let header = 12 + 4 * 2;
+        let base = (header + 2 * dir).next_multiple_of(4);
+        let mut out = Vec::with_capacity(base + sfnt.len());
+        out.extend_from_slice(b"ttcf");
+        out.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+        out.extend_from_slice(&2u32.to_be_bytes());
+        for k in 0..2 {
+            out.extend_from_slice(&((header + k * dir) as u32).to_be_bytes());
+        }
+        for _ in 0..2 {
+            out.extend_from_slice(&sfnt[..12]);
+            for t in 0..tables {
+                let at = 12 + 16 * t;
+                out.extend_from_slice(&sfnt[at..at + 8]);
+                out.extend_from_slice(&(be32(at + 8) + base as u32).to_be_bytes());
+                out.extend_from_slice(&sfnt[at + 12..at + 16]);
+            }
+        }
+        out.resize(base, 0);
+        out.extend_from_slice(sfnt);
+        out
     }
 
     pub(super) fn parts(style: &TextStyle, sizing: &TextSizing) -> TextParts {

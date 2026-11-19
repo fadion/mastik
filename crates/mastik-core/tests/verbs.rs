@@ -1939,12 +1939,15 @@ fn a_variable_value_takes_the_only_mode_unnamed() {
 /// `generate_scale` from `blue/500` makes `blue/50` to `blue/950` beside it from
 /// its default mode's value, the same ramp in every mode, and the source's own
 /// name is left as it is rather than refused. A run again updates the other
-/// ten and never the source; a name held by a number is refused, and so is a
-/// step that is none.
+/// ten and never the source; an anchor off the source's own step, or the
+/// source not kept exact there, is refused, since the ramp would put another
+/// colour where the source stays; a name held by a number is refused, and so
+/// is a step that is none.
 ///
 /// flip: `variable::scale_names` answering no holder → fails at the first
 /// script, on "blue/500 already exists"; `scale_ops` updating its source →
-/// fails at "the source kept".
+/// fails at "the source kept"; `generate_scale` without its `scale_pinned`
+/// check → `exact: false` is not refused.
 #[test]
 fn a_scale_is_generated_from_a_variable_in_every_mode() {
     let (mut doc, mut ids, _) = blank();
@@ -1993,10 +1996,21 @@ fn a_scale_is_generated_from_a_variable_in_every_mode() {
         assert!(l(w[0]) > l(w[1]));
     }
 
+    for (key, value) in [("exact", json!(false)), ("anchor", json!(300))] {
+        let off = refused_step(
+            &mut doc,
+            &mut ids,
+            json!({ "verb": "generate_scale", "args": { "variable": made[0][0], key: value } }),
+        );
+        assert!(
+            off.contains("blue/500 is this scale's 500"),
+            "{key} off the source's own step: {off}"
+        );
+    }
     script(
         &mut doc,
         &mut ids,
-        json!([{ "verb": "generate_scale", "args": { "variable": made[0][0], "exact": false } }]),
+        json!([{ "verb": "generate_scale", "args": { "variable": made[0][0], "exact": true } }]),
     );
     assert_eq!(doc.variables().iter().count(), 11, "updated, none added");
     let source = doc.variables().by_name("blue/500").unwrap();
@@ -7119,20 +7133,23 @@ fn a_tree_inserts_back_as_what_it_read() {
 /// An instance read alone, whose main lies outside the read, inserts back as
 /// it read when its overrides are a new layer's defaults: square corners on a
 /// rounded main, an upright label of an italic main, no flex where the main
-/// has one. A path read even-odd, exporting without its fill and with its
+/// has one, a label's Original case and zero spacing under an Upper main spaced
+/// in em. A path read even-odd, exporting without its fill and with its
 /// proportions locked, inserts back so.
 /// flip: `copy_defaults` without `explicit_kind` → fails at "the square
-/// corners"; `tree` without `keep_copy_italics` → fails at "the upright label";
+/// corners"; `explicit_kind` without its type defaults → fails at "the label's
+/// own case"; `tree` without `keep_copy_italics` → fails at "the upright label";
 /// `full_tree` without its `fill_rule` → fails at "the even-odd path".
 #[test]
 fn a_copy_read_alone_keeps_its_default_overrides() {
+    use mastik_core::typography::{Length, TextCase};
     let (mut doc, mut ids, page) = blank();
     let rounded = json!({ "Artboard": { "size": { "width": 120, "height": 40 },
         "corner_radii": { "top_left": 12, "top_right": 12, "bottom_right": 12, "bottom_left": 12 } } });
     let steps = json!([
         { "verb": "create_node", "args": { "parent": page.to_wire(), "kind": rounded, "name": "Button" }, "as": "main" },
         { "verb": "create_text", "args": { "parent": "@main", "text": "Go" }, "as": "label" },
-        { "verb": "set_text_style", "args": { "nodes": ["@label"], "style": { "italic": true } } },
+        { "verb": "set_text_style", "args": { "nodes": ["@label"], "style": { "italic": true, "case": "Upper", "letter_spacing": "0.05em" } } },
         { "verb": "set_display", "args": { "nodes": ["@main"], "display": { "Flex": {} } } },
         { "verb": "make_component", "args": { "nodes": ["@main"] } },
         { "verb": "create_instance", "args": { "main": "@main", "parent": "@page", "x": 200, "y": 0 }, "as": "inst" },
@@ -7146,7 +7163,15 @@ fn a_copy_read_alone_keeps_its_default_overrides() {
         &mut doc,
         &mut ids,
         "set_text_style",
-        json!({ "nodes": [inst_label.to_wire()], "style": { "italic": false } }),
+        json!({ "nodes": [inst_label.to_wire()], "style": { "italic": false, "case": "Original", "letter_spacing": "0px" } }),
+    );
+    let NodeKind::Text { style, .. } = doc.get(inst_label).unwrap().kind() else {
+        panic!("a label");
+    };
+    assert_eq!(
+        (style.case, style.letter_spacing),
+        (TextCase::Original, Length::Px(0.0)),
+        "the fixture's label case and spacing overridden"
     );
     assert!(
         doc.get(inst).unwrap().display().is_none(),
@@ -7180,6 +7205,12 @@ fn a_copy_read_alone_keeps_its_default_overrides() {
         panic!("a label");
     };
     assert!(!style.italic, "the upright label");
+    assert_eq!(style.case, TextCase::Original, "the label's own case");
+    assert_eq!(
+        style.letter_spacing,
+        Length::Px(0.0),
+        "the label's own spacing"
+    );
     let name = |mut v: Value| {
         v.as_object_mut().unwrap().remove("name");
         v

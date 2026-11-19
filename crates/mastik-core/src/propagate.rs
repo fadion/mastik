@@ -116,10 +116,12 @@ fn mode(op: &Operation) -> Mode {
         // A copy of a swapped node follows what the swap rewrote, one link up,
         // never the swap itself (§15 D983).
         | Operation::SetSwap { .. }
-        // A set, a variant's values and a component's properties belong to the
-        // main or set they are on; an instance reads them through its link.
+        // A set, a variant's values, its layers' lineage keys and a component's
+        // properties belong to the main or set they are on; an instance reads
+        // them through its link.
         | Operation::SetVariantSet { .. }
         | Operation::SetVariant { .. }
+        | Operation::SetLineage { .. }
         | Operation::SetProperties { .. }
         | Operation::CreateNode { .. }
         | Operation::DeleteNode { .. }

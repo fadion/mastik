@@ -136,18 +136,20 @@ decision 2):
 | `x`, `y` | the left and top of the layer's bounds on the page | `build::move_by_world`; refused on a layer its container lays out |
 | `width`, `height` | the layer's own box | the `set_size` verb; `percent(n)` or `50%` sets the size's % mode (`set_layout_item`) only where the size field offers %, a resizable item of a flex or grid container, and is an error saying so elsewhere |
 | `rotation` | degrees, clockwise on the page | `edit::turned_to` |
-| `opacity`, `corner_radius`, `name`, `visible`, `locked`, `text`, `blend` | the layer's own | the matching verb |
-| `fill`, `stroke` | the one paint: a shown plain colour (and a stroke with every default but its colour) as `"#rrggbb"` (`"#rrggbbaa"` when not opaque), any other one paint — a gradient, a picture, a hidden or bound one — as its table, nil for none; several are no one value | `set_fills` / `set_strokes`, a colour or one paint's table; a text whose fills the write changes has its style colour cleared so the fill shows, and one written back its own fills keeps it |
-| `fills`, `strokes`, `effects` | the whole list, bottom first, each item a table (a plain fill as its colour) | `set_fills` / `set_strokes` / `set_effects`; nil or `{}` clears |
+| `opacity`, `corner_radius`, `name`, `visible`, `locked`, `text`, `blend` | the layer's own, a bound opacity at its variable's value | the matching verb |
+| `fill`, `stroke` | the one paint: a shown plain colour (and a stroke with every default but its colour) as `"#rrggbb"` (`"#rrggbbaa"` when not opaque), any other one paint — a gradient, a picture, a hidden or bound one — as its table, nil for none; several are no one value; a text drawn in its style colour reads that colour | `set_fills` / `set_strokes`, a colour or one paint's table; a text written has its style colour cleared so the fill shows |
+| `fills`, `strokes`, `effects` | the whole list, bottom first, each item a table (a plain fill as its colour); a text drawn in its style colour reads that colour alone as its fills | `set_fills` / `set_strokes` / `set_effects`; nil or `{}` clears |
 | `font_family`, `font_size`, `font_weight`, `italic`, `line_height`, `letter_spacing`, `text_case` | a text's character style over all its characters as drawn, a bound slot at its variable's value (no one value when its runs differ); a length as a number of px or a string such as `"1.4em"`, `line_height` nil for auto; nil on any other layer | `style_text` over the whole text, as the Text card writes it, so the runs that set the field give way; a length takes px, `"12px"`, `"0.05em"` or `"5%"` of the font size; refused on a layer that is not a text |
 | `text_align` | a text's paragraph alignment (`"Start"`, `"Center"`…) | `set_paragraph_style`, the rest of the paragraph kept |
 | `layout` | a frame's flex or grid layout as its table, `{ Flex = { … } }` or `{ Grid = { … } }`, nil for none | `set_display`; nil turns it off |
 | `gap`, `padding`, `direction` | as laid out, a bound one at its variable's value: the layout's gap (no one value when its rows and columns differ), its padding (one number when the sides agree, else `{ top, right, bottom, left }`) and a flex layout's direction; nil without a layout | `set_display`, the rest of the layout kept; refused where nothing is laid out, and `direction` on a grid |
-| `layout_item` | how the layer sizes and places itself in its parent's layout, as its table (`{}` for the defaults) | `set_layout_item` |
+| `layout_item` | how the layer sizes and places itself in its parent's layout, as its table (`{}` for the defaults): as authored, a bound limit at its variable's value, never the width a frame with width queries is laid at (`Document::bound_item`) | `set_layout_item` |
 | `id`, `kind`, `parent`, `children`, `prev`, `next` | read-only | — |
 
-**Read and write round-trip**: a table reads in the short forms the verbs read back to the same
-value (`verbs::shorten`: hex colours, a paint without its default fields, lengths as `"22px"`),
+**Read and write round-trip**: a read gives what is drawn in the model's own terms — a bound
+value at its variable's value, a text's style colour as its fill — and never a value layout
+derives, so a read written back draws as it did and every write takes effect. A table reads in
+the short forms the verbs read back to the same value (`verbs::shorten`: hex colours, a paint without its default fields, lengths as `"22px"`),
 so `local f = sel.fills; sel.fills = f` changes nothing, and a read table edited in Lua writes
 back (`local s = sel.strokes; s[1].width = 3; sel.strokes = s`). An empty list read from the
 model keeps a list's mark, since Lua's `{}` is a list and an object alike. Enum words take any

@@ -2255,6 +2255,80 @@ fn a_switch_pairs_a_renamed_layer_by_its_key() {
     assert_eq!(f.fill(ibg), solid(77));
 }
 
+/// A set read by `get_tree` and inserted back keeps each variant layer's lineage
+/// key, remapped to the new set's layers, so a switch on an instance of the copy
+/// still pairs a renamed layer and keeps its override.
+///
+/// flip: `layer_tree` not writing `lineage` → fails at "the key remapped into
+/// the copy".
+#[test]
+fn a_set_read_and_inserted_keeps_its_lineage_keys() {
+    use mastik_core::verbs::{self, Ctx};
+    let mut f = fixture();
+    let tx = variant::add_value(&f.doc, f.s, 0, "Huge").unwrap();
+    f.commit(tx.0);
+    let res = Resolved::rebuild(&f.doc);
+    let (tx, huge) = variant::add_variant(&f.doc, &res, &mut f.ids, f.s, Some(f.small)).unwrap();
+    f.commit(tx.0);
+    f.commit(vec![Operation::SetName {
+        id: f.kids(huge)[0],
+        name: "Background".into(),
+    }]);
+
+    let read = verbs::tree(&f.doc, f.s).expect("the set");
+    let res = Resolved::rebuild(&f.doc);
+    let done = verbs::call(
+        &mut Ctx {
+            doc: &f.doc,
+            res: &res,
+            ids: &mut f.ids,
+            images: None,
+            contrast: None,
+        },
+        "insert_subtree",
+        &serde_json::json!({ "parent": f.root.to_wire(), "tree": read }),
+    )
+    .expect("insert_subtree");
+    f.commit(done.tx.0);
+    let s2 = done.created[0];
+    let named = |f: &F, name: &str| {
+        f.kids(s2)
+            .into_iter()
+            .find(|v| f.name(*v) == name)
+            .expect("a variant of the copy")
+    };
+    let (small2, huge2) = (named(&f, "Small"), named(&f, "Huge"));
+    let (bg2, hbg2) = (f.kids(small2)[0], f.kids(huge2)[0]);
+    assert_eq!(f.name(hbg2), "Background");
+    assert_eq!(
+        f.doc.get(hbg2).unwrap().lineage(),
+        bg2,
+        "the key remapped into the copy"
+    );
+
+    let (tx, made) = mastik_core::insert_subtrees(
+        &f.doc,
+        &mut f.ids,
+        &[Placement {
+            nodes: f.doc.capture_subtree(small2).unwrap(),
+            parent: f.root,
+            index: None,
+        }],
+        Default::default(),
+    );
+    f.commit(tx.0);
+    let i2 = made[0];
+    let ibg = f.kids(i2)[0];
+    f.commit(vec![Operation::SetFills {
+        id: ibg,
+        fills: fills(77),
+    }]);
+    let tx = variant::switch(&f.doc, i2, huge2, &mut f.ids).unwrap();
+    f.commit(tx.0);
+    assert_eq!(f.link(ibg), Some(hbg2), "the copy's layer paired by key");
+    assert_eq!(f.fill(ibg), solid(77));
+}
+
 /// A state variant pairs with its rest through a rename, and one whose layers
 /// change order is named with the layer that moved; a state with no rest at
 /// its other values is named too.

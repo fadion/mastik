@@ -1753,9 +1753,11 @@ fn declaration_is_the_nearest_above() {
 }
 
 /// Paints, effects, text style and layout read back what was written, and
-/// writing back what was read leaves the value as it was.
+/// writing back what was read leaves the value as it was. A text in its style
+/// colour reads it as its fill, and fills written to it take effect.
 /// flip: `props::short` skipping `verbs::shorten` → fails at "reads as written"
-/// for the fills' hex.
+/// for the fills' hex; `write_model` clearing the style colour only where the
+/// stored fills changed → fails at "fills equal to the stored ones".
 #[test]
 fn modelled_properties_round_trip() {
     let mut h = TestHost::new();
@@ -1865,22 +1867,57 @@ fn modelled_properties_round_trip() {
         "local f = sel.fill\nsel.fill = nil\nsel.fill = f",
     );
     assert_eq!(read(&h, r, "fills").unwrap(), before, "fill as it was");
-    // A text drawing in its style colour keeps it when its fills are written
-    // back, and gives it up for new fills.
+    // A text drawing in its style colour reads it as its fill, so its fills
+    // written back draw as they did, and any fill written takes effect, its
+    // stored black one too.
     let red = h.make(
         "create_text",
         json!({ "parent": frame.to_wire(), "text": "Red" }),
     )[0];
+    h.make(
+        "set_fills",
+        json!({ "nodes": [red.to_wire()], "fills": ["#000000"] }),
+    );
     h.make(
         "set_text_style",
         json!({ "nodes": [red.to_wire()], "style": { "color": "#ff0000" } }),
     );
     let coloured = |h: &TestHost| matches!(h.doc.get(red).unwrap().kind(), NodeKind::Text { style, .. } if style.color.is_some());
     assert!(coloured(&h), "fixture: the text has a style colour");
+    let stored = |h: &TestHost| {
+        h.doc.get(red).unwrap().paint().fills[0]
+            .value
+            .brush
+            .literal()
+            .cloned()
+    };
+    assert_eq!(
+        stored(&h),
+        Some(mastik_core::Brush::Solid(Color::from_rgb8(0, 0, 0))),
+        "fixture: its stored fill is black"
+    );
+    let drawn = crate::props::Val::Str("#ff0000".into());
+    assert_eq!(read(&h, red, "fill").unwrap(), drawn, "reads as drawn");
+    run(&mut h, red, "sel.fills = { \"#000000\" }");
+    assert!(
+        !coloured(&h),
+        "fills equal to the stored ones clear the style colour"
+    );
+    assert_eq!(
+        read(&h, red, "fill").unwrap(),
+        crate::props::Val::Str("#000000".into()),
+        "black"
+    );
+    h.make(
+        "set_text_style",
+        json!({ "nodes": [red.to_wire()], "style": { "color": "#ff0000" } }),
+    );
     run(&mut h, red, "local f = sel.fills\nsel.fills = f");
-    assert!(coloured(&h), "fills written back keep the style colour");
-    run(&mut h, red, "sel.fill = \"#00ff00\"");
-    assert!(!coloured(&h), "new fills clear the style colour");
+    assert_eq!(
+        read(&h, red, "fill").unwrap(),
+        drawn,
+        "written back, as drawn"
+    );
     for (id, src, prop, want) in [
         (t, "sel.font_size = 24", "font_size", "24"),
         (t, "sel.font_weight = 700", "font_weight", "700"),
@@ -2099,6 +2136,52 @@ fn a_bound_value_reads_as_drawn() {
     assert_eq!(read(t, "opacity"), Val::Num(0.5), "opacity");
     assert_eq!(read(frame, "gap"), Val::Num(24.0), "gap");
     assert_eq!(read(frame, "padding"), Val::Num(24.0), "padding");
+}
+
+/// A hugging main with a width query reads its item as authored, not the
+/// padding width layout contains it to, so the item written back with a change
+/// keeps hugging.
+/// flip: the `layout_item` arm reading `resolved_item` → fails at "still hugs".
+#[test]
+fn a_query_frame_reads_its_item_as_authored() {
+    use mastik_core::container::Dimension;
+    let mut h = TestHost::new();
+    let card = h.frame("Card", 300.0, 200.0);
+    h.make(
+        "set_display",
+        json!({ "nodes": [card.to_wire()], "display": verbs::example("Display").unwrap() }),
+    );
+    h.make("make_component", json!({ "nodes": [card.to_wire()] }));
+    for name in ["Narrow", "Wide"] {
+        h.make("add_mode", json!({ "name": name }));
+    }
+    h.make(
+        "set_width_query",
+        json!({ "node": card.to_wire(), "on": true }),
+    );
+    h.make(
+        "set_layout_item",
+        json!({ "nodes": [card.to_wire()], "item": { "width": "FitContent" } }),
+    );
+    let item = |h: &TestHost| *h.doc.get(card).unwrap().item();
+    assert!(
+        !h.doc.get(card).unwrap().queries().is_empty() && item(&h).width == Dimension::FitContent,
+        "fixture: a hugging main with a width query"
+    );
+    assert_ne!(
+        h.doc.resolved_item(card).width,
+        Dimension::FitContent,
+        "fixture: laid out at its padding"
+    );
+    let labels = FxHashMap::default();
+    run_script(
+        &mut h,
+        &env(&[card], &labels),
+        "local i = sel.layout_item\ni.grow = 1\nsel.layout_item = i",
+    )
+    .unwrap_or_else(|e| panic!("{}", e.message));
+    assert_eq!(item(&h).width, Dimension::FitContent, "still hugs");
+    assert_eq!(item(&h).grow, 1.0, "the change landed");
 }
 
 /// A text edit that also changes a field no property names has no line, so `.`

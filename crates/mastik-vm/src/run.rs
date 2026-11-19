@@ -1925,27 +1925,12 @@ fn write_model(
             };
             match list_kind {
                 "[Fill]" => {
-                    // A coloured text whose fills were written back as they were
-                    // keeps drawing in its style colour, so a read written back
-                    // changes nothing.
-                    let fills_of = |st: &State<'_>, id: NodeId| -> Vec<mastik_core::Fill> {
-                        st.host.doc().get(id).map_or_else(Vec::new, |n| {
-                            n.paint().fills.iter().map(|f| f.value.clone()).collect()
-                        })
-                    };
-                    let coloured: Vec<(NodeId, Vec<mastik_core::Fill>)> =
-                        mastik_core::build::coloured_texts(st.host.doc(), ids)
-                            .into_iter()
-                            .map(|id| (id, fills_of(&st, id)))
-                            .collect();
+                    // A text in its style colour reads that colour as its fill,
+                    // so a read written back draws as it did with the colour
+                    // cleared, and any write takes effect.
                     st.apply("set_fills", &json!({ "nodes": wires, "fills": list }))
                         .map_err(fail)?;
-                    let changed: Vec<NodeId> = coloured
-                        .into_iter()
-                        .filter(|(id, was)| fills_of(&st, *id) != *was)
-                        .map(|(id, _)| id)
-                        .collect();
-                    st.clear_text_colour(&changed).map_err(fail)?;
+                    st.clear_text_colour(ids).map_err(fail)?;
                 }
                 "[Stroke]" => {
                     st.apply("set_strokes", &json!({ "nodes": wires, "strokes": list }))
