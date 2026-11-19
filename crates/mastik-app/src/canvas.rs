@@ -1228,7 +1228,7 @@ fn autopan_axis(p: f32, min: f32, max: f32) -> f32 {
 /// Whether `Space` is held for the canvas (the pan, a create drag's reposition).
 /// Not while a control holds the keyboard: there `Space` presses the control, and
 /// one key must not do both.
-fn space_down(ui: &egui::Ui) -> bool {
+pub(crate) fn space_down(ui: &egui::Ui) -> bool {
     // Two reads, never nested: the context lock is not re-entrant.
     let control = ui.ctx().memory(|m| m.focused()).is_some();
     !control && ui.input(|i| i.key_down(egui::Key::Space))

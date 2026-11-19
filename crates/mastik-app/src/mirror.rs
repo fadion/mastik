@@ -1060,7 +1060,9 @@ impl MastikApp {
                     false => egui::CursorIcon::ResizeVertical,
                 })
                 .on_hover_text("Drag to move the axis · double-click to put it back");
-            self.grip_pans(ui, &resp);
+            if self.grip_pans(ui, &resp) {
+                continue;
+            }
             if primary_grab(ui, &resp) {
                 self.mirror_grips.held = Some(Grip::Axis(vertical));
                 self.mirror_grips.from = Some(from.unwrap_or(self.mirror().at));
@@ -1210,7 +1212,9 @@ impl MastikApp {
             )
             .on_hover_cursor(egui::CursorIcon::Move)
             .on_hover_text(tip);
-        self.grip_pans(ui, &resp);
+        if self.grip_pans(ui, &resp) {
+            return;
+        }
         if primary_grab(ui, &resp) {
             self.mirror_grips.held = Some(Grip::Centre);
             self.mirror_grips.from = Some(from.unwrap_or(self.mirror().at));
@@ -1341,13 +1345,20 @@ impl MastikApp {
         }
     }
 
-    /// A middle-button drag begun on grip `resp`, or a right-button one where
-    /// that pans, pans the view as it would off the grip: the grip, registered
-    /// over the canvas, takes every button's drag, and moves only by the left.
-    fn grip_pans(&mut self, ui: &egui::Ui, resp: &egui::Response) {
-        if resp.dragged_by(egui::PointerButton::Middle) || self.right_pan(resp) {
+    /// A middle-button drag begun on grip `resp`, a right-button one where that
+    /// pans, or a left one while Space is held, pans the view as it would off the
+    /// grip: the grip, registered over the canvas, takes every button's drag.
+    /// Answers whether Space holds the pan, when the grip neither moves nor
+    /// places.
+    fn grip_pans(&mut self, ui: &egui::Ui, resp: &egui::Response) -> bool {
+        let space = crate::canvas::space_down(ui);
+        if resp.dragged_by(egui::PointerButton::Middle)
+            || self.right_pan(resp)
+            || space && resp.dragged_by(egui::PointerButton::Primary)
+        {
             self.pan_by_drag(ui, resp);
         }
+        space
     }
 
     /// Whether a click on the centre's grip places the pen's point there: under
@@ -2810,6 +2821,45 @@ mod tests {
         canvas_frame(&ctx, &mut app, vec![press(false, at)]);
         assert_ne!(app.session.camera.center, camera, "the view pans");
         assert_eq!(app.session.mirror.at, start, "the centre stays");
+    }
+
+    /// A left drag begun on a grip while Space is held pans, as it does off the
+    /// grip, and neither moves the centre nor places a point.
+    /// flip: `grip_pans` without its Space arm → fails at "the view pans".
+    #[test]
+    fn a_space_drag_on_a_grip_pans() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = mirroring_pen(&ctx);
+        app.session.mirror.axes = Axes::Centre;
+        canvas_frame(&ctx, &mut app, Vec::new());
+        let c = pill(&app).center();
+        let (start, camera) = (app.session.mirror.at, app.session.camera.center);
+        hover(&ctx, &mut app, c);
+        let space = egui::Event::Key {
+            key: egui::Key::Space,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        canvas_frame(&ctx, &mut app, vec![space]);
+        let press = |pressed, pos| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        canvas_frame(&ctx, &mut app, vec![press(true, c)]);
+        let mut at = c;
+        for i in 1..=3 {
+            at = c + egui::vec2(10.0 * i as f32, 0.0);
+            canvas_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        }
+        canvas_frame(&ctx, &mut app, vec![press(false, at)]);
+        assert_ne!(app.session.camera.center, camera, "the view pans");
+        assert_eq!(app.session.mirror.at, start, "the centre stays");
+        assert!(app.pen.is_none(), "no point placed");
     }
 
     /// A path edit's pen mirrors through the edit's own switch: off when the edit
