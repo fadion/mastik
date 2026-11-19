@@ -613,14 +613,7 @@ fn preview(
     hover: &mut (Vec<NodeId>, bool),
     clicked: &mut Option<NodeId>,
 ) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, 30.0), egui::Sense::hover());
-    let y = rect.bottom() - 10.0;
-    ui::paint_eyebrow(
-        ui.painter(),
-        egui::pos2(rect.left() + PAD, y),
-        egui::Align2::LEFT_CENTER,
-        "Preview",
-    );
+    let (rect, y) = crate::settings::card_section_head(ui, W, "Preview", None);
     let die = egui::Rect::from_center_size(
         egui::pos2(rect.right() - PAD - DIE / 2.0 + 4.0, y),
         egui::vec2(DIE, DIE),

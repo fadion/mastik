@@ -167,7 +167,9 @@ at a time: `mirror::Axes` is *Off*, *Vertical*, *Horizontal*, *Both* or *Centre*
   accent pill at its top end (left end for the horizontal axis) is its grab handle: a drag moves
   that axis, a right-click mid-drag puts it back where the drag began (`Grips::from`, in
   `cancel_gesture`), a double-click puts the axes back to the default. Only the primary button
-  moves it, as it moves a layer (`mirror::primary_grab`); a right-button drag moves nothing. The pill claims its pointer
+  moves it, as it moves a layer (`mirror::primary_grab`); a right-button drag moves nothing, and a
+  middle-button drag (or a right-button one where that pans) pans the view as it would off the
+  pill. The pill claims its pointer
   (`mirror::Grips`, `MastikApp::mirror_grip`): a press or drag on it places no point, shows no
   *On axis* mark and wears the resize cursor, under the pen, the pencil and the node tool. While the pen
   draws, the mirrored run shows at 45% of the pen stroke; while the pencil draws, its trail's image
@@ -186,9 +188,10 @@ at a time: `mirror::Axes` is *Off*, *Vertical*, *Horizontal*, *Both* or *Centre*
   pills, is a 14 pt accent disc ringed and dotted in the handle white (`color::POINT`), tooltip *Drag
   to move the centre · double-click to put it back*, wearing the move cursor (`mirror::Grip::Centre`);
   it claims its pointer, moves, puts back on a right-click and resets on a double-click as a pill
-  does. Under the pen, a click on it (no drag) puts the next anchor exactly on the centre
-  (`pen_press_exact`), the grip shows *On centre* while hovered, and its double-click finishes the
-  run as the pen's does anywhere; its tooltip then reads *Click to put a point on the centre · drag
+  does. Under the pen (the node tool's armed pen included, whose first click there starts a new
+  subpath of the edited path), a click on it (no drag) puts the next anchor exactly on the centre
+  (`pen_press_exact`), the grip shows *On centre* on itself while hovered, and its double-click
+  finishes the run on the centre, the first click having put the point there; its tooltip then reads *Click to put a point on the centre · drag
   to move the centre*. The run's copies show at 45% as the mirrored half does. While the node tool edits a radial
   path, its own lines run from its centre to a little past its box's farthest corner, from one of
   its mirror lines (`symmetry::reflection_axis`) or else from its first anchor off the centre, with
@@ -340,7 +343,7 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
   pick or a press elsewhere closes it, and so does `Escape`, a rung of the ladder; leaving the pen
   and the pencil drops it. A right-click mid-scrub of *Copies* puts the count back
   (`InFlight::mirror_copies_scrub`, in `cancel_gesture`) and is spent on that, so it leaves the
-  flyout open.
+  flyout open. In `control_audit`'s list, around a centre.
 - **While a warp envelope is open** the warp bar stands in its place, ahead of both, and the mirror
   flyout and the three cards close (`path_bar::warp_bar`, `tools.md` *Warp*).
 

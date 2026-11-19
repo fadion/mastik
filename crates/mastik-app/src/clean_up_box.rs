@@ -420,22 +420,7 @@ fn preview(
     hover: &mut (Vec<NodeId>, bool),
     clicked: &mut Option<Subject>,
 ) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, 30.0), egui::Sense::hover());
-    let p = ui.painter();
-    let y = rect.bottom() - 10.0;
-    ui::paint_eyebrow(
-        p,
-        egui::pos2(rect.left() + PAD, y),
-        egui::Align2::LEFT_CENTER,
-        "Preview",
-    );
-    p.text(
-        egui::pos2(rect.right() - PAD, y),
-        egui::Align2::RIGHT_CENTER,
-        count_label(&b.plan),
-        egui::FontId::proportional(ui::CAPTION_PT),
-        theme::text::dim(),
-    );
+    crate::settings::card_section_head(ui, W, "Preview", Some(&count_label(&b.plan)));
     let lines = b.lines();
     egui::Frame::NONE
         .inner_margin(egui::Margin {

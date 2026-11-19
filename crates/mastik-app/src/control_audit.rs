@@ -2118,6 +2118,15 @@ fn sweep_on(theme: Theme) {
         .collect();
     rows_audit("colour review", &review_rows, &mut faults);
     rows_audit("instance push rows", &push_rows, &mut faults);
+    // The pen's mirror flyout around a centre, so its *Copies* field is live:
+    // the field at rest, and its axis rows swept.
+    let mut app = with_a_rect(&ctx);
+    app.choose_tool(crate::tools::Tool::Pen);
+    app.session.mirror.axes = crate::mirror::Axes::Centre;
+    let (resting, mirror_rows) = swept(&ctx, &mut app, |_, a| a.mirror_open = true);
+    assert!(!resting.is_empty(), "fixture: the mirror flyout's field");
+    audit("mirror flyout", &resting, disabled_alpha(&ctx), &mut faults);
+    rows_audit("mirror flyout", &mirror_rows, &mut faults);
     let chip = |c: &egui::Context, a: &mut MastikApp| {
         let at = painted_at(c, a, "Hover");
         open_popup_at(c, a, at);

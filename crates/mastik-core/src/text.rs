@@ -140,12 +140,17 @@ static ALIASES: std::sync::LazyLock<std::sync::Mutex<HashMap<u64, Arc<str>>>> =
 /// A worker thread's engine holds only Inter, so one that shapes a document's
 /// text again registers the document's faces (`Resolved::text_fonts`) first, or
 /// every other family is laid out in Inter. A face registered under an alias is
-/// registered under it again.
+/// registered under it again. Each blob registers once, whichever of its faces
+/// are named: fontique registers every face of a collection file at once.
 pub fn register_font_data(fonts: &[FontData]) {
     let aliases = ALIASES.lock().map(|a| a.clone()).unwrap_or_default();
     ENGINE.with(|engine| {
         let collection = &mut engine.borrow_mut().font_cx.collection;
+        let mut seen = std::collections::HashSet::new();
         for font in fonts {
+            if !seen.insert(font.data.id()) {
+                continue;
+            }
             let alias = aliases.get(&font.data.id());
             collection.register_fonts(
                 font.data.clone(),
@@ -158,12 +163,15 @@ pub fn register_font_data(fonts: &[FontData]) {
     });
 }
 
-/// Every face registered with this thread's shaping engine, once each: what a
+/// Every font blob registered with this thread's shaping engine, once each (a
+/// collection file once, not once per face), the bundled Inter left out: what a
 /// worker hands to [`register_font_data`] to measure as this thread would,
 /// families the document does not use yet included.
 pub fn registered_font_data() -> Vec<FontData> {
     ENGINE.with(|engine| {
-        let collection = &mut engine.borrow_mut().font_cx.collection;
+        let engine = &mut *engine.borrow_mut();
+        let bundled = engine.bundled;
+        let collection = &mut engine.font_cx.collection;
         let names: Vec<String> = collection.family_names().map(str::to_owned).collect();
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
@@ -176,7 +184,8 @@ pub fn registered_font_data() -> Vec<FontData> {
             };
             for font in info.fonts() {
                 if let parley::fontique::SourceKind::Memory(blob) = font.source().kind()
-                    && seen.insert((blob.id(), font.index()))
+                    && !bundled.contains(&blob.id())
+                    && seen.insert(blob.id())
                 {
                     out.push(FontData::new(blob.clone(), font.index()));
                 }
@@ -1562,6 +1571,9 @@ struct Engine {
     layout_cx: LayoutContext<RunIndex>,
     /// The bundled family name (Inter) — default and last-resort fallback.
     default_family: String,
+    /// The ids of the bundled Inter blobs this engine registered itself, which
+    /// [`registered_font_data`] leaves out: every thread's engine holds its own.
+    bundled: [u64; 2],
 }
 
 impl Engine {
@@ -1571,13 +1583,16 @@ impl Engine {
             shared: false,
             system_fonts: false,
         });
-        let registered = collection.register_fonts(Blob::from(INTER_UPRIGHT.to_vec()), None);
+        let upright = Blob::from(INTER_UPRIGHT.to_vec());
+        let italic = Blob::from(INTER_ITALIC.to_vec());
+        let bundled = [upright.id(), italic.id()];
+        let registered = collection.register_fonts(upright, None);
         let default_family = registered
             .first()
             .and_then(|(id, _)| collection.family_name(*id))
             .unwrap_or("Inter")
             .to_string();
-        collection.register_fonts(Blob::from(INTER_ITALIC.to_vec()), None);
+        collection.register_fonts(italic, None);
         Self {
             font_cx: FontContext {
                 collection,
@@ -1585,6 +1600,7 @@ impl Engine {
             },
             layout_cx: LayoutContext::new(),
             default_family,
+            bundled,
         }
     }
 }
@@ -4747,6 +4763,37 @@ mod tests {
 
     use super::*;
     use crate::typography::{CharAttr, Decoration, ParaAttr, VerticalAlign};
+
+    /// A blob named by two of its faces registers once, as a collection file's
+    /// faces arrive, and the bundled Inter every engine holds is never handed on.
+    /// flip: `register_font_data` registering every entry → fails at "once".
+    #[test]
+    fn font_data_registers_each_blob_once() {
+        std::thread::spawn(|| {
+            let faces = || {
+                ENGINE.with(|e| {
+                    let c = &mut e.borrow_mut().font_cx.collection;
+                    c.family_id("Inter")
+                        .and_then(|id| c.family(id))
+                        .map_or(0, |f| f.fonts().len())
+                })
+            };
+            assert!(
+                registered_font_data().is_empty(),
+                "the bundled Inter is left out"
+            );
+            let start = faces();
+            register_font_data(&[FontData::new(Blob::from(INTER_UPRIGHT.to_vec()), 0)]);
+            let one = faces() - start;
+            assert!(one > 0, "fixture: the blob registered");
+            let blob = Blob::from(INTER_UPRIGHT.to_vec());
+            register_font_data(&[FontData::new(blob.clone(), 0), FontData::new(blob, 1)]);
+            assert_eq!(faces() - start, 2 * one, "once");
+            assert_eq!(registered_font_data().len(), 2, "one entry a blob");
+        })
+        .join()
+        .unwrap();
+    }
 
     pub(super) fn parts(style: &TextStyle, sizing: &TextSizing) -> TextParts {
         TextParts {

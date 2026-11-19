@@ -65,8 +65,13 @@ pub(crate) enum Code {
 
 /// What a landed run reports to, and how.
 pub(crate) enum After {
-    /// A bar line that writes: `line` and the Luau it was read as.
-    Bar { line: String, luau: String },
+    /// A bar line that writes: `line` and the Luau it was read as, and how many
+    /// times it runs again once this run lands (a count before `.`).
+    Bar {
+        line: String,
+        luau: String,
+        again: u32,
+    },
     /// A bar line that reads: its value is copied.
     Read { line: String, luau: String },
     /// A script from the editor or the palette.
@@ -378,8 +383,13 @@ impl MastikApp {
             }
         }
         match after {
-            After::Bar { line, luau } => {
+            After::Bar { line, luau, again } => {
                 self.bar_line_landed(&line, luau, false, outcome, counts, serial);
+                // The next repetition starts once this one is down, so it is
+                // never refused by this run's hold.
+                if again > 0 {
+                    self.run_bar_line_again(&line, again - 1);
+                }
             }
             After::Read { line, luau } => {
                 self.bar_line_landed(&line, luau, true, outcome, counts, serial);
@@ -520,5 +530,30 @@ mod tests {
         assert_eq!(app.session.history.undo_depth(), depth, "no step");
         assert_eq!(app.session.doc.get(card).unwrap().name(), "Card");
         assert!(app.session.commit(rename(card, "Mine")), "the hold ends");
+    }
+
+    /// A count before `.` runs the line that many times when no run lands in
+    /// the frame that starts it, each repetition after the one before lands.
+    /// flip: `land_run` dropping `again` → fails at "three repetitions".
+    #[test]
+    fn a_count_repeats_a_line_that_runs_on_a_worker() {
+        let (_ctx, mut app, card) = with_card();
+        let x = |app: &MastikApp| {
+            mastik_core::query::bounds(&app.session.resolved, card)
+                .unwrap()
+                .x0
+        };
+        app.run_bar_line(".x += 10");
+        assert!(app.session.script_run.is_none(), "fixture: landed inline");
+        let (start, depth) = (x(&app), app.session.history.undo_depth());
+        let held = INLINE.replace(Duration::ZERO);
+        app.repeat_bar_line(3);
+        assert!(app.session.script_run.is_some(), "fixture: in flight");
+        for _ in 0..10 {
+            settle(&mut app);
+        }
+        INLINE.set(held);
+        assert!((x(&app) - start - 30.0).abs() < 1e-6, "three repetitions");
+        assert_eq!(app.session.history.undo_depth(), depth + 3, "a step each");
     }
 }

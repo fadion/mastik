@@ -9,7 +9,7 @@
 //! these make it rougher.
 
 use crate::app::MastikApp;
-use crate::theme::{self, icon};
+use crate::theme::icon;
 use crate::ui::{self, FieldButton, Prefix, Scrub};
 use eframe::egui;
 use mastik_core::distort::Filter;
@@ -351,11 +351,7 @@ impl MastikApp {
                             .to_owned(),
                         k => format!("Acts between the {k} selected points"),
                     };
-                    ui.label(
-                        egui::RichText::new(note)
-                            .size(ui::SMALL_PT)
-                            .color(theme::text::muted()),
-                    );
+                    crate::settings::row_note(ui, &note);
                 });
             });
 

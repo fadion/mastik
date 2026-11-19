@@ -412,11 +412,7 @@ impl MastikApp {
             Nav::Matching => self.select_matching(),
             Nav::Fit => self.zoom_to(self.document_bounds()),
             Nav::Zoom => self.zoom_to(self.selection_bounds()),
-            Nav::Repeat => {
-                for _ in 0..times {
-                    self.repeat_bar_line();
-                }
-            }
+            Nav::Repeat => self.repeat_bar_line(times),
             Nav::Type => self.set_picking(false),
         }
     }

@@ -1597,22 +1597,7 @@ fn checks(ui: &mut egui::Ui, s: &mut Settings, skipped: usize) {
 /// The preview: every layer at Selection, the matches elsewhere. Only the rows in
 /// view are laid out, so a run of thousands costs what eight do.
 fn preview(ui: &mut egui::Ui, scope: Scope, plan: &Plan, landed: bool) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, 30.0), egui::Sense::hover());
-    let p = ui.painter();
-    let y = rect.bottom() - 10.0;
-    ui::paint_eyebrow(
-        p,
-        egui::pos2(rect.left() + PAD, y),
-        egui::Align2::LEFT_CENTER,
-        "Preview",
-    );
-    p.text(
-        egui::pos2(rect.right() - PAD, y),
-        egui::Align2::RIGHT_CENTER,
-        count_label(scope, plan),
-        egui::FontId::proportional(ui::CAPTION_PT),
-        theme::text::dim(),
-    );
+    crate::settings::card_section_head(ui, W, "Preview", Some(&count_label(scope, plan)));
     egui::Frame::NONE
         .inner_margin(egui::Margin {
             left: 6,

@@ -735,7 +735,13 @@ impl MastikApp {
     /// with the mirror off.
     pub(crate) fn mirror_run(&self, drawn: PenSubpath) -> Vec<PenSubpath> {
         let near = drawn.anchors.first().map(|a| a.at);
-        let Some(frame) = self.mirror_frame(near) else {
+        self.mirror_run_in(self.mirror_frame(near), drawn)
+    }
+
+    /// [`Self::mirror_run`] about `frame`, resolved by a caller that no longer
+    /// holds the run it was read for.
+    pub(crate) fn mirror_run_in(&self, frame: Option<Frame>, drawn: PenSubpath) -> Vec<PenSubpath> {
+        let Some(frame) = frame else {
             return vec![drawn];
         };
         let tol = self.axis_tol(&frame);
@@ -1054,6 +1060,7 @@ impl MastikApp {
                     false => egui::CursorIcon::ResizeVertical,
                 })
                 .on_hover_text("Drag to move the axis · double-click to put it back");
+            self.grip_pans(ui, &resp);
             if primary_grab(ui, &resp) {
                 self.mirror_grips.held = Some(Grip::Axis(vertical));
                 self.mirror_grips.from = Some(from.unwrap_or(self.mirror().at));
@@ -1190,8 +1197,7 @@ impl MastikApp {
         self.mirror_grips.pills.push((Grip::Centre, hit));
         // The pen places on a click; Ctrl holding the run's points places none.
         let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
-        let pen = (self.tool == crate::tools::Tool::Pen || self.pen.is_some())
-            && !self.pen_holds_points(ctrl);
+        let pen = self.grip_places(ctrl);
         let tip = match pen {
             true => "Click to put a point on the centre · drag to move the centre",
             false => "Drag to move the centre · double-click to put it back",
@@ -1204,25 +1210,32 @@ impl MastikApp {
             )
             .on_hover_cursor(egui::CursorIcon::Move)
             .on_hover_text(tip);
+        self.grip_pans(ui, &resp);
         if primary_grab(ui, &resp) {
             self.mirror_grips.held = Some(Grip::Centre);
             self.mirror_grips.from = Some(from.unwrap_or(self.mirror().at));
         }
         if ui::double_clicked(ui, &resp) {
             if pen {
-                // The pen's double-click: its second click planted a duplicate.
-                if let Some(run) = self.pen.as_mut()
-                    && run.anchors.len() > 1
-                {
-                    run.anchors.pop();
-                }
+                // Its first click placed the point on the centre, and the grip
+                // places on a click, so the second planted nothing to take back.
                 self.finish_pen(false);
             } else {
                 self.mirror_mut().at = None;
             }
         } else if pen && resp.clicked_by(egui::PointerButton::Primary) {
             let centre = frame.to_world * frame.at;
-            self.pen_press_exact(centre, false, Some(centre));
+            match self.pen.is_none().then(|| self.pen_scope()).flatten() {
+                // The node tool's armed pen starts a subpath of the edited path,
+                // as its press on bare canvas would.
+                Some(id) => {
+                    self.pen_verb_press(id, centre, false, crate::canvas::PenVerb::NewSubpath);
+                    if let Some(run) = self.pen.as_mut() {
+                        run.anchors = vec![crate::preview::PenAnchor::corner(centre)];
+                    }
+                }
+                None => self.pen_press_exact(centre, false, Some(centre)),
+            }
             // The press is already released, so no handle is being pulled.
             if let Some(run) = self.pen.as_mut() {
                 run.shaping = false;
@@ -1316,16 +1329,34 @@ impl MastikApp {
             });
             let name = if centre { "On centre" } else { "On axis" };
             crate::canvas::draw_snap_target(painter, at, name, false);
-        } else if (self.tool == crate::tools::Tool::Pen || self.pen.is_some())
-            && !self.pen_holds_points(ctrl)
+        } else if self.grip_places(ctrl)
             && self.mirror_grips.held.is_none()
             && self.mirror_grip(ui.ctx().pointer_hover_pos()) == Some(Grip::Centre)
-            && let Some(f) = self.mirror_frame(None).filter(|f| f.axes == Axes::Centre)
+            && let Some(f) = self.mirror_frame(hover).filter(|f| f.axes == Axes::Centre)
         {
-            // The pen's click on the centre's grip puts its point there.
+            // The pen's click on the centre's grip puts its point there, in the
+            // frame the grip is drawn for.
             let at = self.to_screen(f.to_world * f.at, rect, ppp);
             crate::canvas::draw_snap_target(painter, at, "On centre", false);
         }
+    }
+
+    /// A middle-button drag begun on grip `resp`, or a right-button one where
+    /// that pans, pans the view as it would off the grip: the grip, registered
+    /// over the canvas, takes every button's drag, and moves only by the left.
+    fn grip_pans(&mut self, ui: &egui::Ui, resp: &egui::Response) {
+        if resp.dragged_by(egui::PointerButton::Middle) || self.right_pan(resp) {
+            self.pan_by_drag(ui, resp);
+        }
+    }
+
+    /// Whether a click on the centre's grip places the pen's point there: under
+    /// the pen tool, with a run in flight, or under the node tool's armed pen;
+    /// never while Ctrl holds the run's points.
+    fn grip_places(&self, ctrl: bool) -> bool {
+        let node_pen = self.tool == crate::tools::Tool::Node && self.pen_bias;
+        (self.tool == crate::tools::Tool::Pen || self.pen.is_some() || node_pen)
+            && !self.pen_holds_points(ctrl)
     }
 
     /// Where a point placed at `world` lands on a mirror axis, if it does: the pen's
@@ -2517,6 +2548,239 @@ mod tests {
             Some(1),
             "and places nothing"
         );
+    }
+
+    /// The landed path `id`'s anchors, in world space.
+    fn landed(app: &MastikApp, id: NodeId) -> Vec<Point> {
+        let Some(NodeKind::Path { path, .. }) = app.session.doc.get(id).map(|n| n.kind()) else {
+            panic!("a path");
+        };
+        let world = app.session.resolved.world_transform(id).unwrap();
+        crate::tools::pen_anchors(path, &[])
+            .iter()
+            .flat_map(|s| s.anchors.iter().map(|a| world * a.at))
+            .collect()
+    }
+
+    fn near(a: Point, b: Point) -> bool {
+        (a - b).hypot() < 1e-6
+    }
+
+    /// A double-click on the centre's grip ends the run on the centre: its
+    /// first click put the point there, and the second takes nothing back.
+    ///
+    /// flip: the grip's double-click popping the run's last anchor → fails at
+    /// "ends on the centre".
+    #[test]
+    fn a_double_click_on_the_centre_grip_ends_the_run_there() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = mirroring_pen(&ctx);
+        app.session.mirror.axes = Axes::Centre;
+        app.pen = Some(crate::preview::PenState {
+            parent: app.session.page,
+            parent_world: Affine::IDENTITY,
+            anchors: [(100.0, -80.0), (130.0, -60.0)]
+                .map(|(x, y)| PenAnchor::corner(Point::new(x, y)))
+                .to_vec(),
+            shaping: false,
+            editing: None,
+        });
+        canvas_frame(&ctx, &mut app, Vec::new());
+        let c = pill(&app).center();
+        hover(&ctx, &mut app, c);
+        for _ in 0..2 {
+            canvas_frame(&ctx, &mut app, vec![primary(c, true)]);
+            canvas_frame(&ctx, &mut app, vec![primary(c, false)]);
+        }
+        assert!(app.pen.is_none(), "fixture: the double-click ended the run");
+        let id = app.session.selection.single().expect("the path");
+        let centre = Point::new(100.0, 0.0);
+        assert!(
+            landed(&app, id).iter().any(|p| near(*p, centre)),
+            "ends on the centre: {:?}",
+            landed(&app, id)
+        );
+    }
+
+    /// A run lands mirrored about the frame its first press fixed, though Ctrl
+    /// moved its first anchor into another frame: as the preview drew it.
+    ///
+    /// flip: `finish_pen` reading the mirror's frame after taking the run →
+    /// fails at "about A's middle".
+    #[test]
+    fn a_run_lands_about_the_frame_it_began_in() {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let page = app.session.page;
+        let frame = |id, x: f64| mastik_core::Operation::CreateNode {
+            id,
+            parent: page,
+            index: 0,
+            kind: NodeKind::Artboard {
+                size: mastik_core::kurbo::Size::new(200.0, 200.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((x, 0.0))),
+            name: None,
+        };
+        let (a, b) = (app.session.ids.mint(), app.session.ids.mint());
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            frame(a, 0.0),
+            frame(b, 300.0)
+        ])));
+        app.choose_tool(crate::tools::Tool::Pen);
+        app.session.mirror = Mirror {
+            axes: Axes::Vertical,
+            at: None,
+            ..Mirror::default()
+        };
+        app.pen = Some(crate::preview::PenState {
+            parent: a,
+            parent_world: Affine::IDENTITY,
+            anchors: [(350.0, 50.0), (60.0, 80.0)]
+                .map(|(x, y)| PenAnchor::corner(Point::new(x, y)))
+                .to_vec(),
+            shaping: false,
+            editing: None,
+        });
+        app.finish_pen(false);
+        let id = app.session.selection.single().expect("the path");
+        let got = landed(&app, id);
+        assert!(
+            got.iter().any(|p| near(*p, Point::new(-150.0, 50.0))),
+            "about A's middle: {got:?}"
+        );
+    }
+
+    /// Hovering the centre's grip over a frame off the view's middle rings the
+    /// grip, where its click puts the point.
+    ///
+    /// flip: the chip reading the frame under no point → fails at "on the grip".
+    #[test]
+    fn the_centre_grips_ring_sits_on_the_grip() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = mirroring_pen(&ctx);
+        app.session.mirror.axes = Axes::Centre;
+        app.session.mirror.at = None;
+        let page = app.session.page;
+        let board = app.session.ids.mint();
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::CreateNode {
+                id: board,
+                parent: page,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: mastik_core::kurbo::Size::new(200.0, 200.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((100.0, 50.0))),
+                name: None,
+            }
+        ])));
+        canvas_frame(&ctx, &mut app, Vec::new());
+        let middle = app.to_screen(Point::new(200.0, 150.0), app.canvas_rect, 1.0);
+        hover(&ctx, &mut app, middle);
+        let grip = pill(&app).center();
+        assert!(
+            (grip - middle).length() < 0.5,
+            "fixture: the grip on the frame's middle"
+        );
+        let out = hover(&ctx, &mut app, grip);
+        let rings: Vec<egui::Pos2> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Circle(s) if s.stroke.color == color::MEASURE => Some(s.center),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            rings.iter().any(|r| (*r - grip).length() < 0.5),
+            "on the grip: {rings:?} vs {grip:?}"
+        );
+    }
+
+    /// Under the node tool's armed pen a click on the centre's grip starts a new
+    /// subpath of the edited path on the centre.
+    ///
+    /// flip: `grip_places` leaving out the node tool's pen → fails at "a subpath
+    /// begun".
+    #[test]
+    fn the_node_tools_pen_starts_a_subpath_on_the_centre() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = mirroring_pen(&ctx);
+        app.pen = Some(crate::preview::PenState {
+            parent: app.session.page,
+            parent_world: Affine::IDENTITY,
+            anchors: [(20.0, 10.0), (60.0, 50.0)]
+                .map(|(x, y)| PenAnchor::corner(Point::new(x, y)))
+                .to_vec(),
+            shaping: false,
+            editing: None,
+        });
+        app.session.mirror.axes = Axes::Off;
+        app.finish_pen(false);
+        let id = app.session.selection.single().expect("the path");
+        app.choose_tool(crate::tools::Tool::Node);
+        app.session.selection.set_one(id);
+        app.choose_tool(crate::tools::Tool::Pen);
+        assert!(
+            app.pen_bias && app.pen.is_none(),
+            "fixture: the edit's pen armed"
+        );
+        app.mirror_mut().axes = Axes::Centre;
+        canvas_frame(&ctx, &mut app, Vec::new());
+        let c = pill(&app).center();
+        let centre = app
+            .mirror_frame(None)
+            .map(|f| f.to_world * f.at)
+            .expect("fixture: a centre");
+        hover(&ctx, &mut app, c);
+        canvas_frame(&ctx, &mut app, vec![primary(c, true)]);
+        canvas_frame(&ctx, &mut app, vec![primary(c, false)]);
+        let pen = app.pen.as_ref().expect("a subpath begun");
+        assert!(
+            pen.editing.as_ref().is_some_and(|e| e.minted && e.id == id),
+            "in the edited path"
+        );
+        let at: Vec<Point> = pen.anchors.iter().map(|a| a.at).collect();
+        assert_eq!(at, [centre], "on the centre");
+    }
+
+    /// A middle-button drag begun on the centre's grip pans the view and leaves
+    /// the centre where it is.
+    ///
+    /// flip: `grip_pans` never called → fails at "the view pans".
+    #[test]
+    fn a_middle_drag_on_a_grip_pans() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = mirroring_pen(&ctx);
+        app.session.mirror.axes = Axes::Centre;
+        canvas_frame(&ctx, &mut app, Vec::new());
+        let c = pill(&app).center();
+        let (start, camera) = (app.session.mirror.at, app.session.camera.center);
+        hover(&ctx, &mut app, c);
+        let press = |pressed, pos| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Middle,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        canvas_frame(&ctx, &mut app, vec![press(true, c)]);
+        let mut at = c;
+        for i in 1..=3 {
+            at = c + egui::vec2(10.0 * i as f32, 0.0);
+            canvas_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        }
+        canvas_frame(&ctx, &mut app, vec![press(false, at)]);
+        assert_ne!(app.session.camera.center, camera, "the view pans");
+        assert_eq!(app.session.mirror.at, start, "the centre stays");
     }
 
     /// A path edit's pen mirrors through the edit's own switch: off when the edit

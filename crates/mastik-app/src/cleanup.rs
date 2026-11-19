@@ -431,7 +431,7 @@ impl MastikApp {
                         if std::mem::take(&mut card.focus_apply) {
                             b.request_focus();
                         }
-                        caption(ui, &note);
+                        crate::settings::row_note(ui, &note);
                         row(Row::Simplify, Some(f), b);
                     });
 
@@ -516,7 +516,7 @@ impl MastikApp {
                                 ui::count_as(k, "selected point", "selected points")
                             ),
                         };
-                        caption(ui, &note);
+                        crate::settings::row_note(ui, &note);
                         row(Row::Smooth, Some(f), b);
                     });
                 });
@@ -618,15 +618,6 @@ fn simplify_note(
         Some((_, path)) => format!("{total} points → {}", anchors_in(path)),
         None => format!("{total} points"),
     }
-}
-
-/// A row's note under its controls.
-fn caption(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .size(ui::SMALL_PT)
-            .color(theme::text::muted()),
-    );
 }
 
 #[cfg(test)]

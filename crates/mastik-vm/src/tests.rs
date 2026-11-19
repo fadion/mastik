@@ -1865,6 +1865,22 @@ fn modelled_properties_round_trip() {
         "local f = sel.fill\nsel.fill = nil\nsel.fill = f",
     );
     assert_eq!(read(&h, r, "fills").unwrap(), before, "fill as it was");
+    // A text drawing in its style colour keeps it when its fills are written
+    // back, and gives it up for new fills.
+    let red = h.make(
+        "create_text",
+        json!({ "parent": frame.to_wire(), "text": "Red" }),
+    )[0];
+    h.make(
+        "set_text_style",
+        json!({ "nodes": [red.to_wire()], "style": { "color": "#ff0000" } }),
+    );
+    let coloured = |h: &TestHost| matches!(h.doc.get(red).unwrap().kind(), NodeKind::Text { style, .. } if style.color.is_some());
+    assert!(coloured(&h), "fixture: the text has a style colour");
+    run(&mut h, red, "local f = sel.fills\nsel.fills = f");
+    assert!(coloured(&h), "fills written back keep the style colour");
+    run(&mut h, red, "sel.fill = \"#00ff00\"");
+    assert!(!coloured(&h), "new fills clear the style colour");
     for (id, src, prop, want) in [
         (t, "sel.font_size = 24", "font_size", "24"),
         (t, "sel.font_weight = 700", "font_weight", "700"),
@@ -1894,6 +1910,24 @@ fn modelled_properties_round_trip() {
             "sel.direction = \"column\"",
             "direction",
             "\"Column\"",
+        ),
+        (
+            frame,
+            "sel.direction = \"RowReverse\"",
+            "direction",
+            "\"RowReverse\"",
+        ),
+        (
+            frame,
+            "local d = sel.direction\nsel.direction = d",
+            "direction",
+            "\"RowReverse\"",
+        ),
+        (
+            frame,
+            "sel.direction = \"column-reverse\"",
+            "direction",
+            "\"ColumnReverse\"",
         ),
         (r, "sel.fill = \"#00ff00\"", "fill", "\"#00ff00\""),
         (r, "sel.effects = {}", "effects", "{}"),
@@ -1954,10 +1988,24 @@ fn set_by_names_an_edit_as_the_line_that_repeats_it() {
             json!({ "parent": f.to_wire(), "text": "Hi" }),
         )[0]
     });
+    // "Hello world" with "world" bold: an attribute the edit leaves alone differs
+    // across the runs.
+    let bold = frames.map(|f| {
+        let t = h.make(
+            "create_text",
+            json!({ "parent": f.to_wire(), "text": "Hello world" }),
+        )[0];
+        h.make(
+            "style_text",
+            json!({ "node": t.to_wire(), "attrs": [{ "Weight": 700 }], "start": 6 }),
+        );
+        t
+    });
     let labels = FxHashMap::default();
     let display = crate::props::json_literal(&verbs::example("Display").unwrap());
     let effects = crate::props::json_literal(&verbs::example("[Effect]").unwrap());
     let steps: Vec<([NodeId; 2], String, &[&str])> = vec![
+        (bold, "sel.font_size = 24".into(), &["font_size"]),
         (rects, "sel.fill = \"#336699\"".into(), &["fill"]),
         (
             rects,
@@ -1972,6 +2020,11 @@ fn set_by_names_an_edit_as_the_line_that_repeats_it() {
         (frames, "sel.gap = 20".into(), &["gap"]),
         (frames, "sel.padding = 8".into(), &["padding"]),
         (frames, "sel.direction = \"Column\"".into(), &["direction"]),
+        (
+            frames,
+            "sel.direction = \"RowReverse\"".into(),
+            &["direction"],
+        ),
     ];
     for ([a, b], line, props) in steps {
         run_script(&mut h, &env(&[a], &labels), &line)
@@ -1998,6 +2051,87 @@ fn set_by_names_an_edit_as_the_line_that_repeats_it() {
                 "{again}: the twin's {prop}"
             );
         }
+    }
+}
+
+/// A bound text size, gap, padding and opacity read at their variables' values,
+/// never the 0 a bound slot's literal holds.
+/// flip: `read`'s text arms reading the node's own kind → fails at "font size".
+#[test]
+fn a_bound_value_reads_as_drawn() {
+    let mut h = TestHost::new();
+    let frame = h.frame("Card", 400.0, 300.0);
+    let t = h.make(
+        "create_text",
+        json!({ "parent": frame.to_wire(), "text": "Hello" }),
+    )[0];
+    h.make(
+        "set_display",
+        json!({ "nodes": [frame.to_wire()], "display": verbs::example("Display").unwrap() }),
+    );
+    let labels = FxHashMap::default();
+    let bind = |h: &mut TestHost, id: NodeId, src: &str| {
+        run_script(h, &env(&[id], &labels), src).unwrap_or_else(|e| panic!("{src}: {}", e.message));
+    };
+    bind(
+        &mut h,
+        t,
+        "local v = add_variable{kind = \"number\", name = \"type/size\", value = {number = 30}}\n\
+         bind_variable{nodes = sel, field = {type = 2}, variable = v}\n\
+         local o = add_variable{kind = \"number\", name = \"fade\", value = {number = 50}}\n\
+         bind_variable{nodes = sel, field = \"opacity\", variable = o}",
+    );
+    bind(
+        &mut h,
+        frame,
+        "local v = add_variable{kind = \"number\", name = \"space/24\", value = {number = 24}}\n\
+         bind_variable{nodes = sel, field = {spacing = 63}, variable = v}",
+    );
+    let node = |id: NodeId| h.doc.get(id).unwrap();
+    assert!(
+        node(t).text_vars()[mastik_core::variable::TEXT_SIZE].is_some()
+            && node(frame).spacing_vars().iter().all(Option::is_some),
+        "fixture: the slots are bound"
+    );
+    let read = |id: NodeId, prop: &str| crate::props::read(&h.doc, &h.res, id, prop).unwrap();
+    use crate::props::Val;
+    assert_eq!(read(t, "font_size"), Val::Num(30.0), "font size");
+    assert_eq!(read(t, "opacity"), Val::Num(0.5), "opacity");
+    assert_eq!(read(frame, "gap"), Val::Num(24.0), "gap");
+    assert_eq!(read(frame, "padding"), Val::Num(24.0), "padding");
+}
+
+/// A text edit that also changes a field no property names has no line, so `.`
+/// cannot repeat half of it: the Type panel's family pick, which clears the
+/// features with it.
+/// flip: `char_changes` skipping the kinds `CHAR_PROPS` leaves out → fails at
+/// "a hole".
+#[test]
+fn set_by_leaves_a_hole_for_a_field_no_property_names() {
+    let mut h = TestHost::new();
+    let frame = h.frame("A", 400.0, 300.0);
+    let t = h.make(
+        "create_text",
+        json!({ "parent": frame.to_wire(), "text": "Hi" }),
+    )[0];
+    h.make(
+        "set_text_style",
+        json!({ "nodes": [t.to_wire()], "style": { "features": [{ "tag": "ss01", "value": 1 }] } }),
+    );
+    h.make(
+        "set_text_style",
+        json!({ "nodes": [t.to_wire()], "style": { "font_family": "Georgia", "features": [] } }),
+    );
+    let NodeKind::Text { style, .. } = h.doc.get(t).unwrap().kind() else {
+        panic!("a text");
+    };
+    assert!(
+        style.features.is_empty() && style.font_family == "Georgia",
+        "fixture: the pick landed"
+    );
+    let inverse = h.last.take().unwrap();
+    for op in &inverse.0 {
+        assert_eq!(crate::set_by(&h.doc, &h.res, op), None, "a hole: {op:?}");
     }
 }
 
@@ -2044,7 +2178,24 @@ fn random_draws_are_fixed_by_their_seed() {
     // The generator is the crate's own, so the numbers a seed draws never move.
     let out = run_script(&mut h, &e, "local r = random(1) return r(1000000)").unwrap();
     assert_eq!(out.value.as_deref(), Some("702922"), "pinned");
+    // One pin for each way to a seed (a string's hash, a fraction's bits, a
+    // negative whole, a whole too big for its own value) and for the fraction.
+    for (src, want) in [
+        ("random(\"grid\")(1000000)", "293241"),
+        ("random(0.5)(1000000)", "680323"),
+        ("random(-1)(1000000)", "559893"),
+        ("random(1e16)(1000000)", "313054"),
+        ("random(1)() * 2^53", "6331357011769570"),
+    ] {
+        let out = run_script(&mut h, &e, &format!("return {src}")).unwrap();
+        assert_eq!(out.value.as_deref(), Some(want), "{src} pinned");
+    }
     for (src, said) in [
+        ("random(0/0)", "`random`'s seed is a number or a string"),
+        (
+            "random(math.huge)",
+            "`random`'s seed is a number or a string",
+        ),
         ("random()", "`random` needs a seed"),
         ("random({})", "`random`'s seed is a number or a string"),
         ("random(1)(2.5)", "A random draw takes whole numbers"),

@@ -6823,7 +6823,10 @@ impl MastikApp {
                         ui::FieldButton::Off
                     },
                 )
-                .on_hover_text("Swap the ends");
+                .on_hover_text(match bare {
+                    true => "Both ends are the same",
+                    false => "Swap the ends",
+                });
                 if swap.clicked() && !bare {
                     out = Some(Stroke {
                         start: s.end,

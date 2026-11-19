@@ -164,7 +164,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **A script run by the document** — on open, on a change, or on any trigger but the person's own (§15 D1100); a script the document re-runs is a constraint engine.
 - **Links between a document's scripts and the library's** — they exchange copies; a kit's scripts are the one link (`command-mode.md` §10).
 - **Plugins or UI extension from a script** — a script edits the document; panels, tools and chrome are a different feature with a different security design.
-- **Async, coroutines, or a run that yields across frames** (`command-mode.md` §8).
+- **Async or coroutines inside a script** — a script cannot yield to the host; a run, on a worker or not, lands as one step (`command-mode.md` §7, §8).
 - **Binding the interaction layer** — gestures, previews and `RenderOverrides` have no scriptable form; a script says a committed outcome (`command-mode.md` §6).
 - **Keyboard navigation as a mode of its own** — walking layers by key never beats the mouse in a design tool; picking layers by label is the command bar's Pick focus, for naming layers while typing (`command-mode.md`, *Pick*).
 

@@ -456,15 +456,19 @@ fn variant(v: serde_json::Result<serde_json::Value>) -> Val {
     }
 }
 
-/// One character attribute of a text layer over all its characters: the value
-/// they share, `Mixed` when runs differ, nil for any other layer.
-fn char_attr(node: &mastik_core::Node, kind: CharAttrKind) -> Val {
+/// One character attribute of text `id` over all its characters, as drawn (a
+/// bound slot at its variable's value): the value they share, `Mixed` when runs
+/// differ, nil for any other layer.
+fn char_attr(doc: &Document, id: NodeId, kind: CharAttrKind) -> Val {
+    let Some(drawn) = doc.resolved_kind(id) else {
+        return Val::Nil;
+    };
     let NodeKind::Text {
         content,
         style,
         spans,
         ..
-    } = node.kind()
+    } = drawn.as_ref()
     else {
         return Val::Nil;
     };
@@ -556,9 +560,9 @@ const CHAR_PROPS: [(&str, CharAttrKind); 7] = [
 /// What the step holding `inverse` set, as `(property, value)` with the value in
 /// Luau, read against the document after it: the writes a line would make for
 /// the same edit. `None` when `inverse` is no property's edit, or when a value
-/// has no one form (paints that differ inside a group, runs that differ). A
-/// text style edit that changed no character property answers empty: the colour
-/// a `.fill` write clears, or an edit no property names.
+/// has no one form (paints that differ inside a group, runs that differ), or the
+/// edit changed a text attribute no property names. A text style edit that
+/// changed only the colour answers empty: the colour a `.fill` write clears.
 pub fn set_by(
     doc: &Document,
     res: &Resolved,
@@ -637,10 +641,11 @@ fn paints(
     }
 }
 
-/// The character properties that differ between `before` and `after` over a
-/// text `len` bytes long, each with its value after: empty when none does (the
-/// edit changed something no property names, such as the colour), `None` when
-/// one reads as several values.
+/// The character properties whose runs differ between `before` and `after` over
+/// a text `len` bytes long, each with its value after. Empty when only the colour
+/// changed (what a `.fill` write clears); `None` when a changed one reads as
+/// several values, or when an attribute no property names changed too, which a
+/// line naming the rest would not repeat.
 fn char_changes(
     len: usize,
     before: (
@@ -653,14 +658,41 @@ fn char_changes(
     ),
 ) -> Option<Vec<(&'static str, String)>> {
     let mut out = Vec::new();
-    for (prop, kind) in CHAR_PROPS {
-        let then = char_val(before.0, before.1, len, kind);
-        let now = char_val(after.0, after.1, len, kind);
-        if !agree(prop, &then, &now) {
-            out.push((prop, literal(&now)?));
+    for kind in CharAttrKind::ALL {
+        if kind == CharAttrKind::Color
+            || attr_runs(before.0, before.1, len, kind) == attr_runs(after.0, after.1, len, kind)
+        {
+            continue;
         }
+        let (prop, _) = CHAR_PROPS.iter().find(|(_, k)| *k == kind)?;
+        out.push((*prop, literal(&char_val(after.0, after.1, len, kind))?));
     }
     Some(out)
+}
+
+/// One attribute's runs over a text `len` bytes long, neighbours holding one
+/// value merged, so two span layouts that style the same characters alike agree.
+fn attr_runs(
+    style: &mastik_core::typography::TextStyle,
+    spans: &mastik_core::typography::CharSpans,
+    len: usize,
+    kind: CharAttrKind,
+) -> Vec<(std::ops::Range<usize>, CharAttr)> {
+    if len == 0 {
+        return spans
+            .values_in(style, kind, 0..0)
+            .into_iter()
+            .map(|v| (0..0, v))
+            .collect();
+    }
+    let mut out: Vec<(std::ops::Range<usize>, CharAttr)> = Vec::new();
+    for (r, v) in spans.runs_of(style, kind, 0..len) {
+        match out.last_mut() {
+            Some((last, was)) if *was == v => last.end = r.end,
+            _ => out.push((r, v)),
+        }
+    }
+    out
 }
 
 /// The gap, padding and direction that differ between two layouts that differ in
@@ -812,8 +844,9 @@ pub(crate) fn read(doc: &Document, res: &Resolved, id: NodeId, prop: &str) -> Re
             let degrees = mastik_core::edit::shown_angle(node.kind(), w).to_degrees();
             if degrees.abs() < 1e-9 { 0.0 } else { degrees }
         })),
-        // The stored `f32` read back as the decimal it was written as.
-        "opacity" => Val::Num((f64::from(node.opacity()) * 1e6).round() / 1e6),
+        // The `f32` drawn (a bound one at its variable's value) read back as the
+        // decimal it was written as.
+        "opacity" => Val::Num((f64::from(doc.drawn_opacity(id)) * 1e6).round() / 1e6),
         "fill" => paint_value(read(doc, res, id, "fills")?, "fill"),
         "stroke" => paint_value(read(doc, res, id, "strokes")?, "stroke"),
         "fills" => match build::shared_fills(doc, &[id]) {
@@ -841,30 +874,30 @@ pub(crate) fn read(doc: &Document, res: &Resolved, id: NodeId, prop: &str) -> Re
                 .map(|e| serde_json::to_value(&e.value))
                 .collect(),
         ),
-        "font_family" => char_attr(node, CharAttrKind::Family),
-        "font_size" => char_attr(node, CharAttrKind::Size),
-        "font_weight" => char_attr(node, CharAttrKind::Weight),
-        "italic" => char_attr(node, CharAttrKind::Italic),
-        "line_height" => char_attr(node, CharAttrKind::LineHeight),
-        "letter_spacing" => char_attr(node, CharAttrKind::LetterSpacing),
-        "text_case" => char_attr(node, CharAttrKind::Case),
+        "font_family" => char_attr(doc, id, CharAttrKind::Family),
+        "font_size" => char_attr(doc, id, CharAttrKind::Size),
+        "font_weight" => char_attr(doc, id, CharAttrKind::Weight),
+        "italic" => char_attr(doc, id, CharAttrKind::Italic),
+        "line_height" => char_attr(doc, id, CharAttrKind::LineHeight),
+        "letter_spacing" => char_attr(doc, id, CharAttrKind::LetterSpacing),
+        "text_case" => char_attr(doc, id, CharAttrKind::Case),
         "text_align" => match node.kind() {
             NodeKind::Text { paragraph, .. } => variant(serde_json::to_value(paragraph.align)),
             _ => Val::Nil,
         },
-        "layout" => match node.display() {
+        // The layout as laid out: a bound gap or padding at its variable's value.
+        "layout" => match doc.resolved_display(id) {
             None => Val::Nil,
-            Some(d) => serde_json::to_value(d).map_or(Val::Nil, |v| short("layout", v)),
+            Some(d) => serde_json::to_value(&*d).map_or(Val::Nil, |v| short("layout", v)),
         },
-        "direction" => match node.display() {
+        "direction" => match doc.resolved_display(id).as_deref() {
             Some(Display::Flex(f)) => variant(serde_json::to_value(f.direction)),
             _ => Val::Nil,
         },
-        "gap" => node.display().map_or(Val::Nil, gap),
-        "padding" => node.display().map_or(Val::Nil, padding),
-        "layout_item" => {
-            serde_json::to_value(node.item()).map_or(Val::Nil, |v| short("layout_item", v))
-        }
+        "gap" => doc.resolved_display(id).map_or(Val::Nil, |d| gap(&d)),
+        "padding" => doc.resolved_display(id).map_or(Val::Nil, |d| padding(&d)),
+        "layout_item" => serde_json::to_value(doc.resolved_item(id))
+            .map_or(Val::Nil, |v| short("layout_item", v)),
         "name" => Val::Str(node.name().to_owned()),
         "visible" => Val::Bool(node.visible()),
         "locked" => Val::Bool(node.locked()),

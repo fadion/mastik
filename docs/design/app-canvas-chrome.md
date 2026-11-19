@@ -1286,13 +1286,13 @@ the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's 
   | Row | Reads | Button |
   | --- | --- | --- |
   | Raw values a variable or style holds | `raw_match`: every layer `raw_values`' matches name (its private `raw_matches`, uncapped), copies left out; `matches` commonest first | *Bind…*, *Bind other uses* for the commonest match when a variable; *Select* when a style |
-  | Near-identical colours | `near_duplicates`: `near_duplicate_colours`' groups | *Review*, Colour review, which closes this card |
+  | Near-identical colours | `near_duplicates`: `near_duplicate_colours`' groups | *Review*, Colour review on the selection when the card reads *Selection*, else on every page, which closes this card |
   | Off the 4-unit scale | `off_scale`: layers with their own unbound gap, padding or radius off the step, plus `spacing`'s hand-placed `off_scale` gaps | *Select* |
   | Detached | `detached`: layers with `Node::detached_from` (`components.md`, *The verbs*) | *Select* |
   | Main components with no instances | `unused_components`: mains in scope with no instance anywhere, a set counted once when no variant has one; vault mains skipped | *Select* |
   | Variables nothing uses | `tokens::unused_variables`, document-wide whatever the scope | *Show*: the browser's *Unused* on its Variables tab |
   | Unused styles | `style::unused`, document-wide | *Show*: *Unused* on its Styles tab (`MastikApp::open_unused`) |
-  | Kit updates waiting | `MastikApp::kits_waiting` | *Open*: the kit update popover |
+  | Kit updates waiting | `MastikApp::kits_waiting` | *Open*: the kit update popover, as its pill opens it (`open_kit_updates`) |
 
 - **Doors.** *Tools ▸ System health…*, after *Colour review…*, its chord slot showing the whole
   document's coverage; the palette (`Item::SystemHealth`, `Group::View`, unbound; aliases *design
@@ -1310,7 +1310,7 @@ the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's 
 - **Bound to the system.** An eyebrow with *N% of M uses*, then three `ui::meter_readout` rows,
   *Paint*, *Type*, *Spacing and radii*, each *bound of total*; a click selects the raw layers.
 - **To tidy.** An eyebrow with *k of 8* (rows with something to report), then every row, always,
-  so the card keeps one height: glyph, count, sentence, button. A row at zero dims, shows its zero
+  so the card keeps one height: glyph, count, sentence, button. A row at zero is off, its glyph and sentence in `text::off()`, shows its zero
   in `color::saved()` and has no button. Each row's hover says what it counts; a live row stays
   lit while the pointer is over its button.
 - **Select.** Selects the counted layers on this page, else on the first one's page, going there;
@@ -1318,7 +1318,8 @@ the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's 
   keeps reading what was selected before until the selection changes some other way (Clean up's
   rule).
 - **Foot.** *Checked N layers on M pages*, and *Close*.
-- **Reading.** Again whenever the scope, the page, the revision or the selection changes.
+- **Reading.** Again whenever the scope, the page or the revision changes, and on *Selection* the
+  selection: no other scope reads it, so a marquee across the canvas runs no review.
 
 ## The shortcut cheatsheet (`cheatsheet.rs`)
 

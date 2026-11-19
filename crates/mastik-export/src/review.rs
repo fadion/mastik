@@ -15,7 +15,7 @@ use mastik_core::variable::{Field, Value as VarValue};
 use mastik_core::{Brush, Document, NodeId, NodeKind, Operation, Resolved, Transaction};
 use mastik_render::{ImageStore, RenderOverrides, VelloCpuRenderer, Viewport};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 /// One thing a check found: a code naming the check, the layers it is about,
 /// a line saying what is wrong and, where one fits, what to use instead.
@@ -216,14 +216,29 @@ fn layers(n: usize) -> String {
     }
 }
 
+/// Whether `id` is a boolean, or a group inside one through groups: its
+/// children are operands, which a boolean reads a group's union of, and whose
+/// shape the boolean paints.
+pub(crate) fn makes_a_boolean(doc: &Document, id: NodeId) -> bool {
+    let mut at = doc.get(id);
+    while let Some(n) = at {
+        match n.kind() {
+            NodeKind::Boolean { .. } => return true,
+            NodeKind::Group => at = n.parent().and_then(|p| doc.get(p)),
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// `overlap`: two siblings whose boxes share more than a sliver, neither holding
 /// the other. Texts are `check_layout`'s (`text_overlap`, `text_covered`); a
 /// background holds what lies on it and is passed over, and a boolean's operands
-/// overlap to make its shape.
+/// (a group operand's members too) overlap to make its shape.
 pub fn overlaps(scope: &Scope<'_>) -> Vec<Finding> {
     let mut out = Vec::new();
     for &parent in &scope.layers {
-        if matches!(scope.kind(parent), Some(NodeKind::Boolean { .. })) {
+        if makes_a_boolean(scope.doc, parent) {
             continue;
         }
         let kids: Vec<(NodeId, Rect)> = scope
@@ -483,13 +498,20 @@ fn run_of(kids: &mut [(NodeId, Rect)]) -> Option<Vec<(NodeId, f64, f64)>> {
 #[derive(Default)]
 struct Raw {
     by: BTreeMap<String, (String, Vec<NodeId>)>,
+    /// The colour a variable's fill or stroke key first matched, as RGBA bytes.
+    colour: BTreeMap<String, [u8; 4]>,
+    /// Each key's layers as a set, so a layer is listed once.
+    seen: HashSet<(String, NodeId)>,
 }
 
 impl Raw {
     fn add(&mut self, key: String, line: impl FnOnce() -> String, id: NodeId) {
-        let entry = self.by.entry(key).or_insert_with(|| (line(), Vec::new()));
-        if !entry.1.contains(&id) {
-            entry.1.push(id);
+        if self.seen.insert((key.clone(), id)) {
+            self.by
+                .entry(key)
+                .or_insert_with(|| (line(), Vec::new()))
+                .1
+                .push(id);
         }
     }
 }
@@ -502,20 +524,18 @@ impl Raw {
 /// whole fill, stroke or effect list, or a text's type, against the styles.
 pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
     use mastik_core::color_review::{census, roots};
-    // `merge_colours` binds to a variable only when it is the one variable of its
-    // colour that paints in its scope, every page, already use.
+    // `merge_colours` with a colour as `into` binds to the one swatch of exactly
+    // that colour bound in its scope, every page: so only when that swatch is
+    // the variable's, at the colour the layers hold raw.
     let used = census(scope.doc, &roots(scope.doc, None));
-    let mergeable = |var: mastik_core::VarId| {
-        let bytes = |c: Color| c.to_rgba8().to_u8_array();
-        used.iter().find(|s| s.var == Some(var)).is_some_and(|s| {
-            used.iter()
-                .filter(|o| !o.is_raw() && bytes(o.color) == bytes(s.color))
-                .count()
-                == 1
-        })
+    let mergeable = |var: mastik_core::VarId, raw: [u8; 4]| {
+        let mut bound = used
+            .iter()
+            .filter(|o| !o.is_raw() && o.color.to_rgba8().to_u8_array() == raw);
+        bound.next().is_some_and(|s| s.var == Some(var)) && bound.next().is_none()
     };
-    raw_matches(scope)
-        .by
+    let raw = raw_matches(scope);
+    raw.by
         .into_iter()
         .map(|(key, (line, ids))| {
             // A colour's every raw use binds in one call where a merge into the
@@ -524,7 +544,8 @@ pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
                 key.strip_prefix('v')
                     .and_then(|k| k.strip_suffix(what))
                     .and_then(NodeId::from_wire)
-                    .is_some_and(|id| mergeable(mastik_core::VarId(id)))
+                    .zip(raw.colour.get(&key))
+                    .is_some_and(|(id, c)| mergeable(mastik_core::VarId(id), *c))
             });
             let (code, instead) = match (key.starts_with('s'), colour) {
                 (true, _) => ("raw_style", "apply the style"),
@@ -563,8 +584,9 @@ fn fitting<'v>(
         _ => (&[], &[], None),
     };
     let names = |v: &mastik_core::Variable, words: &[&str]| {
-        let name = v.name.to_lowercase();
-        words.iter().any(|w| name.contains(w))
+        name_words(&v.name)
+            .iter()
+            .any(|part| words.contains(&part.as_str()))
     };
     // A scope says what a variable is for only where it keeps the other field
     // out: one admitting every number field, as a token import writes, says nothing.
@@ -578,29 +600,57 @@ fn fitting<'v>(
         .min_by_key(|v| (!scoped(v), !names(v, words)))
 }
 
+/// The words of a variable's name, lowercased: split at `/ - _ .`, spaces and
+/// a camel hump (`borderRadius`), so `round` is no word of `background`.
+fn name_words(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let mut after_lower = false;
+    for ch in name.chars() {
+        let cut = matches!(ch, '/' | '-' | '_' | '.' | ' ');
+        if (cut || (ch.is_uppercase() && after_lower)) && !word.is_empty() {
+            out.push(std::mem::take(&mut word));
+        }
+        after_lower = !cut && (ch.is_lowercase() || ch.is_ascii_digit());
+        if !cut {
+            word.extend(ch.to_lowercase());
+        }
+    }
+    if !word.is_empty() {
+        out.push(word);
+    }
+    out
+}
+
 /// [`raw_values`]' matches with every layer each names: keyed `s<style>` for a
 /// style, `v<variable><what>` for a variable.
 fn raw_matches(scope: &Scope<'_>) -> Raw {
     let doc = scope.doc;
     let vars = doc.variables();
-    let value = |v: &mastik_core::Variable| vars.resolve_opt(v.id, None);
-    let colours: Vec<(&mastik_core::Variable, [u8; 4])> = vars
-        .local()
-        .filter_map(|v| match value(v) {
-            Some(VarValue::Color(c)) => Some((v, c.to_rgba8().to_u8_array())),
-            _ => None,
-        })
-        .collect();
-    let numbers: Vec<(&mastik_core::Variable, f64)> = vars
-        .local()
-        .filter_map(|v| match value(v) {
-            Some(VarValue::Number(n)) => Some((v, n)),
-            _ => None,
-        })
-        .collect();
+    // Each variable's colour or number in the modes `set` puts in force: a layer
+    // matches what its variable draws there, which binding it would keep.
+    type Values<'v> = (
+        Vec<(&'v mastik_core::Variable, [u8; 4])>,
+        Vec<(&'v mastik_core::Variable, f64)>,
+    );
+    let values_in = |set: &[mastik_core::variable::ModeId]| -> Values<'_> {
+        let mut out: Values<'_> = (Vec::new(), Vec::new());
+        for v in vars.local() {
+            match vars.resolve_at(v.id, set) {
+                Some(VarValue::Color(c)) => out.0.push((v, c.to_rgba8().to_u8_array())),
+                Some(VarValue::Number(n)) => out.1.push((v, n)),
+                _ => {}
+            }
+        }
+        out
+    };
+    let unmoded = values_in(&[]);
     let mut raw = Raw::default();
     for id in scope.own() {
         let Some(n) = doc.get(id) else { continue };
+        let modes = doc.modes_at(id);
+        let moded = (!modes.is_empty()).then(|| values_in(&modes));
+        let (colours, numbers) = moded.as_ref().unwrap_or(&unmoded);
         let styles = n.styles();
         let paint = n.paint();
         let solid = |shown: bool, brush: &mastik_core::variable::BrushSource| match brush.literal()
@@ -628,8 +678,10 @@ fn raw_matches(scope: &Scope<'_>) -> Raw {
             for c in solids {
                 let bytes = c.to_rgba8().to_u8_array();
                 if let Some((v, _)) = colours.iter().find(|(v, b)| *b == bytes && v.binds(field)) {
+                    let key = format!("v{}{what}", v.id.0.to_wire());
+                    raw.colour.entry(key.clone()).or_insert(bytes);
                     raw.add(
-                        format!("v{}{what}", v.id.0.to_wire()),
+                        key,
                         || {
                             format!(
                                 "A {what} of {} is the variable `{}`, written raw",
@@ -649,7 +701,7 @@ fn raw_matches(scope: &Scope<'_>) -> Raw {
             && [r.top_right, r.bottom_right, r.bottom_left]
                 .iter()
                 .all(|c| *c == r.top_left)
-            && let Some(v) = fitting(&numbers, r.top_left, Field::Corner)
+            && let Some(v) = fitting(numbers, r.top_left, Field::Corner)
         {
             raw.add(
                 format!("v{}radius", v.id.0.to_wire()),
@@ -669,7 +721,7 @@ fn raw_matches(scope: &Scope<'_>) -> Raw {
                 if x <= 0.0 || bound[k].is_some() {
                     continue;
                 }
-                if let Some(v) = fitting(&numbers, x, Field::Spacing) {
+                if let Some(v) = fitting(numbers, x, Field::Spacing) {
                     raw.add(
                         format!("v{}spacing", v.id.0.to_wire()),
                         || {
@@ -702,13 +754,11 @@ fn raw_matches(scope: &Scope<'_>) -> Raw {
                 S::Text(t) => {
                     styles.text.is_none()
                         && match n.kind() {
+                            // The whole type, as applying the style writes it:
+                            // everything but the colour and the language.
                             NodeKind::Text { style: own, .. } => {
-                                own.font_family == t.font_family
-                                    && own.font_size == t.font_size
-                                    && own.weight == t.weight
-                                    && own.italic == t.italic
-                                    && own.line_height == t.line_height
-                                    && own.letter_spacing == t.letter_spacing
+                                mastik_core::style::type_part(own)
+                                    == mastik_core::style::type_part(t)
                             }
                             _ => false,
                         }
@@ -751,16 +801,13 @@ pub fn near_duplicate_colours(scope: &Scope<'_>) -> Vec<Finding> {
             // a layer already bound to it.
             let target = g.members[g.default_target(&census)];
             let mut ids: Vec<NodeId> = Vec::new();
+            let mut seen: HashSet<NodeId> = HashSet::new();
             for m in g
                 .members
                 .iter()
                 .filter(|m| **m != target && census[**m].is_raw())
             {
-                for id in &census[*m].nodes {
-                    if !ids.contains(id) {
-                        ids.push(*id);
-                    }
-                }
+                ids.extend(census[*m].nodes.iter().filter(|id| seen.insert(**id)));
             }
             let target = label(target);
             Finding::new(
@@ -1142,13 +1189,14 @@ pub fn health(scope: &Scope<'_>, step: f64) -> Health {
     let doc = scope.doc;
     let mut h = Health::default();
     let mut off_scale = counts(scope, step, &mut h);
+    let mut seen: HashSet<NodeId> = off_scale.iter().copied().collect();
     // Gaps between layers placed by hand, the spacing check's own reading.
     for f in spacing(scope, step)
         .into_iter()
         .filter(|f| f.code == "off_scale")
     {
         for id in f.ids {
-            if !off_scale.contains(&id) && !is_copy(doc, id) {
+            if !is_copy(doc, id) && seen.insert(id) {
                 off_scale.push(id);
             }
         }
@@ -1157,6 +1205,7 @@ pub fn health(scope: &Scope<'_>, step: f64) -> Health {
     h.detached.count = h.detached.ids.len();
 
     let mut layers: Vec<NodeId> = Vec::new();
+    let mut seen: HashSet<NodeId> = HashSet::new();
     let mut matches: Vec<(Match, Vec<NodeId>)> = Vec::new();
     for (key, (_, ids)) in raw_matches(scope).by {
         let ids: Vec<NodeId> = ids.into_iter().filter(|i| !is_copy(doc, *i)).collect();
@@ -1166,11 +1215,7 @@ pub fn health(scope: &Scope<'_>, step: f64) -> Health {
         let Some(m) = match_of(doc, &key) else {
             continue;
         };
-        for id in &ids {
-            if !layers.contains(id) {
-                layers.push(*id);
-            }
-        }
+        layers.extend(ids.iter().filter(|id| seen.insert(**id)));
         matches.push((m, ids));
     }
     matches.sort_by_key(|(_, ids)| std::cmp::Reverse(ids.len()));
@@ -1627,5 +1672,259 @@ mod tests {
             Some("one colour, #0b1020 (`Ground`): `merge_colours`"),
             "the target"
         );
+    }
+
+    /// A raw match is only what binding or applying would keep as drawn: a
+    /// colour against the variable in the mode in force at the layer, a text's
+    /// whole type against a text style, and a name's words, never its letters.
+    /// A merge is offered only where it binds to the variable.
+    ///
+    /// flip: `raw_matches` reading every layer in the default mode → fails at
+    /// "the Light colour in a Dark frame"; the text arm comparing six fields →
+    /// fails at "an uppercase twin"; `fitting` matching inside a word → fails at
+    /// "`background/blur` is no radius"; `mergeable` taking any swatch of the
+    /// variable → fails at "a variable bound only at half".
+    #[test]
+    fn raw_matches_hold_what_binding_or_applying_keeps() {
+        let mut ids = IdSource::new(0x4ec);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let p = page.to_wire();
+        let steps = vec![
+            json!({ "verb": "add_variable", "args": { "kind": "color", "name": "Brand",
+                "value": { "color": "#3366cc" } }, "as": "brand" }),
+            json!({ "verb": "add_mode", "args": { "name": "Dark" }, "as": "dark" }),
+            json!({ "verb": "set_variable_value", "args": { "variable": "@brand",
+                "mode": "@dark", "value": { "color": "#99bbff" } } }),
+            layer(&p, "day", 0.0, 0.0, rect(40.0, 40.0, "#3366cc", 0.0)),
+            layer(&p, "night", 100.0, 0.0, frame(200.0, 100.0, "#000000")),
+            json!({ "verb": "set_frame_mode", "args": { "node": "@night", "mode": "@dark" } }),
+            layer(
+                "@night",
+                "night_light",
+                0.0,
+                0.0,
+                rect(40.0, 40.0, "#3366cc", 0.0),
+            ),
+            layer(
+                "@night",
+                "night_dark",
+                50.0,
+                0.0,
+                rect(40.0, 40.0, "#99bbff", 0.0),
+            ),
+            // Bound only at half its alpha: no swatch of the raw colour is it.
+            json!({ "verb": "add_variable", "args": { "kind": "color", "name": "Half",
+                "value": { "color": "#226622" } }, "as": "half" }),
+            layer(&p, "halved", 0.0, 200.0, rect(40.0, 40.0, "#22662280", 0.0)),
+            json!({ "verb": "bind_variable", "args": { "nodes": ["@halved"],
+                "field": { "Fill": 0 }, "variable": "@half" } }),
+            layer(
+                &p,
+                "half_raw",
+                50.0,
+                200.0,
+                rect(40.0, 40.0, "#226622", 0.0),
+            ),
+            json!({ "verb": "add_variable", "args": { "kind": "number", "name": "size/12",
+                "value": { "number": 12 } } }),
+            json!({ "verb": "add_variable", "args": { "kind": "number",
+                "name": "background/blur", "value": { "number": 12 } } }),
+            layer(
+                &p,
+                "rounded",
+                100.0,
+                200.0,
+                rect(40.0, 40.0, "#ffffff", 12.0),
+            ),
+            layer(&p, "body", 0.0, 300.0, text("#111111")),
+            json!({ "verb": "add_style", "args": { "from": "@body", "slot": "text",
+                "name": "Body" }, "as": "body_style" }),
+            layer(&p, "twin", 0.0, 350.0, text("#111111")),
+            layer(&p, "loud", 0.0, 400.0, text("#111111")),
+            json!({ "verb": "set_text_style", "args": { "nodes": ["@loud"],
+                "style": { "case": "Upper" } } }),
+            layer(&p, "card", 300.0, 0.0, rect(40.0, 40.0, "#abcdef", 0.0)),
+            layer(
+                &p,
+                "card_twin",
+                350.0,
+                0.0,
+                rect(40.0, 40.0, "#abcdef", 0.0),
+            ),
+            layer(
+                &p,
+                "card_styled",
+                400.0,
+                0.0,
+                rect(40.0, 40.0, "#abcdef", 0.0),
+            ),
+            json!({ "verb": "add_style", "args": { "from": "@card", "slot": "fills",
+                "name": "Card", "nodes": ["@card_styled"] } }),
+        ];
+        let made = mastik_core::verbs::run_script(
+            &mut doc,
+            &mut ids,
+            mastik_core::verbs::Lent::default(),
+            &Value::Array(steps.clone()),
+        )
+        .expect("the fixture builds");
+        let l: std::collections::HashMap<&str, NodeId> = steps
+            .iter()
+            .zip(made)
+            .filter_map(|(s, m)| Some((s["as"].as_str()?, NodeId::from_wire(m.first()?)?)))
+            .collect();
+        let res = Resolved::rebuild(&doc);
+        let scope = Scope::new(&doc, &res, &[page]);
+        let raw = raw_values(&scope);
+        let of = |var: &str| -> &Finding {
+            raw.iter()
+                .find(|f| f.code == "raw_value" && f.message.contains(var))
+                .unwrap_or_else(|| panic!("{var}: {raw:?}"))
+        };
+        let brand = of("`Brand`");
+        assert!(brand.ids.contains(&l["day"]), "{brand:?}");
+        assert!(
+            !brand.ids.contains(&l["night_light"]),
+            "the Light colour in a Dark frame: {brand:?}"
+        );
+        assert!(
+            brand.ids.contains(&l["night_dark"]),
+            "the Dark one: {brand:?}"
+        );
+        assert_eq!(
+            of("`Half`").instead.as_deref(),
+            Some("bind the variable"),
+            "a variable bound only at half"
+        );
+        assert!(
+            of("`size/12`").ids == vec![l["rounded"]]
+                && !raw.iter().any(|f| f.message.contains("background/blur")),
+            "`background/blur` is no radius: {raw:?}"
+        );
+        let style = |name: &str| -> Vec<&Finding> {
+            raw.iter()
+                .filter(|f| f.code == "raw_style" && f.message.contains(name))
+                .collect()
+        };
+        let card = style("`Card`");
+        assert!(
+            card.len() == 1
+                && card[0].ids.contains(&l["card"])
+                && card[0].ids.contains(&l["card_twin"])
+                && !card[0].ids.contains(&l["card_styled"]),
+            "the fill style's raw twins, not the styled one: {card:?}"
+        );
+        let styled = style("`Body`");
+        assert_eq!(styled.len(), 1, "{styled:?}");
+        assert!(
+            styled[0].ids.contains(&l["twin"]) && styled[0].ids.contains(&l["body"]),
+            "the plain twin: {styled:?}"
+        );
+        assert!(
+            !styled[0].ids.contains(&l["loud"]),
+            "an uppercase twin: {styled:?}"
+        );
+        let h = health(&scope, 4.0);
+        assert!(
+            h.matches.iter().any(|(m, ids)| *m
+                == Match::Style(mastik_core::style::StyleId(l["body_style"]))
+                && ids.contains(&l["twin"])),
+            "health lists the style: {:?}",
+            h.matches
+        );
+    }
+
+    /// Hand-placed gaps off the scale are one finding per gap, naming every
+    /// layer beside one, and `health` folds them and an off-scale radius into
+    /// its count, each corner counted as spacing.
+    /// flip: `health` without its fold of `spacing`'s findings → fails at "the
+    /// row's layers"; `counts` without its corner arm → fails at "radius 6".
+    #[test]
+    fn off_scale_gaps_and_radii_reach_health() {
+        let mut ids = IdSource::new(0x4ee);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let p = page.to_wire();
+        let steps = vec![
+            layer(&p, "row", 0.0, 0.0, frame(300.0, 100.0, "#ffffff")),
+            layer("@row", "r0", 0.0, 0.0, rect(40.0, 40.0, "#eeeeee", 0.0)),
+            layer("@row", "r1", 50.0, 0.0, rect(40.0, 40.0, "#eeeeee", 0.0)),
+            layer("@row", "r2", 100.0, 0.0, rect(40.0, 40.0, "#eeeeee", 0.0)),
+            layer(&p, "box", 0.0, 200.0, frame(100.0, 100.0, "#ffffff")),
+            layer("@box", "soft", 0.0, 0.0, rect(40.0, 40.0, "#eeeeee", 6.0)),
+        ];
+        let made = mastik_core::verbs::run_script(
+            &mut doc,
+            &mut ids,
+            mastik_core::verbs::Lent::default(),
+            &Value::Array(steps.clone()),
+        )
+        .expect("the fixture builds");
+        let l: std::collections::HashMap<&str, NodeId> = steps
+            .iter()
+            .zip(made)
+            .filter_map(|(s, m)| Some((s["as"].as_str()?, NodeId::from_wire(m.first()?)?)))
+            .collect();
+        let res = Resolved::rebuild(&doc);
+        let scope = Scope::new(&doc, &res, &[page]);
+        let row = [l["r0"], l["r1"], l["r2"]];
+        let off: Vec<Finding> = spacing(&scope, 4.0)
+            .into_iter()
+            .filter(|f| f.code == "off_scale")
+            .collect();
+        assert_eq!(off.len(), 1, "one gap of 10: {off:?}");
+        assert!(row.iter().all(|id| off[0].ids.contains(id)), "{off:?}");
+        let h = health(&scope, 4.0);
+        assert!(
+            row.iter().all(|id| h.off_scale.ids.contains(id)),
+            "the row's layers: {h:?}"
+        );
+        assert!(h.off_scale.ids.contains(&l["soft"]), "radius 6: {h:?}");
+        assert_eq!(h.spacing.total, 4, "four corners: {h:?}");
+    }
+
+    /// A group operand's members overlap to make the boolean's shape too.
+    /// flip: `overlaps` passing over a boolean's direct children only → fails.
+    #[test]
+    fn a_group_operands_members_overlap_unremarked() {
+        let mut ids = IdSource::new(0x4ed);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let p = page.to_wire();
+        let steps = vec![
+            layer(
+                &p,
+                "mark",
+                0.0,
+                0.0,
+                json!({ "kind": { "Boolean": { "op": "Union" } }, "fills": ["#dddddd"] }),
+            ),
+            layer("@mark", "g", 0.0, 0.0, json!({ "kind": "Group" })),
+            layer("@g", "a", 0.0, 0.0, rect(100.0, 100.0, "#dddddd", 0.0)),
+            layer("@g", "b", 50.0, 50.0, rect(100.0, 100.0, "#dddddd", 0.0)),
+            layer("@mark", "c", 120.0, 0.0, rect(100.0, 100.0, "#dddddd", 0.0)),
+        ];
+        let made = mastik_core::verbs::run_script(
+            &mut doc,
+            &mut ids,
+            mastik_core::verbs::Lent::default(),
+            &Value::Array(steps.clone()),
+        )
+        .expect("the fixture builds");
+        let g = steps
+            .iter()
+            .zip(made)
+            .find(|(s, _)| s["as"] == "g")
+            .and_then(|(_, m)| NodeId::from_wire(m.first()?))
+            .unwrap();
+        assert!(
+            matches!(doc.get(g).map(|n| n.kind()), Some(NodeKind::Group))
+                && doc.get(g).unwrap().children().len() == 2,
+            "fixture: a group of two inside the boolean"
+        );
+        let res = Resolved::rebuild(&doc);
+        let found = overlaps(&Scope::new(&doc, &res, &[page]));
+        assert!(found.is_empty(), "{found:?}");
     }
 }

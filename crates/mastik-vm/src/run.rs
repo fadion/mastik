@@ -1925,9 +1925,27 @@ fn write_model(
             };
             match list_kind {
                 "[Fill]" => {
+                    // A coloured text whose fills were written back as they were
+                    // keeps drawing in its style colour, so a read written back
+                    // changes nothing.
+                    let fills_of = |st: &State<'_>, id: NodeId| -> Vec<mastik_core::Fill> {
+                        st.host.doc().get(id).map_or_else(Vec::new, |n| {
+                            n.paint().fills.iter().map(|f| f.value.clone()).collect()
+                        })
+                    };
+                    let coloured: Vec<(NodeId, Vec<mastik_core::Fill>)> =
+                        mastik_core::build::coloured_texts(st.host.doc(), ids)
+                            .into_iter()
+                            .map(|id| (id, fills_of(&st, id)))
+                            .collect();
                     st.apply("set_fills", &json!({ "nodes": wires, "fills": list }))
                         .map_err(fail)?;
-                    st.clear_text_colour(ids).map_err(fail)?;
+                    let changed: Vec<NodeId> = coloured
+                        .into_iter()
+                        .filter(|(id, was)| fills_of(&st, *id) != *was)
+                        .map(|(id, _)| id)
+                        .collect();
+                    st.clear_text_colour(&changed).map_err(fail)?;
                 }
                 "[Stroke]" => {
                     st.apply("set_strokes", &json!({ "nodes": wires, "strokes": list }))
@@ -2000,7 +2018,26 @@ fn write_model(
         }
         "direction" | "gap" | "padding" => {
             let (key, value) = match (prop, &v) {
-                ("direction", Value::String(s)) => ("direction", json!(model_word(&s.to_str()?))),
+                ("direction", Value::String(s)) => {
+                    use mastik_core::container::FlexDirection;
+                    // Its word, its CSS keyword or the name it reads as
+                    // (`"RowReverse"`), in any case and with any separators.
+                    let word = s.to_str()?;
+                    let joined = model_word(&word);
+                    let d = FlexDirection::from_word(&word)
+                        .or_else(|| {
+                            FlexDirection::ALL
+                                .into_iter()
+                                .find(|d| format!("{d:?}").eq_ignore_ascii_case(&joined))
+                        })
+                        .ok_or_else(|| {
+                            fail(format!(
+                                "no direction “{}”: \"Row\", \"Column\", \"RowReverse\" or \"ColumnReverse\"",
+                                &*word
+                            ))
+                        })?;
+                    ("direction", json!(d))
+                }
                 ("gap", v) if number(v).is_some_and(f64::is_finite) => ("gap", json!(number(v))),
                 ("padding", v) if number(v).is_some_and(f64::is_finite) => {
                     let n = number(v);

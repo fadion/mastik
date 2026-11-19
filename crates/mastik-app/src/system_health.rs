@@ -23,8 +23,6 @@ const W: f32 = 420.0;
 const PAD: f32 = crate::settings::CANVAS_CARD_PAD;
 /// The air between the controls inside a section.
 const GAP: f32 = 4.0;
-/// A section's eyebrow row.
-const EYEBROW_H: f32 = 28.0;
 /// A *To tidy* row: a list row a control tall, so its button sits inside it.
 const ROW_H: f32 = ui::CONTROL_H;
 /// A tidy row's button, a segment cell tall inside the row.
@@ -44,8 +42,8 @@ pub(crate) struct SystemHealth {
     pin: Option<(Vec<NodeId>, Vec<NodeId>)>,
     health: Health,
     kits: usize,
-    /// What `health` was read for: the scope, the page, the revision and the
-    /// selection.
+    /// What `health` was read for: the scope, the page, the revision and, on
+    /// *Selection*, the selection.
     asked: Option<(Scope, NodeId, u64, Vec<NodeId>)>,
 }
 
@@ -124,7 +122,7 @@ impl Row {
                 "Values that match a variable or style exactly but are written raw. Binding them changes nothing on the canvas."
             }
             Row::NearDuplicates => {
-                "Colours close enough to read as one, as Colour review groups them"
+                "Colours close enough to read as one, as Colour review groups them. Review opens it on the selection, or on every page."
             }
             Row::OffScale => "Gaps, padding and corner radii not on a multiple of the scale's step",
             Row::Detached => "Counts layers detached since this was recorded",
@@ -155,11 +153,17 @@ impl SystemHealth {
         }
     }
 
-    /// Read again when the scope, the page, the document or the selection moved.
+    /// Read again when the scope, the page, the document or, on *Selection*,
+    /// the selection moved: no other scope reads it, so a marquee dragged
+    /// across the canvas runs no review.
     fn reread(&mut self, app: &MastikApp) {
         let rev = app.session.revision();
         let page = app.session.page;
-        let now = (self.scope, page, rev, self.selection.clone());
+        let selection = match self.scope {
+            Scope::Selection => self.selection.clone(),
+            Scope::Page | Scope::Document => Vec::new(),
+        };
+        let now = (self.scope, page, rev, selection);
         if self.asked.as_ref() == Some(&now) {
             return;
         }
@@ -326,7 +330,10 @@ impl MastikApp {
                 None => {}
             },
             Row::NearDuplicates => {
+                // On the card's scope, as near as Colour review has one: the
+                // selection, else every page.
                 self.open_colour_review();
+                self.colour_review.selection = c.scope == Scope::Selection;
                 return true;
             }
             Row::OffScale => {
@@ -343,7 +350,7 @@ impl MastikApp {
             }
             Row::UnusedVariables => self.open_unused(false),
             Row::UnusedStyles => self.open_unused(true),
-            Row::Kits => self.open_menu = crate::app::TopMenu::KitUpdates,
+            Row::Kits => self.open_kit_updates(),
         }
         false
     }
@@ -405,22 +412,7 @@ impl MastikApp {
 
 /// A section's eyebrow, `note` faint on the right.
 fn eyebrow(ui: &mut egui::Ui, label: &str, note: &str) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(W, EYEBROW_H), egui::Sense::hover());
-    let p = ui.painter();
-    let y = rect.bottom() - 10.0;
-    ui::paint_eyebrow(
-        p,
-        egui::pos2(rect.left() + PAD, y),
-        egui::Align2::LEFT_CENTER,
-        label,
-    );
-    p.text(
-        egui::pos2(rect.right() - PAD, y),
-        egui::Align2::RIGHT_CENTER,
-        note,
-        egui::FontId::proportional(ui::CAPTION_PT),
-        theme::text::dim(),
-    );
+    crate::settings::card_section_head(ui, W, label, Some(note));
 }
 
 /// *Bound to the system*: the three meters. A click selects the raw uses.
@@ -489,9 +481,10 @@ fn tidy(ui: &mut egui::Ui, c: &SystemHealth, act: &mut Option<Act>) {
                 // The pointer over the row's button still lights the row.
                 let over = ui.rect_contains_pointer(rect);
                 ui::list_row_ground(ui.painter(), rect, false, live && over);
-                let fade = |c: egui::Color32| match live {
+                // A row at zero is off, in the ink every off row takes.
+                let ink = |c: egui::Color32| match live {
                     true => c,
-                    false => c.gamma_multiply(0.55),
+                    false => theme::text::off(),
                 };
                 let p = ui.painter();
                 let y = rect.center().y;
@@ -500,13 +493,13 @@ fn tidy(ui: &mut egui::Ui, c: &SystemHealth, act: &mut Option<Act>) {
                     egui::pos2(x + 7.0, y),
                     egui::Align2::CENTER_CENTER,
                     row.glyph(),
-                    theme::icon_font(14.0),
-                    fade(theme::text::dim()),
+                    theme::icon_font(ui::CONTROL_GLYPH_PT),
+                    ink(theme::text::dim()),
                 );
                 x += 14.0 + 9.0;
                 let count_ink = match live {
                     true => color::text(),
-                    false => fade(color::saved()),
+                    false => color::saved(),
                 };
                 p.text(
                     egui::pos2(x + COUNT_W, y),
@@ -523,7 +516,7 @@ fn tidy(ui: &mut egui::Ui, c: &SystemHealth, act: &mut Option<Act>) {
                     sentence,
                     egui::TextFormat::simple(
                         egui::FontId::proportional(ui::SMALL_PT),
-                        fade(theme::text::muted()),
+                        ink(theme::text::muted()),
                     ),
                 );
                 job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(0.0));
@@ -684,5 +677,48 @@ mod tests {
         assert_eq!(app.session.selection.ids(), &[gone]);
         assert_eq!(c.scope, Scope::Selection);
         assert_eq!(c.selection.len(), all.len(), "the scope held");
+    }
+
+    /// On *All pages* a new selection reads nothing again, *Review* opens
+    /// Colour review on every page rather than the selection, and *Open* opens
+    /// the kit popover as its pill does, every component ticked.
+    ///
+    /// flip: `reread` keying the selection on every scope → fails at "no read";
+    /// `open_row` leaving Colour review its own scope → fails at "every page";
+    /// `Row::Kits` setting the menu itself → fails at "ticked afresh".
+    #[test]
+    fn the_rows_open_their_doors_on_the_cards_scope() {
+        let ctx = egui::Context::default();
+        let (mut app, gone) = fixture(&ctx);
+        app.session.selection.set(Vec::new());
+        app.open_system_health();
+        run(&mut app, &ctx);
+        let asked = app.system_health.as_ref().unwrap().asked.clone();
+        assert_eq!(
+            app.system_health.as_ref().unwrap().scope,
+            Scope::Document,
+            "fixture: on every page"
+        );
+        app.session.selection.set_one(gone);
+        run(&mut app, &ctx);
+        let c = app.system_health.as_ref().unwrap();
+        assert_eq!(
+            c.selection,
+            vec![gone],
+            "fixture: the card saw the selection"
+        );
+        assert_eq!(c.asked, asked, "no read");
+
+        let mut c = app.system_health.take().unwrap();
+        assert!(
+            app.open_row(&mut c, Row::NearDuplicates),
+            "Review closes it"
+        );
+        assert!(app.colour_review.open, "fixture: Colour review is open");
+        assert!(!app.colour_review.selection, "every page");
+
+        app.kit_review.off.insert(gone);
+        app.open_row(&mut c, Row::Kits);
+        assert!(app.kit_review.off.is_empty(), "ticked afresh");
     }
 }
