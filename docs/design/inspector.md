@@ -78,9 +78,9 @@ opens and closes the Repeat card (`tools.md`), On while it is up and Disabled wi
 **Position and size describe the union box; rotation and skew describe the layers.**
 
 - **X/Y/W/H** move and scale the union, every member following. Scale % also acts on the union, about its top-left.
-- **Rotation/skew** show the shared value or `Mixed`. Dragging nudges every layer by the same amount; typing sets each absolutely. Both act about each layer's own origin; sweeping about the union centre is only reachable from the canvas ring. Skew clamps to `MAX_SKEW`.
-- Rows match the single card, named. **Quarter turns** (`inspector::rotate_selection_quarter`) turn each layer about its own origin in one transaction and stay live over a mixed rotation. **Mirrors** use `build::flip` about the union centreline.
-- **The chain button** shows whole only when every member is locked; a press drives the set to `!all_locked`. **The pivot toggle** is `FieldButton::Disabled`: a set has no stored origin.
+- **Rotation/skew** show the shared value or `Mixed`. Dragging nudges every layer by the same amount; typing sets each absolutely. Both act about each layer's own origin, placed set origin or not; turning the set about its origin is the canvas ring's, and the quarter turns' while one is placed. Skew clamps to `MAX_SKEW`.
+- Rows match the single card, named. **Quarter turns** (`inspector::rotate_selection_quarter`) turn each layer about its own origin in one transaction and stay live over a mixed rotation; with the set's origin placed (`tools.md` *The transform origin*) they turn the set as one arrangement about it. **Mirrors** use `build::flip` about the union centreline, or `build::flip_about` through a placed set origin. The tooltips say which: *— each layer about its own origin* / *— the selection about its origin*, *— the selection swaps sides as one arrangement* / *— the selection swaps sides about its origin*.
+- **The chain button** shows whole only when every member is locked; a press drives the set to `!all_locked`. **The pivot toggle** is live and toggles the same `show_pivot` as the single card's, arming the set's origin on the canvas; tooltip *Move the selection's transform origin — the point rotation and mirroring turn it about*.
 - **Cost guard.** The six fields build a transaction only while mid-edit, because `resize_selection` recurses through every descendant. X/Y/W/H return an empty transaction when nothing changed; W/H compare after `paired_size`.
 
 ### Position (§5.3c)

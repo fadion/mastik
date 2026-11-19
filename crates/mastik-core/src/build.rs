@@ -7902,15 +7902,30 @@ pub fn flip(doc: &Document, res: &Resolved, ids: &[NodeId], axis: Axis) -> Trans
         [id] if doc.get(*id).is_some_and(|n| n.pivot().is_some()) => pivot_world(doc, res, *id),
         _ => None,
     };
-    let Some(c) = placed.map(|p| p.to_vec2()).or_else(|| {
+    let Some(c) = placed.or_else(|| {
         members
             .iter()
             .filter_map(|id| res.world_bounds(*id))
             .reduce(|a, b| a.union(b))
-            .map(|b| b.center().to_vec2())
+            .map(|b| b.center())
     }) else {
         return Transaction(Vec::new());
     };
+    flip_about(doc, res, &members, axis, c)
+}
+
+/// Mirror the outermost of `ids` as one arrangement across the line through the
+/// world point `about`: [`flip`] with the mirror line given, for a selection
+/// whose origin the editor holds.
+pub fn flip_about(
+    doc: &Document,
+    res: &Resolved,
+    ids: &[NodeId],
+    axis: Axis,
+    about: Point,
+) -> Transaction {
+    let members = outermost(doc, ids);
+    let c = about.to_vec2();
     let mirror = Affine::translate(c)
         * match axis {
             Axis::X => Affine::FLIP_X,

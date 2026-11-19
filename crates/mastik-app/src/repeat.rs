@@ -231,7 +231,7 @@ impl MastikApp {
     fn set_repeat_way(&mut self, way: Way) {
         self.repeat.way = way;
         let around = way == Way::Around;
-        if around && !self.show_pivot && self.session.selection.ids().len() == 1 {
+        if around && !self.show_pivot && !self.session.selection.is_empty() {
             self.repeat.raised_pivot = true;
             self.show_pivot = true;
         } else if !around && std::mem::take(&mut self.repeat.raised_pivot) {
@@ -299,13 +299,15 @@ impl MastikApp {
         repeat::layout_refusal(doc, &roots, way)
     }
 
-    /// The point the ring turns about: one layer's transform origin, or the middle
-    /// of a selection's box, which has no shared origin.
+    /// The point the ring turns about: one layer's transform origin, or a
+    /// selection's placed origin, else the middle of its box.
     fn repeat_pivot(&self, roots: &[NodeId]) -> Option<Point> {
         let (doc, res) = (&self.session.doc, &self.session.resolved);
         match roots {
             [one] => mastik_core::pivot_world(doc, res, *one),
-            _ => repeat::centre(res, roots),
+            _ => self
+                .selection_pivot_world()
+                .or_else(|| repeat::centre(res, roots)),
         }
     }
 

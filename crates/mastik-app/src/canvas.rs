@@ -1618,7 +1618,8 @@ pub(crate) const NINE_POINTS: [&str; 9] = [
 struct Handles {
     target: Target,
     /// World-space point a rotation turns about: the node's `mastik_core::Pivot`,
-    /// or the union box's centre. Rotation only; an Alt-resize holds the centre.
+    /// or a set's placed origin (`Selection::pivot`), else its box's centre.
+    /// Rotation only; an Alt-resize holds the centre.
     pivot: Point,
     /// Box → world, for turning a handle's box-local direction into a screen one.
     world: Affine,
@@ -3170,8 +3171,8 @@ impl MastikApp {
         let grab = ui.input(|i| i.pointer.press_origin()).unwrap_or(screen);
         let grab_world = self.to_world(grab, rect, ppp);
 
-        if let Some(id) = self.on_pivot(grab, rect, ppp) {
-            self.drag = Drag::Pivot { id };
+        if let Some(target) = self.on_pivot(grab, rect, ppp) {
+            self.drag = Drag::Pivot { target };
             return;
         }
 
@@ -3610,13 +3611,22 @@ impl MastikApp {
                 ..
             } => self.apply_marquee(origin, world, mode, &base, lasso.as_deref()),
             // `pivot_at` answers `None` back at the centre, which clears the field.
-            Drag::Pivot { id } => {
+            Drag::Pivot {
+                target: Target::Layer(id),
+            } => {
                 let pivot = self.pivot_at(id, world);
                 if self.session.doc.get(id).is_some_and(|n| n.pivot() != pivot) {
                     self.session.name_step("Move pivot", icon::CROSSHAIR_SIMPLE);
                     self.session
                         .commit(Transaction(vec![Operation::SetPivot { id, pivot }]));
                 }
+            }
+            // A set's origin is the session's, as its frame is: no history step.
+            Drag::Pivot {
+                target: Target::Selection,
+            } => {
+                let f = self.set_pivot_at(world);
+                self.session.selection.set_pivot(f);
             }
             // Guide and crop releases are finished by their own input paths.
             Drag::CropPan { .. }
@@ -4311,7 +4321,7 @@ impl MastikApp {
     }
 
     /// A multi-selection turns about the shared pivot the handles were built from
-    /// (the union box's centre), so the set holds its arrangement.
+    /// (its placed origin, else its box's centre), so the set holds its arrangement.
     fn rotate_tx(
         &self,
         target: Target,
@@ -9275,11 +9285,14 @@ impl MastikApp {
             let Some(under) = under else {
                 return false;
             };
-            let single = match *self.session.selection.ids() {
-                [id] => under == origin_fields_layer(id) || under == crop_exit_layer(id),
+            let ids = self.session.selection.ids();
+            let crop = match *ids {
+                [id] => under == crop_exit_layer(id),
                 _ => false,
             };
-            single || self.is_ask_layer(ui.ctx(), under)
+            (!ids.is_empty() && under == origin_fields_layer(ids))
+                || crop
+                || self.is_ask_layer(ui.ctx(), under)
         };
         let touch = ui.input(|i| i.multi_touch()).filter(|t| {
             let under = ui.ctx().layer_id_at(t.center_pos);
@@ -10432,6 +10445,35 @@ impl MastikApp {
         Some(tools::SelectionBox { frame, extent })
     }
 
+    /// A multi-selection's placed transform origin in world space, off the
+    /// committed tree, for the verbs that turn or mirror the set about it; `None`
+    /// while it sits on the centre or one layer is selected.
+    pub(crate) fn selection_pivot_world(&self) -> Option<Point> {
+        let f = self.session.selection.pivot()?;
+        let b = self.selection_resize_box()?;
+        Some(b.frame * fraction_in(b.extent, f))
+    }
+
+    /// Hold a multi-selection's placed origin on the world point `at` after a
+    /// commit turned or mirrored the set about it: a mirror reverses the box
+    /// around the origin, so the fraction it was stored as names another point.
+    pub(crate) fn keep_selection_pivot(&mut self, at: Point) {
+        let Some(b) = self.selection_resize_box() else {
+            return;
+        };
+        let local = b.frame.inverse() * at;
+        let axis = |v: f64, min: f64, extent: f64| match extent > ORIGIN_MIN_EXTENT {
+            true => (v - min) / extent,
+            false => 0.5,
+        };
+        let f = Vec2::new(
+            axis(local.x, b.extent.x0, b.extent.width()),
+            axis(local.y, b.extent.y0, b.extent.height()),
+        );
+        let centred = (f - Vec2::new(0.5, 0.5)).hypot() < 1e-9;
+        self.session.selection.set_pivot((!centred).then_some(f));
+    }
+
     /// The transform box for the selection: one layer's rotated box, or the
     /// **oriented** box over a set, from the preview. A lone line has none
     /// ([`Self::line_ends`] replaces it), refused on the kind ([`lone_line`]) so it
@@ -10459,7 +10501,8 @@ impl MastikApp {
                 // bounds, which would re-shape as the set shears or turns.
                 let _ = many;
                 let (frame, box_) = self.selection_frame_box()?;
-                (Target::Selection, box_, frame, None)
+                let placed = self.session.selection.pivot().map(|f| fraction_in(box_, f));
+                (Target::Selection, box_, frame, placed)
             }
         };
         let at = |h: Handle| {
@@ -10490,19 +10533,43 @@ impl MastikApp {
             .any(|id| mastik_core::is_effectively_locked(doc, *id))
     }
 
-    /// Where the pivot marker sits on screen. Single selection only.
-    fn pivot_screen(&self, rect: egui::Rect, ppp: f32) -> Option<(NodeId, egui::Pos2)> {
-        let [id] = *self.session.selection.ids() else {
-            return None;
-        };
-        let world = self.session.preview_world_transform(id)?;
-        let local = self.session.preview_pivot(id)?;
-        Some((id, self.to_screen(world * local, rect, ppp)))
+    /// What the pivot marker belongs to: the one selected layer, or the set.
+    fn pivot_target(&self) -> Option<Target> {
+        match self.session.selection.ids() {
+            [] => None,
+            [id] => Some(Target::Layer(*id)),
+            _ => Some(Target::Selection),
+        }
+    }
+
+    /// Where the selection's transform origin sits in its box's space
+    /// ([`Self::pivot_frame`]), previewed.
+    fn pivot_local(&self, target: Target) -> Option<Point> {
+        match target {
+            Target::Layer(id) => self.session.preview_pivot(id),
+            Target::Selection => {
+                let (box_, _) = self.pivot_frame(target)?;
+                Some(
+                    self.session
+                        .selection
+                        .pivot()
+                        .map_or_else(|| box_.center(), |f| fraction_in(box_, f)),
+                )
+            }
+        }
+    }
+
+    /// Where the pivot marker sits on screen, and whose it is.
+    fn pivot_screen(&self, rect: egui::Rect, ppp: f32) -> Option<(Target, egui::Pos2)> {
+        let target = self.pivot_target()?;
+        let (_, world) = self.pivot_frame(target)?;
+        let local = self.pivot_local(target)?;
+        Some((target, self.to_screen(world * local, rect, ppp)))
     }
 
     /// Whether a press at `screen` grabs the pivot marker; asked ahead of the
     /// resize handles, or a pivot parked on a corner could never be grabbed back.
-    fn on_pivot(&self, screen: egui::Pos2, rect: egui::Rect, ppp: f32) -> Option<NodeId> {
+    fn on_pivot(&self, screen: egui::Pos2, rect: egui::Rect, ppp: f32) -> Option<Target> {
         // Drawn on a locked layer, but it does not move; hidden under the gradient's
         // handles, so not armed there either, or it would take a centre's press.
         if !self.show_pivot
@@ -10517,11 +10584,54 @@ impl MastikApp {
             .map(|(id, _)| id)
     }
 
+    /// The box a transform origin is measured against and its transform to world:
+    /// a layer's own box, or a set's oriented box (`selection_frame_box`).
+    fn pivot_frame(&self, target: Target) -> Option<(KRect, Affine)> {
+        match target {
+            Target::Layer(id) => Some((
+                self.session.preview_local_box(id)?,
+                self.session.preview_world_transform(id)?,
+            )),
+            Target::Selection => {
+                let (frame, box_) = self.selection_frame_box()?;
+                Some((box_, frame))
+            }
+        }
+    }
+
     /// The pivot a release at `world` should commit, snapped to the box's nine
     /// points within a few screen pixels; `None` (the centre) clears it.
     fn pivot_at(&self, id: NodeId, world: Point) -> Option<Pivot> {
-        let local_box = self.session.preview_local_box(id)?;
-        let to_world = self.session.preview_world_transform(id)?;
+        let (local_box, px, py) = self.pivot_percent_at(Target::Layer(id), world)?;
+        let node = self.session.display_node(id)?;
+        origin_pivot(node.kind(), local_box, px, py)
+    }
+
+    /// The origin a release at `world` places on a multi-selection, as
+    /// [`Self::pivot_at`] for a layer: a fraction of its box, `None` at the centre.
+    fn set_pivot_at(&self, world: Point) -> Option<Vec2> {
+        let (_, px, py) = self.pivot_percent_at(Target::Selection, world)?;
+        origin_fraction(px, py)
+    }
+
+    /// Where the marker dragged to `world` sits in its box's space, snapped as the
+    /// release will be.
+    fn pivot_dragged(&self, target: Target, world: Point) -> Option<Point> {
+        let (b, px, py) = self.pivot_percent_at(target, world)?;
+        let axis = |pct: f64, min: f64, extent: f64| match extent > ORIGIN_MIN_EXTENT {
+            true => min + extent * pct / 100.0,
+            false => min,
+        };
+        Some(Point::new(
+            axis(px, b.x0, b.width()),
+            axis(py, b.y0, b.height()),
+        ))
+    }
+
+    /// The box and the whole percentages across and down it a release at `world`
+    /// names, snapped to the box's nine points within a few screen pixels.
+    fn pivot_percent_at(&self, target: Target, world: Point) -> Option<(KRect, f64, f64)> {
+        let (local_box, to_world) = self.pivot_frame(target)?;
         let at = to_world.inverse() * world;
 
         // The pixel threshold in local units: by zoom and the basis column norms,
@@ -10550,22 +10660,20 @@ impl MastikApp {
                 }
             }
         }
-        let node = self.session.display_node(id)?;
         // Whole percents through the origin fields' functions, so both store the
         // same class of value; the snap's 0/50/100 survive rounding.
         let (px, py) = origin_percent(snapped, local_box);
-        origin_pivot(
-            node.kind(),
+        Some((
             local_box,
             px.unwrap_or(50.0).round(),
             py.unwrap_or(50.0).round(),
-        )
+        ))
     }
 
-    /// The name of the box position `at` (local space) is sitting on, if it is on
-    /// one of the nine — what the drag badge reads out.
-    fn pivot_label(&self, id: NodeId, at: Point) -> Option<&'static str> {
-        let b = self.session.preview_local_box(id)?;
+    /// The name of the box position `at` (its box's space) is sitting on, if it is
+    /// on one of the nine — what the drag badge reads out.
+    fn pivot_label(&self, target: Target, at: Point) -> Option<&'static str> {
+        let (b, _) = self.pivot_frame(target)?;
         let third = |v: f64, min: f64, extent: f64| {
             if extent <= f64::EPSILON {
                 return Some(1);
@@ -10819,9 +10927,10 @@ impl MastikApp {
         }
 
         // One readout under the selection: a create drag's size, else the origin
-        // fields while the crosshair is armed over one layer, else the size badge.
+        // fields while the crosshair is armed over a layer or a set, else the size
+        // badge.
         if self.mode == Mode::Normal && chrome {
-            let armed = self.show_pivot && self.session.selection.ids().len() == 1;
+            let armed = self.show_pivot && !self.session.selection.is_empty();
             if matches!(self.drag, Drag::Create { .. }) {
                 let _ = self.draw_create_badge(ui, painter, rect, ppp, resp);
             } else if armed {
@@ -11160,8 +11269,8 @@ impl MastikApp {
     }
 
     /// The transform-origin marker: a crosshair on the point rotation and mirroring
-    /// turn about. Editable while the Transform panel's toggle is on and one layer
-    /// is selected; read-only on the hovered, unselected, undragged layer whose
+    /// turn about. Editable while the Transform panel's toggle is on over a layer
+    /// or a set; read-only on the hovered, unselected, undragged layer whose
     /// pivot has been moved (Select tool only); absent otherwise.
     fn draw_pivot(
         &self,
@@ -11172,42 +11281,38 @@ impl MastikApp {
         resp: &egui::Response,
     ) {
         // While dragged the marker follows the pointer, snapped as the release will be.
-        if let Drag::Pivot { id } = self.drag {
+        if let Drag::Pivot { target } = self.drag {
             let Some(p) = resp.interact_pointer_pos() else {
                 return;
             };
-            let Some(local) = self.pivot_at(id, self.to_world(p, rect, ppp)).map_or_else(
-                || self.session.preview_local_box(id).map(|b| b.center()),
-                |pv| {
-                    self.session
-                        .preview_local_box(id)
-                        .map(|b| geometry::pivot_point(Some(pv), b))
-                },
+            let (Some(local), Some((_, world))) = (
+                self.pivot_dragged(target, self.to_world(p, rect, ppp)),
+                self.pivot_frame(target),
             ) else {
-                return;
-            };
-            let Some(world) = self.session.preview_world_transform(id) else {
                 return;
             };
             let at = self.to_screen(world * local, rect, ppp);
             paint_pivot(painter, at, Marker::Editable);
-            if let Some(name) = self.pivot_label(id, local) {
+            if let Some(name) = self.pivot_label(target, local) {
                 paint_pivot_badge(painter, at, name);
             }
             ui.ctx().request_repaint();
             return;
         }
 
-        // Editable: the toggle is on and there is exactly one layer to own it.
+        // Editable: the toggle is on and a layer or a set owns it.
         if self.show_pivot
-            && let Some((id, at)) = self.pivot_screen(rect, ppp)
+            && let Some((target, at)) = self.pivot_screen(rect, ppp)
         {
             // The previewed pivot, not the committed one, so the badge tracks typing.
-            let placed = self.session.previewed_pivot(id).flatten().is_some();
+            let placed = match target {
+                Target::Layer(id) => self.session.previewed_pivot(id).flatten().is_some(),
+                Target::Selection => self.session.selection.pivot().is_some(),
+            };
             paint_pivot(painter, at, Marker::Editable);
             if placed
-                && let Some(local) = self.session.preview_pivot(id)
-                && let Some(name) = self.pivot_label(id, local)
+                && let Some(local) = self.pivot_local(target)
+                && let Some(name) = self.pivot_label(target, local)
             {
                 paint_pivot_badge(painter, at, name);
             }
@@ -11242,7 +11347,7 @@ impl MastikApp {
         };
         let at = self.to_screen(world * local, rect, ppp);
         paint_pivot(painter, at, Marker::ReadOnly);
-        if let Some(name) = self.pivot_label(id, local) {
+        if let Some(name) = self.pivot_label(Target::Layer(id), local) {
             paint_pivot_badge(painter, at, name);
         }
     }
@@ -11294,14 +11399,20 @@ impl MastikApp {
     /// (`an_overlay_takes_the_press_from_the_canvas_beneath`). A lone line gets
     /// them too, with the degenerate axis dimmed ([`origin_percent`]).
     fn origin_fields(&mut self, ui: &mut egui::Ui, rect: egui::Rect, ppp: f32) -> Option<()> {
-        let [id] = *self.session.selection.ids() else {
-            return None;
-        };
-        let layer = origin_fields_layer(id);
+        let target = self.pivot_target()?;
+        let layer = origin_fields_layer(self.session.selection.ids());
         let (edge, _) = self.badge_placement(rect, ppp, egui::Vec2::ZERO)?;
-        let box_ = self.session.preview_local_box(id)?;
-        let at = self.session.preview_pivot_in(id, box_)?;
+        let (box_, _) = self.pivot_frame(target)?;
+        let at = match target {
+            Target::Layer(id) => self.session.preview_pivot_in(id, box_)?,
+            Target::Selection => self.pivot_local(target)?,
+        };
         let (px, py) = origin_percent(at, box_);
+        // One word for whose box the percentages are of.
+        let whose = match target {
+            Target::Layer(_) => "layer",
+            Target::Selection => "selection",
+        };
 
         // Two pills of one width centred on the slot, upright (a widget cannot be rotated).
         let pill = egui::vec2(ORIGIN_FIELD_W, crate::ui::BADGE_FIELD_H);
@@ -11345,16 +11456,20 @@ impl MastikApp {
                                 egui::Sense::empty(),
                             )
                             .on_hover_text(if on_y {
-                                "This layer has no height for the origin to sit along"
+                                format!("This {whose} has no height for the origin to sit along")
                             } else {
-                                "This layer has no width for the origin to sit along"
+                                format!("This {whose} has no width for the origin to sit along")
                             });
                             continue;
                         }
                         let resp = scoped.inner.on_hover_text(if on_y {
-                            "Transform origin, down the layer's own box — 50% is its centre"
+                            format!(
+                                "Transform origin, down the {whose}'s own box — 50% is its centre"
+                            )
                         } else {
-                            "Transform origin, across the layer's own box — 50% is its centre"
+                            format!(
+                                "Transform origin, across the {whose}'s own box — 50% is its centre"
+                            )
                         });
                         // valve-gate-not-a-commit: `inspector::interacting` spelled inline; the commit is `edit_valve`'s.
                         if !resp.dragged()
@@ -11375,6 +11490,18 @@ impl MastikApp {
             });
         // Out of the closure: the valve needs `&mut self`.
         let (resp, x_pct, y_pct) = edit?;
+        let id = match target {
+            Target::Layer(id) => id,
+            // A set's origin is the session's: placed as it is typed or scrubbed, with
+            // no preview and no history step.
+            Target::Selection => {
+                self.session
+                    .selection
+                    .set_pivot(origin_fraction(x_pct, y_pct));
+                let _ = resp;
+                return Some(());
+            }
+        };
         let kind = self.session.display_node(id).map(|n| n.kind().clone())?;
         let pivot = origin_pivot(&kind, box_, x_pct, y_pct);
         self.named_valve(
@@ -12337,13 +12464,13 @@ pub(crate) fn pinch_zoom(ctx: &egui::Context) -> f64 {
     })
 }
 
-/// The layer the origin fields for `id` live in, shared by `origin_fields` and
-/// `wheel_input`. Keyed on the node, so a half-typed value cannot carry across a
-/// selection change.
-fn origin_fields_layer(id: NodeId) -> egui::LayerId {
+/// The layer the origin fields for the selection `ids` live in, shared by
+/// `origin_fields` and `wheel_input`. Keyed on the layers, so a half-typed value
+/// cannot carry across a selection change.
+fn origin_fields_layer(ids: &[NodeId]) -> egui::LayerId {
     egui::LayerId::new(
         egui::Order::Foreground,
-        egui::Id::new(("origin-fields", id)),
+        egui::Id::new(("origin-fields", ids)),
     )
 }
 
@@ -12399,6 +12526,18 @@ fn origin_pivot(kind: &NodeKind, box_: KRect, x_pct: f64, y_pct: f64) -> Option<
         axis(y_pct, box_.y0, box_.height()),
     );
     geometry::pivot_placed_at(kind, box_, at)
+}
+
+/// A multi-selection's origin as the fraction of its box the origin fields' two
+/// percentages ask for, or `None` at 50/50, its centre, as [`origin_pivot`] is
+/// for a layer.
+fn origin_fraction(x_pct: f64, y_pct: f64) -> Option<Vec2> {
+    (x_pct != 50.0 || y_pct != 50.0).then(|| Vec2::new(x_pct / 100.0, y_pct / 100.0))
+}
+
+/// The point the fraction `f` of `box_` names.
+fn fraction_in(box_: KRect, f: Vec2) -> Point {
+    Point::new(box_.x0 + box_.width() * f.x, box_.y0 + box_.height() * f.y)
 }
 
 /// What the size pill says about a box: whole units, `W × H`.
@@ -22238,6 +22377,78 @@ mod select_drag_tests {
             marks.guides.iter().any(|g| (g.at - 250.0).abs() < 1e-6),
             "the line on the centre: {:?}",
             marks.guides
+        );
+    }
+
+    /// A set's origin placed at its top-left corner snaps there, is what the
+    /// rotate ring, a quarter turn and a flip turn the set about, stays on that
+    /// world point through each, and goes when the selection changes.
+    /// flip: `rotate_selection_quarter` ignoring `selection_pivot_world` → fails at
+    /// "turned about the corner"; `flip` ignoring it → fails at "mirrored about the
+    /// corner"; `keep_selection_pivot` a no-op → fails at "the origin stays put
+    /// through a flip" (a turn keeps the fraction by itself).
+    #[test]
+    fn a_sets_placed_origin_is_what_it_turns_and_mirrors_about() {
+        let ctx = egui::Context::default();
+        // `a` at 0..100 and `b` at 200..300, both 0..100 down: the set's box is 0..300.
+        let (mut app, a, b) = app_with_two_rects(&ctx);
+        app.canvas_px = (800, 600);
+        app.session.camera.zoom = 1.0;
+        app.session.camera.center = Point::new(150.0, 50.0);
+        app.session.selection.set(vec![a, b]);
+        app.show_pivot = true;
+        assert_eq!(app.pivot_target(), Some(Target::Selection));
+        assert_eq!(
+            app.set_pivot_at(Point::new(150.0, 50.0)),
+            None,
+            "the centre clears"
+        );
+        let corner = app.set_pivot_at(Point::new(2.0, -1.0));
+        assert_eq!(corner, Some(Vec2::ZERO), "snapped to the top-left");
+        app.session.selection.set_pivot(corner);
+        let h = app.selection_handles(AREA, 1.0).expect("the set's handles");
+        assert!(
+            h.pivot.distance(Point::ZERO) < 1e-9,
+            "the ring turns about it: {:?}",
+            h.pivot
+        );
+
+        let union = |app: &MastikApp| {
+            [a, b]
+                .iter()
+                .filter_map(|id| app.session.resolved.world_bounds(*id))
+                .reduce(|p, q| p.union(q))
+                .unwrap()
+        };
+        let stays = |app: &MastikApp, why: &str| {
+            let p = app.selection_pivot_world().expect("still placed");
+            assert!(
+                p.distance(Point::ZERO) < 1e-6,
+                "the origin stays put {why}: {p:?}"
+            );
+        };
+        app.rotate_selection_quarter(std::f64::consts::FRAC_PI_2);
+        let u = union(&app);
+        assert!(
+            (u.x0 + 100.0).abs() < 1e-6 && u.x1.abs() < 1e-6 && (u.y1 - 300.0).abs() < 1e-6,
+            "turned about the corner: {u:?}"
+        );
+        stays(&app, "through a quarter turn");
+        app.rotate_selection_quarter(-std::f64::consts::FRAC_PI_2);
+
+        app.flip(mastik_core::build::Axis::X);
+        let u = union(&app);
+        assert!(
+            (u.x0 + 300.0).abs() < 1e-6 && u.x1.abs() < 1e-6,
+            "mirrored about the corner: {u:?}"
+        );
+        stays(&app, "through a flip");
+
+        app.session.selection.set(vec![a, b]);
+        assert_eq!(
+            app.session.selection.pivot(),
+            None,
+            "a new selection, a new origin"
         );
     }
 

@@ -3653,18 +3653,18 @@ impl MastikApp {
         let Some(union) = self.multi_union() else {
             return;
         };
-        // The pivot toggle, present but inert: a selection has no shared pivot.
+        // The pivot toggle arms the set's origin, which the session holds.
         let action = ui::HeadAction::toggle(
             icon::CROSSHAIR_SIMPLE,
-            false,
-            false,
-            "One layer at a time: a selection has no shared transform origin",
+            self.show_pivot,
+            true,
+            "Move the selection's transform origin — the point rotation and mirroring turn it about",
         );
         // Inert while any member is laid out, or a typed position would move only the free ones.
         let members =
             mastik_core::build::outermost(&self.session.doc, self.session.selection.ids());
         let laid_out = laid_out_xy(&self.session.doc, &members);
-        self.panel(ui, "Transform", Some(action), |app, ui| {
+        let toggled = self.panel(ui, "Transform", Some(action), |app, ui| {
             let fw = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
             let row = egui::vec2(fw, 28.0);
             let xy = ui::disable_unless(ui, laid_out.is_none(), |ui| {
@@ -3761,12 +3761,29 @@ impl MastikApp {
             });
             Self::quarters_row(app, ui, TurnScope::Selection);
         });
+        if toggled {
+            self.show_pivot = !self.show_pivot;
+        }
     }
-    /// Turn every outermost selected layer a whole quarter about **its own** origin.
+    /// Turn every outermost selected layer a whole quarter about **its own** origin,
+    /// or, with the set's origin placed, the set as one arrangement about it, as
+    /// the canvas ring turns it.
     ///
     /// One transaction, so one undo step.
     pub(crate) fn rotate_selection_quarter(&mut self, angle: f64) {
         let (doc, res) = (&self.session.doc, &self.session.resolved);
+        if let Some(p) = self.selection_pivot_world() {
+            let roots = build::outermost(doc, self.session.selection.ids());
+            let tx = tools::rotate_selection(doc, res, &roots, p, angle);
+            if self.commit_edit(tx) {
+                let was = self.session.selection.frame();
+                self.session
+                    .selection
+                    .set_frame(tools::turn_about(p, angle) * was);
+                self.keep_selection_pivot(p);
+            }
+            return;
+        }
         let mut ops = Vec::new();
         for id in build::outermost(doc, self.session.selection.ids()) {
             let Some(pivot) = mastik_core::pivot_world(doc, res, id) else {
@@ -3793,6 +3810,16 @@ impl MastikApp {
                 TurnScope::Node(_) => (
                     ["Rotate 90° counter-clockwise", "Rotate 90° clockwise"],
                     ["Flip horizontal", "Flip vertical"],
+                ),
+                TurnScope::Selection if app.session.selection.pivot().is_some() => (
+                    [
+                        "Rotate 90° counter-clockwise — the selection about its origin",
+                        "Rotate 90° clockwise — the selection about its origin",
+                    ],
+                    [
+                        "Flip horizontal — the selection swaps sides about its origin",
+                        "Flip vertical — the selection swaps sides about its origin",
+                    ],
                 ),
                 TurnScope::Selection => (
                     [
@@ -4397,17 +4424,12 @@ impl MastikApp {
         world: [f64; 6],
         size0: Option<Size>,
     ) {
-        // The pivot toggle arms a canvas handle; one layer only.
-        let single = self.session.selection.ids().len() <= 1;
+        // The pivot toggle arms a canvas handle; a set's card has its own.
         let action = ui::HeadAction::toggle(
             icon::CROSSHAIR_SIMPLE,
-            self.show_pivot && single,
-            single,
-            if single {
-                "Move the transform origin — the point rotation and mirroring turn about"
-            } else {
-                "One layer at a time: a selection has no shared transform origin"
-            },
+            self.show_pivot,
+            true,
+            "Move the transform origin — the point rotation and mirroring turn about",
         );
         // The box's corner, not the translation: a derived box starts off its local origin.
         let shown = Affine::new(world)
@@ -12336,11 +12358,20 @@ impl MastikApp {
         }
         self.session.info(visual_align_status(moved, text));
     }
-    /// Mirror the selection across the centreline of the box it occupies.
+    /// Mirror the selection across the centreline of the box it occupies, or a set
+    /// across the lines through its placed origin, which stays where it is.
     pub(crate) fn flip(&mut self, axis: Axis) {
         let ids = self.session.selection.ids().to_vec();
-        let tx = build::flip(&self.session.doc, &self.session.resolved, &ids, axis);
+        let (doc, res) = (&self.session.doc, &self.session.resolved);
+        let about = self.selection_pivot_world();
+        let tx = match about {
+            Some(p) => build::flip_about(doc, res, &ids, axis, p),
+            None => build::flip(doc, res, &ids, axis),
+        };
         if !tx.0.is_empty() && self.commit_edit(tx) {
+            if let Some(p) = about {
+                self.keep_selection_pivot(p);
+            }
             self.session.info(match axis {
                 Axis::X => "Flipped horizontally",
                 Axis::Y => "Flipped vertically",

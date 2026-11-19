@@ -31,7 +31,7 @@ resize, drop outlines, the transform origin (pivot), *Transform again*, *Repeat*
   - **The target** is `align_target`'s, through its centre: the container's for a lone layer, the union's for several, and with a key the key's visual centre. One undo step, *Align visual centres*; the status line says *Aligned*, or *Aligned 3 layers; 1 text layer by its box* when text fell back.
   - **The card**: while on, the two centre buttons are `ui::icon_button_lit`, with the tooltips *Align visual centres* and *Align visual middles*. The toggle's tooltip reads *Centre by visual weight — align centres on the ink, not the box* while off and *Centre by the box again* while on; while the node tool edits points it is dimmed (*Points align by position*) and keeps its state.
   - **The canvas** marks each outermost selected layer but the key with a 12pt `color::accent()` diamond on a 1pt `color::on_accent()` rim at its visual centre, over the selection boxes and under the handles (`canvas::paint_visual_centre`), while the toggle is on, selection chrome shows, the mode is Normal and nothing is moving the selection: a drag or a field's scrub hides them (`visual_marks_shown`), since they are weighed on the committed document. `MastikApp::visual_marks` keeps them by document revision, selection and key layer. Past `canvas::VISUAL_MARKS_MAX` (100) layers to weigh, counting each outermost layer and every layer under one weighed by its ink (a frame and a text are weighed by their box), none are weighed or drawn: weighing unions all that ink on the UI thread, a selected group of 1,000 circles costing what 1,000 selected ones do, and that many diamonds are a field nobody reads. `align_centres_by_weight_while_the_toggle_is_on` and `a_key_layer_is_the_target_and_not_marked` pin the routing and the key, `the_marks_stop_past_the_layers_they_would_weigh` the cap.
-- **Flip** H/V across the selection's centreline, or about a single layer's pivot where one is placed; **quarter turns** either way. **Z-order** one step or all the way (`Ctrl`+`[`/`]`).
+- **Flip** H/V across the selection's centreline, or about the placed origin of a single layer or a set; **quarter turns** either way. **Z-order** one step or all the way (`Ctrl`+`[`/`]`).
 - **Transform again** (the last move, rotation, scale or skew once more) and **Repeat…** (copies turned about the pivot, stepped along a line or tiled in a grid), below.
 - **Warp…**: an envelope round the selection, dragged by its corners or bent by one of eight presets (*Arc*, *Flag*, *Bulge*, *Wave*, *Rise*, *Squeeze*, *Fisheye*, *Twist*), baked into plain paths (below).
 - **Snapping**: alignment, equal-gap (gaps quoted on the canvas), baselines, the pixel grid. **Guides and view**: rulers and guides (`Shift`+`R`), View and Snap menus, focus mode.
@@ -334,12 +334,12 @@ switch controls drawing and snapping. A rotated text node shows baselines but ca
 Two or more layers get one box; dragging it transforms all of them.
 
 - **Shape.** A transform (`IDENTITY` at rest) plus an extent (`canvas::selection_frame_box`): the union of the members' geometry quads in the box's own axes, so it does not creep under rotation and on stroked members is half a stroke tighter than ink. A member with no box (an empty `Group`) is skipped (`selection_frame_extent`).
-- **Session orientation** lives on `Selection`, not in the document: composed on each commit, dropped when the selection changes, so the box does not snap upright the instant a turn ends.
+- **Session orientation** lives on `Selection`, not in the document: composed on each commit, dropped when the selection changes, so the box does not snap upright the instant a turn ends. The set's placed origin is held beside it and dropped with it (*The transform origin*).
 - **Resize** runs on the oriented box. `canvas::selection_resize_box` is the committed-tree twin of `selection_frame_box`; `edit::resize_selection` takes `edit::SelectionBox { frame, extent }` and works in frame space (`frame · S · frame⁻¹ · world`); `canvas::resize_axes` maps the handle through the same frame. `Handles` stores no extent; everything recomputes it from the committed tree, because scaling against a previewed box compounds every frame. `snapped_resize` excludes the whole selection from the snap targets.
 - **Typed doors** (`MastikApp::size_step`, `inspector::scale_tx`, the multi W/H fields) keep the upright union, which the panel reports.
 - **Target.** `preview::Target { Layer(NodeId), Selection }` travels on `Drag::Resize`, `Drag::Rotate`, `Drag::Skew` and `Handles.target`; `resize_tx`, `rotate_tx`, `skew_tx`, `keep_ratio`, `snapped_resize` and `resize_axes` dispatch on it, so a drag cannot change target midway.
 - **Style.** 1px `SELECT_DIM`, against each member's 1.2px `SELECT` outline; `COMPONENT_DIM` box and `COMPONENT` handles when every member is a main or instance (§5.3d).
-- **Rotation** turns the arrangement about the union centre (`edit::rotate_selection`, `rotate_node` per member). §15 D50 covers the pivot, the proportion lock over a set, and where `build::outermost` applies.
+- **Rotation** turns the arrangement about the set's origin, `Handles::pivot`: its placed origin, else its box's centre (`edit::rotate_selection`, `rotate_node` per member). §15 D50 covers the pivot, the proportion lock over a set, and where `build::outermost` applies.
 
 **Resize mechanism.** A transform never carries scale (§5.6), so `edit::resize_selection` works like
 `resize_group` with world space for the shared parent: each root is carried through the scale
@@ -542,42 +542,63 @@ opposite side stays put (`canvas::skew_tx` → `edit::skew_to_handle` / `edit::s
 ### The transform origin (pivot)
 
 **The toggle.** `MastikApp::show_pivot` is app-wide and sticky (someone rigging pivots will place
-several): a `ui::HeadAction` toggle on the Transform header, dimmed with a tooltip for a
-multi-selection. Escape turns it off, after `cancel_gesture` and before the `entered_group` unwind,
-without undoing placed pivots.
+several): a `ui::HeadAction` toggle on the Transform header, the single card's and the
+multi-selection card's (`inspector_multi_transform`) alike. Escape turns it off, after
+`cancel_gesture` and before the `entered_group` unwind, without undoing placed pivots.
 
 **`canvas::draw_pivot` states:**
 
 | State | When | Glyph |
 | --- | --- | --- |
-| Editable | toggle on, one layer selected | `icon::CROSSHAIR` (`CROSSHAIR_SIMPLE` with a filled centre) |
+| Editable | toggle on, a layer or a set selected (`pivot_target`) | `icon::CROSSHAIR` (`CROSSHAIR_SIMPLE` with a filled centre) |
 | Read-only | hovered layer with a placed pivot, not selected, not mid-gesture, Select tool | `CROSSHAIR_SIMPLE` (also the toggle's glyph) |
 | Absent | otherwise | none |
 
 Both glyphs are `color::SELECT` at `PIVOT_GLYPH_PX` (22), nothing behind them, and must fit inside
 `PIVOT_PICK_PX`.
 
+**Whose origin.** `canvas::pivot_target` names it: one layer is `Target::Layer`, several are
+`Target::Selection`. `pivot_frame` gives the box an origin is measured against and its transform to
+world: a layer's own box, or the set's oriented box (`selection_frame_box`, the handles' box).
+
+- **A layer's** is its stored `Pivot`, committed as `SetPivot`.
+- **A set's** is session state: `Selection::pivot`, a fraction of the oriented box held with the
+  ids it was placed on, answered only for two or more layers matching them. `forget_frame` drops it
+  with the frame, so any change to the ids drops it. It is never saved and takes no undo step: a
+  drag of the marker or a typed field places it directly. With none placed the set's origin is its
+  box's centre.
+
 **Dragging the marker:**
 
-- **Nine-point snap** to the box's corners, side midpoints and centre within `PIVOT_SNAP_PX` (6 screen points). The comparison runs in local space, so the threshold is divided by the zoom and the node's basis column norms (`|col 0|` for x, `|col 1|` for y). A badge names the position.
-- **Centre clears.** Snapping to the centre sets the pivot to `None`: the field leaves the file (§5.11), the read-only marker disappears, `flip` reverts to the union centreline. The rule is `geometry::pivot_placed_at`, shared with the numeric fields; a degenerate axis is centred by itself.
-- **No overrides.** `Drag::Pivot { id }` has no `RenderOverrides` preview (the marker is chrome drawn from the pointer) and commits one `SetPivot` on release. `EditorSession::preview_pivot` resolves the pivot against a live gesture's box.
+- **Nine-point snap** to the box's corners, side midpoints and centre within `PIVOT_SNAP_PX` (6 screen points), then whole percentages (`pivot_percent_at`, for both targets). The comparison runs in the box's own space, so the threshold is divided by the zoom and the basis column norms (`|col 0|` for x, `|col 1|` for y). A badge names the position (`pivot_label`).
+- **Centre clears.** Snapping to the centre sets a layer's pivot to `None`: the field leaves the file (§5.11), the read-only marker disappears, `flip` reverts to the union centreline. The rule is `geometry::pivot_placed_at`, shared with the numeric fields; a degenerate axis is centred by itself. A set's centre is `None` too (`set_pivot_at`, `origin_fraction`).
+- **No overrides.** `Drag::Pivot { target }` has no `RenderOverrides` preview (the marker is chrome drawn from the pointer). On release a layer commits one `SetPivot`; a set calls `Selection::set_pivot`. `EditorSession::preview_pivot` resolves a layer's pivot against a live gesture's box.
 - **Priority.** While the toggle is on, the marker outranks resize handles in `begin_select_drag`.
 
 **The origin fields** (`canvas::origin_fields`) replace the size badge in its slot while the toggle
-is armed over one layer, sharing `badge_placement`; a shape being drawn takes the slot ahead of both.
+is armed over a layer or a set, sharing `badge_placement`; a shape being drawn takes the slot ahead of both.
 
-- **Percentages of the layer's own box**, for every kind (0/50/100 = left, centre, right). `geometry::pivot_for` picks the stored form: a fraction for an authored box, an absolute point for an emergent one. A dragged marker lands on a whole percentage after the screen-space snap. Unclamped: a pivot may sit outside its box. Both at 50 clears the origin.
+- **Percentages of the layer's own box**, for every kind (0/50/100 = left, centre, right), or of the set's oriented box; the tooltips say *layer's* or *selection's*. For a layer `geometry::pivot_for` picks the stored form: a fraction for an authored box, an absolute point for an emergent one. A dragged marker lands on a whole percentage after the screen-space snap. Unclamped: a pivot may sit outside its box. Both at 50 clears the origin.
 - **Degenerate axes** (no extent) are dimmed with a reason, per axis. A lone line is offered the fields.
-- **Scrubbing** goes through `EditorSession`'s `pivot_preview` field, because the overrides cannot carry a pivot.
+- **Scrubbing** a layer's goes through `EditorSession`'s `pivot_preview` field and the valve, because the overrides cannot carry a pivot. A set's edit places the session's origin as it is typed or scrubbed, with no valve and no preview.
 - **Widgets.** The first live egui widgets on the canvas: `ui::badge_field` is the badge pill with `value_field`'s plumbing (`Scrub`, `expr::eval`). They stay upright.
-- **Shielding.** Their own `egui::Area` shields the canvas beneath (§15 D252, pinned by the `overlay_claim` test module in `canvas.rs`); `wheel_input` names their layer through `origin_fields_layer` and takes the wheel back.
+- **Shielding.** Their own `egui::Area` shields the canvas beneath (§15 D252, pinned by the `overlay_claim` test module in `canvas.rs`); `wheel_input` names their layer through `origin_fields_layer`, keyed on the selection's ids, and takes the wheel back.
 
-**What reads the pivot.** `Handles::pivot` is the node's origin for one selection, the union centre
-for several. Readers: `Drag::Rotate`; the inspector's skew field (rebuilds about it); the rotation
-field (composes about it); quarter turns; *Transform again*; *Repeat*'s ring over one layer;
-`build::flip`, only when a pivot has been placed (D55). Canvas skew and Alt-resize deliberately do
-not, each having its own fixed point (D55, D60).
+**What reads the pivot.** `Handles::pivot` is the node's origin for one selection, the set's placed
+origin or box centre for several.
+
+- **A layer's:** `Drag::Rotate`; the inspector's skew field (rebuilds about it); the rotation field
+  (composes about it); quarter turns; *Transform again*; *Repeat*'s ring; `build::flip`, only when
+  a pivot has been placed (D55).
+- **A set's placed origin:** `Drag::Rotate` (through `Handles::pivot`); off the committed tree
+  through `selection_pivot_world`, `rotate_selection_quarter`, which then turns the set as one arrangement about it and composes the
+  frame as the ring does; `MastikApp::flip`, through `build::flip_about`; *Repeat*'s ring. After a
+  quarter turn or a flip, `canvas::keep_selection_pivot` re-derives the fraction so the origin
+  stays on the same world point: a mirror reverses the box about it. With none placed, quarter
+  turns go per layer and a flip about the union centreline.
+- **Not readers:** the multi-selection card's rotation and skew fields and *Transform again* turn
+  each layer about its own origin. Canvas skew and Alt-resize read no pivot at all, each having its
+  own fixed point (D55, D60).
 
 ### Transform again (`again.rs`)
 
@@ -616,8 +637,8 @@ grid, committed grouped with the originals. The three ways are `repeat::Pattern`
 - **The ring** (`repeat::Ring { count, step, turn }`): 12 is a clock face. `Ring::full` divides a full
   turn by the count. With *turn* off the copies keep their orientation and travel round: the
   selection box's centre is what the rotation carries. One layer turns about its pivot
-  (`pivot_world`); several have no shared origin, so they turn as one arrangement about their box's
-  centre (`repeat::centre`).
+  (`pivot_world`); several turn as one arrangement about the set's placed origin, else their box's
+  centre (`repeat_pivot`, `repeat::centre`).
 - **The line** (`repeat::Line { count, gap, down }`) steps each copy across, or down, by the
   selection's world box plus `gap`: the gap is between boxes, not origins, and a negative one
   overlaps. **The grid** (`repeat::Grid { cols, rows, gap: [across, down] }`) tiles row by row from
@@ -658,8 +679,8 @@ rows at `ui::POPOVER_SECTION_GAP`. It is no modal and has no click-away: the can
 because the pivot decides the ring and must stay draggable. It holds the lane alone: opening it
 closes the inspector's popovers (`close_inspector_popovers`) and the Blend shapes card
 (`app-booleans.md`), and an inspector popover opened after it closes it (`inspector_popover_open`).
-Find and Colour review are left open. If the pivot handle is down and one layer is selected, lighting
-*Around* (on opening or on the strip) raises it (`show_pivot`); leaving *Around*, closing or
+Find and Colour review are left open. If the pivot handle is down and anything is selected, lighting
+*Around* (on opening or on the strip) raises it (`show_pivot`, `set_repeat_way`); leaving *Around*, closing or
 committing puts it back down only if the card raised it (`RepeatCard::raised_pivot`).
 
 - **Rows.** Head `ui::popover_head` *Repeat*; the strip *Around · Line · Grid* (`ui::segmented_tipped`,
@@ -828,6 +849,7 @@ centre.
 - **Accelerators by hand for the chords read in code.** A table chord's label is spelled from its `input::BINDINGS` row, but the clipboard chords, `Ctrl+Alt+X`, `F2`, `Del`/`Backspace`, centre-align, the text session's Alt+arrows and the host-dependent chords are spelled by hand in `Item::spec`/`Item::alt_accel`; only the cheatsheet's chord test holds those to `input::resolve`.
 - **Clear without `clear_preview`.** `choose_tool` must call `clear_gesture_preview`, not `clear_preview`, or a live text session's content is lost.
 - **Predicate negatives.** `drags_a_box` decides whether arming a tool deletes the selection. When a predicate gains a second consumer, re-check its negative members.
+- **A set's origin after a flip.** The fraction is of the set's box, which a mirror reverses about the origin, so without `keep_selection_pivot` the same fraction names another point after a flip; a quarter turn happens to keep it, which makes the call look removable. `a_sets_placed_origin_is_what_it_turns_and_mirrors_about` pins it.
 - **Middle-button pan over the origin fields.** It is still swallowed by their `Area` (unverified).
 - **Menu placement order.** `menu_place` must clamp after rounding; reversing the order cuts off a menu's last column.
 - **Cursor bitmaps are cached and their angles quantized on purpose.** egui dedupes cursor uploads by `Arc` pointer identity, so a buffer drawn afresh each frame, or a raw angle in place of `cursor::Turn`, uploads a new cursor every frame of a drag. The cache is keyed by cursor and cleared when the scale changes (`the_bitmaps_are_reused_until_the_scale_changes`).

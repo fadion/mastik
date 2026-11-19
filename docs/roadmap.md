@@ -6,14 +6,6 @@ work is described in `architecture.md`. Refs are file + function name, never lin
 the code before picking an item up — an item's premise can go stale while its ask still reads
 true.
 
-## Now · Misc
-
-- **A placed transform origin for a multi-selection.** One layer, a group among them, takes a
-  placed pivot (`SetPivot`, `tools.md` *Transform origin*); several always turn about their union
-  centre (`Handles::pivot`). The marker and the origin fields are offered over several layers
-  too, the origin held by the session for that exact selection (a selection is not saved), and
-  read by everything `Handles::pivot` feeds.
-
 ## Now · Prototyping
 
 A release of its own: the document played, with interactions, flows,

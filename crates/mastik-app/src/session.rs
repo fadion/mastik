@@ -10,7 +10,7 @@
 
 use crate::view::Camera;
 use mastik_core::Brush;
-use mastik_core::kurbo::{Affine, Point, Rect, RoundedRectRadii, Size};
+use mastik_core::kurbo::{Affine, Point, Rect, RoundedRectRadii, Size, Vec2};
 use mastik_core::node::{
     BlockStyle, CharSpans, Length, ParaSpans, ParagraphStyle, TextSizing, TextStyle,
 };
@@ -203,6 +203,11 @@ pub struct Selection {
     /// layers is a new selection the ids cannot see), and the orientation carries
     /// its ids so a mutator that forgets the call cannot leave it on another set.
     frame: Option<(Vec<NodeId>, Affine)>,
+    /// A **multi-selection's** placed transform origin, as a fraction of its
+    /// oriented box (the handles' box), with the ids it was placed for. Held as
+    /// [`Self::frame`] is and dropped with it: a set has no stored origin in the
+    /// document, and a selection is not saved.
+    pivot: Option<(Vec<NodeId>, Vec2)>,
 }
 
 impl Selection {
@@ -337,9 +342,26 @@ impl Selection {
         self.frame = Some((self.ids.clone(), f));
     }
 
-    /// Give up any stored frame orientation. A new mutator of `ids` owes a call.
+    /// This multi-selection's placed origin as a fraction of its oriented box, or
+    /// `None` for its centre, for one layer, or once the ids have changed.
+    pub fn pivot(&self) -> Option<Vec2> {
+        match &self.pivot {
+            Some((ids, f)) if *ids == self.ids && self.ids.len() >= 2 => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// Place this multi-selection's origin at `f`, a fraction of its oriented box;
+    /// `None` puts it back on the centre.
+    pub fn set_pivot(&mut self, f: Option<Vec2>) {
+        self.pivot = f.map(|f| (self.ids.clone(), f));
+    }
+
+    /// Give up any stored frame orientation and placed origin. A new mutator of
+    /// `ids` owes a call.
     fn forget_frame(&mut self) {
         self.frame = None;
+        self.pivot = None;
     }
 
     /// Drop ids that are no longer on `page` (after a delete, an undo or a move
@@ -3000,6 +3022,24 @@ mod tests {
             name: None,
         }])));
         id
+    }
+
+    /// A set's placed origin holds for exactly the ids it was placed on: adding a
+    /// layer drops it, and one layer has none whatever is stored.
+    /// flip: `forget_frame` leaving `pivot` alone → fails at "a layer added".
+    #[test]
+    fn a_sets_origin_holds_for_exactly_its_ids() {
+        let ids = [1, 2, 3].map(|seq| NodeId { actor: 7, seq });
+        let mut s = Selection::default();
+        s.set(ids[..2].to_vec());
+        s.set_pivot(Some(Vec2::new(0.0, 1.0)));
+        assert_eq!(s.pivot(), Some(Vec2::new(0.0, 1.0)));
+        s.add(ids[2]);
+        s.toggle(ids[2]);
+        assert_eq!(s.pivot(), None, "a layer added");
+        s.set_pivot(Some(Vec2::ZERO));
+        s.toggle(ids[1]);
+        assert_eq!(s.pivot(), None, "one layer has no set origin");
     }
 
     /// No two sessions hold the same revision, so a cache keyed on one cannot answer

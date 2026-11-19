@@ -47,6 +47,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **D439** A new container (group, frame, boolean, flatten, mask) takes the topmost member's z-slot, through one `container_slot`.
 - **D832** The insert door checks inserted subtrees for reachability and depth.
 - **D55** The pivot is baked by the gesture that reads it, never composed into a layer's world transform.
+- **A multi-selection's placed origin is session state**, held on `Selection` with the ids it was placed on, as the set's frame is: a set has no stored origin in the document and a selection is not saved. Placing it records no undo step.
 - **D5** The inspector shows X/Y and rotation in world space, projected back through `build::place_at_world`. W/H are geometry edits, not scale.
 - **D321** A locked group locks everything inside it, through one query, `query::is_effectively_locked`. A lock guards canvas accidents, not deliberate panel edits. **D746** Bulk selection never reaches a locked layer (`may_select_in_bulk`).
 - **A selection holding a locked layer is not dragged on the canvas**: no handle arms, no move starts, no spacing band is offered. The handles stay drawn and the size badge's padlock says why; the keyboard nudge does not ask.

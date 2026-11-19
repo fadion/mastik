@@ -160,13 +160,14 @@ pub enum Drag {
         alt: bool,
         last: f64,
     },
-    /// Moving a layer's transform origin ([`mastik_core::Pivot`]).
+    /// Moving a layer's transform origin ([`mastik_core::Pivot`]), or a
+    /// multi-selection's (`Selection::pivot`).
     ///
     /// Carries no preview: the pivot is not scene content, so the canvas draws the
-    /// marker straight from the live pointer, like a marquee, and commits one
-    /// `SetPivot` on release.
+    /// marker straight from the live pointer, like a marquee, and on release
+    /// commits one `SetPivot`, or for a set places the selection's origin.
     Pivot {
-        id: NodeId,
+        target: Target,
     },
     /// Rubber-band selection from `origin` to the current pointer, of layers or,
     /// in the node tool, of points. Either selects live.
