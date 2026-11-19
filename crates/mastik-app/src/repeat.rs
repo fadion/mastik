@@ -418,7 +418,12 @@ impl MastikApp {
             Err(e) => return self.session.fail(format!("Cannot repeat: {e}")),
         };
         self.session.clear_gesture_preview();
-        self.session.name_step("Repeat", icon::REPEAT_AROUND);
+        let glyph = match way {
+            Way::Around => icon::REPEAT_AROUND,
+            Way::Line => icon::REPEAT_LINE,
+            Way::Grid => icon::REPEAT_GRID,
+        };
+        self.session.name_step("Repeat", glyph);
         if !self.commit_edit(tx) {
             return;
         }
@@ -683,6 +688,9 @@ impl MastikApp {
                                 });
                             });
                             [card.cols, card.rows] = size;
+                            // The fields read what the preview tiles, clamp and all.
+                            let (cols, rows) = card.grid_size();
+                            [card.cols, card.rows] = [cols as f64, rows as f64];
                             let was = gaps;
                             pair(ui, |ui, left| {
                                 let (label, axis) = match left {
@@ -1177,6 +1185,13 @@ pub(crate) mod tests {
         let next = box_of(&app, kids[kids.len() - 2]);
         assert_eq!((next.x0, next.y0), (311.0 + 18.0 + 12.0, 72.0));
         assert_eq!(app.session.status().text, "Made 3 copies in a line");
+        // flip: `commit_repeat` naming every way's step with the ring → fails here.
+        let step = app.session.history.done().last().expect("a step");
+        assert_eq!(
+            step.note.glyph,
+            icon::REPEAT_LINE,
+            "the step wears the line's glyph"
+        );
         app.undo();
         assert_eq!(app.session.doc.get(frame).unwrap().children(), &[tick]);
     }
@@ -1206,6 +1221,28 @@ pub(crate) mod tests {
         app.session.selection.set_one(tick);
         app.open_repeat();
         assert_eq!(app.repeat.way, Way::Grid, "the way last used");
+    }
+
+    /// The grid's fields read the size the preview tiles: rows held to what the
+    /// copy limit leaves, and a one-by-one grid at two across. flip: `repeat_ui`
+    /// not writing `grid_size` back → fails at "20 × 18".
+    #[test]
+    fn the_grid_fields_read_the_clamped_size() {
+        let ctx = egui::Context::default();
+        let (mut app, _, _) = tick_app(&ctx);
+        crate::theme::install(&ctx);
+        app.open_repeat_on(Way::Grid);
+        let run = |app: &mut MastikApp| {
+            let _ = ctx.run_ui(Default::default(), |ui| app.repeat_ui(ui.ctx()));
+        };
+        app.repeat.cols = 20.0;
+        app.repeat.rows = 20.0;
+        run(&mut app);
+        assert_eq!((app.repeat.cols, app.repeat.rows), (20.0, 18.0), "20 × 18");
+        app.repeat.cols = 1.0;
+        app.repeat.rows = 1.0;
+        run(&mut app);
+        assert_eq!((app.repeat.cols, app.repeat.rows), (2.0, 1.0));
     }
 
     /// A flex row holding the selected card: *Around* and *Grid* are refused with
