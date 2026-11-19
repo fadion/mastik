@@ -1,0 +1,1 @@
+-- A new, empty document: `mastik run` with no `--in` starts from one, and this script changes nothing.
