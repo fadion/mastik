@@ -481,11 +481,15 @@ pub fn import<'s>(
         ops,
         shapes,
         skipped,
-        approximated,
+        mut approximated,
         ..
     } = out;
+    let (ops, stretched) = scale_baked(ops, parent, group);
+    if stretched {
+        approximated.push("uneven scale (strokes, corners and type at the mean)".to_string());
+    }
     Ok(Import {
-        tx: Transaction(scale_baked(ops, parent, group)),
+        tx: Transaction(ops),
         root: group,
         size,
         shapes,
@@ -502,8 +506,9 @@ pub fn import<'s>(
 /// The bake is folded into the import's own ops rather than appended, since callers
 /// edit those afterwards (the root's placement, a bound colour) and an appended
 /// `SetTransform` or `SetStrokes` would undo the edit. A bake that will not apply
-/// leaves `ops` as they are.
-fn scale_baked(mut ops: Vec<Operation>, parent: NodeId, root: NodeId) -> Vec<Operation> {
+/// leaves `ops` as they are. The flag is true when an uneven scale reached a
+/// stroke, a corner radius or type, which the model draws at the mean.
+fn scale_baked(mut ops: Vec<Operation>, parent: NodeId, root: NodeId) -> (Vec<Operation>, bool) {
     use crate::document::Document;
     // Most markup scales nothing; it skips the scratch document.
     let scaled = ops.iter().any(|op| match op {
@@ -516,7 +521,7 @@ fn scale_baked(mut ops: Vec<Operation>, parent: NodeId, root: NodeId) -> Vec<Ope
         _ => false,
     });
     if !scaled {
-        return ops;
+        return (ops, false);
     }
     let mut scratch = Document::new(parent);
     let mut probe = ops.clone();
@@ -525,12 +530,62 @@ fn scale_baked(mut ops: Vec<Operation>, parent: NodeId, root: NodeId) -> Vec<Ope
         *index = 0;
     }
     if scratch.apply(&Transaction(probe)).is_err() {
-        return ops;
+        return (ops, false);
     }
     let res = crate::Resolved::rebuild(&scratch);
-    let baked = crate::edit::baked_scale(&scratch, &res, root);
-    if baked.is_empty() || scratch.apply(&Transaction(baked.clone())).is_err() {
-        return ops;
+    let mut baked = crate::edit::baked_scale(&scratch, &res, root);
+    let mut after = scratch.clone();
+    if baked.is_empty() || after.apply(&Transaction(baked.clone())).is_err() {
+        return (ops, false);
+    }
+    // Each layer's old space maps onto its new one by what the bake took out of
+    // its transforms. A line, an arc and a path carry their gradients in the bake
+    // itself; a box-sized layer's are carried here, since the import creates the
+    // layer and so `paint_box::keep_gradients` would skip it at the commit.
+    let res_after = crate::Resolved::rebuild(&after);
+    let mut stretched = false;
+    let created: Vec<NodeId> = ops
+        .iter()
+        .filter_map(|op| match op {
+            Operation::CreateNode { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    for id in created {
+        let (Some(node), Some(was), Some(now)) = (
+            scratch.get(id),
+            res.world_transform(id),
+            res_after.world_transform(id),
+        ) else {
+            continue;
+        };
+        let by = now.inverse() * was;
+        let [a, b, c, d, _, _] = by.as_coeffs();
+        let tol = 1e-9 * a.abs().max(d.abs());
+        let uneven = (a.abs() - d.abs()).abs() > tol || b.abs() + c.abs() > tol;
+        if uneven
+            && (!node.paint().strokes.is_empty()
+                || matches!(node.kind(), NodeKind::Text { .. })
+                || node.kind().corner_radii().is_some_and(|r| {
+                    r.top_left > 0.0
+                        || r.top_right > 0.0
+                        || r.bottom_right > 0.0
+                        || r.bottom_left > 0.0
+                })
+                || matches!(node.kind(), NodeKind::Path { corner_radii, .. } if corner_radii.iter().any(|r| *r > 0.0)))
+        {
+            stretched = true;
+        }
+        if !matches!(
+            node.kind(),
+            NodeKind::Line { .. } | NodeKind::Arc { .. } | NodeKind::Path { .. }
+        ) && (by.as_coeffs()[..4] != [1.0, 0.0, 0.0, 1.0])
+        {
+            crate::paint_box::carry_into(&scratch, id, by, &mut baked);
+        }
+    }
+    if scratch.apply(&Transaction(baked.clone())).is_err() {
+        return (ops, false);
     }
     // What the import's ops already carry is rewritten from the baked layers; a
     // paint list no op set yet, or anything else the bake wrote, is appended.
@@ -587,7 +642,7 @@ fn scale_baked(mut ops: Vec<Operation>, parent: NodeId, root: NodeId) -> Vec<Ope
             ops.push(op);
         }
     }
-    ops
+    (ops, stretched)
 }
 
 /// The `width`/`height` the markup claims, or its `viewBox`'s: the caller wants the
@@ -3292,6 +3347,70 @@ mod tests {
         };
         let size = style.font_size;
         assert!((size - 32.0 * k).abs() < 1e-6, "the type: {size}");
+    }
+
+    /// A baked scale carries a box-sized layer's gradient with its box, so a rect
+    /// drawn 200 wide on a viewBox and landed 20 wide still shows the whole ramp, and
+    /// a path's control rides the scale once, not twice. flip: `scale_baked`'s
+    /// sized-kind carry removed → fails at the rect's gradient end.
+    #[test]
+    fn an_imported_scale_carries_the_gradients() {
+        let (doc, out) = imported(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" viewBox="0 0 200 100">
+                 <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="200" y2="0">
+                   <stop offset="0" stop-color="red"/><stop offset="1" stop-color="blue"/>
+                 </linearGradient></defs>
+                 <rect width="200" height="100" fill="url(#g)"/>
+                 <ellipse cx="100" cy="50" rx="100" ry="50" fill="url(#g)"/>
+                 <path d="M0 0 L200 0 L200 100 Z" fill="url(#g)"/>
+               </svg>"##,
+        );
+        for id in shapes(&doc, &out) {
+            let node = doc.get(id).unwrap();
+            let Some(crate::image::Brush::Gradient(g)) = node.paint().fills[0].brush.literal()
+            else {
+                panic!("a gradient fill on {:?}", node.kind())
+            };
+            let peniko::GradientKind::Linear(line) = g.gradient.kind else {
+                panic!("linear")
+            };
+            let end = g.transform * line.end;
+            // An ellipse's and a rect's box sit at their origin; the path's points
+            // and its gradient share its own space.
+            let world = crate::Resolved::rebuild(&doc).world_transform(id).unwrap();
+            let end = world * end;
+            assert!(
+                (end.x - 20.0).abs() < 1e-6,
+                "{:?}: the gradient ends at the shape's right edge, {end:?}",
+                node.kind()
+            );
+        }
+        assert!(
+            out.approximated.is_empty(),
+            "a uniform scale is exact: {:?}",
+            out.approximated
+        );
+    }
+
+    /// A non-uniform scale baked into a stroke, a corner or type is drawn at the
+    /// mean, which the import reports. flip: the report removed → fails here.
+    #[test]
+    fn a_stretched_scale_baked_into_a_stroke_is_reported() {
+        let (_, out) = imported(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+                 <g transform="scale(4,1)">
+                   <rect x="5" y="10" width="40" height="80" rx="10" fill="none" stroke="black" stroke-width="2"/>
+                 </g>
+               </svg>"#,
+        );
+        assert_eq!(out.approximated.len(), 1, "{:?}", out.approximated);
+        // The control: a stretched shape with no stroke, corner or type is exact.
+        let (_, out) = imported(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+                 <g transform="scale(4,1)"><rect x="5" y="10" width="40" height="80"/></g>
+               </svg>"#,
+        );
+        assert!(out.approximated.is_empty(), "{:?}", out.approximated);
     }
 
     /// A non-positive `width`/`height` is no declaration to either reader, so the
