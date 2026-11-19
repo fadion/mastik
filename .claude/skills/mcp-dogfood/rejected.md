@@ -35,5 +35,10 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
 - **Resetting an instance root resets only that root.** Resetting an instance puts the whole
   instance back as its main has it, as the menu's *Reset all* does; a layer inside it is reset
   by naming that layer.
+- **A frame stretched across its flex line by `align_self`.** A frame's `Auto` size is its
+  stored size, which a stretch never changes, as CSS stretches only an `auto` cross size; a
+  frame fills by `{"Percent": 100}`, which the refusal of a `Fill` width now names.
+- **A 1px flex gap drawn crisp at every row.** A gap at a fractional offset covers two pixels
+  partly, as in any rasteriser, as the seam rejected above.
 - **`@@` collapsed anywhere in a batch string.** Only a string starting with `@` is a reference,
   and the batch's `steps` says to double that leading `@`; a mid-string `@@` stays as written.

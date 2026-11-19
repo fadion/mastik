@@ -448,7 +448,12 @@ fn photos(
                     v
                 })
                 .collect();
-            json!({ "query": q, "found": page.total, "assets": assets })
+            let mut v = json!({ "query": q, "found": page.total, "assets": assets });
+            // Photo services match every word, so a long query often finds nothing.
+            if page.total == 0 && q.split_whitespace().nth(1).is_some() {
+                v["note"] = json!("nothing matched every word; one or two words find more");
+            }
+            v
         })
         .collect();
     let mut answer = json!({
@@ -597,19 +602,47 @@ fn target(args: &Value) -> Result<Target, String> {
     })
 }
 
-/// The colour `args` give an icon's ink, `#rrggbb` or `#rrggbbaa`, else black
-/// as the panel draws it.
+/// The ink `args` give an icon to be drawn in: `colour` as `#rrggbb` or
+/// `#rrggbbaa`, else black as the panel draws it. A `colour` naming a variable
+/// is drawn black here and bound on landing ([`icon_variable`]).
 fn icon_ink(args: &Value) -> Result<&str, String> {
     let Some(v) = args.get("colour") else {
         return Ok(panel::ICON_INK);
     };
-    v.as_str()
-        .filter(|s| {
-            s.strip_prefix('#').is_some_and(|h| {
-                matches!(h.len(), 6 | 8) && h.bytes().all(|b| b.is_ascii_hexdigit())
-            })
-        })
-        .ok_or_else(|| format!("`colour`: {v} is not a colour; write \"#rrggbb\""))
+    let text = v
+        .as_str()
+        .ok_or_else(|| format!("`colour`: {v} is not \"#rrggbb\" or a colour variable"))?;
+    match text.strip_prefix('#') {
+        Some(h) if matches!(h.len(), 6 | 8) && h.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(text),
+        Some(_) => Err(format!(
+            "`colour`: `{text}` is not a colour; write \"#rrggbb\""
+        )),
+        None => Ok(panel::ICON_INK),
+    }
+}
+
+/// The colour variable `args`' `colour` names, by id or name, for an icon's ink
+/// to bind to; `None` for a hex colour or none given.
+fn icon_variable(
+    doc: &mastik_core::Document,
+    args: &Value,
+) -> Result<Option<mastik_core::variable::VarId>, String> {
+    let Some(text) = args.get("colour").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if text.starts_with('#') {
+        return Ok(None);
+    }
+    let vars = doc.variables();
+    let var = serde_json::from_value::<mastik_core::variable::VarId>(json!(text))
+        .ok()
+        .and_then(|id| vars.get(id))
+        .or_else(|| vars.iter().find(|v| v.name == text))
+        .ok_or_else(|| format!("`colour`: `{text}` is no \"#rrggbb\" colour and no variable"))?;
+    if var.kind != mastik_core::variable::VarKind::Color {
+        return Err(format!("`colour`: `{text}` is not a colour variable"));
+    }
+    Ok(Some(var.id))
 }
 
 /// The refusal of an icon asked to fill layers.
@@ -691,7 +724,8 @@ pub(crate) fn put_held(
                 return Err(ICON_FILLS_NOTHING.into());
             }
             let parent = t.parent.ok_or(NO_PARENT)?;
-            put_icon(s, client, parent, t.at, name, svg, credit)
+            let var = icon_variable(&s.doc, args)?;
+            put_icon(s, client, parent, t.at, (name, svg, var), credit)
         }
         Held::Photo { image, credit, .. } => match t.fill {
             Some(ids) => fill_photo(s, client, &ids, image, credit),
@@ -805,14 +839,14 @@ fn icon_drawing(
 
 /// A held icon as the panel inserts it: the SVG importer's group named after
 /// the icon, its box's corner at `at` in `parent`, with its credit, as
-/// *Insert icon*.
+/// *Insert icon*; with `var`, its ink bound to that colour variable, each
+/// paint keeping its own alpha.
 fn put_icon(
     s: &mut crate::session::EditorSession,
     client: &str,
     parent: NodeId,
     at: Point,
-    name: &str,
-    svg: &str,
+    (name, svg, var): (&str, &str, Option<mastik_core::variable::VarId>),
     credit: &mastik_core::Credit,
 ) -> Result<Value, String> {
     let index = s
@@ -836,6 +870,30 @@ fn put_icon(
     {
         *transform = Some(Affine::translate(at.to_vec2()) * transform.unwrap_or(Affine::IDENTITY));
         *layer = Some(name.to_owned());
+    }
+    if let Some(var) = var {
+        use mastik_core::{Brush, BrushSource};
+        let bind = |brush: &mut BrushSource| {
+            if let BrushSource::Literal(Brush::Solid(c)) = brush
+                && c.to_rgba8().to_u8_array()[..3] == [0, 0, 0]
+            {
+                *brush = BrushSource::Bound {
+                    var,
+                    alpha: c.components[3],
+                };
+            }
+        };
+        for op in &mut out.tx.0 {
+            match op {
+                Operation::SetFills { fills, .. } => {
+                    fills.iter_mut().for_each(|f| bind(&mut f.value.brush));
+                }
+                Operation::SetStrokes { strokes, .. } => {
+                    strokes.iter_mut().for_each(|f| bind(&mut f.value.brush));
+                }
+                _ => {}
+            }
+        }
     }
     out.tx.0.push(Operation::SetCredit {
         id: root,
@@ -1186,10 +1244,12 @@ mod tests {
         assert!(why.is_error, "an icon fills nothing");
     }
 
-    /// An icon placed with `colour` is drawn in that ink, and a `colour` that is
-    /// no hex colour is refused.
+    /// An icon placed with `colour` is drawn in that ink, a `colour` naming a
+    /// colour variable binds every ink to it, and a `colour` that is neither is
+    /// refused.
     ///
-    /// flip: `hold` ignoring `icon_ink` → fails at "inked red".
+    /// flip: `hold` ignoring `icon_ink` → fails at "inked red"; `put_icon`
+    /// ignoring its variable → fails at "every ink bound".
     #[test]
     fn an_icon_takes_the_colour_asked() {
         let (mut app, mut engine, file, page, ..) = fixture("icon-ink");
@@ -1225,6 +1285,65 @@ mod tests {
             json!({ "asset": "icon:font-awesome/bell/Solid", "parent": page, "colour": "red" }),
         );
         assert!(why.is_error, "a colour name is refused");
+        let short = now(
+            &mut engine,
+            &mut app,
+            "place_asset",
+            json!({ "asset": "icon:font-awesome/bell/Solid", "parent": page, "colour": "#ff00" }),
+        );
+        assert!(short.is_error, "a hex of the wrong length is refused");
+
+        ok(
+            &mut engine,
+            &mut app,
+            "add_variable",
+            json!({ "kind": "color", "name": "ink", "value": "#3366cc" }),
+        );
+        let made = ok(
+            &mut engine,
+            &mut app,
+            "place_asset",
+            json!({ "asset": "icon:font-awesome/bell/Solid", "parent": page, "colour": "ink" }),
+        );
+        let root = NodeId::from_wire(made["created"][0].as_str().unwrap()).unwrap();
+        let s = Documents::session(&mut app, &file).unwrap();
+        let mut bound = 0;
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let n = s.doc.get(id).unwrap();
+            stack.extend(n.children());
+            for f in &n.paint().fills {
+                assert!(
+                    matches!(f.value.brush, mastik_core::BrushSource::Bound { .. }),
+                    "every ink bound: {:?}",
+                    f.value.brush
+                );
+                bound += 1;
+            }
+        }
+        assert!(bound > 0, "the icon paints, bound to `ink`");
+    }
+
+    /// A photo query of several words that finds nothing says to use fewer.
+    ///
+    /// flip: the answer without its note → fails at "the note".
+    #[test]
+    fn a_photo_search_of_many_words_finding_none_says_why() {
+        let (mut app, mut engine, ..) = fixture("photo-none");
+        coffee(&mut app);
+        let search = json!({ "queries": ["dark laptop code"], "kind": "photos" });
+        let answer = waits(&mut engine, &mut app, "search_assets", search);
+        engine.run_later(&mut app);
+        let page = Page {
+            photos: Vec::new(),
+            total: 0,
+            more: false,
+        };
+        let key = ("unsplash", "dark laptop code".to_owned(), Orientation::Any);
+        app.assets.agent_land_search(key, Ok(page));
+        engine.run_later(&mut app);
+        let found = answer.try_recv().expect("answered").structured.unwrap();
+        assert!(found["results"][0]["note"].is_string(), "the note: {found}");
     }
 
     /// A photo search waits for its answer and thumbnails, then answers each

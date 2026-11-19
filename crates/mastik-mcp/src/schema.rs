@@ -683,7 +683,7 @@ pub static TOOLS: &[Tool] = &[
                 "colour",
                 ParamKind::Text,
                 false,
-                "A set icon's ink, \"#rrggbb\"; else black.",
+                "A set icon's ink: \"#rrggbb\" or a colour variable.",
             ),
             param("fill", ParamKind::Nodes, false, "Layers a photo fills."),
             param(
