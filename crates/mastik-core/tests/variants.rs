@@ -1425,8 +1425,8 @@ fn adding_a_variant_takes_the_next_free_combination() {
 }
 
 /// **Duplicating a whole set makes a new set of new variants**, not a set of
-/// instances: `component::settle_copy` turns a copy into an instance only when
-/// the copied root is itself a main, and a set is a frame.
+/// instances: `component::settle_copy` keeps a copied set's variants mains,
+/// though a main elsewhere inside a copy becomes an instance.
 #[test]
 fn a_duplicated_set_is_a_new_set_of_new_variants() {
     let mut f = fixture();

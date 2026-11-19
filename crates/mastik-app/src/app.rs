@@ -4248,7 +4248,7 @@ impl MastikApp {
     }
 
     /// *Duplicate as component*: a copy of the selected main that is a new, independent
-    /// main rather than an instance.
+    /// main rather than an instance, or of a layer holding mains with new mains in it.
     pub(crate) fn duplicate_as_component(&mut self) {
         let Some(id) = self.session.selection.single() else {
             return;
@@ -4278,8 +4278,13 @@ impl MastikApp {
             mastik_core::component::MainCopy::NewMain,
         );
         self.name_step_as(crate::menu::Item::DuplicateAsComponent);
+        let main = self.session.doc.get(id).is_some_and(|n| n.component());
         if self.session.commit(tx) && !created.is_empty() {
-            self.session.info("Duplicated as a new component");
+            self.session.info(if main {
+                "Duplicated as a new component"
+            } else {
+                "Duplicated with new components"
+            });
             self.session.selection.set(created);
         }
     }

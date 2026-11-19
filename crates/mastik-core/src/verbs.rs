@@ -3757,9 +3757,9 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "duplicate_as_component",
-        doc: "Copy a main as a new, independent main beside it rather than an instance; answers it",
+        doc: "Copy a main, or a layer holding mains, as new mains, not instances; answers it",
         params: &[
-            req("node", NODE, "the main component"),
+            req("node", NODE, "a main or a layer with one"),
             opt(
                 "dx",
                 ParamKind::Number,
@@ -3773,8 +3773,8 @@ pub static VERBS: &[Verb] = &[
         ],
         run: |ctx, a| {
             let id = a.layer(ctx.doc, "node")?;
-            if !node(ctx, id)?.component() {
-                return Err(a.invalid("node", "not a main component"));
+            if !node(ctx, id)?.component() && !crate::component::holds_mains(ctx.doc, id) {
+                return Err(a.invalid("node", "neither a main component nor a layer holding one"));
             }
             let (Some(nodes), Some(parent)) =
                 (ctx.doc.capture_subtree(id), node(ctx, id)?.parent())

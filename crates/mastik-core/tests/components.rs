@@ -767,6 +767,62 @@ fn duplicating_as_component_makes_a_new_main() {
     assert_eq!(c.link(), None);
 }
 
+/// The fixture's main and instance moved into one screen frame, answered.
+fn screen_holding_the_main(f: &mut Fixture) -> NodeId {
+    let s = f.ids.mint();
+    f.doc
+        .apply(&Transaction(vec![
+            create(s, f.root, 0, frame()),
+            Operation::Reparent {
+                id: f.m,
+                new_parent: s,
+                index: 0,
+            },
+            Operation::Reparent {
+                id: f.i,
+                new_parent: s,
+                index: 1,
+            },
+        ]))
+        .expect("a screen holding a main and its instance");
+    s
+}
+
+/// A copied screen holding a main holds an instance of it, and the screen's copied
+/// instance stays an instance of the original main, not of the copy. Flip:
+/// `settle_copy` without `mains_inside_to_instances` fails the first assertion;
+/// that function leaving the copied instance linked to the copy is refused at `apply`.
+#[test]
+fn duplicating_a_frame_holding_a_main_makes_an_instance_of_it() {
+    let mut f = fixture();
+    let s = screen_holding_the_main(&mut f);
+    let (tx, copy) = duplicate(&mut f, s);
+    f.doc.apply(&tx).expect("a valid copy");
+    let kids = f.doc.get(copy).unwrap().children().to_vec();
+    let (cm, ci) = (f.doc.get(kids[0]).unwrap(), f.doc.get(kids[1]).unwrap());
+    assert!(!cm.component(), "the copied main is not a main");
+    assert_eq!(cm.link(), Some(f.m));
+    let members: Vec<_> = cm.children().iter().map(|k| link_of(&f.doc, *k)).collect();
+    assert_eq!(members, vec![Some(f.a), Some(f.b)]);
+    assert_eq!(ci.link(), Some(f.m), "the copied instance keeps its main");
+    let members: Vec<_> = ci.children().iter().map(|k| link_of(&f.doc, *k)).collect();
+    assert_eq!(members, vec![Some(f.a), Some(f.b)]);
+    assert_eq!(mastik_core::component::instances_of(&f.doc, f.m).len(), 3);
+}
+
+/// *Duplicate as component* of a frame holding a main keeps a new main inside it,
+/// and the copied instance follows that new main.
+#[test]
+fn duplicating_a_frame_as_component_keeps_its_mains() {
+    let mut f = fixture();
+    let s = screen_holding_the_main(&mut f);
+    let (tx, copy) = duplicate_as(&mut f, s, mastik_core::component::MainCopy::NewMain);
+    f.doc.apply(&tx).expect("a valid copy");
+    let kids = f.doc.get(copy).unwrap().children().to_vec();
+    assert!(f.doc.get(kids[0]).unwrap().component());
+    assert_eq!(link_of(&f.doc, kids[1]), Some(kids[0]));
+}
+
 /// A member duplicated inside its own instance becomes the instance's own layer:
 /// keeping the link would give two nodes of one instance one source. Flip: keeping
 /// a lone member's link is refused as `SharedSource`.

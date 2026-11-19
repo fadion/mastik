@@ -1885,6 +1885,9 @@ pub struct Context<'a> {
     pub in_set: bool,
     /// The selection holds a main or a set — what withholds *Create component*.
     pub holds_main: bool,
+    /// The one selected plain layer has mains below it, which a copy makes
+    /// instances of — what offers it *Duplicate as component*, keeping them mains.
+    pub copies_mains: bool,
     /// Why the commit would refuse *Create component* on this selection, when it
     /// would (`component::why_not_main` / `why_not_wrap`, [`create_refusal`]).
     pub create_refused: Option<&'static str>,
@@ -2311,6 +2314,9 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
                     .dim_if(cx.create_refused.is_some(), cx.create_refused.unwrap_or(""))
                     .dim_if(locked, why),
             );
+            if cx.copies_mains {
+                rows.push(Row::new(Item::DuplicateAsComponent).dim_if(locked, why));
+            }
         }
         Role::Plain | Role::Local => {}
         Role::Set => {
@@ -2776,7 +2782,10 @@ pub const KIND_VERBS: &[(Item, &str)] = &[
         Item::CreateComponent,
         "Needs a layer that is not a component",
     ),
-    (Item::DuplicateAsComponent, "Needs one main component"),
+    (
+        Item::DuplicateAsComponent,
+        "Needs one main component or a layer holding one",
+    ),
     (Item::SelectAllInstances, "Needs a main component or a set"),
     (Item::GoToMain, "Needs an instance"),
     (Item::DetachInstance, "Needs an instance"),
@@ -3538,6 +3547,13 @@ impl MastikApp {
                     .get(*id)
                     .is_some_and(|n| n.component() || n.set().is_some())
             }),
+            // A walk of the one selected layer's subtree, only for a plain layer.
+            copies_mains: matches!(self.component_role(), Role::Plain | Role::Local)
+                && self
+                    .session
+                    .selection
+                    .single()
+                    .is_some_and(|id| mastik_core::component::holds_mains(&self.session.doc, id)),
             // A tree walk per frame that stops at the first layer with a spec.
             any_exports: self.document_exports_anything(),
             any_frames: !self.exported_frames().is_empty(),
@@ -4183,6 +4199,7 @@ mod tests {
             combinable: false,
             in_set: false,
             holds_main: false,
+            copies_mains: false,
             create_refused: None,
             combine_refused: None,
             property_reset: None,
@@ -5193,6 +5210,30 @@ mod tests {
         let mains = flat(&build(&cx));
         assert!(mains.contains(&Item::CombineAsVariants));
         assert!(!mains.contains(&Item::CreateComponent));
+    }
+
+    /// A plain layer holding mains is offered *Duplicate as component*, the copy
+    /// that keeps them mains; one holding none is not.
+    ///
+    /// flip: dropping the `copies_mains` row → fails at "a component sheet".
+    #[test]
+    fn a_layer_holding_mains_is_offered_duplicate_as_component() {
+        let sel = [id(1)];
+        let kinds = [Kind::Frame];
+        let target = Target::Layer {
+            id: id(1),
+            door: Door::Canvas,
+        };
+        let mut cx = open(target, &sel, &kinds);
+        assert!(
+            !flat(&build(&cx)).contains(&Item::DuplicateAsComponent),
+            "a plain frame"
+        );
+        cx.copies_mains = true;
+        assert!(
+            flat(&build(&cx)).contains(&Item::DuplicateAsComponent),
+            "a component sheet"
+        );
     }
 
     /// A refusal the commit would make dims the row with its reason: *Create

@@ -1027,7 +1027,9 @@ pub enum MainCopy {
 /// - A copy of a main in this document becomes an instance of it under
 ///   [`MainCopy::Instance`]: every copied node links to the node it was copied
 ///   from, and the copy is not itself a main. Its names stay the main's, which is
-///   why the caller skips the copy-numbering then.
+///   why the caller skips the copy-numbering then. A main inside the copy (a
+///   screen whose buttons are mains) becomes an instance the same way, unless it
+///   is a variant of a copied set.
 /// - Otherwise links are settled one at a time. A link `remap_subtree` pointed
 ///   inside the copy stays (a main copied with its instance). A link to a node not
 ///   in this document is dropped (a paste from another document). An instance
@@ -1051,6 +1053,10 @@ pub fn settle_copy(doc: &Document, template: &[Node], copy: &mut [Node], mains: 
         }
         return true;
     }
+    let made = match mains {
+        MainCopy::Instance => mains_inside_to_instances(nodes, template, copy, &in_template),
+        MainCopy::NewMain => FxHashSet::default(),
+    };
     let copied: FxHashSet<NodeId> = copy.iter().map(|n| n.id).collect();
     let root_above = |t: &Node| {
         let mut at = t.parent.and_then(|p| in_template.get(&p).copied());
@@ -1064,7 +1070,7 @@ pub fn settle_copy(doc: &Document, template: &[Node], copy: &mut [Node], mains: 
     };
     for (c, t) in copy.iter_mut().zip(template) {
         let Some(link) = c.link else { continue };
-        if copied.contains(&link) {
+        if copied.contains(&link) || made.contains(&t.id) {
             continue;
         }
         let keep = nodes.contains_key(&link) && (is_instance_root(nodes, t) || root_above(t));
@@ -1088,7 +1094,8 @@ pub fn settle_copy(doc: &Document, template: &[Node], copy: &mut [Node], mains: 
     let climbers: Vec<&Node> = template
         .iter()
         .filter(|t| {
-            !root_above(t)
+            !made.contains(&t.id)
+                && !root_above(t)
                 && is_instance_root(nodes, t)
                 && t.link
                     .and_then(|s| nodes.get(&s))
@@ -1130,4 +1137,58 @@ pub fn settle_copy(doc: &Document, template: &[Node], copy: &mut [Node], mains: 
         }
     }
     false
+}
+
+/// Make each main inside a copy an instance of the main it was copied from, as a
+/// copied main root is; answers the template ids made so. A set's variants stay
+/// mains, so a copied set is a new set. A link or swap elsewhere in the copy that
+/// pointed at one of those copies points at its original again, since the copy is
+/// no longer a main.
+fn mains_inside_to_instances(
+    nodes: &FxHashMap<NodeId, Node>,
+    template: &[Node],
+    copy: &mut [Node],
+    in_template: &FxHashMap<NodeId, &Node>,
+) -> FxHashSet<NodeId> {
+    let above = |t: &Node| {
+        std::iter::successors(t.parent.and_then(|p| in_template.get(&p).copied()), |a| {
+            a.parent.and_then(|p| in_template.get(&p).copied())
+        })
+    };
+    let main_here = |t: &Node| t.component && nodes.get(&t.id).is_some_and(|n| n.component);
+    let made: FxHashSet<NodeId> = template
+        .iter()
+        // The root is not among them: a copied main root is settled whole above.
+        .filter(|&t| {
+            t.parent.is_some_and(|p| in_template.contains_key(&p))
+                && above(t).all(|a| a.set.is_none())
+                && std::iter::once(t).chain(above(t)).any(main_here)
+        })
+        .map(|t| t.id)
+        .collect();
+    if made.is_empty() {
+        return made;
+    }
+    for (c, t) in copy.iter_mut().zip(template) {
+        if made.contains(&t.id) {
+            c.make_copy_of(t.id);
+        } else {
+            if t.link.is_some_and(|l| made.contains(&l)) {
+                c.link = t.link;
+            }
+            if t.swap.is_some_and(|s| made.contains(&s)) {
+                c.swap = t.swap;
+            }
+        }
+    }
+    made
+}
+
+/// Whether a main sits anywhere below `id`, so that a plain copy of `id` makes
+/// instances where [`MainCopy::NewMain`] keeps mains: what offers a component
+/// sheet *Duplicate as component*.
+pub fn holds_mains(doc: &Document, id: NodeId) -> bool {
+    crate::build::subtree_nodes(doc, &[id])
+        .into_iter()
+        .any(|n| n != id && doc.get(n).is_some_and(|n| n.component))
 }

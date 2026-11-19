@@ -196,7 +196,7 @@ stay shut (`align_dims_with_nothing_to_align_to_and_boolean_holds_the_four`).
 
 | Role | Rows, in order | Shown / enabled |
 |---|---|---|
-| Plain / Local | Create component (`Ctrl+Alt+K`) | withheld when the selection holds a main or a set; dims with the commit's own refusal (`create_refusal`: inside a component or instance, holds a component, wrong kind for the set, …) and on lock |
+| Plain / Local | Create component (`Ctrl+Alt+K`) · Duplicate as component | *Create component* withheld when the selection holds a main or a set; dims with the commit's own refusal (`create_refusal`: inside a component or instance, holds a component, wrong kind for the set, …) and on lock. *Duplicate as component* only for one layer with mains below it (`copies_mains`), whose copy keeps them mains; dims on lock |
 | Set | Add variant · Select all instances | *Add variant* dims on lock |
 | Main | Add variant (in a set only) · Duplicate as component · Select all instances | first two dim on lock |
 | Instance | Go to main component · Reset ‹property› · Reset all · Push all to main · Restore children · Detach instance (`Ctrl+Alt+B`) | *Reset ‹property›* only for a nested copy bound to a property that differs; *Reset all* only when drifted; *Push all to main* (`icon::PUSH_TO_MAIN`) only on an instance root with something to push, dimmed with `PUSH_KIT` or `PUSH_LOCKED` when its main is a kit's or locked; *Restore children* only when its own children (collapsed row: its subtree's structure) differ; all but *Go to main* dim on lock |

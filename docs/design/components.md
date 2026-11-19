@@ -348,6 +348,10 @@ name would start as an override). `component::settle_copy`, run by `build::inser
 `remap_subtree` copy (`MainCopy::Instance` / `MainCopy::NewMain`):
 
 - a copy of a main in this document becomes an instance, each node linked to its original;
+- so does each main inside a copy (a screen whose buttons are mains), except a copied set's variants,
+  which stay mains so a copied set is a new set; a link or swap in the copy that pointed at such a
+  main's copy points at the original again. *Duplicate as component*, offered on a layer holding
+  mains as well as on a main (`component::holds_mains`), keeps them all mains;
 - a link pointing inside the copy stays; a link to a node outside the document is dropped; an instance
   root's link stays; a member's link stays only if its instance root came along, otherwise it becomes
   local;

@@ -5156,7 +5156,7 @@ fn push_to_main_writes_an_override_into_the_main() {
 }
 
 /// `add_variant` grows a set by one main; `duplicate_as_component` copies a main
-/// as a new main, not an instance.
+/// as a new main, not an instance, and a layer holding a main with a new main in it.
 #[test]
 fn add_variant_and_duplicate_as_component_make_mains() {
     let (mut doc, mut ids, page) = blank();
@@ -5200,6 +5200,34 @@ fn add_variant_and_duplicate_as_component_make_mains() {
         "a main, not an instance"
     );
     assert_ne!(copy, lone);
+
+    // A layer holding a main copies with a new main in it; one holding none is refused.
+    let sheet = run(
+        &mut doc,
+        &mut ids,
+        "group",
+        json!({ "nodes": [lone.to_wire()] }),
+    )[0];
+    let copy = run(
+        &mut doc,
+        &mut ids,
+        "duplicate_as_component",
+        json!({ "node": sheet.to_wire() }),
+    )[0];
+    let inside = doc.get(copy).unwrap().children()[0];
+    assert!(doc.get(inside).unwrap().component(), "a new main inside");
+    assert_eq!(doc.get(inside).unwrap().link(), None);
+    let leaf = doc.get(lone).unwrap().children()[0];
+    assert_eq!(
+        refused_param(
+            &doc,
+            &mut ids,
+            "duplicate_as_component",
+            json!({ "node": leaf.to_wire() })
+        ),
+        "node",
+        "a layer holding no main"
+    );
 }
 
 /// `import_svg` reads markup into one group placed at `x`/`y`, named as asked,
