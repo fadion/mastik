@@ -1090,9 +1090,10 @@ fn kind_to_solve_against(
     scaled_text(kind, scaling.scalar(csx, csy)?, bound)
 }
 
-/// The edits that make a scale photographic: stroke widths, corner radii and font
-/// size by the geometric mean of the two factors ([`Scaling::scalar`]), and a
-/// frame's guides by the axis factor. Nothing under [`Scaling::Geometry`] (§5.6).
+/// The edits that make a scale photographic: stroke widths, corner radii, font
+/// size and effect lengths by the geometric mean of the two factors
+/// ([`Scaling::scalar`]), and a frame's guides by the axis factor. Nothing under
+/// [`Scaling::Geometry`] (§5.6).
 ///
 /// A corner radius is scaled from the stored radius, since `local_path` clamps.
 fn scale_scalars(
@@ -1141,6 +1142,17 @@ fn scale_scalars(
             })
             .collect();
         ops.push(Operation::SetStrokes { id, strokes });
+    }
+
+    // An effect's lengths are absolute as a stroke's are: a shadow's offset by the
+    // axis factors, its blur and spread and the blurs' radii by the mean, a grain by
+    // the axes. A bound number's literal is 0 and stays 0.
+    if !node.effects().is_empty() {
+        let mut effects = node.effects().to_vec();
+        for e in &mut effects {
+            scale_effect(&mut e.kind, csx.abs(), csy.abs(), s);
+        }
+        ops.push(Operation::SetEffects { id, effects });
     }
 
     match node.kind() {
@@ -1209,6 +1221,31 @@ fn scale_scalars(
             });
         }
         _ => {}
+    }
+}
+
+/// `kind`'s lengths multiplied by a scale of `sx` by `sy` whose mean is `s`; a
+/// sharpen's amount and a filter's numbers are no lengths.
+fn scale_effect(kind: &mut crate::effect::EffectKind, sx: f64, sy: f64, s: f64) {
+    use crate::effect::EffectKind as K;
+    match kind {
+        K::DropShadow(sh) | K::InnerShadow(sh) => {
+            sh.offset.x *= sx;
+            sh.offset.y *= sy;
+            sh.blur *= s;
+            sh.spread *= s;
+        }
+        K::LayerBlur { radius } | K::BackgroundBlur { radius } | K::Sharpen { radius, .. } => {
+            *radius *= s;
+        }
+        K::Noise(n) => {
+            let range = crate::noise::NOISE_SIZE_RANGE;
+            n.size = [
+                (n.size[0] * sx).clamp(*range.start(), *range.end()),
+                (n.size[1] * sy).clamp(*range.start(), *range.end()),
+            ];
+        }
+        K::Filters(_) => {}
     }
 }
 
@@ -1356,6 +1393,46 @@ fn scale_subtree(
         {
             scale_subtree(doc, res, *child_id, Point::ZERO, csx, csy, scaling, ops);
         }
+    }
+}
+
+/// The edits that move every scale in `id`'s subtree out of the transforms and
+/// into geometry, as the Scale tool would draw it, so the tree keeps §5.6's
+/// scale-free transforms: what an imported SVG's `viewBox` fit and `transform=`
+/// scales need, or layout measures the layer at its unscaled size. A node whose
+/// transform has no exact split (rank-1) is left as it is.
+pub fn baked_scale(doc: &Document, res: &Resolved, id: NodeId) -> Vec<Operation> {
+    let mut ops = Vec::new();
+    bake_scale_into(doc, res, id, &mut ops);
+    ops
+}
+
+fn bake_scale_into(doc: &Document, res: &Resolved, id: NodeId, ops: &mut Vec<Operation>) {
+    let Some(node) = doc.get(id) else { return };
+    let t = node.transform();
+    if let Some((transform, sx, sy)) = split_geometry_scale(t)
+        && ((sx - 1.0).abs() > SCALE_NOOP || (sy - 1.0).abs() > SCALE_NOOP)
+    {
+        ops.push(Operation::SetTransform { id, transform });
+        // Down through groups too: `scale_subtree` splits each child's own scale
+        // out with the one handed down, so nothing below needs a second pass.
+        scale_geometry(doc, res, id, sx, sy, Scaling::Photographic, ops);
+        if matches!(node.kind(), NodeKind::Artboard { .. }) {
+            scale_subtree(
+                doc,
+                res,
+                id,
+                Point::ZERO,
+                sx,
+                sy,
+                Scaling::Photographic,
+                ops,
+            );
+        }
+        return;
+    }
+    for child in node.children() {
+        bake_scale_into(doc, res, *child, ops);
     }
 }
 

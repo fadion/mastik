@@ -5,7 +5,10 @@
 //! the round-trip test in `mastik-export/tests/svg_roundtrip.rs` binds them.
 //!
 //! The entry point is a paste: `import` takes a string and a parent, mints its own ids
-//! and hands back one transaction, like every builder in [`crate::build`].
+//! and hands back one transaction, like every builder in [`crate::build`]. A scale the
+//! markup puts in a transform, the `viewBox` fit among them, is baked into geometry,
+//! strokes, type and effects before it returns ([`scale_baked`]), so no imported
+//! transform carries scale.
 //!
 //! ## Grammars
 //!
@@ -481,13 +484,109 @@ pub fn import<'s>(
         ..
     } = out;
     Ok(Import {
-        tx: Transaction(ops),
+        tx: Transaction(scale_baked(ops, parent, group)),
         root: group,
         size,
         shapes,
         skipped,
         approximated,
     })
+}
+
+/// `ops` with every scale the markup put in a transform (the `viewBox` fit, a
+/// `transform=` scale) baked into geometry, strokes, type and effects, as the Scale
+/// tool draws it (`edit::baked_scale`): layout measures a layer in its own space,
+/// so a 22 px icon drawn on a 256 viewBox would otherwise be a 256 box to a flex row.
+///
+/// The bake is folded into the import's own ops rather than appended, since callers
+/// edit those afterwards (the root's placement, a bound colour) and an appended
+/// `SetTransform` or `SetStrokes` would undo the edit. A bake that will not apply
+/// leaves `ops` as they are.
+fn scale_baked(mut ops: Vec<Operation>, parent: NodeId, root: NodeId) -> Vec<Operation> {
+    use crate::document::Document;
+    // Most markup scales nothing; it skips the scratch document.
+    let scaled = ops.iter().any(|op| match op {
+        Operation::CreateNode {
+            transform: Some(t), ..
+        } => {
+            let s = crate::build::Basis::of(*t).scale;
+            (s.x - 1.0).abs() > 1e-9 || (s.y - 1.0).abs() > 1e-9
+        }
+        _ => false,
+    });
+    if !scaled {
+        return ops;
+    }
+    let mut scratch = Document::new(parent);
+    let mut probe = ops.clone();
+    // The scratch parent is empty, so the root goes in at the bottom.
+    if let Some(Operation::CreateNode { index, .. }) = probe.first_mut() {
+        *index = 0;
+    }
+    if scratch.apply(&Transaction(probe)).is_err() {
+        return ops;
+    }
+    let res = crate::Resolved::rebuild(&scratch);
+    let baked = crate::edit::baked_scale(&scratch, &res, root);
+    if baked.is_empty() || scratch.apply(&Transaction(baked.clone())).is_err() {
+        return ops;
+    }
+    // What the import's ops already carry is rewritten from the baked layers; a
+    // paint list no op set yet, or anything else the bake wrote, is appended.
+    let mut carried = rustc_hash::FxHashSet::default();
+    for op in &mut ops {
+        match op {
+            Operation::CreateNode {
+                id,
+                kind,
+                transform,
+                ..
+            } => {
+                if let Some(n) = scratch.get(*id) {
+                    *kind = n.kind().clone();
+                    *transform = Some(n.transform());
+                }
+            }
+            Operation::SetFills { id, fills } => {
+                if let Some(n) = scratch.get(*id) {
+                    fills.clone_from(&n.paint().fills);
+                    carried.insert((*id, 0));
+                }
+            }
+            Operation::SetStrokes { id, strokes } => {
+                if let Some(n) = scratch.get(*id) {
+                    strokes.clone_from(&n.paint().strokes);
+                    carried.insert((*id, 1));
+                }
+            }
+            Operation::SetEffects { id, effects } => {
+                if let Some(n) = scratch.get(*id) {
+                    *effects = n.effects().to_vec();
+                    carried.insert((*id, 2));
+                }
+            }
+            _ => {}
+        }
+    }
+    for op in baked {
+        let kept = match &op {
+            // Carried by the `CreateNode` rewritten above.
+            Operation::SetTransform { .. }
+            | Operation::SetGeometry { .. }
+            | Operation::SetTextStyle { .. }
+            | Operation::SetTextSpans { .. }
+            | Operation::SetParagraphStyle { .. }
+            | Operation::SetParagraphSpans { .. } => false,
+            Operation::SetFills { id, .. } => !carried.contains(&(*id, 0)),
+            Operation::SetStrokes { id, .. } => !carried.contains(&(*id, 1)),
+            Operation::SetEffects { id, .. } => !carried.contains(&(*id, 2)),
+            _ => true,
+        };
+        if kept {
+            ops.push(op);
+        }
+    }
+    ops
 }
 
 /// The `width`/`height` the markup claims, or its `viewBox`'s: the caller wants the
@@ -3088,6 +3187,74 @@ mod tests {
         assert_eq!(world_box(&doc, id), kurbo::Rect::new(0.0, 0.0, 24.0, 24.0));
     }
 
+    /// An icon drawn small on a large `viewBox`, with a `transform=` scale inside,
+    /// lands with no scale in any transform: the root's own box, the one layout
+    /// measures, is the declared 22, and the strokes and type are drawn as before.
+    ///
+    /// flip: `import` returning its ops unbaked (no `scale_baked`) → fails at "no
+    /// scale left".
+    #[test]
+    fn an_imported_scale_is_baked_into_geometry() {
+        let (doc, out) = imported(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 256 256">
+                 <g transform="scale(2)">
+                   <path d="M0 0 L64 0 L64 64 Z" stroke="black" stroke-width="8"/>
+                 </g>
+                 <rect x="128" y="128" width="128" height="128" stroke="black" stroke-width="16"/>
+                 <text x="0" y="200" font-size="32">A</text>
+               </svg>"#,
+        );
+        let k = 22.0 / 256.0;
+        for id in std::iter::once(out.root).chain(shapes(&doc, &out)) {
+            let s = crate::build::Basis::of(doc.get(id).unwrap().transform()).scale;
+            assert!(
+                (s.x - 1.0).abs() < 1e-9 && (s.y - 1.0).abs() < 1e-9,
+                "no scale left on {id:?}: {s:?}"
+            );
+        }
+        let res = crate::Resolved::rebuild(&doc);
+        let own = crate::query::local_box(&doc, &res, out.root).expect("a box");
+        assert!(
+            (own.width() - 22.0).abs() < 1.0 && (own.height() - 22.0).abs() < 1.5,
+            "the root's own box is the icon's: {own:?}"
+        );
+        let nodes = shapes(&doc, &out);
+        let width_of = |kind: fn(&NodeKind) -> bool| {
+            let id = *nodes
+                .iter()
+                .find(|id| kind(doc.get(**id).unwrap().kind()))
+                .unwrap();
+            (id, doc.get(id).unwrap().paint().strokes[0].width)
+        };
+        let (path, w) = width_of(|k| matches!(k, NodeKind::Path { .. }));
+        assert!(
+            (w - 16.0 * k).abs() < 1e-6,
+            "the scaled group's stroke: {w}"
+        );
+        // World bounds take in the centred stroke, half its width each side.
+        let b = world_box(&doc, path);
+        assert!(
+            (b.width() - 128.0 * k - w).abs() < 1e-6,
+            "the path's points: {b:?}"
+        );
+        let (rect, w) = width_of(|k| matches!(k, NodeKind::Rect { .. }));
+        assert!((w - 16.0 * k).abs() < 1e-6, "the rect's stroke: {w}");
+        let b = world_box(&doc, rect);
+        assert!(
+            (b.x0 - 128.0 * k + w / 2.0).abs() < 1e-6 && (b.width() - 128.0 * k - w).abs() < 1e-6,
+            "the rect: {b:?}"
+        );
+        let text = *nodes
+            .iter()
+            .find(|id| matches!(doc.get(**id).unwrap().kind(), NodeKind::Text { .. }))
+            .unwrap();
+        let NodeKind::Text { style, .. } = doc.get(text).unwrap().kind() else {
+            unreachable!()
+        };
+        let size = style.font_size;
+        assert!((size - 32.0 * k).abs() < 1e-6, "the type: {size}");
+    }
+
     /// A non-positive `width`/`height` is no declaration to either reader, so the
     /// drawing pastes at its own units instead of collapsing or flipping.
     ///
@@ -4038,6 +4205,23 @@ mod tests {
         );
         assert!((s.blur - 4.0).abs() < 1e-9, "{}", s.blur);
         assert_eq!(s.color, Color::BLACK);
+    }
+
+    /// A shadow drawn under a `viewBox` scale keeps the size it is drawn at once
+    /// the scale is baked: its offset, blur and spread are multiplied too.
+    ///
+    /// flip: `scale_scalars` leaving effects alone → fails at "the offset".
+    #[test]
+    fn a_shadow_under_a_baked_scale_is_scaled_with_it() {
+        let (doc, out) = imported(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 100 100">
+                 <defs><filter id="f"><feDropShadow dx="8" dy="12" stdDeviation="4"/></filter></defs>
+                 <rect width="50" height="20" filter="url(#f)"/>
+               </svg>"##,
+        );
+        let (s, _) = shadow(&stack_of(&doc, &out), 0);
+        assert_eq!(s.offset, kurbo::Vec2::new(2.0, 3.0), "the offset");
+        assert!((s.blur - 2.0).abs() < 1e-9, "the blur: {}", s.blur);
     }
 
     /// A `stdDeviation` of zero is a hard-edged shadow or a disabled blur (nothing

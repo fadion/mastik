@@ -5268,6 +5268,45 @@ fn import_svg_reads_markup_into_a_placed_group() {
     );
 }
 
+/// An icon drawn at 22 px on a 256 `viewBox`, imported into a flex row, is laid
+/// out as the 22 px it draws: after the row's padding and its first item, inside
+/// the row.
+///
+/// flip: `svg_in::import` leaving the `viewBox` scale in the root's transform →
+/// fails at "laid out at its drawn size".
+#[test]
+fn an_icon_imported_into_a_flex_row_is_laid_out_at_its_drawn_size() {
+    let (mut doc, mut ids, page) = blank();
+    let tree = json!({
+        "kind": frame(300.0, 60.0),
+        "display": { "Flex": { "gap": 8, "padding": 10 } },
+        "children": [{ "kind": { "Rect": { "size": { "width": 40, "height": 40 } } } }],
+    });
+    let row = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": tree }),
+    )[0];
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 256 256"><rect width="256" height="256" fill="black"/></svg>"#;
+    let icon = run(
+        &mut doc,
+        &mut ids,
+        "import_svg",
+        json!({ "parent": row.to_wire(), "svg": svg }),
+    )[0];
+    let res = Resolved::rebuild(&doc);
+    let (r, outer) = (
+        res.world_bounds(icon).unwrap(),
+        res.world_bounds(row).unwrap(),
+    );
+    assert!(
+        (r.width() - 22.0).abs() < 1e-6 && (r.x0 - outer.x0 - 58.0).abs() < 1e-6,
+        "laid out at its drawn size: {r:?} in {outer:?}"
+    );
+    assert!(outer.contains_rect(r), "inside the row: {r:?} in {outer:?}");
+}
+
 /// `replace_text` rewrites every match in scope, keeps a styled run's styling,
 /// leaves a locked layer alone and says so.
 ///

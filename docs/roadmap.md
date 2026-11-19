@@ -77,15 +77,6 @@ Ideas worth weighing, not yet decided or scheduled.
 
 ## Parked decisions
 
-- **A scaled group in a layout is laid out at its unscaled size.** `svg_in::import` puts the
-  viewBox scale on the root group (`view_transform`) and each element's `transform=` scale on its
-  node (`element_transform`), against `core-ops.md` §5.6's scale-free transforms, so an icon from
-  *Insert icon* or `place_asset`, 22 px drawn on a 256 viewBox, is a 256 box to flex
-  (`FlexTree::push` measures `atomic_box` in the group's own space) and lands outside a row under
-  any justification; `place_group` does the same for a pinned group. Either the importer bakes
-  scale into geometry (paths, sizes, strokes, font sizes, gradients, clips) and keeps only
-  rotation, skew and flip, or layout counts an item's own scale, which rewrites *transforms do not
-  affect layout* (`layout.md` §5.3c).
 - Binary save format (the versioned JSON format ships).
 - Rich text model migration (`runs: Vec<(Range, TextStyle)>`, `architecture.md` §5.4).
 - History cap / snapshot compaction for huge delete inverses.
