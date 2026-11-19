@@ -679,6 +679,12 @@ pub static TOOLS: &[Tool] = &[
                 false,
                 "An icon's side or a photo's width.",
             ),
+            param(
+                "color",
+                ParamKind::Text,
+                false,
+                "A set icon's ink, \"#rrggbb\"; else black.",
+            ),
             param("fill", ParamKind::Nodes, false, "Layers a photo fills."),
             param(
                 "pending",

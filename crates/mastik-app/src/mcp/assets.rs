@@ -597,6 +597,21 @@ fn target(args: &Value) -> Result<Target, String> {
     })
 }
 
+/// The colour `args` give an icon's ink, `#rrggbb` or `#rrggbbaa`, else black
+/// as the panel draws it.
+fn icon_ink(args: &Value) -> Result<&str, String> {
+    let Some(v) = args.get("color") else {
+        return Ok(panel::ICON_INK);
+    };
+    v.as_str()
+        .filter(|s| {
+            s.strip_prefix('#').is_some_and(|h| {
+                matches!(h.len(), 6 | 8) && h.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        })
+        .ok_or_else(|| format!("`color`: {v} is not a colour; write \"#rrggbb\""))
+}
+
 /// The refusal of an icon asked to fill layers.
 const ICON_FILLS_NOTHING: &str =
     "An icon fills no layer; a photo does. Place the icon with `parent`.";
@@ -623,12 +638,16 @@ pub(crate) fn hold(
                 return Err(ICON_FILLS_NOTHING.into());
             }
             t.parent.ok_or(NO_PARENT)?;
-            icon_drawing(docs, (&set, &name, &variant), t.size)
+            let ink = icon_ink(args)?;
+            icon_drawing(docs, (&set, &name, &variant), t.size, ink)
         }
         Asset::Kit { .. } => {
             Err("A kit's icon is an instance of its component, placed at Edit access".into())
         }
         Asset::Photo { service, id } => {
+            if args.get("color").is_some() {
+                return Err("`color` inks an icon; a photo has no ink".into());
+            }
             let desk = docs.desk().ok_or(NO_DESK)?;
             if !desk.prefs().photo_services.contains(&service) {
                 return Err(format!(
@@ -707,6 +726,11 @@ pub(super) fn place(docs: &mut impl Documents, path: &Path, call: &Call) -> Resu
             if t.fill.is_some() {
                 return Err(ICON_FILLS_NOTHING.into());
             }
+            if args.get("color").is_some() {
+                return Err(
+                    "`color` inks an icon from a set; a kit's icon is an instance, recoloured with `set` once placed".into(),
+                );
+            }
             let parent = t.parent.ok_or(NO_PARENT)?;
             let at = t.at;
             let desk = docs.desk().ok_or(NO_DESK)?;
@@ -741,11 +765,12 @@ pub(super) fn place(docs: &mut impl Documents, path: &Path, call: &Call) -> Resu
 }
 
 /// A remote set's icon drawn as the panel inserts it, `size` points across
-/// (the variant's grid unless given), with its credit.
+/// (the variant's grid unless given) in `ink`, with its credit.
 fn icon_drawing(
     docs: &mut impl Documents,
     (set, name, variant): (&str, &str, &str),
     size: Option<f64>,
+    ink: &str,
 ) -> Result<Holding, String> {
     let desk = docs.desk().ok_or(NO_DESK)?;
     let spec = SetSpec::by_key(set).ok_or_else(|| format!("`asset`: no icon set `{set}`"))?;
@@ -773,7 +798,7 @@ fn icon_drawing(
     let size = size.unwrap_or_else(|| loaded.grid_of(v));
     Ok(Holding::Ready(Box::new(Held::Icon {
         name: icon.name.clone(),
-        svg: icon.svg(size, panel::ICON_INK),
+        svg: icon.svg(size, ink),
         credit: panel::icon_credit(spec, &panel::today()),
     })))
 }
@@ -1159,6 +1184,47 @@ mod tests {
             json!({ "asset": "icon:font-awesome/bell/Solid", "fill": [page] }),
         );
         assert!(why.is_error, "an icon fills nothing");
+    }
+
+    /// An icon placed with `color` is drawn in that ink, and a `color` that is
+    /// no hex colour is refused.
+    ///
+    /// flip: `hold` ignoring `icon_ink` → fails at "inked red".
+    #[test]
+    fn an_icon_takes_the_colour_asked() {
+        let (mut app, mut engine, file, page, ..) = fixture("icon-ink");
+        bell_set(&mut app);
+        let made = ok(
+            &mut engine,
+            &mut app,
+            "place_asset",
+            json!({ "asset": "icon:font-awesome/bell/Solid", "parent": page, "color": "#ff0000" }),
+        );
+        let root = NodeId::from_wire(made["created"][0].as_str().unwrap()).unwrap();
+        let s = Documents::session(&mut app, &file).unwrap();
+        let mut inks = Vec::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let n = s.doc.get(id).unwrap();
+            stack.extend(n.children());
+            for f in &n.paint().fills {
+                if let mastik_core::Brush::Solid(c) = f.value.brush.drawn() {
+                    inks.push(c.to_rgba8().to_u8_array());
+                }
+            }
+        }
+        assert!(!inks.is_empty(), "the icon paints");
+        assert!(
+            inks.iter().all(|c| c[..3] == [255, 0, 0]),
+            "inked red: {inks:?}"
+        );
+        let why = now(
+            &mut engine,
+            &mut app,
+            "place_asset",
+            json!({ "asset": "icon:font-awesome/bell/Solid", "parent": page, "color": "red" }),
+        );
+        assert!(why.is_error, "a colour name is refused");
     }
 
     /// A photo search waits for its answer and thumbnails, then answers each
