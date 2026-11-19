@@ -663,6 +663,12 @@ impl MastikApp {
     /// for every keystroke, not for Enter. It lands at once when it ends quickly
     /// ([`Self::bar_line_landed`], [`Self::bar_line_failed`]).
     pub(crate) fn run_bar_line(&mut self, line: &str) {
+        self.run_bar_line_again(line, 0);
+    }
+
+    /// [`Self::run_bar_line`], run `again` more times, each once the one before
+    /// it lands; a failure or a stop ends the count.
+    pub(crate) fn run_bar_line_again(&mut self, line: &str, again: u32) {
         let parsed = mastik_vm::desugar(line);
         let selection = self.line_subject(line);
         let labels = self.bar_labels();
@@ -675,6 +681,7 @@ impl MastikApp {
             false => running::After::Bar {
                 line: line.to_owned(),
                 luau: parsed.luau,
+                again,
             },
         };
         let label = verb_named(line).unwrap_or("Edit");
@@ -768,13 +775,14 @@ impl MastikApp {
     }
 
     /// `.` in Pick: run the last line in the log again on the selection, a line
-    /// typed or one an edit made elsewhere was written as (a drag's `.x += 24`).
-    pub(crate) fn repeat_bar_line(&mut self) {
+    /// typed or one an edit made elsewhere was written as (a drag's `.x += 24`),
+    /// `times` times over.
+    pub(crate) fn repeat_bar_line(&mut self, times: u32) {
         let Some(line) = self.session.command_log.last_line().map(str::to_owned) else {
             self.session.info("No line to repeat yet");
             return;
         };
-        self.run_bar_line(&line);
+        self.run_bar_line_again(&line, times.saturating_sub(1));
     }
 
     /// An `/ai` line's footer: where its request stands, what the keys do with

@@ -210,6 +210,8 @@ drawing:
   — a commit, an undo, a redo, a jump in the history, a revert — refuses, and the status line says
   *“Card grid” is running — Esc stops it*; an agent's write is refused with the same reason. The
   canvas still pans, zooms, hovers and selects, and pages still switch: none of that is an edit.
+  Text typed into a document script's code pane meanwhile stays in the pane and is stored once
+  the run lands or stops. A count before `.` runs each repetition once the one before it lands.
   Holding is the rule rather than merging the person's edits with the run's, because a script
   measures the document as it goes (a layer placed from the one before it, a layout read back)
   and an edit landing mid-run would make its step mean something it never measured. The hold is

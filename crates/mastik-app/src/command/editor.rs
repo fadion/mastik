@@ -109,6 +109,10 @@ pub(crate) struct Scripts {
     library: Vec<library::LibraryScript>,
     /// When the library script being typed in was last changed, until written.
     pending: Option<Instant>,
+    /// A document script's text typed while a run held the document, stored
+    /// once the run lands or stops; the pane keeps it rather than following
+    /// the document meanwhile.
+    held_edit: Option<(ScriptId, String)>,
     output: Vec<RunOut>,
     /// The line the last run failed at, for the script it ran.
     bad: Option<(Which, usize)>,
@@ -687,7 +691,19 @@ impl MastikApp {
             return;
         };
         match which {
+            Which::Document(id) if self.session.script_run.is_some() => {
+                self.scripts.held_edit = Some((id, self.scripts.buffer.clone()));
+                self.authored(&which);
+            }
             Which::Document(id) => {
+                if self
+                    .scripts
+                    .held_edit
+                    .as_ref()
+                    .is_some_and(|(h, _)| *h == id)
+                {
+                    self.scripts.held_edit = None;
+                }
                 let tx = Transaction(vec![Operation::SetScriptSource {
                     id,
                     source: self.scripts.buffer.clone(),
@@ -1128,10 +1144,32 @@ impl MastikApp {
                 Err(wait) => ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait)),
             }
         }
+        // Text typed while a run held the document is stored once the hold ends.
+        if self.session.script_run.is_none()
+            && let Some((id, source)) = self.scripts.held_edit.take()
+            && self
+                .session
+                .doc
+                .script(id)
+                .is_some_and(|s| s.source != source)
+        {
+            self.session.name_step("Edit script", icon::FILE_CODE);
+            self.session.commit_run(
+                Transaction(vec![Operation::SetScriptSource { id, source }]),
+                "edit-script",
+            );
+        }
         // A document script changed under the pane (an undo, an agent's edit):
-        // show it as it is, the keyboard staying with the code.
+        // show it as it is, the keyboard staying with the code. Not while text
+        // typed in it waits for a run's hold to end.
         if let Some(Which::Document(id)) = &self.scripts.current {
+            let waiting = self
+                .scripts
+                .held_edit
+                .as_ref()
+                .is_some_and(|(h, _)| h == id);
             match self.session.doc.script(*id) {
+                Some(_) if waiting => {}
                 Some(s) if s.source != self.scripts.buffer => {
                     let text = s.source.clone();
                     self.show_changed_text(ctx, text);
@@ -4303,6 +4341,37 @@ mod tests {
         let copied = app.session.doc.scripts().last().map(|s| s.source.clone());
         assert_eq!(copied.as_deref(), Some("a typed"), "the last typing");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Typing in a document script while a run holds the document stays in
+    /// the pane, and is stored once the run stops.
+    /// flip: `store_buffer` committing while held → fails at "the typing stays".
+    #[test]
+    fn typing_while_a_run_holds_the_document_is_kept() {
+        use crate::command::running::INLINE;
+        use crate::command::tests::{key, pass};
+        let (ctx, mut app) = typing_at_end("sel.x += 1");
+        let Some(Which::Document(id)) = app.scripts.current.clone() else {
+            panic!("fixture: a document script is open");
+        };
+        let held = INLINE.replace(std::time::Duration::ZERO);
+        app.run_bar_line("while true do end");
+        INLINE.set(held);
+        assert!(app.session.script_run.is_some(), "fixture: in flight");
+        type_code(&ctx, &mut app, "0");
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        assert_eq!(app.scripts.buffer, "sel.x += 10", "the typing stays");
+        pass(
+            &ctx,
+            &mut app,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+            egui::Modifiers::NONE,
+        );
+        assert!(app.session.script_run.is_none(), "fixture: stopped");
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        let source = app.session.doc.script(id).map(|s| s.source.clone());
+        assert_eq!(source.as_deref(), Some("sel.x += 10"), "stored after");
+        assert_eq!(app.scripts.buffer, "sel.x += 10");
     }
 
     /// A document script changed under the pane while its code has the
