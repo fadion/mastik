@@ -2560,8 +2560,7 @@ impl MastikApp {
         let mut invert = false;
         let mut invert_reset = false;
         self.panel(ui, "Mask", None, |_app, ui| {
-            ui.spacing_mut().interact_size.y = 28.0;
-            ui.spacing_mut().button_padding.y = 0.0;
+            ui::combo_height(ui);
             ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
             let label = match shared {
                 Some(m) => m.label(),
@@ -6303,8 +6302,7 @@ impl MastikApp {
     ) -> Option<StrokeAlign> {
         let mut picked = None;
         ui.scope(|ui| {
-            ui.spacing_mut().interact_size.y = 28.0;
-            ui.spacing_mut().button_padding.y = 0.0;
+            ui::combo_height(ui);
             let label = match shown {
                 Some(a) => align_label(a),
                 None => "Mixed",
@@ -6527,8 +6525,7 @@ impl MastikApp {
         ui.add_space(ui::CARD_ROW_GAP);
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
-            ui.spacing_mut().interact_size.y = 28.0;
-            ui.spacing_mut().button_padding.y = 0.0;
+            ui::combo_height(ui);
             let combo = egui::ComboBox::from_id_salt(("stroke-sides", index))
                 .icon(ui::combo_chevron)
                 .width(ui.available_width())
@@ -6801,8 +6798,7 @@ impl MastikApp {
             ui.label(ui::eyebrow("Ends"));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                ui.spacing_mut().interact_size.y = CELL;
-                ui.spacing_mut().button_padding.y = 0.0;
+                ui::combo_height(ui);
                 let w = (inner - CELL - ui::CARD_COL_GAP * 2.0) / 2.0;
                 let end = |ui: &mut egui::Ui, at_end: bool, current: Marker| {
                     let face = ui::glyph_and_text(end_glyph(current, at_end), current.label());
@@ -7031,8 +7027,7 @@ impl MastikApp {
 
                     // --- the ends and the corners, common to all four ----------
                     ui.scope(|ui| {
-                        ui.spacing_mut().interact_size.y = CELL;
-                        ui.spacing_mut().button_padding.y = 0.0;
+                        ui::combo_height(ui);
                         let mut cap = s.cap;
                         egui::ComboBox::from_id_salt(("stroke-cap", index))
                             .icon(ui::combo_chevron)
