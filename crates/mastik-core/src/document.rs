@@ -1772,6 +1772,15 @@ impl Document {
                     values: old,
                 })
             }
+            // Nothing is dirtied: a key only pairs layers on a variant switch.
+            Operation::SetLineage { id, lineage } => {
+                let node = self.nodes.get_mut(id).ok_or(OpError::NoSuchNode(*id))?;
+                let old = std::mem::replace(&mut node.lineage, *lineage);
+                Ok(Operation::SetLineage {
+                    id: *id,
+                    lineage: old,
+                })
+            }
             Operation::SetProperties { id, props } => {
                 let node = self.nodes.get_mut(id).ok_or(OpError::NoSuchNode(*id))?;
                 let old = std::mem::replace(&mut node.props, props.clone());

@@ -6754,6 +6754,9 @@ pub struct Tree {
     pub swap: Option<String>,
     pub set: Option<crate::variant::VariantSet>,
     pub variant: Option<Vec<String>>,
+    /// A variant layer's lineage key, the layer it pairs with in the set's other
+    /// variants: remapped like `copy_of` when the tree holds that layer.
+    pub lineage: Option<String>,
     pub props: Option<Vec<crate::variant::Property>>,
     pub description: Option<String>,
     pub doc_link: Option<String>,
@@ -7001,6 +7004,12 @@ fn tree_ops(
             values: values.clone(),
         });
     }
+    if let Some(key) = &tree.lineage {
+        late.push(Operation::SetLineage {
+            id,
+            lineage: Some(tree_ref(a, minted, key)?),
+        });
+    }
     if let Some(source) = &tree.copy_of {
         late.push(Operation::SetLink {
             id,
@@ -7151,8 +7160,9 @@ fn own_bindings(n: &crate::node::Node) -> Vec<TreeBinding> {
 /// takes and the setters write: its kind with a text's runs, every fill and stroke
 /// with the hidden ones, its fill rule, effects and exports, what it reads (styles,
 /// modes, width queries, its own bindings), its pivot, element, link, grids and
-/// guides, its export-fill and proportion flags, and its part in a component, each
-/// field only where it differs from a new layer's, and no item ids. A copy also
+/// guides, its export-fill and proportion flags, and its part in a component with
+/// a variant layer's lineage key, each field only where it differs from a new
+/// layer's, and no item ids. A copy also
 /// writes each field its source has and it leaves at a new layer's default
 /// ([`copy_defaults`]), which `insert_subtree` would otherwise fill back from the
 /// source. With `drawn`, a bound field is written as drawn and left unbound, for a
@@ -7335,6 +7345,9 @@ fn layer_tree(doc: &Document, id: NodeId, drawn: bool, deep: bool) -> Option<Val
             "variant",
             serde_json::to_value(n.variant()).unwrap_or_default(),
         );
+    }
+    if !drawn && let Some(key) = n.lineage {
+        put("lineage", Value::from(key.to_wire()));
     }
     if !n.props().is_empty() {
         put("props", values(n.props()));
@@ -7563,11 +7576,11 @@ fn unlink_members(doc: &Document, outer: NodeId, v: &mut Value) {
     }
 }
 
-/// Every layer id a layer of `v` refers to: its link, its swap, and its
-/// properties' bound layers and preferred mains.
+/// Every layer id a layer of `v` refers to: its link, its swap, its lineage
+/// key, and its properties' bound layers and preferred mains.
 fn referenced(v: &Value, out: &mut std::collections::HashSet<String>) {
     let Value::Object(map) = v else { return };
-    for key in ["copy_of", "swap"] {
+    for key in ["copy_of", "swap", "lineage"] {
         if let Some(Value::String(s)) = map.get(key) {
             out.insert(s.clone());
         }
@@ -7750,11 +7763,12 @@ fn expand_copies(doc: &Document, v: &mut Value) {
         }
     }
     /// What a main has that is its own and not a copy's.
-    const MAIN_ONLY: [&str; 9] = [
+    const MAIN_ONLY: [&str; 10] = [
         "id",
         "component",
         "set",
         "variant",
+        "lineage",
         "props",
         "description",
         "doc_link",

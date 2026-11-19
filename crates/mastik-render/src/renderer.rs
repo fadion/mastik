@@ -1703,6 +1703,7 @@ impl RenderOverrides {
             | Operation::SetSwap { .. }
             | Operation::SetVariantSet { .. }
             | Operation::SetVariant { .. }
+            | Operation::SetLineage { .. }
             | Operation::SetProperties { .. }
             | Operation::SetDescription { .. }
             | Operation::SetDocLink { .. }

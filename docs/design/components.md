@@ -658,10 +658,11 @@ variant* is the verb that takes the next free combination; an instance's name is
   states }` (*Interaction states*, below).
 - `Node::variant: Vec<String>` — a variant's values, one per property in the set's order.
 - `Node::lineage: Option<NodeId>` — the **lineage key** a variant's layer shares with its counterparts
-  in the other variants; `Node::lineage()` is the recorded key, else the layer's own id. Only
-  `build::insert_subtrees_as` writes one, when a variant is copied into its own set as a new main
+  in the other variants; `Node::lineage()` is the recorded key, else the layer's own id.
+  `build::insert_subtrees_as` writes one when a variant is copied into its own set as a new main
   (*Add variant*, *Duplicate as component* on a variant): each copied layer takes its source's key, so
-  a chain of copies shares one. `remap_subtree` remaps a key pointing inside the template (a whole set
+  a chain of copies shares one. A set read by `get_tree` carries each recorded key as `lineage`, and
+  `insert_subtree` writes it back (`Operation::SetLineage`) remapped to the layers the tree makes. `remap_subtree` remaps a key pointing inside the template (a whole set
   copied or vendored keeps its variants' keys consistent), gives a key pointing outside that several
   copied layers share one fresh key (its layer was deleted, and the copies still pair), and drops one
   pointing outside that only one holds (a copy within one variant gets a fresh key), so a key is unique

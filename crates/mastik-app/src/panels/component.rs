@@ -1232,6 +1232,7 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         | O::SetSwap { .. }
         | O::SetVariantSet { .. }
         | O::SetVariant { .. }
+        | O::SetLineage { .. }
         | O::SetProperties { .. }
         | O::CreateNode { .. }
         | O::DeleteNode { .. }
