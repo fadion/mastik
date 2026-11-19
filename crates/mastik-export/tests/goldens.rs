@@ -844,8 +844,8 @@ fn the_fixture_holds_one_node_of_every_kind() {
 /// flip: a guarded arm `E::Filters(_) if false => "halftone"` in `effect_name` →
 /// fails at "the golden fixture no longer covers every EffectKind".
 ///
-/// Not covered by either golden: `<mask>`, `<radialGradient>`, `<image>`,
-/// `<textPath>` and `<use>`. The SVG filter emits the blur and colour matrix
+/// Not covered by either golden: `<radialGradient>`, `<image>`, `<textPath>` and
+/// `<use>`. The SVG filter emits the blur and colour matrix
 /// first and casts both shadows off that result (§6.4), which is why the stack's
 /// list order is not the markup order. A pivot changes no SVG, since the writer
 /// never sees it.

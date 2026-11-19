@@ -542,8 +542,10 @@ fn styles_become_composite_tokens_or_a_note() {
 }
 
 /// An Oklab ramp, which a DTCG gradient cannot name the space of, goes as the
-/// dense sRGB stops that draw it.
-/// flip: the gradient arm reading `g.gradient.stops` unmixed → fails at the count.
+/// dense sRGB stops that draw it, and reads back into the same document as no
+/// change.
+/// flip: the gradient arm reading `g.gradient.stops` unmixed → fails at the count;
+/// the reader's `alike` comparing the held stops unmixed → fails at "no change".
 #[test]
 fn an_oklab_style_ramp_goes_as_the_stops_that_draw_it() {
     use mastik_core::kurbo::Point;
@@ -565,9 +567,20 @@ fn an_oklab_style_ramp_goes_as_the_stops_that_draw_it() {
             }])),
         )]))
         .unwrap();
-    let v = parse(&tokens(&f.doc, None).json);
+    let json = tokens(&f.doc, None).json;
+    let v = parse(&json);
     let stops = at(&v, "styles.fill.Ramp.$value").as_array().unwrap();
     assert!(stops.len() > 2, "the Oklab mix as stops: {stops:?}");
+
+    let file = mastik_export::dtcg_in::parse(&json).unwrap();
+    let r = mastik_export::dtcg_in::review(
+        &f.doc,
+        &file,
+        mastik_core::variable::CollectionId::FIRST,
+        &mut ids,
+    )
+    .unwrap();
+    assert_eq!(r.changes(), 0, "no change: {:#?}", r.rows);
 }
 
 fn add_style(ids: &mut IdSource, name: &str, value: StyleValue) -> Operation {

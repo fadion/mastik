@@ -412,6 +412,10 @@ pub fn spacing(scope: &Scope<'_>, step: f64) -> Vec<Finding> {
             }
             continue;
         }
+        // A boolean's operands are placed to make its shape, not laid out.
+        if makes_a_boolean(doc, parent) {
+            continue;
+        }
         let mut kids = scope.children(parent);
         // A ground holding the rest is not one of the run.
         let all: Vec<Rect> = kids.iter().map(|(_, b)| *b).collect();
@@ -498,7 +502,7 @@ fn run_of(kids: &mut [(NodeId, Rect)]) -> Option<Vec<(NodeId, f64, f64)>> {
 #[derive(Default)]
 struct Raw {
     by: BTreeMap<String, (String, Vec<NodeId>)>,
-    /// The colour a variable's fill or stroke key first matched, as RGBA bytes.
+    /// The colour a variable's fill or stroke key matched, as RGBA bytes.
     colour: BTreeMap<String, [u8; 4]>,
     /// Each key's layers as a set, so a layer is listed once.
     seen: HashSet<(String, NodeId)>,
@@ -541,7 +545,8 @@ pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
             // A colour's every raw use binds in one call where a merge into the
             // colour its variable carries binds to it.
             let colour = ["fill", "stroke"].iter().any(|what| {
-                key.strip_prefix('v')
+                without_colour(&key)
+                    .strip_prefix('v')
                     .and_then(|k| k.strip_suffix(what))
                     .and_then(NodeId::from_wire)
                     .zip(raw.colour.get(&key))
@@ -583,10 +588,11 @@ fn fitting<'v>(
         Field::Spacing => (SPACING, CORNER, Some(Field::Corner)),
         _ => (&[], &[], None),
     };
+    // A word starting with a root says it too: `spacer`, `rounded`, `gaps`.
     let names = |v: &mastik_core::Variable, words: &[&str]| {
         name_words(&v.name)
             .iter()
-            .any(|part| words.contains(&part.as_str()))
+            .any(|part| words.iter().any(|w| part.starts_with(w)))
     };
     // A scope says what a variable is for only where it keeps the other field
     // out: one admitting every number field, as a token import writes, says nothing.
@@ -601,7 +607,7 @@ fn fitting<'v>(
 }
 
 /// The words of a variable's name, lowercased: split at `/ - _ .`, spaces and
-/// a camel hump (`borderRadius`), so `round` is no word of `background`.
+/// a camel hump (`borderRadius`), so `round` starts no word of `background`.
 fn name_words(name: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut word = String::new();
@@ -622,8 +628,13 @@ fn name_words(name: &str) -> Vec<String> {
     out
 }
 
+/// A [`raw_matches`] key less the `#rrggbb` a colour match ends in.
+fn without_colour(key: &str) -> &str {
+    key.split_once('#').map_or(key, |(k, _)| k)
+}
+
 /// [`raw_values`]' matches with every layer each names: keyed `s<style>` for a
-/// style, `v<variable><what>` for a variable.
+/// style, `v<variable><what>` for a variable, a colour's followed by the colour.
 fn raw_matches(scope: &Scope<'_>) -> Raw {
     let doc = scope.doc;
     let vars = doc.variables();
@@ -678,7 +689,9 @@ fn raw_matches(scope: &Scope<'_>) -> Raw {
             for c in solids {
                 let bytes = c.to_rgba8().to_u8_array();
                 if let Some((v, _)) = colours.iter().find(|(v, b)| *b == bytes && v.binds(field)) {
-                    let key = format!("v{}{what}", v.id.0.to_wire());
+                    // A variable matches other colours in other modes; each is
+                    // its own finding, its line and merge that colour's.
+                    let key = format!("v{}{what}{}", v.id.0.to_wire(), hex(c));
                     raw.colour.entry(key.clone()).or_insert(bytes);
                     raw.add(
                         key,
@@ -1216,7 +1229,17 @@ pub fn health(scope: &Scope<'_>, step: f64) -> Health {
             continue;
         };
         layers.extend(ids.iter().filter(|id| seen.insert(**id)));
-        matches.push((m, ids));
+        // One row a variable, though each colour it matches is its own key.
+        match matches.iter_mut().find(|(held, _)| *held == m) {
+            Some((_, held)) => {
+                for id in ids {
+                    if !held.contains(&id) {
+                        held.push(id);
+                    }
+                }
+            }
+            None => matches.push((m, ids)),
+        }
     }
     matches.sort_by_key(|(_, ids)| std::cmp::Reverse(ids.len()));
     h.raw_match = Tidy::of(layers);
@@ -1251,7 +1274,7 @@ fn match_of(doc: &Document, key: &str) -> Option<Match> {
                 .map(|s| Match::Style(s.id))
         }
         None => {
-            let rest = key.strip_prefix('v')?;
+            let rest = without_colour(key).strip_prefix('v')?;
             let id = ["fill", "stroke", "radius", "spacing"]
                 .iter()
                 .find_map(|what| rest.strip_suffix(what))
@@ -1736,14 +1759,19 @@ mod tests {
 
     /// A raw match is only what binding or applying would keep as drawn: a
     /// colour against the variable in the mode in force at the layer, a text's
-    /// whole type against a text style, and a name's words, never its letters.
-    /// A merge is offered only where it binds to the variable.
+    /// whole type against a text style, and a name's words by their start, never
+    /// inside them. One finding holds one raw colour, and a merge is offered only
+    /// where it binds that colour to the variable.
     ///
     /// flip: `raw_matches` reading every layer in the default mode → fails at
-    /// "the Light colour in a Dark frame"; the text arm comparing six fields →
-    /// fails at "an uppercase twin"; `fitting` matching inside a word → fails at
-    /// "`background/blur` is no radius"; `mergeable` taking any swatch of the
-    /// variable → fails at "a variable bound only at half".
+    /// "the Light colour in a Dark frame"; its colour key without the colour →
+    /// fails at "the Light colour in a Dark frame" too, `night_dark` joining
+    /// `day`; the text arm comparing six fields → fails at "an uppercase twin";
+    /// `fitting` matching inside a word → fails at "`background/blur` is no
+    /// radius"; `fitting` matching whole words only → fails at the `size/12`
+    /// lookup, the radius offered as `spacer`; `mergeable` taking any swatch of
+    /// the variable → fails at "a variable bound only at half"; `health` keeping
+    /// a row per colour key → fails at "health lists `Brand` once".
     #[test]
     fn raw_matches_hold_what_binding_or_applying_keeps() {
         let mut ids = IdSource::new(0x4ec);
@@ -1773,6 +1801,10 @@ mod tests {
                 0.0,
                 rect(40.0, 40.0, "#99bbff", 0.0),
             ),
+            // `Brand` bound once, so a merge of its Light colour binds to it.
+            layer(&p, "bound", 0.0, 100.0, rect(40.0, 40.0, "#3366cc", 0.0)),
+            json!({ "verb": "bind_variable", "args": { "nodes": ["@bound"],
+                "field": { "Fill": 0 }, "variable": "@brand" } }),
             // Bound only at half its alpha: no swatch of the raw colour is it.
             json!({ "verb": "add_variable", "args": { "kind": "color", "name": "Half",
                 "value": { "color": "#226622" } }, "as": "half" }),
@@ -1786,6 +1818,9 @@ mod tests {
                 200.0,
                 rect(40.0, 40.0, "#226622", 0.0),
             ),
+            // Ahead of `size/12`, which it would tie with as a name of neither field.
+            json!({ "verb": "add_variable", "args": { "kind": "number", "name": "spacer",
+                "value": { "number": 12 } } }),
             json!({ "verb": "add_variable", "args": { "kind": "number", "name": "size/12",
                 "value": { "number": 12 } } }),
             json!({ "verb": "add_variable", "args": { "kind": "number",
@@ -1842,15 +1877,29 @@ mod tests {
                 .find(|f| f.code == "raw_value" && f.message.contains(var))
                 .unwrap_or_else(|| panic!("{var}: {raw:?}"))
         };
-        let brand = of("`Brand`");
-        assert!(brand.ids.contains(&l["day"]), "{brand:?}");
-        assert!(
-            !brand.ids.contains(&l["night_light"]),
+        let brand = of("A fill of #3366cc is the variable `Brand`");
+        assert_eq!(
+            brand.ids,
+            vec![l["day"]],
             "the Light colour in a Dark frame: {brand:?}"
         );
         assert!(
-            brand.ids.contains(&l["night_dark"]),
-            "the Dark one: {brand:?}"
+            brand
+                .instead
+                .as_deref()
+                .is_some_and(|i| i.contains("merge_colours")),
+            "the Light colour merges into the bound one: {brand:?}"
+        );
+        let dark = of("A fill of #99bbff is the variable `Brand`");
+        assert_eq!(
+            dark.ids,
+            vec![l["night_dark"]],
+            "the Dark one, apart: {dark:?}"
+        );
+        assert_eq!(
+            dark.instead.as_deref(),
+            Some("bind the variable"),
+            "no swatch of the Dark colour is bound: {dark:?}"
         );
         assert_eq!(
             of("`Half`").instead.as_deref(),
@@ -1861,6 +1910,10 @@ mod tests {
             of("`size/12`").ids == vec![l["rounded"]]
                 && !raw.iter().any(|f| f.message.contains("background/blur")),
             "`background/blur` is no radius: {raw:?}"
+        );
+        assert!(
+            !raw.iter().any(|f| f.message.contains("`spacer`")),
+            "`spacer` is no radius: {raw:?}"
         );
         let style = |name: &str| -> Vec<&Finding> {
             raw.iter()
@@ -1893,13 +1946,27 @@ mod tests {
             "health lists the style: {:?}",
             h.matches
         );
+        let brand_rows: Vec<_> = h
+            .matches
+            .iter()
+            .filter(|(m, _)| *m == Match::Variable(mastik_core::VarId(l["brand"])))
+            .collect();
+        assert!(
+            brand_rows.len() == 1
+                && brand_rows[0].1.contains(&l["day"])
+                && brand_rows[0].1.contains(&l["night_dark"]),
+            "health lists `Brand` once, both colours: {:?}",
+            h.matches
+        );
     }
 
     /// Hand-placed gaps off the scale are one finding per gap, naming every
     /// layer beside one, and `health` folds them and an off-scale radius into
     /// its count, each corner counted as spacing.
+    /// A boolean's operands are its shape, so their gaps are not.
     /// flip: `health` without its fold of `spacing`'s findings → fails at "the
-    /// row's layers"; `counts` without its corner arm → fails at "radius 6".
+    /// row's layers"; `counts` without its corner arm → fails at "radius 6";
+    /// `spacing` without its boolean skip → fails at "not the dots'".
     #[test]
     fn off_scale_gaps_and_radii_reach_health() {
         let mut ids = IdSource::new(0x4ee);
@@ -1913,6 +1980,17 @@ mod tests {
             layer("@row", "r2", 100.0, 0.0, rect(40.0, 40.0, "#eeeeee", 0.0)),
             layer(&p, "box", 0.0, 200.0, frame(100.0, 100.0, "#ffffff")),
             layer("@box", "soft", 0.0, 0.0, rect(40.0, 40.0, "#eeeeee", 6.0)),
+            // A dotted mark: its operands' gaps are the shape, not a row.
+            layer(
+                &p,
+                "dots",
+                0.0,
+                400.0,
+                json!({ "kind": { "Boolean": { "op": "Union" } }, "fills": ["#dddddd"] }),
+            ),
+            layer("@dots", "d0", 0.0, 0.0, rect(40.0, 40.0, "#dddddd", 0.0)),
+            layer("@dots", "d1", 50.0, 0.0, rect(40.0, 40.0, "#dddddd", 0.0)),
+            layer("@dots", "d2", 100.0, 0.0, rect(40.0, 40.0, "#dddddd", 0.0)),
         ];
         let made = mastik_core::verbs::run_script(
             &mut doc,
@@ -1929,11 +2007,20 @@ mod tests {
         let res = Resolved::rebuild(&doc);
         let scope = Scope::new(&doc, &res, &[page]);
         let row = [l["r0"], l["r1"], l["r2"]];
+        assert_eq!(
+            doc.get(l["dots"]).map(|n| n.children().len()),
+            Some(3),
+            "fixture: three operands"
+        );
         let off: Vec<Finding> = spacing(&scope, 4.0)
             .into_iter()
             .filter(|f| f.code == "off_scale")
             .collect();
-        assert_eq!(off.len(), 1, "one gap of 10: {off:?}");
+        assert_eq!(
+            off.len(),
+            1,
+            "one gap of 10, the row's, not the dots': {off:?}"
+        );
         assert!(row.iter().all(|id| off[0].ids.contains(id)), "{off:?}");
         let h = health(&scope, 4.0);
         assert!(

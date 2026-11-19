@@ -477,7 +477,7 @@ fn effect_region(
     effects: &[Keyed<Effect>],
 ) -> Option<Rect> {
     // `None` drops the filter and keeps the artwork, like `ScenePainter::push_effect_layer`.
-    Some(ink_in(res, id, id, transform)? + Insets::uniform(working_pad(effects)))
+    Some(ink_in(res, id, id, transform)? + Insets::uniform(working_pad(effects, transform)))
 }
 
 /// `ink_of`'s ink box in the space `outer` maps `frame`'s local space into, the
@@ -514,20 +514,38 @@ fn region_attrs(r: Rect) -> String {
 ///
 /// Uniform and generous on purpose: too small silently crops, and the final
 /// `feComposite operator="in"` confines an inner shadow. `0.0` with neither.
-fn working_pad(effects: &[Keyed<Effect>]) -> f64 {
+/// The offset counts as written, through `space` (see [`effect_def`]), which a
+/// lean stretches past its layer-space length.
+fn working_pad(effects: &[Keyed<Effect>], space: Affine) -> f64 {
     effects
         .iter()
         .filter(|e| e.visible)
         .filter_map(|e| match &e.kind {
-            EffectKind::InnerShadow(s) => {
-                Some(mastik_core::effect::reach(s.blur) + s.spread.abs() + s.offset.hypot())
-            }
+            EffectKind::InnerShadow(s) => Some(
+                mastik_core::effect::reach(s.blur)
+                    + s.spread.abs()
+                    + offset_in(space, s.offset).hypot(),
+            ),
             EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
                 Some(mastik_core::effect::reach(*radius))
             }
             _ => None,
         })
         .fold(0.0, f64::max)
+}
+
+/// A shadow's layer-space `offset` through `space`'s linear part, as the filter
+/// writes it: it turns, mirrors and leans with the layer.
+fn offset_in(space: Affine, offset: Vec2) -> Vec2 {
+    let [a, b, c, d, _, _] = space.as_coeffs();
+    Vec2::new(a * offset.x + c * offset.y, b * offset.x + d * offset.y)
+}
+
+/// A sharpen's amount as [`effect_def`] writes it, rounded to the export's finest
+/// precision.
+fn sharpen_written(amount: f64) -> f64 {
+    let unit = 10f64.powi(i32::from(mastik_core::export::MAX_PRECISION));
+    (amount * unit).round() / unit
 }
 
 /// The `<filter>` for one node's effect stack.
@@ -579,10 +597,12 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect, space: Affine
             // `feComposite` clamps as the renderers do. The amount is rounded to
             // four places once and both coefficients written from it, so they sum
             // to exactly 1, the shape `svg_in::sharpen_amount` reads back; `1 + a`
-            // and `−a` rounded apart need not.
-            EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
-                let unit = 10f64.powi(i32::from(mastik_core::export::MAX_PRECISION));
-                let amount = &((amount * unit).round() / unit);
+            // and `−a` rounded apart need not. An amount that rounds to 0 is left
+            // out: the reader refuses a zero `k3`, and with it the whole stack.
+            EffectKind::Sharpen { amount, radius }
+                if *radius > 0.0 && sharpen_written(*amount) > 0.0 =>
+            {
+                let amount = &sharpen_written(*amount);
                 let _ = writeln!(
                     out,
                     "      <feGaussianBlur in=\"{graphic}\" stdDeviation=\"{}\" result=\"{r}b\"/>",
@@ -620,12 +640,7 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect, space: Affine
         if s.color.components[3] <= 0.0 {
             continue;
         }
-        let [a, b, c, d, _, _] = space.as_coeffs();
-        let offset = Vec2::new(
-            a * s.offset.x + c * s.offset.y,
-            b * s.offset.x + d * s.offset.y,
-        );
-        let r = shadow_graph(&mut out, &graphic, s, offset, n, inner);
+        let r = shadow_graph(&mut out, &graphic, s, offset_in(space, s.offset), n, inner);
         if inner { &mut over } else { &mut behind }.push(r);
     }
 
@@ -1385,8 +1400,14 @@ fn gradient_def(name: &str, brush: &mastik_core::GradientBrush, frame: Option<Re
 /// each reads as the turn.
 const WEDGE_MAX: f64 = std::f64::consts::TAU / 72.0;
 
-/// How far a wedge reaches under the next, so anti-aliased edges leave no seam.
+/// The least turn a wedge reaches under the next, so anti-aliased edges leave no
+/// seam far out; [`WEDGE_UNDERLAY`] holds it near the centre.
 const WEDGE_OVERLAP: f64 = WEDGE_MAX / 8.0;
+
+/// The least distance, in the gradient's units, a wedge reaches under the next
+/// at any radius. A turn alone is under a pixel near the centre, where two edges'
+/// partial coverages composite to less than opaque.
+const WEDGE_UNDERLAY: f64 = 1.0;
 
 /// A sweep, which SVG 1.1 lacks, as a `<pattern>` of wedges round the centre,
 /// each filled with a linear gradient from the colour at its first edge to the
@@ -1402,7 +1423,7 @@ fn sweep_def(
     p: &mastik_core::peniko::SweepGradientPosition,
     frame: Option<Rect>,
 ) -> String {
-    use std::f64::consts::TAU;
+    use std::f64::consts::{FRAC_PI_2, TAU};
     let stops: Vec<(f64, [f32; 4])> = ramp
         .stops
         .iter()
@@ -1477,15 +1498,13 @@ fn sweep_def(
         );
     }
     let r = sweep_radius(p.center, frame, brush.transform).unwrap_or(50.0);
+    // At least `WEDGE_UNDERLAY` at the outer edge, as the band below holds it inside.
+    let overlap = WEDGE_OVERLAP.max(WEDGE_UNDERLAY / r).min(WEDGE_MAX);
     // Far enough that a wedge's straight outer edge stays past the circle.
-    let reach = r / ((WEDGE_MAX + WEDGE_OVERLAP) / 2.0).cos() * 1.01;
+    let reach = r / ((WEDGE_MAX + overlap) / 2.0).cos() * 1.01;
     let (cx, cy, start) = (p.center.x, p.center.y, f64::from(p.start_angle));
-    let at = |a: f64| {
-        (
-            cx + reach * (start + a).cos(),
-            cy + reach * (start + a).sin(),
-        )
-    };
+    let towards = |a: f64, d: f64| (cx + d * (start + a).cos(), cy + d * (start + a).sin());
+    let at = |a: f64| towards(a, reach);
     let stop = |offset: &str, c: [f32; 4]| {
         let c = mastik_core::peniko::color::PremulColor::<mastik_core::peniko::color::Srgb>::new(c)
             .un_premultiply()
@@ -1519,18 +1538,32 @@ fn sweep_def(
         // would paint its colour over the start's. The first reaches back under
         // the last instead, which is painted over it, so the seam is covered too;
         // its gradient pads to its first colour there.
-        let end = (a1 + WEDGE_OVERLAP).min(TAU);
-        let begin = if i == 0 { a0 - WEDGE_OVERLAP } else { a0 };
-        let ((x0, y0), (x2, y2)) = (at(begin), at(end));
+        let end = (a1 + overlap).min(TAU);
+        let begin = if i == 0 { a0 - overlap } else { a0 };
+        // Near the centre the turn is under a pixel, so the wedge also takes a
+        // band `WEDGE_UNDERLAY` wide past its last edge: a corner on that band's
+        // line, on the ray a quarter turn on, or on the seam's if that is nearer.
+        // The first takes one behind its first edge too, under the last.
+        let mut corners = vec![(cx, cy)];
+        if i == 0 {
+            corners.push(towards(a0 - FRAC_PI_2, WEDGE_UNDERLAY));
+        }
+        corners.extend([at(begin), at(end)]);
+        if end < TAU {
+            let side = (a1 + FRAC_PI_2).min(TAU);
+            corners.push(towards(
+                side,
+                (WEDGE_UNDERLAY / (side - a1).sin()).min(reach),
+            ));
+        }
+        let d = corners
+            .iter()
+            .map(|(x, y)| format!("{} {}", fmt(*x), fmt(*y)))
+            .collect::<Vec<_>>()
+            .join("L");
         let _ = writeln!(
             paths,
-            "      <path d=\"M{} {}L{} {}L{} {}Z\" fill=\"url(#{name}-w{i})\"/>",
-            fmt(cx),
-            fmt(cy),
-            fmt(x0),
-            fmt(y0),
-            fmt(x2),
-            fmt(y2),
+            "      <path d=\"M{d}Z\" fill=\"url(#{name}-w{i})\"/>"
         );
     }
     let xform = if brush.transform == Affine::IDENTITY {
@@ -3840,8 +3873,14 @@ mod sweep_tests {
                     .filter(|s| !s.is_empty())
                     .map(|s| s.parse().unwrap())
                     .collect();
-                let first = turn(n[2], n[3]);
-                let round = (turn(n[4], n[5]) - first).rem_euclid(std::f64::consts::TAU);
+                // The outer two, past the band's corners by the centre.
+                let outer: Vec<_> = n
+                    .chunks(2)
+                    .filter(|p| (p[0] - 50.0).hypot(p[1] - 50.0) > 10.0)
+                    .collect();
+                let first = turn(outer[0][0], outer[0][1]);
+                let round =
+                    (turn(outer[1][0], outer[1][1]) - first).rem_euclid(std::f64::consts::TAU);
                 (first, first + round)
             })
             .collect()
