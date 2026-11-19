@@ -602,6 +602,30 @@ fn target(args: &Value) -> Result<Target, String> {
     })
 }
 
+/// `args` with each `"@label"` its `fill` or `parent` names, a layer an earlier
+/// call of a proposal makes, read as a stand-in id, and whether there was one: a
+/// placement held for a proposal is checked against the document only where it
+/// names a layer already there, and again once the proposal runs (`put_held`).
+fn unlabelled(args: &Value) -> (Value, bool) {
+    let mut args = args.clone();
+    let mut labelled = false;
+    let mut stand_in = |v: &mut Value| {
+        if v.as_str().is_some_and(|s| s.starts_with('@')) {
+            *v = json!(NodeId::NOWHERE.to_wire());
+            labelled = true;
+        }
+    };
+    if let Some(parent) = args.get_mut("parent") {
+        stand_in(parent);
+    }
+    match args.get_mut("fill") {
+        Some(Value::Array(ids)) => ids.iter_mut().for_each(&mut stand_in),
+        Some(one) => stand_in(one),
+        None => {}
+    }
+    (args, labelled)
+}
+
 /// The ink `args` give an icon to be drawn in: `colour` as `#rrggbb` or
 /// `#rrggbbaa`, else black as the panel draws it. A `colour` naming a variable
 /// is drawn black here and bound on landing ([`icon_variable`]).
@@ -664,7 +688,8 @@ pub(crate) fn hold(
         .get("asset")
         .and_then(Value::as_str)
         .ok_or("`asset`: an id `search_assets` answered with")?;
-    let t = target(args)?;
+    let (shape, labelled) = unlabelled(args);
+    let t = target(&shape)?;
     match parse(asset)? {
         Asset::Icon { set, name, variant } => {
             if t.fill.is_some() {
@@ -690,7 +715,9 @@ pub(crate) fn hold(
             let photo = desk.assets().agent_found(&service, &id).ok_or(
                 "That photo is in no recent search: search again with `search_assets`, and place one it answers",
             )?;
-            targets(docs, path, args)?;
+            if !labelled {
+                targets(docs, path, args)?;
+            }
             let desk = docs.desk().ok_or(NO_DESK)?;
             let px = PhotoSize::from_key(&desk.prefs().photo_size);
             let (image, pixels) = match desk.assets().agent_photo(&photo, px) {
@@ -1571,6 +1598,44 @@ mod tests {
         let s = Documents::session(&mut app, &file).unwrap();
         let why = crate::mcp::propose::apply(s, &bare).expect_err("no photo at hand");
         assert!(why.contains("no longer at hand"), "{why}");
+    }
+
+    /// A proposal's photo fills a layer an earlier call of it makes, named by
+    /// that call's label, and applies as one step.
+    ///
+    /// flip: `hold` reading `fill` without `unlabelled` → fails at "proposed".
+    #[test]
+    fn a_proposal_fills_a_layer_it_makes() {
+        let (mut app, mut engine, file, page, _rect, _) = fixture("labelled");
+        let photo = coffee(&mut app);
+        searched(&mut app, &photo);
+        let kind = json!({ "Rect": { "size": { "width": 80, "height": 60 } } });
+        let ask = json!({
+            "title": "Card with a photo",
+            "calls": [
+                { "verb": "create_node", "args": { "parent": page, "kind": kind }, "as": "r" },
+                { "verb": "place_asset", "args": { "asset": "photo:unsplash/x1", "fill": ["@r"] } },
+            ],
+        });
+        let answer = waits(&mut engine, &mut app, "propose_edit", ask);
+        downloaded(&mut app, &photo);
+        engine.run_later(&mut app);
+        let out = answer.try_recv().expect("answered once downloaded");
+        assert!(!out.is_error, "proposed: {:?}", out.content);
+        let id = out.structured.unwrap()["proposal"].as_u64().unwrap();
+        let p = engine.proposal(id).expect("held").clone();
+        let s = Documents::session(&mut app, &file).unwrap();
+        let depth = s.history.undo_depth();
+        crate::mcp::propose::apply(s, &p).expect("applies");
+        assert_eq!(s.history.undo_depth(), depth + 1, "one step");
+        let made = NodeId::from_wire(&page)
+            .and_then(|p| s.doc.get(p))
+            .and_then(|p| p.children().last().copied())
+            .expect("the new rectangle");
+        assert!(
+            s.doc.get(made).and_then(|n| n.credit()).is_some(),
+            "the photo fills it"
+        );
     }
 
     /// A chat searches at any level and runs a placement only at Edit; Propose

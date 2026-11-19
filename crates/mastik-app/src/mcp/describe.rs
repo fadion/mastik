@@ -70,15 +70,18 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
         .iter()
         .filter(|n| !all.iter().any(|d| d["name"] == **n))
         .partition(|n| beyond.iter().any(|d| d["name"] == **n));
-    // A query's matches above the level too, the ones some level runs: an
+    // A query's matches above the level too, the ones a higher level runs: an
     // agent that searched for a thing it may not do would otherwise conclude
-    // that no tool does it, and could not tell the person what would.
+    // that no tool does it, and could not tell the person what would. A tool a
+    // higher level drops (`propose_edit` at Edit) is no such thing.
     let mut above: Vec<(u8, &str)> = beyond
         .iter()
         .filter_map(|d| {
             let name = d["name"].as_str()?;
             let r = rank(d).filter(|&r| r > 0)?;
-            needs(name).is_some().then_some((r, name))
+            needs(name)
+                .is_some_and(|l| level.is_none_or(|at| l > at))
+                .then_some((r, name))
         })
         .collect();
     above.sort_by_key(|(r, _)| *r);

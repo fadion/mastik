@@ -301,7 +301,9 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   Phases 2 or 3, `set`, or `place_asset`; a call may name its verb `tool`, as a `batch` step does,
   since an agent copies one shape for the other. A later call names what an earlier one made as
   `"@label"`, resolved on each run, since the trial run on the copy mints its own ids
-  (`Proposal::labels`). They are checked by running them on a copy of the document (`mcp::propose::check`), so the
+  (`Proposal::labels`), and `"@page"` is the first page, as in a batch; a `place_asset` may fill
+  or go into a layer named so, its target checked once the calls run (`assets::put_held`). A
+  `page` given by name reads as that page's id in each call, as in a call of its own. They are checked by running them on a copy of the document (`mcp::propose::check`), so the
   person's document, its revision and their redo stay as they were. The answer is
   `{proposal, changes}`: the id, and what each call changes in its verb's own words. A refusal
   names the call and proposes nothing.
@@ -313,10 +315,17 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   before proposals were) says *This proposal was not kept; ask again to see it.*
 - **An applied card is found again on load.** Step serials are minted afresh when a document's
   history is read back, so a saved card records only that it was applied; loading the thread
-  finds its undo step again (`propose::applied_step`): the one done step that is a `propose_edit`
-  by the card's chat under its title. Found, the card offers *Undo* as before; none or several
-  found, it reads *Applied as one step* with no *Undo*, since a guess could take back the wrong
-  step.
+  finds its undo step again (`propose::applied_steps`): the done steps that are a `propose_edit`
+  by the card's chat under its title, which the applied cards sharing that chat and title take
+  one each in the order they were proposed. Found, the card offers *Undo* as before; when the
+  steps found are not one per such card (one card's own step gone, another's left), none of
+  them takes one and each reads *Applied as one step* with no *Undo*, since a guess could take
+  back the wrong step.
+- **A card read back without its photo or icon** (a thread's file never holds them) applies the
+  host's copy while the host still holds one (`panel::held_copy`), so a tab switch keeps a
+  placement's *Apply*; once the host has let it go, *Apply* says the asset is no longer at hand.
+- **A card's *Undo* while the document takes none** (compare, a script running) is refused with
+  the status line's reason, and the card stays applied.
 - **The card** heads with the sparkle, the title and the count of changes, lists the changes, and
   ends in one of:
   - **Apply** — runs the calls again on the document as it is, as one undo step named by the title
@@ -465,7 +474,8 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   longer side (`export_png`'s ceiling) since it is drawn on the UI thread (`chip_renders`), and the
   preamble names them in order (`pictures: one image per layer, in this order: …`), the scope
   marked as such, so the agent knows which image is which. A layer with nothing to draw is left
-  out of both.
+  out of both. A per-turn harness reads each from a file in its working folder; one that cannot
+  be written refuses the turn (`Refusal::PictureNotWritten`), since the order would no longer hold.
 - **To one that does not**, the preamble says no picture reaches it and describes each in a line
   (`prompt::sketch`): kind and size, its own fills, how many layers it holds by kind, and the
   first of its text, quoted, names written as the preamble writes names.
