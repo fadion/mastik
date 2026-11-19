@@ -86,8 +86,6 @@ Ideas worth weighing, not yet decided or scheduled.
 - **A stored, user-placed transform origin for a multi-selection** — unparks when a user asks for it.
 - UI toolkit revisit (gpui / Xilem), `architecture.md` §9.1.
 - MCP transport hardening (auth, TCP/remote).
-- **Scripts reaching outside the document** — writing files, reading images; two shapes, neither
-  ruled (`vm.md`).
 - **ACP as the assistant's transport** — until Claude Code speaks it without an adapter
   (`design/assistant.md` §2).
 - `vello_hybrid` as a third backend if low-end GPUs demand it.

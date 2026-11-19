@@ -370,3 +370,86 @@ fn parse_default(ty: &InputType, text: &str) -> Result<Value, String> {
             .ok_or_else(|| format!("“{text}” is not one of {}", words.join(", "))),
     }
 }
+
+impl Header {
+    /// What a run reads as `param`: each input's value from `given`, read as its
+    /// default is written (a JSON value as its text) and held to its range, else
+    /// its default. A name the header does not declare is refused.
+    pub fn params(
+        &self,
+        given: &serde_json::Map<String, Value>,
+    ) -> Result<serde_json::Map<String, Value>, String> {
+        if let Some(stray) = given
+            .keys()
+            .find(|k| !self.inputs.iter().any(|i| &i.name == *k))
+        {
+            let names: Vec<&str> = self.inputs.iter().map(|i| i.name.as_str()).collect();
+            return Err(match names.as_slice() {
+                [] => format!("the script declares no inputs, so no `{stray}`"),
+                _ => format!("no input `{stray}`; the script's are {}", names.join(", ")),
+            });
+        }
+        let mut out = serde_json::Map::new();
+        for input in &self.inputs {
+            let value = match given.get(&input.name) {
+                None => input.default.clone(),
+                Some(v) => {
+                    let text = match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    let value = parse_default(&input.ty, &text)
+                        .map_err(|why| format!("`{}`: {why}", input.name))?;
+                    if let (Some((lo, hi)), Some(n)) = (input.range, value.as_f64())
+                        && !(lo..=hi).contains(&n)
+                    {
+                        return Err(format!("`{}`: {n} is outside {lo}..{hi}", input.name));
+                    }
+                    value
+                }
+            };
+            out.insert(input.name.clone(), value);
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A given value is read by its input's type and range; the rest keep
+    /// their defaults, and an undeclared name is refused.
+    #[test]
+    fn params_read_given_values_by_type_and_fill_defaults() {
+        let h = header(
+            "---@input cols integer = 3 -- Columns {1..12}\n\
+             ---@input brand string = acme\n\
+             ---@input tint color = #ff0000\n",
+        )
+        .unwrap();
+        let given = |pairs: &[(&str, Value)]| -> serde_json::Map<String, Value> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect()
+        };
+        let p = h.params(&given(&[("cols", json!("5"))])).unwrap();
+        assert_eq!(p["cols"], json!(5));
+        assert_eq!(p["brand"], json!("acme"), "a default");
+        assert_eq!(
+            h.params(&given(&[("cols", json!(4))])).unwrap()["cols"],
+            json!(4)
+        );
+        assert!(
+            h.params(&given(&[("cols", json!("20"))])).is_err(),
+            "out of range"
+        );
+        assert!(h.params(&given(&[("cols", json!("two"))])).is_err());
+        assert!(h.params(&given(&[("tint", json!("red"))])).is_err());
+        assert!(
+            h.params(&given(&[("logo", json!("x"))])).is_err(),
+            "undeclared"
+        );
+    }
+}

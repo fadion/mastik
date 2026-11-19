@@ -451,7 +451,7 @@ pub static TOOLS: &[Tool] = &[
                 "steps",
                 ParamKind::Model("Steps"),
                 true,
-                "The steps in order, each {\"tool\": <a write tool>, \"args\": {…}, \"as\": <label>}. In a later step's argument, \"@<label>\" stands for what that step made first, and \"@<label>/<Path>\" for an `insert_subtree` layer by its path below the root; write a text starting with @ as @@.",
+                "The steps in order, each {\"tool\": <a write tool>, \"args\": {…}, \"as\": <label>}. In a later step's argument, \"@<label>\" stands for what that step made first, and \"@<label>/<Path>\" for an `insert_subtree` layer by its path below the root, and \"@page\" for the first page; write a text starting with @ as @@.",
             ),
             BASE_REV,
         ],
@@ -499,6 +499,12 @@ pub static TOOLS: &[Tool] = &[
                 ParamKind::Model("Args"),
                 false,
                 "More layers by a name the script uses, {\"card\": <id>}.",
+            ),
+            param(
+                "params",
+                ParamKind::Model("Args"),
+                false,
+                "Its header's `---@input` values, {\"<input>\": <value>}.",
             ),
             BASE_REV,
         ],
@@ -1170,7 +1176,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 111_900;
+        const ALL_BUDGET: usize = 112_100;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

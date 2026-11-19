@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 /// What `mastik run` takes, for its refusals and `help run`.
 pub(crate) const USAGE: &str = "usage: mastik run <script.json> [--in <file.mastik>] -o <out.mastik>\n       \
      mastik run <script.luau> [--in <file.mastik>] [--select <id>]... [--layer <name>=<id>]... \
-     -o <out.mastik>";
+     [--param <input>=<value>]... -o <out.mastik>";
 
 /// A parsed `mastik run` command line.
 #[derive(Debug, PartialEq)]
@@ -25,6 +25,8 @@ pub(crate) struct Run {
     pub select: Vec<String>,
     /// `--layer name=id`: the labels a Luau script reaches layers by.
     pub layers: Vec<(String, String)>,
+    /// `--param input=value`: values for the inputs a Luau script's header declares.
+    pub params: Vec<(String, String)>,
 }
 
 impl Run {
@@ -38,27 +40,30 @@ impl Run {
 /// `mastik run <script> [options]`, `args` starting after `run`.
 pub(crate) fn parse(args: &[String]) -> Result<Run, String> {
     let (mut script, mut input, mut out) = (None, None, None);
-    let (mut select, mut layers) = (Vec::new(), Vec::new());
+    let (mut select, mut layers, mut params) = (Vec::new(), Vec::new(), Vec::new());
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            flag @ ("--in" | "-o" | "--out" | "--select" | "--layer") => {
+            flag @ ("--in" | "-o" | "--out" | "--select" | "--layer" | "--param") => {
                 i += 1;
+                // A `--param` value may be empty, or a negative number.
                 let value = args
                     .get(i)
-                    .filter(|v| !v.starts_with('-'))
+                    .filter(|v| flag == "--param" || !v.starts_with('-'))
                     .ok_or_else(|| format!("{flag} wants a value\n{USAGE}"))?
                     .clone();
+                let pair = |what: &str| {
+                    value
+                        .split_once('=')
+                        .filter(|(n, v)| !n.is_empty() && (flag == "--param" || !v.is_empty()))
+                        .map(|(n, v)| (n.to_owned(), v.to_owned()))
+                        .ok_or_else(|| format!("{flag} wants <name>={what}\n{USAGE}"))
+                };
                 match flag {
                     "--in" => input = Some(value),
                     "--select" => select.push(value),
-                    "--layer" => {
-                        let (name, id) = value
-                            .split_once('=')
-                            .filter(|(n, id)| !n.is_empty() && !id.is_empty())
-                            .ok_or_else(|| format!("--layer wants <name>=<id>\n{USAGE}"))?;
-                        layers.push((name.to_owned(), id.to_owned()));
-                    }
+                    "--layer" => layers.push(pair("<id>")?),
+                    "--param" => params.push(pair("<value>")?),
                     _ => out = Some(value),
                 }
             }
@@ -81,10 +86,12 @@ pub(crate) fn parse(args: &[String]) -> Result<Run, String> {
         out,
         select,
         layers,
+        params,
     };
-    if !run.luau() && !(run.select.is_empty() && run.layers.is_empty()) {
+    if !run.luau() && !(run.select.is_empty() && run.layers.is_empty() && run.params.is_empty()) {
         return Err(format!(
-            "--select and --layer are a Luau script's; a batch names its layers itself\n{USAGE}"
+            "--select, --layer and --param are a Luau script's; a batch names its layers \
+             and values itself\n{USAGE}"
         ));
     }
     Ok(run)
@@ -123,7 +130,12 @@ fn luau(s: &mut EditorSession, run: &Run, source: String) -> Result<(Vec<String>
         .iter()
         .map(|(name, id)| (name.clone(), json!(id)))
         .collect();
-    let args = json!({ "source": source, "nodes": run.select, "layers": layers });
+    let params: Map<String, Value> = run
+        .params
+        .iter()
+        .map(|(name, value)| (name.clone(), json!(value)))
+        .collect();
+    let args = json!({ "source": source, "nodes": run.select, "layers": layers, "params": params });
     let answer = crate::mcp::run_offline(s, "run_script", &args)
         .map_err(|e| format!("{}: {e}", run.script))?;
     let mut lines: Vec<String> = Vec::new();
@@ -137,11 +149,9 @@ fn luau(s: &mut EditorSession, run: &Run, source: String) -> Result<(Vec<String>
             .flatten()
             .filter_map(|l| l.as_str().map(str::to_owned)),
     );
-    if let Some(value) = answer.get("value").filter(|v| !v.is_null()) {
-        lines.push(match value {
-            Value::String(text) => text.clone(),
-            other => other.to_string(),
-        });
+    // The value as the command bar shows it: a string in its quotes.
+    if let Some(value) = answer.get("value").and_then(Value::as_str) {
+        lines.push(value.to_owned());
     }
     Ok((
         lines,
@@ -232,6 +242,44 @@ mod tests {
         assert!(parse(&args(&["s.json", "--select", "1:2", "-o", "o.mastik"])).is_err());
         assert!(parse(&args(&["s.luau", "--layer", "card", "-o", "o.mastik"])).is_err());
         assert!(parse(&args(&["s.luau"])).is_err(), "no -o");
+        let r = parse(&args(&[
+            "s.luau", "--param", "x=-4", "--param", "brand=", "-o", "o.mastik",
+        ]))
+        .unwrap();
+        let pair = |n: &str, v: &str| (n.to_owned(), v.to_owned());
+        assert_eq!(r.params, [pair("x", "-4"), pair("brand", "")]);
+        assert!(parse(&args(&["s.json", "--param", "x=1", "-o", "o.mastik"])).is_err());
+    }
+
+    /// A Luau script's `--param` reaches it as `param`, read by its header's
+    /// types, and the inputs not given keep their defaults.
+    #[test]
+    fn a_luau_script_reads_its_params() {
+        let dir = scratch("luau");
+        let script = dir.join("s.luau");
+        let source = "---@input label string = Hi\n---@input n integer = 1 -- Copies {1..5}\n\
+                      return param.label .. \" \" .. (param.n * 2)\n";
+        std::fs::write(&script, source).unwrap();
+        let out = dir.join("o.mastik");
+        let r = parse(&args(&[
+            script.to_str().unwrap(),
+            "--param",
+            "n=3",
+            "-o",
+            out.to_str().unwrap(),
+        ]))
+        .unwrap();
+        let (lines, _) = run(&r).unwrap();
+        assert_eq!(lines, ["\"Hi 6\""]);
+        let bad = parse(&args(&[
+            script.to_str().unwrap(),
+            "--param",
+            "n=9",
+            "-o",
+            "x.mastik",
+        ]));
+        assert!(run(&bad.unwrap()).unwrap_err().contains("outside"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -257,6 +305,7 @@ mod tests {
             out: out.display().to_string(),
             select: vec![],
             layers: vec![],
+            params: vec![],
         };
         let (lines, said) = run(&r).unwrap();
         assert_eq!(lines.len(), 1, "{lines:?}");

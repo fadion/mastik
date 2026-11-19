@@ -1638,10 +1638,18 @@ fn run_script(
             .ok_or_else(|| format!("`layers.{name}`: `{id}` is not a layer id"))?;
         labels.insert(name.clone(), id);
     }
+    let header = mastik_vm::header(source).map_err(|e| format!("{e}. Nothing was changed."))?;
+    let given = match args.get("params") {
+        None | Some(Value::Null) => Map::new(),
+        Some(Value::Object(given)) => given.clone(),
+        Some(_) => return Err("`params` is an object, {\"<input>\": <value>}".into()),
+    };
     let env = mastik_vm::Env {
         selection: &selection,
         labels: &labels,
-        params: Map::new(),
+        params: header
+            .params(&given)
+            .map_err(|e| format!("`params`: {e}. Nothing was changed."))?,
     };
     let base = index(args, "base_rev");
     let depth = s.history.undo_depth();

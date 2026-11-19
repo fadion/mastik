@@ -7,7 +7,7 @@
 //! It is a calculator, not a language: four operators, brackets, a sign, and no
 //! names. No `parent.width`, no unit conversion, no `50%` (§15 D358); a grammar
 //! that grows identifiers would half-reimplement the command bar's Luau
-//! (`docs/vm.md`) in the inspector.
+//! (`docs/design/command-mode.md`) in the inspector.
 //!
 //! A unit is noise, not a conversion: `%`, `°`, `px`, `pt` and `em` may trail a
 //! value and are dropped, because several fields format their own unit into the

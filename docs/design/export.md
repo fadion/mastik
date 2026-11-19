@@ -305,8 +305,9 @@ The export crate: SVG, PDF, PNG, JPEG, WebP, ICO and ICNS, code export (HTML/CSS
   exits 1 naming where. The extension decides which:
   - **`.luau`** is the MCP `run_script`: Command Mode's Luau as the script editor runs it.
     `--select <id>` (repeatable) is what it finds in `sel`, and `--layer <name>=<id>` a label it
-    reaches a layer by. Its printed lines and its value go to stdout, the status line's summary
-    (`3 layers changed`) to stderr.
+    reaches a layer by. `--param <input>=<value>` (repeatable) fills an input its header
+    declares (`command-mode.md` §10), so a shell loop makes one variant per run. Its printed
+    lines and its value go to stdout, the status line's summary (`3 layers changed`) to stderr.
   - **Anything else is JSON, the MCP `batch`**: a list of `{ tool, args, as }` steps, or a whole
     `batch` call's arguments (`{ "steps": […] }`), so a batch an agent sent replays byte for byte;
     its `base_rev` is dropped, having named a revision of another session. `set`, `"@label"`,

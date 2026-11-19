@@ -200,6 +200,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **A syntax error holds every run of the script, and no other problem does**: Luau's parser refuses the text, so a run could only fail. A name the check cannot find is a warning, not an error, because a layer name resolves at the run, on the page the run sees.
 - **A document's scripts are a top-level table of the document; a document's or kit's script shows its source before its first run on this machine, and again whenever its text changes.** The record is a hash in the preferences, never in the file, so a sender cannot mark a script as shown.
 - **A kit's scripts follow its publishes**, the one link among scripts (a document and the library exchange copies): a kit already links its content, and the disclosure covers each changed text.
+- **Scripts never reach outside the document; the shell owns files.** Work over many files, such as one design in many brand variations, is `mastik run` run once per variant with `--param` values and its own `-o`, pictures handed to a batch as base64 bytes. The sandbox stays whole, and a script that travels in a document cannot write anywhere, so nothing host-mediated (a script returning documents, an image folder picked for it) is built.
 
 ## Distribution
 

@@ -6,8 +6,8 @@ dealt over the canvas (its **Pick** focus), and **scripts** are whole programs i
 kept in the library folder, in a document or in a kit. The language is Luau in the headless crate
 `mastik-vm`; the app's half is `command/` (the bar, its log, the host, the script editor),
 `navigate.rs` (Pick and the labels) and `scripts/` (the library folder). The
-decisions it rests on are `foundations.md` §13. Headings keep `vm.md`'s numbers, so a `vm.md §4`
-cited from code is found here; `vm.md` keeps only what is still open.
+decisions it rests on are `foundations.md` §13. Headings keep the retired `vm.md`'s numbers, so a
+`vm.md §4` cited from code is found here.
 
 ## 1. The thesis
 
@@ -248,7 +248,10 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
 
 - `Lua::sandbox` on; names off the allowlist (§4) do not resolve.
 - **No filesystem, network, clock or unseeded randomness.** A run is deterministic, as replayed
-  operations are (§12 of `foundations.md`). Randomness is **seeded**: `random(seed)` (a number or
+  operations are (§12 of `foundations.md`). Work that needs files, such as one design in twenty
+  brand variations, is the shell's: it runs `mastik run` once per variant with that variant's
+  `--param` values and `-o`, and hands a picture to a batch as `add_image`'s base64 bytes
+  (`export.md`). Randomness is **seeded**: `random(seed)` (a number or
   a string) answers a generator, `math.random`'s three forms, whose draws the seed fixes —
   `rng()` a fraction from 0 up to 1, `rng(n)` a whole number from 1 to n, `rng(m, n)` one from m
   to n — so scatter, jitter and generated patterns come out the same each run and a new seed
@@ -393,7 +396,10 @@ are up.
 
 **The header** is the run of `---` lines a script opens with: the first is its title, the rest its
 description, and each `---@input name type = default -- Label {lo..hi}` an input Mastik asks for in
-a form before the run, read in the script as `param.name` (an unknown one raises). Types: `number`,
+a form before the run, read in the script as `param.name` (an unknown one raises). The MCP
+`run_script` takes the values as `params` and `mastik run` as `--param name=value`, each read as
+its default is written and held to its range (`Header::params`); an input left out keeps its
+default, and a name the header does not declare is refused. Types: `number`,
 `integer`, `boolean`, `string`, `color` (`"#rrggbb"`, or `"#rrggbbaa"`), `choice(a, b, …)`. A missing default is the
 type's zero (the range's low end, the first choice); only a number or an integer takes a range. A
 header that does not parse fails the run at its line. The form draws each by its type: a
