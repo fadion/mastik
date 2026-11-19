@@ -158,8 +158,10 @@ A name people guess (`alpha`, `colour`, `radius`, `weight`, `tracking`, `shadow`
 property it means as the fix.
 
 **A verb call**: a collection given first fills the verb's subject (its first layer parameter),
-else the selection does; a verb of one layer runs once for each; the remaining arguments fill the
-other parameters in order, and one plain table is the named form. It answers what it created as a
+and so does a plain list of layers and collections (`{a, b}`), each layer once in its order
+(`layers_of`), else the selection does; a verb of one layer runs once for each; the remaining
+arguments fill the other parameters in order, and one plain table that is no such list is the
+named form: a lone `{a, b}` is the subject, not named arguments. It answers what it created as a
 collection, else the id of what it made, else nil. What the last creating verb made, or what
 `:select()` named last, is selected when the run ends.
 

@@ -477,6 +477,24 @@ fn verbs_take_positional_and_named_arguments() {
     );
 }
 
+/// A plain list of layers is a verb's subject too, as a collection is: each
+/// layer once, the rest of the arguments after it.
+/// flip: `layers_of` taking collections alone → the run is refused, the list
+/// read as one argument too many.
+#[test]
+fn a_list_of_layers_is_a_verbs_subject() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let src = "local a, b = sel[1], sel[2]\nset_opacity({a, b, a}, 0.5)";
+    run_script(&mut h, &e, src).unwrap();
+    assert_eq!(
+        [0, 1, 2].map(|i| h.doc.get(ids[i]).unwrap().opacity()),
+        [0.5, 0.5, 1.0],
+        "the list's layers"
+    );
+}
+
 /// A verb answers what it created as a collection, and the run selects it.
 #[test]
 fn a_verb_returns_what_it_created() {

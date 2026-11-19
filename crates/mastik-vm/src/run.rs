@@ -1383,12 +1383,36 @@ fn with_layers<R>(lua: &Lua, t: &Table, f: impl FnOnce(&[NodeId]) -> R) -> mlua:
     }
 }
 
-/// The layers of collection `t`, `None` for any other table.
+/// The layers of collection `t`, or of a plain list of collections (`{a, b}`,
+/// each a layer or a collection), in its order and each once; `None` for any
+/// other table.
 fn layers_of(lua: &Lua, t: &Table) -> mlua::Result<Option<Vec<NodeId>>> {
-    with_layers(lua, t, <[NodeId]>::to_vec)
+    if let Some(ids) = with_layers(lua, t, <[NodeId]>::to_vec)? {
+        return Ok(Some(ids));
+    }
+    let len = t.raw_len();
+    if len == 0 || t.pairs::<Value, Value>().count() != len {
+        return Ok(None);
+    }
+    let mut out: Vec<NodeId> = Vec::new();
+    for v in t.sequence_values::<Value>() {
+        let Value::Table(item) = v? else {
+            return Ok(None);
+        };
+        let Some(ids) = with_layers(lua, &item, <[NodeId]>::to_vec)? else {
+            return Ok(None);
+        };
+        for id in ids {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    Ok(Some(out))
 }
 
-/// The layers of collection `t`; raises for any other table.
+/// The layers of collection or list `t` ([`layers_of`]); raises for any other
+/// table.
 fn ids_of(lua: &Lua, t: &Table) -> mlua::Result<Vec<NodeId>> {
     layers_of(lua, t)?.ok_or_else(|| raise(lua, "Not a collection of layers"))
 }
@@ -2151,9 +2175,10 @@ fn adjust(
     Ok(())
 }
 
-/// Call verb `name` with Lua's arguments: a collection first fills the subject
-/// (the first layer parameter), else the selection does; the rest fill the other
-/// parameters in order; one plain table is the named arguments. Answers what it
+/// Call verb `name` with Lua's arguments: a collection or a list of layers first
+/// fills the subject (the first layer parameter), else the selection does; the
+/// rest fill the other parameters in order; one other plain table is the named
+/// arguments. Answers what it
 /// created as a collection, the id of what else it made, or nil.
 fn call_verb(
     lua: &Lua,
@@ -2176,7 +2201,7 @@ fn call_verb(
     let mut map = Map::new();
     let mut given: Option<Vec<NodeId>> = None;
     let named_form = match args.as_slice() {
-        [Value::Table(t)] => with_layers(lua, t, |_| ())?.is_none(),
+        [Value::Table(t)] => layers_of(lua, t)?.is_none(),
         _ => false,
     };
     let fail = |why: String| raise(lua, format!("`{name}`: {why}"));
