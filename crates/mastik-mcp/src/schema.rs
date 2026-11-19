@@ -765,7 +765,7 @@ pub static TOOLS: &[Tool] = &[
                 "collection",
                 ParamKind::Text,
                 false,
-                "Where tokens the file puts in no collection land, by name; the first collection when absent.",
+                "Where tokens the file puts in no collection land: an existing collection's name (`add_collection` makes one); the first when absent.",
             ),
             param(
                 "removals",
@@ -1176,7 +1176,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 112_350;
+        const ALL_BUDGET: usize = 112_400;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

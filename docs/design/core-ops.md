@@ -200,7 +200,8 @@ it created. A verb never commits; its caller does, as every edit is committed.
 
 - **Arguments are checked before a verb runs** (`verbs::call`): a JSON object holding every required
   parameter, none it does not take, each of its kind, a model value read as its type
-  (`verbs::check_model`). Each refusal names the verb and the parameter, and a model value's the
+  (`verbs::check_model`). Each refusal names the verb and the parameter, one it does not take
+  beside the parameters it does (`VerbError::Unexpected`), and a model value's the
   path inside it (``at `children[1].kind.Text.sizing`: …``). A field the type has no place for is
   refused (`no such field`), where serde alone would drop it without a word.
 - **Every model type a parameter takes has an example** (`verbs::example`), serialized from a real

@@ -149,7 +149,17 @@ pub(crate) fn one_shot(
             .iter()
             .find(|c| c.name == name)
             .map(|c| c.id)
-            .ok_or_else(|| format!("the document has no collection called `{name}`"))?,
+            .ok_or_else(|| {
+                let there: Vec<String> = t
+                    .collections()
+                    .iter()
+                    .map(|c| format!("`{}`", c.name))
+                    .collect();
+                format!(
+                    "the document has no collection called `{name}`; it has {}",
+                    there.join(", ")
+                )
+            })?,
     };
     let review = dtcg_in::review(doc, &file, into, ids)
         .map_err(|r| format!("The tokens cannot be read: {r}"))?;

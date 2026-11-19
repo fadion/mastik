@@ -3521,6 +3521,35 @@ mod tests {
         );
     }
 
+    /// A type style whose family the host lacks is said in the import's answer,
+    /// and one in a family the host has is not.
+    ///
+    /// flip: `import_tokens` filtering nothing out by the host's fonts → fails at
+    /// "Inter is the host's".
+    #[test]
+    fn tokens_import_says_a_family_the_host_lacks() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let ty = |family: &str| {
+            json!({ "$type": "typography", "$value": {
+            "fontFamily": family, "fontSize": "16px", "fontWeight": 400, "lineHeight": 1.4 } })
+        };
+        let file = json!({ "body": ty("Inter"), "display": ty("Nowhere Serif") });
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "import_tokens",
+            json!({ "tokens": file }),
+        );
+        let said = ok(&out)["said"].as_str().unwrap_or_default().to_owned();
+        assert!(
+            said.contains("`Nowhere Serif`"),
+            "the missing family: {said}"
+        );
+        assert!(!said.contains("`Inter`"), "Inter is the host's: {said}");
+    }
+
     /// A keyed client that closes its connection and comes back on another, as a
     /// harness starting a process per turn does, keeps its document, hears what
     /// the person changed in between as `changed`, and its `since` and `base_rev`

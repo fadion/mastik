@@ -161,8 +161,13 @@ pub enum VerbError {
         verb: &'static str,
         param: &'static str,
     },
-    #[error("`{verb}` takes no `{param}`")]
-    Unexpected { verb: &'static str, param: String },
+    #[error("`{verb}` takes no `{param}`; it takes {takes}")]
+    Unexpected {
+        verb: &'static str,
+        param: String,
+        /// The parameters it does take, written for the refusal.
+        takes: String,
+    },
     #[error("`{param}` of `{verb}`: {why}")]
     Invalid {
         verb: &'static str,
@@ -258,9 +263,14 @@ pub fn check_args<'a>(
         _ => return Err(VerbError::NotAnObject(name)),
     };
     if let Some(extra) = map.keys().find(|k| !params.iter().any(|p| p.name == *k)) {
+        let takes: Vec<String> = params.iter().map(|p| format!("`{}`", p.name)).collect();
         return Err(VerbError::Unexpected {
             verb: name,
             param: extra.clone(),
+            takes: match takes.as_slice() {
+                [] => "nothing".into(),
+                _ => takes.join(", "),
+            },
         });
     }
     for p in params {
@@ -1312,6 +1322,7 @@ fn model_key<'a>(model: &str, param: &'a str) -> &'a str {
         "[Effect]" => "effects",
         "[LayoutGrid]" => "grids",
         "Insets" => "insets",
+        "BoundField" => "field",
         _ => param,
     }
 }
@@ -4292,7 +4303,7 @@ pub static VERBS: &[Verb] = &[
             req(
                 "field",
                 ParamKind::Model("BoundField"),
-                "the field, with its place: a fill's index, a corner, a gap",
+                "the field and its place: `{\"fill\": 0}`, `{\"corner\": \"all\"}`, `{\"spacing\": \"gaps\"}` (or `padding`, `all`)",
             ),
             opt(
                 "variable",

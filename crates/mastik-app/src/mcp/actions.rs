@@ -23,8 +23,9 @@ pub(super) fn run(docs: &mut impl Documents, path: &Path, call: &Call) -> Result
     let args = &call.args;
     match call.tool.as_str() {
         "import_tokens" => {
+            let fonts = docs.fonts();
             let s = docs.session(path).ok_or("the document closed")?;
-            import_tokens(s, &call.client, args)
+            import_tokens(s, &call.client, args, &fonts)
         }
         "list_versions" => list_versions(docs, path),
         "compare_version" => compare_version(docs, path, args),
@@ -35,8 +36,25 @@ pub(super) fn run(docs: &mut impl Documents, path: &Path, call: &Call) -> Result
 
 /// A DTCG token file read into the document's variables and styles, every row
 /// the app's review starts ticked applied as one undo step (removals only when
-/// asked), as *Import tokens* applies them.
-fn import_tokens(s: &mut EditorSession, client: &str, args: &Value) -> Result<Answer, String> {
+/// asked), as *Import tokens* applies them. A family its type styles bring that
+/// the host's `fonts` lack is said, since text set in it draws in a fallback
+/// with no other word.
+fn import_tokens(
+    s: &mut EditorSession,
+    client: &str,
+    args: &Value,
+    fonts: &[String],
+) -> Result<Answer, String> {
+    let families = |doc: &mastik_core::Document| -> std::collections::BTreeSet<String> {
+        doc.styles()
+            .iter()
+            .filter_map(|st| match &st.value {
+                mastik_core::style::StyleValue::Text(t) => Some(t.font_family.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let before = families(&s.doc);
     let text = match args.get("tokens") {
         Some(Value::String(t)) => t.clone(),
         Some(v @ Value::Object(_)) => v.to_string(),
@@ -45,7 +63,7 @@ fn import_tokens(s: &mut EditorSession, client: &str, args: &Value) -> Result<An
     let collection = args.get("collection").and_then(Value::as_str);
     let removals = args.get("removals").and_then(Value::as_bool) == Some(true);
     let one = crate::tokens_import::one_shot(&s.doc, &mut s.ids, &text, collection, removals)?;
-    let report = json!({
+    let mut report = json!({
         "added": one.added,
         "changed": one.changed,
         "renamed": one.renamed,
@@ -64,6 +82,17 @@ fn import_tokens(s: &mut EditorSession, client: &str, args: &Value) -> Result<An
             "import_tokens",
             mastik_core::Transaction(one.ops),
         )?;
+    }
+    let missing: Vec<String> = families(&s.doc)
+        .difference(&before)
+        .filter(|f| !fonts.iter().any(|h| h.eq_ignore_ascii_case(f)))
+        .map(|f| format!("`{f}`"))
+        .collect();
+    if !missing.is_empty() {
+        report["said"] = json!(format!(
+            "This host has no {}: text in it draws in a fallback; `list_fonts` answers the families there are",
+            missing.join(", ")
+        ));
     }
     Ok(Answer::Json(report))
 }

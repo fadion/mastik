@@ -218,6 +218,36 @@ fn css_length(s: &str) -> Option<Value> {
     Some(serde_json::json!({ unit: n / per }))
 }
 
+/// A bound field written by name where the model takes a place's number: every
+/// corner as `{"corner": "all"}` (the model's `Radius`), and spacing as
+/// `{"spacing": "gaps" | "padding" | "all" | "row_gap" | "padding_top" …}`, the
+/// model's bit set of `SpacingVars` places.
+fn loosen_field(v: &mut Value) {
+    let Some((key, Value::String(word))) = v.as_object().and_then(|m| m.iter().next()) else {
+        return;
+    };
+    let word = word.to_lowercase().replace('-', "_");
+    match key.to_lowercase().as_str() {
+        "corner" if word == "all" => *v = Value::from("Radius"),
+        "spacing" => {
+            let bits: u8 = match word.as_str() {
+                "column_gap" => 1,
+                "row_gap" => 2,
+                "gap" | "gaps" => 3,
+                "padding_top" | "top" => 4,
+                "padding_right" | "right" => 8,
+                "padding_bottom" | "bottom" => 16,
+                "padding_left" | "left" => 32,
+                "padding" => 60,
+                "all" => 63,
+                _ => return,
+            };
+            *v = serde_json::json!({ "Spacing": bits });
+        }
+        _ => {}
+    }
+}
+
 /// An inset written as CSS writes it, a number of px, `"12px"` or `"50%"`, as
 /// the model's `{"Px": 12}` or `{"Percent": 50}`.
 fn loosen_inset(v: &mut Value) {
@@ -329,6 +359,7 @@ fn loosen_effect(item: &mut Value, errs: &mut Vec<String>) {
         }
         blend_by_label(&mut inner);
         loosen_noise(&mut inner);
+        blur_radius(&mut inner);
         map.insert("kind".into(), Value::Object(inner));
         map.insert("visible".into(), visible);
     } else if let Some(Value::Object(kind)) = map.get_mut("kind") {
@@ -338,7 +369,21 @@ fn loosen_effect(item: &mut Value, errs: &mut Vec<String>) {
         }
         blend_by_label(kind);
         loosen_noise(kind);
+        blur_radius(kind);
         map.entry("visible").or_insert(Value::Bool(true));
+    }
+}
+
+/// A layer or background blur's `radius` written `blur`, as a shadow names its
+/// own: the word an agent carries over from the shadow beside it.
+fn blur_radius(kind: &mut Map<String, Value>) {
+    if matches!(
+        kind.get("type").and_then(Value::as_str),
+        Some("layer_blur" | "background_blur")
+    ) && !kind.contains_key("radius")
+        && let Some(r) = kind.remove("blur")
+    {
+        kind.insert("radius".into(), r);
     }
 }
 
@@ -466,6 +511,7 @@ fn loosen_in(key: &str, v: &mut Value, errs: &mut Vec<String>) {
     }
     match (key, &mut *v) {
         ("sizing", _) => loosen_sizing(v, errs),
+        ("field", Value::Object(map)) if map.len() == 1 => loosen_field(v),
         ("padding", Value::Number(n)) => {
             let n = n.clone();
             *v = Value::Array(vec![Value::Number(n); 4]);
@@ -587,6 +633,13 @@ fn loosen_paint(item: &mut Value, stroke: bool, errs: &mut Vec<String>) {
         && let Some(c) = map.remove("color")
     {
         map.insert("brush".into(), c);
+    }
+    // Bound to a variable by its id, as `bind_variable` names one: the brush
+    // the snapshot's `bindings` stand for.
+    if !map.contains_key("brush")
+        && let Some(var) = map.remove("variable").or_else(|| map.remove("var"))
+    {
+        map.insert("brush".into(), serde_json::json!({ "var": var }));
     }
     if let Some(Value::String(s)) = map.get("brush")
         && let Some(c) = hex_colour(s)

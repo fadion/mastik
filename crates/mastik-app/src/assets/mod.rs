@@ -854,7 +854,15 @@ impl Assets {
         let name = photo.layer_name();
         self.run(Box::new(move || Done::AgentPhoto {
             read: get(&agent(), &url, None, |_, _| {})
-                .map_err(|_| "The photo could not be downloaded".to_string())
+                .map_err(|status| match status {
+                    Some(s) => format!(
+                        "The photo could not be downloaded: its source answered HTTP {s}; place another"
+                    ),
+                    None => format!(
+                        "The photo could not be downloaded: the connection failed or the file passed {} MB; try again, or place another",
+                        MAX_BYTES / (1024 * 1024)
+                    ),
+                })
                 .and_then(|bytes| {
                     crate::app::read_picture(bytes, None, Some(name))
                         .map_err(|_| "The photo could not be read".to_string())

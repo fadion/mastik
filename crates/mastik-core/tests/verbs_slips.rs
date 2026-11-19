@@ -835,3 +835,83 @@ fn get_tree_writes_corners_and_ends_short() {
     );
     assert!(back.is_ok(), "{back:?}");
 }
+
+/// The names agents write for a bound field, a bound fill and a blur's radius
+/// are read: every corner as `"all"`, spacing by its places' names, a fill as
+/// `{"variable": id}` and a blur's `blur`; and a parameter no tool takes is
+/// refused with the ones it does.
+///
+/// flip: `loosen_in` without its `field` arm → the `corner: "all"` bind is
+/// refused.
+#[test]
+fn bound_fields_fills_and_blurs_take_the_names_agents_write() {
+    let (mut doc, mut ids, page) = blank();
+    let f = frame_on(&mut doc, &mut ids, page);
+    run(
+        &mut doc,
+        &mut ids,
+        "set_display",
+        json!({ "nodes": [f.to_wire()], "display": { "Flex": { "gap": 8 } } }),
+    );
+    let number = run(
+        &mut doc,
+        &mut ids,
+        "add_variable",
+        json!({ "kind": "number", "name": "space/sm", "value": 8 }),
+    )
+    .made
+    .unwrap();
+    let colour = run(
+        &mut doc,
+        &mut ids,
+        "add_variable",
+        json!({ "kind": "color", "name": "ink", "value": "#112233" }),
+    )
+    .made
+    .unwrap();
+    let bind = |field: Value| json!({ "nodes": [f.to_wire()], "field": field, "variable": number });
+    run(
+        &mut doc,
+        &mut ids,
+        "bind_variable",
+        bind(json!({ "corner": "all" })),
+    );
+    let n = doc.get(f).unwrap();
+    assert!(n.corner_vars().iter().all(Option::is_some), "every corner");
+    run(
+        &mut doc,
+        &mut ids,
+        "bind_variable",
+        bind(json!({ "spacing": "gaps" })),
+    );
+    let gaps = doc.get(f).unwrap().spacing_vars();
+    assert!(
+        gaps[0].is_some() && gaps[1].is_some() && gaps[2].is_none(),
+        "the gaps"
+    );
+
+    run(
+        &mut doc,
+        &mut ids,
+        "set_fills",
+        json!({ "nodes": [f.to_wire()], "fills": [{ "variable": colour }] }),
+    );
+    assert!(
+        doc.get(f).unwrap().paint().fills[0].brush.is_bound(),
+        "the bound fill"
+    );
+    let blur = json!({ "nodes": [f.to_wire()],
+        "effects": [{ "kind": { "type": "background_blur", "blur": 20 } }] });
+    assert!(
+        answer(&doc, &mut ids, "set_effects", &blur).is_ok(),
+        "the blur"
+    );
+
+    let refused = why(
+        &doc,
+        &mut ids,
+        "set_fills",
+        json!({ "nodes": [f.to_wire()], "fills": [], "name": "x" }),
+    );
+    assert!(refused.contains("`fills`"), "what it takes: {refused}");
+}
