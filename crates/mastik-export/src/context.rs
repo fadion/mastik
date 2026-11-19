@@ -1846,10 +1846,12 @@ mod tests {
 
     /// `draws_nothing` takes a shape, an empty frame and a transparent fill,
     /// and passes over a stroke, a shadow, text, a frame with children, a
-    /// hidden layer, a spacer a flex frame lays out and a boolean's operands.
+    /// hidden layer, a spacer a flex frame lays out and a boolean's operands, a
+    /// group operand's members too.
     ///
     /// flip: `draws_nothing` without its `laid_out` exemption → fails at the
-    /// codes, which gain "Spacer"; without its operand exemption, "Operand".
+    /// codes, which gain "Spacer"; without its operand exemption, "Operand";
+    /// sparing a boolean's direct children only, "Member".
     #[test]
     fn check_layout_finds_what_draws_nothing() {
         let clear = json!([Fill {
@@ -1883,6 +1885,10 @@ mod tests {
                     "children": [
                         { "kind": rect(20.0, 20.0, 0.0), "name": "Operand", "transform": at(300.0, 10.0) },
                         { "kind": rect(20.0, 20.0, 0.0), "name": "Operand", "transform": at(310.0, 10.0) },
+                        {
+                            "kind": "Group", "name": "Grouped",
+                            "children": [{ "kind": rect(20.0, 20.0, 0.0), "name": "Member", "transform": at(320.0, 10.0) }],
+                        },
                     ],
                 },
             ],
@@ -1890,6 +1896,14 @@ mod tests {
         let hidden = s.doc.get(s.page).unwrap().children()[0];
         let hidden = s.doc.get(hidden).unwrap().children()[5];
         assert!(!s.doc.shown(hidden), "the fixture hides one");
+        let mark = s.doc.get(s.page).unwrap().children()[0];
+        let mark = *s.doc.get(mark).unwrap().children().last().unwrap();
+        let grouped = s.doc.get(mark).unwrap().children()[2];
+        assert!(
+            matches!(s.doc.get(grouped).map(|n| n.kind()), Some(NodeKind::Group))
+                && s.doc.get(grouped).unwrap().children().len() == 1,
+            "the fixture: a group operand of one member"
+        );
         let want = [
             ("draws_nothing", "Bare"),
             ("draws_nothing", "Clear"),
