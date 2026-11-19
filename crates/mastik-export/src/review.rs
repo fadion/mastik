@@ -493,8 +493,8 @@ impl Raw {
 /// `raw_value` and `raw_style`: a value written raw where a variable or a style
 /// of the document holds exactly it, and the layer takes neither. A solid fill
 /// or stroke against the colour variables that may bind it, a rectangle's or
-/// frame's even radius against the number variables scoped to corners, a
-/// layout's gaps and padding against those scoped to spacing, and a layer's
+/// frame's even radius and a layout's gaps and padding against the number
+/// variables that may bind them (the best fit, [`fitting`]), and a layer's
 /// whole fill, stroke or effect list, or a text's type, against the styles.
 pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
     raw_matches(scope)
@@ -513,6 +513,31 @@ pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
             .instead(instead.into())
         })
         .collect()
+}
+
+/// The number variable worth `x` that may bind `field` and fits it best: one
+/// scoped to it, then one whose name says the field (`radius/card` for a corner,
+/// `space/md` for a gap), then any, since an unscoped variable binds every
+/// number field.
+fn fitting<'v>(
+    numbers: &[(&'v mastik_core::Variable, f64)],
+    x: f64,
+    field: Field,
+) -> Option<&'v mastik_core::Variable> {
+    let words: &[&str] = match field {
+        Field::Corner => &["radius", "radii", "corner", "round"],
+        Field::Spacing => &["space", "spacing", "gap", "padding", "gutter", "inset"],
+        _ => &[],
+    };
+    let says = |v: &mastik_core::Variable| {
+        let name = v.name.to_lowercase();
+        words.iter().any(|w| name.contains(w))
+    };
+    numbers
+        .iter()
+        .filter(|(v, y)| *y == x && v.binds(field))
+        .map(|(v, _)| *v)
+        .min_by_key(|v| (v.scope.is_none(), !says(v)))
 }
 
 /// [`raw_values`]' matches with every layer each names: keyed `s<style>` for a
@@ -586,9 +611,7 @@ fn raw_matches(scope: &Scope<'_>) -> Raw {
             && [r.top_right, r.bottom_right, r.bottom_left]
                 .iter()
                 .all(|c| *c == r.top_left)
-            && let Some((v, _)) = numbers
-                .iter()
-                .find(|(v, x)| *x == r.top_left && v.binds(Field::Corner))
+            && let Some(v) = fitting(&numbers, r.top_left, Field::Corner)
         {
             raw.add(
                 format!("v{}radius", v.id.0.to_wire()),
@@ -608,10 +631,7 @@ fn raw_matches(scope: &Scope<'_>) -> Raw {
                 if x <= 0.0 || bound[k].is_some() {
                     continue;
                 }
-                if let Some((v, _)) = numbers
-                    .iter()
-                    .find(|(v, y)| *y == x && v.binds(Field::Spacing))
-                {
+                if let Some(v) = fitting(&numbers, x, Field::Spacing) {
                     raw.add(
                         format!("v{}spacing", v.id.0.to_wire()),
                         || {
@@ -678,7 +698,16 @@ pub fn near_duplicate_colours(scope: &Scope<'_>) -> Vec<Finding> {
         .into_iter()
         .filter(|g| g.members.len() > 1)
         .map(|g| {
-            let hexes: Vec<String> = g.members.iter().map(|m| hex(census[*m].color)).collect();
+            // A bound member is named by its variable: beside it, a raw colour of
+            // the same hex would otherwise read as a colour listed twice.
+            let label = |m: usize| {
+                let swatch = &census[m];
+                match swatch.var.and_then(|v| scope.doc.variables().get(v)) {
+                    Some(v) => format!("{} (`{}`)", hex(swatch.color), v.name),
+                    None => hex(swatch.color),
+                }
+            };
+            let hexes: Vec<String> = g.members.iter().map(|m| label(*m)).collect();
             let mut ids: Vec<NodeId> = Vec::new();
             for m in &g.members {
                 for id in &census[*m].nodes {
@@ -687,7 +716,7 @@ pub fn near_duplicate_colours(scope: &Scope<'_>) -> Vec<Finding> {
                     }
                 }
             }
-            let target = hex(census[g.default_target(&census)].color);
+            let target = label(g.members[g.default_target(&census)]);
             Finding::new(
                 "near_duplicate_colours",
                 named(&ids),
@@ -1397,5 +1426,63 @@ mod tests {
         let json = h.to_json(&doc);
         assert_eq!(json["detached"]["count"], 1);
         assert_eq!(json["unused"]["variables"], json!(["Idle"]));
+    }
+
+    /// A raw gap is offered the spacing variable of its value, not a radius one
+    /// made first; a colour written raw beside its variable is named by that
+    /// variable, which is the merge's target.
+    ///
+    /// flip: `fitting` taking the first equal variable → fails at "the gap's";
+    /// `near_duplicate_colours` reading `default_target` as a census index →
+    /// fails at "the target".
+    #[test]
+    fn raw_values_name_the_variable_that_fits() {
+        let mut ids = IdSource::new(0x4eb);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let p = page.to_wire();
+        let steps = vec![
+            json!({ "verb": "add_variable", "args": { "kind": "color", "name": "Ink",
+                "value": { "color": "#f2f4ff" } } }),
+            json!({ "verb": "add_variable", "args": { "kind": "color", "name": "Ground",
+                "value": { "color": "#0b1020" } }, "as": "ground" }),
+            json!({ "verb": "add_variable", "args": { "kind": "number", "name": "radius/card",
+                "value": { "number": 16 } } }),
+            json!({ "verb": "add_variable", "args": { "kind": "number", "name": "space/md",
+                "value": { "number": 16 } } }),
+            layer(&p, "row", 0.0, 0.0, frame(300.0, 100.0, "#f2f4ff")),
+            json!({ "verb": "set_display", "args": { "nodes": ["@row"],
+                "display": { "Flex": { "direction": "Row", "gap": 16 } } } }),
+            layer("@row", "bound", 0.0, 0.0, rect(40.0, 40.0, "#0b1020", 0.0)),
+            json!({ "verb": "bind_variable", "args": { "nodes": ["@bound"],
+                "field": { "Fill": 0 }, "variable": "@ground" } }),
+            layer("@row", "raw", 0.0, 0.0, rect(40.0, 40.0, "#0b1020", 0.0)),
+        ];
+        mastik_core::verbs::run_script(
+            &mut doc,
+            &mut ids,
+            mastik_core::verbs::Lent::default(),
+            &Value::Array(steps),
+        )
+        .expect("the fixture builds");
+        let res = Resolved::rebuild(&doc);
+        let scope = Scope::new(&doc, &res, &[page]);
+        let raw = raw_values(&scope);
+        let gap = raw
+            .iter()
+            .find(|f| f.message.starts_with("A gap"))
+            .expect("the raw gap");
+        assert!(gap.message.contains("`space/md`"), "the gap's: {gap:?}");
+        let near = near_duplicate_colours(&scope);
+        let pair = near
+            .iter()
+            .find(|f| f.message.contains("#0b1020"))
+            .expect("the raw and bound #0b1020");
+        assert!(pair.message.contains("(`Ground`)"), "{pair:?}");
+        assert_eq!(
+            pair.instead.as_deref(),
+            Some("one colour, #0b1020 (`Ground`): `merge_colours`"),
+            "the target"
+        );
     }
 }
