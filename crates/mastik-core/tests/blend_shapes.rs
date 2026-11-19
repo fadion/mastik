@@ -886,7 +886,7 @@ fn turned(f: &Fixture, id: NodeId) -> f64 {
 
 /// Along an open spine the circle stands on its start and the square on its end,
 /// by their centres, with the steps evenly spaced between by arc length; the spine
-/// stays its own layer, where it was on the page, directly under the group.
+/// stays its own layer, where it was on the page, directly over the group.
 /// flip: `places` spacing over `count` gaps on an open spine → fails at "the square
 /// on the end".
 #[test]
@@ -932,6 +932,102 @@ fn an_open_spine_puts_the_shapes_on_its_ends_and_spaces_the_steps_evenly() {
     assert!(
         turned(&f, f.square).abs() < 1e-9,
         "turning is off by default"
+    );
+}
+
+/// A spine in another frame, or one a mask lies below in the shapes' parent,
+/// stays where it is: moved, it would fall under another frame's clip, or out
+/// from under the mask. flip: `blend`'s spine move without `stays` → fails at
+/// "still in its own frame".
+#[test]
+fn a_spine_elsewhere_or_past_a_mask_stays_where_it_is() {
+    let mut f = Fixture::new();
+    let (other, spine) = (f.ids.mint(), f.ids.mint());
+    let root = f.doc.get(f.frame).unwrap().parent().unwrap();
+    let path = polyline(&[(0.0, 0.0), (300.0, 0.0)], false);
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: other,
+                parent: root,
+                index: 1,
+                kind: NodeKind::Artboard {
+                    size: Size::new(400.0, 100.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((50.0, 600.0))),
+                name: None,
+            },
+            Operation::CreateNode {
+                id: spine,
+                parent: other,
+                index: 0,
+                kind: NodeKind::Path {
+                    path,
+                    corner_radii: Vec::new(),
+                    corner_smoothing: 0.0,
+                    mirror: Default::default(),
+                },
+                transform: Some(Affine::translate((20.0, 50.0))),
+                name: None,
+            },
+        ]))
+        .unwrap();
+    let before = Resolved::rebuild(&f.doc).world_bounds(spine);
+    f.blend(Blend {
+        spine: Some(spine),
+        ..FIVE
+    });
+    assert_eq!(
+        f.doc.get(spine).unwrap().parent(),
+        Some(other),
+        "still in its own frame"
+    );
+    assert_eq!(Resolved::rebuild(&f.doc).world_bounds(spine), before);
+
+    let mut f = Fixture::new();
+    let spine = f.spine(polyline(&[(100.0, 50.0), (400.0, 50.0)], false));
+    let mask = f.ids.mint();
+    // Under the spine and over the square: the spine is clipped by it.
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: mask,
+                parent: f.frame,
+                index: 2,
+                kind: NodeKind::Rect {
+                    size: Size::new(800.0, 420.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+            Operation::SetMask {
+                id: mask,
+                mask: true,
+            },
+        ]))
+        .unwrap();
+    let res = Resolved::rebuild(&f.doc);
+    let (tx, group) = blend::blend(
+        &f.doc,
+        &res,
+        &mut f.ids,
+        &[f.square, f.circle],
+        Blend {
+            spine: Some(spine),
+            ..FIVE
+        },
+    )
+    .expect("a blend");
+    f.doc.apply(&tx).unwrap();
+    let kids = f.doc.get(f.frame).unwrap().children().to_vec();
+    let pos = |id: NodeId| kids.iter().position(|c| *c == id).unwrap();
+    assert!(
+        pos(group) < pos(mask) && pos(mask) < pos(spine),
+        "still over the mask: {kids:?}"
     );
 }
 

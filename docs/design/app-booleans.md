@@ -404,7 +404,9 @@ stays live.
   tangent's at the start, so the first shape keeps the way it faces. A gradient is carried with the
   move. The spine stays its own layer, unchanged on the page, moved to stand directly over the
   group in its parent (`Reparent` and a `SetTransform` keeping its world transform), so the steps
-  never hide it.
+  never hide it. Only a spine beside the shapes moves, and only when no mask lies between its slot
+  and the group's; one in another parent, or past a mask, stays where it is, since the move would
+  give it or take away a clip, an opacity or a mode.
 
 ### The card (`blend.rs`)
 
@@ -434,7 +436,8 @@ here* row says *Blend shapes needs two shapes, and a path to follow if you like*
 - **The spine.** The card opens on the path selected with the two (`spine_in`), else on a
   straight line, and lets go of a spine that stops fitting (`spine_refusal`). *Pick a path…*
   hides the card and makes the canvas wait for a path (`BlendCard::picking`): the status says
-  *Click a path to blend along · Esc to cancel*, the cursor is the crosshair, every press but an
+  *Click a path to blend along · Esc to cancel*, said again before it fades or once another
+  message replaces it, for as long as the wait lasts; the cursor is the crosshair, every press but an
   armed pan's goes to the pick (`blend_pick_at`), and the hover outline gives way to a 3pt accent
   ring round the path under the pointer the card could follow (`MastikApp::blend_spine_at`: the
   outline under the pointer, `rail_at`, then the leaf, `pick_leaf`, kept only if `spine_refusal`

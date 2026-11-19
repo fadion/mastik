@@ -251,6 +251,18 @@ impl MastikApp {
         self.blend.built = None;
     }
 
+    /// Say [`PICK_STATUS`] again before it fades or once another message has
+    /// replaced it: while the wait lasts the card is hidden and the canvas takes
+    /// no other press, so the status line is all that says how to get out.
+    fn keep_pick_status(&mut self) {
+        let status = self.session.status();
+        let fading = status.at.elapsed() + std::time::Duration::from_secs(1)
+            >= crate::app::status_hold(status);
+        if status.text != PICK_STATUS || fading {
+            self.session.info(PICK_STATUS);
+        }
+    }
+
     /// Draw the card when it is open, keep its preview up, and act on this
     /// frame's clicks.
     pub(crate) fn blend_ui(&mut self, ctx: &egui::Context) {
@@ -265,8 +277,10 @@ impl MastikApp {
             return self.close_blend();
         }
         self.refresh_blend_preview();
-        // The canvas has the pointer until a path is clicked or Escape pressed.
+        // The canvas has the pointer until a path is clicked or Escape pressed, and
+        // the status line says so for as long as the card is hidden.
         if self.blend.picking {
+            self.keep_pick_status();
             return;
         }
         let area = self.transform_popover_area(ctx, egui::Id::new("blend-shapes"));
@@ -649,6 +663,20 @@ mod tests {
             "the wait called off, card open"
         );
         assert_eq!(app.blend.spine, Some(spine), "the path kept");
+    }
+
+    /// While *Pick a path…* waits, the status line keeps saying how to get out,
+    /// even once another message has replaced it. flip: `blend_ui` not calling
+    /// `keep_pick_status` → fails at "said again".
+    #[test]
+    fn the_pick_wait_keeps_its_status() {
+        let ctx = egui::Context::default();
+        let (mut app, _, _, _) = with_spine(&ctx);
+        app.open_blend();
+        app.blend.picking = true;
+        app.session.info("Something else");
+        let _ = ctx.run_ui(Default::default(), |ui| app.blend_ui(ui.ctx()));
+        assert_eq!(app.session.status().text, PICK_STATUS, "said again");
     }
 
     /// The card is as tall on a straight line as along a path: the *Along* row and

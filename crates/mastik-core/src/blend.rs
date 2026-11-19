@@ -807,8 +807,19 @@ pub fn blend(
     }
     // The spine stays its own layer, unchanged on the page, directly over the
     // group, so the steps never bury it and it is still there to pick: the list
-    // as it stands once the group is in and the shapes out.
-    if let Some(s) = blend.spine {
+    // as it stands once the group is in and the shapes out. Only a spine beside
+    // the shapes moves, and only past no mask: moved from another parent or
+    // across a mask it would take on, or lose, a clip, an opacity or a mode.
+    let stays = |s: NodeId| {
+        let siblings = doc.get(parent).map_or(&[][..], |p| p.children());
+        let Some(i) = siblings.iter().position(|c| *c == s) else {
+            return true;
+        };
+        siblings[i.min(at)..i.max(at)]
+            .iter()
+            .any(|c| *c != s && doc.get(*c).is_some_and(|n| n.mask()))
+    };
+    if let Some(s) = blend.spine.filter(|s| !stays(*s)) {
         let mut list: Vec<NodeId> = doc
             .get(parent)
             .map(|p| p.children().to_vec())
