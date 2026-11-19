@@ -148,6 +148,13 @@ pub trait ScenePainter {
         self.push_layer(Affine::IDENTITY, None, ClipRule::NonZero, 1.0);
     }
 
+    /// [`Self::push_erase_layer`] for an inverted mask's ink, which is a layer of
+    /// the document rather than a knock-out the walk made, so a painter that
+    /// traces artwork still traces it.
+    fn push_ink_erase_layer(&mut self) {
+        self.push_erase_layer();
+    }
+
     /// Begin a layer composited over the enclosing layer **by adding** to it
     /// (`Compose::Plus`): what fills a hole [`Self::push_erase_layer`] left, in
     /// proportion to how far it was erased. The default composites plainly;
@@ -537,6 +544,9 @@ impl<P: ScenePainter> ScenePainter for OutlinePainter<'_, P> {
     }
     fn push_erase_layer(&mut self) {
         self.erasing.push(true);
+    }
+    fn push_ink_erase_layer(&mut self) {
+        self.erasing.push(false);
     }
     fn push_add_layer(&mut self) {
         self.erasing.push(false);
@@ -1432,9 +1442,9 @@ fn push_ink_mask<P: ScenePainter>(painter: &mut P, ink: InkMask) -> usize {
     match (ink.luminance, ink.inverted) {
         (true, false) => painter.push_luminance_mask_layer(),
         (false, false) => painter.push_mask_layer(),
-        (false, true) => painter.push_erase_layer(),
+        (false, true) => painter.push_ink_erase_layer(),
         (true, true) => {
-            painter.push_erase_layer();
+            painter.push_ink_erase_layer();
             painter.fill_cover();
             painter.push_luminance_mask_layer();
             return 2;

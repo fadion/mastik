@@ -755,19 +755,45 @@ fn both_backends_draw_the_same_luminance_mask() {
 
 /// An 80-unit red square at 10 under an inverted mid-grey 40-unit mask at 30,
 /// masking in `mode`.
-fn inverted_mask_fixture(mode: mastik_core::MaskMode) -> (Document, Resolved) {
+fn inverted_mask_fixture(mode: mastik_core::MaskMode, grouped: bool) -> (Document, Resolved) {
     let mut ids = IdSource::new(1);
     let root = ids.mint();
     let mut doc = Document::new(root);
-    let (mask, square) = (ids.mint(), ids.mint());
+    let (mask, square, group) = (ids.mint(), ids.mint(), ids.mint());
     let mut ops = Vec::new();
+    // Grouped, the run is drawn inside the group's effect buffer: a shadow cast
+    // far out of view, so it opens the buffer without inking what is read.
+    let parent = match grouped {
+        true => {
+            ops.push(Operation::CreateNode {
+                id: group,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Group,
+                transform: None,
+                name: None,
+            });
+            ops.push(Operation::SetEffects {
+                id: group,
+                effects: keyed_by_position([Effect::new(EffectKind::DropShadow(Shadow {
+                    offset: Vec2::new(300.0, 0.0),
+                    blur: 0.0,
+                    spread: 0.0,
+                    color: Color::BLACK,
+                    blend: mastik_core::BlendMode::Normal,
+                }))]),
+            });
+            group
+        }
+        false => root,
+    };
     for (id, at, side, color) in [
         (mask, 30.0, 40.0, Color::from_rgba8(128, 128, 128, 255)),
         (square, 10.0, 80.0, Color::from_rgba8(220, 30, 40, 255)),
     ] {
         ops.push(Operation::CreateNode {
             id,
-            parent: root,
+            parent,
             index: usize::from(id == square),
             kind: NodeKind::Rect {
                 size: Size::new(side, side),
@@ -803,7 +829,8 @@ fn inverted_mask_fixture(mode: mastik_core::MaskMode) -> (Document, Resolved) {
 /// survives whole outside the mask, and inside it shape erases, alpha erases (the
 /// grey is opaque) and luminance leaves the grey's complement. The inverted
 /// luminance arrangement (an erase layer over a cover cut by a luminance mask) is
-/// the one built from two backend-specific parts.
+/// the one built from two backend-specific parts, at the top level and inside a
+/// group's effect buffer, where each backend's cover finds a smaller target.
 /// flip: `GpuScenePainter::fill_cover` drawing nothing → fails at "Luminance:
 /// inside the mask alpha is 127".
 #[test]
@@ -813,12 +840,13 @@ fn both_backends_draw_the_same_inverted_mask() {
         return;
     };
     use mastik_core::MaskMode;
-    for (mode, inside) in [
-        (MaskMode::Shape, 0u8),
-        (MaskMode::Alpha, 0),
-        (MaskMode::Luminance, 127),
+    for (mode, inside, grouped) in [
+        (MaskMode::Shape, 0u8, false),
+        (MaskMode::Alpha, 0, false),
+        (MaskMode::Luminance, 127, false),
+        (MaskMode::Luminance, 127, true),
     ] {
-        let (doc, res) = inverted_mask_fixture(mode);
+        let (doc, res) = inverted_mask_fixture(mode, grouped);
         let gpu_px = render_gpu(&mut g, &doc, &res);
         let cpu_px = render_cpu(&doc, &res);
         let ring = at(&gpu_px, 20, 20);

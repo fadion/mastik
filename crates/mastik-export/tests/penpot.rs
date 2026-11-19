@@ -260,6 +260,32 @@ fn the_report_names_what_penpot_cannot_hold() {
     );
 }
 
+/// An inverted mask, which Penpot draws the right way out, is reported; the
+/// plain one above is not.
+/// flip: the mask run's `mask_inverted` report removed → fails.
+#[test]
+fn an_inverted_mask_is_reported() {
+    let mut f = fixture();
+    let clip = named(&f.doc, "Clip");
+    f.doc
+        .apply(&mastik_core::Transaction(vec![
+            mastik_core::Operation::SetMaskInverted {
+                id: clip,
+                inverted: true,
+            },
+        ]))
+        .unwrap();
+    f.res = mastik_core::Resolved::rebuild(&f.doc);
+    let out = mastik_export::penpot::export(&f.doc, &f.res, "Fixture").unwrap();
+    assert!(
+        out.approximated
+            .iter()
+            .any(|s| s == "Inverted masks, as masks the right way out"),
+        "{:?}",
+        out.approximated
+    );
+}
+
 /// A layer's export settings go out as Penpot's `exports`: the format as its
 /// keyword, the multiplier, and the suffix Mastik would name the file with.
 /// flip: `exports` writing `spec.suffix` for the suffix → fails at the 2× row.

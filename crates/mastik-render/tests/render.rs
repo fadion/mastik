@@ -684,6 +684,72 @@ fn outline_view_strokes_every_outline_as_a_hairline_and_drops_layers() {
     }
 }
 
+/// Outline mode outlines an inverted alpha or luminance mask's fill as it does a
+/// plain one's: the mask is a layer of the document, not a knock-out.
+/// flip: `push_ink_mask` opening `push_erase_layer` for an inverted mask → fails
+/// at "Alpha".
+#[test]
+fn outline_view_outlines_an_inverted_masks_fill() {
+    for mode in [
+        mastik_core::MaskMode::Alpha,
+        mastik_core::MaskMode::Luminance,
+    ] {
+        for inverted in [false, true] {
+            let mut ids = IdSource::new(1);
+            let root = ids.mint();
+            let mut doc = Document::new(root);
+            let (mask, square) = (ids.mint(), ids.mint());
+            let mut ops = Vec::new();
+            for (id, at, side) in [(mask, 30.0, 40.0), (square, 10.0, 80.0)] {
+                ops.push(Operation::CreateNode {
+                    id,
+                    parent: root,
+                    index: usize::from(id == square),
+                    kind: NodeKind::Rect {
+                        size: Size::new(side, side),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: Some(Affine::translate((at, at))),
+                    name: None,
+                });
+                ops.push(Operation::SetFills {
+                    id,
+                    fills: keyed_by_position([Fill {
+                        brush: Brush::Solid(Color::from_rgba8(128, 128, 128, 255)).into(),
+                        visible: true,
+                    }]),
+                });
+            }
+            ops.push(Operation::SetMask {
+                id: mask,
+                mask: true,
+            });
+            ops.push(Operation::SetMaskMode { id: mask, mode });
+            ops.push(Operation::SetMaskInverted { id: mask, inverted });
+            doc.apply(&Transaction(ops)).unwrap();
+            let res = Resolved::rebuild(&doc);
+            let vp = Viewport {
+                view: Rect::new(0.0, 0.0, 2000.0, 2000.0),
+                pixel_size: (400, 400),
+            };
+            let ink = Color::from_rgba8(255, 0, 128, 255);
+            let mut ov = RenderOverrides::default();
+            ov.set_outline(Some(ink));
+            let mut outlined = OutlineRecorder {
+                ink: Some(ink),
+                ..Default::default()
+            };
+            scene::build(&doc, &res, &vp, &ov, doc.first_page(), &mut outlined);
+            assert_eq!(
+                outlined.strokes.len(),
+                2,
+                "{mode:?}, inverted {inverted}: the mask's hairline and the square's"
+            );
+        }
+    }
+}
+
 /// Outline mode draws what a frame clips even when only the overflow is in
 /// view: the cull reads the frame's unclipped bounds there.
 ///

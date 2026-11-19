@@ -197,6 +197,40 @@ fn an_effect_is_reported_as_pixels() {
     );
 }
 
+/// An inverted alpha mask goes to pixels and says so; an inverted shape mask is
+/// a clip and does not.
+/// flip: `approximations` without the inverted-mask note → fails at "alpha".
+#[test]
+fn an_inverted_alpha_mask_is_reported_as_pixels() {
+    const NOTE: &str = "an inverted alpha or luminance mask, drawn as pixels";
+    for (mode, noted) in [
+        (mastik_core::MaskMode::Alpha, true),
+        (mastik_core::MaskMode::Shape, false),
+    ] {
+        let mut f = common::fixture();
+        f.doc
+            .apply(&Transaction(vec![
+                Operation::SetMask {
+                    id: f.rect,
+                    mask: true,
+                },
+                Operation::SetMaskMode { id: f.rect, mode },
+                Operation::SetMaskInverted {
+                    id: f.rect,
+                    inverted: true,
+                },
+            ]))
+            .expect("an inverted mask");
+        f.res = Resolved::rebuild(&f.doc);
+        let notes = approximated(&f.doc, &f.res, &[f.artboard], ExportText::Live);
+        assert_eq!(
+            notes.iter().any(|s| s == NOTE),
+            noted,
+            "{mode:?}: {notes:?}"
+        );
+    }
+}
+
 /// A frame with an effect says its contents go to pixels with it, and live
 /// text's decorations say they lose their style; outlined text's do not.
 ///

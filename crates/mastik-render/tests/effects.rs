@@ -221,6 +221,103 @@ fn a_noise_after_a_heavy_blur_keeps_its_grain() {
     assert!(worst <= Some(2), "off the noise alone by up to {worst:?}");
 }
 
+/// An inverted luminance mask inside a group's effect buffer keeps its grey's
+/// complement and the square outside it: the cover it erases by fills that
+/// buffer, not the page. `gpu_effects::both_backends_draw_the_same_inverted_mask`
+/// holds the GPU to this.
+/// flip: `CpuPainter::fill_cover` covering nothing inside an effect buffer →
+/// fails at "inside". A cover the page's size from the buffer's corner would pass:
+/// the buffer here is no larger than the page.
+#[test]
+fn an_inverted_luminance_mask_in_an_effect_buffer_keeps_its_complement() {
+    let mut ids = IdSource::new(1);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let (group, mask, square) = (ids.mint(), ids.mint(), ids.mint());
+    let mut ops = vec![
+        Operation::CreateNode {
+            id: group,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Group,
+            transform: None,
+            name: None,
+        },
+        // Cast far out of view: it opens the buffer and inks nothing read here.
+        Operation::SetEffects {
+            id: group,
+            effects: keyed_by_position([Effect::new(EffectKind::DropShadow(Shadow {
+                offset: Vec2::new(300.0, 0.0),
+                blur: 0.0,
+                spread: 0.0,
+                color: Color::BLACK,
+                blend: mastik_core::BlendMode::Normal,
+            }))]),
+        },
+    ];
+    for (id, at, side, color) in [
+        (mask, 30.0, 40.0, Color::from_rgba8(128, 128, 128, 255)),
+        (square, 10.0, 80.0, Color::from_rgba8(220, 30, 40, 255)),
+    ] {
+        ops.push(Operation::CreateNode {
+            id,
+            parent: group,
+            index: usize::from(id == square),
+            kind: NodeKind::Rect {
+                size: Size::new(side, side),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((at, at))),
+            name: None,
+        });
+        ops.push(Operation::SetFills {
+            id,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Solid(color).into(),
+                visible: true,
+            }]),
+        });
+    }
+    ops.push(Operation::SetMask {
+        id: mask,
+        mask: true,
+    });
+    ops.push(Operation::SetMaskMode {
+        id: mask,
+        mode: mastik_core::MaskMode::Luminance,
+    });
+    ops.push(Operation::SetMaskInverted {
+        id: mask,
+        inverted: true,
+    });
+    doc.apply(&Transaction(ops)).unwrap();
+    let res = Resolved::rebuild(&doc);
+    let vp = Viewport {
+        view: Rect::new(0.0, 0.0, 100.0, 100.0),
+        pixel_size: (100, 100),
+    };
+    let (px, w, _) = VelloCpuRenderer::new().render_to_rgba(
+        &doc,
+        &res,
+        &vp,
+        &ImageStore::default(),
+        doc.first_page(),
+    );
+    let w = w as usize;
+    let ring = at(&px, w, 20, 20);
+    assert!(
+        ring.0 > 200 && ring.3 == 255,
+        "outside the mask the square is whole: {ring:?}"
+    );
+    let mid = at(&px, w, 50, 50);
+    assert!(
+        mid.3.abs_diff(127) <= 2,
+        "inside, the grey's complement: {mid:?}"
+    );
+    assert_eq!(at(&px, w, 5, 5).3, 0, "past the square, nothing");
+}
+
 /// The blur is what makes a shadow a shadow, so its falloff is the assertion.
 ///
 /// A shadow 10 down with an 8 blur has a deviation of 4 and reaches 12 past its
