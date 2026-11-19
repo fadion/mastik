@@ -2607,7 +2607,7 @@ mod tests {
     /// moved its first anchor into another frame: as the preview drew it.
     ///
     /// flip: `finish_pen` reading the mirror's frame after taking the run →
-    /// fails at "about A's middle".
+    /// fails at "about A's middle", and in its minted arm at "a minted run".
     #[test]
     fn a_run_lands_about_the_frame_it_began_in() {
         let ctx = egui::Context::default();
@@ -2651,6 +2651,35 @@ mod tests {
         assert!(
             got.iter().any(|p| near(*p, Point::new(-150.0, 50.0))),
             "about A's middle: {got:?}"
+        );
+
+        // A new run the node tool's pen draws inside that path lands about the
+        // frame its edit drew in, A, though its first anchor sits in B.
+        let world = app.session.resolved.world_transform(id).unwrap();
+        app.pen = Some(crate::preview::PenState {
+            parent: a,
+            parent_world: Affine::IDENTITY,
+            anchors: [(350.0, 120.0), (60.0, 150.0)]
+                .map(|(x, y)| PenAnchor::corner(Point::new(x, y)))
+                .to_vec(),
+            shaping: false,
+            editing: Some(crate::preview::PenEdit {
+                id,
+                world,
+                subpaths: vec![PenSubpath {
+                    anchors: Vec::new(),
+                    closed: false,
+                }],
+                active: 0,
+                from_start: false,
+                minted: true,
+            }),
+        });
+        app.finish_pen(false);
+        let got = landed(&app, id);
+        assert!(
+            got.iter().any(|p| near(*p, Point::new(140.0, 150.0))),
+            "a minted run about A's middle: {got:?}"
         );
     }
 

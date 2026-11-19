@@ -7424,8 +7424,9 @@ impl MastikApp {
                     edit.subpaths.remove(edit.active);
                 } else if edit.minted {
                     // A new run inside the path mirrors as a new path does: across
-                    // the path's own axes when it is mirrored (`mirror_frame`).
-                    let run = self.mirror_run(sub);
+                    // the path's own axes when it is mirrored (`mirror_frame`),
+                    // about the frame read before the run was taken.
+                    let run = self.mirror_run_in(frame, sub);
                     edit.subpaths.splice(edit.active..=edit.active, run);
                 } else {
                     edit.subpaths[edit.active] = sub;
