@@ -877,27 +877,16 @@ impl Builder<'_> {
     /// arrow, 3 a line across, 4–5 a circle, 6–7 a square. The open circle and
     /// square are drawn filled. Sketch keeps one pair for a layer; every border
     /// takes it.
-    fn marker(&mut self, code: i64) -> crate::marker::Marker {
+    /// A `startMarkerType`/`endMarkerType` code as a marker; an open circle (4)
+    /// or square (6) is drawn filled, which the stroke reader counts.
+    fn marker(code: i64) -> crate::marker::Marker {
         use crate::marker::Marker;
         match code {
             1 => Marker::OpenArrow,
             2 => Marker::Arrow,
             3 => Marker::Bar,
-            4 | 6 => {
-                self.count(
-                    "Open circle and square line ends",
-                    1,
-                    "layers",
-                    "Drawn filled",
-                );
-                if code == 4 {
-                    Marker::Circle
-                } else {
-                    Marker::Square
-                }
-            }
-            5 => Marker::Circle,
-            7 => Marker::Square,
+            4 | 5 => Marker::Circle,
+            6 | 7 => Marker::Square,
             _ => Marker::None,
         }
     }
@@ -937,8 +926,20 @@ impl Builder<'_> {
             .get("miterLimit")
             .and_then(Value::as_f64)
             .unwrap_or(10.0);
-        let start = self.marker(num(style, "startMarkerType") as i64);
-        let end = self.marker(num(style, "endMarkerType") as i64);
+        let codes = [
+            num(style, "startMarkerType") as i64,
+            num(style, "endMarkerType") as i64,
+        ];
+        let [start, end] = codes.map(Self::marker);
+        // Once a layer, and only where a border draws them.
+        if codes.iter().any(|c| matches!(c, 4 | 6)) && !arr(style, "borders").is_empty() {
+            self.count(
+                "Open circle and square line ends",
+                1,
+                "layers",
+                "Drawn filled",
+            );
+        }
         arr(style, "borders")
             .iter()
             .filter_map(|s| {

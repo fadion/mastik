@@ -592,8 +592,11 @@ impl Writer<'_> {
                         Some(json!({ "$type": "color", "$value": color(*c) }))
                     }
                     BrushSource::Literal(Brush::Gradient(g)) => {
-                        let stops: Vec<Json> = g
-                            .gradient
+                        // A DTCG gradient has no mixing space and readers mix in
+                        // sRGB, so an Oklab ramp goes as the dense stops that draw it.
+                        let mut ramp = g.gradient.clone();
+                        mastik_core::image::mix_in_srgb(&mut ramp);
+                        let stops: Vec<Json> = ramp
                             .stops
                             .iter()
                             .map(|s| {

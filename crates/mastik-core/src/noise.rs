@@ -307,8 +307,12 @@ impl Lattice {
                     *v = f64::from((seed % (2 * B_SIZE as i32)) - B_SIZE as i32) / B_SIZE as f64;
                 }
                 let s = (cell[0] * cell[0] + cell[1] * cell[1]).sqrt();
-                cell[0] /= s;
-                cell[1] /= s;
+                // Two draws of 256 make a zero vector, which stays zero (Skia's
+                // reading) rather than `0/0`, a `NaN` every reader draws apart.
+                if s > 0.0 {
+                    cell[0] /= s;
+                    cell[1] /= s;
+                }
             }
         }
         for i in (1..B_SIZE).rev() {
@@ -519,6 +523,25 @@ mod tests {
         let below = l.noise2(1, 4.999_99, 2.5);
         let above = l.noise2(1, 5.000_01, 2.5);
         assert!((below - above).abs() < 1e-3, "{below} against {above}");
+    }
+
+    /// A seed that draws a zero gradient (1155 in the red channel, 514 in the
+    /// alpha) keeps it at zero, as Skia does, rather than normalising it to `NaN`.
+    /// flip: `Lattice::new` dividing a zero vector by its length → fails at "table".
+    #[test]
+    fn a_zero_gradient_stays_zero_and_the_noise_finite() {
+        for seed in [1155, 514] {
+            let l = Lattice::new(seed);
+            assert!(l.table().iter().all(|v| v.is_finite()), "{seed}: table");
+            for c in 0..4 {
+                for i in 0..256 {
+                    for j in 0..256 {
+                        let v = l.noise2(c, i as f32 + 0.5, j as f32 + 0.5);
+                        assert!(v.is_finite(), "{seed}: noise2 at ({i}, {j}) of {c}");
+                    }
+                }
+            }
+        }
     }
 
     /// A noise's numbers are held to range when read, and what is left out takes

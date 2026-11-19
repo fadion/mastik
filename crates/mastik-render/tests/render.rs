@@ -684,6 +684,134 @@ fn outline_view_strokes_every_outline_as_a_hairline_and_drops_layers() {
     }
 }
 
+/// A line's arrowhead is drawn, in the stroke's colour, on the canvas's CPU
+/// path: inside the head's triangle off the stroke's band, and nothing there
+/// without the head.
+/// flip: `paint_strokes` without its `fill_path(heads)` → fails at "the head".
+#[test]
+fn a_lines_arrowhead_is_drawn() {
+    use mastik_core::kurbo::Point;
+    use mastik_core::{Marker, Stroke};
+    let draw = |end: Marker| {
+        let mut ids = IdSource::new(5);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let line = ids.mint();
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: line,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Line {
+                    end: Point::new(80.0, 0.0),
+                },
+                transform: Some(Affine::translate((10.0, 50.0))),
+                name: None,
+            },
+            Operation::SetStrokes {
+                id: line,
+                strokes: keyed_by_position([Stroke {
+                    brush: Brush::Solid(Color::from_rgba8(20, 200, 90, 255)).into(),
+                    width: 4.0,
+                    end,
+                    ..Default::default()
+                }]),
+            },
+        ]))
+        .unwrap();
+        let res = Resolved::rebuild(&doc);
+        let vp = Viewport {
+            view: Rect::new(0.0, 0.0, 100.0, 100.0),
+            pixel_size: (100, 100),
+        };
+        let (px, w, _) = mastik_render::VelloCpuRenderer::new().render_to_rgba(
+            &doc,
+            &res,
+            &vp,
+            &mastik_render::ImageStore::default(),
+            doc.first_page(),
+        );
+        let at = |x: usize, y: usize| {
+            let i = (y * w as usize + x) * 4;
+            [px[i], px[i + 1], px[i + 2], px[i + 3]]
+        };
+        // The tip at x 90, the head 12 long and 12 across; the stroke is y 48..52.
+        // (80, 46) is wholly inside the head and off the stroke's band.
+        (at(80, 46), at(50, 50))
+    };
+    let (head, shaft) = draw(Marker::Arrow);
+    assert_eq!(shaft, [20, 200, 90, 255], "the fixture strokes its line");
+    assert_eq!(head, [20, 200, 90, 255], "the head");
+    let (none, _) = draw(Marker::None);
+    assert_eq!(none[3], 0, "the control: nothing there without a head");
+}
+
+/// Outline mode outlines an inverted alpha or luminance mask's fill as it does a
+/// plain one's: the mask is a layer of the document, not a knock-out.
+/// flip: `push_ink_mask` opening `push_erase_layer` for an inverted mask → fails
+/// at "Alpha".
+#[test]
+fn outline_view_outlines_an_inverted_masks_fill() {
+    for mode in [
+        mastik_core::MaskMode::Alpha,
+        mastik_core::MaskMode::Luminance,
+    ] {
+        for inverted in [false, true] {
+            let mut ids = IdSource::new(1);
+            let root = ids.mint();
+            let mut doc = Document::new(root);
+            let (mask, square) = (ids.mint(), ids.mint());
+            let mut ops = Vec::new();
+            for (id, at, side) in [(mask, 30.0, 40.0), (square, 10.0, 80.0)] {
+                ops.push(Operation::CreateNode {
+                    id,
+                    parent: root,
+                    index: usize::from(id == square),
+                    kind: NodeKind::Rect {
+                        size: Size::new(side, side),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: Some(Affine::translate((at, at))),
+                    name: None,
+                });
+                ops.push(Operation::SetFills {
+                    id,
+                    fills: keyed_by_position([Fill {
+                        brush: Brush::Solid(Color::from_rgba8(128, 128, 128, 255)).into(),
+                        visible: true,
+                    }]),
+                });
+            }
+            ops.push(Operation::SetMask {
+                id: mask,
+                mask: true,
+            });
+            ops.push(Operation::SetMaskMode { id: mask, mode });
+            ops.push(Operation::SetMaskInverted { id: mask, inverted });
+            doc.apply(&Transaction(ops)).unwrap();
+            let res = Resolved::rebuild(&doc);
+            let vp = Viewport {
+                view: Rect::new(0.0, 0.0, 2000.0, 2000.0),
+                pixel_size: (400, 400),
+            };
+            let ink = Color::from_rgba8(255, 0, 128, 255);
+            let mut ov = RenderOverrides::default();
+            ov.set_outline(Some(ink));
+            let mut outlined = OutlineRecorder {
+                ink: Some(ink),
+                ..Default::default()
+            };
+            scene::build(&doc, &res, &vp, &ov, doc.first_page(), &mut outlined);
+            assert_eq!(
+                outlined.strokes.len(),
+                2,
+                "{mode:?}, inverted {inverted}: the mask's hairline and the square's"
+            );
+        }
+    }
+}
+
 /// Outline mode draws what a frame clips even when only the overflow is in
 /// view: the cull reads the frame's unclipped bounds there.
 ///

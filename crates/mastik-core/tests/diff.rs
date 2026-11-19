@@ -589,6 +589,33 @@ fn a_number_skipped_at_one_reads_from_one() {
     assert_eq!(dot.changes, [change("item shrink", "1", "2")]);
 }
 
+/// A noise's density, which the file skips at one, reads from one.
+/// flip: `("density", "1.0")` taken out of `SKIPPED_AT` → reads `0 → 0.4`.
+#[test]
+fn a_noise_density_skipped_at_one_reads_from_one() {
+    let f = fixture();
+    let noise = |density| Operation::SetEffects {
+        id: f.dot,
+        effects: keyed_by_position([mastik_core::Effect::new(mastik_core::EffectKind::Noise(
+            mastik_core::Noise {
+                density,
+                ..Default::default()
+            },
+        ))]),
+    };
+    let a = edited(&f, vec![noise(1.0)]);
+    let b = edited(&f, vec![noise(0.4)]);
+    let d = diff(&a, &b);
+    let dot = layer(&d, &["Card", "Dot"]).expect("Dot is reported");
+    assert_eq!(dot.changes.len(), 1, "{:?}", dot.changes);
+    let c = &dot.changes[0];
+    assert_eq!(
+        (c.before.as_deref(), c.after.as_deref()),
+        (Some("1"), Some("0.4")),
+        "{c:?}"
+    );
+}
+
 /// A kit that stops sharing is a change, though the file skips `sharing` at on.
 ///
 /// flip: `("sharing", "true")` taken out of `SKIPPED_AT` → still reported, by

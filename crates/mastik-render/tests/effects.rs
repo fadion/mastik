@@ -36,6 +36,16 @@ fn render_kind(kind: NodeKind, effects: Vec<Effect>) -> (Vec<u8>, usize) {
 /// `render_kind` onto a page cut to `width` pixels from its left edge, which
 /// can cut the layer at the target's edge.
 fn render_in(kind: NodeKind, effects: Vec<Effect>, width: u32) -> (Vec<u8>, usize) {
+    render_placed(kind, Affine::translate((30.0, 30.0)), effects, width)
+}
+
+/// `render_in` with the layer's transform chosen.
+fn render_placed(
+    kind: NodeKind,
+    transform: Affine,
+    effects: Vec<Effect>,
+    width: u32,
+) -> (Vec<u8>, usize) {
     let mut ids = IdSource::new(1);
     let root = ids.mint();
     let mut doc = Document::new(root);
@@ -46,7 +56,7 @@ fn render_in(kind: NodeKind, effects: Vec<Effect>, width: u32) -> (Vec<u8>, usiz
             parent: root,
             index: 0,
             kind,
-            transform: Some(Affine::translate((30.0, 30.0))),
+            transform: Some(transform),
             name: None,
         },
         Operation::SetFills {
@@ -120,6 +130,192 @@ fn a_drop_shadow_lands_below_the_layer_in_its_own_colour() {
         (255, 255, 255, 255),
         "and the layer itself is untouched, drawn over its own shadow"
     );
+}
+
+/// A shadow's offset is in the layer's own space: turned 90° the offset (20, 0)
+/// points down, mirrored it points left, and in both it is drawn.
+/// flip: `effects::shadow_shift` returning `offset × scale` → fails at "turned".
+#[test]
+fn a_shadow_turns_and_mirrors_with_its_layer() {
+    let rect = || NodeKind::Rect {
+        size: Size::new(40.0, 40.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    };
+    let shadow = || {
+        Effect::new(EffectKind::DropShadow(Shadow {
+            offset: Vec2::new(20.0, 0.0),
+            blur: 0.0,
+            spread: 0.0,
+            color: Color::from_rgba8(255, 0, 0, 255),
+            blend: mastik_core::BlendMode::Normal,
+        }))
+    };
+    // Both cover x 30..70, y 30..70.
+    let turned = Affine::translate((70.0, 30.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2);
+    let mirrored = Affine::translate((70.0, 30.0)) * Affine::scale_non_uniform(-1.0, 1.0);
+    let (px, w) = render_placed(rect(), turned, vec![shadow()], 100);
+    assert_eq!(
+        at(&px, w, 50, 50),
+        (255, 255, 255, 255),
+        "the fixture covers the middle"
+    );
+    assert_eq!(
+        at(&px, w, 50, 80),
+        (255, 0, 0, 255),
+        "turned: the shadow is below"
+    );
+    assert_eq!(at(&px, w, 80, 50).3, 0, "turned: nothing to the right");
+    let (px, w) = render_placed(rect(), mirrored, vec![shadow()], 100);
+    assert_eq!(
+        at(&px, w, 50, 50),
+        (255, 255, 255, 255),
+        "the fixture covers the middle"
+    );
+    assert_eq!(
+        at(&px, w, 20, 50),
+        (255, 0, 0, 255),
+        "mirrored: the shadow is left"
+    );
+    assert_eq!(at(&px, w, 80, 50).3, 0, "mirrored: nothing to the right");
+}
+
+/// A noise after a heavy layer blur is grain drawn on the blurred layer, so over
+/// the blur's flat middle it draws what the noise alone draws: the buffer is
+/// not downscaled for it.
+/// flip: `effect::buffer_downscale` without its noise-after-blur check → fails
+/// at the comparison.
+#[test]
+fn a_noise_after_a_heavy_blur_keeps_its_grain() {
+    let rect = || NodeKind::Rect {
+        size: Size::new(600.0, 600.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    };
+    let noise = || {
+        Effect::new(EffectKind::Noise(mastik_core::Noise {
+            colors: [Color::BLACK, Color::WHITE],
+            density: 1.0,
+            ..Default::default()
+        }))
+    };
+    let blur = Effect::new(EffectKind::LayerBlur { radius: 100.0 });
+    assert!(
+        mastik_core::effect::buffer_downscale(&keyed_by_position([blur.clone()]), (1.0, 1.0)) > 1.0,
+        "the blur alone earns a downscale"
+    );
+    // The view is 250 units inside every edge, past the blur's reach.
+    let place = Affine::translate((-250.0, -250.0));
+    let (alone, _) = render_placed(rect(), place, vec![noise()], 100);
+    let (after, _) = render_placed(rect(), place, vec![blur, noise()], 100);
+    // Colour only: a layer covering the view gets no room past it
+    // (`effect::buffer_box_within`'s budget), so the blur fades its alpha towards
+    // the view's edge while its colour stays the flat white the grain is laid on.
+    let worst = alone
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after.as_chunks::<4>().0)
+        .flat_map(|(a, b)| (0..3).map(move |c| a[c].abs_diff(b[c])))
+        .max();
+    assert!(worst <= Some(2), "off the noise alone by up to {worst:?}");
+}
+
+/// An inverted luminance mask inside a group's effect buffer keeps its grey's
+/// complement and the square outside it: the cover it erases by fills that
+/// buffer, not the page. `gpu_effects::both_backends_draw_the_same_inverted_mask`
+/// holds the GPU to this.
+/// flip: `CpuPainter::fill_cover` covering nothing inside an effect buffer →
+/// fails at "inside". A cover the page's size from the buffer's corner would pass:
+/// the buffer here is no larger than the page.
+#[test]
+fn an_inverted_luminance_mask_in_an_effect_buffer_keeps_its_complement() {
+    let mut ids = IdSource::new(1);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let (group, mask, square) = (ids.mint(), ids.mint(), ids.mint());
+    let mut ops = vec![
+        Operation::CreateNode {
+            id: group,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Group,
+            transform: None,
+            name: None,
+        },
+        // Cast far out of view: it opens the buffer and inks nothing read here.
+        Operation::SetEffects {
+            id: group,
+            effects: keyed_by_position([Effect::new(EffectKind::DropShadow(Shadow {
+                offset: Vec2::new(300.0, 0.0),
+                blur: 0.0,
+                spread: 0.0,
+                color: Color::BLACK,
+                blend: mastik_core::BlendMode::Normal,
+            }))]),
+        },
+    ];
+    for (id, at, side, color) in [
+        (mask, 30.0, 40.0, Color::from_rgba8(128, 128, 128, 255)),
+        (square, 10.0, 80.0, Color::from_rgba8(220, 30, 40, 255)),
+    ] {
+        ops.push(Operation::CreateNode {
+            id,
+            parent: group,
+            index: usize::from(id == square),
+            kind: NodeKind::Rect {
+                size: Size::new(side, side),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((at, at))),
+            name: None,
+        });
+        ops.push(Operation::SetFills {
+            id,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Solid(color).into(),
+                visible: true,
+            }]),
+        });
+    }
+    ops.push(Operation::SetMask {
+        id: mask,
+        mask: true,
+    });
+    ops.push(Operation::SetMaskMode {
+        id: mask,
+        mode: mastik_core::MaskMode::Luminance,
+    });
+    ops.push(Operation::SetMaskInverted {
+        id: mask,
+        inverted: true,
+    });
+    doc.apply(&Transaction(ops)).unwrap();
+    let res = Resolved::rebuild(&doc);
+    let vp = Viewport {
+        view: Rect::new(0.0, 0.0, 100.0, 100.0),
+        pixel_size: (100, 100),
+    };
+    let (px, w, _) = VelloCpuRenderer::new().render_to_rgba(
+        &doc,
+        &res,
+        &vp,
+        &ImageStore::default(),
+        doc.first_page(),
+    );
+    let w = w as usize;
+    let ring = at(&px, w, 20, 20);
+    assert!(
+        ring.0 > 200 && ring.3 == 255,
+        "outside the mask the square is whole: {ring:?}"
+    );
+    let mid = at(&px, w, 50, 50);
+    assert!(
+        mid.3.abs_diff(127) <= 2,
+        "inside, the grey's complement: {mid:?}"
+    );
+    assert_eq!(at(&px, w, 5, 5).3, 0, "past the square, nothing");
 }
 
 /// The blur is what makes a shadow a shadow, so its falloff is the assertion.

@@ -159,6 +159,99 @@ pub fn pinned_icon() -> Fixture {
     Fixture { doc, res }
 }
 
+/// `line_ends` with the board filled by a red-to-blue ramp mixed in Oklab.
+pub fn oklab_board() -> Fixture {
+    let mut f = line_ends();
+    let board = named(&f.doc, "Board");
+    let mut ramp = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(100.0, 0.0)).with_stops([
+        (0.0_f32, Color::from_rgb8(255, 0, 0)),
+        (1.0_f32, Color::from_rgb8(0, 0, 255)),
+    ]);
+    ramp.interpolation_cs = mastik_core::peniko::color::ColorSpaceTag::Oklab;
+    f.doc
+        .apply(&Transaction(vec![Operation::SetFills {
+            id: board,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Gradient(ramp.into()).into(),
+                visible: true,
+            }]),
+        }]))
+        .expect("the ramp");
+    f.res = Resolved::rebuild(&f.doc);
+    f
+}
+
+/// The most stops any gradient in `z`'s JSON carries.
+pub fn most_stops(z: &Unzipped) -> usize {
+    fn walk(v: &Value) -> usize {
+        match v {
+            Value::Object(m) => m
+                .iter()
+                .map(|(k, v)| match (k.as_str(), v) {
+                    ("stops", Value::Array(a)) => a.len().max(walk(v)),
+                    _ => walk(v),
+                })
+                .max()
+                .unwrap_or(0),
+            Value::Array(a) => a.iter().map(walk).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    z.json.values().map(walk).max().unwrap_or(0)
+}
+
+/// A board holding two lines: *Arrows*, an open arrow at its start and an arrow
+/// at its end; *Bars*, a bar at its start and a circle at its end at 200%.
+pub fn line_ends() -> Fixture {
+    use mastik_core::{Marker, Stroke};
+    let mut ids = IdSource::new(0x11E);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let [board, arrows, bars] = [(); 3].map(|_| ids.mint());
+    let line = |id, y: f64, name: &str| Operation::CreateNode {
+        id,
+        parent: board,
+        index: 0,
+        kind: NodeKind::Line {
+            end: Point::new(80.0, 0.0),
+        },
+        transform: Some(Affine::translate((10.0, y))),
+        name: Some(name.into()),
+    };
+    let ends = |id, start, end, marker_size| Operation::SetStrokes {
+        id,
+        strokes: keyed_by_position([Stroke {
+            brush: Brush::Solid(Color::BLACK).into(),
+            width: 2.0,
+            start,
+            end,
+            marker_size,
+            ..Default::default()
+        }]),
+    };
+    doc.apply(&Transaction(vec![
+        Operation::CreateNode {
+            id: board,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Artboard {
+                size: Size::new(100.0, 100.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: Some("Board".into()),
+        },
+        line(arrows, 30.0, "Arrows"),
+        line(bars, 60.0, "Bars"),
+        ends(arrows, Marker::OpenArrow, Marker::Arrow, 1.0),
+        ends(bars, Marker::Bar, Marker::Circle, 2.0),
+    ]))
+    .expect("the lines");
+    let res = Resolved::rebuild(&doc);
+    Fixture { doc, res }
+}
+
 /// A page with a flex row, a component and an instance whose label is
 /// overridden, a fill bound to a colour variable, a text style, a mask over a
 /// picture, a turned rect, a radial gradient and a hidden, locked layer.

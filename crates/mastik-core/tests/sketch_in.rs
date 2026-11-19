@@ -1159,3 +1159,50 @@ fn export_presets_become_export_settings() {
     let rows: Vec<&str> = read.report.iter().map(|u| u.what).collect();
     assert_eq!(rows, ["Export formats Mastik lacks"]);
 }
+
+/// Sketch's line-end codes read as the markers they name, and an open circle at
+/// both ends of one layer counts that layer once.
+/// flip: `marker` reading 1 as `Arrow` → fails at "Arrows"; the count taken per
+/// end → fails at the row.
+#[test]
+fn line_ends_read_as_their_markers_and_count_once_a_layer() {
+    use mastik_core::Marker;
+    let border = json!({ "_class": "border", "isEnabled": true, "fillType": 0,
+        "color": color(0.0, 0.0, 0.0), "thickness": 2, "position": 0 });
+    let layer = |id: &str, name: &str, start: i64, end: i64| {
+        let mut r = rectangle(
+            id,
+            0.0,
+            0.0,
+            json!({ "borders": [border.clone()], "startMarkerType": start, "endMarkerType": end }),
+        );
+        r["name"] = json!(name);
+        r
+    };
+    let read = import(sketch(
+        &[(
+            "P",
+            "Page",
+            json!([
+                layer("A", "Arrows", 1, 2),
+                layer("B", "Bars", 3, 7),
+                layer("C", "Rings", 4, 4)
+            ]),
+        )],
+        json!({}),
+        &[],
+    ));
+    let ends = |name: &str| {
+        let s = &read.doc.get(one(&read.doc, name)).unwrap().paint().strokes[0].value;
+        (s.start, s.end)
+    };
+    assert_eq!(ends("Arrows"), (Marker::OpenArrow, Marker::Arrow), "Arrows");
+    assert_eq!(ends("Bars"), (Marker::Bar, Marker::Square), "Bars");
+    assert_eq!(ends("Rings"), (Marker::Circle, Marker::Circle), "Rings");
+    let row = read
+        .report
+        .iter()
+        .find(|u| u.what == "Open circle and square line ends")
+        .expect("the open circles are reported");
+    assert!(row.count.starts_with("1 "), "one layer: {}", row.count);
+}

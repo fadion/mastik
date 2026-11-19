@@ -260,6 +260,100 @@ fn the_report_names_what_penpot_cannot_hold() {
     );
 }
 
+/// A line's ends go out as Penpot's stroke caps and read back as the markers
+/// they were, cap butt; a bar has no cap and a size other than 100% is Penpot's
+/// own, both reported.
+/// flip: `markers` writing an arrow as `line-arrow` → fails at "Arrows".
+#[test]
+fn line_ends_go_out_as_caps_and_read_back() {
+    use mastik_core::Marker;
+    let f = rich::line_ends();
+    let out = mastik_export::penpot::export(&f.doc, &f.res, "Lines").unwrap();
+    let z = unzip(&out.bytes);
+    let stroke = |name: &str| {
+        let shape = z
+            .json
+            .values()
+            .find(|v| s(v, "name") == name)
+            .unwrap_or_else(|| panic!("{name}"));
+        shape["strokes"][0].clone()
+    };
+    let arrows = stroke("Arrows");
+    assert_eq!(
+        (s(&arrows, "strokeCapStart"), s(&arrows, "strokeCapEnd")),
+        ("line-arrow", "triangle-arrow"),
+        "Arrows"
+    );
+    let bars = stroke("Bars");
+    assert!(bars.get("strokeCapStart").is_none(), "the bar is left out");
+    assert_eq!(s(&bars, "strokeCapEnd"), "circle-marker");
+    for line in [
+        "Bar line ends, left out",
+        "Line end sizes, drawn at Penpot's own",
+    ] {
+        assert!(out.approximated.iter().any(|s| s == line), "{line}");
+    }
+    let mut ids = IdSource::new(0x9E);
+    let back = mastik_core::penpot_in::read(&mut Zip::of(out.bytes), &mut ids, &mut Pictures)
+        .expect("read back");
+    let ends = |name: &str| {
+        let st = &back
+            .doc
+            .get(named(&back.doc, name))
+            .unwrap()
+            .paint()
+            .strokes[0]
+            .value;
+        (st.start, st.end, st.cap)
+    };
+    assert_eq!(
+        ends("Arrows"),
+        (
+            Marker::OpenArrow,
+            Marker::Arrow,
+            mastik_core::kurbo::Cap::Butt
+        )
+    );
+    assert_eq!(ends("Bars").1, Marker::Circle);
+}
+
+/// An Oklab ramp, which Penpot mixes in sRGB, goes as the dense stops that draw
+/// it.
+/// flip: `gradient` writing the ramp's own stops → fails.
+#[test]
+fn an_oklab_ramp_goes_as_the_stops_that_draw_it() {
+    let f = rich::oklab_board();
+    let out = mastik_export::penpot::export(&f.doc, &f.res, "Ramp").unwrap();
+    let n = rich::most_stops(&unzip(&out.bytes));
+    assert!(n > 2, "{n} stops");
+}
+
+/// An inverted mask, which Penpot draws the right way out, is reported; the
+/// plain one above is not.
+/// flip: the mask run's `mask_inverted` report removed → fails.
+#[test]
+fn an_inverted_mask_is_reported() {
+    let mut f = fixture();
+    let clip = named(&f.doc, "Clip");
+    f.doc
+        .apply(&mastik_core::Transaction(vec![
+            mastik_core::Operation::SetMaskInverted {
+                id: clip,
+                inverted: true,
+            },
+        ]))
+        .unwrap();
+    f.res = mastik_core::Resolved::rebuild(&f.doc);
+    let out = mastik_export::penpot::export(&f.doc, &f.res, "Fixture").unwrap();
+    assert!(
+        out.approximated
+            .iter()
+            .any(|s| s == "Inverted masks, as masks the right way out"),
+        "{:?}",
+        out.approximated
+    );
+}
+
 /// A layer's export settings go out as Penpot's `exports`: the format as its
 /// keyword, the multiplier, and the suffix Mastik would name the file with.
 /// flip: `exports` writing `spec.suffix` for the suffix → fails at the 2× row.

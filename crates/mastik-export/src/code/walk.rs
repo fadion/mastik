@@ -1561,11 +1561,16 @@ impl Walk<'_> {
                 EffectKind::DropShadow(s) if s.spread == 0.0 => shadows += 1,
                 EffectKind::DropShadow(_) => return Some("a shadow with spread".into()),
                 EffectKind::InnerShadow(_) => return Some("an inner shadow".into()),
-                // CSS `filter` has no unsharp mask.
-                EffectKind::Sharpen { .. } => return Some("a sharpen".into()),
-                // Nor a noise.
-                EffectKind::Noise(_) => return Some("noise".into()),
-                EffectKind::Filters(_) => return Some("colour filters".into()),
+                // CSS `filter` has no unsharp mask, nor a noise. One that draws
+                // nothing (`effects::any_ink`'s reading) blocks nothing.
+                EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
+                    return Some("a sharpen".into());
+                }
+                EffectKind::Noise(n) if n.has_ink() => return Some("noise".into()),
+                EffectKind::Filters(f) if !f.is_neutral() => {
+                    return Some("colour filters".into());
+                }
+                EffectKind::Sharpen { .. } | EffectKind::Noise(_) | EffectKind::Filters(_) => {}
             }
         }
         // CSS chains `drop-shadow()`s, each casting the last one's shadow too.

@@ -14,7 +14,7 @@
 //! glyph outlines the canvas draws, which no viewer can re-shape.
 
 use mastik_core::geometry::Dots;
-use mastik_core::kurbo::{Affine, BezPath, Insets, Rect, Shape};
+use mastik_core::kurbo::{Affine, BezPath, Insets, Rect, Shape, Vec2};
 use mastik_core::peniko::{Color, Extend, GradientKind};
 use mastik_core::{
     BlendMode, Decoration, Document, Effect, EffectKind, ExportSpec, ExportText, Fill, Framing,
@@ -530,7 +530,10 @@ fn inner_working_pad(effects: &[Keyed<Effect>]) -> f64 {
 /// Two stages, as `mastik_render::effects::run`: the layer's own appearance, then
 /// every shadow cast from that. `color-interpolation-filters="sRGB"` is mandatory;
 /// the `linearRGB` default would differ from the canvas.
-fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
+///
+/// `space` maps the layer's own space into the filter's; its linear part carries
+/// each shadow's offset, which turns with the layer as on the canvas.
+fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect, space: Affine) -> String {
     let mut out = format!(
         "    <filter id=\"{name}\" filterUnits=\"userSpaceOnUse\" \
          color-interpolation-filters=\"sRGB\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\">\n",
@@ -568,8 +571,13 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
                 graphic = r;
             }
             // `effects::sharpen`'s unsharp mask: `k2·layer + k3·blur`, which
-            // `feComposite` clamps as the renderers do.
+            // `feComposite` clamps as the renderers do. The amount is rounded to
+            // four places once and both coefficients written from it, so they sum
+            // to exactly 1, the shape `svg_in::sharpen_amount` reads back; `1 + a`
+            // and `−a` rounded apart need not.
             EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
+                let unit = 10f64.powi(i32::from(mastik_core::export::MAX_PRECISION));
+                let amount = &((amount * unit).round() / unit);
                 let _ = writeln!(
                     out,
                     "      <feGaussianBlur in=\"{graphic}\" stdDeviation=\"{}\" result=\"{r}b\"/>",
@@ -579,8 +587,8 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
                     out,
                     "      <feComposite in=\"{graphic}\" in2=\"{r}b\" operator=\"arithmetic\" \
                      k1=\"0\" k2=\"{}\" k3=\"{}\" k4=\"0\" result=\"{r}\"/>",
-                    fmt(1.0 + amount),
-                    fmt(-amount),
+                    fmt_unit(1.0 + amount),
+                    fmt_unit(-amount),
                 );
                 graphic = r;
             }
@@ -607,7 +615,12 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect) -> String {
         if s.color.components[3] <= 0.0 {
             continue;
         }
-        let r = shadow_graph(&mut out, &graphic, s, n, inner);
+        let [a, b, c, d, _, _] = space.as_coeffs();
+        let offset = Vec2::new(
+            a * s.offset.x + c * s.offset.y,
+            b * s.offset.x + d * s.offset.y,
+        );
+        let r = shadow_graph(&mut out, &graphic, s, offset, n, inner);
         if inner { &mut over } else { &mut behind }.push(r);
     }
 
@@ -744,9 +757,17 @@ fn turbulence(freq: (f64, f64), octaves: u32, seed: i32, result: &str) -> String
     )
 }
 
-/// The primitives for one shadow, returning its result's name. An inner shadow
-/// inverts the silhouette and clips the result back into the layer's alpha.
-fn shadow_graph(out: &mut String, graphic: &str, s: &Shadow, n: usize, inner: bool) -> String {
+/// The primitives for one shadow, returning its result's name; `offset` is the
+/// shadow's offset in the filter's space. An inner shadow inverts the silhouette
+/// and clips the result back into the layer's alpha.
+fn shadow_graph(
+    out: &mut String,
+    graphic: &str,
+    s: &Shadow,
+    offset: Vec2,
+    n: usize,
+    inner: bool,
+) -> String {
     let a = format!("fxa{n}");
     let t = format!("fxt{n}");
     // The layer's alpha as a black silhouette — `SourceAlpha`, but from `graphic`
@@ -788,8 +809,8 @@ fn shadow_graph(out: &mut String, graphic: &str, s: &Shadow, n: usize, inner: bo
     let _ = writeln!(
         out,
         "      <feOffset in=\"{src}\" dx=\"{}\" dy=\"{}\" result=\"{o}\"/>",
-        fmt(s.offset.x),
-        fmt(s.offset.y),
+        fmt(offset.x),
+        fmt(offset.y),
     );
     let mut shape = o;
     if s.blur > 0.0 {
@@ -864,7 +885,10 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
     if mastik_render::effects::any_ink(&effects)
         && let Some(region) = effect_region(res, id, space, &effects)
     {
-        defs.add(effect_id(id), effect_def(&effect_id(id), &effects, region));
+        defs.add(
+            effect_id(id),
+            effect_def(&effect_id(id), &effects, region, space),
+        );
     }
     // A rail is a def because `<textPath>` can name nothing else; it is in the
     // text node's own space, as the referencing element carries the transform.
@@ -891,7 +915,9 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
             ),
         );
     }
-    let mut consider = |brush: &Brush, slot: &str| {
+    // `pad` is how far the slot's ink reaches past the shape's box: a stroke's
+    // outer half or whole width, further at a mitred corner or a head.
+    let mut consider = |brush: &Brush, slot: &str, pad: f64| {
         match brush {
             Brush::Gradient(g) => {
                 let name = gradient_id(id, slot);
@@ -899,7 +925,8 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
                 // outline walk; `Linear` and `Radial` carry their own geometry.
                 let frame = matches!(g.gradient.kind, GradientKind::Sweep(_))
                     .then(|| paint_frame(node, res, id))
-                    .flatten();
+                    .flatten()
+                    .map(|f| f.inflate(pad, pad));
                 let body = gradient_def(&name, g, frame);
                 defs.add(name, body);
             }
@@ -940,10 +967,28 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
         return;
     };
     for (i, f) in visible_fills(&paint) {
-        consider(f.brush.drawn(), &format!("fill-{i}"));
+        consider(f.brush.drawn(), &format!("fill-{i}"), 0.0);
     }
     for (i, s) in visible_strokes(&paint) {
-        consider(s.brush.drawn(), &format!("stroke-{i}"));
+        let outer = match s.align {
+            StrokeAlign::Inside => 0.0,
+            StrokeAlign::Center => s.width / 2.0,
+            StrokeAlign::Outside => s.width,
+        };
+        let corner = match s.join {
+            mastik_core::kurbo::Join::Miter => s.miter_limit.max(1.0),
+            _ => 1.0,
+        };
+        let head = match s.markers().is_none() {
+            true => 0.0,
+            false => 3.0 * s.marker_size * s.width,
+        };
+        let pad = (outer * corner).max(head);
+        consider(
+            s.brush.drawn(),
+            &format!("stroke-{i}"),
+            if pad.is_finite() { pad } else { 0.0 },
+        );
     }
     // Identity for children: the node's own `<g transform>` establishes their
     // space, as in `emit_node`'s recursion.
@@ -1465,13 +1510,13 @@ fn sweep_def(
             stop("0", colour(t_at(a0 + INSIDE))),
             stop("1", colour(t_at(a1 - INSIDE))),
         );
-        // The last wedge meets the first at the sweep's seam and does not reach past it.
-        let end = if i + 1 < wedges.len() {
-            a1 + WEDGE_OVERLAP
-        } else {
-            a1
-        };
-        let (x2, y2) = at(end);
+        // Each wedge reaches under the next, but never past the seam, where it
+        // would paint its colour over the start's. The first reaches back under
+        // the last instead, which is painted over it, so the seam is covered too;
+        // its gradient pads to its first colour there.
+        let end = (a1 + WEDGE_OVERLAP).min(TAU);
+        let begin = if i == 0 { a0 - WEDGE_OVERLAP } else { a0 };
+        let ((x0, y0), (x2, y2)) = (at(begin), at(end));
         let _ = writeln!(
             paths,
             "      <path d=\"M{} {}L{} {}L{} {}Z\" fill=\"url(#{name}-w{i})\"/>",
@@ -1571,6 +1616,13 @@ fn report_node(
         })
     {
         report.approximate("a shadow's blend mode, drawn normal");
+    }
+    // `svg_in` reads no `feTurbulence`, and a filter it cannot hold whole it
+    // skips whole.
+    if filter_written && noised(effects) {
+        report.round_trip(
+            "a noise, which this app does not read back, nor the rest of its effects with it",
+        );
     }
     // SVG has no backdrop: `BackgroundImage` was never implemented by any viewer.
     if mastik_core::effect::backdrop_radius(effects).is_some() {
@@ -2379,9 +2431,34 @@ fn emit_strokes(
         // A solid stroke's heads are `<marker>`s; any other paint inside a marker
         // would be laid out against the marker's own box, so those heads are
         // filled paths in the stroke's space instead, as are the heads of a line
-        // too short to keep any stroke to hang them on.
+        // too short to keep any stroke to hang them on, and of a head whose
+        // subpath the trim swallowed: SVG hangs `marker-start` and `marker-end` on
+        // the written path's first and last vertex, which is then another
+        // subpath's.
+        let carrier = |at_end: bool| match &pieces {
+            Some(parts) => match at_end {
+                true => parts.last(),
+                false => parts.first(),
+            }
+            .map(|(p, _)| p),
+            None => trimmed.as_ref().or(shape.as_ref()),
+        };
+        let hung = placed.iter().all(|p| {
+            let vertex = carrier(p.at_end).and_then(|c| match p.at_end {
+                true => c
+                    .segments()
+                    .last()
+                    .map(|g| mastik_core::kurbo::ParamCurve::end(&g)),
+                false => c
+                    .segments()
+                    .next()
+                    .map(|g| mastik_core::kurbo::ParamCurve::start(&g)),
+            });
+            vertex.is_some_and(|v| (v - p.base).hypot() <= 1e-6 * p.base.to_vec2().hypot().max(1.0))
+        });
         let solid = matches!(s.brush.drawn(), Brush::Solid(_))
-            && trimmed.as_ref().is_none_or(|t| !t.is_empty());
+            && trimmed.as_ref().is_none_or(|t| !t.is_empty())
+            && hung;
         let (mut marker_start, mut marker_end) = (String::new(), String::new());
         if solid {
             for p in &placed {
@@ -3649,8 +3726,12 @@ mod sweep_tests {
 
     /// A full-turn sweep from `stops`, centred in a 100 × 100 box.
     fn sweep(stops: &[(f32, Color)], extend: Extend) -> String {
-        let mut g = Gradient::new_sweep(Point::new(50.0, 50.0), 0.0, std::f32::consts::TAU)
-            .with_stops(stops);
+        sweep_over(stops, extend, 0.0, std::f32::consts::TAU)
+    }
+
+    /// `sweep` from the turn `start` to `end`.
+    fn sweep_over(stops: &[(f32, Color)], extend: Extend, start: f32, end: f32) -> String {
+        let mut g = Gradient::new_sweep(Point::new(50.0, 50.0), start, end).with_stops(stops);
         g.extend = extend;
         let brush: GradientBrush = g.into();
         let GradientKind::Sweep(p) = brush.gradient.kind else {
@@ -3729,6 +3810,98 @@ mod sweep_tests {
             wedge(&svg, half),
             ["#0000ff".to_owned(), "#0000ff".to_owned()],
             "the far side"
+        );
+    }
+
+    /// Each wedge path's turns, its first and last outer vertex: the first in
+    /// `-0.05..2π - 0.05`, between an overlap and a wedge, so the first wedge's
+    /// reach under the seam reads below 0 and the last wedge's start near `2π`;
+    /// the last that far round from the first, so a wedge past the seam reads
+    /// past `2π`.
+    fn wedge_turns(svg: &str) -> Vec<(f64, f64)> {
+        let turn = |x: f64, y: f64| {
+            let a = (y - 50.0).atan2(x - 50.0);
+            if a < -0.05 {
+                a + std::f64::consts::TAU
+            } else {
+                a
+            }
+        };
+        svg.match_indices("<path d=\"M")
+            .map(|(k, m)| {
+                let d = svg[k + m.len()..].split('"').next().unwrap();
+                let n: Vec<f64> = d
+                    .split(['L', ' ', 'Z'])
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.parse().unwrap())
+                    .collect();
+                let first = turn(n[2], n[3]);
+                let round = (turn(n[4], n[5]) - first).rem_euclid(std::f64::consts::TAU);
+                (first, first + round)
+            })
+            .collect()
+    }
+
+    /// The first wedge reaches back under the seam and no wedge reaches past it,
+    /// even beside a sliver of a last wedge.
+    /// flip: `sweep_def` without the `min(TAU)` → fails at "past the seam".
+    #[test]
+    fn no_wedge_paints_past_the_seam() {
+        let (red, blue) = (Color::from_rgb8(255, 0, 0), Color::from_rgb8(0, 0, 255));
+        let svg = sweep_over(
+            &[(0.0, red), (1.0, blue)],
+            Extend::Pad,
+            0.0,
+            std::f32::consts::TAU - 0.003,
+        );
+        let turns = wedge_turns(&svg);
+        assert!(
+            turns[0].0 < 0.0,
+            "the first reaches under the seam: {:?}",
+            turns[0]
+        );
+        for (i, (_, end)) in turns.iter().enumerate().skip(1) {
+            assert!(
+                *end <= std::f64::consts::TAU + 1e-6,
+                "wedge {i} past the seam: {end}"
+            );
+        }
+    }
+
+    /// A reflected quarter-turn sweep with a hard stop a quarter in puts its edges
+    /// at 22.5° and, mirrored on the second quarter, at 157.5°; a repeated one
+    /// turned to start at a quarter begins its wedges there.
+    /// flip: the reflect edge rule reading `o` on odd turns → fails at "mirrored:
+    /// the fourth".
+    #[test]
+    fn a_reflected_or_turned_sweep_keeps_its_edges_and_start() {
+        let (red, blue) = (Color::from_rgb8(255, 0, 0), Color::from_rgb8(0, 0, 255));
+        let hard = [(0.0, red), (0.25, red), (0.25, blue), (1.0, blue)];
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let svg = sweep_over(&hard, Extend::Reflect, 0.0, quarter);
+        let turns = wedge_turns(&svg);
+        // Which wedge holds the turn `a` (in degrees), and its colours.
+        let at = |deg: f64| {
+            let a = deg.to_radians();
+            let i = turns
+                .iter()
+                .position(|(s, e)| *s <= a && a < *e)
+                .expect("a wedge holds it");
+            wedge(&svg, i)
+        };
+        let red_s = ["#ff0000".to_owned(), "#ff0000".to_owned()];
+        let blue_s = ["#0000ff".to_owned(), "#0000ff".to_owned()];
+        assert_eq!(at(10.0), red_s, "the first");
+        assert_eq!(at(50.0), blue_s, "the second");
+        assert_eq!(at(130.0), blue_s, "mirrored: the third");
+        // Just past the mirrored edge, where a wedge across it would mix the two.
+        assert_eq!(at(159.0), red_s, "mirrored: the fourth");
+        let turned = sweep_over(&hard, Extend::Repeat, quarter, quarter + quarter);
+        // 22.5° between edges, in five wedges of 4.5°.
+        let first = wedge_turns(&turned)[1].0;
+        assert!(
+            (first - (std::f64::consts::FRAC_PI_2 + 4.5f64.to_radians())).abs() < 1e-3,
+            "the second wedge starts a wedge past the quarter: {first}"
         );
     }
 }

@@ -773,6 +773,29 @@ pub fn device_sigma(radius: f64, scale_x: f64, scale_y: f64) -> (f32, f32) {
     ((d * scale_x.abs()) as f32, (d * scale_y.abs()) as f32)
 }
 
+/// A shadow's offset in buffer pixels, rounded: the layer's own-space `offset`
+/// carried by the linear part of the map back from `to_local`, so it turns and
+/// mirrors with the layer as `effect::escaped` bounds it. Both backends shift by
+/// this one number. A buffer with no inverse map (a layer scaled flat) falls back
+/// to the axis scale, which keeps the shift finite.
+pub fn shadow_shift(offset: kurbo::Vec2, scale: (f64, f64), to_local: kurbo::Affine) -> (i32, i32) {
+    let [a, b, c, d, _, _] = to_local.as_coeffs();
+    let det = a * d - b * c;
+    let (x, y) = match det.is_finite() && det != 0.0 {
+        // The inverse of `[a c; b d]` applied to the offset.
+        true => (
+            (d * offset.x - c * offset.y) / det,
+            (a * offset.y - b * offset.x) / det,
+        ),
+        false => (offset.x * scale.0, offset.y * scale.1),
+    };
+    let whole = |v: f64| match v.is_finite() {
+        true => v.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+        false => 0,
+    };
+    (whole(x), whole(y))
+}
+
 /// Apply a whole effect stack to a rasterized layer, in place.
 ///
 /// `scale` is device pixels per document unit along each axis, and `to_local`
@@ -844,7 +867,8 @@ fn run_keeping(
         if sh.color.components[3] <= 0.0 {
             continue;
         }
-        let layer = shadow_layer(&graphic, s.w, s.h, sh, scale, inner);
+        let shift = shadow_shift(sh.offset, scale, to_local);
+        let layer = shadow_layer(&graphic, s.w, s.h, sh, scale, shift, inner);
         if inner {
             // On top of the accumulated result.
             over(&mut out, &layer);
@@ -865,9 +889,11 @@ fn shadow_layer(
     h: usize,
     sh: &mastik_core::effect::Shadow,
     scale: (f64, f64),
+    shift: (i32, i32),
     inner: bool,
 ) -> Vec<u8> {
-    // The silhouette: the layer's alpha shifted by the offset; colour comes later.
+    // The silhouette: the layer's alpha shifted by the offset ([`shadow_shift`]);
+    // colour comes later.
     //
     // **The inversion an inner shadow needs happens at the tint, not here**
     // (§15 D742). Every pass between here and the tint (blur, coarsen, upsample,
@@ -875,10 +901,7 @@ fn shadow_layer(
     // keep one edge rule (outside the buffer is transparent) and the shape's own
     // alpha travels through them. Inverting first would contradict that rule at
     // the buffer edge. It also keeps [`spread_alpha`]'s `grow` the right way up.
-    let (dx, dy) = (
-        (sh.offset.x * scale.0).round() as isize,
-        (sh.offset.y * scale.1).round() as isize,
-    );
+    let (dx, dy) = (shift.0 as isize, shift.1 as isize);
     let mut mask = vec![0u8; w * h * 4];
     for y in 0..h {
         for x in 0..w {

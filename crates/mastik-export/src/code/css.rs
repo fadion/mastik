@@ -354,5 +354,27 @@ mod tests {
         );
         g.gradient.interpolation_cs = ColorSpaceTag::Hsl;
         assert!(gradient(&g, Size::new(200.0, 100.0)).is_none());
+        let mut radial = two_stop(GradientKind::Radial(RadialGradientPosition {
+            start_center: Point::new(20.0, 20.0),
+            start_radius: 0.0,
+            end_center: Point::new(20.0, 20.0),
+            end_radius: 30.0,
+        }));
+        radial.gradient.interpolation_cs = ColorSpaceTag::Oklab;
+        assert_eq!(
+            gradient(&radial, Size::new(40.0, 40.0)).unwrap(),
+            "radial-gradient(30px 30px at 20px 20px in oklab, #000000 0%, #ffffff 100%)"
+        );
+        let start = std::f32::consts::FRAC_PI_2;
+        let mut sweep = two_stop(GradientKind::Sweep(SweepGradientPosition {
+            center: Point::new(20.0, 20.0),
+            start_angle: start,
+            end_angle: start + std::f32::consts::TAU,
+        }));
+        sweep.gradient.interpolation_cs = ColorSpaceTag::Oklab;
+        assert_eq!(
+            gradient(&sweep, Size::new(40.0, 40.0)).unwrap(),
+            "conic-gradient(from 180deg at 20px 20px in oklab, #000000 0deg, #ffffff 360deg)"
+        );
     }
 }

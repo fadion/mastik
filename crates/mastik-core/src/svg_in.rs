@@ -2741,7 +2741,8 @@ fn sharpen_amount(blur: roxmltree::Node<'_, '_>, comp: roxmltree::Node<'_, '_>) 
     let k = |name| comp.attribute(name).map_or(Some(0.0), parse_len);
     let (k1, k2, k3, k4) = (k("k1")?, k("k2")?, k("k3")?, k("k4")?);
     let amount = -k3;
-    // `1 + a` and `-a` round alike at any precision, so the sum is 1 to float noise.
+    // The writer rounds `a` once and writes both from it, so the sum is 1 to
+    // float noise.
     (k1 == 0.0
         && k4 == 0.0
         && amount > 0.0

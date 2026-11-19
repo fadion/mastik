@@ -541,6 +541,35 @@ fn styles_become_composite_tokens_or_a_note() {
     );
 }
 
+/// An Oklab ramp, which a DTCG gradient cannot name the space of, goes as the
+/// dense sRGB stops that draw it.
+/// flip: the gradient arm reading `g.gradient.stops` unmixed → fails at the count.
+#[test]
+fn an_oklab_style_ramp_goes_as_the_stops_that_draw_it() {
+    use mastik_core::kurbo::Point;
+    use mastik_core::peniko::{Gradient, color::ColorSpaceTag};
+    let mut f = common::fixture();
+    let mut ids = IdSource::new(0xA9);
+    let mut ramp = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(100.0, 0.0)).with_stops([
+        (0.0_f32, Color::from_rgba8(255, 0, 0, 255)),
+        (1.0_f32, Color::from_rgba8(0, 0, 255, 255)),
+    ]);
+    ramp.interpolation_cs = ColorSpaceTag::Oklab;
+    f.doc
+        .apply(&Transaction(vec![add_style(
+            &mut ids,
+            "Ramp",
+            StyleValue::Fills(keyed_by_position([mastik_core::Fill {
+                brush: mastik_core::Brush::Gradient(ramp.into()).into(),
+                visible: true,
+            }])),
+        )]))
+        .unwrap();
+    let v = parse(&tokens(&f.doc, None).json);
+    let stops = at(&v, "styles.fill.Ramp.$value").as_array().unwrap();
+    assert!(stops.len() > 2, "the Oklab mix as stops: {stops:?}");
+}
+
 fn add_style(ids: &mut IdSource, name: &str, value: StyleValue) -> Operation {
     Operation::AddStyle {
         style: Style {

@@ -44,6 +44,10 @@ fn masking(id: NodeId) -> Operation {
     Operation::SetMask { id, mask: true }
 }
 
+fn inverted(id: NodeId) -> Operation {
+    Operation::SetMaskInverted { id, inverted: true }
+}
+
 struct Fixture {
     doc: Document,
     ids: IdSource,
@@ -191,6 +195,21 @@ fn a_masked_run_is_cut_to_its_mask() {
     assert!(
         at.distance(Point::new(55.0, 35.0)) < 1e-6,
         "the left 10 only: {at:?}"
+    );
+}
+
+/// An inverted mask's run is weighed less the mask.
+/// flip: `collect_children`'s rule fixed at `OverlayRule::Intersect` → fails.
+#[test]
+fn an_inverted_masks_run_is_cut_by_its_mask() {
+    let mut f = Fixture::new();
+    let g = f.group();
+    f.rect(g, (0.0, 0.0, 10.0, 10.0), &[filled, masking, inverted]);
+    f.rect(g, (0.0, 0.0, 40.0, 10.0), &[filled]);
+    let at = f.centre(g).at();
+    assert!(
+        at.distance(Point::new(75.0, 35.0)) < 1e-6,
+        "the right 30 only: {at:?}"
     );
 }
 

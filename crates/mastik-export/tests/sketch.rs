@@ -279,6 +279,90 @@ fn the_report_names_what_sketch_cannot_hold() {
     );
 }
 
+/// A line's ends go out as the style's marker types and read back as the
+/// markers they were; a size other than 100% is Sketch's own, reported.
+/// flip: `marker_type` writing an open arrow as 2 → fails at "Arrows".
+#[test]
+fn line_ends_go_out_as_marker_types_and_read_back() {
+    use mastik_core::Marker;
+    let f = rich::line_ends();
+    let out = mastik_export::sketch::export(&f.doc, &f.res, "Lines").unwrap();
+    let z = unzip(&out.bytes);
+    let style = |name: &str| {
+        layers(&z)
+            .into_iter()
+            .map(|(_, l)| l)
+            .find(|l| s(l, "name") == name)
+            .unwrap_or_else(|| panic!("{name}"))["style"]
+            .clone()
+    };
+    let codes = |name: &str| {
+        let st = style(name);
+        (st["startMarkerType"].as_i64(), st["endMarkerType"].as_i64())
+    };
+    assert_eq!(codes("Arrows"), (Some(1), Some(2)), "Arrows");
+    assert_eq!(codes("Bars"), (Some(3), Some(5)), "Bars");
+    assert!(
+        out.approximated
+            .iter()
+            .any(|s| s == "Line end sizes, drawn at Sketch's own"),
+        "{:?}",
+        out.approximated
+    );
+    let mut ids = IdSource::new(0x9E);
+    let back = mastik_core::sketch_in::read(&mut Zip::of(out.bytes), &mut ids, &mut Pictures)
+        .expect("read back");
+    let ends = |name: &str| {
+        let st = &back
+            .doc
+            .get(named(&back.doc, name))
+            .unwrap()
+            .paint()
+            .strokes[0]
+            .value;
+        (st.start, st.end)
+    };
+    assert_eq!(ends("Arrows"), (Marker::OpenArrow, Marker::Arrow));
+    assert_eq!(ends("Bars"), (Marker::Bar, Marker::Circle));
+}
+
+/// An Oklab ramp, which Sketch mixes in sRGB, goes as the dense stops that draw
+/// it.
+/// flip: `gradient` writing the ramp's own stops → fails.
+#[test]
+fn an_oklab_ramp_goes_as_the_stops_that_draw_it() {
+    let f = rich::oklab_board();
+    let out = mastik_export::sketch::export(&f.doc, &f.res, "Ramp").unwrap();
+    let n = rich::most_stops(&unzip(&out.bytes));
+    assert!(n > 2, "{n} stops");
+}
+
+/// An inverted mask, which Sketch draws the right way out, is reported; the
+/// plain one above is not.
+/// flip: the `mask_inverted` report removed → fails.
+#[test]
+fn an_inverted_mask_is_reported() {
+    let mut f = fixture();
+    let clip = named(&f.doc, "Clip");
+    f.doc
+        .apply(&mastik_core::Transaction(vec![
+            mastik_core::Operation::SetMaskInverted {
+                id: clip,
+                inverted: true,
+            },
+        ]))
+        .unwrap();
+    f.res = mastik_core::Resolved::rebuild(&f.doc);
+    let out = mastik_export::sketch::export(&f.doc, &f.res, "Fixture").unwrap();
+    assert!(
+        out.approximated
+            .iter()
+            .any(|s| s == "Inverted masks, as masks the right way out"),
+        "{:?}",
+        out.approximated
+    );
+}
+
 /// A text override inside a nested copy that its master writes as plain layers
 /// names the text by its own id there; every path resolves segment by segment,
 /// through symbol instances only, to a text layer.
