@@ -35,6 +35,11 @@ pub(super) const WAIT: std::time::Duration = std::time::Duration::from_secs(25);
 /// without one.
 const THUMB_BUDGET: usize = 64 * 1024;
 
+/// The most photo queries one call takes: each is a search on the person's
+/// hourly limit, and a call must stay well under the searches `Assets` keeps,
+/// or its own pending searches crowd each other out.
+const PHOTO_QUERIES: usize = 8;
+
 /// Why a host that lends no assets browser answers no asset tool.
 pub(super) const NO_DESK: &str = "This host has no assets browser to search.";
 
@@ -356,6 +361,12 @@ fn photos(
     let service = service_of(desk, source)?;
     if queries.iter().any(String::is_empty) {
         return Err("`queries`: a photo search needs words".into());
+    }
+    if queries.len() > PHOTO_QUERIES {
+        return Err(format!(
+            "`queries`: at most {PHOTO_QUERIES} photo searches a call, since each spends the \
+             person's hourly limit; ask the rest in another call"
+        ));
     }
     let orientation = match args.get("orientation").and_then(Value::as_str) {
         Some("landscape") => Orientation::Landscape,
@@ -1233,6 +1244,41 @@ mod tests {
         let why = format!("{:?}", out.content);
         assert!(out.is_error && why.contains("hourly limit"), "{why}");
         assert!(why.contains("`pexels`"), "the other service: {why}");
+    }
+
+    /// A photo search of more queries than a call takes is refused before any
+    /// is asked.
+    ///
+    /// flip: `photos` without its `PHOTO_QUERIES` check → the first call waits
+    /// on its searches instead of answering.
+    #[test]
+    fn too_many_photo_queries_are_refused() {
+        let (mut app, mut engine, ..) = fixture("many-queries");
+        app.prefs.assets.photo_services = vec!["unsplash".into()];
+        app.prefs.assets.service = "unsplash".into();
+        let queries: Vec<String> = (0..=super::PHOTO_QUERIES)
+            .map(|i| format!("q{i}"))
+            .collect();
+        let out = now(
+            &mut engine,
+            &mut app,
+            "search_assets",
+            json!({ "queries": queries, "kind": "photos" }),
+        );
+        let why = format!("{:?}", out.content);
+        assert!(out.is_error && why.contains("at most"), "refused: {why}");
+        let fits = &queries[..super::PHOTO_QUERIES];
+        let key = |q: &String| ("unsplash", q.clone(), Orientation::Any);
+        for q in fits {
+            app.assets.agent_land_search(key(q), Ok(Default::default()));
+        }
+        let out = now(
+            &mut engine,
+            &mut app,
+            "search_assets",
+            json!({ "queries": fits, "kind": "photos" }),
+        );
+        assert!(!out.is_error, "{:?}", out.content);
     }
 
     /// An icon lands as the panel's insert does: a group named after it, its
