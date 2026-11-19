@@ -2789,6 +2789,60 @@ fn styles_are_added_changed_applied_and_removed() {
     assert!(doc.get(page).is_some());
 }
 
+/// A variable read only by a style no layer takes is in use, as a library file
+/// defines styles before any layer takes them; the untaken style itself is
+/// unused, and a variable only an alias reads is in use.
+///
+/// flip: `unused_variables` reading styles only through the layers that take
+/// them → fails at "a style's read"; dropping its alias loop → fails at "an
+/// alias's read".
+#[test]
+fn unused_variables_keep_a_style_and_an_alias_read() {
+    let (mut doc, mut ids, _) = blank();
+    let fill = serde_json::to_value(vec![Fill {
+        brush: Brush::Solid(Color::from_rgb8(0x33, 0x66, 0xcc)).into(),
+        visible: true,
+    }])
+    .unwrap();
+    let script = json!([
+        { "verb": "add_variable", "args": { "kind": "color", "name": "Brand",
+            "value": { "color": "#3366cc" } }, "as": "brand" },
+        { "verb": "add_variable", "args": { "kind": "color", "name": "Base",
+            "value": { "color": "#112233" } }, "as": "base" },
+        { "verb": "add_variable", "args": { "kind": "color", "name": "Ink",
+            "value": { "color": "#000000" } }, "as": "ink" },
+        { "verb": "set_variable_value", "args": { "variable": "@ink",
+            "value": { "alias": "@base" } } },
+        { "verb": "add_variable", "args": { "kind": "number", "name": "Idle",
+            "value": { "number": 3 } } },
+        { "verb": "create_node", "args": { "parent": "@page", "kind": rect(10.0, 10.0) }, "as": "a" },
+        { "verb": "set_fills", "args": { "nodes": ["@a"], "fills": fill } },
+        { "verb": "bind_variable", "args": { "nodes": ["@a"], "field": { "Fill": 0 },
+            "variable": "@brand" } },
+        { "verb": "add_style", "args": { "from": "@a", "slot": "fills", "name": "Primary" }, "as": "s" },
+        { "verb": "delete_node", "args": { "nodes": ["@a"] } },
+    ]);
+    verbs::run_script(&mut doc, &mut ids, Lent::default(), &script)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let named = |name: &str| doc.variables().iter().find(|v| v.name == name).unwrap().id;
+    let primary = doc.styles().iter().find(|s| s.name == "Primary").unwrap();
+    assert!(
+        primary.value.vars().contains(&named("Brand")),
+        "the style reads Brand"
+    );
+    let unused = mastik_core::tokens::unused_variables(&doc);
+    assert!(
+        !unused.contains(&named("Brand")),
+        "a style's read: {unused:?}"
+    );
+    assert!(
+        !unused.contains(&named("Base")),
+        "an alias's read: {unused:?}"
+    );
+    assert!(unused.contains(&named("Ink")) && unused.contains(&named("Idle")));
+    assert_eq!(mastik_core::style::unused(&doc), vec![primary.id]);
+}
+
 /// A fill style given a group styles the group's shapes, as the Fill card's
 /// picker does, by `add_style` and by `apply_style`; detaching the group
 /// detaches them.

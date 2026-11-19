@@ -1536,6 +1536,66 @@ mod tests {
         assert_eq!(json["unused"]["variables"], json!(["Idle"]));
     }
 
+    /// A component set none of whose variants is shown counts once, as the set;
+    /// a set with one shown variant does not count, and neither do its unshown
+    /// variants on their own.
+    ///
+    /// flip: `unused_components` reading `in_set` as false → fails at "a variant
+    /// alone"; checking only the set's first variant → fails at "a set in use".
+    #[test]
+    fn unused_components_count_a_set_once() {
+        let mut ids = IdSource::new(0x4ec);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let p = page.to_wire();
+        let main = |label: &str, x: f64| {
+            vec![
+                layer(&p, label, x, 0.0, frame(40.0, 40.0, "#ff0000")),
+                json!({ "verb": "make_component", "args": { "nodes": [format!("@{label}")] } }),
+            ]
+        };
+        let mut steps = Vec::new();
+        for (label, x) in [("a1", 0.0), ("a2", 50.0), ("b1", 200.0), ("b2", 250.0)] {
+            steps.extend(main(label, x));
+        }
+        steps.push(
+            json!({ "verb": "combine_as_variants", "args": { "nodes": ["@a1", "@a2"] },
+            "as": "idle_set" }),
+        );
+        steps.push(
+            json!({ "verb": "combine_as_variants", "args": { "nodes": ["@b1", "@b2"] },
+            "as": "used_set" }),
+        );
+        steps.push(
+            json!({ "verb": "create_instance", "args": { "main": "@b2", "parent": p,
+            "x": 400, "y": 0 } }),
+        );
+        let made = mastik_core::verbs::run_script(
+            &mut doc,
+            &mut ids,
+            mastik_core::verbs::Lent::default(),
+            &Value::Array(steps.clone()),
+        )
+        .expect("the fixture builds");
+        let l: std::collections::HashMap<&str, NodeId> = steps
+            .iter()
+            .zip(made)
+            .filter_map(|(s, m)| Some((s["as"].as_str()?, NodeId::from_wire(m.first()?)?)))
+            .collect();
+        let res = Resolved::rebuild(&doc);
+        let scope = Scope::new(&doc, &res, &[page]);
+        let unused = unused_components(&scope);
+        assert!(unused.contains(&l["idle_set"]), "an idle set: {unused:?}");
+        assert!(!unused.contains(&l["used_set"]), "a set in use: {unused:?}");
+        for v in ["a1", "a2", "b1"] {
+            assert!(
+                !unused.contains(&l[v]),
+                "a variant alone: {v} in {unused:?}"
+            );
+        }
+        assert_eq!(unused.len(), 1, "{unused:?}");
+    }
+
     /// A raw gap is offered the spacing variable of its value, not a radius one
     /// made first; a colour written raw beside its variable is named by that
     /// variable, which is the merge's target, and a text of its exact colour,

@@ -138,11 +138,15 @@ pub(crate) fn reached<'a>(
 
 /// The document's own variables nothing reads, in id order: no layer's field,
 /// chart or style reads one, directly or through an alias, and no other
-/// variable aliases it. A kit's variables are the kit's to keep.
+/// variable aliases it. A style no layer takes still counts: a library defines
+/// its styles before anything takes them. A kit's variables are the kit's to keep.
 pub fn unused_variables(doc: &Document) -> Vec<VarId> {
     let t = doc.variables();
     let (read, _) = reached(t, doc.styles(), doc.node_map().values());
     let mut used: FxHashSet<VarId> = read.into_iter().collect();
+    for s in doc.styles().iter() {
+        used.extend(s.value.vars());
+    }
     for n in doc.node_map().values() {
         if let Some(c) = n.chart() {
             used.extend(c.brushes().filter_map(|b| b.var()));
