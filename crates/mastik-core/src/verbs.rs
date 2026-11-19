@@ -7416,7 +7416,9 @@ fn copy_defaults(n: &crate::node::Node, own: &mut Map<String, Value>, theirs: &M
 /// `mine`, `kind` as serde writes it, given explicitly each field serde left out
 /// (its default) where `theirs`, another kind of the same variant, has one, and
 /// a text's style field by field. A field's default is found as the one candidate
-/// that reads back as `kind`; one with none found is left out.
+/// that reads back as `kind`; one with none found is left out. The candidates
+/// include the defaults of the types whose default no zeroed value spells: a
+/// text's Original case, a zero length in px, a path with no mirror.
 fn explicit_kind(kind: &NodeKind, mine: &mut Value, theirs: &Value) {
     fn zeroed(v: &Value) -> Value {
         match v {
@@ -7448,6 +7450,9 @@ fn explicit_kind(kind: &NodeKind, mine: &mut Value, theirs: &Value) {
             Value::Array(Vec::new()),
             Value::Object(Map::new()),
             zeroed(source),
+            serde_json::to_value(crate::typography::TextCase::default()).unwrap_or_default(),
+            serde_json::to_value(Length::ZERO).unwrap_or_default(),
+            serde_json::to_value(crate::symmetry::PathMirror::default()).unwrap_or_default(),
         ];
         for c in candidates {
             let mut trial = mine.clone();
