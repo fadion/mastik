@@ -783,12 +783,12 @@ fn inks(brush: &Brush) -> bool {
 /// empty frame or an empty group with no visible fill, no stroke of width and
 /// no effect. Text, booleans and slices are never one, nor is a layer a flex or
 /// grid parent lays out, where an empty box is a spacer, nor a boolean's
-/// operand, whose shape the boolean paints.
+/// operand (a member of a group operand included), whose shape the boolean
+/// paints.
 fn draws_nothing(doc: &Document, id: NodeId, kind: &NodeKind, laid_out: bool) -> bool {
     let Some(n) = doc.get(id) else { return false };
     if n.parent()
-        .and_then(|p| doc.get(p))
-        .is_some_and(|p| matches!(p.kind(), NodeKind::Boolean { .. }))
+        .is_some_and(|p| crate::review::makes_a_boolean(doc, p))
     {
         return false;
     }
