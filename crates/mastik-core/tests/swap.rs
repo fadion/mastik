@@ -1725,3 +1725,105 @@ fn a_top_level_instance_changes_main_by_relinking() {
         .collect();
     assert_eq!(kids, vec![Some(f.hshape), Some(f.hshine)], "Heart's layers");
 }
+
+/// `f`'s button instance `b1` and the mains in `mains` moved into a new screen at
+/// the root, then that screen copied as *Duplicate* copies it.
+fn duplicated_screen(f: &mut F, mains: &[NodeId]) -> (Transaction, NodeId) {
+    let s = f.ids.mint();
+    let mut ops = vec![create(s, f.root, 0, frame(400.0, 400.0), "Screen")];
+    for (i, id) in mains.iter().chain([&f.b1]).enumerate() {
+        ops.push(Operation::Reparent {
+            id: *id,
+            new_parent: s,
+            index: i,
+        });
+    }
+    f.commit(ops);
+    let (tx, made) = mastik_core::build::insert_subtrees_as(
+        &f.doc,
+        &mut f.ids,
+        &[Placement {
+            nodes: f.doc.capture_subtree(s).unwrap(),
+            parent: f.root,
+            index: None,
+        }],
+        Default::default(),
+        mastik_core::component::MainCopy::Instance,
+    );
+    (tx, made[0])
+}
+
+/// A copied screen holding a main and a slot swapped to it: the copied main is
+/// an instance, so the copied slot's swap points back at the original main.
+/// flip: `mains_inside_to_instances` not re-pointing `swap` → the copy's swap
+/// names the copied Heart, no main, and `apply` refuses it.
+#[test]
+fn a_copied_slot_swapped_to_a_copied_main_shows_the_original() {
+    let mut f = fixture();
+    f.swap_to(f.r, f.heart);
+    let heart = f.heart;
+    let (tx, copy) = duplicated_screen(&mut f, &[heart]);
+    f.doc.apply(&tx).expect("a valid copy");
+    let kids = f.kids(copy);
+    assert!(!f.node(kids[0]).component(), "the copied Heart is no main");
+    assert_eq!(f.node(kids[0]).link(), Some(f.heart));
+    let slot = child_linked(&f.doc, kids[1], f.n).expect("the copied slot");
+    assert_eq!(f.node(slot).swap(), Some(f.heart), "it shows the original");
+}
+
+/// A copied screen holding a variant set and an instance of a variant: the set
+/// is copied whole as a new set, its variants mains, and the copied instance
+/// follows the copied variant. flip: `mains_inside_to_instances` without the
+/// set exclusion → fails at "the copied variant is a main".
+#[test]
+fn a_copied_screen_holding_a_set_copies_the_set() {
+    let mut f = fixture();
+    let set = f.ids.mint();
+    let (star, heart) = (f.star, f.heart);
+    f.commit(vec![
+        create(set, f.root, 0, frame(300.0, 300.0), "Icon"),
+        Operation::Reparent {
+            id: star,
+            new_parent: set,
+            index: 0,
+        },
+        Operation::Reparent {
+            id: heart,
+            new_parent: set,
+            index: 1,
+        },
+        Operation::SetVariantSet {
+            id: set,
+            set: Some(VariantSet {
+                props: vec![VariantProp::new(
+                    "Icon",
+                    vec!["Star".into(), "Heart".into()],
+                )],
+            }),
+        },
+        Operation::SetVariant {
+            id: star,
+            values: vec!["Star".into()],
+        },
+        Operation::SetVariant {
+            id: heart,
+            values: vec!["Heart".into()],
+        },
+    ]);
+    let (tx, i) = instance(&f.doc, &mut f.ids, heart, f.root);
+    f.commit(tx.0);
+    let (tx, copy) = duplicated_screen(&mut f, &[set, i]);
+    f.doc.apply(&tx).expect("a valid copy");
+    let kids = f.kids(copy);
+    let variants = f.kids(kids[0]);
+    assert!(f.node(kids[0]).set().is_some(), "a new set");
+    assert!(
+        f.node(variants[1]).component(),
+        "the copied variant is a main"
+    );
+    assert_eq!(
+        f.node(kids[1]).link(),
+        Some(variants[1]),
+        "the copied instance follows it"
+    );
+}
