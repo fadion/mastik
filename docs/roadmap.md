@@ -35,6 +35,13 @@ The design and its open questions are in `prototyping.md`.
 
 Ideas worth weighing, not yet decided or scheduled.
 
+- **An instance inside an `insert_subtree` tree by its main alone.** A tree places an instance
+  only as `get_tree` reads one, every layer with its `kind` and `copy_of`; an agent building a
+  section of cards writes the tree without them and places each card with `create_instance`
+  and `set_instance_property` afterwards. A layer naming `copy_of` with no `kind` could take its
+  main's layer whole, the fields it gives being overrides; a copy that fell back to a new
+  layer's defaults instead would override its main's fills and type with nothing.
+
 - **A control channel into the running app.** Loopback only: read UI state, drive tools with
   synthetic pointer and key events, and screenshot the window. Agents never launch the GUI because
   the window takes the user's mouse and keyboard; a window that accepts input only through the

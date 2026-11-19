@@ -12,5 +12,10 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   layers that differ.
 - **`place_asset` as a `batch` step, or with an `index`.** It waits on the network, which a
   batch's one undo step cannot hold; a `reparent` with `index` after it places the icon first.
+- **Every bad path of a model value in one refusal.** A value is read whole and refused at the
+  first place serde stops, with that place's form; a second error behind it may not exist once
+  the first is put right.
+- **Photo thumbnails not labelled with their asset.** Each thumbnail follows a text naming its
+  asset id, and `said` says where thumbnails stop at the answer's 64 KB.
 - **A DTCG `lineHeight` written as `"64px"`.** The DTCG format defines a typography token's
   `lineHeight` as a number, the multiplier; the refusal says so.
