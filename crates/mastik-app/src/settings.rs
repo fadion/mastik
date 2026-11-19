@@ -1423,6 +1423,8 @@ pub(crate) const CANVAS_CARD_PAD: f32 = 14.0;
 pub(crate) const CANVAS_CARD_HEAD_H: f32 = 40.0;
 /// A canvas card's footer row ([`card_foot`]).
 pub(crate) const CANVAS_CARD_FOOT_H: f32 = 48.0;
+/// A canvas card's section head ([`card_section_head`]).
+pub(crate) const CANVAS_CARD_SECTION_H: f32 = 30.0;
 
 /// How a [`canvas_card`] holds the window while it is open.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1517,6 +1519,38 @@ pub(crate) fn card_head_noted(ui: &mut egui::Ui, w: f32, title: &str, note: Opti
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     title_row(&mut child, title, note)
+}
+
+/// A canvas card's section head, `w` wide: the eyebrow `label` inside
+/// [`CANVAS_CARD_PAD`] and a dim caption `note` at the right, both on the line
+/// 10 above the head's foot. Answers its rect and that line's y, for a control
+/// put in the note's place.
+pub(crate) fn card_section_head(
+    ui: &mut egui::Ui,
+    w: f32,
+    label: &str,
+    note: Option<&str>,
+) -> (egui::Rect, f32) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(w, CANVAS_CARD_SECTION_H), egui::Sense::hover());
+    let p = ui.painter();
+    let y = rect.bottom() - 10.0;
+    ui::paint_eyebrow(
+        p,
+        egui::pos2(rect.left() + CANVAS_CARD_PAD, y),
+        egui::Align2::LEFT_CENTER,
+        label,
+    );
+    if let Some(note) = note {
+        p.text(
+            egui::pos2(rect.right() - CANVAS_CARD_PAD, y),
+            egui::Align2::RIGHT_CENTER,
+            note,
+            egui::FontId::proportional(ui::CAPTION_PT),
+            theme::text::dim(),
+        );
+    }
+    (rect, y)
 }
 
 /// A canvas card's footer row, `w` wide: `note` faint on the left, `buttons` on
@@ -1986,6 +2020,16 @@ fn toggle_key(on: &mut Vec<String>, key: &str) {
 /// Closer than [`ROW_GAP`], because a caption belongs to the row above it.
 pub(crate) fn caption(ui: &mut egui::Ui, text: &str) {
     caption_in(ui, text, theme::text::faint());
+}
+
+/// A path-bar card's note under a row's controls (Clean up, Distort): muted at
+/// `SMALL_PT`, the controls' own neighbourhood rather than a Settings caption.
+pub(crate) fn row_note(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(ui::SMALL_PT)
+            .color(theme::text::muted()),
+    );
 }
 
 /// A [`caption`] in a card that spaces its items itself (the script form, the
