@@ -27,6 +27,44 @@ enum Handle {
     Inner(usize),
 }
 
+/// The held handle as kept between frames: an inner point also by its stored
+/// input and the curve's length, since an undo that brings a point back before it
+/// shifts every index after.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Held {
+    handle: Handle,
+    x: f32,
+    len: usize,
+}
+
+impl Held {
+    fn of(handle: Handle, a: &ImageAdjust) -> Self {
+        let x = match handle {
+            Handle::Inner(i) => a.curve.as_slice().get(i).map_or(f32::NAN, |p| p[0]),
+            _ => f32::NAN,
+        };
+        Self {
+            handle,
+            x,
+            len: a.curve.len(),
+        }
+    }
+
+    /// The handle on `a`: the point holding the same input, else the same index
+    /// while the curve keeps its length (a live edit moving the held point
+    /// itself), else nothing.
+    fn on(self, a: &ImageAdjust) -> Option<Handle> {
+        let Handle::Inner(i) = self.handle else {
+            return Some(self.handle);
+        };
+        let pts = a.curve.as_slice();
+        pts.iter()
+            .position(|p| p[0] == self.x)
+            .or((pts.len() == self.len).then_some(i))
+            .map(Handle::Inner)
+    }
+}
+
 /// A drag on the graph: the handle held, and the adjustment it started from,
 /// holding the point the press added when it began on the curve.
 #[derive(Clone, Copy)]
@@ -170,10 +208,16 @@ fn moved(base: &ImageAdjust, h: Handle, to: [f32; 2], off: bool) -> ImageAdjust 
                 .and_then(|j| pts.get(j))
                 .map_or(bx, |p| base.curve_shown(*p)[0]);
             let right = pts.get(i + 1).map_or(wx, |p| base.curve_shown(*p)[0]);
-            if right - left <= 2.0 * MIN_GAP {
+            let Some(here) = pts.get(i).map(|p| base.curve_shown(*p)[0]) else {
                 return a;
-            }
-            let x = to[0].clamp(left + MIN_GAP, right - MIN_GAP);
+            };
+            // Crowded between its neighbours, a point keeps its input and still
+            // moves up and down.
+            let x = if right - left <= 2.0 * MIN_GAP {
+                here
+            } else {
+                to[0].clamp(left + MIN_GAP, right - MIN_GAP)
+            };
             let y = to[1].clamp(base.fade, 1.0);
             a.curve.set(i, base.curve_stored([x, y]));
         }
@@ -184,6 +228,29 @@ fn moved(base: &ImageAdjust, h: Handle, to: [f32; 2], off: bool) -> ImageAdjust 
     let ordered =
         pts.iter().all(|p| p[0] > 0.0 && p[0] < 1.0) && pts.windows(2).all(|w| w[0][0] < w[1][0]);
     if ordered { a } else { *base }
+}
+
+/// Why the In (`axis` 0) or Out (1) field is dimmed for `pick`, or `None` when
+/// it takes a value.
+fn field_reason(pick: Option<Handle>, axis: usize) -> Option<&'static str> {
+    match (pick, axis) {
+        (None, _) => Some("Pick a point on the curve to set it"),
+        (Some(Handle::White), 1) => Some("The white end always maps to white"),
+        _ => None,
+    }
+}
+
+/// `base` with the held `h`, now at `at`, given `percent` on `axis` from its In
+/// or Out field.
+fn typed(
+    base: &ImageAdjust,
+    h: Handle,
+    mut at: [f32; 2],
+    axis: usize,
+    percent: f64,
+) -> ImageAdjust {
+    at[axis] = (percent / 100.0) as f32;
+    moved(base, h, at, false)
 }
 
 /// The straight curve: every end at rest and no inner points.
@@ -217,9 +284,12 @@ impl MastikApp {
         let a = img.adjust;
         let mut drag = ctx.data(|d| d.get_temp::<Option<Drag>>(drag_id)).flatten();
         let mut pick = ctx
-            .data(|d| d.get_temp::<Option<Handle>>(pick_id))
+            .data(|d| d.get_temp::<Option<Held>>(pick_id))
             .flatten()
+            .and_then(|h| h.on(&a))
             .filter(|h| position(&a, *h).is_some());
+        // The curve this frame leaves, which the held point is filed against.
+        let mut landed = a;
         let inner = ui.available_width();
         let gap = ui.spacing().item_spacing.y;
         let graph_h = (body_h - 2.0 * gap - STRIP_H - ui::CONTROL_H)
@@ -256,6 +326,7 @@ impl MastikApp {
                     pick = None;
                 }
             }
+            landed = live;
             self.valve_slot(
                 &resp,
                 id,
@@ -274,6 +345,7 @@ impl MastikApp {
                 let mut next = a;
                 next.curve.remove(i);
                 self.write_slot(id, slot, paint::map_image(brush, |r| r.adjust = next));
+                landed = next;
                 pick = None;
             }
         } else if resp.clicked()
@@ -284,6 +356,7 @@ impl MastikApp {
                 None => {
                     if let Some((next, i)) = added(&a, from_screen(plot, p)[0]) {
                         self.write_slot(id, slot, paint::map_image(brush, |r| r.adjust = next));
+                        landed = next;
                         pick = Some(Handle::Inner(i));
                     }
                 }
@@ -308,6 +381,7 @@ impl MastikApp {
             if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
                 live = slid(&d.base, d.handle, from_screen(plot, pos)[0]);
             }
+            landed = live;
             self.valve_slot(
                 &strip_resp,
                 id,
@@ -363,11 +437,7 @@ impl MastikApp {
             let half = (inner - ui::CARD_COL_GAP) / 2.0;
             let at = pick.and_then(|h| position(&live, h));
             for (axis, word) in [(0, "In"), (1, "Out")] {
-                let reason = match (pick, axis) {
-                    (None, _) => Some("Pick a point on the curve to set it"),
-                    (Some(Handle::White), 1) => Some("The white end always maps to white"),
-                    _ => None,
-                };
+                let reason = field_reason(pick, axis);
                 let blank = at.is_none();
                 let mut v = at.map_or(0.0, |p| f64::from(p[axis]) * 100.0);
                 let field = ui::disable_unless(ui, reason.is_none(), |ui| {
@@ -387,9 +457,9 @@ impl MastikApp {
                 })
                 .inner;
                 match (reason, pick, at) {
-                    (None, Some(h), Some(mut to)) => {
-                        to[axis] = (v / 100.0) as f32;
-                        let next = moved(&a, h, to, false);
+                    (None, Some(h), Some(to)) => {
+                        let next = typed(&a, h, to, axis, v);
+                        landed = next;
                         self.valve_slot(
                             &field,
                             id,
@@ -431,9 +501,10 @@ impl MastikApp {
                 pick = None;
             }
         });
+        let held = pick.map(|h| Held::of(h, &landed));
         ctx.data_mut(|d| {
             d.insert_temp(drag_id, drag);
-            d.insert_temp(pick_id, pick);
+            d.insert_temp(pick_id, held);
         });
     }
 
@@ -783,6 +854,92 @@ mod card_tests {
         assert!((x - 0.5).abs() < 0.02, "where the click was: {x}");
     }
 
+    /// The graph's rect on the Curves tab, found by shape (the card fades in,
+    /// scaling its fills).
+    fn graph_rect(app: &mut MastikApp, ctx: &egui::Context, rect: NodeId) -> egui::Rect {
+        card_h(app, ctx, rect, ImageCard::Curves);
+        let out = frame(app, ctx, Vec::new());
+        let inner = ui::menu_inner_w(crate::app::POPOVER_W, ui::POPOVER_PAD);
+        out.shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Rect(r)
+                    if (r.rect.width() - inner).abs() < 0.5 && r.rect.height() >= GRAPH_MIN_H =>
+                {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("the graph is drawn")
+    }
+
+    /// The picture's adjustments as the document holds them.
+    fn adjust_of(app: &MastikApp, rect: NodeId) -> ImageAdjust {
+        let fill = &app.session.doc.get(rect).unwrap().paint().fills;
+        fill.iter()
+            .find_map(|f| paint::image_of(f.brush.drawn()).map(|r| r.adjust))
+            .expect("still a picture")
+    }
+
+    /// Press at `from`, move through `path` a frame at a time, release at its end.
+    fn drag(app: &mut MastikApp, ctx: &egui::Context, from: egui::Pos2, path: &[egui::Pos2]) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(app, ctx, vec![egui::Event::PointerMoved(from)]);
+        frame(app, ctx, vec![button(from, true)]);
+        for p in path {
+            frame(app, ctx, vec![egui::Event::PointerMoved(*p)]);
+        }
+        let end = *path.last().unwrap_or(&from);
+        frame(app, ctx, vec![button(end, false)]);
+        frame(app, ctx, Vec::new());
+    }
+
+    /// A press on the graph's empty middle that drags adds a point there and
+    /// carries it, all as one undo step. flip: the drag's `None =>` arm answering
+    /// no drag → fails at "one point".
+    #[test]
+    fn a_drag_on_empty_graph_adds_and_carries_a_point_in_one_step() {
+        let ctx = egui::Context::default();
+        let (mut app, rect) = editing(&ctx);
+        let graph = graph_rect(&mut app, &ctx, rect);
+        let depth = app.session.history.undo_depth();
+        let at = graph.center();
+        let up = |dy: f32| at - egui::vec2(0.0, dy);
+        drag(&mut app, &ctx, at, &[up(10.0), up(20.0), up(30.0)]);
+        let a = adjust_of(&app, rect);
+        assert_eq!(a.curve.len(), 1, "one point");
+        let [x, y] = a.curve_shown(a.curve.as_slice()[0]);
+        assert!(
+            y > ImageAdjust::NEUTRAL.curve_at(x) + 0.05,
+            "carried up: {x}, {y}"
+        );
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+    }
+
+    /// A point dragged well off the graph goes, as one step. flip: `off` measured
+    /// against a reach four times `OFF_GRAPH` → fails at "removed".
+    #[test]
+    fn a_point_dragged_off_the_graph_goes() {
+        let ctx = egui::Context::default();
+        let (mut app, rect) = editing(&ctx);
+        let graph = graph_rect(&mut app, &ctx, rect);
+        let at = graph.center();
+        drag(&mut app, &ctx, at, &[at + egui::vec2(0.0, 6.0)]);
+        assert_eq!(adjust_of(&app, rect).curve.len(), 1, "the fixture: a point");
+        let depth = app.session.history.undo_depth();
+        let below = egui::pos2(at.x, graph.bottom() + OFF_GRAPH + 40.0);
+        let shown = adjust_of(&app, rect).curve_shown(adjust_of(&app, rect).curve.as_slice()[0]);
+        let from = super::to_screen(graph.shrink(GRAPH_PAD), shown);
+        drag(&mut app, &ctx, from, &[from + egui::vec2(0.0, 20.0), below]);
+        assert_eq!(adjust_of(&app, rect).curve.len(), 0, "removed");
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+    }
+
     /// The graph stays square with the input strip under it, and a diagonal drag
     /// on the strip's black triangle writes black point alone, as one step.
     ///
@@ -990,6 +1147,65 @@ mod tests {
         assert!(b.pipeline().is_some(), "and the curve still draws");
         let gone = moved(&a, Handle::Inner(0), [0.3, 2.0], true);
         assert_eq!(gone.curve.len(), 1, "dragged off, it goes");
+    }
+
+    /// The In and Out fields are dimmed with their reasons when nothing is held
+    /// and on the white end's Out, and a typed In lands the held point there.
+    /// flip: `field_reason` without the white end's arm → fails at "white's Out".
+    #[test]
+    fn the_in_and_out_fields_say_why_and_land_a_typed_value() {
+        assert!(field_reason(None, 0).is_some() && field_reason(None, 1).is_some());
+        assert!(
+            field_reason(Some(Handle::White), 1).is_some(),
+            "white's Out"
+        );
+        assert_eq!(field_reason(Some(Handle::White), 0), None);
+        assert_eq!(field_reason(Some(Handle::Inner(0)), 1), None);
+        let mut a = ImageAdjust::NEUTRAL;
+        a.curve.insert([0.5, 0.5]);
+        let at = position(&a, Handle::Inner(0)).expect("held");
+        let b = typed(&a, Handle::Inner(0), at, 0, 30.0);
+        let [x, _] = b.curve_shown(b.curve.as_slice()[0]);
+        assert!((x - 0.30).abs() < 1e-6, "In 30 lands at 0.30: {x}");
+    }
+
+    /// The held point follows its own input when an undo brings a point back
+    /// before it, rather than staying on its old index. flip: `Held::on` keeping
+    /// the index → fails at "the same point".
+    #[test]
+    fn the_held_point_survives_a_point_coming_back_before_it() {
+        let mut both = ImageAdjust::NEUTRAL;
+        both.curve.insert([0.3, 0.3]);
+        both.curve.insert([0.7, 0.7]);
+        let mut one = ImageAdjust::NEUTRAL;
+        one.curve.insert([0.7, 0.7]);
+        let held = Held::of(Handle::Inner(0), &one);
+        assert_eq!(held.on(&both), Some(Handle::Inner(1)), "the same point");
+        // A live edit moving the held point keeps it by index.
+        let mut moved_it = one;
+        moved_it.curve.set(0, [0.75, 0.7]);
+        assert_eq!(held.on(&moved_it), Some(Handle::Inner(0)));
+        assert_eq!(Held::of(Handle::White, &one).on(&both), Some(Handle::White));
+    }
+
+    /// A point with no room across between its neighbours keeps its input and
+    /// still moves up and down. flip: the crowded arm returning the base → fails
+    /// at "it moved up".
+    #[test]
+    fn a_crowded_point_still_moves_up_and_down() {
+        let mut a = ImageAdjust::NEUTRAL;
+        for x in [0.40, 0.415, 0.43] {
+            a.curve.insert([x, x]);
+        }
+        a.white_point = 0.4;
+        let before = a.curve_shown(a.curve.as_slice()[1]);
+        let b = moved(&a, Handle::Inner(1), [before[0] + 0.05, 0.9], false);
+        let after = b.curve_shown(b.curve.as_slice()[1]);
+        assert!((after[1] - 0.9).abs() < 1e-6, "it moved up: {after:?}");
+        assert!(
+            (after[0] - before[0]).abs() < 1e-6,
+            "on its own input: {after:?}"
+        );
     }
 
     /// A press lands on the nearest handle within reach, and screen and graph
