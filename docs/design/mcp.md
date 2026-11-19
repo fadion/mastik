@@ -70,7 +70,7 @@ Phase 2 — write (1:1 with operations/composites):
 `move_page(page, index)`, `set_page_draft(page, draft)`, `set_canvas_colour(page, colour?)`, `set_guides(owner, guides)`, `undo()`, `redo()`, `set_selection(ids)`, `batch(steps)`, `group_steps(action, name?)`, `set(nodes, props)`, `run_script(source, nodes?, layers?, params?)`, `call(tool, args?)`.
 
 Phase 3 — components, variables and styles (through the verbs, never the raw ops):
-`make_component(nodes)`, `duplicate_as_component(node)`, `create_instance(main, parent, x?, y?)`, `detach_instance(nodes)`,
+`make_component(nodes)`, `duplicate_as_component(node)`, `create_instance(main, parent, x?, y?, index?)`, `detach_instance(nodes)`,
 `swap_instance(node, main)`, `combine_as_variants(nodes)`, `add_variant(node)`, `set_variant_value(node, property, value)`,
 `add_variant_property(node, name?, value?)`, `rename_variant_property(node, property, name)`, `delete_variant_property(node, property)`,
 `add_variant_value(node, property, value?)`, `rename_variant_value(node, property, value, name)`,

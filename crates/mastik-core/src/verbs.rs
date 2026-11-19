@@ -2994,6 +2994,7 @@ pub static VERBS: &[Verb] = &[
                 ParamKind::Number,
                 "its box's top edge in the parent; where the main's is unless given",
             ),
+            opt("index", INDEX, "its place, 0 the bottom"),
         ],
         run: |ctx, a| {
             let (main, parent) = (a.node("main")?, a.node("parent")?);
@@ -3001,9 +3002,18 @@ pub static VERBS: &[Verb] = &[
             if !m.component() && m.set().is_none() {
                 return Err(a.invalid("main", "not a main component or a set"));
             }
-            node(ctx, parent)?;
+            let count = node(ctx, parent)?.children().len();
             let (mut tx, id) = build::place_instance(ctx.doc, ctx.ids, main, parent, None)
                 .ok_or(VerbError::Nothing("the set has no variant to place"))?;
+            if let Some(at) = a.index("index") {
+                for op in &mut tx.0 {
+                    if let Operation::InsertSubtree { nodes, index, .. } = op
+                        && nodes.first().is_some_and(|n| n.id == id)
+                    {
+                        *index = at.min(count);
+                    }
+                }
+            }
             place_corner(ctx.doc, a, &mut tx, id);
             Ok(Done::made(tx, vec![id]))
         },

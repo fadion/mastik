@@ -4458,6 +4458,43 @@ fn a_stroke_width_per_side_is_its_sides() {
     assert_eq!(stroke.width, 2.0);
 }
 
+/// `create_instance` places the instance at `index` among the parent's
+/// children, and at the top without one.
+///
+/// flip: `create_instance` ignoring `index` → fails at "second from the bottom".
+#[test]
+fn create_instance_takes_an_index() {
+    let (mut doc, mut ids, page) = blank();
+    let made = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": { "kind": frame(300.0, 100.0), "children": [
+            { "kind": rect(10.0, 10.0) }, { "kind": rect(10.0, 10.0) },
+            { "kind": frame(20.0, 20.0), "component": true },
+        ] } }),
+    );
+    let (row, main) = (made[0], made[3]);
+    let inst = run(
+        &mut doc,
+        &mut ids,
+        "create_instance",
+        json!({ "main": main.to_wire(), "parent": row.to_wire(), "index": 1 }),
+    )[0];
+    assert_eq!(
+        doc.get(row).unwrap().children()[1],
+        inst,
+        "second from the bottom"
+    );
+    let top = run(
+        &mut doc,
+        &mut ids,
+        "create_instance",
+        json!({ "main": main.to_wire(), "parent": row.to_wire() }),
+    )[0];
+    assert_eq!(doc.get(row).unwrap().children().last(), Some(&top));
+}
+
 /// `set_chart` turning a chart dark moves its starting ink with it, as the
 /// card's *Dark* does, and a palette patch recolours a stored series colour
 /// as the card's pick does.
