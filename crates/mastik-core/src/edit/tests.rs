@@ -147,6 +147,7 @@ fn repoint_image_moves_every_layer_onto_the_new_picture() {
     let mut framed = image_brush(old.clone());
     if let Brush::Image(i) = &mut framed {
         i.image.fit = crate::ImageFit::Tile;
+        i.image.tile_scale = 0.5;
     }
     let rect = || NodeKind::Rect {
         size: Size::new(10.0, 10.0),
@@ -186,7 +187,8 @@ fn repoint_image_moves_every_layer_onto_the_new_picture() {
         }]),
     });
     doc.apply(&Transaction(ops)).expect("two layers");
-    let tx = Transaction(repoint_image(&doc, &old, &new));
+    // The new picture is half as wide, so each tile is drawn from half the pixels.
+    let tx = Transaction(repoint_image(&doc, &old, &new, 2.0));
     assert_eq!(tx.0.len(), 2, "a's fills and b's strokes, not b's fills");
     doc.apply(&tx).expect("applies");
     let Some(Brush::Image(i)) = doc.get(a).unwrap().paint().fills[0].brush.literal() else {
@@ -197,6 +199,8 @@ fn repoint_image_moves_every_layer_onto_the_new_picture() {
         (&new, crate::ImageFit::Tile),
         "framing kept"
     );
+    // flip: `repoint_image` leaving `tile_scale` → 0.5 here, tiles drawn half size.
+    assert_eq!(i.image.tile_scale, 1.0, "each tile the size it was drawn");
 }
 
 /// Picking a shape takes the largest box of it inside the window and the picture,

@@ -128,7 +128,7 @@ impl MastikApp {
                     continue;
                 };
                 let m = world * img.image.framing(frame, e.width, e.height).transform;
-                let per_px = m.determinant().abs().sqrt();
+                let per_px = largest_scale(m);
                 if per_px.is_finite() && per_px > 0.0 {
                     drawn = Some(drawn.map_or(per_px, |d| d.max(per_px)));
                 }
@@ -225,10 +225,13 @@ impl MastikApp {
 
     /// *Apply crop*: keep only the pixels inside `id`'s crop, cut in the picture's
     /// own pixel space so the mirrors, the turn and the adjustments stay live.
-    /// The layer gets a picture of its own, exactly its box, its crop whole and
-    /// its mode Fill; others showing the original keep it. Decoded and encoded on
+    /// The layer gets a picture of its own, still in Crop and drawn exactly as it
+    /// was; others showing the original keep it. Decoded and encoded on
     /// a worker, landed by [`Self::poll_pictures`].
     pub(crate) fn apply_crop(&mut self, id: NodeId, fill: usize) {
+        if self.picture_busy() {
+            return;
+        }
         let Some((img, entry)) = self.fill_picture(id, fill) else {
             return;
         };
@@ -256,6 +259,17 @@ impl MastikApp {
                 kind: Rewrite::ApplyCrop,
             },
         });
+    }
+
+    /// Whether a rewrite is still on its worker, said on the status line: one runs
+    /// at a time, and a second would drop the first unlanded.
+    fn picture_busy(&mut self) -> bool {
+        let busy = self.picture_job.is_some();
+        if busy {
+            self.session
+                .info("Still rewriting a picture — try again in a moment");
+        }
+        busy
     }
 
     /// The image fill at `fill` on `id`, and its table entry.
@@ -313,6 +327,10 @@ impl MastikApp {
             crate::settings::human_bytes(before),
             crate::settings::human_bytes(after)
         );
+        let Some(was) = doc.image(&p.picture) else {
+            return;
+        };
+        let (was_w, was_h) = (was.width, was.height);
         let (ops, step, glyph, said) = match p.kind {
             Rewrite::ApplyCrop => {
                 let Some(node) = doc.get(p.layer) else { return };
@@ -322,9 +340,13 @@ impl MastikApp {
                 else {
                     return;
                 };
+                // The mode stays: Crop maps the crop onto the box exactly, and the
+                // crop left is what was shown of the cut, rounded outward to pixels.
+                let Some(crop) = mastik_core::edit::crop_after_cut(&b.image, was_w, was_h) else {
+                    return;
+                };
                 b.image.id = new.clone();
-                b.image.crop = mastik_core::whole_crop();
-                b.image.fit = mastik_core::ImageFit::Fill;
+                b.image.crop = crop;
                 (
                     vec![Operation::SetFills { id: p.layer, fills }],
                     "Apply crop",
@@ -333,7 +355,12 @@ impl MastikApp {
                 )
             }
             Rewrite::Reduce => (
-                mastik_core::edit::repoint_image(doc, &p.picture, &new),
+                mastik_core::edit::repoint_image(
+                    doc,
+                    &p.picture,
+                    &new,
+                    f64::from(was_w) / f64::from(w.max(1)),
+                ),
                 "Reduce picture",
                 icon::CORNERS_IN,
                 format!("Reduced {name} — {sizes}"),
@@ -353,7 +380,7 @@ impl MastikApp {
         };
         let weight = self.picture_weight(&picture);
         let sizes = reduce_sizes(entry.width, entry.height, weight.drawn);
-        let pick = sizes.iter().position(|s| s.times == Some(2)).unwrap_or(0);
+        let pick = reduce_pick(&sizes);
         let decoding = Job::spawn("mastik-reduce-read", &self.egui_ctx, move || {
             decode_rgba(&entry).map(Arc::new)
         });
@@ -555,6 +582,25 @@ impl ReduceSize {
             None => format!("Original · {} × {}", self.width, self.height),
         }
     }
+}
+
+/// The size *Reduce picture…* opens on: 2× as drawn, or past it the original,
+/// which is the nearest size still sharp at 2×.
+fn reduce_pick(sizes: &[ReduceSize]) -> usize {
+    sizes
+        .iter()
+        .position(|s| s.times.is_none_or(|k| k >= 2))
+        .unwrap_or(sizes.len().saturating_sub(1))
+}
+
+/// The most units one source pixel spans along any direction under `m`: the
+/// larger singular value of its linear part, so a picture squeezed on one axis
+/// reads at the scale of the axis it is drawn largest on.
+fn largest_scale(m: mastik_core::kurbo::Affine) -> f64 {
+    let [a, b, c, d, _, _] = m.as_coeffs();
+    let sum = a * a + b * b + c * c + d * d;
+    let det = a * d - b * c;
+    ((sum + (sum * sum - 4.0 * det * det).max(0.0).sqrt()) / 2.0).sqrt()
 }
 
 /// The sizes offered for a `width` × `height` picture drawn at most `drawn`
@@ -869,14 +915,22 @@ mod tests {
     }
 
     /// *Apply crop* keeps only the cropped pixels in a picture of the layer's own,
-    /// whole and in Fill, takes the original out once nothing shows it, and one
-    /// undo brings it all back.
-    /// flip: `rewrite_tx` never removing the old picture → fails at "the original goes".
+    /// whole and still in Crop, drawn exactly where they were (the fixture's box is
+    /// stretched against the cut), takes the original out once nothing shows it,
+    /// and one undo brings it all back.
+    /// flip: `rewrite_tx` never removing the old picture → fails at "the original goes";
+    /// `land_rewrite` switching the mode to Fill → fails at the mode, and the
+    /// position check behind it fails too.
     #[test]
     fn apply_crop_keeps_the_cut_and_undo_brings_the_rest_back() {
         let ctx = egui::Context::default();
         let right = mastik_core::kurbo::Rect::new(0.5, 0.0, 1.0, 1.0);
         let (mut app, rect, old) = app_with(&ctx, mastik_core::ImageFit::Crop, right);
+        let frame = {
+            let s = &app.session;
+            mastik_core::local_box(&s.doc, &s.resolved, rect).expect("a box")
+        };
+        let before = shown(&app, rect).framing(frame, 4, 2).transform;
         app.apply_crop(rect, 0);
         let p = app.picture_job.take().expect("a worker");
         let e = p.job.wait().flatten().expect("encoded");
@@ -898,7 +952,16 @@ mod tests {
             "the right half, blue"
         );
         assert_eq!(now.crop, mastik_core::whole_crop());
-        assert_eq!(now.fit, mastik_core::ImageFit::Fill);
+        assert_eq!(now.fit, mastik_core::ImageFit::Crop);
+        let after = now.framing(frame, 2, 2).transform;
+        use mastik_core::kurbo::Point;
+        for (was, is) in [((2.0, 0.0), (0.0, 0.0)), ((4.0, 2.0), (2.0, 2.0))] {
+            let (a, b) = (before * Point::from(was), after * Point::from(is));
+            assert!(
+                a.distance(b) < 1e-9,
+                "drawn where it was: {a:?} against {b:?}"
+            );
+        }
         assert!(!app.session.doc.has_image(&old), "the original goes");
         assert!(
             app.session
@@ -912,13 +975,241 @@ mod tests {
         assert!(app.session.doc.has_image(&old), "with every byte back");
     }
 
+    /// A second *Apply crop* while the first is on its worker is refused and says
+    /// so, rather than dropping the first unlanded. flip: `apply_crop` without
+    /// `picture_busy` → fails at "the first job stays".
+    #[test]
+    fn a_second_apply_crop_waits_for_the_first() {
+        let ctx = egui::Context::default();
+        let right = mastik_core::kurbo::Rect::new(0.5, 0.0, 1.0, 1.0);
+        let (mut app, rect, _) = app_with(&ctx, mastik_core::ImageFit::Crop, right);
+        app.apply_crop(rect, 0);
+        let first = app.picture_job.as_ref().expect("a worker").target.revision;
+        app.session.info("");
+        app.apply_crop(rect, 0);
+        assert!(app.session.status().text.starts_with("Still rewriting"));
+        let p = app.picture_job.take().expect("the first job stays");
+        assert_eq!(p.target.revision, first);
+        let _ = p.job.wait();
+    }
+
+    /// A rewrite lands only on the document it was asked of, and one whose
+    /// picture could not be read says so. flip: `poll_pictures` without the
+    /// revision check → fails at "the original stays".
+    #[test]
+    fn a_rewrite_is_dropped_when_the_document_moved_meanwhile() {
+        let ctx = egui::Context::default();
+        let right = mastik_core::kurbo::Rect::new(0.5, 0.0, 1.0, 1.0);
+        let (mut app, rect, old) = app_with(&ctx, mastik_core::ImageFit::Crop, right);
+        app.apply_crop(rect, 0);
+        let p = app.picture_job.take().expect("a worker");
+        let encoded = p.job.wait().flatten();
+        assert!(encoded.is_some(), "the fixture: it encodes");
+        app.picture_job = Some(PictureJob {
+            job: Job::done(encoded),
+            target: p.target,
+        });
+        assert!(app.session.commit(Transaction(vec![Operation::SetName {
+            id: rect,
+            name: "Renamed".into(),
+        }])));
+        app.poll_pictures();
+        assert_eq!(shown(&app, rect).id, old, "the original stays");
+        assert_eq!(
+            app.session.status().text,
+            "The document changed meanwhile — the picture was left as it was"
+        );
+
+        app.apply_crop(rect, 0);
+        let p = app.picture_job.take().expect("a worker");
+        let _ = p.job.wait();
+        app.picture_job = Some(PictureJob {
+            job: Job::done(None),
+            target: p.target,
+        });
+        app.poll_pictures();
+        assert_eq!(shown(&app, rect).id, old);
+        assert_eq!(
+            app.session.status().text,
+            "The picture could not be read to rewrite"
+        );
+    }
+
+    /// `picture_weight` reads the largest drawn size across every layer showing
+    /// the picture, and counts a layer once, a stroke-only one too. flip:
+    /// `d.max` → `d.min` → fails at "the largest".
+    #[test]
+    fn a_pictures_weight_is_its_largest_drawn_size_over_every_layer() {
+        let ctx = egui::Context::default();
+        let (mut app, _, old) =
+            app_with(&ctx, mastik_core::ImageFit::Fill, mastik_core::whole_crop());
+        let mut ids = IdSource::new(0x91E);
+        let (big, stroked) = (ids.mint(), ids.mint());
+        let page = app.session.page;
+        let rect = |w: f64, h: f64| NodeKind::Rect {
+            size: Size::new(w, h),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        };
+        assert!(app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: big,
+                parent: page,
+                index: 1,
+                kind: rect(80.0, 40.0),
+                transform: None,
+                name: None,
+            },
+            Operation::SetFills {
+                id: big,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: image_brush(old.clone()).into(),
+                    visible: true,
+                }]),
+            },
+            Operation::CreateNode {
+                id: stroked,
+                parent: page,
+                index: 2,
+                kind: rect(8.0, 4.0),
+                transform: None,
+                name: None,
+            },
+            Operation::SetStrokes {
+                id: stroked,
+                strokes: mastik_core::keyed_by_position([mastik_core::Stroke {
+                    brush: image_brush(old.clone()).into(),
+                    ..Default::default()
+                }]),
+            },
+        ])));
+        let w = app.picture_weight(&old);
+        // 4 × 2 pixels on boxes 40 wide (10 a pixel), 80 (20) and 8 (2).
+        assert_eq!(w.drawn, Some(20.0), "the largest");
+        assert_eq!(w.layers, 3, "one each, the stroke-only layer too");
+    }
+
+    /// The Reduce card encodes PNG for a picture with transparency whatever the
+    /// JPEG switch says, and answers only a measurement of the settings now asked.
+    /// flip: `asked` ignoring `alpha` → fails at "PNG keeps the transparency".
+    #[test]
+    fn the_reduce_card_keeps_alpha_and_answers_only_what_is_asked() {
+        let ctx = egui::Context::default();
+        let (mut app, rect, old) =
+            app_with(&ctx, mastik_core::ImageFit::Fill, mastik_core::whole_crop());
+        app.open_reduce(rect, old);
+        let mut card = app.reduce.take().expect("the card");
+        let px = card.decoding.take().expect("decoding").wait().flatten();
+        card.pixels = px;
+        assert!(
+            card.jpeg && matches!(card.asked().out, Out::Jpeg(_)),
+            "opaque: JPEG"
+        );
+        let mut clear = (*card.pixels.clone().unwrap()).clone();
+        clear.put_pixel(0, 0, image::Rgba([0, 0, 0, 0]));
+        card.pixels = Some(Arc::new(clear.clone()));
+        assert_eq!(card.asked().out, Out::Png, "PNG keeps the transparency");
+        let e = Arc::new(encode(&clear, Out::Png).expect("encodes"));
+        card.measured = Some((card.asked(), e));
+        assert!(card.done().is_some(), "the measurement answers");
+        card.size = (card.size + 1) % card.sizes.len();
+        if card.sizes.len() > 1 {
+            assert!(
+                card.done().is_none(),
+                "another size is not this measurement"
+            );
+        }
+    }
+
+    /// The drawn scale is the largest along any axis, so a picture squeezed on
+    /// one axis is not reduced below the size it is drawn on the other; and the
+    /// card opens on 2× or, past it, on the original. flip: `largest_scale` as
+    /// √det → 0.5 for 1.
+    #[test]
+    fn the_drawn_scale_is_the_largest_axis_and_the_pick_is_2x_or_original() {
+        use mastik_core::kurbo::Affine;
+        assert!((largest_scale(Affine::scale_non_uniform(1.0, 0.25)) - 1.0).abs() < 1e-12);
+        assert!((largest_scale(Affine::rotate(0.7) * Affine::scale(0.5)) - 0.5).abs() < 1e-12);
+        let sizes = reduce_sizes(3000, 2000, Some(0.6));
+        assert_eq!(sizes.last().map(|s| s.times), Some(None), "{sizes:?}");
+        assert_eq!(
+            reduce_pick(&sizes),
+            sizes.len() - 1,
+            "past 2×, the original"
+        );
+        let sizes = reduce_sizes(3000, 2000, Some(0.1));
+        assert_eq!(sizes[reduce_pick(&sizes)].times, Some(2));
+    }
+
     /// *Reduce* moves every layer and style showing the picture onto the smaller
-    /// one, so the file gets lighter.
+    /// one, so the file gets lighter: a fill, a stroke, a style and a Tile layer,
+    /// whose tiles keep the size they were drawn. flip: `repoint_image` without its
+    /// styles loop → the style still names the original, which stays in the table
+    /// (fails at `!has_image(&old)`); without the tile scale → at "each tile".
     #[test]
     fn reduce_lands_on_every_layer_showing_the_picture() {
         let ctx = egui::Context::default();
         let (mut app, rect, old) =
             app_with(&ctx, mastik_core::ImageFit::Fill, mastik_core::whole_crop());
+        let mut ids = IdSource::new(0x91D);
+        let (stroked, tiled) = (ids.mint(), ids.mint());
+        let style = mastik_core::style::StyleId(ids.mint());
+        let page = app.session.page;
+        let mut tile = image_brush(old.clone());
+        if let mastik_core::Brush::Image(b) = &mut tile {
+            b.image.fit = mastik_core::ImageFit::Tile;
+            b.image.tile_scale = 3.0;
+        }
+        let square = || NodeKind::Rect {
+            size: Size::new(40.0, 20.0),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        };
+        let fill = |brush: mastik_core::Brush| {
+            mastik_core::keyed_by_position([Fill {
+                brush: brush.into(),
+                visible: true,
+            }])
+        };
+        assert!(app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: stroked,
+                parent: page,
+                index: 1,
+                kind: square(),
+                transform: None,
+                name: None,
+            },
+            Operation::SetStrokes {
+                id: stroked,
+                strokes: mastik_core::keyed_by_position([mastik_core::Stroke {
+                    brush: image_brush(old.clone()).into(),
+                    ..Default::default()
+                }]),
+            },
+            Operation::CreateNode {
+                id: tiled,
+                parent: page,
+                index: 2,
+                kind: square(),
+                transform: None,
+                name: None,
+            },
+            Operation::SetFills {
+                id: tiled,
+                fills: fill(tile),
+            },
+            Operation::AddStyle {
+                style: mastik_core::style::Style {
+                    id: style,
+                    name: "Texture".into(),
+                    value: mastik_core::style::StyleValue::Fills(fill(image_brush(old.clone()))),
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ])));
         let entry = app.session.doc.image(&old).expect("there").clone();
         let small = image::imageops::resize(
             &decode_rgba(&entry).expect("decodes"),
@@ -940,6 +1231,22 @@ mod tests {
         assert_eq!((entry.width, entry.height), (2, 1));
         assert!(!app.session.doc.has_image(&old));
         assert!(app.session.status().text.starts_with("Reduced Hero —"));
+        let doc = &app.session.doc;
+        let picture = |b: &mastik_core::BrushSource| match b.literal() {
+            Some(mastik_core::Brush::Image(i)) => i.image.clone(),
+            _ => panic!("a picture"),
+        };
+        let stroke = picture(&doc.get(stroked).unwrap().paint().strokes[0].brush);
+        assert_eq!(stroke.id, now.id, "the stroke");
+        let tiles = picture(&doc.get(tiled).unwrap().paint().fills[0].brush);
+        assert_eq!(tiles.id, now.id, "the tile layer");
+        // 4 px wide → 2: each tile drawn from half the pixels, so twice the scale.
+        assert_eq!(tiles.tile_scale, 6.0, "each tile the size it was drawn");
+        let mastik_core::style::StyleValue::Fills(f) = &doc.styles().get(style).unwrap().value
+        else {
+            panic!("a fill style")
+        };
+        assert_eq!(picture(&f[0].brush).id, now.id, "the style");
     }
 
     /// The sizes offered are multiples of the drawn size below the original,

@@ -2177,10 +2177,23 @@ const MIN_CROP: f64 = 1.0;
 /// `to` instead, framing and adjustments kept: what *Reduce picture…* commits,
 /// since a reduce that left the other layers on the original would not make
 /// the file any smaller.
-pub fn repoint_image(doc: &Document, from: &crate::ImageId, to: &crate::ImageId) -> Vec<Operation> {
+///
+/// `scale` is the old picture's width over the new one's. Every mode but Tile is
+/// framed in fractions of the picture, while `tile_scale` is units per source
+/// pixel, so it is multiplied by `scale` (in every mode, since it is kept while
+/// the mode is not Tile) to keep each tile the size it was drawn.
+pub fn repoint_image(
+    doc: &Document,
+    from: &crate::ImageId,
+    to: &crate::ImageId,
+    scale: f64,
+) -> Vec<Operation> {
     let swap = |b: &mut crate::BrushSource| match b.literal_mut() {
         Some(Brush::Image(img)) if img.image.id == *from => {
             img.image.id = to.clone();
+            if scale.is_finite() && scale > 0.0 {
+                img.image.tile_scale *= scale;
+            }
             true
         }
         _ => false,
@@ -2244,6 +2257,42 @@ pub fn crop_source_px(
     let x1 = source.x1.ceil().clamp(0.0, w);
     let y1 = source.y1.ceil().clamp(0.0, h);
     (x1 > x0 && y1 > y0).then_some((x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32))
+}
+
+/// The crop that shows, on the picture [`crop_source_px`] cuts out of a `width` by
+/// `height` one, exactly what `img`'s crop showed: the whole picture unless the cut
+/// was rounded outward, else the fraction of it that was on screen. With the mode
+/// left Crop, *Apply crop* then maps the same pixels onto the same box.
+pub fn crop_after_cut(img: &crate::ImageRef, width: u32, height: u32) -> Option<Rect> {
+    let (x, y, cw, ch) = crop_source_px(img, width, height)?;
+    let (w, h) = (f64::from(width), f64::from(height));
+    let (ow, oh) = img.orient.oriented_size(w, h);
+    let c = img.crop;
+    let shown = Rect::new(c.x0 * ow, c.y0 * oh, c.x1 * ow, c.y1 * oh);
+    let source = img.orient.affine(w, h).inverse().transform_rect_bbox(shown);
+    let (cw, ch) = (f64::from(cw), f64::from(ch));
+    let local = source - Vec2::new(f64::from(x), f64::from(y));
+    let oriented = img.orient.affine(cw, ch).transform_rect_bbox(local);
+    let (nw, nh) = img.orient.oriented_size(cw, ch);
+    let crop = Rect::new(
+        oriented.x0 / nw,
+        oriented.y0 / nh,
+        oriented.x1 / nw,
+        oriented.y1 / nh,
+    );
+    let whole = crate::whole_crop();
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    Some(
+        if near(crop.x0, whole.x0)
+            && near(crop.y0, whole.y0)
+            && near(crop.x1, whole.x1)
+            && near(crop.y1, whole.y1)
+        {
+            whole
+        } else {
+            crop
+        },
+    )
 }
 
 /// Which fill of `paint` image editing acts on: the first visible image

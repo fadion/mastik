@@ -91,20 +91,27 @@ Part of §9.4.
   - *Reduce picture…* (`icon::CORNERS_IN`) opens a modal canvas card (`MastikApp::reduce_ui`, the
     Trace card's pattern): **Size** offered as multiples of the largest drawn size (1×, 2×, 3× as
     drawn, each only while smaller than the original, then *Original*, which only re-encodes;
-    `pictures::reduce_sizes`; 2× by default), never upscaling; **Format** JPEG or PNG (a picture
+    `pictures::reduce_sizes`; 2× by default, the original when 2× is not smaller), never
+    upscaling; the drawn size is the largest scale along any axis, so a picture squeezed on one
+    axis is not reduced below the size it is drawn on the other; **Format** JPEG or PNG (a picture
     with transparency offers PNG only); **Quality** (`icon::GAUGE`, 85) dimmed with its reason for
     PNG. *Now* and *After, about* sizes; the after figure is **measured**, encoded on a worker as
     the settings move, one encode at a time, and *Reduce* waits for it. It acts on the picture, not
     the layer: every layer and style showing it moves onto the smaller one (`edit::repoint_image`),
     since a reduce leaving the original for the others would not shrink the file. Crops,
-    orientations and adjustments keep their meaning (the crop is in fractions). Status *Reduced
+    orientations and adjustments keep their meaning (the crop is in fractions); a tile scale, in
+    units per source pixel, is multiplied by the old width over the new so each tile keeps its
+    drawn size. Status *Reduced
     Hero photo — 4.8 MB to 0.6 MB*.
   - *Apply crop* (`icon::CROP`) keeps only the pixels inside the window, cut in the picture's own
     pixel space (`edit::crop_source_px`, through the orientation) so the mirrors, the turn and the
-    adjustments stay live; afterwards the picture is exactly the box, its crop whole and its mode
-    Fill. This layer gets a new entry; others showing the original keep it. Decoded and encoded on
-    a worker (`MastikApp::apply_crop`), landed by `poll_pictures` only on the document it was asked
-    of. A JPEG is re-encoded at quality 92, anything else as PNG. Dimmed with *This picture has not
+    adjustments stay live. The mode stays Crop, and the crop left is the part of the cut that was
+    shown (`edit::crop_after_cut`): whole unless the cut was rounded outward to pixels, so the layer
+    draws exactly what it drew, a box stretched against the cut included. This layer gets a new
+    entry; others showing the original keep it. Decoded and encoded on a worker
+    (`MastikApp::apply_crop`), landed by `poll_pictures` only on the document it was asked of; a
+    second rewrite while one is on its worker is refused with *Still rewriting a picture — try
+    again in a moment*. A JPEG is re-encoded at quality 92, anything else as PNG. Dimmed with *This picture has not
     been cropped* (the whole-crop sentinel), then *Only Crop keeps part of the picture — switch the
     mode to Crop first*. Status *Cropped Hero photo to 2400 × 1800 — 4.8 MB to 1.1 MB*. Linked-source entries (*Embed/Link*, *Relink…*) are not built — no linking is authored.
   A replacement drops the layer's photo credit (`credit::dropped_by_replace`, in `replace_image_with`),
