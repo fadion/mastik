@@ -1091,7 +1091,7 @@ enum NodeGrab {
 ///
 /// An open end continues the path, its ink inserts a point, bare canvas starts
 /// another subpath; middle anchors, handles and the point box keep node-tool meanings.
-enum PenVerb {
+pub(crate) enum PenVerb {
     /// An open end of the edited path: pick it up and keep drawing. Carries the
     /// [`PenEdit`] `pen_resume` would build, so hover ring and press agree.
     Continue(Box<PenEdit>),
@@ -5581,7 +5581,7 @@ impl MastikApp {
     /// when it may reach anything — the standalone tool. Inside an edit every pen
     /// verb stays in the edited node; reaching another layer would be a node merge
     /// with a second join rule (§15 D125).
-    fn pen_scope(&self) -> Option<NodeId> {
+    pub(crate) fn pen_scope(&self) -> Option<NodeId> {
         self.pen_bias.then(|| self.edited_path()).flatten()
     }
 
@@ -5651,7 +5651,7 @@ impl MastikApp {
 
     /// Take the press with the verb [`Self::pen_verb`] named. `shift` is the
     /// pen's own constraint (`pen_point`), not the node tool's extend.
-    fn pen_verb_press(&mut self, id: NodeId, world: Point, shift: bool, verb: PenVerb) {
+    pub(crate) fn pen_verb_press(&mut self, id: NodeId, world: Point, shift: bool, verb: PenVerb) {
         match verb {
             PenVerb::Continue(edit) => {
                 self.begin_pen_edit(*edit);
@@ -7394,6 +7394,14 @@ impl MastikApp {
     }
 
     pub(crate) fn finish_pen(&mut self, close: bool) {
+        // Read while the run still names the parent its first press fixed, which
+        // a Ctrl-moved first anchor does not change.
+        let frame = self.mirror_frame(
+            self.pen
+                .as_ref()
+                .and_then(|p| p.anchors.first())
+                .map(|a| a.at),
+        );
         let Some(pen) = self.pen.take() else { return };
         let resumed = pen.editing.is_some();
         let mut saved_plain = false;
@@ -7426,10 +7434,13 @@ impl MastikApp {
                 let id = self.session.ids.mint();
                 let index = self.child_count(pen.parent);
                 // The mirror draws the other half, joined where the run meets the axis.
-                let run = self.mirror_run(crate::preview::PenSubpath {
-                    anchors: pen.anchors,
-                    closed: close,
-                });
+                let run = self.mirror_run_in(
+                    frame,
+                    crate::preview::PenSubpath {
+                        anchors: pen.anchors,
+                        closed: close,
+                    },
+                );
                 let mut tx = tools::create_paths(
                     id,
                     pen.parent,
@@ -7440,9 +7451,7 @@ impl MastikApp {
                 );
                 // Saved mirrored, so point editing keeps it so, as the parent's own
                 // axes; a frame turned off a quarter turn has none to keep it by.
-                if let Some(frame) =
-                    self.mirror_frame(run.first().and_then(|s| s.anchors.first()).map(|a| a.at))
-                {
+                if let Some(frame) = frame {
                     let (mirror, dropped) = crate::mirror::local_mirror(&frame, pen.parent_world);
                     crate::mirror::mark_mirrored(&mut tx, mirror);
                     saved_plain = dropped;
