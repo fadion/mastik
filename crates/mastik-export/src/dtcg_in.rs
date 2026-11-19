@@ -2054,12 +2054,15 @@ impl Ctx<'_> {
                 }
                 if let Some(v) = &ty.line {
                     let m = self.number(path, v)?;
+                    // A held Auto is exported as 1.2, so 1.2 read back keeps it;
+                    // a new style has nothing to keep and takes the number.
                     let held_m = match s.line_height {
-                        Some(Length::Em(e)) => e,
-                        Some(Length::Px(p)) if s.font_size > 0.0 => p / s.font_size,
-                        _ => 1.2,
+                        Some(Length::Em(e)) => Some(e),
+                        Some(Length::Px(p)) if s.font_size > 0.0 => Some(p / s.font_size),
+                        _ if held.is_some() => Some(1.2),
+                        _ => None,
                     };
-                    if !near(held_m, m) {
+                    if !held_m.is_some_and(|h| near(h, m)) {
                         s.line_height = Some(Length::Em(m.max(0.0)));
                     }
                 }

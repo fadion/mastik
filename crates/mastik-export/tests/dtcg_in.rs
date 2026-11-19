@@ -467,6 +467,34 @@ fn a_foreign_file_matches_by_path_into_the_default_mode() {
     );
 }
 
+/// A new typography token's line height of 1.2 is written as 1.2em: only a
+/// held style's Auto, which exports as 1.2, is kept for it.
+///
+/// flip: the line height reading a missing one as 1.2 with no style held →
+/// fails at "a new style's 1.2".
+#[test]
+fn a_new_type_style_keeps_a_line_height_of_one_point_two() {
+    let mut d = doc();
+    let v = json!({ "h2": { "$type": "typography", "$value": {
+        "fontFamily": "Inter", "fontSize": "36px", "fontWeight": 700, "lineHeight": 1.2 } } });
+    let r = reviewed(&mut d, &v);
+    apply(&mut d, &r, &[]);
+    let h2 = d
+        .doc
+        .styles()
+        .iter()
+        .find(|s| s.name == "h2")
+        .expect("added");
+    let StyleValue::Text(t) = &h2.value else {
+        panic!("a text style")
+    };
+    assert_eq!(
+        t.line_height,
+        Some(mastik_core::Length::Em(1.2)),
+        "a new style's 1.2"
+    );
+}
+
 /// A linked file's review holds only what changed since the file was last
 /// applied: a value the document changed meanwhile is not offered back.
 #[test]
