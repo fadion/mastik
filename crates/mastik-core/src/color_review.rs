@@ -337,6 +337,15 @@ enum Into {
     },
 }
 
+/// Whether merging `group` into its default target would change anything, or
+/// leave a place on a locked layer to say so. A raw colour that is a variable's
+/// exactly, on places no variable binds (a text's runs), is a group nothing
+/// merges: the card and `review` show only the others.
+pub fn would_change(doc: &Document, roots: &[NodeId], census: &[Swatch], group: &Group) -> bool {
+    let m = merge(doc, roots, census, group, group.default_target(census));
+    m.uses > 0 || m.locked > 0
+}
+
 /// Merge `group`'s members into its member `target` over the subtrees rooted at
 /// `roots`, as one transaction. Into a raw colour, the others take it; into a
 /// bound one, their fills and strokes bind to its variable.
@@ -440,9 +449,16 @@ fn rewrite(doc: &Document, roots: &[NodeId], from: &[Key], into: Into) -> Merged
         let mut uses = 0;
         let mut unbound = 0;
         let mut ops = Vec::new();
-        // A place that cannot bind takes the value; one that can, the binding.
-        let mut literal = |c: Color| -> Option<Color> {
-            if !hit(c) {
+        let written = match into {
+            Into::Raw(t) => t,
+            Into::Var { value, .. } => value,
+        };
+        // A place that cannot bind takes the value; one that can, the binding. One
+        // that takes the value and is that colour already is no use: a text run of
+        // a variable's exact colour stays raw, and a merge of only such places
+        // changes nothing.
+        let mut literal = |c: Color, bindable: bool| -> Option<Color> {
+            if !hit(c) || (!bindable && bytes(c) == bytes(written)) {
                 return None;
             }
             uses += 1;
@@ -469,11 +485,12 @@ fn rewrite(doc: &Document, roots: &[NodeId], from: &[Key], into: Into) -> Merged
             here && doc.variables().get(var).is_none_or(|v| v.binds(f))
         };
         let brush = |b: &BrushSource,
-                     literal: &mut dyn FnMut(Color) -> Option<Color>,
+                     literal: &mut dyn FnMut(Color, bool) -> Option<Color>,
                      f: crate::variable::Field| match b {
             BrushSource::Literal(Brush::Solid(c)) => {
                 let c = *c;
-                let swapped = literal(c)?;
+                let bindable = matches!(into, Into::Var { var, .. } if binds(var, f));
+                let swapped = literal(c, bindable)?;
                 Some(match into {
                     Into::Var { var, own, .. } if binds(var, f) => BrushSource::Bound {
                         var,
@@ -486,7 +503,7 @@ fn rewrite(doc: &Document, roots: &[NodeId], from: &[Key], into: Into) -> Merged
                 let mut g = g.clone();
                 let mut any = false;
                 for s in g.gradient.stops.iter_mut() {
-                    if let Some(c) = literal(stop_color(&s.color)) {
+                    if let Some(c) = literal(stop_color(&s.color), false) {
                         s.color = DynamicColor::from_alpha_color(c);
                         any = true;
                     }
@@ -546,7 +563,7 @@ fn rewrite(doc: &Document, roots: &[NodeId], from: &[Key], into: Into) -> Merged
             .map(|e| {
                 let mut e = e.clone();
                 if let EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) = &mut e.kind
-                    && let Some(c) = literal(s.color)
+                    && let Some(c) = literal(s.color, false)
                 {
                     s.color = c;
                     effects_changed = true;
@@ -560,7 +577,7 @@ fn rewrite(doc: &Document, roots: &[NodeId], from: &[Key], into: Into) -> Merged
         if let NodeKind::Text { style, spans, .. } = node.kind() {
             let mut style = (**style).clone();
             let mut changed = false;
-            if let Some(c) = style.color.and_then(&mut literal) {
+            if let Some(c) = style.color.and_then(|c| literal(c, false)) {
                 style.color = Some(c);
                 changed = true;
             }
@@ -568,7 +585,7 @@ fn rewrite(doc: &Document, roots: &[NodeId], from: &[Key], into: Into) -> Merged
                 .as_slice()
                 .iter()
                 .map(|s| match s.attr {
-                    CharAttr::Color(Some(c)) => match literal(c) {
+                    CharAttr::Color(Some(c)) => match literal(c, false) {
                         Some(c) => {
                             changed = true;
                             Span {

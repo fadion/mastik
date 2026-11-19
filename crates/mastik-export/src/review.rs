@@ -692,11 +692,12 @@ fn raw_matches(scope: &Scope<'_>) -> Raw {
 /// `near_duplicate_colours`: the colours painted under the roots that Colour
 /// review groups as near-identical, which `merge_colours` makes one.
 pub fn near_duplicate_colours(scope: &Scope<'_>) -> Vec<Finding> {
-    use mastik_core::color_review::{Threshold, census, groups};
+    use mastik_core::color_review::{Threshold, census, groups, would_change};
     let census = census(scope.doc, &scope.roots);
     groups(&census, Threshold::Close)
         .into_iter()
         .filter(|g| g.members.len() > 1)
+        .filter(|g| would_change(scope.doc, &scope.roots, &census, g))
         .map(|g| {
             // A bound member is named by its variable: beside it, a raw colour of
             // the same hex would otherwise read as a colour listed twice.
@@ -708,15 +709,22 @@ pub fn near_duplicate_colours(scope: &Scope<'_>) -> Vec<Finding> {
                 }
             };
             let hexes: Vec<String> = g.members.iter().map(|m| label(*m)).collect();
+            // The layers a merge changes: the raw members' but the target's, never
+            // a layer already bound to it.
+            let target = g.members[g.default_target(&census)];
             let mut ids: Vec<NodeId> = Vec::new();
-            for m in &g.members {
+            for m in g
+                .members
+                .iter()
+                .filter(|m| **m != target && census[**m].is_raw())
+            {
                 for id in &census[*m].nodes {
                     if !ids.contains(id) {
                         ids.push(*id);
                     }
                 }
             }
-            let target = label(g.members[g.default_target(&census)]);
+            let target = label(target);
             Finding::new(
                 "near_duplicate_colours",
                 named(&ids),
@@ -1430,11 +1438,13 @@ mod tests {
 
     /// A raw gap is offered the spacing variable of its value, not a radius one
     /// made first; a colour written raw beside its variable is named by that
-    /// variable, which is the merge's target.
+    /// variable, which is the merge's target, and a text of its exact colour,
+    /// which no merge changes, is no finding.
     ///
     /// flip: `fitting` taking the first equal variable → fails at "the gap's";
     /// `near_duplicate_colours` reading `default_target` as a census index →
-    /// fails at "the target".
+    /// fails at "the target"; `rewrite` counting a place written its own colour
+    /// → fails at "a text of the variable's colour".
     #[test]
     fn raw_values_name_the_variable_that_fits() {
         let mut ids = IdSource::new(0x4eb);
@@ -1457,14 +1467,33 @@ mod tests {
             json!({ "verb": "bind_variable", "args": { "nodes": ["@bound"],
                 "field": { "Fill": 0 }, "variable": "@ground" } }),
             layer("@row", "raw", 0.0, 0.0, rect(40.0, 40.0, "#0b1020", 0.0)),
+            json!({ "verb": "add_variable", "args": { "kind": "color", "name": "Leaf",
+                "value": { "color": "#3f6212" } }, "as": "leaf" }),
+            layer("@row", "leafy", 0.0, 0.0, rect(40.0, 40.0, "#3f6212", 0.0)),
+            json!({ "verb": "bind_variable", "args": { "nodes": ["@leafy"],
+                "field": { "Fill": 0 }, "variable": "@leaf" } }),
+            // A text's own colour binds no variable, so a merge cannot change it.
+            layer(
+                &p,
+                "note",
+                0.0,
+                200.0,
+                json!({ "kind": { "Text": { "content": "Leaf",
+                "style": { "font_size": 14, "color": "#3f6212" } } } }),
+            ),
         ];
-        mastik_core::verbs::run_script(
+        let made = mastik_core::verbs::run_script(
             &mut doc,
             &mut ids,
             mastik_core::verbs::Lent::default(),
-            &Value::Array(steps),
+            &Value::Array(steps.clone()),
         )
         .expect("the fixture builds");
+        let l: std::collections::HashMap<&str, NodeId> = steps
+            .iter()
+            .zip(made)
+            .filter_map(|(s, m)| Some((s["as"].as_str()?, NodeId::from_wire(m.first()?)?)))
+            .collect();
         let res = Resolved::rebuild(&doc);
         let scope = Scope::new(&doc, &res, &[page]);
         let raw = raw_values(&scope);
@@ -1479,6 +1508,11 @@ mod tests {
             .find(|f| f.message.contains("#0b1020"))
             .expect("the raw and bound #0b1020");
         assert!(pair.message.contains("(`Ground`)"), "{pair:?}");
+        assert_eq!(pair.ids, vec![l["raw"]], "only the layer a merge changes");
+        assert!(
+            !near.iter().any(|f| f.message.contains("#3f6212")),
+            "a text of the variable's colour is no finding: {near:?}"
+        );
         assert_eq!(
             pair.instead.as_deref(),
             Some("one colour, #0b1020 (`Ground`): `merge_colours`"),

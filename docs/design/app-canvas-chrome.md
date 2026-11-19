@@ -1204,7 +1204,10 @@ colour, one undo step each. The rule is `mastik_core::color_review`.
   and stops, shadow and text colours take its default-mode value (`Merged::unbound`). So does a fill
   or stroke the variable's scope refuses, and every place on a layer where the variable draws
   another colour than its default mode's, which is the value the census matched: a bind there would
-  change the colour by more than the threshold. Effectively locked layers are never written
+  change the colour by more than the threshold. A place that takes the value and is that colour
+  already is no use and is not counted, so a merge of only such places writes nothing, and a
+  group whose merge into its default target would write nothing is not listed
+  (`color_review::would_change`, which `review` reads too). Effectively locked layers are never written
   (`Merged::locked`). `merge_into_new` adds *Mode 1* to a document with no modes, a variable valued
   the target's colour in every mode, and binds every raw member's users, the target's included;
   with every use on a locked layer it writes nothing, the variable included.

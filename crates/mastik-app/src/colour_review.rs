@@ -280,7 +280,10 @@ impl MastikApp {
         let doc = &self.session.doc;
         seen.roots = color_review::roots(doc, on_selection.then_some(selection.as_slice()));
         seen.census = color_review::census(doc, &seen.roots);
-        let groups = color_review::groups(&seen.census, key.2);
+        let groups: Vec<Group> = color_review::groups(&seen.census, key.2)
+            .into_iter()
+            .filter(|g| color_review::would_change(doc, &seen.roots, &seen.census, g))
+            .collect();
         seen.key = Some(key);
         // The settled groups last, so the list leads with what is left to do. Here
         // only: a group a tick settles stays where it is until the census moves.
@@ -1372,7 +1375,8 @@ mod tests {
         );
         let said = &f.app.session.status().text;
         assert!(
-            said.contains(" · 4 took its value instead of binding"),
+            // B alone: the raw A fills the scope refuses are A already.
+            said.contains(" · 1 took its value instead of binding"),
             "the status line: {said}"
         );
     }

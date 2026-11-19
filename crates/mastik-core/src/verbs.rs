@@ -5609,8 +5609,13 @@ pub static VERBS: &[Verb] = &[
                 return Err(VerbError::Nothing("none of the colours is used in scope"));
             }
             let merged = color_review::merge(ctx.doc, &roots, &census, &Group { members }, 0);
-            if merged.uses == 0 {
+            if merged.uses == 0 && merged.locked > 0 {
                 return Err(VerbError::Nothing("every place is on a locked layer"));
+            }
+            if merged.uses == 0 {
+                return Err(VerbError::Nothing(
+                    "every place is that colour already where no variable binds: a text's runs or colour, a gradient stop, a shadow",
+                ));
             }
             let locked = match merged.locked {
                 0 => String::new(),
