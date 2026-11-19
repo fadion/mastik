@@ -516,6 +516,7 @@ pub(super) fn waits(docs: &mut impl Documents, path: Option<&Path>, args: &Value
 /// takes no photo, as the panel fills only what can, or a missing `parent`.
 fn targets(docs: &mut impl Documents, path: &Path, args: &Value) -> Result<(), String> {
     let s = docs.session(path).ok_or("the document closed")?;
+    refuse_vault(s, args)?;
     match super::nodes(args, "fill")? {
         Some(ids) => match ids.iter().find(|id| !panel::fillable(&s.doc, **id)) {
             Some(id) => Err(format!(
@@ -532,6 +533,18 @@ fn targets(docs: &mut impl Documents, path: &Path, args: &Value) -> Result<(), S
             Some(_) => Ok(()),
         },
     }
+}
+
+/// Refuses a placement whose `parent` or `fill` is in a kit's vendored
+/// component, as every write tool refuses an edit there.
+fn refuse_vault(s: &crate::session::EditorSession, args: &Value) -> Result<(), String> {
+    let fill = super::nodes(args, "fill")?.unwrap_or_default();
+    let ids: Vec<String> = fill
+        .into_iter()
+        .chain(super::node(args, "parent")?)
+        .map(|id| id.to_wire())
+        .collect();
+    super::writes::refuse_kit_vault(s, &json!({ "nodes": ids }))
 }
 
 /// A number argument, refused when it is no positive number.
@@ -755,6 +768,7 @@ pub(crate) fn put_held(
     args: &Value,
     held: &Held,
 ) -> Result<Value, String> {
+    refuse_vault(s, args)?;
     let t = target(args)?;
     match held {
         Held::Icon { name, svg, credit } => {
@@ -805,6 +819,7 @@ pub(super) fn place(docs: &mut impl Documents, path: &Path, call: &Call) -> Resu
             }
             let parent = t.parent.ok_or(NO_PARENT)?;
             let at = t.at;
+            refuse_vault(docs.session(path).ok_or("the document closed")?, args)?;
             let desk = docs.desk().ok_or(NO_DESK)?;
             if !desk.prefs().icon_sets.contains(&sets::pack_key(&kit)) {
                 return Err(format!(
@@ -1499,6 +1514,79 @@ mod tests {
             s.doc.get(rect).and_then(|n| n.credit()).is_some(),
             "credited"
         );
+    }
+
+    /// An icon placed in a kit's vendored component, or a photo filling one, is
+    /// refused as every write tool refuses an edit there, and nothing lands.
+    ///
+    /// flip: `put_held` without `refuse_vault` → fails at "icon refused", core's
+    /// bare vault rule refusing instead; `targets` also without it → fails at
+    /// "fill refused", the photo filling the vendored main.
+    #[test]
+    fn a_placement_into_a_kit_component_is_refused() {
+        let (mut app, mut engine, file, ..) = fixture("vault");
+        bell_set(&mut app);
+        let photo = coffee(&mut app);
+        searched(&mut app, &photo);
+        downloaded(&mut app, &photo);
+        let s = Documents::session(&mut app, &file).unwrap();
+        let (vault, main) = (s.ids.mint(), s.ids.mint());
+        s.try_commit(Transaction(vec![
+            Operation::OpenVault { id: vault },
+            Operation::CreateNode {
+                id: main,
+                parent: vault,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: mastik_core::kurbo::Size::new(40.0, 40.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Kit main".into()),
+            },
+            Operation::SetComponent {
+                id: main,
+                component: true,
+            },
+            Operation::SetOrigin {
+                id: main,
+                origin: Some(mastik_core::kit::Origin {
+                    kit: "0".repeat(32),
+                    node: main,
+                    version: 1,
+                    name: Some("Kit".into()),
+                }),
+            },
+        ]))
+        .unwrap();
+        assert!(s.doc.in_vault(main), "the fixture: a vendored main");
+        let icon = now(
+            &mut engine,
+            &mut app,
+            "place_asset",
+            json!({ "asset": "icon:font-awesome/bell/Solid", "parent": main.to_wire() }),
+        );
+        let why = format!("{:?}", icon.content);
+        assert!(
+            icon.is_error && why.contains("kit's component"),
+            "icon refused: {why}"
+        );
+        let fill = now(
+            &mut engine,
+            &mut app,
+            "place_asset",
+            json!({ "asset": "photo:unsplash/x1", "fill": [main.to_wire()] }),
+        );
+        let why = format!("{:?}", fill.content);
+        assert!(
+            fill.is_error && why.contains("kit's component"),
+            "fill refused: {why}"
+        );
+        let s = Documents::session(&mut app, &file).unwrap();
+        let held = s.doc.get(main).unwrap();
+        assert!(held.children().is_empty(), "no icon landed");
+        assert!(held.paint().fills.is_empty() && held.credit().is_none());
     }
 
     /// A placement still downloading past the wait answers a pending id, keeps
