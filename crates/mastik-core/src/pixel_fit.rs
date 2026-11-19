@@ -339,6 +339,35 @@ fn fit_layer(place: &Place, id: NodeId, ops: &mut Vec<Operation>, fitted: &mut F
     }
 }
 
+/// Undo the fit of every anchor of a radial path but each orbit's first that
+/// [`fit_anchors`] may move, so the same anchor decides its orbit on every press:
+/// a turned grid point is off the grid, and an orbit decided by whichever anchor
+/// moved would turn the last press's fitted anchor off it again.
+fn keep_orbit_leaders(
+    start: &[PenSubpath],
+    fitted: &mut [PenSubpath],
+    mirror: PathMirror,
+    only: Option<&[PointRef]>,
+) {
+    let orbits = crate::symmetry::radial_orbits(start, mirror);
+    let refs: Vec<PointRef> = start
+        .iter()
+        .enumerate()
+        .flat_map(|(s, sub)| (0..sub.anchors.len()).map(move |a| (s, a)))
+        .collect();
+    let mut leader: Vec<Option<usize>> = vec![None; refs.len()];
+    for (i, r) in refs.iter().enumerate() {
+        if only.is_none_or(|o| o.contains(r)) && leader[orbits[i]].is_none() {
+            leader[orbits[i]] = Some(i);
+        }
+    }
+    for (i, &(s, a)) in refs.iter().enumerate() {
+        if leader[orbits[i]] != Some(i) {
+            fitted[s].anchors[a] = start[s].anchors[a];
+        }
+    }
+}
+
 /// The path `id` with its anchors (those in `only`, when given) fitted, or `None`
 /// when nothing moved.
 ///
@@ -397,6 +426,9 @@ fn fit_path(
         map_subpaths(&mut start, Affine::translate(to - at));
         subpaths = start.clone();
         fit_anchors(&mut subpaths, only);
+        if mirror.is_radial() {
+            keep_orbit_leaders(&start, &mut subpaths, mirror, only);
+        }
         crate::symmetry::remirror(&start, &mut subpaths, mirror, to);
     } else {
         fit_anchors(&mut subpaths, only);
@@ -968,6 +1000,53 @@ mod tests {
         };
         assert!(mirror.vertical, "the axis is kept");
         assert_eq!(fitted.moved, 3, "the right anchor was already whole");
+        let (again, twice) = fit(&after, &ra, &[made]);
+        assert!(again.0.is_empty(), "a second fit moves nothing: {again:?}");
+        assert_eq!(twice.moved, 0);
+    }
+
+    /// A radial path off the grid fits once: the same anchor of each orbit
+    /// decides it on every press, so a second fit moves nothing.
+    /// flip: `fit_path` without `keep_orbit_leaders` → fails at "a second fit".
+    #[test]
+    fn a_radial_path_fits_once() {
+        let (doc, [made]) = doc_of(|root, [made]| {
+            let c = Point::new(50.3, 40.7);
+            let mut p = BezPath::new();
+            for j in 0..10 {
+                let t = (f64::from(j) * 36.0 + 7.0).to_radians();
+                let r = if j % 2 == 0 { 20.0 } else { 9.0 };
+                let at = c + r * Vec2::new(t.cos(), t.sin());
+                match j {
+                    0 => p.move_to(at),
+                    _ => p.line_to(at),
+                }
+            }
+            p.close_path();
+            vec![Operation::CreateNode {
+                id: made,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Path {
+                    path: p,
+                    corner_radii: Vec::new(),
+                    corner_smoothing: 0.0,
+                    mirror: PathMirror::around(5, false),
+                },
+                transform: None,
+                name: None,
+            }]
+        });
+        let res = Resolved::rebuild(&doc);
+        let (tx, fitted) = fit(&doc, &res, &[made]);
+        assert!(fitted.moved > 0, "the fixture is off the grid");
+        let mut after = doc.clone();
+        after.apply(&tx).expect("the fit applies");
+        let NodeKind::Path { mirror, .. } = after.get(made).unwrap().kind() else {
+            panic!("a path");
+        };
+        assert_eq!(*mirror, PathMirror::around(5, false), "the copies are kept");
+        let ra = Resolved::rebuild(&after);
         let (again, twice) = fit(&after, &ra, &[made]);
         assert!(again.0.is_empty(), "a second fit moves nothing: {again:?}");
         assert_eq!(twice.moved, 0);

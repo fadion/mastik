@@ -477,8 +477,10 @@ pushing a square's corner, not `GRID_FOUR`, which is the View menu's grid.
 - **A mirrored path** keeps its axis: fitting the whole path first moves the axis to the nearest
   half unit, then fits the anchors and mirrors each pair from its first anchor, so images land on
   whole units too and a second fit moves nothing. An anchor on an odd-width axis stays on the half
-  unit. Fitting selected points mirrors them about the axis where it is. Points are counted from
-  what is written.
+  unit. Fitting selected points mirrors them about the axis where it is. A radial path keeps its
+  centre, which a grid does not move; the first anchor of each orbit that may move is fitted and
+  turned onto the rest, which land off the grid, and the same anchor decides on every press, so a
+  second fit moves nothing. Points are counted from what is written.
 - **Box shapes** (rectangle, ellipse, polygon, star, spiral) keep their kind: their world box is
   rounded (`fit_rect`), a tie growing outward, and no side with any length ends shorter than one
   unit: a sub-unit side takes the unit its middle is in. A line or an arc snaps both ends; one

@@ -661,6 +661,36 @@ fn carried(a: &PenAnchor, map: Affine, swap: bool) -> PenAnchor {
     }
 }
 
+/// Each anchor of `base`, in flat order, as its orbit under the radial
+/// `mirror`: the lowest flat index among the anchors its copies map onto. An
+/// anchor no copy maps elsewhere, or a path that is not radial, is its own.
+pub fn radial_orbits(base: &[PenSubpath], mirror: PathMirror) -> Vec<usize> {
+    let n = base.iter().map(|s| s.anchors.len()).sum();
+    let group = match mirror.is_radial() {
+        true => radial_group(base, mirror),
+        false => Vec::new(),
+    };
+    let c = radial_centre(&crate::edit::pen_path(base));
+    let size = base
+        .iter()
+        .flat_map(|s| &s.anchors)
+        .map(|a| (a.at - c).hypot())
+        .fold(0.0, f64::max);
+    let tol = 1e-6 * (1.0 + size);
+    let pairs: Vec<Vec<Option<(usize, bool)>>> = group
+        .iter()
+        .map(|(map, reverses)| partners_by(base, |p| *map * p, *reverses, tol))
+        .collect();
+    (0..n)
+        .map(|a| {
+            pairs
+                .iter()
+                .filter_map(|p| p[a].map(|(q, _)| q))
+                .fold(a, usize::min)
+        })
+        .collect()
+}
+
 /// [`symmetric_edit`] and [`remirror`] for a radial path: each orbit of anchors
 /// made one again, the first anchor in order that the edit changed deciding the
 /// rest. An anchor a turn holds still is on the centre and is held there; one a
