@@ -1894,9 +1894,13 @@ impl Ctx<'_> {
                         Some(BrushSource::Literal(Brush::Gradient(g))) => Some(g),
                         _ => None,
                     };
+                    // Compared as the writer wrote it: an Oklab ramp goes as its
+                    // sRGB samples, so its own export reads back as unchanged.
                     let alike = held_g.is_some_and(|g| {
-                        g.gradient.stops.len() == read.len()
-                            && g.gradient.stops.iter().zip(&read).all(|(s, (c, at))| {
+                        let mut drawn = g.gradient.clone();
+                        mastik_core::image::mix_in_srgb(&mut drawn);
+                        drawn.stops.len() == read.len()
+                            && drawn.stops.iter().zip(&read).all(|(s, (c, at))| {
                                 let drawn = s
                                     .color
                                     .to_alpha_color::<peniko::color::Srgb>()
