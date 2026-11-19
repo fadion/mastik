@@ -390,7 +390,8 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
     Clean up rule, since pictures belong to the document, not to a scope of layers. Unused means
     nothing can draw it (`io::unused_images`: no string anywhere in the saved form names its id,
     so hidden and locked layers, mains, overrides and styles all count); a picture only undo
-    refers to is unused. One undo step, *Remove unused pictures*; the status says *Removed 4 unused
+    refers to is unused, and a step taken back under it (`History::revert`) brings back the
+    pictures its layers name. One undo step, *Remove unused pictures*; the status says *Removed 4 unused
     pictures — 12.3 MB*. Save does not do this silently: a picture removed between a layer's
     delete and its undo would be gone from the file. The answer is read once per document change
     (`MastikApp::unused_pictures`).

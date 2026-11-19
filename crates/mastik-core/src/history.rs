@@ -379,7 +379,8 @@ impl History {
     /// a new step carrying `note` with its `reverts` set. Refused unless exact:
     /// on a copy the later steps are undone, then this one, then the later ones
     /// redone, and that must be the document its inverse gives applied now. The
-    /// step stays in the history, so undoing the new one brings it back.
+    /// step stays in the history, so undoing the new one brings it back. A picture
+    /// a later step purged comes back with the layers that name it.
     pub fn revert(
         &mut self,
         doc: &mut Document,
@@ -405,13 +406,16 @@ impl History {
         replayed
             .apply_restoring(step)
             .map_err(|_| self.tangled(at))?;
+        let unwound = replayed.clone();
         for tx in forward.iter().rev() {
             replayed.apply_restoring(tx).map_err(|_| self.tangled(at))?;
         }
         if replayed != reverted {
             return Err(self.tangled(at));
         }
-        let outcome = doc.apply_restoring(step).map_err(RevertError::Op)?;
+        let mut tx = step.clone();
+        tx.0.extend(carried_pictures(&unwound, &reverted));
+        let outcome = doc.apply_restoring(&tx).map_err(RevertError::Op)?;
         note.reverts = Some(serial);
         self.next_serial += 1;
         self.undo.push(Step {
@@ -607,6 +611,32 @@ impl Step {
             inverse: &self.tx,
         }
     }
+}
+
+/// The pictures a revert brings back with its layers: those `unwound` (the
+/// document with the later steps and this one undone) holds, `reverted` lacks,
+/// and `reverted` names. A later step that purged a picture only the reverted
+/// step's layers named would otherwise leave them naming nothing.
+fn carried_pictures(unwound: &Document, reverted: &Document) -> Vec<Operation> {
+    let gone: Vec<Operation> = unwound
+        .images()
+        .filter(|(id, _)| reverted.image(id).is_none())
+        .map(|(id, entry)| Operation::AddImage {
+            id: id.clone(),
+            entry: entry.clone(),
+        })
+        .collect();
+    if gone.is_empty() {
+        return gone;
+    }
+    let mut probe = reverted.clone();
+    if probe.apply_restoring(&Transaction(gone.clone())).is_err() {
+        return Vec::new();
+    }
+    let unused = crate::io::unused_images(&probe);
+    gone.into_iter()
+        .filter(|op| matches!(op, Operation::AddImage { id, .. } if !unused.contains(id)))
+        .collect()
 }
 
 #[cfg(test)]

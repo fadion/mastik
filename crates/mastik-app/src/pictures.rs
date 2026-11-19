@@ -1330,4 +1330,35 @@ mod tests {
         app.session.undo();
         assert!(app.session.doc.has_image(&orphan), "one undo step");
     }
+
+    /// Taking back a layer's deletion under a later *Remove unused pictures*
+    /// brings the layer back with its picture, and undoing that revert takes
+    /// both out again.
+    /// flip: `History::revert` committing the step without `carried_pictures` →
+    /// fails at "the picture comes back".
+    #[test]
+    fn a_revert_under_a_purge_brings_the_picture_back() {
+        let ctx = egui::Context::default();
+        let (mut app, rect, picture) =
+            app_with(&ctx, mastik_core::ImageFit::Fill, mastik_core::whole_crop());
+        assert!(
+            app.session
+                .commit(Transaction(vec![Operation::DeleteNode { id: rect }]))
+        );
+        let deleted = app.session.history.last_serial();
+        app.remove_unused_images();
+        assert!(
+            !app.session.doc.has_image(&picture),
+            "the fixture purges it"
+        );
+        app.session.revert(deleted).expect("the revert is exact");
+        assert!(app.session.doc.get(rect).is_some(), "the layer comes back");
+        assert!(
+            app.session.doc.has_image(&picture),
+            "the picture comes back"
+        );
+        app.session.undo();
+        assert!(app.session.doc.get(rect).is_none());
+        assert!(!app.session.doc.has_image(&picture));
+    }
 }
