@@ -3909,4 +3909,47 @@ mod sweep_tests {
             "the second wedge starts a wedge past the quarter: {first}"
         );
     }
+
+    /// A turned sweep's wedges are laid out in the gradient's own space and the
+    /// pattern carries the brush's transform; an unturned one carries none.
+    /// flip: `sweep_def` writing no `patternTransform` → fails at "turned".
+    #[test]
+    fn a_turned_sweep_carries_its_transform() {
+        let (red, blue) = (Color::from_rgb8(255, 0, 0), Color::from_rgb8(0, 0, 255));
+        let write = |transform: Affine| {
+            let g = Gradient::new_sweep(Point::new(50.0, 50.0), 0.0, std::f32::consts::TAU)
+                .with_stops([(0.0, red), (1.0, blue)]);
+            let mut brush: GradientBrush = g.into();
+            brush.transform = transform;
+            let GradientKind::Sweep(p) = brush.gradient.kind else {
+                unreachable!()
+            };
+            sweep_def(
+                "g",
+                &brush,
+                &brush.gradient,
+                &p,
+                Some(Rect::new(0.0, 0.0, 100.0, 100.0)),
+            )
+        };
+        let plain = write(Affine::IDENTITY);
+        assert!(!plain.contains("patternTransform"), "the control: {plain}");
+        let turned = write(Affine::rotate_about(
+            std::f64::consts::FRAC_PI_2,
+            Point::new(50.0, 50.0),
+        ));
+        let tile = turned.split("<pattern").nth(1).expect("a pattern");
+        assert!(
+            tile.starts_with(
+                r#" id="g" patternUnits="userSpaceOnUse" patternTransform="matrix(0 1 -1 0 100 0)""#
+            ),
+            "turned: {tile}"
+        );
+        // The wedges themselves are the unturned ones: the turn is the pattern's.
+        assert_eq!(
+            wedge_turns(&turned)[1],
+            wedge_turns(&plain)[1],
+            "laid out in the gradient's space"
+        );
+    }
 }
