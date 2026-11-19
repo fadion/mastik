@@ -368,6 +368,44 @@ fn keep_orbit_leaders(
     }
 }
 
+/// The radial path `start` fitted: each orbit's leader snapped and carried to the
+/// rest. An orbit whose fit a second press would move again is left where it was:
+/// a leader on a slanted mirror line slides off its grid point back onto the line,
+/// and the next press could snap it to another point.
+fn fit_radial(
+    start: &[PenSubpath],
+    mirror: PathMirror,
+    only: Option<&[PointRef]>,
+) -> Vec<PenSubpath> {
+    let settle = |from: &[PenSubpath]| {
+        let mut s = from.to_vec();
+        fit_anchors(&mut s, only);
+        keep_orbit_leaders(from, &mut s, mirror, only);
+        crate::symmetry::remirror(from, &mut s, mirror, Point::ZERO);
+        s
+    };
+    let once = settle(start);
+    let twice = settle(&once);
+    let orbits = crate::symmetry::radial_orbits(start, mirror);
+    let flat = |s: &[PenSubpath]| s.iter().flat_map(|s| s.anchors.clone()).collect::<Vec<_>>();
+    let (a, b) = (flat(&once), flat(&twice));
+    let unsettled: Vec<usize> = (0..a.len())
+        .filter(|i| (a[*i].at - b[*i].at).hypot() > EPS)
+        .map(|i| orbits[i])
+        .collect();
+    let mut out = once;
+    let mut i = 0;
+    for (sub, was) in out.iter_mut().zip(start) {
+        for (anchor, kept) in sub.anchors.iter_mut().zip(&was.anchors) {
+            if unsettled.contains(&orbits[i]) {
+                *anchor = *kept;
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
 /// The path `id` with its anchors (those in `only`, when given) fitted, or `None`
 /// when nothing moved.
 ///
@@ -424,12 +462,15 @@ fn fit_path(
             ),
         };
         map_subpaths(&mut start, Affine::translate(to - at));
-        subpaths = start.clone();
-        fit_anchors(&mut subpaths, only);
-        if mirror.is_radial() {
-            keep_orbit_leaders(&start, &mut subpaths, mirror, only);
-        }
-        crate::symmetry::remirror(&start, &mut subpaths, mirror, to);
+        subpaths = match mirror.is_radial() {
+            true => fit_radial(&start, mirror, only),
+            false => {
+                let mut s = start.clone();
+                fit_anchors(&mut s, only);
+                crate::symmetry::remirror(&start, &mut s, mirror, to);
+                s
+            }
+        };
     } else {
         fit_anchors(&mut subpaths, only);
     }
@@ -1010,11 +1051,26 @@ mod tests {
     /// flip: `fit_path` without `keep_orbit_leaders` → fails at "a second fit".
     #[test]
     fn a_radial_path_fits_once() {
+        fits_once(Point::new(50.3, 40.7), 7.0, PathMirror::around(5, false));
+    }
+
+    /// A star whose copies are mirrored fits once too, though an inner anchor's
+    /// leader sits on a slanted mirror line, where the grid point it snaps to
+    /// slides back along the line.
+    /// flip: `fit_radial` keeping an orbit that moves again on a second
+    /// settle → fails at "a second fit".
+    #[test]
+    fn a_mirrored_radial_path_fits_once() {
+        fits_once(Point::new(50.2, 40.7), -90.0, PathMirror::around(5, true));
+    }
+
+    /// A ten-anchor star about `c`, its first tip at `start` degrees, fitted
+    /// twice under `mirror`: the second fit moves nothing.
+    fn fits_once(c: Point, start: f64, mirror: PathMirror) {
         let (doc, [made]) = doc_of(|root, [made]| {
-            let c = Point::new(50.3, 40.7);
             let mut p = BezPath::new();
             for j in 0..10 {
-                let t = (f64::from(j) * 36.0 + 7.0).to_radians();
+                let t = (f64::from(j) * 36.0 + start).to_radians();
                 let r = if j % 2 == 0 { 20.0 } else { 9.0 };
                 let at = c + r * Vec2::new(t.cos(), t.sin());
                 match j {
@@ -1031,7 +1087,7 @@ mod tests {
                     path: p,
                     corner_radii: Vec::new(),
                     corner_smoothing: 0.0,
-                    mirror: PathMirror::around(5, false),
+                    mirror,
                 },
                 transform: None,
                 name: None,
@@ -1042,10 +1098,10 @@ mod tests {
         assert!(fitted.moved > 0, "the fixture is off the grid");
         let mut after = doc.clone();
         after.apply(&tx).expect("the fit applies");
-        let NodeKind::Path { mirror, .. } = after.get(made).unwrap().kind() else {
+        let NodeKind::Path { mirror: kept, .. } = after.get(made).unwrap().kind() else {
             panic!("a path");
         };
-        assert_eq!(*mirror, PathMirror::around(5, false), "the copies are kept");
+        assert_eq!(*kept, mirror, "the copies are kept");
         let ra = Resolved::rebuild(&after);
         let (again, twice) = fit(&after, &ra, &[made]);
         assert!(again.0.is_empty(), "a second fit moves nothing: {again:?}");
