@@ -180,9 +180,13 @@ itself. Whatever still matches the main follows it; whatever differs belongs to 
   its whole subtree still equal their sources and it holds no local additions**; otherwise it is kept
   and unlinked (by the one cut rule). **A main edit never destroys instance-side work.**
 - **Instance-side edits**: a linked node reparented out of its instance loses its link (membership is
-  judged at the nearest instance root, so moving into a nested instance also cuts it); a linked node
-  duplicated or pasted inside its own instance becomes local — at most one node per instance links to
-  a given source.
+  judged at the nearest instance root, so moving into a nested instance also cuts it: the layer is
+  then the nested instance's own, as any layer added to an instance is); a linked node duplicated or
+  pasted inside its own instance becomes local — at most one node per instance links to a given
+  source.
+- **A main's guides stay on the main.** A guide is a working aid for drawing the component, not part
+  of it, so an instance carries none of its main's guides and gets guides of its own only as any
+  frame does.
 
 **`propagate::propagate_structure`** implements it from the transaction's final tree against a reverse
 link map:
@@ -443,6 +447,10 @@ transaction. Gated on `propagate::touches_copied`.
   copy is laid out by its own container.
 - **Only the field pass**: structure and `settle_links` remove/move nodes, which overrides cannot
   express; a main's gained or lost child reaches its instances on release.
+- **A main's layer dragged out of its frame** is previewed following on the copies, clipped at each
+  instance's edge, and on release an untouched counterpart is deleted and a changed one kept and cut.
+  The preview is left as it is: the clip already shows the layer leaving the instance, which is what
+  the release does to an untouched copy.
 - The pivot preview reads the gesture's ops, never the follows.
 - A pinned copy given a transform and no insets has its own insets restated by `preview_follows`
   (`relayout` re-places only a layer with an insets or kind override).
@@ -494,8 +502,8 @@ any other pass that recomputes a copy's value.
   document's mains, vendored kit mains among them).
 - No verb un-makes a component (`non-goals.md`); one would owe its instances a detach, as a delete
   does.
-- Unruled, parked in `roadmap.md`: a main-scoped guide not copied into instances; whether a group
-  *instance* gets a canvas label.
+- A group instance on its page wears no tag outside entering it (`app::wears_tag`); ruled to wear
+  a frame instance's, open in `roadmap.md`.
 - Real-time collaboration — non-goal for now (it is where linked copies cost).
 
 ### Chrome

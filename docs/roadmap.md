@@ -6,6 +6,24 @@ work is described in `architecture.md`. Refs are file + function name, never lin
 the code before picking an item up — an item's premise can go stale while its ask still reads
 true.
 
+## Now · Misc
+
+- **A centroid snap during a move.** While the Align card's visual-centre toggle is on, a moved
+  layer's visual centre (`mastik_core::centroid`) is a snap source in `snap::snap_rect` beside its
+  box's centre, so a move snaps by the same centre the toggle aligns by.
+- **Reading a sharpen back from SVG.** The export writes a sharpen as `feGaussianBlur` plus an
+  arithmetic `feComposite` (k2 = 1 + a, k3 = −a), and `svg_in` does not recognise the pair, so a
+  Mastik SVG re-imported loses it. Key on the exact coefficients, so other tools' filters are not
+  misread as a sharpen.
+- **A group instance's canvas tag.** A group instance sitting on its page wears the tag a frame
+  instance does, drawn only while it is selected or entered; today `app::wears_tag` gives a group a
+  tag only as a main, so a group instance shows one only while entered.
+- **A placed transform origin for a multi-selection.** One layer, a group among them, takes a
+  placed pivot (`SetPivot`, `tools.md` *Transform origin*); several always turn about their union
+  centre (`Handles::pivot`). The marker and the origin fields are offered over several layers
+  too, the origin held by the session for that exact selection (a selection is not saved), and
+  read by everything `Handles::pivot` feeds.
+
 ## Now · Prototyping
 
 A release of its own: the document played, with interactions, flows,
@@ -53,13 +71,6 @@ Ideas worth weighing, not yet decided or scheduled.
   (*Parked decisions*); a compare that forgives edge pixels and still catches a moved shape is what
   would unblock it. The same harness could hold approved screenshots of the chrome as regression
   baselines.
-- **A centroid snap during a move.** A layer's visual centre (`mastik_core::centroid`) as a source
-  in `snap_rect` while the Align card's visual-centre toggle is on. Worth weighing only once the
-  toggle has seen use.
-- **Reading a sharpen back from SVG.** The export writes a sharpen as `feGaussianBlur` plus an
-  arithmetic `feComposite` (k2 = 1 + a, k3 = −a), and `svg_in` does not recognise the pair, so a
-  Mastik SVG re-imported loses it. Worth it only if that round trip matters; matching the pattern
-  risks misreading other tools' filters, so it would key on the exact coefficients.
 - **Background removal by a model.** The feature designers expect of an image card, but it brings
   a model and a native runtime, so it is a project of its own. The model must be MIT or Apache
   licensed: BiRefNet's lite variant (about 1024 px input, good on hair) cuts out a subject in one
@@ -77,31 +88,20 @@ Ideas worth weighing, not yet decided or scheduled.
 
 ## Parked decisions
 
-- Binary save format (the versioned JSON format ships).
 - Rich text model migration (`runs: Vec<(Range, TextStyle)>`, `architecture.md` §5.4).
 - History cap / snapshot compaction for huge delete inverses.
 - Font embedding for non-Google local fonts (`architecture.md` §5.4a).
 - **Justify-all** — blocked upstream in parley (`align_impl`, `pub(crate)` internals); trigger is a
   parley patch (§15 D825).
-- **A stored, user-placed transform origin for a multi-selection** — unparks when a user asks for it.
-- UI toolkit revisit (gpui / Xilem), `architecture.md` §9.1.
 - MCP transport hardening (auth, TCP/remote).
-- **ACP as the assistant's transport** — until Claude Code speaks it without an adapter
-  (`design/assistant.md` §2).
 - `vello_hybrid` as a third backend if low-end GPUs demand it.
 - **PNG goldens** — wait on an aarch64/NEON measurement (§15 D304); per-`vello_cpu` too (D414).
   `num_threads` is still a default.
-- **Layers panel `MIN_W = 210`** rests on one reading, not two (§15 D444): re-tighten or amend its prose.
 - **Chrome hairline base** in `rulers::snap_across_axis` (guides) is unruled (§15 D479). The pixel
   grid no longer calls it: it places lines from its lattice, which
   `the_lattice_picks_the_pixels_the_snapped_lines_did` holds to the pixels `snap_across_axis` picks,
   so ruling the base means moving the lattice with it.
 - **The Type panel's four `%` caps** are 200, inherited, not chosen (§15 D861).
-- **Dashboard virtualisation** — deferred (§15 D862); not a one-line `show_rows` (rename field, ⋮ menu,
-  `follow_selection` depend on drawn cards).
-- **Components: five unruled questions** — a group instance's canvas label; a main-scoped guide not
-  copied; a linked node moved into a nested instance losing its link; instance roots exempt from
-  membership (§15 D978); a moved-out layer previewed on copies (§15 D979 (xiv)).
 - **`Ctrl+Alt` is `AltGr`** on many European layouts (`shortcuts.md` §12, §15 D987).
 - **One font-availability question for panel and snapshot** — only worth it if the snapshot ever
   reads a live `FontService`.

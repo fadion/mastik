@@ -96,7 +96,7 @@ name (`claude`) and a speaker name (*Claude*) shown on its replies. An unknown s
 - **Each harness is driven through its own headless mode, not the Agent Client Protocol.** ACP
   would turn the dialects into one, but Claude Code and Codex speak it only through adapter
   packages, which the person would have to install and which may not run the program they signed in
-  to. Parked until Claude Code speaks ACP itself.
+  to. Not planned (`non-goals.md`).
 
 ### Finding and probing the program
 

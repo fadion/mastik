@@ -11,6 +11,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **A unit system** — a screen tool's units are all px at 1x; density belongs to export (§15 D358).
 - **Custom key bindings** — the keymap is fixed (`shortcuts.md`).
 - **A UI scale setting.**
+- **Moving the UI to another toolkit** (gpui, Xilem) — egui composites the wgpu canvas directly and serves the chrome (`app-chrome.md`).
 
 ## Canvas and interaction
 
@@ -88,6 +89,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **Detecting OneDrive's machine-name conflict copies** — indistinguishable from a typed name (§15 D375).
 - **Queueing `Ctrl+S` and document-leaving transitions on the writer thread** — they read the result on the next line (§15 D393).
 - **A "remember last page" dashboard option** — the default page is a Settings preference (§15 D749).
+- **A binary save format** — the versioned JSON format is the file; it diffs, merges and recovers by hand, and nothing has asked for a smaller or faster one.
 - **Reading Figma's `.fig` binary** — the format is unpublished, reading it reverse-engineers another company's product, and it breaks when Figma changes it; Figma files come in by link through the documented REST API.
 - **EPS import** — PostScript is a program, and reading it needs an interpreter (Ghostscript, AGPL); PDF and AI import cover the vector files that matter.
 - **Choosing an icon kit's variant in the Icons tab** — a set can have several properties, and the tab would have to enforce one or grow a picker per property; the tab places the default variant as an instance and its Instance card switches variants.
@@ -97,6 +99,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 
 - **Pairing a state's layer with rest's by hand** — states pair by lineage key, then name path (§15 D982); an unpaired layer is fixed on the layer itself, where the Variants card's *Select it* leads.
 - **A verb that un-makes a component** — delete the main, which detaches its instances, or detach an instance.
+- **A main's guides on its instances** — a guide is a working aid for drawing the main, not part of the component (`components.md`).
 - **Clean up removing layout from one-child frames** — the layout still pads, aligns and hugs, and code export writes it as flex.
 - **CSS block, inline and float layout, `calc`, `order`, and margins other than `auto`** — layout is flexbox and grid; gap and padding stand in for margins, and the layers panel's order for `order`.
 
@@ -152,6 +155,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **The agent's own tools** (shell, files, web) inside the assistant.
 - **Kits and the library through the assistant** — Phase 4's kit and library tools are never a chat's (the assets browser's two are).
 - **A chat saved in the document** — a chat is the person's, not the work's.
+- **The Agent Client Protocol as the assistant's transport** — Claude Code and Codex speak it only through adapters the person would install; each harness is driven through its own headless mode (`design/assistant.md`).
 - **Gemini CLI as a harness** — Google withdrew its OAuth sign-in for individuals in favour of Antigravity, which is driven.
 
 ## Command Mode

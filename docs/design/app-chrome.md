@@ -6,8 +6,8 @@ How `mastik-app` draws its window and panels: the toolkit choice, the shared wid
 
 ### Toolkit
 
-- **egui, via eframe.** gpui was evaluated and parked: it renders through its own backends rather than wgpu, so embedding the Vello-on-wgpu canvas would need cross-API texture sharing or a per-frame CPU readback. egui composites a wgpu canvas trivially (Vello renders to a texture, egui draws it through a paint callback).
-- egui is a medium-term commitment. The boundary rule (no egui types in core, render, export or mcp) is what keeps a later migration survivable.
+- **egui, via eframe.** gpui was evaluated and declined: it renders through its own backends rather than wgpu, so embedding the Vello-on-wgpu canvas would need cross-API texture sharing or a per-frame CPU readback. egui composites a wgpu canvas trivially (Vello renders to a texture, egui draws it through a paint callback).
+- egui is the toolkit, not a stage (`non-goals.md`). The boundary rule (no egui types in core, render, export or mcp) keeps the model, the renderer and the exporters free of it.
 - eframe rather than raw winit + egui-winit + egui-wgpu: it owns only the window, wgpu device and event loop, imposes no canvas cost, and swapping back changes only `main.rs`. eframe 0.35: the `App` method is `ui(&mut self, &mut egui::Ui, &mut Frame)`, and panels are `egui::Panel::left(..)` shown into a `Ui`.
 
 ### Theme (`theme.rs`)
