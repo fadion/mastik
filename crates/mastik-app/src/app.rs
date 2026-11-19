@@ -2691,19 +2691,30 @@ impl MastikApp {
     pub(crate) fn jump_history(&mut self, serial: Option<u64>) {
         self.finish_text_first();
         let history = &self.session.history;
+        let serials: Vec<u64> = history
+            .done()
+            .chain(history.undone())
+            .map(|v| v.serial)
+            .collect();
+        let now = history.done().count();
         let depth = match serial {
             None => Some(0),
-            Some(s) => history
-                .done()
-                .chain(history.undone())
-                .position(|v| v.serial == s)
-                .map(|i| i + 1),
+            Some(s) => serials.iter().position(|v| *v == s).map(|i| i + 1),
         };
         if let Some(depth) = depth
             && self.session.jump_to(depth)
         {
-            if self.session.selection.has_turns() {
-                self.session.selection.clear_turns();
+            // Each step crossed puts back the frame and origin it filed, in the
+            // order an undo or redo of it one at a time would.
+            let selection = &mut self.session.selection;
+            if depth < now {
+                for &s in serials[depth..now].iter().rev() {
+                    selection.rewind_turn(s, true);
+                }
+            } else {
+                for &s in &serials[now..depth] {
+                    selection.rewind_turn(s, false);
+                }
             }
             self.document_rewound();
         }

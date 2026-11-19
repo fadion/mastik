@@ -3564,10 +3564,12 @@ impl MastikApp {
             } => {
                 let (tx, lean) = self.skew_tx(target, handle, press, world, shift);
                 self.session.name_step("Skew", icon::SKEW);
+                let before = self.selection_turn_state();
                 if self.session.commit(tx) && matches!(target, Target::Selection) {
                     // A set has no stored frame; keep its lean on the selection.
                     let was = self.session.selection.frame();
                     self.session.selection.set_frame(lean * was);
+                    self.note_selection_turn(before);
                 }
             }
             Drag::Rotate {
@@ -3578,9 +3580,11 @@ impl MastikApp {
             } => {
                 let (tx, turn) = self.rotate_tx(target, pivot, start, world, shift);
                 self.session.name_step("Rotate", icon::ROTATION);
+                let before = self.selection_turn_state();
                 if self.session.commit(tx) && matches!(target, Target::Selection) {
                     let was = self.session.selection.frame();
                     self.session.selection.set_frame(turn * was);
+                    self.note_selection_turn(before);
                 }
             }
             Drag::Create {
@@ -22524,6 +22528,87 @@ mod select_drag_tests {
             at(&app).distance(Point::ZERO) < 1e-6,
             "after undoing the turn: {:?}",
             at(&app)
+        );
+    }
+
+    /// A set turned or leaned on the canvas stands upright again after undo, and a
+    /// History jump puts back only what the steps it crosses filed.
+    /// flip: `finish_drag`'s rotate arm without `note_selection_turn` → fails at
+    /// "the ring's turn undone"; `jump_history` forgetting every turn → fails at
+    /// "a jump past a fill keeps the frame".
+    #[test]
+    fn a_canvas_turn_of_a_set_is_undone_with_its_frame() {
+        let ctx = egui::Context::default();
+        let (mut app, a, b) = app_with_two_rects(&ctx);
+        app.session.selection.set(vec![a, b]);
+        let union = app
+            .session
+            .resolved
+            .world_bounds(a)
+            .unwrap()
+            .union(app.session.resolved.world_bounds(b).unwrap());
+        let pivot = union.center();
+        app.drag = Drag::Rotate {
+            target: Target::Selection,
+            pivot,
+            start: 0.0,
+            turn: Affine::IDENTITY,
+        };
+        app.finish_drag(Some(pivot + Vec2::new(50.0, 80.0)), false, false);
+        let turned = app.session.selection.frame();
+        assert!(turned != Affine::IDENTITY, "the fixture turns the set");
+        app.undo();
+        assert_eq!(
+            app.session.selection.frame(),
+            Affine::IDENTITY,
+            "the ring's turn undone"
+        );
+        app.redo();
+        assert_eq!(app.session.selection.frame(), turned, "and redone");
+
+        let press = Point::new(union.center().x, union.min_y());
+        app.drag = Drag::Skew {
+            target: Target::Selection,
+            handle: Handle::Top,
+            press,
+            lean: Affine::IDENTITY,
+        };
+        app.finish_drag(Some(Point::new(press.x + 60.0, press.y)), false, false);
+        let leaned = app.session.selection.frame();
+        app.undo();
+        assert_eq!(app.session.selection.frame(), turned, "the lean undone");
+        app.redo();
+        assert_eq!(app.session.selection.frame(), leaned);
+
+        let fill = |app: &mut MastikApp, rgb| {
+            assert!(app.session.commit(Transaction(vec![Operation::SetFills {
+                id: a,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: mastik_core::Brush::Solid(Color::from_rgb8(rgb, 0, 0)).into(),
+                    visible: true,
+                }]),
+            }])));
+        };
+        fill(&mut app, 10);
+        let first_fill = app.session.history.last_serial();
+        fill(&mut app, 20);
+        app.jump_history(Some(first_fill));
+        assert_eq!(
+            app.session.selection.frame(),
+            leaned,
+            "a jump past a fill keeps the frame"
+        );
+        app.jump_history(None);
+        assert_eq!(
+            app.session.selection.frame(),
+            Affine::IDENTITY,
+            "to the start"
+        );
+        app.jump_history(Some(first_fill));
+        assert_eq!(
+            app.session.selection.frame(),
+            leaned,
+            "and back across both"
         );
     }
 

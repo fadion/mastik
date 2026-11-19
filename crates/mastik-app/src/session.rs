@@ -393,17 +393,6 @@ impl Selection {
         self.pivot = pivot.map(|f| (self.ids.clone(), f));
     }
 
-    /// Whether any turn or mirror of this set is recorded: a history jump across
-    /// one cannot tell which side it lands on.
-    pub fn has_turns(&self) -> bool {
-        !self.turns.is_empty()
-    }
-
-    /// Put the frame upright and the origin on the centre.
-    pub fn clear_turns(&mut self) {
-        self.forget_frame();
-    }
-
     /// Drop ids that are no longer on `page` (after a delete, an undo or a move
     /// to another page) — the vault's among them, never selectable (§15 D1012).
     pub fn retain_existing(&mut self, doc: &Document, page: NodeId) {
