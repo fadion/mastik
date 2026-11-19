@@ -6992,6 +6992,171 @@ fn a_tree_inserts_back_as_what_it_read() {
     );
 }
 
+/// An instance read alone, whose main lies outside the read, inserts back as
+/// it read when its overrides are a new layer's defaults: square corners on a
+/// rounded main, an upright label of an italic main, no flex where the main
+/// has one. A path read even-odd, exporting without its fill and with its
+/// proportions locked, inserts back so.
+/// flip: `copy_defaults` without `explicit_kind` → fails at "the square
+/// corners"; `tree` without `keep_copy_italics` → fails at "the upright label";
+/// `full_tree` without its `fill_rule` → fails at "the even-odd path".
+#[test]
+fn a_copy_read_alone_keeps_its_default_overrides() {
+    let (mut doc, mut ids, page) = blank();
+    let rounded = json!({ "Artboard": { "size": { "width": 120, "height": 40 },
+        "corner_radii": { "top_left": 12, "top_right": 12, "bottom_right": 12, "bottom_left": 12 } } });
+    let steps = json!([
+        { "verb": "create_node", "args": { "parent": page.to_wire(), "kind": rounded, "name": "Button" }, "as": "main" },
+        { "verb": "create_text", "args": { "parent": "@main", "text": "Go" }, "as": "label" },
+        { "verb": "set_text_style", "args": { "nodes": ["@label"], "style": { "italic": true } } },
+        { "verb": "set_display", "args": { "nodes": ["@main"], "display": { "Flex": {} } } },
+        { "verb": "make_component", "args": { "nodes": ["@main"] } },
+        { "verb": "create_instance", "args": { "main": "@main", "parent": "@page", "x": 200, "y": 0 }, "as": "inst" },
+        { "verb": "set_geometry", "args": { "node": "@inst", "geometry": { "CornerRadius": 0 } } },
+        { "verb": "set_display", "args": { "nodes": ["@inst"] } },
+    ]);
+    let made = script(&mut doc, &mut ids, steps);
+    let inst = NodeId::from_wire(&made[5][0]).unwrap();
+    let inst_label = doc.get(inst).unwrap().children()[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_text_style",
+        json!({ "nodes": [inst_label.to_wire()], "style": { "italic": false } }),
+    );
+    assert!(
+        doc.get(inst).unwrap().display().is_none(),
+        "the fixture's flex removed"
+    );
+    assert_eq!(
+        doc.get(inst)
+            .unwrap()
+            .kind()
+            .corner_radii()
+            .map(|r| r.top_left),
+        Some(0.0),
+        "the fixture's corners squared"
+    );
+
+    let read = verbs::tree(&doc, inst).expect("the instance");
+    let back = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": read }),
+    )[0];
+    let b = doc.get(back).unwrap();
+    assert_eq!(
+        b.kind().corner_radii().map(|r| r.top_left),
+        Some(0.0),
+        "the square corners"
+    );
+    assert!(b.display().is_none(), "no flex");
+    let NodeKind::Text { style, .. } = doc.get(b.children()[0]).unwrap().kind() else {
+        panic!("a label");
+    };
+    assert!(!style.italic, "the upright label");
+    let name = |mut v: Value| {
+        v.as_object_mut().unwrap().remove("name");
+        v
+    };
+    assert_eq!(
+        verbs::tree(&doc, back).map(name),
+        verbs::tree(&doc, inst).map(name),
+        "reads back as it read"
+    );
+
+    let ring = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": { "Path": { "path": "M0 0 L40 0 L40 40 L0 40 Z M10 10 L30 10 L30 30 L10 30 Z" } } }),
+    )[0];
+    let ops = vec![
+        mastik_core::Operation::SetFillRule {
+            id: ring,
+            rule: mastik_core::FillRule::EvenOdd,
+        },
+        mastik_core::Operation::SetFillHiddenInExport {
+            id: ring,
+            hidden: true,
+        },
+        mastik_core::Operation::SetProportionsLocked {
+            id: ring,
+            locked: true,
+        },
+    ];
+    doc.apply(&mastik_core::Transaction(ops)).unwrap();
+    let read = verbs::tree(&doc, ring).expect("the ring");
+    let back = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": read }),
+    )[0];
+    let b = doc.get(back).unwrap();
+    assert_eq!(
+        b.fill_rule(),
+        mastik_core::FillRule::EvenOdd,
+        "the even-odd path"
+    );
+    assert!(
+        b.fill_hidden_in_export() && b.proportions_locked(),
+        "its flags"
+    );
+}
+
+/// A tree copy written in the loose forms takes its main's completion: a
+/// label's kind in lowercase keeps the main's family, and a card's
+/// `corner_radius` is its own corners.
+/// flip: `expand_copies` without `name_variant` → fails at "the main's family";
+/// without its `corner_radius` move → the card is refused.
+#[test]
+fn a_loose_tree_copy_takes_its_mains_completion() {
+    let (mut doc, mut ids, page) = blank();
+    let rounded = json!({ "Artboard": { "size": { "width": 120, "height": 40 },
+        "corner_radii": { "top_left": 12, "top_right": 12, "bottom_right": 12, "bottom_left": 12 } } });
+    let steps = json!([
+        { "verb": "create_node", "args": { "parent": page.to_wire(), "kind": rounded, "name": "Card" }, "as": "card" },
+        { "verb": "create_text", "args": { "parent": "@card", "text": "Go" }, "as": "label" },
+        { "verb": "set_text_style", "args": { "nodes": ["@label"], "style": { "font_family": "Georgia", "font_size": 30 } } },
+        { "verb": "make_component", "args": { "nodes": ["@card"] } },
+    ]);
+    let made = script(&mut doc, &mut ids, steps);
+    let (card, label) = (&made[0][0], &made[1][0]);
+    let tree = json!({ "kind": frame(300.0, 300.0), "children": [
+        { "copy_of": card, "corner_radius": 0, "children": [
+            { "copy_of": label, "kind": { "text": { "content": "Stop", "sizing": "Auto",
+                "style": { "weight": 700 } } } },
+        ] },
+    ] });
+    let root = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": tree }),
+    )[0];
+    let kids = doc.get(root).unwrap().children().to_vec();
+    let text = doc.get(kids[0]).unwrap().children()[0];
+    let NodeKind::Text { style, .. } = doc.get(text).unwrap().kind() else {
+        panic!("a label");
+    };
+    assert_eq!(
+        (style.font_family.as_str(), style.font_size, style.weight),
+        ("Georgia", 30.0, 700),
+        "the main's family"
+    );
+    assert_eq!(
+        doc.get(kids[0])
+            .unwrap()
+            .kind()
+            .corner_radii()
+            .map(|r| r.top_left),
+        Some(0.0),
+        "the card's own corners"
+    );
+}
+
 /// A tree layer naming `copy_of` takes what it leaves out from its main: one
 /// with no kind and no children is the main whole, and one giving only a
 /// label's content keeps the main's display, fills and the label's look. A

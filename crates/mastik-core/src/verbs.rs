@@ -6706,6 +6706,15 @@ pub struct Tree {
     /// A [`MASK_MODES`] word.
     pub mask_mode: Option<String>,
     pub mask_inverted: Option<bool>,
+    /// The rule a path's fill is read by, stored as set.
+    pub fill_rule: Option<crate::node::FillRule>,
+    /// A frame's fill left out of its export.
+    pub fill_hidden_in_export: Option<bool>,
+    /// A copy's corners by the name `set` takes, where it leaves its kind to its
+    /// main ([`expand_copies`] moves them into it); refused anywhere else, since
+    /// the short forms move a written kind's own.
+    pub corner_radius: Option<Value>,
+    pub proportions_locked: Option<bool>,
     pub fills: Option<Vec<Fill>>,
     pub strokes: Option<Vec<Stroke>>,
     pub effects: Option<Vec<Effect>>,
@@ -6799,6 +6808,12 @@ fn tree_ops(
     let id = *ids
         .next()
         .ok_or(VerbError::Nothing("a tree layer has no id"))?;
+    if tree.corner_radius.is_some() {
+        return Err(a.invalid(
+            "tree",
+            "a tree's corners are part of its `kind`, as `{\"Artboard\": {\"size\": {\"width\": 320, \"height\": 200}, \"corner_radii\": 20}}`",
+        ));
+    }
     let kind = tree.kind.clone().ok_or_else(|| {
         let why = match &tree.copy_of {
             Some(main) => {
@@ -6859,6 +6874,15 @@ fn tree_ops(
     }
     if let Some(inverted) = tree.mask_inverted {
         ops.push(Operation::SetMaskInverted { id, inverted });
+    }
+    if let Some(rule) = tree.fill_rule {
+        ops.push(Operation::SetFillRule { id, rule });
+    }
+    if let Some(hidden) = tree.fill_hidden_in_export {
+        ops.push(Operation::SetFillHiddenInExport { id, hidden });
+    }
+    if let Some(locked) = tree.proportions_locked {
+        ops.push(Operation::SetProportionsLocked { id, locked });
     }
     if let Some(fills) = &tree.fills {
         let fills = rekeyed(ctx, &[], fills.clone());
@@ -7114,16 +7138,24 @@ fn own_bindings(n: &crate::node::Node) -> Vec<TreeBinding> {
 
 /// Layer `id` and the layers inside it as a [`Tree`], the shape `insert_subtree`
 /// takes and the setters write: its kind with a text's runs, every fill and stroke
-/// with the hidden ones, its effects and exports, what it reads (styles, modes,
-/// width queries, its own bindings), its pivot, element, link, grids and guides,
-/// and its part in a component, each field only where it differs from a new
-/// layer's, and no item ids. With `drawn`, a bound field is written as drawn and
-/// left unbound, for a `like` sample's look; without, it is the model: the
-/// placeholder literal beside its binding, so the tree inserts back as it was.
-/// Every layer carries its `id`, which [`tree`] keeps only where the tree refers
-/// to it. `None` for no such layer. Every value in its full shape; [`tree`]
-/// writes the short forms.
+/// with the hidden ones, its fill rule, effects and exports, what it reads (styles,
+/// modes, width queries, its own bindings), its pivot, element, link, grids and
+/// guides, its export-fill and proportion flags, and its part in a component, each
+/// field only where it differs from a new layer's, and no item ids. A copy also
+/// writes each field its source has and it leaves at a new layer's default
+/// ([`copy_defaults`]), which `insert_subtree` would otherwise fill back from the
+/// source. With `drawn`, a bound field is written as drawn and left unbound, for a
+/// `like` sample's look; without, it is the model: the placeholder literal beside
+/// its binding, so the tree inserts back as it was. Every layer carries its `id`,
+/// which [`tree`] keeps only where the tree refers to it. `None` for no such
+/// layer. Every value in its full shape; [`tree`] writes the short forms.
 fn full_tree(doc: &Document, id: NodeId, drawn: bool) -> Option<Value> {
+    layer_tree(doc, id, drawn, true)
+}
+
+/// [`full_tree`], or with `deep` false the layer alone: no children and no
+/// [`copy_defaults`].
+fn layer_tree(doc: &Document, id: NodeId, drawn: bool, deep: bool) -> Option<Value> {
     fn values<T: serde::Serialize>(list: &[Keyed<T>]) -> Value {
         serde_json::to_value(list.iter().map(|k| &k.value).collect::<Vec<_>>()).unwrap_or_default()
     }
@@ -7183,6 +7215,19 @@ fn full_tree(doc: &Document, id: NodeId, drawn: bool) -> Option<Value> {
         if n.mask_inverted() {
             put("mask_inverted", Value::Bool(true));
         }
+    }
+    // The stored rule, as a file keeps it: an exclude reads even-odd whatever it says.
+    if n.fill_rule != crate::node::FillRule::default() {
+        put(
+            "fill_rule",
+            serde_json::to_value(n.fill_rule).unwrap_or_default(),
+        );
+    }
+    if n.fill_hidden_in_export() {
+        put("fill_hidden_in_export", Value::Bool(true));
+    }
+    if n.proportions_locked() {
+        put("proportions_locked", Value::Bool(true));
     }
     let paint = n.paint();
     if !paint.fills.is_empty() {
@@ -7262,55 +7307,6 @@ fn full_tree(doc: &Document, id: NodeId, drawn: bool) -> Option<Value> {
             serde_json::to_value(bindings).unwrap_or_default(),
         );
     }
-    // A copy's field left at a new layer's default where its source's is not is
-    // an override `insert_subtree` would otherwise fill back from the source.
-    if let Some(src) = n.link().and_then(|s| doc.get(s)) {
-        let none = || Value::Array(Vec::new());
-        if paint.fills.is_empty() && !src.paint().fills.is_empty() {
-            put("fills", none());
-        }
-        if paint.strokes.is_empty() && !src.paint().strokes.is_empty() {
-            put("strokes", none());
-        }
-        if n.effects().is_empty() && !src.effects().is_empty() {
-            put("effects", none());
-        }
-        if n.exports().is_empty() && !src.exports().is_empty() {
-            put("exports", none());
-        }
-        if visible && !src.visible() {
-            put("visible", Value::Bool(true));
-        }
-        if opacity == 1.0 && src.opacity() != 1.0 {
-            put("opacity", Value::from(1.0));
-        }
-        if n.blend() != src.blend() && n.blend() == BlendMode::default_for(n.kind()) {
-            put("blend", Value::from(n.blend().label()));
-        }
-        if !n.clip() && src.clip() {
-            put("clip", Value::Bool(false));
-        }
-        if *n.item() == LayoutItem::default() && *src.item() != LayoutItem::default() {
-            put("item", serde_json::to_value(n.item()).unwrap_or_default());
-        }
-        if *n.insets() == Insets::default() && *src.insets() != Insets::default() {
-            put(
-                "insets",
-                serde_json::to_value(n.insets()).unwrap_or_default(),
-            );
-        }
-        if n.styles() == crate::style::StyleRefs::default()
-            && src.styles() != crate::style::StyleRefs::default()
-        {
-            put(
-                "styles",
-                serde_json::to_value(n.styles()).unwrap_or_default(),
-            );
-        }
-        if n.children().is_empty() && !src.children().is_empty() {
-            put("children", none());
-        }
-    }
     if n.component() {
         put("component", Value::Bool(true));
     }
@@ -7338,15 +7334,146 @@ fn full_tree(doc: &Document, id: NodeId, drawn: bool) -> Option<Value> {
     if !n.doc_link().is_empty() {
         put("doc_link", Value::from(n.doc_link()));
     }
+    if !deep {
+        return Some(Value::Object(out));
+    }
+    if let Some(src) = n.link().and_then(|s| doc.get(s))
+        && let Some(Value::Object(theirs)) = layer_tree(doc, src.id(), drawn, false)
+    {
+        copy_defaults(n, &mut out, &theirs);
+        if n.children().is_empty() && !src.children().is_empty() {
+            out.insert("children".into(), Value::Array(Vec::new()));
+        }
+    }
     let children: Vec<Value> = n
         .children()
         .iter()
         .filter_map(|c| full_tree(doc, *c, drawn))
         .collect();
     if !children.is_empty() {
-        put("children", Value::Array(children));
+        out.insert("children".into(), Value::Array(children));
     }
     Some(Value::Object(out))
+}
+
+/// A copy's read, `own`, given explicitly each field its source's read `theirs`
+/// has and it leaves out, the copy's own being a new layer's default: an override
+/// `insert_subtree` would otherwise fill back from the source. Its kind likewise,
+/// field by field and a text's style field by field.
+fn copy_defaults(n: &crate::node::Node, own: &mut Map<String, Value>, theirs: &Map<String, Value>) {
+    let empty = || Value::Array(Vec::new());
+    for k in theirs.keys() {
+        if own.contains_key(k) {
+            continue;
+        }
+        let unset = match k.as_str() {
+            "transform" => serde_json::to_value(Affine::IDENTITY).unwrap_or_default(),
+            "visible" => Value::Bool(true),
+            "opacity" => Value::from(1.0),
+            "blend" => Value::from(BlendMode::default_for(n.kind()).label()),
+            "locked"
+            | "clip"
+            | "mask"
+            | "mask_inverted"
+            | "fill_hidden_in_export"
+            | "proportions_locked" => Value::Bool(false),
+            "mask_mode" => {
+                let at = crate::node::MaskMode::ALL
+                    .iter()
+                    .position(|m| *m == n.mask_mode())
+                    .unwrap_or(0);
+                Value::from(MASK_MODES[at])
+            }
+            "fill_rule" => serde_json::to_value(n.fill_rule).unwrap_or_default(),
+            "fills" | "strokes" | "effects" | "exports" | "grids" | "modes" | "queries"
+            | "bindings" => empty(),
+            "display" | "pivot" | "element" | "swap" => Value::Null,
+            "item" => serde_json::to_value(n.item()).unwrap_or_default(),
+            "insets" => serde_json::to_value(n.insets()).unwrap_or_default(),
+            "styles" => serde_json::to_value(n.styles()).unwrap_or_default(),
+            "link" => Value::from(""),
+            // A main's own, or always written.
+            _ => continue,
+        };
+        own.insert(k.clone(), unset);
+    }
+    if let (Some(mine), Some(source)) = (own.get_mut("kind"), theirs.get("kind")) {
+        explicit_kind(n.kind(), mine, source);
+    }
+}
+
+/// `mine`, `kind` as serde writes it, given explicitly each field serde left out
+/// (its default) where `theirs`, another kind of the same variant, has one, and
+/// a text's style field by field. A field's default is found as the one candidate
+/// that reads back as `kind`; one with none found is left out.
+fn explicit_kind(kind: &NodeKind, mine: &mut Value, theirs: &Value) {
+    fn zeroed(v: &Value) -> Value {
+        match v {
+            Value::Number(_) => Value::from(0.0),
+            Value::Bool(_) => Value::Bool(false),
+            Value::String(_) => Value::from(""),
+            Value::Array(_) => Value::Array(Vec::new()),
+            Value::Object(m) => {
+                Value::Object(m.iter().map(|(k, v)| (k.clone(), zeroed(v))).collect())
+            }
+            Value::Null => Value::Null,
+        }
+    }
+    let Some((variant, Value::Object(from))) = theirs.as_object().and_then(|m| m.iter().next())
+    else {
+        return;
+    };
+    let reads_back = |trial: &Value| {
+        serde_json::from_value::<NodeKind>(trial.clone())
+            .ok()
+            .as_ref()
+            == Some(kind)
+    };
+    let fill = |mine: &mut Value, path: &[&str], source: &Value| {
+        let candidates = [
+            Value::Null,
+            Value::Bool(false),
+            Value::from(0.0),
+            Value::Array(Vec::new()),
+            Value::Object(Map::new()),
+            zeroed(source),
+        ];
+        for c in candidates {
+            let mut trial = mine.clone();
+            let Some(Value::Object(at)) = path
+                .iter()
+                .take(path.len() - 1)
+                .try_fold(&mut trial, |v, k| v.get_mut(*k))
+            else {
+                return;
+            };
+            at.insert(path[path.len() - 1].to_owned(), c.clone());
+            if reads_back(&trial) {
+                *mine = trial;
+                return;
+            }
+        }
+    };
+    for (k, source) in from {
+        // A copy's own words take none of its source's runs.
+        if matches!(k.as_str(), "spans" | "para_spans") {
+            continue;
+        }
+        let at = mine.get(variant).and_then(|v| v.get(k));
+        match (at, source) {
+            (None, _) => fill(mine, &[variant, k], source),
+            (Some(Value::Object(style)), Value::Object(theirs)) if k == "style" => {
+                let missing: Vec<&String> = theirs
+                    .keys()
+                    .filter(|sk| !style.contains_key(*sk))
+                    .collect();
+                for sk in missing {
+                    fill(mine, &[variant, k, sk], &theirs[sk]);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// [`full_tree`] of the model in the short forms `insert_subtree` reads: hex
@@ -7367,7 +7494,37 @@ pub fn tree(doc: &Document, id: NodeId) -> Option<Value> {
     referenced(&v, &mut referred);
     keep_referred_ids(&mut v, &referred);
     loose::tighten("tree", &mut v);
+    keep_copy_italics(doc, &mut v);
     Some(v)
+}
+
+/// Put back the `"italic": false` the short forms leave out of a copy's text
+/// style where its source is italic, which `insert_subtree` would otherwise
+/// fill back from the source.
+fn keep_copy_italics(doc: &Document, v: &mut Value) {
+    let Value::Object(map) = v else { return };
+    let italic_source = map
+        .get("copy_of")
+        .and_then(Value::as_str)
+        .and_then(NodeId::from_wire)
+        .and_then(|s| doc.get(s))
+        .is_some_and(|s| matches!(s.kind(), NodeKind::Text { style, .. } if style.italic));
+    if italic_source
+        && let Some(Value::Object(style)) = map
+            .get_mut("kind")
+            .and_then(|k| k.get_mut("Text"))
+            .and_then(|t| t.get_mut("style"))
+    {
+        style.entry("italic").or_insert(Value::Bool(false));
+    }
+    for child in map
+        .get_mut("children")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        keep_copy_italics(doc, child);
+    }
 }
 
 /// Drop `copy_of` from every layer of `v` whose instance root is `outer`.
@@ -7636,6 +7793,23 @@ fn expand_copies(doc: &Document, v: &mut Value) {
             }
         }
     }
+    /// A copy's `own` kind written in any case, or a frame as `Frame`, named as
+    /// its main's `theirs` is, so [`merge_kind`] meets the same variant.
+    fn name_variant(own: &mut Map<String, Value>, theirs: &Map<String, Value>) {
+        let (Some(variant), Some(written)) = (theirs.keys().next(), own.keys().next().cloned())
+        else {
+            return;
+        };
+        let want = plain(variant);
+        let mine = plain(&written);
+        if written != *variant
+            && own.len() == 1
+            && (mine == want || alias(&mine) == want)
+            && let Some(inner) = own.remove(&written)
+        {
+            own.insert(variant.clone(), inner);
+        }
+    }
     /// `above` is the main of the copy this layer sits in, if any.
     fn walk(doc: &Document, read: &FxHashSet<String>, v: &mut Value, above: Option<NodeId>) {
         let Value::Object(map) = v else { return };
@@ -7660,7 +7834,41 @@ fn expand_copies(doc: &Document, v: &mut Value) {
             if let (Some(Value::Object(own)), Some(Value::Object(theirs))) =
                 (map.get_mut("kind"), main.get("kind"))
             {
+                name_variant(own, theirs);
+            }
+            // `corner_radius`, the name `set` takes, is the copy's own corners,
+            // not to lose to the main's merged in below.
+            let own_corners = map
+                .get("kind")
+                .and_then(Value::as_object)
+                .and_then(|k| k.values().next())
+                .is_some_and(|inner| inner.get("corner_radii").is_some());
+            let radius = (!own_corners)
+                .then(|| map.remove("corner_radius"))
+                .flatten();
+            if let (Some(Value::Object(own)), Some(Value::Object(theirs))) =
+                (map.get_mut("kind"), main.get("kind"))
+            {
                 merge_kind(own, theirs);
+            }
+            if let Some(r) = radius {
+                map.entry("kind")
+                    .or_insert_with(|| main.get("kind").cloned().unwrap_or_default());
+                match map
+                    .get_mut("kind")
+                    .and_then(Value::as_object_mut)
+                    .and_then(|k| k.iter_mut().next())
+                {
+                    Some((variant, Value::Object(inner)))
+                        if matches!(variant.as_str(), "Rect" | "Artboard") =>
+                    {
+                        inner.insert("corner_radii".into(), r);
+                    }
+                    // No corners to take it: left for the read to refuse.
+                    _ => {
+                        map.insert("corner_radius".into(), r);
+                    }
+                }
             }
             if !map.contains_key("children")
                 && let Some(children) = main.get_mut("children")
