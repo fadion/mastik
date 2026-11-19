@@ -3,7 +3,8 @@
 //! specification's own code that shares nothing with ours. The CPU backend's
 //! raster of the same document must match it; `mastik-render`'s on-device suite
 //! holds the GPU to the CPU (`tests/fx_gpu.rs`, `tests/gpu_effects.rs`). The
-//! sharpen is held to its `feGaussianBlur` and `feComposite` the same way.
+//! sharpen is held to its `feGaussianBlur` and `feComposite` the same way, and
+//! so are a leaned inner shadow and a sweep's wedges.
 
 use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
 use mastik_core::peniko::Color;
@@ -376,6 +377,97 @@ fn a_mirrored_shadow_falls_where_the_canvas_casts_it() {
         svg.contains(r#"<g transform="matrix(-1 0 0 1 150 10)"><g filter="#)
             && svg.contains(r#"dx="6" dy="4""#),
         "noise: the offset as authored, under the layer's transform:\n{svg}"
+    );
+}
+
+/// An opaque sweep's wedges leave no seam where they are narrowest, near the
+/// centre: every pixel inside the rectangle, which lies within 24 of it, is
+/// opaque in `resvg`, the seam's row included.
+/// flip: `sweep_def` reaching under the next wedge by `WEDGE_OVERLAP` alone →
+/// fails at "a seam", on most of the rectangle; without the first wedge's band
+/// behind its first edge → on the row above the seam.
+#[test]
+fn a_sweep_leaves_no_seam_near_its_centre() {
+    // The rectangle at x 60..100, y 18..42, the sweep's centre at (80, 30).
+    let (mut doc, _, board, page) = single(Affine::translate((60.0, 18.0)), vec![]);
+    let rect = doc
+        .node_ids()
+        .find(|id| matches!(doc.get(*id).unwrap().kind(), NodeKind::Rect { .. }))
+        .expect("the rectangle");
+    let sweep = mastik_core::peniko::Gradient::new_sweep((20.0, 12.0), 0.0, std::f32::consts::TAU)
+        .with_stops([
+            (0.0_f32, Color::from_rgba8(255, 0, 0, 255)),
+            (1.0_f32, Color::from_rgba8(0, 0, 255, 255)),
+        ]);
+    doc.apply(&Transaction(vec![Operation::SetFills {
+        id: rect,
+        fills: keyed_by_position([Fill {
+            brush: Brush::Gradient(sweep.into()).into(),
+            visible: true,
+        }]),
+    }]))
+    .unwrap();
+    let res = Resolved::rebuild(&doc);
+    let svg = mastik_export::svg::svg(&doc, &res, page, Some(board));
+    assert!(svg.contains("<pattern"), "the fixture: a sweep:\n{svg}");
+    let px = reference(&svg);
+    let mut thin = Vec::new();
+    for y in 18..42 {
+        for x in 60..100 {
+            let a = px[((y * W + x) * 4 + 3) as usize];
+            if a < 250 {
+                thin.push((x, y, a));
+            }
+        }
+    }
+    assert!(thin.is_empty(), "a seam: {} pixels, {thin:?}", thin.len());
+}
+
+/// An inner shadow on a layer leaned past 45° is whole in the SVG: its offset is
+/// written stretched by the lean, (0, 10) as (20, 10), and the filter region is
+/// padded by that, not by the layer-space offset. Counted as pixels more than 40
+/// levels off, which the slanted edges' anti-aliasing stays under.
+/// flip: `working_pad` padding by the layer-space offset → fails at "leaned", on
+/// the wedge at the top-left corner.
+#[test]
+fn a_leaned_inner_shadow_is_whole_in_the_svg() {
+    let inner = Effect::new(EffectKind::InnerShadow(mastik_core::Shadow {
+        offset: mastik_core::kurbo::Vec2::new(0.0, 10.0),
+        blur: 0.0,
+        spread: 0.0,
+        color: Color::from_rgba8(255, 0, 0, 255),
+        blend: mastik_core::BlendMode::Normal,
+    }));
+    let far_off = |a: &[u8], b: &[u8], (x0, y0, x1, y1): (u32, u32, u32, u32)| {
+        let mut n = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y * W + x) * 4) as usize;
+                n += usize::from((0..4).any(|c| a[i + c].abs_diff(b[i + c]) > 40));
+            }
+        }
+        n
+    };
+    // The plain rectangle at x 40..80, y 10..34; leaned, it reaches x 128.
+    let plain = Affine::translate((40.0, 10.0));
+    let (a, svg) = raster(plain, vec![inner.clone()]);
+    assert_eq!(far_off(&a, &reference(&svg), (40, 10, 80, 34)), 0, "plain");
+    let leaned = plain * Affine::skew(2.0, 0.0);
+    let (a, svg) = raster(leaned, vec![inner]);
+    assert!(
+        svg.contains(r#"dx="20" dy="10""#),
+        "the offset leaned:\n{svg}"
+    );
+    let i = ((11 * W + 45) * 4) as usize;
+    assert_eq!(
+        &a[i..i + 4],
+        &[255, 0, 0, 255],
+        "the canvas casts the top-left corner"
+    );
+    assert_eq!(
+        far_off(&a, &reference(&svg), (40, 10, 128, 34)),
+        0,
+        "leaned"
     );
 }
 

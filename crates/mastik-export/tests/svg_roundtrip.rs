@@ -1268,6 +1268,38 @@ fn a_sharpen_round_trips_ahead_of_its_shadow() {
 /// `a_sharpen_round_trips_ahead_of_its_shadow` at one amount, written through
 /// an export spec at its default precision or by `svg_of`.
 fn sharpen_round_trip(amount: f64, spec: bool) {
+    use mastik_core::EffectKind;
+    let fx = sharpen_reimported(amount, spec);
+    assert!(
+        matches!(fx[0], EffectKind::Sharpen { amount: a, radius }
+            if (a - amount).abs() < 1e-4 && (radius - 1.5).abs() < 0.01),
+        "the sharpen: {fx:?}"
+    );
+    assert!(
+        matches!(fx.get(1), Some(EffectKind::DropShadow(_))),
+        "then the shadow"
+    );
+    assert_eq!(fx.len(), 2);
+}
+
+/// A sharpen too slight to write at four places is left out, and the shadow
+/// after it still reads back.
+/// flip: `effect_def`'s sharpen arm writing a zero amount → fails at "one node
+/// carries the stack" (the reader refuses the whole filter).
+#[test]
+fn a_sharpen_too_slight_to_write_keeps_its_shadow() {
+    for spec in [false, true] {
+        let fx = sharpen_reimported(0.00004, spec);
+        assert!(
+            matches!(fx.as_slice(), [mastik_core::EffectKind::DropShadow(_)]),
+            "the shadow alone: {fx:?}"
+        );
+    }
+}
+
+/// A sharpened rect with a drop shadow above it, written by `svg_of` or through an
+/// export spec at its default precision, and the one effect stack read back.
+fn sharpen_reimported(amount: f64, spec: bool) -> Vec<mastik_core::EffectKind> {
     use mastik_core::{Effect, EffectKind, Shadow};
 
     let mut ids = IdSource::new(0x5A5B);
@@ -1324,18 +1356,7 @@ fn sharpen_round_trip(amount: f64, spec: bool) {
         .filter(|fx| !fx.is_empty())
         .collect();
     assert_eq!(stacks.len(), 1, "{amount}: one node carries the stack");
-    let fx = stacks[0];
-    assert!(
-        matches!(fx[0].kind, EffectKind::Sharpen { amount: a, radius }
-            if (a - amount).abs() < 1e-4 && (radius - 1.5).abs() < 0.01),
-        "the sharpen: {:?}",
-        fx.iter().map(|e| &e.kind).collect::<Vec<_>>()
-    );
-    assert!(
-        matches!(fx.get(1).map(|e| &e.kind), Some(EffectKind::DropShadow(_))),
-        "then the shadow"
-    );
-    assert_eq!(fx.len(), 2);
+    stacks[0].iter().map(|e| e.kind.clone()).collect()
 }
 
 /// A noise does not read back, and takes its stack's shadow with it; the export
