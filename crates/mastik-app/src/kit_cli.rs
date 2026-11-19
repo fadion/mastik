@@ -329,8 +329,9 @@ mod tests {
     /// A library holding Atlas — one component whose fill reads a colour
     /// variable, published at v1, then at v2 with only the variable's value
     /// changed — and Consumer, holding an instance of it at v1. Built through
-    /// the MCP's tools on a `serve` host. Answers the root and Consumer's path.
-    fn library(tag: &str) -> (std::path::PathBuf, String) {
+    /// the MCP's tools on a `serve` host. Answers the root, Consumer's path and
+    /// a second library folder holding Atlas at v1.
+    fn library(tag: &str) -> (std::path::PathBuf, String, std::path::PathBuf) {
         use crate::mcp::Engine;
         use crate::mcp::serve::Headless;
         use serde_json::{Value, json};
@@ -362,6 +363,10 @@ mod tests {
         let main = ok("make_component", json!({ "nodes": [rect] }))["created"][0].clone();
         ok("make_kit", json!({}));
         ok("publish_kit", json!({ "note": "First" }));
+        // A second library holding Atlas as v1 left it.
+        let v1 = crate::kits::picker::tests::temp_root(&format!("{tag}-v1"));
+        let file = std::path::PathBuf::from(atlas.as_str().unwrap());
+        std::fs::copy(&file, v1.join(file.file_name().unwrap())).unwrap();
 
         let consumer = ok("create_document", json!({ "name": "Consumer" }))["path"].clone();
         let page = ok("use_document", json!({ "document": consumer }))["pages"][0]["id"].clone();
@@ -376,7 +381,7 @@ mod tests {
             json!({ "variable": ink, "value": "#ff0000" }),
         );
         ok("publish_kit", json!({ "note": "Red" }));
-        (root, consumer.as_str().unwrap().to_owned())
+        (root, consumer.as_str().unwrap().to_owned(), v1)
     }
 
     fn update(file: &str, library: &std::path::Path, dry_run: bool) -> Update {
@@ -391,13 +396,15 @@ mod tests {
 
     /// A dry run says what it would take, fails the gate and writes nothing; a
     /// real run takes it, writes it and passes; then the document is up to
-    /// date. A variable-only update counts the variable.
+    /// date. A variable-only update counts the variable. A library holding the
+    /// kit older than the document's is not "up to date" either.
     ///
     /// flip: `one` writing before its dry-run return → fails at "a dry run
-    /// writes nothing"; `taken` counting layers only → fails at "1 variable".
+    /// writes nothing"; `taken` counting layers only → fails at "1 variable";
+    /// `unchecked` passing an older kit → fails at "an older library".
     #[test]
     fn kit_update_dry_runs_takes_and_reports() {
-        let (root, consumer) = library("cli-update");
+        let (root, consumer, v1) = library("cli-update");
         let lib = Library::open(root.clone());
         let bytes = std::fs::read(&consumer).unwrap();
 
@@ -427,22 +434,53 @@ mod tests {
         let mut both = update(&consumer, &root, true);
         both.files.push(missing);
         assert_eq!(run(&both), 2, "the worst code of the documents");
+
+        // A library holding Atlas older than the document's is no check of it.
+        let old = Library::open(v1.clone());
+        let (line, code) = one(&update(&consumer, &v1, true), &old, &consumer).unwrap();
+        assert!(
+            line.starts_with("not checked: Atlas is at v1 in")
+                && line.ends_with("older than the v2 held"),
+            "an older library: {line}"
+        );
+        assert_eq!(code, 1);
         let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&v1);
     }
 
     /// A library that lacks a kit the document draws from is not "up to date":
-    /// it names the kit and fails the gate.
+    /// it names the kit and fails the gate, a kit drawn on for tokens alone too.
     ///
-    /// flip: `one` ignoring `unchecked` → fails at "not checked".
+    /// flip: `one` ignoring `unchecked` → fails at "not checked"; `unchecked`
+    /// reading the vault's mains alone → fails at "token-only".
     #[test]
     fn kit_update_names_a_kit_the_library_lacks() {
-        let (root, consumer) = library("cli-lacks");
+        let (root, consumer, v1) = library("cli-lacks");
         let empty = crate::kits::picker::tests::temp_root("cli-lacks-empty");
         let lib = Library::open(empty.clone());
         let (line, code) = one(&update(&consumer, &empty, true), &lib, &consumer).unwrap();
         assert!(line.starts_with("not checked: Atlas is not in"), "{line}");
         assert_eq!(code, 1);
+
+        // A document drawing on Atlas's variable alone is checked by it too.
+        let mut doc = mastik_core::io::load(&std::fs::read(&consumer).unwrap()).unwrap();
+        let mains = doc.get(doc.vault().unwrap()).unwrap().children().to_vec();
+        let page = doc.first_page();
+        let used = doc.get(page).unwrap().children().to_vec();
+        let gone: Vec<_> = used
+            .into_iter()
+            .chain(mains)
+            .map(|id| mastik_core::Operation::DeleteNode { id })
+            .collect();
+        doc.apply(&mastik_core::Transaction(gone)).unwrap();
+        assert!(
+            doc.variables().iter().any(|v| v.origin.is_some()),
+            "fixture: Atlas's variable stays"
+        );
+        let line = unchecked(&doc, &lib).expect("token-only");
+        assert!(line.starts_with("not checked: kit "), "{line}");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&empty);
+        let _ = std::fs::remove_dir_all(&v1);
     }
 }
