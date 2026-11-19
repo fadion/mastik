@@ -23,5 +23,12 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   says the source answered HTTP 429, and another photo is the way on.
 - **An instance root following its main's layout item.** An instance root's placement is its
   own (`SetLayoutItem` among it, `components.md`), as its transform is.
+- **`fill` as a layout item's width or height.** It has no one meaning: on the main axis it is
+  `grow`, across it a stretch (`align_self`), and neither is a size.
+- **`id` for the checks' `ids`.** The refusal names the parameters the tool takes; a second name
+  for the same list is one more thing every agent reads.
+- **A seam where two frames meet in a page drawn below 1×.** Two antialiased edges on one
+  fractional pixel each cover it partly, as in any rasteriser; a region export at 2× shows the page
+  as it is.
 - **A DTCG `lineHeight` written as `"64px"`.** The DTCG format defines a typography token's
   `lineHeight` as a number, the multiplier; the refusal says so.
