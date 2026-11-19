@@ -159,6 +159,47 @@ pub fn pinned_icon() -> Fixture {
     Fixture { doc, res }
 }
 
+/// `line_ends` with the board filled by a red-to-blue ramp mixed in Oklab.
+pub fn oklab_board() -> Fixture {
+    let mut f = line_ends();
+    let board = named(&f.doc, "Board");
+    let mut ramp = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(100.0, 0.0)).with_stops([
+        (0.0_f32, Color::from_rgb8(255, 0, 0)),
+        (1.0_f32, Color::from_rgb8(0, 0, 255)),
+    ]);
+    ramp.interpolation_cs = mastik_core::peniko::color::ColorSpaceTag::Oklab;
+    f.doc
+        .apply(&Transaction(vec![Operation::SetFills {
+            id: board,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Gradient(ramp.into()).into(),
+                visible: true,
+            }]),
+        }]))
+        .expect("the ramp");
+    f.res = Resolved::rebuild(&f.doc);
+    f
+}
+
+/// The most stops any gradient in `z`'s JSON carries.
+pub fn most_stops(z: &Unzipped) -> usize {
+    fn walk(v: &Value) -> usize {
+        match v {
+            Value::Object(m) => m
+                .iter()
+                .map(|(k, v)| match (k.as_str(), v) {
+                    ("stops", Value::Array(a)) => a.len().max(walk(v)),
+                    _ => walk(v),
+                })
+                .max()
+                .unwrap_or(0),
+            Value::Array(a) => a.iter().map(walk).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    z.json.values().map(walk).max().unwrap_or(0)
+}
+
 /// A board holding two lines: *Arrows*, an open arrow at its start and an arrow
 /// at its end; *Bars*, a bar at its start and a circle at its end at 200%.
 pub fn line_ends() -> Fixture {

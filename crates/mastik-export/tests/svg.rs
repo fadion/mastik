@@ -4626,6 +4626,50 @@ fn a_sweep_gradients_radius_is_the_shapes_and_is_measured_from_its_centre() {
     );
 }
 
+/// A sweep stroke's wedges reach the stroke's outer corner, not only the
+/// shape's: a 20-wide outside stroke on a 100 square reaches 20 past every edge,
+/// so the wedges reach that grown box's corner, 70.71 + 28.28 from the centre.
+/// flip: `collect_defs` framing a stroke's sweep without its pad → fails.
+#[test]
+fn a_sweep_strokes_wedges_reach_its_outer_corner() {
+    use mastik_core::kurbo::{Point, Size};
+    use mastik_core::peniko::{Color, Gradient};
+    use mastik_core::{Brush, GeometryPatch, Stroke, StrokeAlign};
+    let mut f = common::fixture();
+    let gradient = Gradient::new_sweep(Point::new(50.0, 50.0), 0.0, std::f32::consts::TAU)
+        .with_stops([
+            (0.0_f32, Color::from_rgba8(255, 0, 0, 255)),
+            (1.0_f32, Color::from_rgba8(0, 0, 255, 255)),
+        ]);
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::SetGeometry {
+                id: f.rect,
+                geometry: GeometryPatch::Size(Size::new(100.0, 100.0)),
+            },
+            Operation::SetStrokes {
+                id: f.rect,
+                strokes: keyed_by_position([Stroke {
+                    brush: Brush::Gradient(gradient.into()).into(),
+                    width: 20.0,
+                    align: StrokeAlign::Outside,
+                    join: mastik_core::kurbo::Join::Round,
+                    ..Default::default()
+                }]),
+            },
+        ]))
+        .unwrap();
+    let res = Resolved::rebuild(&f.doc);
+    let out = svg(&f.doc, &res, f.doc.first_page(), None);
+    let tail = out
+        .split("<pattern")
+        .nth(1)
+        .unwrap_or_else(|| panic!("the wedge pattern: {out}"));
+    let w = tail.split(r#" width=""#).nth(1).unwrap();
+    let half = w.split('"').next().unwrap().parse::<f64>().unwrap() / 2.0;
+    assert!(half >= 70.71 + 28.28, "the wedges reach {half}");
+}
+
 /// **A hidden mask masks nothing, in both modes** — §15 D566's rule, which the
 /// canvas got and this writer did not (§15 D648).
 ///
@@ -5149,6 +5193,34 @@ fn a_head_whose_subpath_the_trim_swallows_stays_on_its_end() {
         two.contains("M0,0 L6,3 L6,-3") || two.contains("M0,0 L6,-3 L6,3"),
         "the head at the outline's start: {two}"
     );
+}
+
+/// An Oklab ramp, which SVG mixes in sRGB, goes as the dense stops that draw it.
+/// flip: `gradient_def` writing the ramp's own stops → fails at the count.
+#[test]
+fn an_oklab_ramp_goes_as_the_stops_that_draw_it() {
+    use mastik_core::kurbo::Point;
+    use mastik_core::peniko::{Color, Gradient, color::ColorSpaceTag};
+    use mastik_core::{Brush, Fill};
+    let mut f = common::fixture();
+    let mut ramp = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(60.0, 0.0)).with_stops([
+        (0.0_f32, Color::from_rgba8(0, 0, 0, 255)),
+        (1.0_f32, Color::from_rgba8(255, 255, 255, 255)),
+    ]);
+    ramp.interpolation_cs = ColorSpaceTag::Oklab;
+    f.doc
+        .apply(&Transaction(vec![Operation::SetFills {
+            id: f.rect,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Gradient(ramp.into()).into(),
+                visible: true,
+            }]),
+        }]))
+        .unwrap();
+    let res = Resolved::rebuild(&f.doc);
+    let out = svg_of(&f.doc, &res, &[f.rect]);
+    let n = out.matches("<stop ").count();
+    assert!(n > 2, "{n} stops: {out}");
 }
 
 /// A gradient stroke's heads are filled paths in the stroke's space carrying

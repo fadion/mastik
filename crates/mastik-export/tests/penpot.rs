@@ -317,6 +317,17 @@ fn line_ends_go_out_as_caps_and_read_back() {
     assert_eq!(ends("Bars").1, Marker::Circle);
 }
 
+/// An Oklab ramp, which Penpot mixes in sRGB, goes as the dense stops that draw
+/// it.
+/// flip: `gradient` writing the ramp's own stops → fails.
+#[test]
+fn an_oklab_ramp_goes_as_the_stops_that_draw_it() {
+    let f = rich::oklab_board();
+    let out = mastik_export::penpot::export(&f.doc, &f.res, "Ramp").unwrap();
+    let n = rich::most_stops(&unzip(&out.bytes));
+    assert!(n > 2, "{n} stops");
+}
+
 /// An inverted mask, which Penpot draws the right way out, is reported; the
 /// plain one above is not.
 /// flip: the mask run's `mask_inverted` report removed → fails.
