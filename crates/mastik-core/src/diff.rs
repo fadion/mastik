@@ -1119,12 +1119,15 @@ fn hex(v: &Value) -> String {
 
 /// The keys the file skips at a default other than an empty list, `false` or
 /// zero, with that default as JSON. `skipped_keys_are_listed` holds every key
-/// skipped beside a `default = "…"` function to this list.
-const SKIPPED_AT: [(&str, &str); 15] = [
+/// skipped beside a `default = "…"` function, or by an `is_one`, to this list; a
+/// key a wire form defaults that skips by another test must be added by hand.
+const SKIPPED_AT: [(&str, &str); 16] = [
     ("alpha", "1"),
     // A shadow's; a node's `blend` is an `Option`, absent at its kind's default.
     ("blend", r#""Normal""#),
     ("crop", r#"{"x0":0.0,"y0":0.0,"x1":1.0,"y1":1.0}"#),
+    // A noise's, defaulted through its wire form rather than a function.
+    ("density", "1.0"),
     // `image::DUOTONE_DARK` and `DUOTONE_LIGHT` as the file spells them.
     (
         "duotone_dark",
@@ -1220,9 +1223,10 @@ mod tests {
     use super::SKIPPED_AT;
     use std::path::Path;
 
-    /// The fields in `src` whose serde attribute names both a `default = "…"`
-    /// function and a `skip_serializing_if`: skipped at a default the function
-    /// alone knows.
+    /// The fields in `src` whose serde attribute names a `skip_serializing_if`
+    /// beside a `default = "…"` function, or one ending `is_one`: skipped at a
+    /// default other than zero, which a wire form's `#[serde(default)]` hides
+    /// from the field's own attribute.
     fn skipped_at_a_function(src: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut attr = String::new();
@@ -1241,7 +1245,13 @@ mod tests {
                 continue;
             }
             if !attr.is_empty() && !t.starts_with("///") && !t.starts_with("#[") {
-                if attr.contains("default = \"") && attr.contains("skip_serializing_if") {
+                let at_one = attr
+                    .split("skip_serializing_if = \"")
+                    .nth(1)
+                    .and_then(|s| s.split('"').next())
+                    .is_some_and(|p| p.ends_with("is_one"));
+                if (attr.contains("default = \"") && attr.contains("skip_serializing_if")) || at_one
+                {
                     let field = t
                         .trim_start_matches("pub(crate) ")
                         .trim_start_matches("pub ");
@@ -1277,8 +1287,12 @@ mod tests {
                    #[serde(default, skip_serializing_if = \"is_zero\")]\n\
                    pub grow: f64,\n\
                    #[serde(default = \"yes\")]\n\
-                   clip: bool,";
-        assert_eq!(skipped_at_a_function(src), ["shrink", "quality"]);
+                   clip: bool,\n\
+                   #[serde(skip_serializing_if = \"is_one\")]\n\
+                   pub density: f64,\n\
+                   #[serde(skip_serializing_if = \"Option::is_none\")]\n\
+                   pub name: Option<String>,";
+        assert_eq!(skipped_at_a_function(src), ["shrink", "quality", "density"]);
     }
 
     /// Every field in this crate skipped at a default its function knows is in

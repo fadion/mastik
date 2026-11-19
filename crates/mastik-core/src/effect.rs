@@ -203,13 +203,25 @@ pub fn backdrop_radius(effects: &[Keyed<Effect>]) -> Option<f64> {
 ///
 /// Only [`layer_blur_deviation`] may pay for this: the licence to lose resolution
 /// is that the output already lost it. A stack that leaves any artwork sharp
-/// gets `1.0`.
+/// gets `1.0`, and so does one where a noise follows the last layer blur in list
+/// order: that grain is drawn after the blur, at full resolution.
 ///
 /// `1.0` — never less — when the layer is not blurred enough to have earned it.
 /// Nothing between 1 and 2: a shallow downscale resamples without the blur being
 /// wide enough to hide it and saves little, so an ordinary zoom is left exactly
 /// alone.
 pub fn buffer_downscale(effects: &[Keyed<Effect>], scale: (f64, f64)) -> f64 {
+    let last_blur = effects.iter().rposition(|e| {
+        e.visible && matches!(e.kind, EffectKind::LayerBlur { radius } if radius > 0.0)
+    });
+    let grain_after = last_blur.is_some_and(|i| {
+        effects[i + 1..]
+            .iter()
+            .any(|e| e.visible && matches!(&e.kind, EffectKind::Noise(n) if n.has_ink()))
+    });
+    if grain_after {
+        return 1.0;
+    }
     let sigma = layer_blur_deviation(effects) * scale.0.abs().max(scale.1.abs());
     let k = sigma / BLUR_SIGMA_BUDGET;
     if k < 2.0 { 1.0 } else { k }
@@ -1524,6 +1536,18 @@ mod tests {
             vars: Default::default(),
         }]);
         assert_eq!(buffer_downscale(&fx, (8.0, 8.0)), 1.0);
+    }
+
+    /// A noise after the last layer blur leaves grain sharp and buys no
+    /// downscale; one before it is blurred with the layer and keeps it.
+    #[test]
+    fn a_noise_after_the_blur_takes_back_its_downscale() {
+        let blur = || Effect::new(EffectKind::LayerBlur { radius: 55.5 });
+        let noise = || Effect::new(EffectKind::Noise(crate::Noise::default()));
+        let after = crate::keyed_by_position([blur(), noise()]);
+        let before = crate::keyed_by_position([noise(), blur()]);
+        assert_eq!(buffer_downscale(&after, (8.0, 8.0)), 1.0);
+        assert!(buffer_downscale(&before, (8.0, 8.0)) > 2.0);
     }
 
     /// Whenever the buffer fits, `buffer_box_within` is `buffer_box` exactly.

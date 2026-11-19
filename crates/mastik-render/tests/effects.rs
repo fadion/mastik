@@ -180,6 +180,47 @@ fn a_shadow_turns_and_mirrors_with_its_layer() {
     assert_eq!(at(&px, w, 80, 50).3, 0, "mirrored: nothing to the right");
 }
 
+/// A noise after a heavy layer blur is grain drawn on the blurred layer, so over
+/// the blur's flat middle it draws what the noise alone draws: the buffer is
+/// not downscaled for it.
+/// flip: `effect::buffer_downscale` without its noise-after-blur check → fails
+/// at the comparison.
+#[test]
+fn a_noise_after_a_heavy_blur_keeps_its_grain() {
+    let rect = || NodeKind::Rect {
+        size: Size::new(600.0, 600.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    };
+    let noise = || {
+        Effect::new(EffectKind::Noise(mastik_core::Noise {
+            colors: [Color::BLACK, Color::WHITE],
+            density: 1.0,
+            ..Default::default()
+        }))
+    };
+    let blur = Effect::new(EffectKind::LayerBlur { radius: 100.0 });
+    assert!(
+        mastik_core::effect::buffer_downscale(&keyed_by_position([blur.clone()]), (1.0, 1.0)) > 1.0,
+        "the blur alone earns a downscale"
+    );
+    // The view is 250 units inside every edge, past the blur's reach.
+    let place = Affine::translate((-250.0, -250.0));
+    let (alone, _) = render_placed(rect(), place, vec![noise()], 100);
+    let (after, _) = render_placed(rect(), place, vec![blur, noise()], 100);
+    // Colour only: a layer covering the view gets no room past it
+    // (`effect::buffer_box_within`'s budget), so the blur fades its alpha towards
+    // the view's edge while its colour stays the flat white the grain is laid on.
+    let worst = alone
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(after.as_chunks::<4>().0)
+        .flat_map(|(a, b)| (0..3).map(move |c| a[c].abs_diff(b[c])))
+        .max();
+    assert!(worst <= Some(2), "off the noise alone by up to {worst:?}");
+}
+
 /// The blur is what makes a shadow a shadow, so its falloff is the assertion.
 ///
 /// A shadow 10 down with an 8 blur has a deviation of 4 and reaches 12 past its

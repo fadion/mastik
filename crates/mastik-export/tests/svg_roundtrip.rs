@@ -1253,11 +1253,21 @@ fn an_effect_stack_round_trips_as_the_same_stack() {
 }
 
 /// A sharpen comes back a sharpen with its amount and radius, ahead of the shadow
-/// cast from it, as the stack was.
-/// flip: the export writing `k3` as `-amount * 0.9` → fails at "one node carries the
-/// stack" (the whole filter is refused).
+/// cast from it, as the stack was: at four places, and through an export spec at
+/// its default two, where `1 + a` and `−a` written apart round to a pair whose sum
+/// is not 1 (0.115 writes 1.12 and −0.12).
+/// flip: `effect_def`'s sharpen writing `k2`, `k3` at the spec's precision → fails
+/// at "one node carries the stack" for 0.115 (the whole filter is refused).
 #[test]
 fn a_sharpen_round_trips_ahead_of_its_shadow() {
+    sharpen_round_trip(0.75, false);
+    sharpen_round_trip(0.115, true);
+    sharpen_round_trip(0.12345, true);
+}
+
+/// `a_sharpen_round_trips_ahead_of_its_shadow` at one amount, written through
+/// an export spec at its default precision or by `svg_of`.
+fn sharpen_round_trip(amount: f64, spec: bool) {
     use mastik_core::{Effect, EffectKind, Shadow};
 
     let mut ids = IdSource::new(0x5A5B);
@@ -1281,7 +1291,7 @@ fn a_sharpen_round_trips_ahead_of_its_shadow() {
             id: rect,
             effects: keyed_by_position([
                 Effect::new(EffectKind::Sharpen {
-                    amount: 0.75,
+                    amount,
                     radius: 1.5,
                 }),
                 Effect::new(EffectKind::DropShadow(Shadow {
@@ -1297,17 +1307,27 @@ fn a_sharpen_round_trips_ahead_of_its_shadow() {
     .expect("a sharpened rect with a shadow");
     let res = Resolved::rebuild(&doc);
 
-    let (back, got) = reimport(&svg_of(&doc, &res, &[rect]));
+    let markup = match spec {
+        true => {
+            let spec = mastik_core::ExportSpec::new(
+                mastik_core::ExportFormat::Svg,
+                mastik_core::ExportScale::Times(1.0),
+            );
+            mastik_export::svg::svg_spec(&doc, &res, rect, &spec).svg
+        }
+        false => svg_of(&doc, &res, &[rect]),
+    };
+    let (back, got) = reimport(&markup);
     let stacks: Vec<_> = got
         .iter()
         .map(|id| back.get(*id).unwrap().effects())
         .filter(|fx| !fx.is_empty())
         .collect();
-    assert_eq!(stacks.len(), 1, "one node carries the stack");
+    assert_eq!(stacks.len(), 1, "{amount}: one node carries the stack");
     let fx = stacks[0];
     assert!(
-        matches!(fx[0].kind, EffectKind::Sharpen { amount, radius }
-            if (amount - 0.75).abs() < 1e-6 && (radius - 1.5).abs() < 0.01),
+        matches!(fx[0].kind, EffectKind::Sharpen { amount: a, radius }
+            if (a - amount).abs() < 1e-4 && (radius - 1.5).abs() < 0.01),
         "the sharpen: {:?}",
         fx.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
@@ -1316,6 +1336,55 @@ fn a_sharpen_round_trips_ahead_of_its_shadow() {
         "then the shadow"
     );
     assert_eq!(fx.len(), 2);
+}
+
+/// A noise does not read back, and takes its stack's shadow with it; the export
+/// says so as a round-trip loss.
+/// flip: `report_node` without its noise arm → fails at "the report names it".
+#[test]
+fn a_noise_that_does_not_read_back_is_reported() {
+    use mastik_core::{Effect, EffectKind, Noise, Shadow};
+
+    let mut ids = IdSource::new(0x5A5C);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let rect = ids.mint();
+    doc.apply(&Transaction(vec![
+        Operation::CreateNode {
+            id: rect,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(80.0, 40.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((20.0, 20.0))),
+            name: None,
+        },
+        Operation::SetEffects {
+            id: rect,
+            effects: keyed_by_position([
+                Effect::new(EffectKind::Noise(Noise::default())),
+                Effect::new(EffectKind::DropShadow(Shadow::default())),
+            ]),
+        },
+    ]))
+    .expect("a noised rect with a shadow");
+    let res = Resolved::rebuild(&doc);
+    let out = mastik_export::svg::svg_of_reported(&doc, &res, &[rect]);
+    assert!(out.svg.contains("<feTurbulence"), "the noise is written");
+    let (back, got) = reimport(&out.svg);
+    assert!(
+        got.iter()
+            .all(|id| back.get(*id).unwrap().effects().is_empty()),
+        "the reader still skips it; if it reads it now, this report is a lie"
+    );
+    assert!(
+        out.round_trip.iter().any(|r| r.contains("noise")),
+        "the report names it: {:?}",
+        out.round_trip
+    );
 }
 
 /// A picture round-trips into nothing, and the loss is reported: the writer emits

@@ -571,8 +571,13 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect, space: Affine
                 graphic = r;
             }
             // `effects::sharpen`'s unsharp mask: `k2·layer + k3·blur`, which
-            // `feComposite` clamps as the renderers do.
+            // `feComposite` clamps as the renderers do. The amount is rounded to
+            // four places once and both coefficients written from it, so they sum
+            // to exactly 1, the shape `svg_in::sharpen_amount` reads back; `1 + a`
+            // and `−a` rounded apart need not.
             EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {
+                let unit = 10f64.powi(i32::from(mastik_core::export::MAX_PRECISION));
+                let amount = &((amount * unit).round() / unit);
                 let _ = writeln!(
                     out,
                     "      <feGaussianBlur in=\"{graphic}\" stdDeviation=\"{}\" result=\"{r}b\"/>",
@@ -582,8 +587,8 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect, space: Affine
                     out,
                     "      <feComposite in=\"{graphic}\" in2=\"{r}b\" operator=\"arithmetic\" \
                      k1=\"0\" k2=\"{}\" k3=\"{}\" k4=\"0\" result=\"{r}\"/>",
-                    fmt(1.0 + amount),
-                    fmt(-amount),
+                    fmt_unit(1.0 + amount),
+                    fmt_unit(-amount),
                 );
                 graphic = r;
             }
@@ -1590,6 +1595,13 @@ fn report_node(
         })
     {
         report.approximate("a shadow's blend mode, drawn normal");
+    }
+    // `svg_in` reads no `feTurbulence`, and a filter it cannot hold whole it
+    // skips whole.
+    if filter_written && noised(effects) {
+        report.round_trip(
+            "a noise, which this app does not read back, nor the rest of its effects with it",
+        );
     }
     // SVG has no backdrop: `BackgroundImage` was never implemented by any viewer.
     if mastik_core::effect::backdrop_radius(effects).is_some() {

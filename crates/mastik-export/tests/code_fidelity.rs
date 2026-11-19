@@ -992,6 +992,43 @@ fn effects_match_the_canvas() {
     holds("effects", &doc, &res);
 }
 
+/// A sharpen, a noise or a colour filter that draws nothing leaves the layer CSS.
+/// flip: `css_blocker`'s sharpen arm without its guard → fails at the sharpen.
+#[test]
+fn an_effect_that_draws_nothing_keeps_the_layer_css() {
+    let neutral = [
+        (
+            "sharpen",
+            EffectKind::Sharpen {
+                amount: 0.0,
+                radius: 2.0,
+            },
+        ),
+        (
+            "noise",
+            EffectKind::Noise(mastik_core::Noise {
+                density: 0.0,
+                ..Default::default()
+            }),
+        ),
+        ("filters", EffectKind::Filters(Default::default())),
+    ];
+    for (name, kind) in neutral {
+        let mut d = Doc::new();
+        let f = d.frame(None, 0.0, 0.0, 120.0, 100.0, "Board");
+        let a = d.rect(f, 20.0, 20.0, 60.0, 60.0, 0.0);
+        d.fill(a, solid(40, 120, 220, 255));
+        d.effects(a, vec![kind]);
+        let (doc, res) = d.done();
+        let export = html_of(&doc, &res, &[f]);
+        assert!(
+            export.positioned.is_empty(),
+            "{name}: no inline SVG: {:?}",
+            export.positioned
+        );
+    }
+}
+
 /// A flex row with gap, padding, a growing item and centred cross alignment,
 /// and a two-column grid.
 #[test]
