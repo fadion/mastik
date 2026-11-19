@@ -608,6 +608,22 @@ impl ImageStore {
         // `thumbnail` makes no derived entry, so the `small` rule would throw the
         // base away every frame.
         cache.thumb_base.retain(|id, _| sources.contains_key(id));
+        // A reduced copy for the atlas is keyed by its buffer's blob, and a buffer
+        // no decode or derived entry holds any more is never asked for again: a
+        // scrub makes a new blob every frame.
+        let held: rustc_hash::FxHashSet<u64> = sources
+            .values()
+            .map(|e| e.data.data.id())
+            .chain(cache.entries.values().map(|d| d.data.data.id()))
+            .collect();
+        cache.atlas.retain(|(blob, _), _| held.contains(blob));
+    }
+
+    /// How many reduced copies the atlas cache holds.
+    #[cfg(test)]
+    fn atlas_len(&self) -> usize {
+        let cache = self.derived.lock().unwrap_or_else(|e| e.into_inner());
+        cache.atlas.len()
     }
 
     /// Whether a repaint is owed: some adjustment is still showing a preview and
@@ -1065,9 +1081,17 @@ struct AdjustLut {
     /// The matrix as [`Contributions`], with its fifth column beside as the
     /// per-output-channel offset.
     matrix: Option<(Contributions, [i64; 3])>,
-    /// The tone curve at each of the 256 levels a byte has.
+    /// The tone curve at each of the 256 levels a byte has, read when there is
+    /// no matrix and the input is a byte.
     curve: Option<[u8; 256]>,
+    /// The tone curve at [`CURVE_STEPS`] + 1 levels, read from the matrix's
+    /// fixed-point sum: end points that meet make the curve a step as steep as
+    /// 32, which a byte of input would carry up to sixteen levels off.
+    fine: Option<Box<[u8; CURVE_STEPS + 1]>>,
 }
+
+/// How finely [`AdjustLut::fine`] reads the curve between 0 and 1.
+const CURVE_STEPS: usize = 4096;
 
 impl AdjustLut {
     fn build(p: &AdjustPipeline) -> Self {
@@ -1085,43 +1109,62 @@ impl AdjustLut {
             let offset = [0, 1, 2].map(|out| (f64::from(m[out * 5 + 4]) * one).round() as i64);
             (contrib, offset)
         });
-        let curve = p.curve.map(|c| {
+        let level = |c: &[f32; mastik_core::image::TONE_STEPS], x: f32| {
+            (mastik_core::transfer(c, x) * 255.0 + 0.5) as u8
+        };
+        let curve = p.curve.filter(|_| matrix.is_none()).map(|c| {
             let mut lut = [0u8; 256];
             for (v, cell) in lut.iter_mut().enumerate() {
-                *cell = (mastik_core::transfer(&c, v as f32 / 255.0) * 255.0 + 0.5) as u8;
+                *cell = level(&c, v as f32 / 255.0);
             }
             lut
         });
-        Self { matrix, curve }
+        let fine = p.curve.filter(|_| matrix.is_some()).map(|c| {
+            let mut lut = Box::new([0u8; CURVE_STEPS + 1]);
+            for (v, cell) in lut.iter_mut().enumerate() {
+                *cell = level(&c, v as f32 / CURVE_STEPS as f32);
+            }
+            lut
+        });
+        Self {
+            matrix,
+            curve,
+            fine,
+        }
     }
 
     /// One pixel's colour channels, as bytes.
     ///
-    /// The tone curve reads a *quantized* matrix result, where
+    /// The tone curve reads the matrix result at [`CURVE_STEPS`] levels, where
     /// [`AdjustPipeline::apply`] passes a float: the one difference, under one level.
     #[inline]
     fn apply(&self, rgb: [u8; 3]) -> [u8; 3] {
-        let mut v = rgb;
-        if let Some((c, off)) = &self.matrix {
-            let (cr, cg, cb) = (
-                &c[0][rgb[0] as usize],
-                &c[1][rgb[1] as usize],
-                &c[2][rgb[2] as usize],
-            );
-            v = [0, 1, 2].map(|out| {
-                let sum = cr[out]
-                    .saturating_add(cg[out])
-                    .saturating_add(cb[out])
-                    .saturating_add(off[out]);
-                // Clamped to `0..=1` before rounding, as `apply` does.
-                let sum = sum.clamp(0, i64::from(FIXED_ONE)) as i32;
-                ((sum * 255 + FIXED_ONE / 2) >> 16) as u8
-            });
-        }
-        if let Some(lut) = &self.curve {
-            v = v.map(|x| lut[x as usize]);
-        }
-        v
+        let Some((c, off)) = &self.matrix else {
+            return match &self.curve {
+                Some(lut) => rgb.map(|x| lut[x as usize]),
+                None => rgb,
+            };
+        };
+        let (cr, cg, cb) = (
+            &c[0][rgb[0] as usize],
+            &c[1][rgb[1] as usize],
+            &c[2][rgb[2] as usize],
+        );
+        [0, 1, 2].map(|out| {
+            let sum = cr[out]
+                .saturating_add(cg[out])
+                .saturating_add(cb[out])
+                .saturating_add(off[out]);
+            // Clamped to `0..=1` before rounding, as `apply` does.
+            let sum = sum.clamp(0, i64::from(FIXED_ONE)) as i32;
+            match &self.fine {
+                Some(lut) => {
+                    let at = (i64::from(sum) * CURVE_STEPS as i64 + i64::from(FIXED_ONE / 2)) >> 16;
+                    lut[at as usize]
+                }
+                None => ((sum * 255 + FIXED_ONE / 2) >> 16) as u8,
+            }
+        })
     }
 }
 
@@ -2090,7 +2133,10 @@ mod tests {
 
         /// The tables agree with `AdjustPipeline::apply` (§15 D186); a drifted table
         /// would still look like a photograph. One level of tolerance: the tables
-        /// round twice and the curve's slope is under 2.
+        /// round twice, and the curve reads the matrix at `CURVE_STEPS` levels, fine
+        /// enough under the steepest curve the end points make.
+        /// flip: the curve read at the matrix's rounded byte → fails at the end
+        /// points that meet.
         #[test]
         fn the_table_agrees_with_the_function_it_compiles() {
             let sliders = [
@@ -2139,6 +2185,20 @@ mod tests {
                 ImageAdjust {
                     invert: 0.8,
                     duotone: 0.7,
+                    ..ImageAdjust::NEUTRAL
+                },
+                // End points that meet: a step at 0.5, the curve's steepest.
+                ImageAdjust {
+                    exposure: 0.5,
+                    black_point: 0.5,
+                    white_point: 0.5,
+                    ..ImageAdjust::NEUTRAL
+                },
+                ImageAdjust {
+                    contrast: 0.3,
+                    black_point: 0.4,
+                    white_point: 0.55,
+                    fade: 0.2,
                     ..ImageAdjust::NEUTRAL
                 },
             ];
@@ -2451,6 +2511,30 @@ mod tests {
                 store.derived_len(),
                 3,
                 "the export path held every buffer it built"
+            );
+        }
+
+        /// The atlas's reduced copies go with the buffers they were cut from: a
+        /// run of adjustments asked once each leaves no more of them than the
+        /// derived entries and the decode still hold.
+        /// flip: `evict_derived` without its atlas `retain` → fails at the count.
+        #[test]
+        fn the_atlas_copies_go_with_their_buffers() {
+            let mut store = store_with(64, false);
+            store.atlas_factor = 2;
+            store.set_derived_budget(64 * 64 * 4 * 3);
+            for i in 0..12 {
+                let r = reference("a", |a| a.exposure = 0.05 * (i as f32 + 1.0));
+                let px = store.atlas_pixels(&r).expect("each read must answer");
+                assert_eq!(px.data.width, 32, "the fixture: a reduced copy");
+            }
+            assert_eq!(store.atlas_len(), 12, "the fixture: one copy per buffer");
+            store.evict_derived();
+            assert!(
+                store.atlas_len() <= store.derived_len(),
+                "{} atlas copies for {} derived buffers",
+                store.atlas_len(),
+                store.derived_len()
             );
         }
 
