@@ -713,13 +713,19 @@ pub fn convert(brush: &Brush, kind: PaintKind, box_size: Size) -> Brush {
     }
     // The kind changed, so old geometry is discarded and `default_brush` reframes it.
     let mut out = default_brush(kind, stops, box_size);
-    // A gradient keeps how it mixes, and its ends where the new kind has them
-    // (a sweep has none).
-    if let (Brush::Gradient(was), Brush::Gradient(now)) = (brush, &mut out) {
-        now.gradient.interpolation_cs = was.gradient.interpolation_cs;
-        if kind != PaintKind::Sweep {
-            now.gradient.extend = was.gradient.extend;
+    // A gradient keeps how it mixes, its ramp's opacity, and its ends where the
+    // new kind has them (a sweep has none); a solid takes that opacity into its
+    // colour.
+    match (brush, &mut out) {
+        (Brush::Gradient(was), Brush::Gradient(now)) => {
+            now.gradient.interpolation_cs = was.gradient.interpolation_cs;
+            now.opacity = was.opacity;
+            if kind != PaintKind::Sweep {
+                now.gradient.extend = was.gradient.extend;
+            }
         }
+        (Brush::Gradient(was), Brush::Solid(c)) => *c = c.multiply_alpha(was.opacity),
+        _ => {}
     }
     out
 }
@@ -1510,6 +1516,28 @@ mod tests {
         let sweep = convert(&radial, PaintKind::Sweep, BOX);
         assert!(smooth_of(&sweep));
         assert_eq!(ends_of(&sweep), Extend::Pad, "a sweep has no ends");
+    }
+
+    /// A gradient switched to another kind keeps its ramp's opacity, and one
+    /// switched to a solid takes it into the colour.
+    /// flip: `convert` without the opacity copy → fails at "opacity kept".
+    #[test]
+    fn switching_kind_keeps_the_ramps_opacity() {
+        let solid = Brush::Solid(Color::from_rgba8(0x22, 0x44, 0xff, 255));
+        let mut linear = convert(&solid, PaintKind::Linear, BOX);
+        if let Brush::Gradient(g) = &mut linear {
+            g.opacity = 0.4;
+        }
+        let radial = convert(&linear, PaintKind::Radial, BOX);
+        let Brush::Gradient(g) = &radial else {
+            panic!("a gradient");
+        };
+        assert_eq!(g.opacity, 0.4, "opacity kept");
+        let flat = convert(&radial, PaintKind::Solid, BOX);
+        assert!(
+            (solid_components(&flat)[3] - 0.4).abs() < 1e-6,
+            "into the solid's alpha"
+        );
     }
 
     fn solid_components(b: &Brush) -> [f32; 4] {
