@@ -237,7 +237,7 @@ it created. A verb never commits; its caller does, as every edit is committed.
   the verb sees the document. A text that gives its own fills does not take the style's `color`,
   which would draw over them. A sample with nothing to give, a text's that is no text or one
   with no paint, is refused. A child outside a flex or grid parent is
-  placed by its `transform`; a tree child written with `at`, `x` or `y` is refused with that form.
+  placed by its `transform`, and one inside leaves the flow by its `insets`, as CSS `position: absolute`; a tree child written with `at`, `x`, `y` or `position` is refused with both forms.
 - **Model parameters read short forms** (`verbs::loose`): hex colours and paints and text styles
   without their default fields, and what `get_node` and CSS write (lengths in `px`/`em`, flat
   effects, a path as SVG data; `mcp.md` §8.4), expand into the model's serde shapes before

@@ -1188,8 +1188,8 @@ impl Serialize for BrushSource {
 
 impl<'de> Deserialize<'de> for BrushSource {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        // `Bound` first: `{"var": …}` is no brush, and trying it first leaves a
-        // malformed brush's error to the brush arm.
+        // `Bound` first: `{"var": …}` is no brush. Untagged, a malformed brush's own
+        // error is lost; the verbs read it again alone to give it (`brush_miss`).
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Repr {

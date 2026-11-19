@@ -592,11 +592,12 @@ fn attempt<T: serde::de::DeserializeOwned>(v: &Value) -> Result<T, Miss> {
                 Segment::Unknown => None,
             }
         });
-        Miss {
+        let miss = Miss {
             steps: steps.collect(),
             unknown_field: false,
             why: e.into_inner().to_string(),
-        }
+        };
+        brush_miss(v, &miss).unwrap_or(miss)
     })?;
     match unknown.into_iter().next().or_else(|| unseen_field(v)) {
         None => Ok(t),
@@ -606,6 +607,33 @@ fn attempt<T: serde::de::DeserializeOwned>(v: &Value) -> Result<T, Miss> {
             why: String::new(),
         }),
     }
+}
+
+/// A paint's `brush` refused as the untagged `BrushSource` refuses it, which names
+/// neither the field nor the variant, read again as a brush alone for serde's own
+/// path and reason: `None` where the miss is not that or the brush reads.
+fn brush_miss(v: &Value, miss: &Miss) -> Option<Miss> {
+    if !matches!(miss.steps.last(), Some(Some(Step::Key(k))) if k == "brush")
+        || !miss.why.contains("untagged enum")
+    {
+        return None;
+    }
+    let mut at = v;
+    for step in &miss.steps {
+        at = match (step, at) {
+            (Some(Step::Key(k)), Value::Object(map)) => map.get(k)?,
+            (Some(Step::Index(i)), Value::Array(list)) => list.get(*i)?,
+            _ => return None,
+        };
+    }
+    if at.get("var").is_some() {
+        return None;
+    }
+    let inner = attempt::<crate::Brush>(at).err()?;
+    Some(Miss {
+        steps: [miss.steps.clone(), inner.steps].concat(),
+        ..inner
+    })
 }
 
 /// A noise effect's kind's fields, its tag first: `mastik_core::Noise`'s, which
@@ -814,11 +842,19 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
             .and_then(Value::as_str)
             .map(str::to_owned),
     };
+    // A flex or grid frame places its children itself, so a transform alone is
+    // dropped there: the way out of the flow is the CSS one, insets.
+    const OUT_OF_FLOW: &str = "inside a flex or grid frame a child leaves the flow, as CSS \
+         `position: absolute` does, by its `insets`, as `{\"top\": 12, \"right\": \"5%\"}` \
+         (`set_insets` on a layer already there)";
     if model == "Tree" && matches!(named.as_deref(), Some("at" | "x" | "y" | "position")) {
         return format!(
             "{said}; a tree places a child by `transform`, as [1, 0, 0, 1, x, y], \
-             and the root by `insert_subtree`'s `x` and `y`"
+             and the root by `insert_subtree`'s `x` and `y`; {OUT_OF_FLOW}"
         );
+    }
+    if model == "LayoutItem" && matches!(named.as_deref(), Some("position" | "absolute")) {
+        return format!("{said}; a layout item has no position: {OUT_OF_FLOW}");
     }
     if model == "Tree"
         && (miss.why.starts_with("unknown field `corner_radius`")
@@ -1123,6 +1159,21 @@ pub fn example(model: &str) -> Option<Value> {
         brush: peniko::Brush::Solid(Color::from_rgb8(0x33, 0x66, 0xcc)).into(),
         visible: true,
     };
+    let gradient_fill = Fill {
+        brush: peniko::Brush::Gradient(crate::GradientBrush {
+            gradient: peniko::Gradient::new_linear((0.0, 0.0), (0.0, 80.0)).with_stops(
+                [
+                    Color::from_rgb8(0x33, 0x66, 0xcc),
+                    Color::from_rgba8(0x33, 0x66, 0xcc, 0),
+                ]
+                .as_slice(),
+            ),
+            transform: Affine::IDENTITY,
+            opacity: 1.0,
+        })
+        .into(),
+        visible: true,
+    };
     let image_fill = Fill {
         brush: crate::image::image_brush(crate::image::ImageId("<add_image's id>".into())).into(),
         visible: true,
@@ -1144,7 +1195,8 @@ pub fn example(model: &str) -> Option<Value> {
             "padding": [16, 24],
         } }),
         "GeometryPatch" => json(&GeometryPatch::Size(Size::new(200.0, 100.0))),
-        "Insets" => json(&Insets::default()),
+        // Filled in, since a default one writes as `{}`.
+        "Insets" => serde_json::json!({ "top": { "Px": 12 }, "right": { "Px": 12 } }),
         "LayoutItem" => serde_json::json!({
             "width": { "Px": 320 },
             "height": "Auto",
@@ -1219,7 +1271,7 @@ pub fn example(model: &str) -> Option<Value> {
             ExportFormat::Png,
             ExportScale::default(),
         )]),
-        "[Fill]" => json(&vec![fill, image_fill]),
+        "[Fill]" => json(&vec![fill, gradient_fill, image_fill]),
         "[Stroke]" => json(&vec![Stroke::default()]),
         "[LayoutGrid]" => serde_json::json!([
             { "axis": "Columns", "count": 4, "gutter": 24, "margin": 32 },
@@ -1259,6 +1311,7 @@ fn model_key<'a>(model: &str, param: &'a str) -> &'a str {
         "[Stroke]" => "strokes",
         "[Effect]" => "effects",
         "[LayoutGrid]" => "grids",
+        "Insets" => "insets",
         _ => param,
     }
 }
@@ -5427,7 +5480,7 @@ pub static VERBS: &[Verb] = &[
     // --- paint --------------------------------------------------------------
     Verb {
         name: "set_fills",
-        doc: "Replace layers' fills, bottom first, as the Fill card writes a selection: a group's reach its shapes",
+        doc: "Replace layers' fills (colours, gradients, images), bottom first, as the Fill card writes a selection: a group's reach its shapes",
         params: &[
             req("nodes", NODES, "the layers"),
             req("fills", ParamKind::Model("[Fill]"), "the fills"),
@@ -6033,7 +6086,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "set_insets",
-        doc: "Pin layers to their frames' sides, as CSS insets and auto margins",
+        doc: "Pin layers to their frames' sides, as CSS insets and auto margins; in a flex or grid frame, out of the flow (absolute)",
         params: &[
             req("nodes", NODES, "the layers"),
             req("insets", ParamKind::Model("Insets"), "the four sides"),

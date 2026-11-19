@@ -10,7 +10,9 @@
 //! given; a star's points and inner ratio are 5 and 0.382 unless given. A layout
 //! grid leaves out what a new grid on its axis has. A noise effect leaves out
 //! what a new noise has, takes its `size` as one number for both axes and its
-//! `colors` as hex, and a one-colour noise as `color` alone.
+//! `colors` as hex, and a one-colour noise as `color` alone. A gradient leaves out
+//! its extend and colour spaces (pad, sRGB, premultiplied, shorter hue) and takes
+//! its points as `[x, y]`. An inset is a number of px, `"12px"` or `"50%"`.
 //!
 //! What `get_node` and CSS write is taken too: a length as `"22px"`, `"1.2em"`,
 //! `"120%"` or `"auto"`; a sizing as `{"type": "AutoHeight", "width": w}`; a fill as
@@ -43,6 +45,59 @@ fn stroke_defaults() -> [(&'static str, Value); 6] {
         ("dashes", Value::Array(Vec::new())),
         ("dash_offset", Value::from(0.0)),
     ]
+}
+
+/// What a new gradient has unless it says otherwise, as its serde shape spells it:
+/// the ramp's extend and colour-space fields, which peniko's serde requires.
+fn gradient_defaults() -> [(&'static str, Value); 4] {
+    [
+        ("extend", Value::from("Pad")),
+        ("interpolation_cs", Value::from("Srgb")),
+        ("interpolation_alpha_space", Value::from("Premultiplied")),
+        ("hue_direction", Value::from("Shorter")),
+    ]
+}
+
+/// A gradient in its short form: the fields a new one has left out, its points
+/// as `[x, y]` and each stop's sRGB colour as hex.
+fn tighten_gradient(map: &mut Map<String, Value>) {
+    for (k, d) in gradient_defaults() {
+        if map.get(k) == Some(&d) {
+            map.remove(k);
+        }
+    }
+    if let Some(Value::Object(kind)) = map.get_mut("kind") {
+        for position in kind.values_mut().filter_map(Value::as_object_mut) {
+            for (k, point) in position.iter_mut() {
+                if matches!(
+                    k.as_str(),
+                    "start" | "end" | "center" | "start_center" | "end_center"
+                ) && let Some(Value::Number(x)) = point.get("x")
+                    && let Some(Value::Number(y)) = point.get("y")
+                {
+                    *point = serde_json::json!([x, y]);
+                }
+            }
+        }
+    }
+    if let Some(Value::Array(stops)) = map.get_mut("stops") {
+        for stop in stops {
+            let Some(colour) = stop.get_mut("color") else {
+                continue;
+            };
+            let plain = colour.get("cs").and_then(Value::as_str) == Some("Srgb")
+                && colour
+                    .get("flags")
+                    .and_then(Value::as_object)
+                    .is_some_and(|f| f.values().all(|v| v.as_u64() == Some(0)));
+            if plain
+                && let Some(Value::Array(components)) = colour.get("components")
+                && let Some(hex) = nearest_hex(components)
+            {
+                *colour = Value::String(hex);
+            }
+        }
+    }
 }
 
 /// A colour written `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa`.
@@ -161,6 +216,23 @@ fn css_length(s: &str) -> Option<Value> {
     };
     let n: f64 = n.trim().parse().ok().filter(|n: &f64| n.is_finite())?;
     Some(serde_json::json!({ unit: n / per }))
+}
+
+/// An inset written as CSS writes it, a number of px, `"12px"` or `"50%"`, as
+/// the model's `{"Px": 12}` or `{"Percent": 50}`.
+fn loosen_inset(v: &mut Value) {
+    let (unit, n) = match &*v {
+        Value::Number(n) => ("Px", n.as_f64()),
+        Value::String(s) => match (s.trim().strip_suffix("px"), s.trim().strip_suffix('%')) {
+            (Some(n), _) => ("Px", n.trim().parse().ok()),
+            (_, Some(n)) => ("Percent", n.trim().parse().ok()),
+            _ => return,
+        },
+        _ => return,
+    };
+    if let Some(n) = n.filter(|n: &f64| n.is_finite()) {
+        *v = serde_json::json!({ unit: n });
+    }
 }
 
 /// The four corners a radius written as one number, or left out of a rectangle,
@@ -435,6 +507,18 @@ fn loosen_in(key: &str, v: &mut Value, errs: &mut Vec<String>) {
                     map.entry("column_gap").or_insert(gap);
                 }
             }
+            "insets" => {
+                for side in ["top", "right", "bottom", "left"] {
+                    if let Some(inset) = map.get_mut(side) {
+                        loosen_inset(inset);
+                    }
+                }
+            }
+            "Gradient" => {
+                for (k, d) in gradient_defaults() {
+                    map.entry(k).or_insert(d);
+                }
+            }
             _ => {}
         }
         if let Some(Value::String(name)) = map.get("corner")
@@ -693,6 +777,20 @@ pub(crate) fn tighten(key: &str, v: &mut Value) {
             {
                 *v = Value::String(hex);
                 return;
+            }
+            if key == "Gradient" {
+                tighten_gradient(map);
+            }
+            if key == "insets" {
+                for side in ["top", "right", "bottom", "left"] {
+                    if let Some(inset) = map.get_mut(side)
+                        && let Some(n) = inset
+                            .get("Px")
+                            .filter(|_| inset.as_object().is_some_and(|o| o.len() == 1))
+                    {
+                        *inset = n.clone();
+                    }
+                }
             }
             if key == "Text"
                 && let Some(Value::Object(style)) = map.get_mut("style")

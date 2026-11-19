@@ -168,6 +168,50 @@ fn a_tree_child_placed_with_at_is_shown_transform() {
     );
 }
 
+/// A layout item written with a `position`, in a tree or alone, is refused
+/// with the insets that take a child out of its frame's flow.
+///
+/// flip: `explain` without its `LayoutItem` position arm → fails at "the item's".
+#[test]
+fn an_items_position_is_shown_insets() {
+    let (mut doc, mut ids, page) = blank();
+    let rect = json!({ "Rect": { "size": { "width": 1, "height": 1 } } });
+    let in_tree = why(
+        &doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": { "kind": rect,
+            "item": { "position": "Absolute" } } }),
+    );
+    assert!(in_tree.contains("`insets`"), "the tree's: {in_tree}");
+    let f = frame_on(&mut doc, &mut ids, page);
+    let alone = why(
+        &doc,
+        &mut ids,
+        "set_layout_item",
+        json!({ "nodes": [f.to_wire()], "item": { "position": "absolute" } }),
+    );
+    assert!(alone.contains("`insets`"), "the item's: {alone}");
+}
+
+/// Insets are taken as CSS writes them, in a tree and alone: a number of px,
+/// `"12px"` and `"50%"`.
+///
+/// flip: `loosen_in` without its `insets` arm → fails at "a tree's".
+#[test]
+fn insets_are_taken_as_css_writes_them() {
+    let (mut doc, mut ids, page) = blank();
+    let f = frame_on(&mut doc, &mut ids, page);
+    let rect = json!({ "Rect": { "size": { "width": 10, "height": 10 } } });
+    let tree = json!({ "parent": f.to_wire(), "tree": { "kind": rect,
+        "insets": { "top": 12, "right": "12px", "left": "50%" } } });
+    let taken = answer(&doc, &mut ids, "insert_subtree", &tree);
+    assert!(taken.is_ok(), "a tree's: {taken:?}");
+    let alone = json!({ "nodes": [f.to_wire()], "insets": { "top": "8px", "bottom": 4 } });
+    let taken = answer(&doc, &mut ids, "set_insets", &alone);
+    assert!(taken.is_ok(), "set_insets': {taken:?}");
+}
+
 /// A parameter a client sent as JSON text is read as the JSON.
 #[test]
 fn a_model_parameter_sent_as_json_text_is_read() {
@@ -476,6 +520,49 @@ fn a_gradients_and_a_tracks_unknown_field_is_refused() {
     extra["step"] = json!(2);
     let refused = why(&doc, &mut ids, "set_display", grid(extra));
     assert!(refused.contains("step"), "a track's: {refused}");
+}
+
+/// A gradient is taken without its colour-space fields, its points as `[x, y]`
+/// and its stops' colours as hex; the fill example shows it so; and a brush
+/// written wrong is refused with serde's own reason, not the untagged one.
+/// flip: `brush_miss` answering `None` → fails at "the brush's own reason".
+#[test]
+fn a_gradient_is_written_short_and_a_wrong_brush_says_why() {
+    let (mut doc, mut ids, page) = blank();
+    let f = frame_on(&mut doc, &mut ids, page);
+    let short = json!({ "Gradient": {
+        "kind": { "Linear": { "start": [0, 0], "end": [0, 100] } },
+        "stops": [{ "offset": 0, "color": "#0b102066" }, { "offset": 1, "color": "#0b1020" }],
+    } });
+    let ok = json!({ "nodes": [f.to_wire()], "fills": [{ "brush": short }] });
+    let taken = answer(&doc, &mut ids, "set_fills", &ok);
+    assert!(taken.is_ok(), "the short gradient: {taken:?}");
+
+    let example = mastik_core::verbs::example("[Fill]").unwrap();
+    let shown = example
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|f| f.get("brush")?.get("Gradient"))
+        .expect("the example shows a gradient");
+    assert!(shown.get("interpolation_cs").is_none(), "{shown}");
+    assert!(shown["stops"][0]["color"].is_string(), "{shown}");
+    assert!(
+        mastik_core::verbs::check_model("[Fill]", &example).is_ok(),
+        "the example reads back"
+    );
+
+    let wrong = json!({ "LinearGradient": { "stops": [] } });
+    let refused = why(
+        &doc,
+        &mut ids,
+        "set_fills",
+        json!({ "nodes": [f.to_wire()], "fills": [{ "brush": wrong }] }),
+    );
+    assert!(
+        !refused.contains("untagged") && refused.contains("Gradient"),
+        "the brush's own reason: {refused}"
+    );
 }
 
 /// A field an effect's kind or a solid brush's colour has no place for is

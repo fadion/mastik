@@ -474,7 +474,14 @@ mod tests {
         );
         let image = ok(&out)["image"].as_str().unwrap().to_owned();
         let page = docs.session.doc.first_page().to_wire();
-        let example = mastik_core::verbs::example("[Fill]").unwrap()[1].to_string();
+        let example = mastik_core::verbs::example("[Fill]").unwrap();
+        let example = example
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(Value::to_string)
+            .find(|f| f.contains("<add_image's id>"))
+            .expect("the example shows an image fill");
         let fill: Value =
             serde_json::from_str(&example.replace("<add_image's id>", &image)).unwrap();
         let tree = json!({ "kind": { "Rect": { "size": { "width": 96, "height": 96 } } },
