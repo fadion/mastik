@@ -347,6 +347,75 @@ mod tests {
         }
     }
 
+    /// Each signature §8.4 writes for a verb of Phases 2 and 3 names the verb's
+    /// parameters, as a set, each optional one marked `?`; one ending in `…`
+    /// names only some of them.
+    ///
+    /// flip: dropping `x?` from §8.4's `repeat` → fails at `repeat`.
+    #[test]
+    fn each_written_signature_names_its_verbs_parameters() {
+        use mastik_core::verbs;
+        let section = ARCHITECTURE
+            .split_once("\n### 8.4 Tools\n")
+            .expect("§8.4 is in the document")
+            .1;
+        let mut compared = 0;
+        let mut drift = Vec::new();
+        for prefix in [
+            "Phase 2 — write (1:1 with operations/composites):",
+            "Phase 3 — components, variables and styles (through the verbs, never the raw ops):",
+        ] {
+            let para = section
+                .split_once(prefix)
+                .expect("the paragraph")
+                .1
+                .split_once("\n\n")
+                .expect("the paragraph ends")
+                .0;
+            for sig in para.split('`').skip(1).step_by(2) {
+                let Some((name, rest)) = sig.split_once('(') else {
+                    continue;
+                };
+                let Some(verb) = verbs::find(name.trim()) else {
+                    continue;
+                };
+                // `a | b` is one of either; a trailing `…` leaves the rest out.
+                let list = rest.split(')').next().unwrap_or_default();
+                let mut written: Vec<String> = list
+                    .split([',', '|'])
+                    .map(|p| p.trim().to_owned())
+                    .filter(|p| !p.is_empty())
+                    .collect();
+                let partial = written.last().is_some_and(|p| p == "…");
+                written.retain(|p| p != "…");
+                let mut theirs: Vec<String> = verb
+                    .params
+                    .iter()
+                    .map(|p| match p.required {
+                        true => p.name.to_owned(),
+                        false => format!("{}?", p.name),
+                    })
+                    .collect();
+                written.sort();
+                theirs.sort();
+                compared += 1;
+                let fits = match partial {
+                    true => written.iter().all(|p| theirs.contains(p)),
+                    false => written == theirs,
+                };
+                if !fits {
+                    drift.push(format!("`{name}`: §8.4 {written:?}, the verb {theirs:?}"));
+                }
+            }
+        }
+        assert!(compared > 20, "§8.4's signatures parsed to {compared}");
+        assert!(
+            drift.is_empty(),
+            "signatures drifted:\n{}",
+            drift.join("\n")
+        );
+    }
+
     /// Phase 2 tools no verb answers: the session's, and `batch` and
     /// `run_script`, which run verbs.
     const SESSION: [&str; 8] = [

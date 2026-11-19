@@ -54,10 +54,10 @@ Phase 1 — read/export (ship first):
 `review_colours(ids?, threshold?)`, `design_context(id?)`, `check_layout(ids?, page?)`, `review(ids?, page?, step?, level?)`, `health(ids?, page?, pages?, step?)`, `describe_tools(names?, query?, brief?)`.
 
 Phase 2 — write (1:1 with operations/composites):
-`create_node`, `create_text(parent, text, x?, y?, width?)`, `insert_subtree`, `import_svg(parent, svg, x?, y?, name?)`, `delete_node`,
+`create_node`, `create_text(parent, text, x?, y?, width?, name?, index?)`, `insert_subtree`, `import_svg(parent, svg, x?, y?, name?, index?)`, `delete_node`,
 `reparent`, `reorder`, `arrange(nodes, move)`, `group(nodes)`, `frame(nodes)`, `ungroup(nodes)`, `convert_container(node)`, `boolean(nodes, op)`, `flatten(nodes)`,
 `outline_shape(node)`, `outline_stroke(node)`, `outline_text(node)`, `divide(nodes)`, `blend_shapes(nodes, steps?, paint?, reverse?, spine?, turn?)`, `warp(nodes, preset?, bend?, vertical?, corners?)`,
-`duplicate(nodes, dx?, dy?)`, `join_paths(node, other)`, `repeat(nodes, count?, line?, grid?, angle?, turn?, linked?)`, `align(nodes, edge)`,
+`duplicate(nodes, dx?, dy?)`, `join_paths(node, other)`, `repeat(nodes, count?, line?, grid?, angle?, turn?, x?, y?, linked?)`, `align(nodes, edge)`,
 `distribute(nodes, axis)`, `tidy_up(nodes)`, `slice(nodes)`, `set_transform`, `set_pivot`, `set_geometry`,
 `set_point(node, point, subpath?, x?, y?, in_x?, in_y?, out_x?, out_y?, radius?)`, `set_size(node, width, height)`, `fit_to_content(node)`, `pixel_fit(nodes)`, `set_name`, `set_visible`,
 `set_locked`, `set_opacity`, `set_blend(nodes, blend)`, `set_clip(nodes, clip)`, `set_mask(nodes, mask, mode?, inverted?)`, `set_element(node, element?)`,
@@ -65,12 +65,12 @@ Phase 2 — write (1:1 with operations/composites):
 `set_text_spans`, `set_paragraph_style(nodes, paragraph)`, `set_block_style(nodes, block)`, `style_text(node, attrs, start?, end?)`,
 `style_paragraphs(node, attrs, start?, end?)`, `set_fills(nodes, fills)`, `set_strokes(nodes, strokes)`,
 `set_effects(nodes, effects)`, `merge_colours(colours, into, nodes?)`, `add_image(bytes) -> ImageId`, `replace_image(node, image, index?)`, `trace_image(node, colours?, threshold?, detail?, corners?, speck?, keep?)`, `fix_contrast(nodes, level?, colour?, variable?)`, `clean_up(nodes?, hidden_paint?, covered_fills?, hidden_layers?, empty_layers?, one_layer_groups?, guides?, skip_locked?)`, `fill_content(nodes, locale?, kind?, records?, avatars?, seed?, example_emails?)`, `set_display(nodes, display?)`, `set_layout_item(nodes, item)`, `set_insets(nodes, insets)`, `set_layout_grids(nodes, grids)`,
-`insert_chart(parent, kind, table?, mapping?, x?, y?, width?, height?)`, `set_chart(node, kind?, mapping?, options?, colours?)`, `set_chart_data(node, table)`, `flatten_chart(nodes)`,
+`insert_chart(parent, kind, table?, mapping?, x?, y?, width?, height?, name?, index?)`, `set_chart(node, kind?, mapping?, options?, colours?)`, `set_chart_data(node, table)`, `flatten_chart(nodes)`,
 `set_exports(nodes, exports)`, `add_page(name?, index?)`, `duplicate_page(page)`, `delete_page(page)`,
 `move_page(page, index)`, `set_page_draft(page, draft)`, `set_canvas_colour(page, colour?)`, `set_guides(owner, guides)`, `undo()`, `redo()`, `set_selection(ids)`, `batch(steps)`, `group_steps(action, name?)`, `set(nodes, props)`, `run_script(source, nodes?, layers?, params?)`, `call(tool, args?)`.
 
 Phase 3 — components, variables and styles (through the verbs, never the raw ops):
-`make_component(nodes)`, `duplicate_as_component(node)`, `create_instance(main, parent, x?, y?, index?)`, `detach_instance(nodes)`,
+`make_component(nodes)`, `duplicate_as_component(node, dx?, dy?)`, `create_instance(main, parent, x?, y?, index?)`, `detach_instance(nodes)`,
 `swap_instance(node, main)`, `combine_as_variants(nodes)`, `add_variant(node)`, `set_variant_value(node, property, value)`,
 `add_variant_property(node, name?, value?)`, `rename_variant_property(node, property, name)`, `delete_variant_property(node, property)`,
 `add_variant_value(node, property, value?)`, `rename_variant_value(node, property, value, name)`,
@@ -79,13 +79,13 @@ Phase 3 — components, variables and styles (through the verbs, never the raw o
 `define_property(node, kind, property?, name?)`, `edit_property(node, property, name?, filter?, preferred?)`,
 `delete_property(node, property)`, `show_nested_properties(node, shown)`, `set_description(text, node? | style? | variable?)`,
 `set_doc_link(node, url)`, `set_instance_property(node, property, value)`,
-`reset_overrides(nodes, scope)`, `push_to_main(node, scope?)`, `add_variable(kind, name, value)`, `generate_scale(variable, name?, steps?, anchor?, exact?)`, `remove_variable(variable)`,
-`rename_variable(variable, name)`, `set_variable_value(variable, mode?, value | alias)`, `add_mode(name, collection?)`,
+`reset_overrides(nodes, scope?)`, `push_to_main(node, scope?)`, `add_variable(kind, name?, value?, collection?)`, `generate_scale(variable, name?, steps?, anchor?, exact?)`, `remove_variable(variable)`,
+`rename_variable(variable, name)`, `set_variable_value(variable, mode?, value)`, `add_mode(name?, collection?)`,
 `remove_mode(mode)`, `rename_mode(mode, name)`, `set_frame_mode(node, mode?, collection?)` (one pick, the frame's
 other collections' modes kept), `move_mode(mode, index)`, `add_collection(name?)`, `rename_collection(collection, name)`,
 `duplicate_collection(collection, name?)`, `delete_collection(collection)`, `set_by_width(collection, on)`,
 `set_breakpoint(mode, width)`, `set_width_query(node, on, collection?)`, `set_scope(variable, scope?)`,
-`bind_variable(nodes, field, variable?)`, `add_style(slot, name, value)`, `remove_style(style)`,
+`bind_variable(nodes, field, variable?)`, `add_style(slot?, name?, value?, from?, nodes?)`, `remove_style(style)`,
 `rename_style(style, name)`, `set_style_value(style, value)`, `apply_style(nodes, style?, slot?)`,
 `add_script(name, source)`, `set_script(script, name?, source?)`, `remove_script(script)`.
 
