@@ -1939,12 +1939,15 @@ fn a_variable_value_takes_the_only_mode_unnamed() {
 /// `generate_scale` from `blue/500` makes `blue/50` to `blue/950` beside it from
 /// its default mode's value, the same ramp in every mode, and the source's own
 /// name is left as it is rather than refused. A run again updates the other
-/// ten and never the source; a name held by a number is refused, and so is a
-/// step that is none.
+/// ten and never the source; an anchor off the source's own step, or the
+/// source not kept exact there, is refused, since the ramp would put another
+/// colour where the source stays; a name held by a number is refused, and so
+/// is a step that is none.
 ///
 /// flip: `variable::scale_names` answering no holder → fails at the first
 /// script, on "blue/500 already exists"; `scale_ops` updating its source →
-/// fails at "the source kept".
+/// fails at "the source kept"; `generate_scale` without its `scale_pinned`
+/// check → `exact: false` is not refused.
 #[test]
 fn a_scale_is_generated_from_a_variable_in_every_mode() {
     let (mut doc, mut ids, _) = blank();
@@ -1993,10 +1996,21 @@ fn a_scale_is_generated_from_a_variable_in_every_mode() {
         assert!(l(w[0]) > l(w[1]));
     }
 
+    for (key, value) in [("exact", json!(false)), ("anchor", json!(300))] {
+        let off = refused_step(
+            &mut doc,
+            &mut ids,
+            json!({ "verb": "generate_scale", "args": { "variable": made[0][0], key: value } }),
+        );
+        assert!(
+            off.contains("blue/500 is this scale's 500"),
+            "{key} off the source's own step: {off}"
+        );
+    }
     script(
         &mut doc,
         &mut ids,
-        json!([{ "verb": "generate_scale", "args": { "variable": made[0][0], "exact": false } }]),
+        json!([{ "verb": "generate_scale", "args": { "variable": made[0][0], "exact": true } }]),
     );
     assert_eq!(doc.variables().iter().count(), 11, "updated, none added");
     let source = doc.variables().by_name("blue/500").unwrap();

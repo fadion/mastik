@@ -3885,7 +3885,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "generate_scale",
-        doc: "Make `name/50`…`name/950` from a colour variable's default-mode value, even in OKLCH lightness; a name taken by a colour variable is updated, the source never",
+        doc: "Make `name/50`…`name/950` from a colour variable's default-mode value, even in OKLCH lightness; a name taken by a colour variable is updated, the source never, so a source named for a step of its scale lands there exact",
         params: &[
             req("variable", ParamKind::Id("variable"), "the colour variable"),
             opt(
@@ -3936,6 +3936,19 @@ pub static VERBS: &[Verb] = &[
                         a.invalid("anchor", format!("one of {}", kept.join(", ")))
                     })?,
             };
+            // The source on a step of its own scale keeps its colour there.
+            if let Some(at) = crate::variable::scale_pinned(name, &stem, &keep) {
+                let why = format!(
+                    "{name} is this scale's {}, which keeps its colour; leave it out",
+                    steps[at]
+                );
+                if anchor != at {
+                    return Err(a.invalid("anchor", why));
+                }
+                if a.bool("exact") == Some(false) {
+                    return Err(a.invalid("exact", why));
+                }
+            }
             let exact = a.bool("exact").unwrap_or(true);
             let ramp = crate::oklch::scale_kept(base, anchor, exact, &keep);
             let (ops, made, updated) =

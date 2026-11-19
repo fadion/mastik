@@ -4048,6 +4048,15 @@ pub fn scale_anchor(name: &str, stem: &str, base: Color) -> usize {
     named_step(name, stem).unwrap_or_else(|| crate::oklch::nearest_step(base))
 }
 
+/// The step a scale keeping `keep` (indices of [`crate::oklch::SCALE_STEPS`])
+/// under `stem` must land its source, the variable `name`, on, exact: the step
+/// its name stands at, when the scale keeps it. [`scale_ops`] never rewrites
+/// the source, so a ramp putting another colour on that step would make a
+/// scale other than the one it shows. `None` leaves the anchor free.
+pub fn scale_pinned(name: &str, stem: &str, keep: &[usize]) -> Option<usize> {
+    named_step(name, stem).filter(|i| keep.contains(i))
+}
+
 /// Where a scale from the colour variable `var` comes from: its collection,
 /// that collection's default mode, and its colour there. `None` for a
 /// variable of another kind or a kit's.
