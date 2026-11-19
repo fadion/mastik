@@ -99,9 +99,15 @@ pub(crate) fn parse(args: &[String]) -> Result<Run, String> {
 
 /// Run the script and write the result atomically. Answers the lines for
 /// stdout: a Luau script's printed lines, or a line per batch step that made
-/// something; and the summary for stderr.
+/// something; and the summary for stderr. An `-o` naming the script is refused;
+/// naming `--in` writes the document in place.
 pub(crate) fn run(run: &Run) -> Result<(Vec<String>, String), String> {
     let script = &run.script;
+    if crate::same_file(std::path::Path::new(&run.out), std::path::Path::new(script)) {
+        return Err(format!(
+            "refusing to write the document over {script}, the script it runs"
+        ));
+    }
     let text = std::fs::read_to_string(script).map_err(|e| format!("cannot read {script}: {e}"))?;
     let mut s = EditorSession::new();
     let doc = match &run.input {
@@ -320,6 +326,39 @@ mod tests {
             .filter_map(|c| doc.get(*c).map(|n| n.name()))
             .collect();
         assert_eq!(names, ["Renamed"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `-o` naming the script is refused and leaves the script, while one
+    /// naming `--in` writes the document in place.
+    ///
+    /// flip: `run` without its same-file check → fails at `unwrap_err`, the run
+    /// writing the document over the script.
+    #[test]
+    fn run_refuses_to_write_over_its_script() {
+        let dir = scratch("self");
+        let script = dir.join("s.json");
+        let steps = r#"[{ "tool": "create_text", "args": { "parent": "@page", "text": "Hi" } }]"#;
+        std::fs::write(&script, steps).unwrap();
+        let doc = dir.join("d.mastik");
+        let blank = mastik_core::io::save(&mastik_core::Document::new(
+            mastik_core::IdSource::new(0x5E).mint(),
+        ))
+        .unwrap();
+        std::fs::write(&doc, &blank).unwrap();
+        let on = |out: &std::path::Path| Run {
+            script: script.display().to_string(),
+            input: Some(doc.display().to_string()),
+            out: out.display().to_string(),
+            select: vec![],
+            layers: vec![],
+            params: vec![],
+        };
+        let err = run(&on(&script)).unwrap_err();
+        assert!(err.contains("refusing"), "{err}");
+        assert_eq!(std::fs::read_to_string(&script).unwrap(), steps);
+        run(&on(&doc)).unwrap();
+        assert_ne!(std::fs::read(&doc).unwrap(), blank, "written in place");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

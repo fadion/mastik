@@ -730,10 +730,18 @@ fn parse_tokens_import(args: &[String], usage: &str) -> Result<Command, String> 
     }
 }
 
+/// Whether `out` is the existing file `input`, by canonical path: the check a
+/// command makes before its `-o` replaces one of the files it reads.
+pub(crate) fn same_file(out: &std::path::Path, input: &std::path::Path) -> bool {
+    std::fs::canonicalize(out).ok() == std::fs::canonicalize(input).ok() && out.exists()
+}
+
 /// `mastik tokens import`: the rows applied through an editor session, so they
 /// settle as the review's *Import* does, and the document written atomically,
-/// over itself unless `out` names another file. Nothing is written when nothing
-/// changes. Answers the line to print; what is left out goes to stderr.
+/// over itself unless `out` names another file. Nothing is written over the
+/// document when nothing changes; another `out` still gets the document as it
+/// stands. An `out` naming the tokens file is refused. Answers the line to
+/// print; what is left out goes to stderr.
 fn run_tokens_import(
     file: &str,
     tokens: &str,
@@ -741,6 +749,13 @@ fn run_tokens_import(
     removals: bool,
     out: Option<&str>,
 ) -> Result<String, String> {
+    let path = std::path::Path::new;
+    let target = out.unwrap_or(file);
+    if same_file(path(target), path(tokens)) {
+        return Err(format!(
+            "refusing to write the document over {tokens}, the tokens file it reads"
+        ));
+    }
     let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
     let doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
     let text = std::fs::read_to_string(tokens).map_err(|e| format!("cannot read {tokens}: {e}"))?;
@@ -766,16 +781,20 @@ fn run_tokens_import(
         one.added, one.changed, one.renamed, one.removed
     );
     if one.ops.is_empty() {
-        return Ok(format!("nothing to change in {file}"));
+        // The document already holds the result; another `-o` is still this
+        // command's output, so it must not be left missing or stale.
+        if out.is_none() || same_file(path(target), path(file)) {
+            return Ok(format!("nothing to change in {file}"));
+        }
+        atomic::write(path(target), &bytes).map_err(|e| format!("cannot write {target}: {e}"))?;
+        return Ok(format!("nothing to change in {file}; wrote {target}"));
     }
     s.try_commit(mastik_core::Transaction(one.ops))
         .map_err(|e| format!("cannot apply {tokens}: {e:?}"))?;
     let saved = mastik_core::io::save(&s.doc).map_err(|e| format!("cannot save: {e}"))?;
-    let out = out.unwrap_or(file);
     // Atomic: the default target is the document itself.
-    atomic::write(std::path::Path::new(out), &saved)
-        .map_err(|e| format!("cannot write {out}: {e}"))?;
-    Ok(format!("{counts}; wrote {out}"))
+    atomic::write(path(target), &saved).map_err(|e| format!("cannot write {target}: {e}"))?;
+    Ok(format!("{counts}; wrote {target}"))
 }
 
 /// What `mastik export` takes, for its refusals and `help export`.
@@ -1456,10 +1475,7 @@ fn run_export(e: &OneOff) -> Result<(), String> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::Path::new(file).with_extension(format.extension()));
     // `-o` naming the document itself would replace it with the export.
-    let same = |a: &std::path::Path, b: &str| {
-        std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok() && a.exists()
-    };
-    if same(&out_path, file) {
+    if same_file(&out_path, std::path::Path::new(file)) {
         return Err(format!(
             "refusing to write the export over {file}, the document it is made from"
         ));
@@ -2207,6 +2223,43 @@ mod tests {
         assert_eq!(names(), ["brand"]);
 
         assert!(run_tokens_import(&doc, &red, Some("Nope"), false, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `-o` naming the tokens file is refused and leaves it; an `-o` naming
+    /// another file is written even when nothing changes, so it is never left
+    /// missing.
+    ///
+    /// flip: `run_tokens_import` without its tokens-file check → fails at
+    /// `unwrap_err`; returning before the write whenever nothing changes →
+    /// fails at "wrote".
+    #[test]
+    fn tokens_import_guards_and_always_writes_its_output() {
+        let dir = std::env::temp_dir().join(format!("mastik-tokens-out-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("a.mastik");
+        let blank = mastik_core::io::save(&mastik_core::Document::new(
+            mastik_core::IdSource::new(0xD7).mint(),
+        ))
+        .unwrap();
+        std::fs::write(&doc, &blank).unwrap();
+        let doc = doc.to_string_lossy().into_owned();
+        let tokens = dir.join("t.json");
+        let text = r##"{"brand": {"$type": "color", "$value": "#3366cc"}}"##;
+        std::fs::write(&tokens, text).unwrap();
+        let tokens = tokens.to_string_lossy().into_owned();
+
+        let err = run_tokens_import(&doc, &tokens, None, false, Some(&tokens)).unwrap_err();
+        assert!(err.contains("refusing"), "{err}");
+        assert_eq!(std::fs::read_to_string(&tokens).unwrap(), text);
+
+        run_tokens_import(&doc, &tokens, None, false, None).unwrap();
+        let applied = std::fs::read(&doc).unwrap();
+        let out = dir.join("build.mastik").to_string_lossy().into_owned();
+        let line = run_tokens_import(&doc, &tokens, None, false, Some(&out)).unwrap();
+        assert!(line.starts_with("nothing to change"), "{line}");
+        assert!(line.ends_with(&format!("wrote {out}")), "{line}");
+        assert_eq!(std::fs::read(&out).unwrap(), applied);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
