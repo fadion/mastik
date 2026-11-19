@@ -2296,6 +2296,22 @@ impl EditorSession {
         self.saved_step
     }
 
+    /// `History::join_agent_run`, keeping the saved mark true: the joined step
+    /// takes its oldest step's serial, so a save at the top of the run moves to
+    /// it, and a save inside the run no longer names any step's state.
+    pub fn join_agent_run(&mut self, after: u64, agent: &str) -> (usize, usize) {
+        let top = self.history.current();
+        let (joined, separate) = self.history.join_agent_run(after, agent);
+        let now = self.history.current();
+        if joined > 1
+            && let (Some(Some(saved)), Some(now), Some(top)) = (self.saved_step, now, top)
+            && (now..=top).contains(&saved)
+        {
+            self.saved_step = (saved == top).then_some(Some(now));
+        }
+        (joined, separate)
+    }
+
     /// Whether the document was read from a file — see the field.
     pub fn opened_from_file(&self) -> bool {
         self.opened

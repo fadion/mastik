@@ -86,7 +86,7 @@ pub(super) fn close(docs: &mut impl Documents, group: Group) {
 /// `after` lying on top of the history, as `History::join_agent_run` decides;
 /// the client's steps under a step of anyone else's stay apart (`separate`).
 fn join(s: &mut EditorSession, group: Group) -> Value {
-    let (joined, separate) = s.history.join_agent_run(group.after, &group.agent);
+    let (joined, separate) = s.join_agent_run(group.after, &group.agent);
     if joined > 0
         && let Some(note) = s.history.current_note_mut()
     {
@@ -144,6 +144,44 @@ mod tests {
         assert_eq!(docs.session.doc.len(), layers, "both taken back");
         let again = call(&mut engine, &mut docs, 1, "group_steps", end);
         assert!(again.is_error, "no group is open");
+    }
+
+    /// A save inside a group's run marks no step once the run joins, since the
+    /// file holds only the run's first writes; a save at its top moves to the
+    /// joined step.
+    ///
+    /// flip: `EditorSession::join_agent_run` leaving `saved_step` alone → fails
+    /// at "saved inside the run".
+    #[test]
+    fn a_join_keeps_the_saved_mark_true() {
+        for at_top in [false, true] {
+            let (mut engine, mut docs) = (Engine::default(), One::new());
+            open(&mut engine, &mut docs, 1);
+            begin(&mut engine, &mut docs, 1, "Cards");
+            rect(&mut engine, &mut docs, 1, "A");
+            let first = docs.session.history.current();
+            if !at_top {
+                docs.session.mark_saved("cards.mastik".into());
+            }
+            rect(&mut engine, &mut docs, 1, "B");
+            if at_top {
+                docs.session.mark_saved("cards.mastik".into());
+            }
+            let end = call(
+                &mut engine,
+                &mut docs,
+                1,
+                "group_steps",
+                json!({ "action": "end" }),
+            );
+            assert_eq!(ok(&end)["joined"], 2);
+            assert_eq!(docs.session.history.current(), first, "the oldest serial");
+            assert_eq!(
+                docs.session.saved_step(),
+                at_top.then_some(first),
+                "saved inside the run: {at_top}"
+            );
+        }
     }
 
     /// The person's step among the group's ends its run: only the agent's steps
