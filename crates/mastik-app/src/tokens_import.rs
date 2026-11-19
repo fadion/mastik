@@ -196,7 +196,16 @@ pub(crate) fn one_shot(
 /// bytes; `None` for anything else — a share, a device, a pipe, a stream with
 /// no end.
 pub(crate) fn read_linked(path: &Path, cap: u64) -> Option<String> {
-    String::from_utf8(read_linked_bytes(path, cap).ok()?).ok()
+    tokens_text(read_linked_bytes(path, cap).ok()?).ok()
+}
+
+/// A tokens file's bytes as text: UTF-16 by its byte-order mark, which Windows
+/// PowerShell 5.1's `>` writes, else UTF-8. A UTF-8 mark is left for the parser.
+pub(crate) fn tokens_text(bytes: Vec<u8>) -> Result<String, String> {
+    match crate::chart_import::utf16_by_bom(&bytes) {
+        Some(text) => Ok(text),
+        None => String::from_utf8(bytes).map_err(|_| "not UTF-8 or UTF-16 text".to_string()),
+    }
 }
 
 /// [`read_linked`]'s bytes, whatever their encoding, or why they could not be
@@ -345,7 +354,9 @@ impl MastikApp {
         let (name, _) = where_label(&path);
         let text = match from_link {
             true => read_linked(&path, MAX_READ).ok_or_else(|| "not a local file".to_string()),
-            false => std::fs::read_to_string(&path).map_err(|e| e.to_string()),
+            false => std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(tokens_text),
         };
         match text {
             Ok(text) => self.open_tokens_text(path, text, true, from_link),

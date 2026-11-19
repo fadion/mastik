@@ -153,22 +153,8 @@ fn read_source_with(
 /// Windows-1252, the code page Excel writes *CSV (Comma delimited)* in, which
 /// covers Latin-1 too.
 fn decode(bytes: &[u8]) -> String {
-    let utf16 = |rest: &[u8], be: bool| {
-        let units: Vec<u16> = rest
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|p| match be {
-                true => u16::from_be_bytes(*p),
-                false => u16::from_le_bytes(*p),
-            })
-            .collect();
-        String::from_utf16_lossy(&units)
-    };
-    match bytes {
-        [0xFF, 0xFE, rest @ ..] => return utf16(rest, false),
-        [0xFE, 0xFF, rest @ ..] => return utf16(rest, true),
-        _ => {}
+    if let Some(text) = utf16_by_bom(bytes) {
+        return text;
     }
     if let Ok(text) = std::str::from_utf8(bytes) {
         return text.to_string();
@@ -186,6 +172,26 @@ fn decode(bytes: &[u8]) -> String {
             _ => char::from(b),
         })
         .collect()
+}
+
+/// `bytes` as UTF-16 when they open with its byte-order mark, little- or
+/// big-endian, as Windows PowerShell 5.1's `>` writes; `None` without one.
+pub(crate) fn utf16_by_bom(bytes: &[u8]) -> Option<String> {
+    let (rest, be) = match bytes {
+        [0xFF, 0xFE, rest @ ..] => (rest, false),
+        [0xFE, 0xFF, rest @ ..] => (rest, true),
+        _ => return None,
+    };
+    let units: Vec<u16> = rest
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|p| match be {
+            true => u16::from_be_bytes(*p),
+            false => u16::from_le_bytes(*p),
+        })
+        .collect();
+    Some(String::from_utf16_lossy(&units))
 }
 
 /// What the watch last saw of the linked files: by path, the stat on disk.

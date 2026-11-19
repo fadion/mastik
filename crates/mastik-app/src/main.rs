@@ -758,7 +758,10 @@ fn run_tokens_import(
     }
     let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
     let doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
-    let text = std::fs::read_to_string(tokens).map_err(|e| format!("cannot read {tokens}: {e}"))?;
+    let text = std::fs::read(tokens)
+        .map_err(|e| e.to_string())
+        .and_then(tokens_import::tokens_text)
+        .map_err(|e| format!("cannot read {tokens}: {e}"))?;
     let mut s = session::EditorSession::new();
     s.adopt_document(doc, None);
     let one = tokens_import::one_shot(&s.doc, &mut s.ids, &text, collection, removals)?;
@@ -1381,8 +1384,16 @@ fn diff_files(a: &str, b: &str, json: bool) -> Result<(String, bool), String> {
 }
 
 /// `mastik tokens export`: the DTCG file to `out`, or to stdout, its notes on
-/// stderr. A `mode` the document does not have is refused with the names it does.
+/// stderr. A `mode` the document does not have is refused with the names it does,
+/// and an `out` naming the document.
 fn run_tokens_export(file: &str, mode: Option<&str>, out: Option<&str>) -> Result<(), String> {
+    if let Some(path) = out
+        && same_file(std::path::Path::new(path), std::path::Path::new(file))
+    {
+        return Err(format!(
+            "refusing to write the tokens over {file}, the document they are read from"
+        ));
+    }
     let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
     let doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?;
     let modes: Vec<&mastik_core::Mode> = doc.variables().modes().collect();
@@ -2260,6 +2271,54 @@ mod tests {
         assert!(line.starts_with("nothing to change"), "{line}");
         assert!(line.ends_with(&format!("wrote {out}")), "{line}");
         assert_eq!(std::fs::read(&out).unwrap(), applied);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tokens file Windows PowerShell 5.1's `>` wrote, UTF-16 with its mark,
+    /// imports as its text does.
+    ///
+    /// flip: `run_tokens_import` reading with `read_to_string` → fails at the
+    /// `unwrap` of the import.
+    #[test]
+    fn tokens_import_reads_a_utf16_file() {
+        let dir = std::env::temp_dir().join(format!("mastik-tokens-u16-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("a.mastik");
+        let blank = mastik_core::io::save(&mastik_core::Document::new(
+            mastik_core::IdSource::new(0xD8).mint(),
+        ))
+        .unwrap();
+        std::fs::write(&doc, &blank).unwrap();
+        let doc = doc.to_string_lossy().into_owned();
+        let text = r##"{"brand": {"$type": "color", "$value": "#3366cc"}}"##;
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        let tokens = dir.join("t.json");
+        std::fs::write(&tokens, &bytes).unwrap();
+        let tokens = tokens.to_string_lossy().into_owned();
+        let line = run_tokens_import(&doc, &tokens, None, false, None).unwrap();
+        assert!(!line.starts_with("0 added"), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An export `-o` naming the document it reads is refused and leaves it.
+    ///
+    /// flip: `run_tokens_export` without its document check → fails at
+    /// `unwrap_err`.
+    #[test]
+    fn tokens_export_refuses_to_write_over_its_document() {
+        let dir = std::env::temp_dir().join(format!("mastik-tokens-ex-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("a.mastik");
+        let blank = mastik_core::io::save(&mastik_core::Document::new(
+            mastik_core::IdSource::new(0xD9).mint(),
+        ))
+        .unwrap();
+        std::fs::write(&doc, &blank).unwrap();
+        let doc = doc.to_string_lossy().into_owned();
+        let err = run_tokens_export(&doc, None, Some(&doc)).unwrap_err();
+        assert!(err.contains("refusing"), "{err}");
+        assert_eq!(std::fs::read(&doc).unwrap(), blank, "the document stays");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
