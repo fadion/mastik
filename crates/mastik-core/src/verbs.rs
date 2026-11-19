@@ -7565,6 +7565,35 @@ fn expand_copies(doc: &Document, v: &mut Value) {
             as_copy(child);
         }
     }
+    /// A copy's `own` kind completed from its main's `theirs` where both are the
+    /// same variant: each field it leaves out, a text's style field by field.
+    /// A text giving its own content takes none of the main's runs, which index
+    /// the main's words.
+    fn merge_kind(own: &mut Map<String, Value>, theirs: &Map<String, Value>) {
+        let Some((variant, Value::Object(from))) = theirs.iter().next() else {
+            return;
+        };
+        let Some(Value::Object(to)) = own.get_mut(variant) else {
+            return;
+        };
+        let own_words = to.contains_key("content");
+        for (k, val) in from {
+            if own_words && matches!(k.as_str(), "spans" | "para_spans") {
+                continue;
+            }
+            match (to.get_mut(k), val) {
+                (Some(Value::Object(mine)), Value::Object(main)) if k == "style" => {
+                    for (sk, sv) in main {
+                        mine.entry(sk.clone()).or_insert_with(|| sv.clone());
+                    }
+                }
+                (Some(_), _) => {}
+                (None, _) => {
+                    to.insert(k.clone(), val.clone());
+                }
+            }
+        }
+    }
     /// `above` is the main of the copy this layer sits in, if any.
     fn walk(doc: &Document, read: &FxHashSet<String>, v: &mut Value, above: Option<NodeId>) {
         let Value::Object(map) = v else { return };
@@ -7585,6 +7614,11 @@ fn expand_copies(doc: &Document, v: &mut Value) {
                 && source.and_then(|s| doc.get(s)).and_then(|n| n.parent()) == above;
             if !own_child {
                 main.remove("transform");
+            }
+            if let (Some(Value::Object(own)), Some(Value::Object(theirs))) =
+                (map.get_mut("kind"), main.get("kind"))
+            {
+                merge_kind(own, theirs);
             }
             if !map.contains_key("children")
                 && let Some(children) = main.get_mut("children")

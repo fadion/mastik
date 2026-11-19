@@ -6898,7 +6898,8 @@ fn a_tree_inserts_back_as_what_it_read() {
 /// flip: `insert_subtree` without `expand_copies` → the kind-less copy is refused.
 /// flip: `full_tree` without its copy defaults → fails at "the cleared fills";
 /// `expand_copies` giving every nested copy its source's place → fails at "a
-/// copy from elsewhere at the origin".
+/// copy from elsewhere at the origin"; without `merge_kind` → fails at "the
+/// main's size beside its own weight".
 #[test]
 fn a_tree_copy_takes_what_it_leaves_out_from_its_main() {
     let (mut doc, mut ids, page) = blank();
@@ -6943,8 +6944,7 @@ fn a_tree_copy_takes_what_it_leaves_out_from_its_main() {
         "copy_of": main.to_wire(),
         "children": [{
             "copy_of": label.to_wire(),
-            "kind": { "Text": { "content": "Stop", "sizing": "Auto",
-                "style": { "font_family": "Inter", "font_size": 15 } } },
+            "kind": { "Text": { "content": "Stop", "style": { "weight": 700 } } },
         }],
     });
     let made = run(
@@ -6964,10 +6964,15 @@ fn a_tree_copy_takes_what_it_leaves_out_from_its_main() {
         fills(&doc, label),
         "the label's fills"
     );
-    let NodeKind::Text { content, .. } = doc.get(copy_label).unwrap().kind() else {
+    let NodeKind::Text { content, style, .. } = doc.get(copy_label).unwrap().kind() else {
         unreachable!()
     };
     assert_eq!(content, "Stop", "its override");
+    assert_eq!(
+        (style.font_size, style.weight),
+        (15.0, 700),
+        "the main's size beside its own weight"
+    );
 
     // A layer copied in from elsewhere lands where a new layer does, not at
     // its source's place in another frame.
