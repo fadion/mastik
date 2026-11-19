@@ -101,7 +101,6 @@ Ideas worth weighing, not yet decided or scheduled.
   grid no longer calls it: it places lines from its lattice, which
   `the_lattice_picks_the_pixels_the_snapped_lines_did` holds to the pixels `snap_across_axis` picks,
   so ruling the base means moving the lattice with it.
-- **The Type panel's four `%` caps** are 200, inherited, not chosen (§15 D861).
 - **`Ctrl+Alt` is `AltGr`** on many European layouts (`shortcuts.md` §12, §15 D987).
 - **One font-availability question for panel and snapshot** — only worth it if the snapshot ever
   reads a live `FontService`.

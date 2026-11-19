@@ -5868,14 +5868,38 @@ const MIN_LINE_HEIGHT_PCT: f64 = 0.0;
 const MAX_LINE_HEIGHT_PCT: f64 = 1000.0;
 const MIN_TRACKING_PCT: f64 = -50.0;
 const MAX_TRACKING_PCT: f64 = 200.0;
-const MAX_PARAGRAPH_SPACING_PCT: f64 = 200.0;
-const MAX_INDENT_PCT: f64 = 200.0;
+/// Ten lines of the type, line height's reach: a heading's space after it or a
+/// list's hanging indent runs several ems at a small size, past 200%'s two.
+const MAX_PARAGRAPH_SPACING_PCT: f64 = 1000.0;
+const MAX_INDENT_PCT: f64 = 1000.0;
+/// Two ems either way: a decoration past that is no longer a line under or
+/// through the text.
 const MAX_DECORATION_THICKNESS_PCT: f64 = 200.0;
 const MAX_DECORATION_OFFSET_PCT: f64 = 200.0;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// At body sizes the paragraph spacing field reaches a heading's space after it
+    /// and the indent field a list's hanging indent.
+    ///
+    /// flip: `MAX_PARAGRAPH_SPACING_PCT` back at 200 → fails at "48px after 14px type".
+    #[test]
+    fn spacing_and_indents_reach_what_body_text_asks_of_them() {
+        assert!(
+            *Bounds::PARAGRAPH_SPACING.px(14.0).end() >= 48.0,
+            "48px after 14px type"
+        );
+        assert!(
+            *Bounds::INDENT.px(12.0).end() >= 40.0,
+            "a 40px hang at 12px"
+        );
+        assert!(
+            *Bounds::INDENT.px(12.0).start() <= -40.0,
+            "and the other way"
+        );
+    }
 
     /// Decisions lifted out of `&mut self` bodies so tests can reach them.
     mod lifted_decisions {
