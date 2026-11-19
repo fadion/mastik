@@ -20183,6 +20183,97 @@ mod frame_menu_door_tests {
         assert_eq!(picked, Some(nested), "its tag is on the canvas");
     }
 
+    /// A group instance on its page wears the tag a frame instance does, shown
+    /// while it is selected; inside a frame it wears none.
+    /// flip: `wears_tag` tagging a group only as a main → fails at "a group instance on its page".
+    #[test]
+    fn a_group_instance_on_its_page_wears_a_tag() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let (mut app, board) = app_with_an_occupied_frame(&ctx);
+        let root = app.session.doc.first_page();
+        let [group, dot] = [(); 2].map(|_| app.session.ids.mint());
+        assert!(app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: group,
+                parent: root,
+                index: 1,
+                kind: NodeKind::Group,
+                transform: Some(Affine::translate((40.0, 400.0))),
+                name: Some("Badge".into()),
+            },
+            Operation::CreateNode {
+                id: dot,
+                parent: group,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size: Size::new(20.0, 20.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: None,
+            },
+        ])));
+        let inst = main_with_an_instance(&mut app, group);
+        let doc = &app.session.doc;
+        assert!(matches!(
+            doc.get(inst).map(|n| n.kind()),
+            Some(NodeKind::Group)
+        ));
+        assert_eq!(mastik_core::component::instance_root(doc, inst), Some(inst));
+        let (tx, made) = mastik_core::insert_subtrees(
+            doc,
+            &mut app.session.ids,
+            &[mastik_core::Placement {
+                nodes: doc.capture_subtree(group).expect("the main"),
+                parent: board,
+                index: None,
+            }],
+            mastik_core::kurbo::Vec2::ZERO,
+        );
+        assert!(app.session.commit(tx));
+        let nested = made[0];
+        let doc = &app.session.doc;
+        assert!(
+            crate::app::wears_tag(doc, inst),
+            "a group instance on its page"
+        );
+        assert!(
+            !crate::app::wears_tag(doc, nested),
+            "a group instance in a frame"
+        );
+        assert!(size_badge_marks(doc, &[inst]).is_empty(), "the tag says it");
+        assert_eq!(size_badge_marks(doc, &[nested]), [icon::HEXAGON]);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let tag = |app: &mut MastikApp, selected: bool| {
+            match selected {
+                true => app.session.selection.set_one(inst),
+                false => app.session.selection.set_one(board),
+            }
+            let mut out = None;
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    ..Default::default()
+                },
+                |ui| {
+                    out = app
+                        .frame_label(ui, inst, rect, 1.0)
+                        .map(|(_, g)| g.text().to_string())
+                },
+            );
+            out
+        };
+        let shown = tag(&mut app, true);
+        assert!(
+            shown.as_deref().is_some_and(|t| t.contains("Badge")),
+            "a selected group instance: {shown:?}"
+        );
+        assert_eq!(tag(&mut app, false), None, "unselected, no tag");
+    }
+
     /// An instance's tag shows only while selected or entered (a frame's name and a
     /// main's chip always show), and a selected main does not bring it along.
     /// flip: `frame_label` without its selected-or-entered return → fails at "unselected, no tag".

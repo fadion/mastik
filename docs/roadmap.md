@@ -15,9 +15,6 @@ true.
   arithmetic `feComposite` (k2 = 1 + a, k3 = −a), and `svg_in` does not recognise the pair, so a
   Mastik SVG re-imported loses it. Key on the exact coefficients, so other tools' filters are not
   misread as a sharpen.
-- **A group instance's canvas tag.** A group instance sitting on its page wears the tag a frame
-  instance does, drawn only while it is selected or entered; today `app::wears_tag` gives a group a
-  tag only as a main, so a group instance shows one only while entered.
 - **A placed transform origin for a multi-selection.** One layer, a group among them, takes a
   placed pivot (`SetPivot`, `tools.md` *Transform origin*); several always turn about their union
   centre (`Handles::pivot`). The marker and the origin fields are offered over several layers

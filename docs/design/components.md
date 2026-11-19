@@ -502,8 +502,6 @@ any other pass that recomputes a copy's value.
   document's mains, vendored kit mains among them).
 - No verb un-makes a component (`non-goals.md`); one would owe its instances a detach, as a delete
   does.
-- A group instance on its page wears no tag outside entering it (`app::wears_tag`); ruled to wear
-  a frame instance's, open in `roadmap.md`.
 - Real-time collaboration — non-goal for now (it is where linked copies cost).
 
 ### Chrome
@@ -518,7 +516,7 @@ Canvas:
 - A main's tag is a chip, `color::COMPONENT` fill (no edge), filled hexagon and name in
   `COMPONENT_INK`, *N instances* in `COMPONENT_INK_DIM` while selected. Shown selected or not, where it is worn. A group that is a
   main gets a canvas label as a page frame does (`MastikApp::tagged`, walked by `canvas::draw_frame_labels`).
-- A frame instance on its page wears a tag: outline hexagon and name in `COMPONENT`, its main's name trailing in
+- An instance on its page, frame or group, wears a tag: outline hexagon and name in `COMPONENT`, its main's name trailing in
   `COMPONENT_DIM` when they differ — drawn **only while the instance is selected or entered**. The
   entered instance (`canvas::entered_instance`) is tagged wherever it sits, nested included
   (`canvas::canvas_tags`), and reads *Editing Name* with *· Esc to exit* in `COMPONENT_DIM`: the

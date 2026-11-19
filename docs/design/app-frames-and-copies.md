@@ -11,8 +11,9 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
   the design and picks as a group does (`app-selection.md`), so a design of nested frames is not a
   wall of names.
 - **Who wears a tag** is `app::wears_tag`, read by `MastikApp::tagged` (`FrameIndex::tagged`) and
-  `canvas::frame_label`: a frame, a main (frame or group) or a component set sitting on its page,
-  and the variants of a set that does, whose tags are what tell them apart. A frame, main, set or
+  `canvas::frame_label`: a frame, a main or an instance (frame or group), or a component set sitting
+  on its page, and the variants of a set that does, whose tags are what tell them apart. An
+  instance's tag shows only while it is selected or entered. A frame, main, set or
   instance inside another frame, a group, a main or an instance wears none, and picks as a group
   does; the size badge marks a selected untagged main or instance instead (`app-canvas-chrome.md`).
 - The tag sits above the top-left corner, outside the box: 5px in from the left edge, 5px between

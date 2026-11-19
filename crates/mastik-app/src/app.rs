@@ -474,11 +474,11 @@ pub(crate) fn is_chart(doc: &mastik_core::Document, id: NodeId) -> bool {
     doc.get(id).is_some_and(|n| n.chart().is_some())
 }
 
-/// Whether `id` wears a name tag on the canvas: a frame, a main or a component
-/// set sitting on its page, and a variant in a set that does, whose tag is all
-/// that tells the variants apart. Anything inside another frame, group or
-/// component is part of the design, picked as a group is, and a tag on each
-/// would bury it.
+/// Whether `id` wears a name tag on the canvas: a frame, a main, an instance or
+/// a component set sitting on its page, and a variant in a set that does, whose
+/// tag is all that tells the variants apart. A group main or instance wears one
+/// as a frame does. Anything inside another frame, group or component is part
+/// of the design, picked as a group is, and a tag on each would bury it.
 pub(crate) fn wears_tag(doc: &mastik_core::Document, id: NodeId) -> bool {
     let on_page = |id: NodeId| {
         doc.get(id)
@@ -488,7 +488,9 @@ pub(crate) fn wears_tag(doc: &mastik_core::Document, id: NodeId) -> bool {
     doc.get(id).is_some_and(|n| {
         let container = match n.kind() {
             NodeKind::Artboard { .. } => true,
-            NodeKind::Group => n.component(),
+            NodeKind::Group => {
+                n.component() || mastik_core::component::instance_root(doc, id) == Some(id)
+            }
             _ => false,
         };
         let in_set = n.component()
