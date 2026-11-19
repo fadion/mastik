@@ -565,8 +565,8 @@ world: a layer's own box, or the set's oriented box (`selection_frame_box`, the 
 - **A set's** is session state: `Selection::pivot`, a fraction of the oriented box held with the
   ids it was placed on, answered only for two or more layers matching them. `forget_frame` drops it
   with the frame, so any change to the ids drops it. It is never saved and takes no undo step: a
-  drag of the marker or a typed field places it directly. With none placed the set's origin is its
-  box's centre.
+  drag of the marker or a typed field places it directly, and the context menu's *Reset origin*
+  puts it back on the centre. With none placed the set's origin is its box's centre.
 
 **Dragging the marker:**
 

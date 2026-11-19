@@ -2000,6 +2000,8 @@ pub struct LayerState {
     pub even_odd: bool,
     /// `croppable_fill` said yes — the same predicate image editing acts on (§5.7).
     pub has_picture: bool,
+    /// A placed origin: this layer's pivot, or over several layers the set's
+    /// (`Selection::pivot`), which *Reset origin* puts back on the centre.
     pub pivot_moved: bool,
     /// The layer is inside a `Boolean`, so it can be made the base operand.
     pub in_boolean: bool,
@@ -2598,8 +2600,9 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
         // The box is not in a panel, but it shows every name.
         Row::new(Item::BatchRename).dim_if(crate::private::on(), crate::private::DECLINE_RENAME)
     });
-    // Omitted at default (§3's exception), not dim.
-    if st.pivot_moved && one {
+    // Omitted at default (§3's exception), not dim: one layer's placed pivot, or
+    // a set's placed origin.
+    if st.pivot_moved {
         rows.push(Row::new(Item::ResetOrigin).dim_if(locked, why));
     }
 
@@ -3606,7 +3609,11 @@ impl MastikApp {
                     .any(|c| self.session.doc.get(*c).is_some_and(|n| n.mask())),
             even_odd: node.fill_rule() == mastik_core::FillRule::EvenOdd,
             has_picture: picture.is_some(),
-            pivot_moved: node.pivot().is_some(),
+            // Over several layers, the set's own origin, which the session holds.
+            pivot_moved: match self.session.selection.len() >= 2 {
+                true => self.session.selection.pivot().is_some(),
+                false => node.pivot().is_some(),
+            },
             in_boolean: node.parent().is_some_and(|p| {
                 matches!(
                     self.session.doc.get(p).map(|n| n.kind()),
@@ -3935,7 +3942,12 @@ impl MastikApp {
                         .info(if clip { "Clipping" } else { "Not clipping" });
                 }
             }
-            // "Not moved": a state the model can say and a resolved pivot cannot.
+            // "Not moved": a state the model can say and a resolved pivot cannot. A
+            // set's origin is the session's, so its reset records no step.
+            Item::ResetOrigin if self.session.selection.pivot().is_some() => {
+                self.session.selection.set_pivot(None);
+                self.session.info("Origin reset");
+            }
             Item::ResetOrigin => {
                 let ops: Vec<Operation> = self
                     .session
@@ -6949,6 +6961,109 @@ mod restore_children_tests {
         assert_eq!(
             crate::panels::layers::child_drift_tip(app.child_drift_of(i)),
             None
+        );
+    }
+
+    /// Over several layers *Reset origin* answers for the set's placed origin, not
+    /// the clicked layer's pivot, and puts it back on the centre with no history
+    /// step, leaving each layer's own pivot alone.
+    /// flip: `layer_menu_state` reading the clicked layer's pivot over a set → fails
+    /// at "a member's own pivot is not the set's"; `perform_menu_item` without the
+    /// set's arm → fails at "back on the centre".
+    #[test]
+    fn reset_origin_over_a_set_resets_the_sets_origin() {
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let mut ids = IdSource::new(0xB1E);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let [a, b] = [(); 2].map(|_| ids.mint());
+        let rect = |id, x: f64| Operation::CreateNode {
+            id,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(10.0, 10.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(mastik_core::kurbo::Affine::translate((x, 0.0))),
+            name: None,
+        };
+        doc.apply(&Transaction(vec![
+            rect(a, 0.0),
+            rect(b, 40.0),
+            Operation::SetPivot {
+                id: a,
+                pivot: Some(mastik_core::Pivot::Normalized(
+                    mastik_core::kurbo::Vec2::ZERO,
+                )),
+            },
+        ]))
+        .expect("two rects, one with a placed pivot");
+        app.session.adopt_document(doc, None);
+        let reset = "Reset origin".to_string();
+        let on_set = |app: &mut MastikApp| {
+            app.session.selection.set(vec![a, b]);
+            let door = Target::Layer {
+                id: a,
+                door: Door::Canvas,
+            };
+            app.open_context_menu(&ctx, door, None);
+            let labels: Vec<String> = app
+                .open_menu_rows()
+                .iter()
+                .flatten()
+                .map(|r| r.label.to_string())
+                .collect();
+            app.context_menu = None;
+            labels
+        };
+        assert!(
+            !on_set(&mut app).contains(&reset),
+            "a member's own pivot is not the set's"
+        );
+
+        let origin = Some(mastik_core::kurbo::Vec2::new(0.0, 1.0));
+        app.session.selection.set(vec![a, b]);
+        app.session.selection.set_pivot(origin);
+        // `on_set` reselects, which drops the origin; read the rows without it.
+        app.open_context_menu(
+            &ctx,
+            Target::Layer {
+                id: a,
+                door: Door::Canvas,
+            },
+            None,
+        );
+        let labels: Vec<String> = app
+            .open_menu_rows()
+            .iter()
+            .flatten()
+            .map(|r| r.label.to_string())
+            .collect();
+        app.context_menu = None;
+        assert!(
+            labels.contains(&reset),
+            "the set's origin is placed: {labels:?}"
+        );
+        assert_eq!(
+            app.session.selection.pivot(),
+            origin,
+            "the menu kept the selection"
+        );
+
+        let before = app.session.revision();
+        let target = Target::Layer {
+            id: a,
+            door: Door::Canvas,
+        };
+        app.perform_menu_item(&ctx, Item::ResetOrigin, target, None);
+        assert_eq!(app.session.selection.pivot(), None, "back on the centre");
+        assert_eq!(app.session.revision(), before, "no history step");
+        assert!(
+            app.session.doc.get(a).unwrap().pivot().is_some(),
+            "the layer's own pivot stays"
         );
     }
 }

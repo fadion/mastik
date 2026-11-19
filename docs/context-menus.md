@@ -213,7 +213,7 @@ and *Duplicate as component* draw the filled hexagon.
 | Hide / Show | `Ctrl+Shift+H` | *Show* only when every selected layer is hidden, as the action shows only then (a mixed selection hides); never dims |
 | Lock / Unlock | `Ctrl+Shift+L` | *Unlock* only when every selected layer's **own** flag is set, as the action unlocks only then; never dims |
 | Rename (one layer) / Batch rename… (several) | `Ctrl+R` (`F2`) / `Ctrl+Shift+R` | one row, naming what `Ctrl+R` opens for this selection (`one_rename_row_names_what_ctrl_r_opens`). *Rename* dims *"Leave focus mode to rename"* in focus mode, where the panel that holds the field is hidden; *Batch rename…* does not, its box being in no panel (`app-canvas-chrome.md`, *Batch rename*). Both dim in private mode. Live on a lock |
-| Reset origin | — | one layer whose pivot has been moved, otherwise omitted; dims on lock |
+| Reset origin | — | one layer whose pivot has been moved, or several whose set origin has been placed (`Selection::pivot`, put back on the centre with no undo step; a member's own pivot does not count), otherwise omitted; dims on lock |
 
 ---
 
