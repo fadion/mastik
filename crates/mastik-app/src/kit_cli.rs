@@ -77,8 +77,8 @@ pub(crate) fn parse(args: &[String]) -> Result<Update, String> {
 
 /// Run `update` over each document, a line each, and answer the exit code: 0
 /// when every document is up to date or was updated, 1 when an update was
-/// refused (or, in a dry run, when one waits), 2 when a document or the library
-/// cannot be read.
+/// refused or a kit could not be checked (or, in a dry run, when one waits), 2
+/// when a document or the library cannot be read.
 pub(crate) fn run(update: &Update) -> i32 {
     let root = match &update.library {
         Some(folder) => Some(std::path::PathBuf::from(folder)),
@@ -107,7 +107,9 @@ pub(crate) fn run(update: &Update) -> i32 {
     worst
 }
 
-/// One document: its line and its exit code, or why it could not be read.
+/// One document: its line and its exit code, or why it could not be read. A
+/// kit the document draws from that the library lacks makes the code 1, so a
+/// wrong `--library` cannot pass for up to date.
 fn one(update: &Update, lib: &Library, file: &str) -> Result<(String, i32), String> {
     let bytes = std::fs::read(file).map_err(|e| format!("cannot read it: {e}"))?;
     let doc = mastik_core::io::load(&bytes).map_err(|e| format!("cannot load it: {e}"))?;
@@ -118,23 +120,88 @@ fn one(update: &Update, lib: &Library, file: &str) -> Result<(String, i32), Stri
         Some(wanted) => Some(find(lib, &s, wanted)?),
         None => None,
     };
+    // `find` has already refused a `--kit` the library lacks.
+    let unchecked = match only {
+        Some(_) => None,
+        None => unchecked(&s.doc, lib),
+    };
     // The versions held, read before the update moves them.
     let held = crate::kits::updates::waiting(&s.doc, lib, false);
-    let accepted = match prepare_accept(&mut s, lib, only.as_deref()) {
-        Ok(Some(a)) => a,
-        Ok(None) => return Ok(("up to date".into(), 0)),
-        Err(why) => return Ok((not_accepted_words(why, "leaving out --kit"), 1)),
+    let (line, code) = match prepare_accept(&mut s, lib, only.as_deref()) {
+        Ok(None) => {
+            return Ok(match unchecked {
+                Some(u) => (u, 1),
+                None => ("up to date".into(), 0),
+            });
+        }
+        Err(why) => (not_accepted_words(why, "leaving out --kit"), 1),
+        Ok(Some(mut accepted)) => {
+            let before = tokens(&s.doc);
+            // Committed in memory for a dry run too, to count what it changes.
+            s.try_commit(std::mem::take(&mut accepted.tx))
+                .map_err(|e| format!("cannot apply the update: {e:?}"))?;
+            let taken = taken(&accepted, &held, &before, &tokens(&s.doc));
+            if update.dry_run {
+                (format!("would take {taken}"), 1)
+            } else {
+                let saved =
+                    mastik_core::io::save(&s.doc).map_err(|e| format!("cannot save: {e}"))?;
+                crate::atomic::write(std::path::Path::new(file), &saved)
+                    .map_err(|e| format!("cannot write it: {e}"))?;
+                (format!("took {taken}; wrote it"), 0)
+            }
+        }
     };
-    let taken = taken(&accepted, &held);
-    if update.dry_run {
-        return Ok((format!("would take {taken}"), 1));
+    Ok(match unchecked {
+        Some(u) => (format!("{line}; {u}"), code.max(1)),
+        None => (line, code),
+    })
+}
+
+/// The kits `doc` draws from (its vault's mains, its variables and styles) that
+/// the library does not hold at the version held or newer, as one clause;
+/// `None` when it holds every one.
+fn unchecked(doc: &mastik_core::Document, lib: &Library) -> Option<String> {
+    let tops = doc
+        .vault()
+        .and_then(|v| doc.get(v))
+        .map_or(&[][..], |v| v.children());
+    let mains = tops
+        .iter()
+        .filter_map(|t| doc.get(*t).and_then(|n| n.origin()))
+        .map(|o| (o.kit.as_str(), o.name.as_deref(), o.version));
+    let vars = doc.variables().iter().filter_map(|v| v.origin.as_ref());
+    let styles = doc.styles().iter().filter_map(|s| s.origin.as_ref());
+    let tokens = vars
+        .map(|o| (o.kit.as_str(), o.version))
+        .chain(styles.map(|o| (o.kit.as_str(), o.version)));
+    let mut held: Vec<(&str, Option<&str>, u32)> = Vec::new();
+    for (kit, name, version) in mains.chain(tokens.map(|(k, v)| (k, None, v))) {
+        match held.iter_mut().find(|h| h.0 == kit) {
+            Some(h) => {
+                h.1 = h.1.or(name);
+                h.2 = h.2.min(version);
+            }
+            None => held.push((kit, name, version)),
+        }
     }
-    s.try_commit(accepted.tx)
-        .map_err(|e| format!("cannot apply the update: {e:?}"))?;
-    let saved = mastik_core::io::save(&s.doc).map_err(|e| format!("cannot save: {e}"))?;
-    crate::atomic::write(std::path::Path::new(file), &saved)
-        .map_err(|e| format!("cannot write it: {e}"))?;
-    Ok((format!("took {taken}; wrote it"), 0))
+    let library = crate::kits::index::kits_in(lib, doc.meta().id.as_deref());
+    let root = lib.root.display();
+    let missing: Vec<String> = held
+        .iter()
+        .filter_map(|&(kit, name, version)| {
+            let named = name.map_or_else(|| format!("kit {kit}"), str::to_owned);
+            match library.iter().find(|k| k.id == kit) {
+                None => Some(format!("{named} is not in {root}")),
+                Some(k) if k.version < version => Some(format!(
+                    "{named} is at v{} in {root}, older than the v{version} held",
+                    k.version
+                )),
+                Some(_) => None,
+            }
+        })
+        .collect();
+    (!missing.is_empty()).then(|| format!("not checked: {}", missing.join(", ")))
 }
 
 /// The kit `wanted` names among those the library holds, by id or by its
@@ -161,8 +228,44 @@ fn find(lib: &Library, s: &EditorSession, wanted: &str) -> Result<String, String
     }
 }
 
-/// *Atlas v3 → v4, Icons v1 → v2 (5 changed, 1 removed, 1 made local)*.
-fn taken(a: &Accepted, held: &[crate::kits::updates::Waiting]) -> String {
+/// A document's variables and styles, as [`tokens`] reads them.
+type Tokens = (Vec<mastik_core::Variable>, Vec<mastik_core::style::Style>);
+
+/// The document's variables and styles, the kit version each was taken at left
+/// out: an update moves every kit token's version, and only a new value is a
+/// change.
+fn tokens(doc: &mastik_core::Document) -> Tokens {
+    let vars = doc.variables().iter().cloned().map(|mut v| {
+        if let Some(o) = &mut v.origin {
+            o.version = 0;
+        }
+        v
+    });
+    let styles = doc.styles().iter().cloned().map(|mut s| {
+        if let Some(o) = &mut s.origin {
+            o.version = 0;
+        }
+        s
+    });
+    (vars.collect(), styles.collect())
+}
+
+/// How many of `after`'s rows are new or changed, plus `before`'s gone.
+fn moved<T: PartialEq, K: PartialEq>(before: &[T], after: &[T], key: impl Fn(&T) -> K) -> usize {
+    let gone = before
+        .iter()
+        .filter(|b| !after.iter().any(|a| key(a) == key(b)));
+    after.iter().filter(|a| !before.contains(a)).count() + gone.count()
+}
+
+/// *Atlas v3 → v4, Icons v1 → v2 (5 changed, 1 removed, 1 made local, 2
+/// variables changed)*; the layers' *changed* is left out when only tokens moved.
+fn taken(
+    a: &Accepted,
+    held: &[crate::kits::updates::Waiting],
+    before: &Tokens,
+    after: &Tokens,
+) -> String {
     let kits: Vec<String> = a
         .kits
         .iter()
@@ -173,12 +276,22 @@ fn taken(a: &Accepted, held: &[crate::kits::updates::Waiting]) -> String {
             },
         )
         .collect();
-    let mut counts = vec![format!("{} changed", a.changed.len())];
+    let vars = moved(&before.0, &after.0, |v| v.id);
+    let styles = moved(&before.1, &after.1, |s| s.id);
+    let mut counts = Vec::new();
+    if !a.changed.is_empty() || vars + styles == 0 {
+        counts.push(format!("{} changed", a.changed.len()));
+    }
     if !a.removed.is_empty() {
         counts.push(format!("{} removed", a.removed.len()));
     }
     if !a.made_local.is_empty() {
         counts.push(format!("{} made local", a.made_local.len()));
+    }
+    for (n, one, many) in [(vars, "variable", "variables"), (styles, "style", "styles")] {
+        if n > 0 {
+            counts.push(format!("{n} {} changed", if n == 1 { one } else { many }));
+        }
     }
     format!("{} ({})", kits.join(", "), counts.join(", "))
 }
@@ -211,5 +324,125 @@ mod tests {
         assert!(kit(&["update", "a.mastik", "--kit"]).is_err(), "a value");
         assert!(kit(&["update", "a.mastik", "--page", "1", "--page", "2"]).is_err());
         assert!(kit(&["update", "a.mastik", "--force"]).is_err());
+    }
+
+    /// A library holding Atlas — one component whose fill reads a colour
+    /// variable, published at v1, then at v2 with only the variable's value
+    /// changed — and Consumer, holding an instance of it at v1. Built through
+    /// the MCP's tools on a `serve` host. Answers the root and Consumer's path.
+    fn library(tag: &str) -> (std::path::PathBuf, String) {
+        use crate::mcp::Engine;
+        use crate::mcp::serve::Headless;
+        use serde_json::{Value, json};
+        let root = crate::kits::picker::tests::temp_root(tag);
+        let mut engine = Engine::default();
+        let mut docs = Headless::new(Some(root.clone()));
+        let mut ok = |tool: &str, args: Value| -> Value {
+            let (reply, _answer) = std::sync::mpsc::sync_channel(1);
+            let call = mastik_mcp::queue::Call::new(1, None, tool, args, reply);
+            let out = engine.handle(&mut docs, call);
+            assert!(!out.is_error, "{tool}: {:?}", out.content);
+            out.structured.unwrap()
+        };
+        let atlas = ok("create_document", json!({ "name": "Atlas" }))["path"].clone();
+        let page = ok("use_document", json!({ "document": atlas }))["pages"][0]["id"].clone();
+        let ink = ok("add_variable", json!({ "kind": "color", "name": "ink" }))["variable"].clone();
+        let kind = mastik_core::verbs::example("NodeKind").unwrap();
+        let rect = ok(
+            "create_node",
+            json!({ "parent": page, "kind": kind, "name": "Badge" }),
+        )["created"][0]
+            .clone();
+        let fills = mastik_core::verbs::example("[Fill]").unwrap();
+        ok("set_fills", json!({ "nodes": [rect], "fills": fills }));
+        ok(
+            "bind_variable",
+            json!({ "nodes": [rect], "field": { "fill": 0 }, "variable": ink }),
+        );
+        let main = ok("make_component", json!({ "nodes": [rect] }))["created"][0].clone();
+        ok("make_kit", json!({}));
+        ok("publish_kit", json!({ "note": "First" }));
+
+        let consumer = ok("create_document", json!({ "name": "Consumer" }))["path"].clone();
+        let page = ok("use_document", json!({ "document": consumer }))["pages"][0]["id"].clone();
+        ok(
+            "insert_from_kit",
+            json!({ "kit": "Atlas", "main": main, "parent": page }),
+        );
+
+        ok("use_document", json!({ "document": atlas }));
+        ok(
+            "set_variable_value",
+            json!({ "variable": ink, "value": "#ff0000" }),
+        );
+        ok("publish_kit", json!({ "note": "Red" }));
+        (root, consumer.as_str().unwrap().to_owned())
+    }
+
+    fn update(file: &str, library: &std::path::Path, dry_run: bool) -> Update {
+        Update {
+            files: vec![file.to_owned()],
+            kit: None,
+            library: Some(library.display().to_string()),
+            page: None,
+            dry_run,
+        }
+    }
+
+    /// A dry run says what it would take, fails the gate and writes nothing; a
+    /// real run takes it, writes it and passes; then the document is up to
+    /// date. A variable-only update counts the variable.
+    ///
+    /// flip: `one` writing before its dry-run return → fails at "a dry run
+    /// writes nothing"; `taken` counting layers only → fails at "1 variable".
+    #[test]
+    fn kit_update_dry_runs_takes_and_reports() {
+        let (root, consumer) = library("cli-update");
+        let lib = Library::open(root.clone());
+        let bytes = std::fs::read(&consumer).unwrap();
+
+        let (line, code) = one(&update(&consumer, &root, true), &lib, &consumer).unwrap();
+        assert!(line.starts_with("would take Atlas v1 → v2 ("), "{line}");
+        assert!(line.contains("1 variable changed"), "{line}");
+        assert!(!line.contains("0 changed"), "{line}");
+        assert_eq!(code, 1, "a waiting update fails the dry run");
+        assert_eq!(
+            std::fs::read(&consumer).unwrap(),
+            bytes,
+            "a dry run writes nothing"
+        );
+
+        let (line, code) = one(&update(&consumer, &root, false), &lib, &consumer).unwrap();
+        assert!(line.starts_with("took Atlas v1 → v2 ("), "{line}");
+        assert!(line.ends_with("; wrote it"), "{line}");
+        assert_eq!(code, 0);
+        let doc = mastik_core::io::load(&std::fs::read(&consumer).unwrap()).unwrap();
+        let top = doc.get(doc.vault().unwrap()).unwrap().children()[0];
+        assert_eq!(doc.get(top).unwrap().origin().unwrap().version, 2);
+
+        let lib = Library::open(root.clone());
+        let (line, code) = one(&update(&consumer, &root, true), &lib, &consumer).unwrap();
+        assert_eq!((line.as_str(), code), ("up to date", 0));
+        let missing = root.join("missing.mastik").display().to_string();
+        let mut both = update(&consumer, &root, true);
+        both.files.push(missing);
+        assert_eq!(run(&both), 2, "the worst code of the documents");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A library that lacks a kit the document draws from is not "up to date":
+    /// it names the kit and fails the gate.
+    ///
+    /// flip: `one` ignoring `unchecked` → fails at "not checked".
+    #[test]
+    fn kit_update_names_a_kit_the_library_lacks() {
+        let (root, consumer) = library("cli-lacks");
+        let empty = crate::kits::picker::tests::temp_root("cli-lacks-empty");
+        let lib = Library::open(empty.clone());
+        let (line, code) = one(&update(&consumer, &empty, true), &lib, &consumer).unwrap();
+        assert!(line.starts_with("not checked: Atlas is not in"), "{line}");
+        assert_eq!(code, 1);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&empty);
     }
 }
