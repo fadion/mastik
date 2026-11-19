@@ -32,3 +32,8 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   as it is.
 - **A DTCG `lineHeight` written as `"64px"`.** The DTCG format defines a typography token's
   `lineHeight` as a number, the multiplier; the refusal says so.
+- **Resetting an instance root resets only that root.** Resetting an instance puts the whole
+  instance back as its main has it, as the menu's *Reset all* does; a layer inside it is reset
+  by naming that layer.
+- **`@@` collapsed anywhere in a batch string.** Only a string starting with `@` is a reference,
+  and the batch's `steps` says to double that leading `@`; a mid-string `@@` stays as written.

@@ -782,9 +782,16 @@ fn inks(brush: &Brush) -> bool {
 /// Whether shown layer `id`, of used kind `kind`, paints nothing: a shape, an
 /// empty frame or an empty group with no visible fill, no stroke of width and
 /// no effect. Text, booleans and slices are never one, nor is a layer a flex or
-/// grid parent lays out, where an empty box is a spacer.
+/// grid parent lays out, where an empty box is a spacer, nor a boolean's
+/// operand, whose shape the boolean paints.
 fn draws_nothing(doc: &Document, id: NodeId, kind: &NodeKind, laid_out: bool) -> bool {
     let Some(n) = doc.get(id) else { return false };
+    if n.parent()
+        .and_then(|p| doc.get(p))
+        .is_some_and(|p| matches!(p.kind(), NodeKind::Boolean { .. }))
+    {
+        return false;
+    }
     let empty = n.children().is_empty();
     let shape = match kind {
         NodeKind::Rect { .. }
@@ -1839,10 +1846,10 @@ mod tests {
 
     /// `draws_nothing` takes a shape, an empty frame and a transparent fill,
     /// and passes over a stroke, a shadow, text, a frame with children, a
-    /// hidden layer and a spacer a flex frame lays out.
+    /// hidden layer, a spacer a flex frame lays out and a boolean's operands.
     ///
     /// flip: `draws_nothing` without its `laid_out` exemption → fails at the
-    /// codes, which gain "Spacer".
+    /// codes, which gain "Spacer"; without its operand exemption, "Operand".
     #[test]
     fn check_layout_finds_what_draws_nothing() {
         let clear = json!([Fill {
@@ -1870,6 +1877,13 @@ mod tests {
                     "kind": frame(200.0, 40.0), "name": "Row", "transform": at(10.0, 300.0), "fills": fill(9, 9, 9),
                     "display": Display::Flex(Flex::default()),
                     "children": [{ "kind": frame(20.0, 20.0), "name": "Spacer" }],
+                },
+                {
+                    "kind": { "Boolean": { "op": "Union" } }, "name": "Mark", "fills": fill(9, 9, 9),
+                    "children": [
+                        { "kind": rect(20.0, 20.0, 0.0), "name": "Operand", "transform": at(300.0, 10.0) },
+                        { "kind": rect(20.0, 20.0, 0.0), "name": "Operand", "transform": at(310.0, 10.0) },
+                    ],
                 },
             ],
         }));

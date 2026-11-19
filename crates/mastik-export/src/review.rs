@@ -543,18 +543,21 @@ pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
 /// The number variable worth `x` that may bind `field` and fits it best: one
 /// scoped to it, then one whose name says the field (`radius/card` for a corner,
 /// `space/md` for a gap), then any, since an unscoped variable binds every
-/// number field.
+/// number field. An unscoped one whose name says the other field
+/// (`radius/card` for a gap) is no fit: its value matching is a coincidence.
 fn fitting<'v>(
     numbers: &[(&'v mastik_core::Variable, f64)],
     x: f64,
     field: Field,
 ) -> Option<&'v mastik_core::Variable> {
-    let words: &[&str] = match field {
-        Field::Corner => &["radius", "radii", "corner", "round"],
-        Field::Spacing => &["space", "spacing", "gap", "padding", "gutter", "inset"],
-        _ => &[],
+    const CORNER: &[&str] = &["radius", "radii", "corner", "round"];
+    const SPACING: &[&str] = &["space", "spacing", "gap", "padding", "gutter", "inset"];
+    let (words, other): (&[&str], &[&str]) = match field {
+        Field::Corner => (CORNER, SPACING),
+        Field::Spacing => (SPACING, CORNER),
+        _ => (&[], &[]),
     };
-    let says = |v: &mastik_core::Variable| {
+    let names = |v: &mastik_core::Variable, words: &[&str]| {
         let name = v.name.to_lowercase();
         words.iter().any(|w| name.contains(w))
     };
@@ -562,7 +565,8 @@ fn fitting<'v>(
         .iter()
         .filter(|(v, y)| *y == x && v.binds(field))
         .map(|(v, _)| *v)
-        .min_by_key(|v| (v.scope.is_none(), !says(v)))
+        .filter(|v| v.scope.is_some() || names(v, words) || !names(v, other))
+        .min_by_key(|v| (v.scope.is_none(), !names(v, words)))
 }
 
 /// [`raw_values`]' matches with every layer each names: keyed `s<style>` for a
@@ -1467,6 +1471,8 @@ mod tests {
     /// which no merge changes, is no finding.
     ///
     /// flip: `fitting` taking the first equal variable → fails at "the gap's";
+    /// without its filter on the other field's names → fails at "a radius
+    /// offered for a gap";
     /// `near_duplicate_colours` reading `default_target` as a census index →
     /// fails at "the target"; `rewrite` counting a place written its own colour
     /// → fails at "a text of the variable's colour"; `raw_values` not telling a
@@ -1509,6 +1515,12 @@ mod tests {
                 json!({ "kind": { "Text": { "content": "Leaf",
                 "style": { "font_size": 14, "color": "#3f6212" } } } }),
             ),
+            json!({ "verb": "add_variable", "args": { "kind": "number", "name": "radius/xl",
+                "value": { "number": 24 } } }),
+            layer(&p, "wide", 0.0, 300.0, frame(300.0, 100.0, "#f2f4ff")),
+            json!({ "verb": "set_display", "args": { "nodes": ["@wide"],
+                "display": { "Flex": { "direction": "Row", "gap": 24 } } } }),
+            layer("@wide", "a", 0.0, 0.0, rect(40.0, 40.0, "#f2f4ff", 0.0)),
         ];
         let made = mastik_core::verbs::run_script(
             &mut doc,
@@ -1531,6 +1543,10 @@ mod tests {
             .expect("the raw gap");
         assert!(gap.message.contains("`space/md`"), "the gap's: {gap:?}");
         assert_eq!(gap.instead.as_deref(), Some("bind the variable"));
+        assert!(
+            !raw.iter().any(|f| f.message.contains("`radius/xl`")),
+            "a radius offered for a gap: {raw:?}"
+        );
         let fill = |var: &str| {
             raw.iter()
                 .find(|f| f.message.starts_with("A fill") && f.message.contains(var))
