@@ -4395,7 +4395,7 @@ mod tests {
         pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
 
         // Another document in front, as a tab switch parks this one.
-        let parked = std::mem::replace(&mut app.session, crate::session::EditorSession::new());
+        let parked = std::mem::take(&mut app.session);
         pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
         assert!(
             app.session.held_script_edit.is_none(),
