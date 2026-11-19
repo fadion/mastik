@@ -341,4 +341,63 @@ mod tests {
         assert_eq!(z.added.len(), 3, "the top side only");
         assert_eq!(z.subpaths[0].anchors.len(), 7);
     }
+
+    /// Roughen and Zig-zag drop the corner radius of every anchor a changed
+    /// segment touches and keep the rest's; Pucker / Bloat keeps every one.
+    /// Roughen under a selection leaves the anchors off it where they were, and
+    /// a smooth anchor at the scope's edge leans a sixth of the way toward its
+    /// changed neighbour.
+    /// flip: `shape_handles` keeping the radius → fails at "a touched anchor".
+    #[test]
+    fn the_radius_and_the_scopes_edge_follow_the_rule() {
+        let rounded = || {
+            let mut s = square();
+            for a in &mut s[0].anchors {
+                a.radius = 10.0;
+            }
+            s
+        };
+        let top = [(0, 0), (0, 1)];
+        let roughen = Filter::Roughen {
+            size: 4.0,
+            detail: 0.5,
+            seed: 3,
+        };
+        let zig = Filter::ZigZag {
+            size: 8.0,
+            ridges: 2,
+        };
+        for filter in [roughen, zig] {
+            let d = distort(&rounded(), &top, filter, false);
+            let a = &d.subpaths[0].anchors;
+            let n = a.len();
+            assert_eq!(a[0].radius, 0.0, "a touched anchor: {filter:?}");
+            assert_eq!(
+                (a[n - 2].radius, a[n - 1].radius),
+                (10.0, 10.0),
+                "the untouched keep theirs: {filter:?}"
+            );
+        }
+        let p = distort(&rounded(), &[], Filter::PuckerBloat { amount: 0.3 }, false);
+        assert!(
+            p.subpaths[0].anchors.iter().all(|a| a.radius == 10.0),
+            "Pucker / Bloat keeps every radius"
+        );
+        let r = distort(&square(), &top, roughen, false);
+        let a = &r.subpaths[0].anchors;
+        let n = a.len();
+        assert_eq!(
+            (a[n - 2].at, a[n - 1].at),
+            (Point::new(100.0, 100.0), Point::new(0.0, 100.0)),
+            "off the selection, unmoved"
+        );
+        assert_ne!(a[0].at, Point::new(0.0, 0.0), "on it, jittered");
+        let z = distort(&square(), &top, zig, true);
+        let a = &z.subpaths[0].anchors;
+        assert!(
+            (a[0].out - (a[1].at - a[0].at) / 6.0).hypot() < 1e-9,
+            "a sixth toward the changed neighbour: {:?}",
+            a[0]
+        );
+    }
 }
