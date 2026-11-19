@@ -991,12 +991,23 @@ fn scale_geometry(
             } => {
                 let mut scaled = path.clone();
                 scaled.apply_affine(Affine::scale_non_uniform(csx, csy));
+                // `scale_scalars` wrote the Scale tool's radii onto the unscaled
+                // path; this op replaces that one and keeps its radii.
+                let at = ops.iter().position(|op| {
+                    matches!(op, Operation::SetGeometry { id: i, geometry: GeometryPatch::Path { .. } } if *i == id)
+                });
+                let corner_radii = match at.map(|i| ops.remove(i)) {
+                    Some(Operation::SetGeometry {
+                        geometry: GeometryPatch::Path { corner_radii, .. },
+                        ..
+                    }) => corner_radii,
+                    _ => corner_radii.clone(),
+                };
                 ops.push(Operation::SetGeometry {
                     id,
                     geometry: GeometryPatch::Path {
                         path: scaled,
-                        // Carried: only the Scale tool multiplies it (`scale_scalars`).
-                        corner_radii: corner_radii.clone(),
+                        corner_radii,
                         mirror: None,
                     },
                 });
@@ -2101,12 +2112,17 @@ pub fn crop_shaped(frame: Rect, limit: Rect, aspect: f64) -> Option<Rect> {
         return None;
     }
     let w = room.width().min(room.height() * aspect);
-    let size = Size::new(w, w / aspect);
+    let size = Size::new(w, (w / aspect).min(room.height()));
     let c = frame.center();
-    let cx =
-        c.x.clamp(room.x0 + size.width / 2.0, room.x1 - size.width / 2.0);
-    let cy =
-        c.y.clamp(room.y0 + size.height / 2.0, room.y1 - size.height / 2.0);
+    // `max` then `min`, not `clamp`: the two bounds can round an ulp apart, and
+    // `f64::clamp` panics when they cross.
+    let within = |v: f64, lo: f64, hi: f64| v.max(lo).min(hi);
+    let cx = within(c.x, room.x0 + size.width / 2.0, room.x1 - size.width / 2.0);
+    let cy = within(
+        c.y,
+        room.y0 + size.height / 2.0,
+        room.y1 - size.height / 2.0,
+    );
     Some(Rect::from_center_size(Point::new(cx, cy), size))
 }
 

@@ -220,6 +220,26 @@ fn a_picked_shape_is_the_largest_box_of_it_about_the_centre() {
     );
 }
 
+/// A shape whose height rounds an ulp past the room still lands inside it rather
+/// than handing `f64::clamp` a minimum above its maximum (195.5 × 109.75 at 16:9
+/// gives a height of 109.75000000000001). flip: the bare clamp → panics.
+#[test]
+fn a_shape_rounding_past_the_room_stays_inside_it() {
+    let frame = Rect::new(0.0, 0.0, 195.5, 109.75);
+    let got = crop_shaped(frame, frame, 16.0 / 9.0).expect("a shape");
+    assert!(
+        got.y0 >= frame.y0 - 1e-9 && got.y1 <= frame.y1 + 1e-9,
+        "{got:?}"
+    );
+    // The x clamp too: a room off the origin, where x0 + w/2 and x1 - w/2 round apart.
+    let limit = Rect::new(0.1, 0.0, 0.1 + 195.5, 1000.0);
+    for k in 0..400 {
+        let h = 50.0 + f64::from(k) * 0.25;
+        let frame = Rect::new(0.1, 0.0, 0.1 + 195.5, h);
+        let _ = crop_shaped(frame, limit, frame.width() / frame.height());
+    }
+}
+
 /// `reshape_box` puts the box exactly where it was asked, with no edge held:
 /// the turn's swap about the centre and a side drag held to a shape. The
 /// fixture is square, so the swap is the control.
@@ -4015,6 +4035,67 @@ fn scaling_takes_the_stroke_radii_and_type_that_a_resize_leaves_alone() {
             },
             "{scaling:?}: per-side widths"
         );
+    }
+}
+
+/// A path's per-anchor radii take a photographic scale with its points, and a
+/// geometry resize leaves them. flip: `scale_geometry`'s Path arm carrying the
+/// unscaled radii → fails at the Photographic radius.
+#[test]
+fn scaling_a_path_takes_its_anchor_radii() {
+    for (scaling, want) in [(Scaling::Geometry, 8.0), (Scaling::Photographic, 16.0)] {
+        let mut ids = IdSource::new(0x1F2);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let path = ids.mint();
+        let mut pen = BezPath::new();
+        pen.move_to((0.0, 0.0));
+        pen.line_to((20.0, 0.0));
+        pen.line_to((20.0, 20.0));
+        pen.close_path();
+        doc.apply(&Transaction(vec![Operation::CreateNode {
+            id: path,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Path {
+                path: pen,
+                corner_radii: vec![0.0, 8.0, 0.0],
+                corner_smoothing: 0.0,
+                mirror: crate::symmetry::PathMirror::NONE,
+            },
+            transform: None,
+            name: None,
+        }]))
+        .expect("a path");
+        let res = Resolved::rebuild(&doc);
+        let local = crate::local_box(&doc, &res, path).expect("a box");
+        let tx = resize_geometry(
+            &doc,
+            &res,
+            path,
+            local,
+            Handle::BottomRight,
+            Point::new(40.0, 40.0),
+            Resize {
+                scaling,
+                ..Default::default()
+            },
+        );
+        doc.apply(&tx).expect("applies");
+        let NodeKind::Path {
+            path: shape,
+            corner_radii,
+            ..
+        } = doc.get(path).unwrap().kind()
+        else {
+            panic!("still a path")
+        };
+        let bounds = crate::kurbo::Shape::bounding_box(shape);
+        assert!(
+            (bounds.width() - 40.0).abs() < 1e-9,
+            "{scaling:?}: points doubled, {bounds:?}"
+        );
+        assert_eq!(corner_radii, &vec![0.0, want, 0.0], "{scaling:?}: radii");
     }
 }
 
