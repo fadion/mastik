@@ -105,7 +105,20 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
             .collect();
         (tools, more)
     };
+    // A tool outside the core list is not one a client listing only the core can
+    // call by name: it answers "no such tool" before Mastik hears of it.
+    let unlisted: Vec<&str> = tools
+        .iter()
+        .filter_map(|d| d["name"].as_str())
+        .filter(|n| !mastik_mcp::tools::CORE.contains(n))
+        .collect();
     let mut answer = json!({ "tools": tools, "more": more });
+    if !unlisted.is_empty() {
+        answer["unlisted"] = json!({
+            "tools": unlisted,
+            "said": "Not in the core list: where your client lists only it, run these through `call`, as {\"tool\": <name>, \"args\": {…}}",
+        });
+    }
     if !not_found.is_empty() {
         answer["not_found"] = json!(not_found);
     }
@@ -313,5 +326,24 @@ mod tests {
             tools.iter().any(|t| t["name"] == "search_assets"),
             "found: {tools:?}"
         );
+    }
+
+    /// A tool outside the core list is answered as unlisted, with how to run it,
+    /// and a core tool is not.
+    ///
+    /// flip: `describe_tools` without its `unlisted` answer → fails at "boolean".
+    #[test]
+    fn describe_tools_names_what_is_unlisted() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        let found = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "describe_tools",
+            json!({ "names": ["boolean", "set"] }),
+        );
+        let unlisted = ok(&found)["unlisted"].clone();
+        assert_eq!(unlisted["tools"], json!(["boolean"]), "boolean: {unlisted}");
+        assert!(unlisted["said"].as_str().unwrap().contains("`call`"));
     }
 }
