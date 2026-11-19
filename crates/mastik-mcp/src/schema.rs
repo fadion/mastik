@@ -445,13 +445,13 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "batch",
-        doc: "Run several write tools in turn as one undo step, each seeing what the last made; if one is refused, none applies. Answers each step's answer.",
+        doc: "Run write tools in turn as one undo step, each seeing what the last made; one refused, none applies. Not `place_asset`, `run_script`, `import_tokens` or kit tools. Answers each step's.",
         params: &[
             param(
                 "steps",
                 ParamKind::Model("Steps"),
                 true,
-                "The steps in order, each {\"tool\": <a write tool>, \"args\": {…}, \"as\": <label>}. In a later step's argument, \"@<label>\" stands for what that step made first, and \"@<label>/<Path>\" for an `insert_subtree` layer by its path below the root, and \"@page\" for the first page; write a text starting with @ as @@.",
+                "The steps, each {\"tool\": <a write tool>, \"args\": {…}, \"as\": <label>}. In a later step, \"@<label>\" is what that step made first, \"@<label>/<Path>\" an `insert_subtree` layer by its path below the root, \"@page\" the first page; write a text starting with @ as @@.",
             ),
             BASE_REV,
         ],

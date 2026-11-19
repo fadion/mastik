@@ -190,6 +190,39 @@ fn a_tree_fill_written_wrong_is_shown_fills() {
     );
 }
 
+/// `Hug` is read as `FitContent`, a bare number as a letter spacing's px and a
+/// line height's multiple, and a kind missing a field is shown that kind.
+///
+/// flip: `alias` without its `hug` arm → fails at "hug"; `loosen_in` without its
+/// bare-number arm → fails at "bare numbers"; `explain` without its
+/// missing-field kind arm → fails at "the Path form".
+#[test]
+fn hug_bare_spacing_and_a_kinds_own_form_are_read() {
+    let (mut doc, mut ids, page) = blank();
+    let f = frame_on(&mut doc, &mut ids, page);
+    let hug = answer(
+        &doc,
+        &mut ids,
+        "set_layout_item",
+        &json!({ "nodes": [f.to_wire()], "item": { "height": "Hug" } }),
+    );
+    assert!(hug.is_ok(), "hug: {hug:?}");
+    let text = json!({ "parent": page.to_wire(), "kind": { "Text": { "content": "Hi",
+        "style": { "font_size": 16, "letter_spacing": -0.4, "line_height": 1.4 } } } });
+    let made = answer(&doc, &mut ids, "create_node", &text);
+    assert!(made.is_ok(), "bare numbers: {made:?}");
+    let refused = why(
+        &doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": { "Path": { "d": "M0 0 L10 0" } } }),
+    );
+    assert!(
+        refused.contains("\"Path\":{\"path\""),
+        "the Path form: {refused}"
+    );
+}
+
 /// A layout item written with a `position`, in a tree or alone, is refused
 /// with the insets that take a child out of its frame's flow.
 ///

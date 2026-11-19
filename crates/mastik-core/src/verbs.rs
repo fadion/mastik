@@ -776,6 +776,8 @@ fn plain(word: &str) -> String {
 fn alias(plain: &str) -> &str {
     match plain {
         "frame" => "artboard",
+        // Hug contents, as Figma and CSS's `fit-content` name a size that follows them.
+        "hug" | "hugcontents" | "fit" => "fitcontent",
         other => other,
     }
 }
@@ -917,6 +919,12 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
     .any(|w| miss.why.contains(w));
     if without_fields && let Some(form) = named.as_deref().and_then(|n| kind_example(&plain(n))) {
         return format!("{said}; write it with its fields, as `{}`", compact(&form));
+    }
+    // A kind missing a field is shown that kind, not the model's example of another.
+    if miss.why.contains("missing field")
+        && let Some(form) = named.as_deref().and_then(|n| kind_example(&plain(n)))
+    {
+        return format!("{said}; for example `{}`", compact(&form));
     }
     // The example of the nearest field holding a model of its own: a fill written
     // wrong inside a tree is shown fills, not the whole tree.

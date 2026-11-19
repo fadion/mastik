@@ -509,6 +509,19 @@ fn loosen_in(key: &str, v: &mut Value, errs: &mut Vec<String>) {
     {
         *v = length;
     }
+    // A bare number, as a type panel writes one: px for spacing, a multiple of the
+    // font size for a line height, as CSS reads a unitless one. Only these keys:
+    // `offset` is also a gradient stop's.
+    if let Value::Number(n) = v {
+        let unit = match key {
+            "letter_spacing" | "word_spacing" | "LetterSpacing" | "WordSpacing" => Some("Px"),
+            "line_height" | "LineHeight" => Some("Em"),
+            _ => None,
+        };
+        if let Some(unit) = unit {
+            *v = serde_json::json!({ unit: n.clone() });
+        }
+    }
     match (key, &mut *v) {
         ("sizing", _) => loosen_sizing(v, errs),
         ("field", Value::Object(map)) if map.len() == 1 => loosen_field(v),
