@@ -599,13 +599,15 @@ fn loosen_in(key: &str, v: &mut Value, errs: &mut Vec<String>) {
             }
             _ => {}
         }
-        // A tree layer's `corner_radius`, the name `set` takes, is its kind's corners.
+        // A tree layer's `corner_radius`, the name `set` takes, is its kind's corners,
+        // the kind in any case and a frame by the alias `settle` takes too.
         let cornered = map
             .get("kind")
             .and_then(Value::as_object)
             .and_then(|k| {
-                k.iter()
-                    .find(|(v, _)| matches!(v.as_str(), "Rect" | "Artboard"))
+                k.iter().find(|(v, _)| {
+                    matches!(v.to_lowercase().as_str(), "rect" | "artboard" | "frame")
+                })
             })
             .and_then(|(v, inner)| {
                 (inner.is_object() && inner.get("corner_radii").is_none()).then(|| v.clone())

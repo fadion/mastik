@@ -228,7 +228,8 @@ fn hug_bare_spacing_and_a_kinds_own_form_are_read() {
 /// geometry `{"path": …}` without its variant.
 ///
 /// flip: `loosen_in` without its style-value `text` arm → fails at "the style";
-/// its `Flex` arm without `align` → fails at "the tree".
+/// its `Flex` arm without `align` → fails at "the tree"; the corner move
+/// matching `Artboard` alone → fails at "a frame written `Frame`".
 #[test]
 fn styles_flex_corners_and_paths_take_the_names_agents_write() {
     let (mut doc, mut ids, page) = blank();
@@ -243,6 +244,10 @@ fn styles_flex_corners_and_paths_take_the_names_agents_write() {
         "children": [{ "kind": rect, "corner_radius": 4 }] } });
     let made = answer(&doc, &mut ids, "insert_subtree", &tree);
     assert!(made.is_ok(), "the tree: {made:?}");
+    let framed = json!({ "parent": page.to_wire(), "tree": {
+        "kind": { "Frame": { "size": { "width": 100, "height": 40 } } }, "corner_radius": 20 } });
+    let made = answer(&doc, &mut ids, "insert_subtree", &framed);
+    assert!(made.is_ok(), "a frame written `Frame`: {made:?}");
     let path = run(
         &mut doc,
         &mut ids,
