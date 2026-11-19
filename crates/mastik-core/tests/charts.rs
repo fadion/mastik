@@ -1151,6 +1151,35 @@ fn page_wide_edits_leave_a_charts_parts_to_it() {
     );
 }
 
+/// A chart with no family of its own draws in a new text's, and replacing that
+/// family reaches it.
+/// flip: `families::chart_family` answering the chart's own family alone →
+/// fails at "a chart in the default family".
+#[test]
+fn replacing_the_default_family_reaches_a_chart_without_one() {
+    let (doc, chart) = unsettled(480.0, 280.0);
+    assert!(
+        doc.get(chart)
+            .unwrap()
+            .chart()
+            .unwrap()
+            .options
+            .text
+            .family
+            .is_empty(),
+        "the fixture sets no family"
+    );
+    let default = mastik_core::typography::TextStyle::default().font_family;
+    let mut doc = doc;
+    let tx = mastik_core::families::replace_family(&doc, &default, "Segoe UI");
+    doc.apply(&tx).expect("replace font");
+    assert_eq!(
+        doc.get(chart).unwrap().chart().unwrap().options.text.family,
+        "Segoe UI",
+        "a chart in the default family"
+    );
+}
+
 /// Chart `id` settled once, its regeneration applied and asserted accepted.
 fn settle_checked(doc: &mut Document, id: NodeId, what: &str) {
     let res = mastik_core::Resolved::rebuild(doc);

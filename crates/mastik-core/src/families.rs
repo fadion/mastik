@@ -14,9 +14,19 @@ use std::collections::BTreeMap;
 /// Families, each with the layers set in it.
 pub type FamilyUses = Vec<(String, Vec<NodeId>)>;
 
+/// The family chart `c` draws its text in: its own, else a new text's, as
+/// settle generates it.
+fn chart_family(c: &crate::chart::Chart) -> String {
+    match c.options.text.family.as_str() {
+        "" => crate::typography::TextStyle::default().font_family,
+        own => own.to_owned(),
+    }
+}
+
 /// Every family the document's text layers draw with, each with the layers that
 /// name it: a layer's own family (or its bound variable's value in every mode)
-/// and its runs', and a chart's family with the chart frame as its layer.
+/// and its runs', and the family a chart draws in with the chart frame as its
+/// layer.
 /// Sorted by name; a name is spelled as first met.
 pub fn families_in_use(doc: &Document) -> FamilyUses {
     let mut by_key: BTreeMap<String, (String, Vec<NodeId>)> = BTreeMap::new();
@@ -31,9 +41,7 @@ pub fn families_in_use(doc: &Document) -> FamilyUses {
     for id in text_layers(doc) {
         let Some(node) = doc.get(id) else { continue };
         if let Some(c) = node.chart() {
-            if !c.options.text.family.is_empty() {
-                note(&c.options.text.family, id);
-            }
+            note(&chart_family(c), id);
             continue;
         }
         let NodeKind::Text { style, spans, .. } = node.kind() else {
@@ -68,8 +76,9 @@ pub fn families_in_use(doc: &Document) -> FamilyUses {
 /// - Where a style or a layer's defaults change family, its axis and feature
 ///   settings go with the old typeface; a run's stay.
 /// - Runs naming `from` are rewritten on every layer.
-/// - A chart setting `from` is rewritten in its description, and settle remakes
-///   its parts; the parts are never written.
+/// - A chart drawing in `from` (its own family, else a new text's) is
+///   rewritten in its description, and settle remakes its parts; the parts are
+///   never written.
 /// - A bound family's variable, and every variable its aliases reach, has every
 ///   cell holding `from` rewritten; a kit's variable is read-only and is left.
 ///
@@ -97,7 +106,7 @@ pub fn replace_family(doc: &Document, from: &str, to: &str) -> Transaction {
     for id in text_layers(doc) {
         let Some(node) = doc.get(id) else { continue };
         if let Some(c) = node.chart() {
-            if matches(&c.options.text.family) {
+            if matches(&chart_family(c)) {
                 let mut c = c.clone();
                 c.options.text.family = to.to_string();
                 ops.push(Operation::SetChart {

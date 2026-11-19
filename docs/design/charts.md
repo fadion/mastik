@@ -82,8 +82,10 @@ everything below.
   never meets a chart, which cannot sit in a main. *Bind other uses*, Colour review, Find
   (so *Replace all*), Group colours' recolour and the multi-selection corner radius
   (`build::writable_nodes`) leave a chart's parts out, as no edit but the regeneration may
-  write them. *Missing fonts* lists a chart frame under the family its description sets, and
-  *Replace* rewrites that family in the description.
+  write them. *Missing fonts* lists a chart frame under the family it draws in (its description's, else a
+  new text's, `TextStyle::default().font_family`, the one settle generates it in), and
+  *Replace* (so `replace_font`) writes the new family into the description
+  (`families::families_in_use`, `replace_family`).
 - **`nodes: Vec<NodeStyle>`** — a Sankey's node colours, keyed by node name, so a
   re-import or a reorder keeps them. A node with no style draws the palette's colour at its
   place in node order; editing or binding its swatch stores one (`chart::with_node_fill`). A
