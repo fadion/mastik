@@ -497,13 +497,38 @@ impl Raw {
 /// variables that may bind them (the best fit, [`fitting`]), and a layer's
 /// whole fill, stroke or effect list, or a text's type, against the styles.
 pub fn raw_values(scope: &Scope<'_>) -> Vec<Finding> {
+    use mastik_core::color_review::{census, roots};
+    // `merge_colours` binds to a variable only when it is the one variable of its
+    // colour that paints in its scope, every page, already use.
+    let used = census(scope.doc, &roots(scope.doc, None));
+    let mergeable = |var: mastik_core::VarId| {
+        let bytes = |c: Color| c.to_rgba8().to_u8_array();
+        used.iter().find(|s| s.var == Some(var)).is_some_and(|s| {
+            used.iter()
+                .filter(|o| !o.is_raw() && bytes(o.color) == bytes(s.color))
+                .count()
+                == 1
+        })
+    };
     raw_matches(scope)
         .by
         .into_iter()
         .map(|(key, (line, ids))| {
-            let (code, instead) = match key.starts_with('s') {
-                true => ("raw_style", "apply the style"),
-                false => ("raw_value", "bind the variable"),
+            // A colour's every raw use binds in one call where a merge into the
+            // colour its variable carries binds to it.
+            let colour = ["fill", "stroke"].iter().any(|what| {
+                key.strip_prefix('v')
+                    .and_then(|k| k.strip_suffix(what))
+                    .and_then(NodeId::from_wire)
+                    .is_some_and(|id| mergeable(mastik_core::VarId(id)))
+            });
+            let (code, instead) = match (key.starts_with('s'), colour) {
+                (true, _) => ("raw_style", "apply the style"),
+                (false, true) => (
+                    "raw_value",
+                    "bind the variable; `merge_colours` with this colour as both `colours` and `into` binds every raw use at once",
+                ),
+                (false, false) => ("raw_value", "bind the variable"),
             };
             Finding::new(
                 code,
@@ -1444,7 +1469,10 @@ mod tests {
     /// flip: `fitting` taking the first equal variable → fails at "the gap's";
     /// `near_duplicate_colours` reading `default_target` as a census index →
     /// fails at "the target"; `rewrite` counting a place written its own colour
-    /// → fails at "a text of the variable's colour".
+    /// → fails at "a text of the variable's colour"; `raw_values` not telling a
+    /// colour apart → fails at "a colour's one-call fix"; its `mergeable`
+    /// answering true for a variable nothing paints → fails at "an unused
+    /// variable".
     #[test]
     fn raw_values_name_the_variable_that_fits() {
         let mut ids = IdSource::new(0x4eb);
@@ -1502,6 +1530,42 @@ mod tests {
             .find(|f| f.message.starts_with("A gap"))
             .expect("the raw gap");
         assert!(gap.message.contains("`space/md`"), "the gap's: {gap:?}");
+        assert_eq!(gap.instead.as_deref(), Some("bind the variable"));
+        let fill = |var: &str| {
+            raw.iter()
+                .find(|f| f.message.starts_with("A fill") && f.message.contains(var))
+                .unwrap_or_else(|| panic!("the raw fill of {var}: {raw:?}"))
+        };
+        let ground = fill("`Ground`");
+        assert!(
+            ground
+                .instead
+                .as_deref()
+                .is_some_and(|i| i.contains("`merge_colours`")),
+            "a colour's one-call fix: {ground:?}"
+        );
+        // The advice holds: the merge it names binds the raw `Ground` fill.
+        let mut merged = doc.clone();
+        mastik_core::verbs::run_script(
+            &mut merged,
+            &mut ids,
+            mastik_core::verbs::Lent::default(),
+            &json!([{ "verb": "merge_colours",
+                "args": { "colours": ["#0b1020ff"], "into": "#0b1020ff" } }]),
+        )
+        .expect("the merge the hint names");
+        let res_m = Resolved::rebuild(&merged);
+        let after = raw_values(&Scope::new(&merged, &res_m, &[page]));
+        assert!(
+            !after.iter().any(|f| f.message.contains("`Ground`")),
+            "merged away: {after:?}"
+        );
+        // `Ink` paints nothing, so a merge would find no variable to bind to.
+        assert_eq!(
+            fill("`Ink`").instead.as_deref(),
+            Some("bind the variable"),
+            "an unused variable"
+        );
         let near = near_duplicate_colours(&scope);
         let pair = near
             .iter()
