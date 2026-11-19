@@ -2383,6 +2383,7 @@ impl MastikApp {
         self.leave_a_scope_the_selection_left();
         // Before every key reader: while a script runs, Escape stops it.
         self.tend_script_run(&ctx);
+        self.store_held_script_edit();
 
         // Whether this frame's `Tab` was ours (point editing or a live text session),
         // read before the panels change focus and acted on at the end of the frame.

@@ -695,6 +695,10 @@ pub struct EditorSession {
     /// commit, an undo and a redo are refused here, so the run's step lands on
     /// the document it was made from. Dropping it stops the worker.
     pub(crate) script_run: Option<crate::command::running::Running>,
+    /// A script's text typed in the Scripts pane while [`Self::script_run`]
+    /// held this document, stored as an *Edit script* step once the hold ends.
+    /// Kept here so it follows the document through a tab switch.
+    pub(crate) held_script_edit: Option<(mastik_core::ScriptId, String)>,
 }
 
 /// **The flex-item properties a resize changed on the user's behalf** — the
@@ -964,6 +968,7 @@ impl EditorSession {
             compare: None,
             command_log: Default::default(),
             script_run: None,
+            held_script_edit: None,
         }
     }
 

@@ -109,10 +109,6 @@ pub(crate) struct Scripts {
     library: Vec<library::LibraryScript>,
     /// When the library script being typed in was last changed, until written.
     pending: Option<Instant>,
-    /// A document script's text typed while a run held the document, stored
-    /// once the run lands or stops; the pane keeps it rather than following
-    /// the document meanwhile.
-    held_edit: Option<(ScriptId, String)>,
     output: Vec<RunOut>,
     /// The line the last run failed at, for the script it ran.
     bad: Option<(Which, usize)>,
@@ -683,6 +679,25 @@ impl MastikApp {
         true
     }
 
+    /// Store the script text typed while a run held the document in front, once
+    /// the hold has ended: every frame, whether or not the Scripts window is open.
+    pub(crate) fn store_held_script_edit(&mut self) {
+        if self.session.script_run.is_none()
+            && let Some((id, source)) = self.session.held_script_edit.take()
+            && self
+                .session
+                .doc
+                .script(id)
+                .is_some_and(|s| s.source != source)
+        {
+            self.session.name_step("Edit script", icon::FILE_CODE);
+            self.session.commit_run(
+                Transaction(vec![Operation::SetScriptSource { id, source }]),
+                "edit-script",
+            );
+        }
+    }
+
     /// Put the code pane's text where the script lives: a document script as an
     /// *Edit script* step that folds while typing continues, a library script
     /// after a rest, an unsaved one at once. A kit's script is read-only.
@@ -692,17 +707,17 @@ impl MastikApp {
         };
         match which {
             Which::Document(id) if self.session.script_run.is_some() => {
-                self.scripts.held_edit = Some((id, self.scripts.buffer.clone()));
+                self.session.held_script_edit = Some((id, self.scripts.buffer.clone()));
                 self.authored(&which);
             }
             Which::Document(id) => {
                 if self
-                    .scripts
-                    .held_edit
+                    .session
+                    .held_script_edit
                     .as_ref()
                     .is_some_and(|(h, _)| *h == id)
                 {
-                    self.scripts.held_edit = None;
+                    self.session.held_script_edit = None;
                 }
                 let tx = Transaction(vec![Operation::SetScriptSource {
                     id,
@@ -1144,28 +1159,13 @@ impl MastikApp {
                 Err(wait) => ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait)),
             }
         }
-        // Text typed while a run held the document is stored once the hold ends.
-        if self.session.script_run.is_none()
-            && let Some((id, source)) = self.scripts.held_edit.take()
-            && self
-                .session
-                .doc
-                .script(id)
-                .is_some_and(|s| s.source != source)
-        {
-            self.session.name_step("Edit script", icon::FILE_CODE);
-            self.session.commit_run(
-                Transaction(vec![Operation::SetScriptSource { id, source }]),
-                "edit-script",
-            );
-        }
         // A document script changed under the pane (an undo, an agent's edit):
         // show it as it is, the keyboard staying with the code. Not while text
         // typed in it waits for a run's hold to end.
         if let Some(Which::Document(id)) = &self.scripts.current {
             let waiting = self
-                .scripts
-                .held_edit
+                .session
+                .held_script_edit
                 .as_ref()
                 .is_some_and(|(h, _)| h == id);
             match self.session.doc.script(*id) {
@@ -4372,6 +4372,51 @@ mod tests {
         let source = app.session.doc.script(id).map(|s| s.source.clone());
         assert_eq!(source.as_deref(), Some("sel.x += 10"), "stored after");
         assert_eq!(app.scripts.buffer, "sel.x += 10");
+    }
+
+    /// Text typed while a run holds the document stays with that document while
+    /// another is in front, and is stored when the hold ends with the Scripts
+    /// window closed.
+    /// flip: the held text kept on the app's `Scripts` → fails at "the other
+    /// document keeps nothing"; storing it only while the window is open → fails
+    /// at "stored with the window closed".
+    #[test]
+    fn typing_held_by_a_run_follows_its_document() {
+        use crate::command::running::INLINE;
+        use crate::command::tests::{key, pass};
+        let (ctx, mut app) = typing_at_end("sel.x += 1");
+        let Some(Which::Document(id)) = app.scripts.current.clone() else {
+            panic!("fixture: a document script is open");
+        };
+        let held = INLINE.replace(std::time::Duration::ZERO);
+        app.run_bar_line("while true do end");
+        INLINE.set(held);
+        type_code(&ctx, &mut app, "0");
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+
+        // Another document in front, as a tab switch parks this one.
+        let parked = std::mem::replace(&mut app.session, crate::session::EditorSession::new());
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        assert!(
+            app.session.held_script_edit.is_none(),
+            "the other document keeps nothing"
+        );
+        app.session = parked;
+        app.scripts.open = false;
+        pass(
+            &ctx,
+            &mut app,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+            egui::Modifiers::NONE,
+        );
+        assert!(app.session.script_run.is_none(), "fixture: stopped");
+        pass(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        let source = app.session.doc.script(id).map(|s| s.source.clone());
+        assert_eq!(
+            source.as_deref(),
+            Some("sel.x += 10"),
+            "stored with the window closed"
+        );
     }
 
     /// A document script changed under the pane while its code has the
