@@ -848,7 +848,7 @@ mod tests {
         encode(&px, Out::Png).expect("encodes").bytes
     }
 
-    /// A headless app with a 40 × 20 rect showing [`halves`] under `fit` and
+    /// A headless app with a 40 × 20 rect showing `halves` under `fit` and
     /// `crop`, the picture's id the bytes' own hash.
     fn app_with(
         ctx: &egui::Context,
