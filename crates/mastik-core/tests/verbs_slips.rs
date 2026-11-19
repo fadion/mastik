@@ -280,6 +280,29 @@ fn a_fill_width_is_shown_the_size_that_fills() {
     );
 }
 
+/// A text style written with a `sizing` is refused naming the geometry patch
+/// that sets it.
+///
+/// flip: `explain` without its sizing arm → fails at "the sizing's".
+#[test]
+fn a_styles_sizing_is_shown_the_geometry() {
+    let (mut doc, mut ids, page) = blank();
+    let text = run(
+        &mut doc,
+        &mut ids,
+        "create_text",
+        json!({ "parent": page.to_wire(), "text": "Hi" }),
+    )
+    .created[0];
+    let refused = why(
+        &doc,
+        &mut ids,
+        "set_text_style",
+        json!({ "nodes": [text.to_wire()], "style": { "sizing": "Auto" } }),
+    );
+    assert!(refused.contains("TextSizing"), "the sizing's: {refused}");
+}
+
 /// A layout item written with a `position`, in a tree or alone, is refused
 /// with the insets that take a child out of its frame's flow.
 ///

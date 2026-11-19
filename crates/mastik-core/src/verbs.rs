@@ -876,6 +876,14 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
     if model == "LayoutItem" && matches!(named.as_deref(), Some("position" | "absolute")) {
         return format!("{said}; a layout item has no position: {OUT_OF_FLOW}");
     }
+    if miss.unknown_field
+        && named.as_deref() == Some("sizing")
+        && matches!(model, "TextStyle" | "BlockStyle" | "ParagraphStyle")
+    {
+        return format!(
+            "{said}; a text's sizing is its geometry, as `set`'s {{\"geometry\": {{\"TextSizing\": \"Auto\"}}}}"
+        );
+    }
     // `fill` has no one meaning, so it is refused; the refusal names what does it.
     let word = miss
         .why
@@ -2298,7 +2306,7 @@ pub static VERBS: &[Verb] = &[
             req(
                 "tree",
                 ParamKind::Model("Tree"),
-                "the root layer, its properties and its `children`, bottom first; a child is placed by `transform` [1, 0, 0, 1, x, y]; a `copy_of` layer takes what it leaves out, `kind` and `children` too, from its main, so write only overrides; a layer's `like` names one whose fills, strokes, effects, opacity and blend it takes where it gives none, a text also a text's style and paragraph",
+                "the root layer, its properties and its `children`, bottom first; a child is placed by `transform` [1, 0, 0, 1, x, y]; a `copy_of` layer takes what it leaves out, `kind` and `children` too, from its main, so write only overrides; a fill binds as {\"brush\": {\"var\": <id>}}, a style as \"styles\": {\"text\": <id>}; a layer's `like` names one whose fills, strokes, effects, opacity and blend it takes where it gives none, a text also a text's style and paragraph",
             ),
             opt(
                 "index",
@@ -6150,7 +6158,7 @@ pub static VERBS: &[Verb] = &[
             req(
                 "item",
                 ParamKind::Model("LayoutItem"),
-                "their item properties",
+                "their item properties; a width or height `Auto` keeps the stored size, `FitContent` hugs, {\"Percent\": 100} fills",
             ),
         ],
         run: |ctx, a| {

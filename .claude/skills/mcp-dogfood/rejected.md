@@ -40,5 +40,8 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   frame fills by `{"Percent": 100}`, which the refusal of a `Fill` width now names.
 - **A 1px flex gap drawn crisp at every row.** A gap at a fractional offset covers two pixels
   partly, as in any rasteriser, as the seam rejected above.
+- **A tree copy's children matched by name rather than by `copy_of`.** A copy written without
+  children takes its main's whole; one giving children names each one's source, since two of a
+  main's layers may share a name.
 - **`@@` collapsed anywhere in a batch string.** Only a string starting with `@` is a reference,
   and the batch's `steps` says to double that leading `@`; a mid-string `@@` stays as written.

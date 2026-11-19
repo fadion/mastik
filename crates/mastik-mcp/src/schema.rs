@@ -490,7 +490,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "run_script",
-        doc: "Run a Luau script as one undo step, for loops and edits over many layers in one call; a raise or its 1 s budget changes nothing. `sel` is the list `nodes` names (`sel[1]`); a layer's box (world space), paints, effects, text style, layout, `name`, `text`, `children` read and write; a write tool is a function (`align(sel, \"left\")`); `random(seed)` draws. Answers what it printed, made and changed.",
+        doc: "Run a Luau script as one undo step, for loops and edits over many layers in one call; a raise or its 1 s budget changes nothing. `sel` is the list `nodes` names (`sel[1]`); a layer's `x`, `y`, `width`, `height` (world space), paints, effects, text style, layout, `name`, `text`, `children` read and write; a write tool is a function (`align(sel, \"left\")`); `random(seed)` draws. Answers what it printed, made and changed.",
         params: &[
             param("source", ParamKind::Text, true, "The script."),
             param("nodes", ParamKind::Nodes, false, "The layers `sel` holds."),
@@ -1182,7 +1182,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 112_900;
+        const ALL_BUDGET: usize = 113_100;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,
