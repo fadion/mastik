@@ -352,7 +352,7 @@ impl Assistant {
             return true;
         };
         let streaming = self.running.as_ref().map(|r| r.msg);
-        let applied = |id| self.applied.contains_key(&id);
+        let applied = |id| self.applied.get(&id).map(|a| a.map(|a| a.depth()));
         let saved = thread::for_saving(&self.msgs, streaming, &self.proposals, &applied);
         match thread::save(file, &saved) {
             Ok(()) => true,
@@ -973,14 +973,14 @@ impl MastikApp {
         self.assistant.msgs = saved.msgs;
         // An applied card's undo step is found again in the document's
         // history, whose serials were minted afresh.
-        let applied: Vec<&crate::mcp::propose::Proposal> = saved
+        let applied: Vec<(&crate::mcp::propose::Proposal, Option<usize>)> = saved
             .proposals
             .iter()
             .filter(|k| k.applied)
-            .map(|k| &k.proposal)
+            .map(|k| (&k.proposal, k.depth))
             .collect();
         let steps = crate::mcp::propose::applied_steps(&self.session, &applied);
-        self.assistant.applied = applied.iter().map(|p| p.id).zip(steps).collect();
+        self.assistant.applied = applied.iter().map(|(p, _)| p.id).zip(steps).collect();
         self.assistant.proposals = saved.proposals.into_iter().map(|k| k.proposal).collect();
         self.assistant.file = file;
         let a = &mut self.assistant;

@@ -52,6 +52,14 @@ pub(crate) struct Applied {
     depth: usize,
 }
 
+impl Applied {
+    /// The history depth of the step, which a saved card keeps to tell apart
+    /// the steps of cards sharing a title ([`applied_steps`]).
+    pub(crate) fn depth(&self) -> usize {
+        self.depth
+    }
+}
+
 /// The verbs a proposal may call: the write tools, never the kits and library;
 /// `set`, as a batch runs it; and `place_asset`, whose asset is made ready when
 /// it is proposed.
@@ -339,13 +347,14 @@ pub(crate) fn stale(session: &EditorSession, p: &Proposal) -> Option<String> {
 /// The undo step applying each of `applied` made, in their order, found again
 /// in a history whose serials were minted afresh (a reopened document, a thread
 /// loaded again): the done steps that are a `propose_edit` by a proposal's chat
-/// under its title. The cards sharing a chat and title take those steps in the
-/// order they were proposed, one each, only when there are as many steps as
-/// cards; else none of them takes one, since a card whose own step is gone
-/// would take another's, and a guess could undo the wrong step.
+/// under its title. Each card comes with the history depth its step had when
+/// saved. The cards sharing a chat and title take those steps in the order of
+/// those depths, one each, only when every one has a depth and there are as
+/// many steps as cards; else none of them takes one, since a card whose own
+/// step is gone would take another's, and a guess could undo the wrong step.
 pub(crate) fn applied_steps(
     session: &EditorSession,
-    applied: &[&Proposal],
+    applied: &[(&Proposal, Option<usize>)],
 ) -> Vec<Option<Applied>> {
     let steps_of = |p: &Proposal| -> Vec<Applied> {
         let agent = p.key.as_deref().map(super::keyed_agent);
@@ -366,15 +375,18 @@ pub(crate) fn applied_steps(
     };
     applied
         .iter()
-        .map(|p| {
-            let mut alike: Vec<u64> = applied
+        .map(|(p, _)| {
+            let mut alike: Vec<(Option<usize>, u64)> = applied
                 .iter()
-                .filter(|q| q.title == p.title && q.key == p.key)
-                .map(|q| q.id)
+                .filter(|(q, _)| q.title == p.title && q.key == p.key)
+                .map(|(q, depth)| (*depth, q.id))
                 .collect();
+            if alike.len() > 1 && alike.iter().any(|(depth, _)| depth.is_none()) {
+                return None;
+            }
             alike.sort_unstable();
             let steps = steps_of(p);
-            let at = alike.iter().position(|id| *id == p.id)?;
+            let at = alike.iter().position(|(_, id)| *id == p.id)?;
             (steps.len() == alike.len()).then(|| steps[at])
         })
         .collect()
@@ -544,14 +556,14 @@ mod tests {
     /// A proposal saved and read back is the same proposal, so a restored card
     /// still finds a changed layer; its applied step is found again by its
     /// note, and not where two steps would answer for it alone. Two cards of one
-    /// title take their steps in order; once the first's step is gone, the
-    /// second's is neither's.
+    /// title take their steps in the order they were applied; once the first's
+    /// step is gone, the second's is neither's.
     ///
     /// flip: `applied_steps` giving cards steps when the counts differ → fails
-    /// at "two steps".
+    /// at "two steps"; sorting the cards by id → fails at "in the order applied".
     #[test]
     fn a_saved_proposal_reads_back_and_finds_its_step() {
-        let applied_step = |s: &EditorSession, p: &Proposal| applied_steps(s, &[p])[0];
+        let applied_step = |s: &EditorSession, p: &Proposal| applied_steps(s, &[(p, None)])[0];
         let (mut engine, mut docs) = (Engine::default(), One::new());
         open(&mut engine, &mut docs, 1);
         let card = rect(&mut engine, &mut docs, 1, "Card");
@@ -581,10 +593,22 @@ mod tests {
             .clone();
         let second = apply(&mut docs.session, &again).unwrap();
         assert_eq!(applied_step(&docs.session, &back), None, "two steps");
+        let (one, two) = (Some(applied.depth()), Some(second.depth()));
         assert_eq!(
-            applied_steps(&docs.session, &[&back, &again]),
+            applied_steps(&docs.session, &[(&back, one), (&again, two)]),
             [Some(applied), Some(second)],
             "in order"
+        );
+        // Applied the other way round: the later proposal holds the earlier step.
+        assert_eq!(
+            applied_steps(&docs.session, &[(&back, two), (&again, one)]),
+            [Some(second), Some(applied)],
+            "in the order applied, not proposed"
+        );
+        assert_eq!(
+            applied_steps(&docs.session, &[(&back, None), (&again, two)]),
+            [None, None],
+            "a card without its depth cannot be told apart"
         );
 
         // The first is taken back and its step dropped from the history (the
@@ -597,7 +621,7 @@ mod tests {
         ok(&call(&mut engine, &mut docs, 1, "set_name", args));
         apply(&mut docs.session, &again).unwrap();
         assert_eq!(
-            applied_steps(&docs.session, &[&back, &again]),
+            applied_steps(&docs.session, &[(&back, one), (&again, two)]),
             [None, None],
             "the gone step's card takes none"
         );

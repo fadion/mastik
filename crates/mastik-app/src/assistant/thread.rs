@@ -145,6 +145,10 @@ pub(crate) struct Kept {
     /// The person applied it from its card.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub applied: bool,
+    /// The history depth of its applied step, which orders it among the cards
+    /// of its title when the thread is loaded again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<usize>,
 }
 
 /// A thread as its file holds it: the messages, and the proposals their
@@ -176,12 +180,13 @@ fn cut(text: &str, n: usize) -> String {
 /// The thread as saved: at most [`KEPT`] messages, nothing after a turn still
 /// streaming, each tool result within [`RESULT_KEPT`], and the proposals the
 /// kept cards show, newest first within [`PROPOSAL_BYTES`] each and
-/// [`PROPOSALS_BYTES`] in all. `applied` says which the person applied.
+/// [`PROPOSALS_BYTES`] in all. `applied` answers for each card the person
+/// applied, with its step's history depth when that step is known.
 pub(crate) fn for_saving(
     msgs: &[Msg],
     streaming: Option<usize>,
     proposals: &[Proposal],
-    applied: &dyn Fn(u64) -> bool,
+    applied: &dyn Fn(u64) -> Option<Option<usize>>,
 ) -> Saved {
     let end = streaming.map_or(msgs.len(), |i| i.min(msgs.len()));
     let mut kept: Vec<Msg> = msgs[..end]
@@ -256,9 +261,11 @@ pub(crate) fn for_saving(
         if cards.iter().any(|k| k.proposal.id == *id) {
             continue;
         }
+        let step = applied(*id);
         let card = Kept {
             proposal: p.clone(),
-            applied: applied(*id),
+            applied: step.is_some(),
+            depth: step.flatten(),
         };
         let size = serde_json::to_vec(&card).map_or(usize::MAX, |b| b.len());
         if size <= PROPOSAL_BYTES && size <= room {
@@ -389,7 +396,7 @@ mod tests {
 
     /// `for_saving` with no proposals.
     fn saving(msgs: &[Msg], streaming: Option<usize>) -> Vec<Msg> {
-        for_saving(msgs, streaming, &[], &|_| false).msgs
+        for_saving(msgs, streaming, &[], &|_| None).msgs
     }
 
     /// The tool row of agent message `m` at part `i`.
@@ -494,7 +501,7 @@ mod tests {
             proposal(3, "Fade", 10),
             proposal(4, "Elsewhere", 10),
         ];
-        let saved = for_saving(&msgs, None, &given, &|id| id == 1);
+        let saved = for_saving(&msgs, None, &given, &|id| (id == 1).then_some(Some(4)));
         let ids: Vec<(u64, bool)> = saved
             .proposals
             .iter()
@@ -515,7 +522,7 @@ mod tests {
             many.push(person(&format!("q{i}")));
             many.push(agent("a", None));
         }
-        let cut = for_saving(&many, None, &given, &|_| false);
+        let cut = for_saving(&many, None, &given, &|_| None);
         assert!(cut.proposals.is_empty(), "its card was cut");
     }
 

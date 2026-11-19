@@ -314,12 +314,13 @@ against an eager model, not a boundary against a hostile one. The seal's sentenc
   `propose_edit` renders as its card; one whose proposal was not kept (too large to save, or saved
   before proposals were) says *This proposal was not kept; ask again to see it.*
 - **An applied card is found again on load.** Step serials are minted afresh when a document's
-  history is read back, so a saved card records only that it was applied; loading the thread
-  finds its undo step again (`propose::applied_steps`): the done steps that are a `propose_edit`
-  by the card's chat under its title, which the applied cards sharing that chat and title take
-  one each in the order they were proposed. Found, the card offers *Undo* as before; when the
-  steps found are not one per such card (one card's own step gone, another's left), none of
-  them takes one and each reads *Applied as one step* with no *Undo*, since a guess could take
+  history is read back, so a saved card records that it was applied and the history depth of its
+  step; loading the thread finds its undo step again (`propose::applied_steps`): the done steps
+  that are a `propose_edit` by the card's chat under its title, which the applied cards sharing
+  that chat and title take one each in the order of their saved depths, which is the order they
+  were applied. Found, the card offers *Undo* as before; when the steps found are not one per
+  such card (one card's own step gone, another's left), or one of several such cards has no
+  saved depth, none of them takes one and each reads *Applied as one step* with no *Undo*, since a guess could take
   back the wrong step.
 - **A card read back without its photo or icon** (a thread's file never holds them) applies the
   host's copy while the host still holds one (`panel::held_copy`), so a tab switch keeps a
