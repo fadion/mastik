@@ -192,7 +192,7 @@ Further rules:
 ### The verb registry (`verbs.rs`)
 
 `verbs::VERBS` is every document edit a caller outside the canvas can name: an MCP tool, a Command Mode
-line or script (by the same names, `command-mode.md` §3–§5), a step of `mastik run`. A `Verb` is a public name (MCP's, spelled for an agent: `set_fills`,
+line or script (by the same names, `command-mode.md` §3–§5), a step of an MCP `batch` or `mastik run`. A `Verb` is a public name (MCP's, spelled for an agent: `set_fills`,
 `boolean`), a one-line doc, typed `Param`s (`ParamKind`: a node or nodes by wire form, a number, an
 index, a bool, text, one of a fixed set of words, or a model value in its serde form), and a function
 from a `Ctx` (document, `Resolved`, `IdSource`) to a `Done`: the `Transaction` to commit and the nodes
@@ -216,8 +216,8 @@ it created. A verb never commits; its caller does, as every edit is committed.
 - **What core cannot do, a caller lends** (`verbs::Lent`, held in `Ctx`): `add_image` borrows an
   `svg_in::ImageSink` to hash and size a picture, `fix_contrast` a `contrast::Probe` to measure
   against a rendered backdrop (`mastik_export::contrast::Measurer`). A verb without its loan is
-  refused, but for `fill_content`, which fills the texts and leaves the avatars out; `mastik run`
-  lends both.
+  refused, but for `fill_content`, which fills the texts and leaves the avatars out; the MCP's
+  writes, and so `mastik run`, lend both.
 - **`clean_up` is the *Clean up…* box's plan** (`clean_up::plan`, its rule in `app-canvas-chrome.md`,
   *Clean up*), one bool per rule plus `skip_locked`, over every non-draft page unless given `nodes`.
 - **`fill_content` is the *Fill with content…* box's plan** (`content_fill::plan`, its rule in
@@ -265,7 +265,8 @@ it created. A verb never commits; its caller does, as every edit is committed.
   A string starting `@@` is written with one `@` (`"@@home"` is the text *@home*). A step with a
   key other than `verb`, `args` and `as` is refused, since a misspelled `args` would run the verb
   with none, at its widest. A refusal names its step, counted from 1, and keeps the steps before it.
-  `mastik run <script.json> [--in <file.mastik>] -o <out.mastik>` is its door (`export.md`).
+  Its callers are the app's own scripted edits and the core tests; `mastik run` takes the MCP
+  `batch`'s `{ tool, args, as }` steps instead (`export.md`).
 - **A layer verb refuses a page** (`Args::layer`, `Args::layers`): placement, pivot, eye, lock,
   opacity, blend and exports have no control on a page. `bind_variable` refuses one for the eye
   and the opacity too, while its paint fields pass a page on to its shapes. `set_name` and

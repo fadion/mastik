@@ -165,6 +165,7 @@ mod reader;
 mod render_cli;
 mod repeat;
 mod rulers;
+mod run_cli;
 mod scripts;
 mod session;
 mod settings;
@@ -234,13 +235,9 @@ enum Command {
         theirs: String,
         out: Option<String>,
     },
-    /// Run a script of registry verbs (`mastik_core::verbs::run_script`) against
-    /// `input`, or a new document, and write the result to `out`.
-    Run {
-        script: String,
-        input: Option<String>,
-        out: String,
-    },
+    /// `mastik run`: a Luau script or a JSON batch, as the MCP runs them, applied
+    /// to a document or a new one and written to `-o`.
+    Run(run_cli::Run),
     /// `mastik kit update`: the kits' waiting updates taken into each document.
     KitUpdate(kit_cli::Update),
     /// Write the document's variables and styles as DTCG `tokens.json`
@@ -426,7 +423,6 @@ fn unicode_args(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Vec<St
 const DIFF_USAGE: &str = "usage: mastik diff <a.mastik> <b.mastik> [--json]";
 const MERGE_USAGE: &str =
     "usage: mastik merge <base.mastik> <ours.mastik> <theirs.mastik> [-o <out.mastik>]";
-const RUN_USAGE: &str = "usage: mastik run <script.json> [--in <file.mastik>] -o <out.mastik>";
 const MCP_PROXY_USAGE: &str =
     "usage: mastik mcp-proxy [--client <key>] [--document <path>] [--tools core|all]";
 const SERVE_USAGE: &str = "usage: mastik serve (an agent picks documents with use_document)";
@@ -448,7 +444,7 @@ commands:
   merge      a three-way merge, as git's merge driver
   tokens     DTCG design tokens out of a document, or into one
   kit        the kits' waiting updates, taken into documents
-  run        a script of registry verbs, applied to a document
+  run        a Luau script or a JSON batch, applied to a document
   serve      documents behind the MCP endpoint, with no window
   mcp-proxy  the MCP server an agent harness configures
   gui        the window
@@ -464,7 +460,7 @@ const COMMANDS: [(&str, &str); 11] = [
     ("merge", MERGE_USAGE),
     ("tokens", TOKENS_USAGE),
     ("kit", kit_cli::USAGE),
-    ("run", RUN_USAGE),
+    ("run", run_cli::USAGE),
     ("serve", SERVE_USAGE),
     ("mcp-proxy", MCP_PROXY_USAGE),
     ("gui", GUI_USAGE),
@@ -509,7 +505,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Some("kit") => kit_cli::parse(&args[1..]).map(Command::KitUpdate),
         Some("merge") => parse_merge(&args[1..]),
         Some("check") => check_cli::parse(&args[1..]).map(Command::Check),
-        Some("run") => parse_run(&args[1..]),
+        Some("run") => run_cli::parse(&args[1..]).map(Command::Run),
         Some("mcp-proxy") => parse_mcp_proxy(&args[1..]),
         // Absolute, so the session's save path and `prefs.last_document` survive a
         // different working directory next launch.
@@ -634,73 +630,6 @@ fn run_merge(base: &str, ours: &str, theirs: &str, out: Option<&str>) -> Result<
         eprintln!("conflict: {c}");
     }
     Ok(merged.conflicts.is_empty())
-}
-
-fn parse_run(args: &[String]) -> Result<Command, String> {
-    const USAGE: &str = RUN_USAGE;
-    let (mut script, mut input, mut out) = (None, None, None);
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            flag @ ("--in" | "-o" | "--out") => {
-                i += 1;
-                let value = args
-                    .get(i)
-                    .filter(|v| !v.starts_with('-'))
-                    .ok_or_else(|| format!("{flag} wants a file\n{USAGE}"))?
-                    .clone();
-                match flag {
-                    "--in" => input = Some(value),
-                    _ => out = Some(value),
-                }
-            }
-            other if other.starts_with('-') => {
-                return Err(format!("unknown option {other}\n{USAGE}"));
-            }
-            other if script.is_some() => {
-                return Err(format!("one script at a time; also got {other}\n{USAGE}"));
-            }
-            other => script = Some(other.to_string()),
-        }
-        i += 1;
-    }
-    match (script, out) {
-        (Some(script), Some(out)) => Ok(Command::Run { script, input, out }),
-        _ => Err(USAGE.to_string()),
-    }
-}
-
-/// [`Command::Run`]: the script's steps committed one by one, the result saved
-/// atomically. Answers a line per step that made something.
-fn run_script(script: &str, input: Option<&str>, out: &str) -> Result<Vec<String>, String> {
-    let text = std::fs::read_to_string(script).map_err(|e| format!("cannot read {script}: {e}"))?;
-    let steps: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("{script} is not JSON: {e}"))?;
-    let mut ids = mastik_core::IdSource::new(session::random_actor());
-    let mut doc = match input {
-        Some(file) => {
-            let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
-            mastik_core::io::load(&bytes).map_err(|e| format!("cannot load {file}: {e}"))?
-        }
-        None => mastik_core::Document::new(ids.mint()),
-    };
-    let mut pictures = panels::import_files::Pictures;
-    let mut measurer = mastik_export::contrast::Measurer::default();
-    let lent = mastik_core::verbs::Lent {
-        images: Some(&mut pictures),
-        contrast: Some(&mut measurer),
-    };
-    let made = mastik_core::verbs::run_script(&mut doc, &mut ids, lent, &steps)
-        .map_err(|e| format!("{script}: {e}"))?;
-    let bytes = mastik_core::io::save(&doc).map_err(|e| format!("cannot save: {e}"))?;
-    atomic::write(std::path::Path::new(out), &bytes)
-        .map_err(|e| format!("cannot write {out}: {e}"))?;
-    Ok(made
-        .iter()
-        .enumerate()
-        .filter(|(_, made)| !made.is_empty())
-        .map(|(i, made)| format!("step {}: {}", i + 1, made.join(" ")))
-        .collect())
 }
 
 /// What `mastik tokens` takes, for its refusals and `help tokens`.
@@ -1218,14 +1147,12 @@ fn main() {
         // `diff`'s codes: 1 is "a document fails", so an unreadable one is 2.
         Ok(Command::Check(check)) => std::process::exit(check_cli::run(&check)),
         Ok(Command::KitUpdate(update)) => std::process::exit(kit_cli::run(&update)),
-        Ok(Command::Run { script, input, out }) => {
-            run_script(&script, input.as_deref(), &out).map(|lines| {
-                for line in lines {
-                    println!("{line}");
-                }
-                eprintln!("wrote {out}");
-            })
-        }
+        Ok(Command::Run(run)) => run_cli::run(&run).map(|(lines, said)| {
+            for line in lines {
+                println!("{line}");
+            }
+            eprintln!("{said}");
+        }),
         // `diff`'s codes: 1 is "conflicts", so a failure is 2.
         Ok(Command::Merge {
             base,

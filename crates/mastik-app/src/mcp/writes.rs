@@ -171,10 +171,10 @@ fn named_paths<'a>(
 /// `batch`: each step's verb or `set` committed in turn, each reading what the last left,
 /// then joined into one undo step named `batch`. A refused step takes back the
 /// steps before it, so the batch lands whole or not at all. A step names what an
-/// earlier one made as `"@label"`, the label that step gave in `as`, as
-/// `mastik script` does, and a layer an `insert_subtree` step named by
-/// `"@label/Path"`, its path of names below the root; `base_rev` holds for every
-/// step.
+/// earlier one made as `"@label"`, the label that step gave in `as`, as a core
+/// script does, a layer an `insert_subtree` step named by `"@label/Path"`, its
+/// path of names below the root, and the first page as `"@page"`; `base_rev`
+/// holds for every step.
 pub(super) fn batch(
     conn: &Connection,
     s: &mut EditorSession,
@@ -188,7 +188,8 @@ pub(super) fn batch(
         return Err("`steps` is empty".into());
     }
     let base = args.get("base_rev").filter(|v| !v.is_null()).cloned();
-    let mut labels = HashMap::new();
+    // `"@page"` is the first page, as in a core script; a step labelled `page` wins.
+    let mut labels = HashMap::from([("page".to_owned(), s.doc.first_page().to_wire())]);
     let mut answers = Vec::new();
     let mut made = 0;
     let depth = s.history.undo_depth();

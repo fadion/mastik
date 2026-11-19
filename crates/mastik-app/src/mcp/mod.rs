@@ -1575,6 +1575,26 @@ fn undo(s: &mut EditorSession, agent: &str) -> Result<Answer, String> {
     }
 }
 
+/// A `batch` or `run_script` call run straight on `s`, outside any client's
+/// connection: `mastik run`'s two kinds of script, answered as the MCP answers
+/// them. `args` carries no `base_rev`, the one thing that reads a connection.
+pub(crate) fn run_offline(
+    s: &mut EditorSession,
+    tool: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    const CLIENT: &str = "mastik run";
+    let conn = Connection::default();
+    let answer = match tool {
+        "batch" => writes::batch(&conn, s, CLIENT, args)?,
+        _ => run_script(&conn, s, CLIENT, args)?,
+    };
+    match answer {
+        Answer::Json(v) => Ok(v),
+        _ => Err(format!("`{tool}` answers JSON")),
+    }
+}
+
 /// The most printed lines `run_script` answers; the earlier ones are counted.
 const PRINTED_LISTED: usize = 100;
 
