@@ -431,7 +431,7 @@ const NOISE_TOLERANCE: u8 = 3;
 /// so one level's difference in one channel turns the hue by several.
 const HUE_TOLERANCE: u8 = 8;
 
-/// [`compare`] at `tolerance` on the **premultiplied** pixels, and no more than
+/// `compare` at `tolerance` on the **premultiplied** pixels, and no more than
 /// one channel in a hundred off by anything: a wrong lattice index or a swapped
 /// operand moves most of the buffer, a fused rounding a handful of pixels.
 ///
@@ -448,7 +448,7 @@ fn compare_noise(name: &str, got: &[u8], want: &[u8], tolerance: u8) {
     );
 }
 
-/// `check_on` for a noise pass, compared by [`compare_noise`].
+/// `check_on` for a noise pass, compared by `compare_noise`.
 fn check_noise(name: &str, noise: mastik_core::Noise, px: &[u8]) {
     let Some(g) = gpu() else {
         eprintln!("no GPU adapter; skipping {name}");

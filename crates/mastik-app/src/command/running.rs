@@ -28,7 +28,7 @@ const LANDS_INLINE: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 thread_local! {
-    /// [`LANDS_INLINE`] in tests: long, so a run lands where it starts and a
+    /// `LANDS_INLINE` in tests: long, so a run lands where it starts and a
     /// test reads its result at once; a test of a run in flight sets it to zero.
     pub(crate) static INLINE: std::cell::Cell<Duration> =
         const { std::cell::Cell::new(Duration::from_secs(120)) };

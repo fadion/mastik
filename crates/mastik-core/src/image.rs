@@ -1881,7 +1881,7 @@ mod tests {
         g
     }
 
-    /// The sRGB stops [`mix_in_srgb`] writes, mixed linearly as every sRGB reader
+    /// The sRGB stops `mix_in_srgb` writes, mixed linearly as every sRGB reader
     /// does, stay within one 8-bit level of the true Oklab mix everywhere on the
     /// widest spans. flip: `MIX_MAX_DEPTH` at 3 → fails at the level bound.
     #[test]
@@ -1933,7 +1933,7 @@ mod tests {
         }
     }
 
-    /// An sRGB ramp passes through [`mix_in_srgb`] with its stops as they were, and
+    /// An sRGB ramp passes through `mix_in_srgb` with its stops as they were, and
     /// a hard stop in an Oklab ramp stays hard.
     #[test]
     fn mixing_in_srgb_keeps_srgb_ramps_and_hard_stops() {
