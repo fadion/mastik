@@ -303,7 +303,8 @@ mod tests {
     /// flip: `refused` without its `is_tool` filter → fails at "as no tool";
     /// `describe_tools` without its query's matches above the level → fails at
     /// "the query's matches above Look"; keeping a match whatever level it needs
-    /// → fails at "nothing above Edit".
+    /// → fails at "nothing above Edit"; the named partition without the level
+    /// test → fails at "nor when named".
     #[test]
     fn a_chat_is_told_the_truth_about_tools_it_cannot_use() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -395,6 +396,19 @@ mod tests {
         assert!(
             ok(&found).get("beyond_access").is_none(),
             "nothing above Edit, `propose_edit` below it: {found:?}"
+        );
+        let args = json!({ "names": ["propose_edit"] });
+        let found = keyed(
+            &mut engine,
+            &mut docs,
+            7,
+            Some("assistant-4"),
+            "describe_tools",
+            args,
+        );
+        assert!(
+            ok(&found).get("beyond_access").is_none(),
+            "nor when named: {found:?}"
         );
 
         let lists = grants.lists();

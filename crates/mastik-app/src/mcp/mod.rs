@@ -972,7 +972,7 @@ fn node(args: &Value, name: &str) -> Result<Option<NodeId>, String> {
 /// [`page_by_name`] for `tool`'s `args`, and for each step of a `batch` or call
 /// of a `propose_edit`, its refusal naming the step.
 fn pages_by_name(s: &EditorSession, tool: &str, args: &mut Value) -> Result<(), String> {
-    page_by_name(s, args)?;
+    page_by_name(s, args, false)?;
     let (list, what) = match tool {
         "batch" => ("steps", "step"),
         "propose_edit" => ("calls", "call"),
@@ -981,7 +981,7 @@ fn pages_by_name(s: &EditorSession, tool: &str, args: &mut Value) -> Result<(), 
     let steps = args.get_mut(list).and_then(Value::as_array_mut);
     for (n, step) in steps.into_iter().flatten().enumerate() {
         if let Some(args) = step.get_mut("args") {
-            page_by_name(s, args).map_err(|why| format!("{what} {}: {why}", n + 1))?;
+            page_by_name(s, args, true).map_err(|why| format!("{what} {}: {why}", n + 1))?;
         }
     }
     Ok(())
@@ -989,13 +989,14 @@ fn pages_by_name(s: &EditorSession, tool: &str, args: &mut Value) -> Result<(), 
 
 /// A `page` argument given as a page's name, as an agent reads it in the
 /// preamble or a tree, written as that page's id; one no page has, or several
-/// do, is refused naming the pages with their ids. An id is left as it is.
-fn page_by_name(s: &EditorSession, args: &mut Value) -> Result<(), String> {
+/// do, is refused naming the pages with their ids. An id is left as it is, and
+/// so is an `@` name in a batch step or proposal call (`labels`), where it is a
+/// label for an earlier step's page; a direct call substitutes no labels.
+fn page_by_name(s: &EditorSession, args: &mut Value, labels: bool) -> Result<(), String> {
     let Some(Value::String(name)) = args.get("page") else {
         return Ok(());
     };
-    // An id, or a batch's or proposal's label for an earlier step's page.
-    if NodeId::from_wire(name).is_some() || name.starts_with('@') {
+    if NodeId::from_wire(name).is_some() || labels && name.starts_with('@') {
         return Ok(());
     }
     let pages: Vec<(NodeId, &str)> = s
@@ -2801,7 +2802,8 @@ mod tests {
     ///
     /// flip: `page_by_name` returning before its lookup → fails at "by name";
     /// `pages_by_name` reading the call's own `page` alone → fails at "a batch
-    /// step by name".
+    /// step by name"; passing over an `@` name in a direct call → fails at "an
+    /// @ name directly".
     #[test]
     fn a_page_is_found_by_its_name() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -2835,6 +2837,23 @@ mod tests {
         let out = call(&mut engine, &mut docs, 1, "batch", draft);
         assert!(!out.is_error, "a batch step by name: {:?}", out.content);
         assert!(docs.session.doc.pages()[0].draft, "the page is a draft");
+
+        // A direct call substitutes no labels, so an `@` name is a page's name.
+        assert!(docs.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetName {
+                id: page,
+                name: "@Mobile".into(),
+            }
+        ])));
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "set_page_draft",
+            json!({ "page": "@Mobile", "draft": false }),
+        );
+        assert!(!out.is_error, "an @ name directly: {:?}", out.content);
+        assert!(!docs.session.doc.pages()[0].draft);
     }
 
     /// `export_png`'s `region` draws that rectangle of the page, up to 2×, and

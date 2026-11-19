@@ -66,9 +66,13 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
     let mut matching: Vec<(u8, &Value)> =
         all.iter().filter_map(|d| rank(d).map(|r| (r, d))).collect();
     matching.sort_by_key(|(r, _)| *r);
+    // A named tool a higher level drops is neither beyond this chat's access nor
+    // missing; it is left out of both.
+    let higher = |n: &str| needs(n).is_none_or(|l| level.is_none_or(|at| l > at));
     let (mut beyond_access, not_found): (Vec<&str>, Vec<&str>) = names
         .iter()
         .filter(|n| !all.iter().any(|d| d["name"] == **n))
+        .filter(|n| !beyond.iter().any(|d| d["name"] == **n) || higher(n))
         .partition(|n| beyond.iter().any(|d| d["name"] == **n));
     // A query's matches above the level too, the ones a higher level runs: an
     // agent that searched for a thing it may not do would otherwise conclude
