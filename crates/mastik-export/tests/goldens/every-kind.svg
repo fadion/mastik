@@ -44,6 +44,23 @@
       <stop offset="0.5" stop-color="#ffc828"/>
       <stop offset="1" stop-color="#005ac8"/>
     </linearGradient>
+    <linearGradient id="grad-601d_27-fill-0" gradientUnits="userSpaceOnUse" spreadMethod="reflect" x1="0" y1="0" x2="20" y2="0">
+      <stop offset="0" stop-color="#e62828"/>
+      <stop offset="0.0312" stop-color="#e12f34"/>
+      <stop offset="0.0625" stop-color="#db353e"/>
+      <stop offset="0.125" stop-color="#d03e4f"/>
+      <stop offset="0.1875" stop-color="#c5455d"/>
+      <stop offset="0.25" stop-color="#ba4a6a"/>
+      <stop offset="0.3125" stop-color="#af4e76"/>
+      <stop offset="0.375" stop-color="#a45181"/>
+      <stop offset="0.5" stop-color="#8e5497"/>
+      <stop offset="0.625" stop-color="#7753ab"/>
+      <stop offset="0.75" stop-color="#5f50bf"/>
+      <stop offset="0.8125" stop-color="#524dc9"/>
+      <stop offset="0.875" stop-color="#4549d3"/>
+      <stop offset="0.9375" stop-color="#3843dc"/>
+      <stop offset="1" stop-color="#283ce6"/>
+    </linearGradient>
   </defs>
   <g style="isolation:isolate">
     <g style="isolation:isolate">
@@ -62,7 +79,10 @@
           </g>
         </g>
         <path data-name="Star 1" transform="matrix(1 0 0 1 310 20)" d="M33.5413,11.4585 L36.2115,20.0983 C36.7295,21.7742 38.2789,22.9171 40.033,22.9172 L48.5413,22.9175 C50.2035,22.9176 51.6807,23.9773 52.2133,25.5519 C52.7459,27.1264 52.2154,28.8653 50.8946,29.8744 L43.677,35.3886 C42.345,36.4063 41.7888,38.1465 42.2836,39.748 L45.0972,48.8542 C45.5761,50.404 44.9981,52.0856 43.6677,53.0136 C42.3373,53.9416 40.5596,53.9032 39.2705,52.9185 L32.4281,47.6918 C30.9946,46.5968 29.0054,46.5968 27.5719,47.6918 L20.7295,52.9185 C19.4404,53.9032 17.6627,53.9416 16.3323,53.0136 C15.0019,52.0856 14.4239,50.404 14.9028,48.8542 L17.7164,39.748 C18.2112,38.1465 17.655,36.4063 16.323,35.3886 L9.1054,29.8744 C7.7846,28.8653 7.2541,27.1264 7.7867,25.5519 C8.3193,23.9773 9.7965,22.9176 11.4587,22.9175 L19.967,22.9172 C21.7211,22.9171 23.2705,21.7742 23.7885,20.0983 L26.4587,11.4585 C26.9386,9.9055 28.3745,8.8464 30,8.8464 C31.6255,8.8464 33.0614,9.9055 33.5413,11.4585 Z" fill="#dc3c5a"/>
-        <line data-name="Line 1" transform="matrix(1 0 0 1 20 100)" x1="0" y1="0" x2="120" y2="30" stroke="#5a5a64" stroke-width="3" stroke-linejoin="miter" stroke-linecap="butt"/>
+        <g data-name="Line 1" transform="matrix(1 0 0 1 20 100)">
+          <marker id="mk-601d-7-0-end" markerUnits="strokeWidth" orient="14.0362" refX="-1.5" refY="0" viewBox="-4 -2.5 5 5" markerWidth="5" markerHeight="5" overflow="visible"><path d="M0,0 L-3,1.5 L-3,-1.5 Z" fill="#5a5a64"/></marker>
+          <path d="M0,0 L115.6344,28.9086" fill="none" stroke="#5a5a64" stroke-width="3" stroke-linejoin="miter" stroke-linecap="butt" marker-end="url(#mk-601d-7-0-end)"/>
+        </g>
         <path data-name="Triangle" transform="matrix(1 0 0 1 160 100)" d="M13.9811,4.1943 L40,12 L26.5677,38.8647 C26.0681,39.8638 25.0548,40.5026 23.9379,40.5226 C22.8211,40.5425 21.7856,39.9403 21.2507,38.9596 L6.9897,12.8144 C5.8248,10.6788 6.0647,8.0511 7.5971,6.1618 C9.1295,4.2724 11.6511,3.4953 13.9811,4.1943 Z" fill="#8c64dc"/>
         <g style="isolation:isolate">
           <g data-name="Pair" transform="matrix(1 0 0 1 240 100)" opacity="0.6">
@@ -81,6 +101,12 @@
         </g>
         <path data-name="Spiral 1" transform="matrix(1 0 0 1 20 240)" d="M26.478,31.4494 C26.0133,31.3326 25.6066,30.8753 25.5343,30.245 C25.4502,29.5109 25.8398,28.5709 26.7113,27.9894 C27.5828,27.4078 28.9254,27.22 30.2421,27.7777 C31.5588,28.3354 32.8142,29.6517 33.369,31.4787 C33.9238,33.3057 33.7442,35.6209 32.5959,37.647 C31.4477,39.6731 29.3258,41.3651 26.7113,41.9466 C24.0968,42.5282 21.0219,41.9639 18.4727,40.1143 C15.9236,38.2647 13.9506,35.1327 13.3958,31.4787 C12.841,27.8247 13.7381,23.6937 16.1189,20.3758 C18.4996,17.0578 22.3538,14.6137 26.7113,14.0321 C31.0688,13.4506 35.8759,14.767 39.6576,17.9085 C43.4392,21.0499 46.1297,25.9977 46.6845,31.4787 C47.2393,36.9597 45.6247,42.9064 42.0114,47.5163 C38.3982,52.1261 32.8118,55.3224 26.7113,55.9039 C20.6108,56.4855 14.0714,54.4169 9.0573,49.9836 C4.0431,45.5502 0.6351,38.7867 0.0803,31.4787 C-0.4745,24.1707 1.8577,16.4082 6.7034,10.5065 C11.5491,4.6048 18.8678,0.6564 26.7113,0.0749 C34.5547,-0.5067 42.8264,2.3139 49.073,8.0392 C55.3196,13.7644 59.4452,22.3437 60,31.4787" fill="none" stroke="#3c3c46" stroke-width="2" stroke-linejoin="miter" stroke-linecap="butt"/>
         <path data-name="Arc 1" transform="matrix(1 0 0 1 100 280)" d="M0,0 C7.2194,12.5043 20.5613,20.2073 35,20.2073 C49.4387,20.2073 62.7806,12.5043 70,0" fill="none" stroke="#3c3c46" stroke-width="2" stroke-linejoin="miter" stroke-linecap="butt"/>
+        <g data-name="Knockout" transform="matrix(1 0 0 1 240 175)">
+          <mask id="mask-601d_26" maskUnits="userSpaceOnUse" x="-6" y="-5" width="72" height="60" style="mask-type:luminance"><rect x="-6" y="-5" width="72" height="60" fill="#fff"/><path d="M45,25 C45,33.2843 38.2843,40 30,40 C21.7157,40 15,33.2843 15,25 C15,16.7157 21.7157,10 30,10 C38.2843,10 45,16.7157 45,25 Z" fill="#000"/></mask>
+          <g mask="url(#mask-601d_26)">
+            <rect data-name="Ramp" x="0" y="0" width="60" height="50" fill="url(#grad-601d_27-fill-0)"/>
+          </g>
+        </g>
         <text data-name="Text 1" transform="matrix(1 0 0 1 160 250)" x="0" y="17" xml:space="preserve" fill="#000000"><tspan font-family="Inter" font-size="18" font-weight="500">Golden &amp; &lt;escaped&gt;</tspan></text>
       </g>
     </g>

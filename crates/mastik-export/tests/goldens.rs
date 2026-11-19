@@ -650,6 +650,75 @@ fn golden_document() -> (Document, Resolved) {
     ]))
     .expect("blends, arcs, a rounded clip and the open kinds");
 
+    // A head on the line's end, and a reflected ramp mixed in Oklab under an
+    // inverted shape mask: the writers' marker, dense-stop and knock-out paths.
+    let (knockout, hole, ramp) = (ids.mint(), ids.mint(), ids.mint());
+    let mut reflected = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(20.0, 0.0))
+        .with_stops([
+            (0.0_f32, Color::from_rgba8(230, 40, 40, 255)),
+            (1.0_f32, Color::from_rgba8(40, 60, 230, 255)),
+        ]);
+    reflected.extend = mastik_core::peniko::Extend::Reflect;
+    reflected.interpolation_cs = mastik_core::peniko::color::ColorSpaceTag::Oklab;
+    doc.apply(&Transaction(vec![
+        Operation::SetStrokes {
+            id: line,
+            strokes: keyed_by_position([Stroke {
+                brush: Brush::Solid(Color::from_rgba8(90, 90, 100, 255)).into(),
+                width: 3.0,
+                end: mastik_core::Marker::Arrow,
+                ..Default::default()
+            }]),
+        },
+        Operation::CreateNode {
+            id: knockout,
+            parent: artboard,
+            index: 14,
+            kind: NodeKind::Group,
+            transform: Some(Affine::translate((240.0, 175.0))),
+            name: Some("Knockout".into()),
+        },
+        Operation::CreateNode {
+            id: hole,
+            parent: knockout,
+            index: 0,
+            kind: NodeKind::Ellipse {
+                size: Size::new(30.0, 30.0),
+                arc: mastik_core::EllipseArc::default(),
+            },
+            transform: Some(Affine::translate((15.0, 10.0))),
+            name: Some("Hole".into()),
+        },
+        Operation::SetMask {
+            id: hole,
+            mask: true,
+        },
+        Operation::SetMaskInverted {
+            id: hole,
+            inverted: true,
+        },
+        Operation::CreateNode {
+            id: ramp,
+            parent: knockout,
+            index: 1,
+            kind: NodeKind::Rect {
+                size: Size::new(60.0, 50.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: Some("Ramp".into()),
+        },
+        Operation::SetFills {
+            id: ramp,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Gradient(reflected.into()).into(),
+                visible: true,
+            }]),
+        },
+    ]))
+    .expect("a head, an inverted mask and an Oklab ramp");
+
     let res = Resolved::rebuild(&doc);
     (doc, res)
 }
