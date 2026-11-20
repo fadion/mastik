@@ -228,6 +228,16 @@ answers the `Take` (start, inputs, length). `Replay::new(doc, take, actor)` play
 copy; `advance(ms)` gives each input due in that span at its own time, so a replay stepped frame
 by frame for a video reaches exactly the state the run had at each time.
 
+**Video** (`mastik_export::video::video(doc, take, actor, options, progress)`) replays a take on
+a fresh copy at a fixed rate (1 to 60 frames a second), a frame at every frame time from the start
+to the take's length, each drawn by `VelloCpuRenderer::render_play_to_rgba` at the options' scale
+(capped at 4096 pixels a side) over white, every frame cut or padded to the first one's size. A
+GIF loops, each frame on its own palette, its delays carrying their rounding so they add up to
+the take. An MP4 is H.264 from OpenH264 built from source (BSD-2-Clause; the C++ toolchain `mlua`
+already needs builds it, and its patent licence covers only Cisco's own binaries), at even sizes,
+muxed by the `mp4` crate with one sample a frame. `progress` hears each frame and stops the job by
+answering false.
+
 ## Notices
 
 `Missing` and `Expression` are said once per action; `Script` and `ScriptNeedsInput` per run;

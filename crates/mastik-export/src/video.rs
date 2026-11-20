@@ -1,0 +1,326 @@
+//! Video from a prototype's take: the take replayed on a fresh copy of the
+//! document, frame by frame at a fixed rate, each frame drawn by the CPU
+//! backend and encoded as an animated GIF or an H.264 MP4. Nothing is captured
+//! from a screen, so a video is the same wherever it is made.
+//!
+//! MP4 goes through OpenH264, built from source, and the `mp4` crate's muxer;
+//! GIF through the `gif` crate, each frame quantised to its own palette.
+
+use mastik_core::Document;
+use mastik_play::{Replay, StartError, Take};
+use mastik_render::{ImageStore, VelloCpuRenderer};
+
+/// The container and codec a video is written in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// An animated GIF that loops, frame times rounded to its hundredths.
+    Gif,
+    /// H.264 in an MP4, every frame a sample of the same length.
+    Mp4,
+}
+
+/// How a video is made.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Options {
+    pub format: Format,
+    /// Frames a second, 1 to [`MAX_FPS`].
+    pub fps: u32,
+    /// Pixels per screen unit, more than 0; the frame's side is capped at
+    /// [`MAX_SIDE`].
+    pub scale: f64,
+}
+
+/// The most frames a second a video takes.
+pub const MAX_FPS: u32 = 60;
+/// The longest side of a video frame, in pixels: H.264's level 5.1 and a GIF
+/// viewer both stop well short of a canvas export's size.
+pub const MAX_SIDE: u32 = 4096;
+
+/// Why a video was not made.
+#[derive(Debug, thiserror::Error)]
+pub enum VideoError {
+    #[error("the take does not start: {0}")]
+    Start(#[from] StartError),
+    #[error("the frame rate is 1 to {MAX_FPS} and the scale more than 0")]
+    Options,
+    #[error("the screen has no size to draw")]
+    Empty,
+    #[error("stopped")]
+    Cancelled,
+    #[error("the encoder failed: {0}")]
+    Encode(String),
+}
+
+/// How many frames a video of `take` at `fps` has: one at every frame time from
+/// the start to the take's end, both included.
+pub fn frame_count(take: &Take, fps: u32) -> usize {
+    (take.length.max(0.0) * f64::from(fps.max(1)) / 1000.0).floor() as usize + 1
+}
+
+/// `take` replayed on a copy of `doc` as a video, its frames drawn at
+/// `options.scale` over white. `actor` is the replay's own, as a player's is.
+/// `progress` hears each frame drawn, as (done, of), and stops the video by
+/// answering `false`: a long take is a long job.
+pub fn video(
+    doc: &Document,
+    take: &Take,
+    actor: u64,
+    options: &Options,
+    progress: &mut dyn FnMut(usize, usize) -> bool,
+) -> Result<Vec<u8>, VideoError> {
+    if !(1..=MAX_FPS).contains(&options.fps) || !(options.scale.is_finite() && options.scale > 0.0)
+    {
+        return Err(VideoError::Options);
+    }
+    let mut replay = Replay::new(doc, take.clone(), actor)?;
+    let mut images = ImageStore::new();
+    images.prepare(doc);
+    let mut renderer = VelloCpuRenderer::new();
+    let total = frame_count(take, options.fps);
+    let step = 1000.0 / f64::from(options.fps);
+    let mut sink = match options.format {
+        Format::Gif => Sink::Gif(None),
+        Format::Mp4 => Sink::Mp4(None),
+    };
+    let mut size: Option<(u32, u32)> = None;
+    for i in 0..total {
+        if i > 0 {
+            // Each frame at its own time from the start, so rounding never
+            // drifts.
+            let at = i as f64 * step;
+            replay.advance(at - replay.player().now());
+        }
+        let p = replay.player();
+        let scene = p.scene();
+        let scale = scale_for(options.scale, scene.size);
+        let (rgba, w, h) =
+            renderer.render_play_to_rgba(p.document(), p.resolved(), &images, &scene, scale);
+        if w == 0 || h == 0 {
+            return Err(VideoError::Empty);
+        }
+        // Every frame takes the first one's size: a screen of another size is
+        // drawn into its top-left corner and cut off or padded white.
+        let (fw, fh) = *size.get_or_insert((w, h));
+        let frame = fit(&rgba, (w, h), (fw, fh));
+        sink.push(frame, (fw, fh), i, options.fps)?;
+        if !progress(i + 1, total) {
+            return Err(VideoError::Cancelled);
+        }
+    }
+    sink.finish(options.fps)
+}
+
+/// `asked` lowered so a screen of `size` is at most [`MAX_SIDE`] pixels a side.
+fn scale_for(asked: f64, size: mastik_core::kurbo::Size) -> f64 {
+    let side = size.width.max(size.height);
+    match side * asked > f64::from(MAX_SIDE) {
+        true => f64::from(MAX_SIDE) / side,
+        false => asked,
+    }
+}
+
+/// `rgba`, straight alpha at `from`, over white and placed at the top-left of a
+/// frame of `to`: opaque RGBA.
+fn fit(rgba: &[u8], from: (u32, u32), to: (u32, u32)) -> Vec<u8> {
+    let mut out = vec![255u8; (to.0 * to.1 * 4) as usize];
+    for y in 0..from.1.min(to.1) {
+        for x in 0..from.0.min(to.0) {
+            let s = ((y * from.0 + x) * 4) as usize;
+            let d = ((y * to.0 + x) * 4) as usize;
+            let a = u32::from(rgba[s + 3]);
+            for c in 0..3 {
+                let v = u32::from(rgba[s + c]) * a + 255 * (255 - a);
+                out[d + c] = ((v + 127) / 255) as u8;
+            }
+            out[d + 3] = 255;
+        }
+    }
+    out
+}
+
+/// Where the frames go.
+enum Sink {
+    Gif(Option<gif::Encoder<Vec<u8>>>),
+    Mp4(Option<Box<Mp4>>),
+}
+
+/// An MP4 being written: the encoder, the parameter sets from its first frame,
+/// and each frame's NAL units, length-prefixed.
+struct Mp4 {
+    encoder: openh264::encoder::Encoder,
+    size: (u32, u32),
+    sps: Vec<u8>,
+    pps: Vec<u8>,
+    samples: Vec<(Vec<u8>, bool)>,
+}
+
+impl Sink {
+    fn push(
+        &mut self,
+        mut frame: Vec<u8>,
+        size: (u32, u32),
+        i: usize,
+        fps: u32,
+    ) -> Result<(), VideoError> {
+        let encode = |e: &dyn std::fmt::Display| VideoError::Encode(e.to_string());
+        match self {
+            Sink::Gif(enc) => {
+                let (w, h) = (
+                    u16::try_from(size.0).map_err(|e| encode(&e))?,
+                    u16::try_from(size.1).map_err(|e| encode(&e))?,
+                );
+                if enc.is_none() {
+                    let mut e = gif::Encoder::new(Vec::new(), w, h, &[]).map_err(|e| encode(&e))?;
+                    e.set_repeat(gif::Repeat::Infinite)
+                        .map_err(|e| encode(&e))?;
+                    *enc = Some(e);
+                }
+                let mut f = gif::Frame::from_rgba_speed(w, h, &mut frame, 10);
+                f.delay = gif_delay(i, fps);
+                enc.as_mut()
+                    .map_or(Ok(()), |e| e.write_frame(&f))
+                    .map_err(|e| encode(&e))
+            }
+            Sink::Mp4(mp4) => {
+                if mp4.is_none() {
+                    let config = openh264::encoder::EncoderConfig::new()
+                        .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps as f32))
+                        .usage_type(openh264::encoder::UsageType::ScreenContentRealTime)
+                        .skip_frames(false)
+                        .bitrate(openh264::encoder::BitRate::from_bps(bitrate(size, fps)));
+                    let encoder = openh264::encoder::Encoder::with_api_config(
+                        openh264::OpenH264API::from_source(),
+                        config,
+                    )
+                    .map_err(|e| encode(&e))?;
+                    *mp4 = Some(Box::new(Mp4 {
+                        encoder,
+                        // H.264 codes 4:2:0 in even sizes.
+                        size: (size.0 & !1, size.1 & !1),
+                        sps: Vec::new(),
+                        pps: Vec::new(),
+                        samples: Vec::new(),
+                    }));
+                }
+                let Some(m) = mp4.as_mut() else {
+                    return Ok(());
+                };
+                let even = fit(&frame, size, m.size);
+                let rgba = openh264::formats::RgbaSliceU8::new(
+                    &even,
+                    (m.size.0 as usize, m.size.1 as usize),
+                );
+                let yuv = openh264::formats::YUVBuffer::from_rgb_source(rgba);
+                let stream = m.encoder.encode(&yuv).map_err(|e| encode(&e))?.to_vec();
+                let (mut sample, mut sync) = (Vec::new(), false);
+                for nal in openh264::nal_units(&stream) {
+                    let body = strip_start_code(nal);
+                    match body.first().map(|b| b & 0x1f) {
+                        Some(7) => m.sps = body.to_vec(),
+                        Some(8) => m.pps = body.to_vec(),
+                        Some(kind) => {
+                            sync |= kind == 5;
+                            sample.extend_from_slice(&(body.len() as u32).to_be_bytes());
+                            sample.extend_from_slice(body);
+                        }
+                        None => {}
+                    }
+                }
+                m.samples.push((sample, sync));
+                Ok(())
+            }
+        }
+    }
+
+    fn finish(self, fps: u32) -> Result<Vec<u8>, VideoError> {
+        let encode = |e: &dyn std::fmt::Display| VideoError::Encode(e.to_string());
+        match self {
+            Sink::Gif(enc) => enc
+                .ok_or(VideoError::Empty)?
+                .into_inner()
+                .map_err(|e| encode(&e)),
+            Sink::Mp4(m) => {
+                let m = m.ok_or(VideoError::Empty)?;
+                // The muxer indexes into both and panics on an empty one.
+                if m.sps.len() < 4 || m.pps.is_empty() {
+                    return Err(VideoError::Encode("no parameter sets".into()));
+                }
+                let config = mp4::Mp4Config {
+                    major_brand: str::parse("isom").map_err(|e| encode(&e))?,
+                    minor_version: 512,
+                    compatible_brands: ["isom", "iso2", "avc1", "mp41"]
+                        .iter()
+                        .map(|b| str::parse(b))
+                        .collect::<Result<_, _>>()
+                        .map_err(|e| encode(&e))?,
+                    timescale: fps,
+                };
+                let mut w = mp4::Mp4Writer::write_start(std::io::Cursor::new(Vec::new()), &config)
+                    .map_err(|e| encode(&e))?;
+                w.add_track(&mp4::TrackConfig {
+                    track_type: mp4::TrackType::Video,
+                    timescale: fps,
+                    language: "und".into(),
+                    media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
+                        width: m.size.0 as u16,
+                        height: m.size.1 as u16,
+                        seq_param_set: m.sps,
+                        pic_param_set: m.pps,
+                    }),
+                })
+                .map_err(|e| encode(&e))?;
+                for (i, (bytes, is_sync)) in m.samples.into_iter().enumerate() {
+                    w.write_sample(
+                        1,
+                        &mp4::Mp4Sample {
+                            start_time: i as u64,
+                            duration: 1,
+                            rendering_offset: 0,
+                            is_sync,
+                            bytes: bytes::Bytes::from(bytes),
+                        },
+                    )
+                    .map_err(|e| encode(&e))?;
+                }
+                w.write_end().map_err(|e| encode(&e))?;
+                Ok(w.into_writer().into_inner())
+            }
+        }
+    }
+}
+
+/// Frame `i`'s delay in a GIF's hundredths of a second at `fps`: the rounding
+/// carried, so the frames add up to the take's length.
+fn gif_delay(i: usize, fps: u32) -> u16 {
+    let at = |n: usize| (n as f64 * 100.0 / f64::from(fps)).round() as u16;
+    at(i + 1) - at(i)
+}
+
+/// A bit rate for screens of `size` at `fps`: about a tenth of a bit a pixel a
+/// frame, enough for flat interface colour.
+fn bitrate(size: (u32, u32), fps: u32) -> u32 {
+    let pixels = u64::from(size.0) * u64::from(size.1) * u64::from(fps);
+    (pixels / 10).clamp(500_000, 40_000_000) as u32
+}
+
+/// A NAL unit without the Annex B start code `openh264::nal_units` leaves on it.
+fn strip_start_code(nal: &[u8]) -> &[u8] {
+    let zeros = nal.iter().take_while(|b| **b == 0).count();
+    match nal.get(zeros) {
+        Some(1) if zeros >= 2 => &nal[zeros + 1..],
+        _ => nal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A GIF's delays carry their rounding: at 30 fps three frames make ten
+    /// hundredths.
+    #[test]
+    fn gif_delays_add_up() {
+        let sum: u32 = (0..3).map(|i| u32::from(gif_delay(i, 30))).sum();
+        assert_eq!(sum, 10);
+    }
+}

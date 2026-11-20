@@ -57,6 +57,7 @@ pub mod sketch;
 pub mod snapshot;
 mod stable_id;
 pub mod svg;
+pub mod video;
 pub mod webp;
 
 pub use plan::{PlanOptions, PlannedFile, plan};
