@@ -129,10 +129,9 @@ impl Player {
                 true
             }
             Input::SetMode(mode) => {
-                let pages: Vec<NodeId> = self.doc.page_ids().collect();
                 let mut used = false;
-                for page in pages {
-                    used |= self.set_mode_on(page, mode).is_some();
+                for id in self.everywhere(mode) {
+                    used |= self.set_mode_on(id, mode).is_some();
                 }
                 used
             }
@@ -223,6 +222,18 @@ impl Player {
             return false;
         }
         let rect = self.rect(id).map(|r| r + shift);
+        // A scroll effect moves, scales and turns the layer and what it holds
+        // about its centre as drawn: the point is taken back through it.
+        let w = match (self.effect_now(id), rect) {
+            (Some(e), Some(r)) if e.transforms => {
+                let m = e.affine(r.center());
+                if m.determinant().abs() < 1e-9 {
+                    return false;
+                }
+                m.inverse() * w
+            }
+            _ => w,
+        };
         let inside = rect.is_some_and(|r| r.contains(w));
         let clips = n.clip() || self.scrolls(id) != ScrollAxis::None;
         if clips && matches!(n.kind(), NodeKind::Artboard { .. }) && !inside {

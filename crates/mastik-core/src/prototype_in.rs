@@ -116,6 +116,7 @@ pub(crate) fn flow_op(
                 Flow {
                     name: name.clone(),
                     start: *nodes.get(fid)?,
+                    modes: Vec::new(),
                     values: Vec::new(),
                 },
             ))

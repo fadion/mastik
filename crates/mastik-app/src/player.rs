@@ -516,7 +516,16 @@ fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
     let modes = p.player.modes();
     if !modes.is_empty() {
         ui.label(ui::eyebrow("Modes"));
+        let mut kit = None;
         for (i, row) in modes.iter().enumerate() {
+            // A kit's collections under the kit's name, as Set mode lists them.
+            if let Some(k) = row.kit.as_deref()
+                && kit != Some(k)
+            {
+                kit = Some(k);
+                let name = crate::panels::binding::kit_name(p.player.document(), k);
+                ui.label(ui::eyebrow(&name));
+            }
             mode_row(ui, p, i, row);
         }
         ui.label(ui::eyebrow("Values"));
@@ -1290,6 +1299,7 @@ mod tests {
                     Flow {
                         name: "Checkout".into(),
                         start: b,
+                        modes: Vec::new(),
                         values: Vec::new(),
                     },
                 )],

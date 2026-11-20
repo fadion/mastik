@@ -492,6 +492,21 @@ impl Document {
             .or_else(|| col.default_mode())
     }
 
+    /// [`Self::mode_at`] for any owner of modes: a kit's collection reads the
+    /// mode it maps to under the modes in force at `id`.
+    pub fn mode_of_at(
+        &self,
+        id: NodeId,
+        owner: crate::variable::ModeOwner<'_>,
+    ) -> Option<crate::variable::ModeId> {
+        match owner {
+            crate::variable::ModeOwner::Collection(c) => self.mode_at(id, c),
+            crate::variable::ModeOwner::Kit(kit, c) => {
+                self.variables.kit_mode_at(kit, c, &self.modes_at(id))
+            }
+        }
+    }
+
     /// The modes set at or above `id`, nearest first, one per collection — of
     /// the document's or a kit's (§15 D1064), the nearer frame's winning. What
     /// [`crate::variable::Variables::resolve_at`] reads with; a collection with

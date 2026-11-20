@@ -108,7 +108,8 @@ out both ends.
   `is_moving` stays true while one waits.
 - **Hit testing is by box**, not ink: a layer with a box (a frame, a shape) by its box, any other
   by its bounds, each moved by the scrolling frames above it and by how far it and the layers
-  above it were dragged (`child_offset`), not by a scroll effect. A group is hit only through its
+  above it were dragged (`child_offset`), then taken back through a scroll effect's move, turn
+  and scale (`walk`, from the box's centre as drawn). A group is hit only through its
   children. A clipping or scrolling frame cuts off what is outside it. A click on the box that
   holds an input text focuses it, since an empty text has no width.
 - **Overlays are modal.** A press outside the top overlay closes it when its *close when clicking
@@ -185,10 +186,13 @@ out both ends.
   does not change what the variable reads fires nothing.
 - **Set mode** commits `SetModes` on the copy in place of any mode of the same collection there:
   on every page root for *Everywhere*, so a frame that sets its own mode keeps it and a by-width
-  collection is held at that mode; on the screen frame for *This screen*. The player remembers
+  collection is held at that mode; on the screen frame for *This screen*. A page holds no kit's
+  mode, so *Everywhere* puts a kit's on each top-level frame instead, passing over one that pins
+  a mode of that kit collection in the document (`Player::everywhere`). The player remembers
   what it gave each node (`put_modes`), so a live edit's re-clone puts it back; a *while* trigger
   undoes it (`Undo::Modes`). A mode in neither the document's collections nor a kit's is skipped
-  with `Missing`. Nothing animates. *Restart* and a new flow start from the document's own modes.
+  with `Missing`. Nothing animates. *Restart* and a new flow start from the document's own modes
+  and the flow's starting modes, which play sets as *Everywhere* does before anything opens.
 - **Conditional** runs the first branch whose condition is true, else `otherwise`; a condition
   that errs or is not true or false is skipped with a notice.
 - **Open URL** asks the shell (`Request::OpenUrl`) for `http` and `https` addresses only.
@@ -278,7 +282,9 @@ frame above it: the vertical offset, or the horizontal one for a frame that scro
 - **Drawn** as a patch after the scroll's and the drag's (`scroll_effect_patch`): the opacity, clamped
   to 0–1, in place of the layer's own, then a move, and a turn and scale about the layer's centre,
   over whatever placed it.
-- **Hit testing does not follow it**: a layer is hit where it is placed, scrolled and dragged.
+- **Hit testing follows it** (`effect_now`, shared with the patch): a point is taken back through
+  the move, turn and scale before it is tested against the layer and what it holds. The
+  hotspot hints stay where the layer is placed.
 - The layers with an effect are listed once (`Player::effects`, by `prepare`) as play starts and
   after a live edit, so a frame's scene does not look for them.
 
@@ -297,11 +303,14 @@ frame above it: the vertical offset, or the horizontal one for a frame that scro
   name, or for a layer of an instance the lineage key of the main layer it follows, and which of
   its siblings with that key it is — so a pair's parents are paired too. Both ends are laid out
   when it starts and never again. A paired layer's transform (moved, turned the short way, scaled
-  and sheared, each interpolated), box size, opacity, solid fills and corner radii (a polygon's or
-  star's one) interpolate; so do stroke widths and solid stroke colours when both ends have as
-  many strokes, and effects when both stacks are the same kinds in the same order (shadows'
-  offset, blur, spread and colour; layer and background blur radii). Gradients, a stack that
-  differs and other effect kinds jump to the end's. The frame's own paint interpolates too. A
+  and sheared, each interpolated), box size, opacity and corner radii (a polygon's or star's one)
+  interpolate; so do fills and strokes, brush by brush, when both ends have as many (and stroke
+  widths), and effects when both stacks are the same kinds in the same order (shadows' offset,
+  blur, spread and colour; layer and background blur radii). Two gradients of one kind move
+  their geometry, transform and opacity, their ramps sampled at every offset either has; a
+  colour against a gradient reads as a flat ramp of its kind (`lerp_brush`). An image, two
+  kinds of gradient, a stack that differs and other effect kinds jump to the end's. The frame's
+  own paint interpolates too. A
   pair's start is measured where it is drawn less the end's scroll, which `scroll_patches` adds
   over the tracks, so a kept scroll is not counted twice. With no side (`Direction::None`) the unpaired layers fade: the end's in, the
   outgoing frame's out. Under a named side they move by it, a screen's width or height: the

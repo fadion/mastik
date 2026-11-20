@@ -339,6 +339,7 @@ fn a_duplicated_pages_flow_starts_on_its_copy() {
     let flow = mastik_core::prototype::Flow {
         name: "Checkout".into(),
         start: a,
+        modes: Vec::new(),
         values: Vec::new(),
     };
     doc.apply(&Transaction(vec![Operation::SetFlows {

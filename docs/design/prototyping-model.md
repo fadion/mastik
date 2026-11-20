@@ -65,7 +65,9 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
   drawn), `Scale` (a factor about its centre) and `Rotation` (degrees about its centre). The
   scroll is the timing, so there is no curve and no keyframe past the two ends. What play does
   with it is `play.md`.
-- A **flow** is a name, a start frame and starting variable cells, which beat the modes' values.
+- A **flow** is a name, a start frame, starting modes (one per collection, of the document's or
+  a kit's; one no longer there is passed over) and starting variable cells, which beat the
+  modes' values.
 - **Expressions** (`prototype::Expr`: a condition, *Set variable*'s value) are stored as source text,
   a variable written `{<actor-hex>:<seq>}` so a rename never breaks one. The language is in
   `play.md` *Expressions*.

@@ -189,6 +189,7 @@ fn shop() -> (Document, [NodeId; 5], VarId) {
                 Flow {
                     name: "Checkout".into(),
                     start: home,
+                    modes: Vec::new(),
                     values: vec![],
                 },
             )],

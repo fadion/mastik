@@ -6,7 +6,7 @@ use crate::input::{Press, Tap, While};
 use crate::take::Recording;
 use mastik_core::kurbo::{Point, Rect, Size, Vec2};
 use mastik_core::prototype::{self, FlowRef, OverlaySettings, Transition, Trigger};
-use mastik_core::variable::{Cell, Value, VarId, VarKind};
+use mastik_core::variable::{Cell, ModeId, Value, VarId, VarKind};
 use mastik_core::{
     Document, IdSource, ItemId, NodeId, NodeKind, OpError, Resolved, Transaction,
     reserve_existing_ids, subtree_nodes,
@@ -92,6 +92,8 @@ pub struct ValueRow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModeRow {
     pub name: String,
+    /// The kit it comes from, by id; `None` for the document's own.
+    pub kit: Option<String>,
     /// Its modes in order, by id and name.
     pub modes: Vec<(mastik_core::variable::ModeId, String)>,
     pub current: mastik_core::variable::ModeId,
@@ -226,7 +228,7 @@ impl Player {
     /// Start playing `doc` from `start`, minting any id from `actor`, which must
     /// be the player's own.
     pub fn new(doc: &Document, start: Start, actor: u64) -> Result<Player, StartError> {
-        let (page, frame, cells) = resolve_start(doc, start)?;
+        let (page, frame, modes, cells) = resolve_start(doc, start)?;
         let mut ids = IdSource::new(actor);
         reserve_existing_ids(doc, &mut ids);
         let mut copy = doc.clone();
@@ -271,6 +273,12 @@ impl Player {
             depth: 0,
         };
         p.prepare();
+        // A flow's starting modes are set as *Set mode* sets them everywhere.
+        for mode in modes {
+            for id in p.everywhere(mode) {
+                p.set_mode_on(id, mode);
+            }
+        }
         for (var, cell) in cells {
             let value = match cell {
                 Cell::Alias(to) => p.doc.resolve_var(frame, to),
@@ -462,23 +470,22 @@ impl Player {
             .collect()
     }
 
-    /// The state card's modes: each of the document's collections with two
-    /// modes or more, and the mode it reads on the screen shown.
+    /// The state card's modes: each collection with two modes or more, the
+    /// document's then the kits', and the mode it reads on the screen shown.
     pub fn modes(&self) -> Vec<ModeRow> {
+        let t = self.doc.variables();
         let screen_modes = self.doc.get(self.screen).map(|n| n.modes().to_vec());
-        self.doc
-            .variables()
-            .collections()
-            .iter()
-            .filter(|c| c.modes.len() > 1)
-            .filter_map(|c| {
+        t.switchable()
+            .into_iter()
+            .filter_map(|s| {
                 Some(ModeRow {
-                    name: c.name.clone(),
-                    modes: c.modes.iter().map(|m| (m.id, m.name.clone())).collect(),
-                    current: self.doc.mode_at(self.screen, c.id)?,
+                    name: s.name.clone(),
+                    kit: s.owner.kit().map(str::to_owned),
+                    modes: s.modes.iter().map(|(m, n)| (*m, n.to_string())).collect(),
+                    current: self.doc.mode_of_at(self.screen, s.owner)?,
                     screen_sets: screen_modes
                         .as_ref()
-                        .is_some_and(|ms| ms.iter().any(|m| c.has(*m))),
+                        .is_some_and(|ms| ms.iter().any(|m| t.owner_of(*m) == Some(s.owner))),
                 })
             })
             .collect()
@@ -777,11 +784,11 @@ impl Player {
 }
 
 /// A start's page, its frame, and the cells its flow starts variables at.
-type Started = (NodeId, NodeId, Vec<(VarId, Cell)>);
+type Started = (NodeId, NodeId, Vec<ModeId>, Vec<(VarId, Cell)>);
 
 /// The page, the start frame and the starting cells of `start` in `doc`.
 fn resolve_start(doc: &Document, start: Start) -> Result<Started, StartError> {
-    let (frame, cells) = match start {
+    let (frame, modes, cells) = match start {
         Start::Flow(r) => {
             let page = doc.page(r.page).ok_or(StartError::NoFlow)?;
             let flow = page
@@ -789,16 +796,17 @@ fn resolve_start(doc: &Document, start: Start) -> Result<Started, StartError> {
                 .iter()
                 .find(|f| f.id == r.flow)
                 .ok_or(StartError::NoFlow)?;
-            (flow.value.start, flow.value.values.clone())
+            let f = &flow.value;
+            (f.start, f.modes.clone(), f.values.clone())
         }
-        Start::Frame(f) => (f, Vec::new()),
+        Start::Frame(f) => (f, Vec::new(), Vec::new()),
     };
     let is_frame = doc
         .get(frame)
         .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }));
     let page = doc.page_of(frame).filter(|_| is_frame);
     let page = page.ok_or(StartError::NoFrame)?;
-    Ok((page, frame, cells))
+    Ok((page, frame, modes, cells))
 }
 
 /// The kind of variable `v` is a value of.

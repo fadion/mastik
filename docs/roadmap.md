@@ -22,17 +22,12 @@ remains is below.
   ends with the app, needs no account and never leaves the network.
 - **Annotations in inspect mode.** The exported player's inspect panel does not show a picked
   layer's annotation (`Node::note`), which the packed document already carries.
-- **Scroll effects: what is left.** A scroll trigger's point drawn on the canvas and dragged
-  there, instead of typed in *Past*; and hit testing following a scroll effect's move, turn and
-  scale, which it does not (`play.md`, *A scroll effect*).
+- **Scroll triggers: what is left.** A scroll trigger's point drawn on the canvas and dragged
+  there, instead of typed in *Past*.
 - **A layer that follows the drag: what is left.** Its snap points drawn on the canvas as ghosts
-  of the layer and dragged to place them, as a placed overlay is, instead of typed as X and Y;
-  and *Settle* timing fields in *Dragging* (`Follow::settle` keeps its default spring)
+  of the layer and dragged to place them, as a placed overlay is, instead of typed as X and Y
   (`design/prototyping-authoring.md`, *The Prototype card*).
-- **Modes, snapping and smart animate: what is left.** A flow that starts at a mode, as it starts
-  at variable values; *Set mode* and the state card offering a kit's collections, which play
-  already sets but the UI lists only the document's own; a snapping frame's rest points drawn on
-  the canvas; gradients moving under smart animate (`play.md`, *Motion*), which still jump.
+- **Snapping: what is left.** A snapping frame's rest points drawn on the canvas.
 - **Responsive playback.** *Fit*, *Fill width* and *Actual size* all scale the screen as drawn. A
   fourth scaling lays the frame out again at the player's width through its flex, grid and width
   queries, so a resized window or a phone of another size shows the real layout.

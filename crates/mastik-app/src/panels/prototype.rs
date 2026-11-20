@@ -18,7 +18,7 @@ use mastik_core::prototype::{
     PagePlay, Pin, Reaction, Release, Scaling, ScrollAxis, ScrollEffect, ScrollProp, Side, Snap,
     SnapAlign, Timing, Transition, TransitionKind, Trigger, VarChange,
 };
-use mastik_core::variable::{Cell, ModeId, VarId, VarKind};
+use mastik_core::variable::{Cell, ModeId, ModeOwner, Switchable, VarId, VarKind};
 use mastik_core::{Document, NodeKind, Operation, Transaction};
 
 /// Prototype mode's state between frames: its open popover, a typed field's
@@ -942,14 +942,10 @@ fn target_words(doc: &Document, holder: NodeId, a: &Action) -> (String, Option<&
     }
 }
 
-/// The collections *Set mode* can switch: the document's with two modes or
-/// more, in order.
-fn switchable_collections(doc: &Document) -> Vec<&mastik_core::variable::Collection> {
-    doc.variables()
-        .collections()
-        .iter()
-        .filter(|c| c.modes.len() > 1)
-        .collect()
+/// The collections *Set mode* and a flow's starting modes can switch: the
+/// document's with two modes or more, then each kit's.
+fn switchable_collections(doc: &Document) -> Vec<Switchable<'_>> {
+    doc.variables().switchable()
 }
 
 /// A mode's collection and its own name, `None` for a mode not there.
@@ -959,8 +955,44 @@ fn mode_words(doc: &Document, mode: ModeId) -> Option<(String, String)> {
         let m = c.modes.iter().find(|m| m.id == mode)?;
         return Some((c.name.clone(), m.name.clone()));
     }
-    let (kit, m) = t.kit_mode_of(mode)?;
-    Some((kit.to_owned(), m.name.clone()))
+    let s = t
+        .switchable()
+        .into_iter()
+        .find(|s| s.modes.iter().any(|(m, _)| *m == mode))?;
+    let name = s.modes.iter().find(|(m, _)| *m == mode)?.1.to_owned();
+    Some((s.name, name))
+}
+
+/// The collection combo of *Set mode* and a flow's starting mode: the
+/// document's collections, then each kit's under its name. Answers the pick.
+fn collection_combo<'a>(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    w: f32,
+    cols: &'a [Switchable<'a>],
+    at: Option<&Switchable<'_>>,
+) -> Option<&'a Switchable<'a>> {
+    let shown = at.map_or("Missing collection".to_string(), |c| c.name.clone());
+    let face = ui::glyph_and_text(icon::MODE, &shown);
+    let mut pick = None;
+    ui::fitted_combo(ui, salt, w, face, &shown, |ui| {
+        ui::menu_rows(ui);
+        let mut kit = None;
+        for c in cols {
+            if let Some(k) = c.owner.kit()
+                && kit != Some(k)
+            {
+                kit = Some(k);
+                ui::menu_eyebrow(ui, &super::binding::kit_name(doc, k));
+            }
+            let on = at.is_some_and(|x| x.owner == c.owner);
+            if ui.selectable_label(on, &c.name).clicked() && !on {
+                pick = Some(c);
+            }
+        }
+    });
+    pick
 }
 
 /// The transition a new link on `page` takes: the page's own default.
@@ -1037,8 +1069,8 @@ pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Op
         ActionKind::SetMode => {
             // The first such collection, at the mode it does not read now.
             let c = switchable_collections(doc).into_iter().next()?;
-            let now = own.and_then(|s| doc.mode_at(s, c.id));
-            let mode = c.modes.iter().find(|m| Some(m.id) != now)?.id;
+            let now = own.and_then(|s| doc.mode_of_at(s, c.owner));
+            let mode = c.modes.iter().find(|m| Some(m.0) != now)?.0;
             Action::SetMode {
                 mode,
                 scope: ModeScope::Everywhere,
@@ -3387,34 +3419,26 @@ impl MastikApp {
             Action::SetMode { mode, scope } => {
                 let (mode, scope) = (*mode, *scope);
                 let cols = switchable_collections(doc);
-                let col = cols.iter().find(|c| c.has(mode)).copied();
-                let col_name = col.map_or("Missing collection".to_string(), |c| c.name.clone());
+                let col = cols.iter().find(|c| c.modes.iter().any(|m| m.0 == mode));
                 let mut pick = None;
                 ui::labelled(ui, "Collection", |ui| {
-                    let face = ui::glyph_and_text(icon::MODE, &col_name);
-                    ui::fitted_combo(ui, ("mode-col", k.id), w, face, &col_name, |ui| {
-                        ui::menu_rows(ui);
-                        for c in &cols {
-                            let on = col.is_some_and(|x| x.id == c.id);
-                            if ui.selectable_label(on, &c.name).clicked() && !on {
-                                // A new collection starts at the mode it does not
-                                // read now, as a new action does.
-                                let now = screen_of(doc, id).and_then(|s| doc.mode_at(s, c.id));
-                                pick = c.modes.iter().find(|m| Some(m.id) != now).map(|m| m.id);
-                            }
-                        }
-                    });
+                    if let Some(c) = collection_combo(ui, doc, ("mode-col", k.id), w, &cols, col) {
+                        // A new collection starts at the mode it does not read
+                        // now, as a new action does.
+                        let now = screen_of(doc, id).and_then(|s| doc.mode_of_at(s, c.owner));
+                        pick = c.modes.iter().find(|m| Some(m.0) != now).map(|m| m.0);
+                    }
                 });
                 let mode_name = col
-                    .and_then(|c| c.modes.iter().find(|m| m.id == mode))
-                    .map_or("Missing mode".to_string(), |m| m.name.clone());
+                    .and_then(|c| c.modes.iter().find(|m| m.0 == mode))
+                    .map_or("Missing mode".to_string(), |m| m.1.to_owned());
                 ui::labelled(ui, "Mode", |ui| {
                     ui::fitted_combo(ui, ("mode-mode", k.id), w, &mode_name, &mode_name, |ui| {
                         ui::menu_rows(ui);
-                        for m in col.map_or(&[][..], |c| &c.modes[..]) {
-                            let on = m.id == mode;
-                            if ui.selectable_label(on, &m.name).clicked() && !on {
-                                pick = Some(m.id);
+                        for (m, n) in col.map_or(&[][..], |c| &c.modes[..]) {
+                            let on = *m == mode;
+                            if ui.selectable_label(on, *n).clicked() && !on {
+                                pick = Some(*m);
                             }
                         }
                     });
@@ -3440,7 +3464,14 @@ impl MastikApp {
                     }
                 });
                 if let Some(c) = col {
-                    let note = match (c.breakpoints.is_some(), scope_new) {
+                    let by_width = match c.owner {
+                        ModeOwner::Collection(id) => doc
+                            .variables()
+                            .collection(id)
+                            .is_some_and(|x| x.breakpoints.is_some()),
+                        ModeOwner::Kit(..) => false,
+                    };
+                    let note = match (by_width, scope_new) {
                         (true, _) => format!(
                             "{} picks its mode by width; setting it holds {mode_name} at any width.",
                             c.name
@@ -3701,7 +3732,6 @@ impl MastikApp {
         t: Transition,
         w: f32,
     ) -> Option<Transition> {
-        let h = ui::CONTROL_H;
         let mut out = None;
         let mut kind_pick = None;
         let kind = transition_label(t.kind);
@@ -3772,7 +3802,25 @@ impl MastikApp {
                 });
             }
         }
-        let spring = matches!(t.timing, Timing::Spring { .. });
+        if let Some(timing) = self.timing_fields(ui, salt, t.timing, w) {
+            out = Some(Transition { timing, ..t });
+        }
+        out
+    }
+
+    /// A timing's rows: *Curve* or *Spring*, then a curve over a duration or a
+    /// spring's three numbers, then the motion preview. Answers as
+    /// [`Self::transition_fields`] does.
+    pub(crate) fn timing_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug + Copy,
+        t: Timing,
+        w: f32,
+    ) -> Option<Timing> {
+        let h = ui::CONTROL_H;
+        let mut out = None;
+        let spring = matches!(t, Timing::Spring { .. });
         let pick = ui::segmented_tipped(
             ui,
             w,
@@ -3788,29 +3836,23 @@ impl MastikApp {
         );
         match pick {
             Some(1) if !spring => {
-                out = Some(Transition {
-                    timing: Timing::Spring {
-                        mass: 1.0,
-                        stiffness: 320.0,
-                        damping: 22.0,
-                    },
-                    ..t
+                out = Some(Timing::Spring {
+                    mass: 1.0,
+                    stiffness: 320.0,
+                    damping: 22.0,
                 });
             }
             Some(0) if spring => {
-                out = Some(Transition {
-                    timing: Timing::Ease {
-                        curve: Easing::EaseOut,
-                        ms: 300,
-                    },
-                    ..t
+                out = Some(Timing::Ease {
+                    curve: Easing::EaseOut,
+                    ms: 300,
                 });
             }
             _ => {}
         }
-        // A number's write: the transition with `set` applied to its timing.
-        let mut numbers: Vec<(egui::Response, egui::Id, f64, Transition)> = Vec::new();
-        match t.timing {
+        // A number's write: the timing with that number in it.
+        let mut numbers: Vec<(egui::Response, egui::Id, f64, Timing)> = Vec::new();
+        match t {
             Timing::Ease { curve, ms } => {
                 let mut curve_pick = None;
                 ui.horizontal(|ui| {
@@ -3849,21 +3891,10 @@ impl MastikApp {
                     .0
                     .on_hover_text("How long it takes");
                     let ms2 = v.round().clamp(0.0, 10_000.0) as u32;
-                    numbers.push((
-                        resp,
-                        rid,
-                        v,
-                        Transition {
-                            timing: Timing::Ease { curve, ms: ms2 },
-                            ..t
-                        },
-                    ));
+                    numbers.push((resp, rid, v, Timing::Ease { curve, ms: ms2 }));
                 });
                 if let Some(e) = curve_pick {
-                    out = Some(Transition {
-                        timing: Timing::Ease { curve: e, ms },
-                        ..t
-                    });
+                    out = Some(Timing::Ease { curve: e, ms });
                 }
                 if let Easing::Cubic(c) = curve {
                     ui.horizontal(|ui| {
@@ -3894,12 +3925,9 @@ impl MastikApp {
                                 resp,
                                 rid,
                                 v,
-                                Transition {
-                                    timing: Timing::Ease {
-                                        curve: Easing::Cubic(c2),
-                                        ms,
-                                    },
-                                    ..t
+                                Timing::Ease {
+                                    curve: Easing::Cubic(c2),
+                                    ms,
                                 },
                             ));
                         }
@@ -3941,13 +3969,10 @@ impl MastikApp {
                             resp,
                             rid,
                             v,
-                            Transition {
-                                timing: Timing::Spring {
-                                    mass: s[0],
-                                    stiffness: s[1],
-                                    damping: s[2],
-                                },
-                                ..t
+                            Timing::Spring {
+                                mass: s[0],
+                                stiffness: s[1],
+                                damping: s[2],
                             },
                         ));
                     }
@@ -3960,7 +3985,7 @@ impl MastikApp {
         let held = numbers
             .iter()
             .find(|(r, ..)| r.dragged() || r.has_focus())
-            .map(|(.., next)| next.timing);
+            .map(|(.., next)| *next);
         for (resp, rid, v, next) in numbers {
             self.proto_hold(rid, v, &resp);
             let engaged = resp.dragged() || resp.has_focus();
@@ -3968,7 +3993,7 @@ impl MastikApp {
                 out = Some(next);
             }
         }
-        let shown = held.or(out.map(|o| o.timing)).unwrap_or(t.timing);
+        let shown = held.or(out).unwrap_or(t);
         motion_preview(ui, salt, shown, w);
         out
     }
@@ -4665,6 +4690,13 @@ impl MastikApp {
                     *next = Some((with(&|f| f.release = releases[i]), "Dragging"));
                 }
             });
+            // How it moves after a release: back into its range, home, or onto a
+            // point. The transition's timing rows, without a kind or a side.
+            ui::labelled(ui, "Settle", |ui| {
+                if let Some(t) = self.timing_fields(ui, ("settle", id), f.settle, w) {
+                    *next = Some((with(&|f| f.settle = t), "Dragging"));
+                }
+            });
             ui::labelled(ui, "Snap points", |ui| {
                 ui.horizontal(|ui| {
                     ui.label(theme::icon_text(
@@ -5050,6 +5082,19 @@ impl MastikApp {
                         ));
                     }
                 });
+                if let Some(modes) = app.flow_modes(ui, f) {
+                    let list = flows
+                        .iter()
+                        .map(|x| match x.id == f.id {
+                            true => x.map(|v| Flow {
+                                modes: modes.0.clone(),
+                                ..v.clone()
+                            }),
+                            false => x.clone(),
+                        })
+                        .collect();
+                    next = Some((list, modes.1));
+                }
                 // The flow's starting values: each a variable and what it holds
                 // when the flow starts, typed as the variable's kind takes it.
                 let with_values = |values: Vec<(VarId, Cell)>| -> Vec<Keyed<Flow>> {
@@ -5143,6 +5188,7 @@ impl MastikApp {
                 Flow {
                     name: format!("Flow {n}"),
                     start,
+                    modes: Vec::new(),
                     values: Vec::new(),
                 },
             ));
@@ -5152,6 +5198,103 @@ impl MastikApp {
             self.session.name_step(label, icon::PLAY);
             self.commit_edit(Transaction(vec![Operation::SetFlows { id: page, flows }]));
         }
+    }
+
+    /// A flow's starting modes: each a collection and the mode it reads as the
+    /// flow starts, then *Add a starting mode*. Answers the new list and its
+    /// undo name.
+    fn flow_modes(
+        &mut self,
+        ui: &mut egui::Ui,
+        f: &Keyed<Flow>,
+    ) -> Option<(Vec<ModeId>, &'static str)> {
+        let doc = &self.session.doc;
+        let t = doc.variables();
+        let cols = switchable_collections(doc);
+        let mut out = None;
+        for (i, mode) in f.modes.iter().enumerate() {
+            let col = cols.iter().find(|c| c.modes.iter().any(|m| m.0 == *mode));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = COL;
+                let w = ui.available_width() - ui::CONTROL_H - COL;
+                let half = (w - COL) / 2.0;
+                ui.allocate_ui(egui::vec2(half, ui::CONTROL_H), |ui| {
+                    // A collection another starting mode names is not offered
+                    // twice: one mode per collection.
+                    let free: Vec<Switchable> = cols
+                        .iter()
+                        .filter(|c| {
+                            col.is_some_and(|x| x.owner == c.owner)
+                                || !f.modes.iter().any(|m| t.owner_of(*m) == Some(c.owner))
+                        })
+                        .cloned()
+                        .collect();
+                    if let Some(c) =
+                        collection_combo(ui, doc, ("flow-col", f.id, i), half, &free, col)
+                    {
+                        let now = doc.mode_of_at(f.start, c.owner);
+                        if let Some(m) = c.modes.iter().find(|m| Some(m.0) != now) {
+                            let mut modes = f.modes.clone();
+                            modes[i] = m.0;
+                            out = Some((modes, "Change starting mode"));
+                        }
+                    }
+                });
+                let shown = col
+                    .and_then(|c| c.modes.iter().find(|m| m.0 == *mode))
+                    .map_or("Missing mode".to_string(), |m| m.1.to_owned());
+                ui::fitted_combo(ui, ("flow-mode", f.id, i), half, &shown, &shown, |ui| {
+                    ui::menu_rows(ui);
+                    for (m, n) in col.map_or(&[][..], |c| &c.modes[..]) {
+                        let on = m == mode;
+                        if ui.selectable_label(on, *n).clicked() && !on {
+                            let mut modes = f.modes.clone();
+                            modes[i] = *m;
+                            out = Some((modes, "Change starting mode"));
+                        }
+                    }
+                });
+                if ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
+                    .on_hover_text("Remove this starting mode")
+                    .clicked()
+                {
+                    let mut modes = f.modes.clone();
+                    modes.remove(i);
+                    out = Some((modes, "Remove starting mode"));
+                }
+            });
+        }
+        // The first collection no starting mode names yet, at the mode the
+        // start frame does not read now.
+        let unused = cols
+            .iter()
+            .find(|c| !f.modes.iter().any(|m| t.owner_of(*m) == Some(c.owner)))
+            .and_then(|c| {
+                let now = doc.mode_of_at(f.start, c.owner);
+                c.modes.iter().find(|m| Some(m.0) != now).map(|m| m.0)
+            });
+        let why = match (cols.is_empty(), unused) {
+            (true, _) => "No collection has a second mode",
+            (false, None) => "Every collection has a starting mode",
+            (false, Some(_)) => "Set a mode as the flow starts",
+        };
+        if crate::settings::text_button(
+            ui,
+            "Add a starting mode",
+            match unused {
+                Some(_) => ui::FieldButton::Off,
+                None => ui::FieldButton::Disabled,
+            },
+        )
+        .on_hover_text(why)
+        .clicked()
+            && let Some(m) = unused
+        {
+            let mut modes = f.modes.clone();
+            modes.push(m);
+            out = Some((modes, "Add starting mode"));
+        }
+        out
     }
 
     /// A flow's starting value for `var`, typed as its kind reads: a number, a

@@ -882,13 +882,18 @@ pub struct Input {
     pub property: Option<String>,
 }
 
-/// A named way into a page's prototype: a starting frame, and starting values for
+/// A named way into a page's prototype: a starting frame, starting modes set as
+/// *Set mode* sets them everywhere (*Checkout, dark*), and starting values for
 /// variables that beat their modes' values (*Checkout, signed in*).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Flow {
     pub name: String,
     #[serde(with = "wire")]
     pub start: NodeId,
+    /// One mode per collection at most, of the document's or a kit's; a mode no
+    /// longer there is passed over.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modes: Vec<ModeId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub values: Vec<(VarId, Cell)>,
 }

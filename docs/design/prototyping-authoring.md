@@ -101,7 +101,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *Toggle* for a boolean) and its expression or step; *Conditional* one expression per branch
   (`ui::labelled` *If* / *Else if*), *Add else if* and a branch's `×`; *Open link* an address, refused unless `http` or `https`;
   *Run script* a document script by name.
-- ***Set mode*'s popover**: *Collection* (the document's own collections with two modes or more;
+- ***Set mode*'s popover**: *Collection* (`collection_combo`: the document's collections with two
+  modes or more, then each kit's under the kit's `ui::menu_eyebrow`, `Variables::switchable`;
   a new pick starts at a mode the holder's screen does not read now), *Mode*, and *Where*
   (*Everywhere* · *This screen*), then a note: a by-width collection is held at the mode at any
   width; under *Everywhere*, frames that set their own mode keep it. Its row reads *Set Theme to
@@ -166,8 +167,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *Snaps* dimmed with *Add a snap point first*), each change a *Dragging* step. Under *Snap
   points*, the fixed line *Open · where drawn*, then a row per point (`drag_point_row`): its
   name, `×`, and its X and Y from where the layer is drawn; `+` adds *Point n*, n the first number no point
-  is named by, n × 100 down.
-  The settle timing has no fields yet and keeps its default.
+  is named by, n × 100 down. *Settle* sits between *Release* and the points: the transition
+  popover's timing rows and motion preview (`timing_fields`), without a kind or a side, for how
+  the layer moves after a release; a change is a *Dragging* step.
 - **An input**: a text layer binds a string variable; an instance a boolean one and the set's
   two-valued property that shows it. `×` unbinds.
 - **The page** (nothing selected): *Device* (*None*, then the phone and tablet frame templates by name, each group under its
@@ -176,7 +178,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its
   start among the page's frames, a `ui::field_button` `×` to remove (as every removal in the
   tab is), each flow after the first under a `ui::card_rule`; `+` adds *Flow N* starting at the page's first
-  frame, dimmed with no frame. Under each flow, its starting values: a row per value, the
+  frame, dimmed with no frame. Under each flow, its starting modes (`flow_modes`): a row per
+  mode, its collection (as *Set mode*'s, less those another row names) and its mode, and `×`;
+  *Add a starting mode* adds the first collection not yet named, at a mode the start frame does
+  not read now, dimmed when none is left. Then its starting values: a row per value, the
   variable (a variable dropdown; a new pick starts at its first mode's value), the value typed as
   the variable's kind reads it (a number, text, `true` / `false`, a colour, or `{name}` for
   another variable of that kind; refused and ringed when it does not read) and `×`; *Add a

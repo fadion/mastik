@@ -161,6 +161,7 @@ fn fixture() -> Fixture {
                     Flow {
                         name: "Main".into(),
                         start: home,
+                        modes: Vec::new(),
                         values: Vec::new(),
                     },
                 ),
@@ -169,6 +170,7 @@ fn fixture() -> Fixture {
                     Flow {
                         name: "Spare".into(),
                         start: home,
+                        modes: Vec::new(),
                         values: Vec::new(),
                     },
                 ),
@@ -181,6 +183,7 @@ fn fixture() -> Fixture {
                 Flow {
                     name: "Other".into(),
                     start: other,
+                    modes: Vec::new(),
                     values: Vec::new(),
                 },
             )],

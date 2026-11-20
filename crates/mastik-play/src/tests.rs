@@ -392,6 +392,7 @@ fn a_flow_starts_values_and_a_change_fires_its_reaction() {
         Flow {
             name: "Signed out".into(),
             start: a,
+            modes: Vec::new(),
             values: vec![(signed, Cell::Boolean(true))],
         },
     ));
@@ -1679,6 +1680,89 @@ fn set_mode_switches_what_variables_read() {
     assert_eq!(number(&p, n), 1.0, "a restart reads the saved modes");
 }
 
+/// A flow's starting mode is set everywhere as play starts, again on a
+/// restart, and the state card lists a kit's collection after the document's.
+///
+/// flip: `Player::new` skipping the flow's modes → fails at "starts dark";
+/// `Player::everywhere` naming the pages for a kit's mode, which a page cannot
+/// hold → fails at "the kit's starting mode".
+#[test]
+fn a_flow_starts_at_its_modes_and_the_card_lists_kits() {
+    const KIT: &str = "5eed0000000000000000000000000011";
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let light = fx.mode;
+    let dark = fx.ids.mint_mode();
+    fx.apply(vec![Operation::AddMode {
+        collection: CollectionId::FIRST,
+        mode: Mode {
+            id: dark,
+            name: "Dark".into(),
+        },
+        index: 1,
+        cells: vec![],
+    }]);
+    let n = fx.ids.mint_var();
+    fx.apply(vec![Operation::AddVariable {
+        var: Variable {
+            id: n,
+            name: "n".into(),
+            kind: VarKind::Number,
+            cells: [(light, Cell::Number(1.0)), (dark, Cell::Number(2.0))].into(),
+            scope: None,
+            origin: None,
+            forked: None,
+            description: String::new(),
+        },
+    }]);
+    let (k1, k2) = (fx.ids.mint_mode(), fx.ids.mint_mode());
+    let kit_mode = |id, name: &str| mastik_core::variable::KitMode {
+        id,
+        name: name.into(),
+        from: id,
+        collection: "Density".into(),
+    };
+    fx.apply(vec![Operation::SetKitModes {
+        kit: KIT.into(),
+        modes: Some(mastik_core::variable::KitModes {
+            name: Some("Brand".into()),
+            modes: vec![kit_mode(k1, "Roomy"), kit_mode(k2, "Tight")],
+            map: Default::default(),
+        }),
+    }]);
+    let flow = fx.ids.mint_item();
+    let page = fx.page;
+    fx.apply(vec![Operation::SetFlows {
+        id: page,
+        flows: vec![Keyed::new(
+            flow,
+            Flow {
+                name: "Dark".into(),
+                start: a,
+                modes: vec![dark, k2],
+                values: Vec::new(),
+            },
+        )],
+    }]);
+    let mut p = Player::new(
+        &fx.doc,
+        Start::Flow(mastik_core::prototype::FlowRef { page, flow }),
+        PLAYER,
+    )
+    .unwrap();
+    assert_eq!(number(&p, n), 2.0, "starts dark");
+    let rows = p.modes();
+    assert_eq!(rows.len(), 2, "the document's collection and the kit's");
+    assert_eq!(
+        (rows[1].name.as_str(), rows[1].kit.as_deref()),
+        ("Density", Some(KIT))
+    );
+    assert_eq!(rows[1].current, k2, "the kit's starting mode");
+    p.input(Input::SetMode(light));
+    p.restart();
+    assert_eq!(number(&p, n), 2.0, "a restart starts the flow dark again");
+}
+
 /// A carousel 100 wide of four 100-wide cards, snapping to its children: a
 /// wheel gesture moves one card, and a short quick drag one card.
 ///
@@ -1936,4 +2020,53 @@ fn a_scroll_effect_follows_the_offset() {
     assert_eq!(o, Some(0.0));
     // Scrolled up 240, moved down its whole 60.
     assert_eq!(at, Some(Vec2::new(10.0, -170.0)), "held at its end");
+}
+
+/// A click finds a layer where its scroll effect has moved and shrunk it, not
+/// where it is drawn.
+///
+/// flip: `Player::walk` not taking the point back through the effect → fails
+/// at "missed where it is drawn".
+#[test]
+fn a_click_follows_a_scroll_effect() {
+    use mastik_core::prototype::{EffectEnds, ScrollEffect, ScrollProp};
+    let (mut fx, a, card, n) = one_card();
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    fx.rect(a, "Long", 0.0, 0.0, 10.0, 500.0);
+    let ends = |prop, start, end| EffectEnds { prop, start, end };
+    fx.play_settings(
+        card,
+        LayerPlay {
+            pin: Pin::Fixed,
+            scroll_effect: Some(ScrollEffect {
+                from: 0.0,
+                to: 100.0,
+                props: vec![
+                    ends(ScrollProp::MoveX, 0.0, 100.0),
+                    ends(ScrollProp::Scale, 1.0, 0.5),
+                ],
+            }),
+            ..LayerPlay::default()
+        },
+    );
+    fx.on(card, Trigger::Click, vec![add(n, 1.0)]);
+    let mut p = fx.play(a);
+    p.input(Input::Wheel {
+        at: Point::new(100.0, 50.0),
+        delta: Vec2::new(0.0, 100.0),
+    });
+    // Drawn at 10..60 × 10..40; moved 100 right and halved about its centre:
+    // 122.5..147.5 × 17.5..32.5.
+    click(&mut p, 20.0, 25.0);
+    assert_eq!(number(&p, n), 0.0, "missed where it is drawn");
+    click(&mut p, 115.0, 25.0);
+    assert_eq!(number(&p, n), 0.0, "missed where it would be unshrunk");
+    click(&mut p, 135.0, 25.0);
+    assert_eq!(number(&p, n), 1.0, "hit where it moved to");
 }

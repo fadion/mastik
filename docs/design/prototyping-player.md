@@ -58,7 +58,8 @@ otherwise the player returns over the canvas).
   over the canvas*, *Fullscreen*, and, fullscreen, *Stop playing*. Its commands are buttons, not
   chords: the editor has spent the chords they would want.
 - **The state card** heads with *Modes* when the document has a collection of two modes or more:
-  one row per such collection of the document's own (`Player::modes`), a dropdown of its modes
+  one row per such collection, the document's then each kit's under the kit's eyebrow
+  (`Player::modes`), a dropdown of its modes
   set on every page, dim with *This screen sets its own ‹Collection› mode* while the screen sets
   one. The variables follow under a *Values* eyebrow with their values; a number or text is
   typed, a boolean switched, a colour shown. A value or mode set there is an input like any other.

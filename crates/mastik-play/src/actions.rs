@@ -15,7 +15,9 @@ const QUICK_MS: f64 = 300.0;
 /// picked.
 const THROW_MS: f64 = 200.0;
 use mastik_core::variable::{ModeId, Value, VarId};
-use mastik_core::{ItemId, Keyed, NodeId, Operation, Transaction, subtree_nodes, variant};
+use mastik_core::{
+    ItemId, Keyed, NodeId, NodeKind, Operation, Transaction, subtree_nodes, variant,
+};
 
 /// What an action under a *while* trigger did, so ending the hover or the press
 /// can put it back.
@@ -271,7 +273,7 @@ impl Player {
                     return;
                 }
                 let at = match scope {
-                    ModeScope::Everywhere => self.doc.page_ids().collect(),
+                    ModeScope::Everywhere => self.everywhere(*mode),
                     ModeScope::Screen => vec![self.screen],
                 };
                 for id in at {
@@ -327,6 +329,39 @@ impl Player {
                 Undo::Modes(id, was) => self.put_modes(id, was),
             }
         }
+    }
+
+    /// Where *Set mode* sets `mode` everywhere: every page, for one of the
+    /// document's modes. A page holds none of a kit's, so a kit's goes on each
+    /// top-level frame instead, passing over one that pins a mode of that kit
+    /// collection in the document, as a frame's own pin beats the page's.
+    pub(crate) fn everywhere(&self, mode: ModeId) -> Vec<NodeId> {
+        let t = self.doc.variables();
+        let pages = self.doc.page_ids();
+        if t.mode(mode).is_some() {
+            return pages.collect();
+        }
+        let Some(owner) = t.owner_of(mode) else {
+            return Vec::new();
+        };
+        let bt = self.base.variables();
+        let pins = |id: NodeId| {
+            self.base.get(id).is_some_and(|n| {
+                n.modes()
+                    .iter()
+                    .any(|m| bt.owner_of(*m).is_some_and(|o| o == owner))
+            })
+        };
+        pages
+            .filter_map(|p| self.doc.get(p))
+            .flat_map(|root| root.children().iter().copied())
+            .filter(|f| {
+                self.doc
+                    .get(*f)
+                    .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }))
+                    && !pins(*f)
+            })
+            .collect()
     }
 
     /// Set `mode` on node `id` of the copy (a page's root or a frame) in place

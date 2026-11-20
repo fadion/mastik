@@ -1059,6 +1059,50 @@ pub fn owner_modes(t: &Variables, owner: ModeOwner<'_>) -> Vec<ModeId> {
     }
 }
 
+/// A collection play can switch: one with two modes or more.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Switchable<'a> {
+    pub owner: ModeOwner<'a>,
+    /// The collection's name; for a kit's only collection, which has none, the
+    /// kit's.
+    pub name: String,
+    /// Its modes in order, by id and name.
+    pub modes: Vec<(ModeId, &'a str)>,
+}
+
+impl Variables {
+    /// The collections *Set mode*, a flow's starting modes and the player's
+    /// state card offer: the document's in order, then each kit's, kit by kit.
+    pub fn switchable(&self) -> Vec<Switchable<'_>> {
+        let own = self.collections.iter().map(|c| Switchable {
+            owner: ModeOwner::Collection(c.id),
+            name: c.name.clone(),
+            modes: c.modes.iter().map(|m| (m.id, m.name.as_str())).collect(),
+        });
+        let kits = self.kits.iter().flat_map(|(kit, km)| {
+            km.collections().into_iter().map(move |c| Switchable {
+                owner: ModeOwner::Kit(kit, c),
+                name: match c.is_empty() {
+                    true => km.name.clone().unwrap_or_else(|| kit.clone()),
+                    false => c.to_owned(),
+                },
+                modes: km.modes_in(c).map(|m| (m.id, m.name.as_str())).collect(),
+            })
+        });
+        own.chain(kits).filter(|s| s.modes.len() > 1).collect()
+    }
+}
+
+impl ModeOwner<'_> {
+    /// The kit it belongs to, `None` for one of the document's collections.
+    pub fn kit(&self) -> Option<&str> {
+        match self {
+            ModeOwner::Collection(_) => None,
+            ModeOwner::Kit(k, _) => Some(k),
+        }
+    }
+}
+
 /// What owns a mode: one of the document's collections, or a kit's collection
 /// by kit id and collection name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

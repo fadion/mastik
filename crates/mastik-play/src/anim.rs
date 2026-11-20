@@ -110,8 +110,6 @@ pub(crate) struct Look {
     rel: Affine,
     size: Option<Size>,
     opacity: f32,
-    /// Its fills' colours, when every fill is a solid.
-    fills: Option<Vec<Color>>,
     /// Its paint with literal brushes.
     paint: Paint,
     radii: Option<RoundedRectRadii>,
@@ -342,12 +340,16 @@ impl Smart {
             }
             let mut paint = tr.to.paint.clone();
             let mut painted = false;
-            if let (Some(a), Some(b)) = (&tr.from.fills, &tr.to.fills)
-                && a.len() == b.len()
-                && a != b
+            // Fill by fill: one that cannot move (an image, two kinds of
+            // gradient) shows the end's at once, the rest still move.
+            if tr.from.paint.fills.len() == paint.fills.len() && tr.from.paint.fills != paint.fills
             {
-                for (f, (x, y)) in paint.fills.iter_mut().zip(a.iter().zip(b)) {
-                    f.brush = BrushSource::Literal(Brush::Solid(lerp_color(*x, *y, fade)));
+                for (f, a) in paint.fills.iter_mut().zip(&tr.from.paint.fills) {
+                    if let (Some(x), Some(y)) = (a.brush.literal(), f.brush.literal())
+                        && let Some(b) = lerp_brush(x, y, t, fade)
+                    {
+                        f.brush = BrushSource::Literal(b);
+                    }
                 }
                 painted = true;
             }
@@ -356,10 +358,10 @@ impl Smart {
             {
                 for (s, a) in paint.strokes.iter_mut().zip(&tr.from.paint.strokes) {
                     s.width = mix(a.width, s.width, t).max(0.0);
-                    if let (Some(Brush::Solid(x)), Some(Brush::Solid(y))) =
-                        (a.brush.literal(), s.brush.literal())
+                    if let (Some(x), Some(y)) = (a.brush.literal(), s.brush.literal())
+                        && let Some(b) = lerp_brush(x, y, t, fade)
                     {
-                        s.brush = BrushSource::Literal(Brush::Solid(lerp_color(*x, *y, fade)));
+                        s.brush = BrushSource::Literal(b);
                     }
                 }
                 painted = true;
@@ -449,20 +451,11 @@ impl Player {
             ),
             None => (1.0, Paint::default(), Vec::new()),
         };
-        let fills = paint
-            .fills
-            .iter()
-            .map(|f| match f.brush.literal() {
-                Some(Brush::Solid(c)) => Some(*c),
-                _ => None,
-            })
-            .collect();
         let kind = self.res.used_kind(&self.doc, id);
         Look {
             rel,
             size: kind.and_then(|k| k.box_size()),
             opacity,
-            fills,
             paint,
             radii: kind.and_then(|k| k.corner_radii()),
             effects,
@@ -681,15 +674,36 @@ impl Player {
     /// its opacity in place of its own, then a move, scale and turn about its
     /// centre over whatever placed it.
     fn scroll_effect_patch(&self, id: NodeId, out: &mut Patches) {
-        let Some(n) = self.doc.get(id) else { return };
-        let Some(e) = n.play().scroll_effect.clone() else {
-            return;
-        };
+        let Some(e) = self.effect_now(id) else { return };
+        let placed = self
+            .res
+            .used_local(&self.doc, id)
+            .unwrap_or(Affine::IDENTITY);
+        let centre = self
+            .res
+            .used_kind(&self.doc, id)
+            .and_then(|k| k.box_size())
+            .map_or(Point::ZERO, |s| Point::new(s.width / 2.0, s.height / 2.0));
+        let patch = out.get(id);
+        if let Some(o) = e.opacity {
+            patch.opacity = Some(o.clamp(0.0, 1.0) as f32);
+        }
+        if e.transforms {
+            let local = patch.transform.unwrap_or(placed);
+            patch.transform = Some(e.affine(local * centre) * local);
+        }
+    }
+
+    /// Where `id`'s scroll effect stands at the offset of the nearest scrolling
+    /// frame above it; `None` without an effect or such a frame.
+    pub(crate) fn effect_now(&self, id: NodeId) -> Option<EffectNow> {
+        let n = self.doc.get(id)?;
+        let e = n.play().scroll_effect.as_ref()?;
         let mut at = n.parent();
         while let Some(f) = at.filter(|f| self.scrolls(*f) == ScrollAxis::None) {
             at = self.doc.get(f).and_then(|n| n.parent());
         }
-        let Some(frame) = at else { return };
+        let frame = at?;
         let offset = self.scroll_offset(frame);
         let along = match self.scrolls(frame) {
             ScrollAxis::Horizontal => offset.x,
@@ -706,31 +720,20 @@ impl Player {
                 .map_or(p.rest(), |x| x.start + (x.end - x.start) * t)
         };
         let has = |p: ScrollProp| e.props.iter().any(|x| x.prop == p);
-        let placed = self
-            .res
-            .used_local(&self.doc, id)
-            .unwrap_or(Affine::IDENTITY);
-        let centre = self
-            .res
-            .used_kind(&self.doc, id)
-            .and_then(|k| k.box_size())
-            .map_or(Point::ZERO, |s| Point::new(s.width / 2.0, s.height / 2.0));
-        let patch = out.get(id);
-        if has(ScrollProp::Opacity) {
-            patch.opacity = Some(value(ScrollProp::Opacity).clamp(0.0, 1.0) as f32);
-        }
-        let turns = has(ScrollProp::Scale) || has(ScrollProp::Rotation);
-        let moves = has(ScrollProp::MoveX) || has(ScrollProp::MoveY);
-        if turns || moves {
-            let local = patch.transform.unwrap_or(placed);
-            let c = local * centre;
-            let about = Affine::translate(c.to_vec2())
-                * Affine::rotate(value(ScrollProp::Rotation).to_radians())
-                * Affine::scale(value(ScrollProp::Scale))
-                * Affine::translate(-c.to_vec2());
-            let shift = Vec2::new(value(ScrollProp::MoveX), value(ScrollProp::MoveY));
-            patch.transform = Some(Affine::translate(shift) * about * local);
-        }
+        Some(EffectNow {
+            opacity: has(ScrollProp::Opacity).then(|| value(ScrollProp::Opacity)),
+            shift: Vec2::new(value(ScrollProp::MoveX), value(ScrollProp::MoveY)),
+            scale: value(ScrollProp::Scale),
+            turn: value(ScrollProp::Rotation),
+            transforms: [
+                ScrollProp::MoveX,
+                ScrollProp::MoveY,
+                ScrollProp::Scale,
+                ScrollProp::Rotation,
+            ]
+            .into_iter()
+            .any(has),
+        })
     }
 
     /// Whether `id` is `ancestor` or inside it.
@@ -743,6 +746,30 @@ impl Player {
             at = self.doc.get(x).and_then(|n| n.parent());
         }
         false
+    }
+}
+
+/// A scroll effect's values at the offset now.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EffectNow {
+    /// In place of the layer's own, when the effect drives it.
+    pub opacity: Option<f64>,
+    pub shift: Vec2,
+    pub scale: f64,
+    /// Degrees.
+    pub turn: f64,
+    /// Whether it moves, scales or turns the layer at all.
+    pub transforms: bool,
+}
+
+impl EffectNow {
+    /// The move, scale and turn about `centre`, in the space `centre` is in.
+    pub fn affine(&self, centre: Point) -> Affine {
+        let c = centre.to_vec2();
+        Affine::translate(self.shift + c)
+            * Affine::rotate(self.turn.to_radians())
+            * Affine::scale(self.scale)
+            * Affine::translate(-c)
     }
 }
 
@@ -867,6 +894,118 @@ fn lerp_effects(a: &[Keyed<Effect>], b: &[Keyed<Effect>], t: f64) -> Option<Vec<
         .collect()
 }
 
+/// Two brushes at `t` between them, colours at `fade`: two colours mix; two
+/// gradients of one kind move their geometry, opacity and ramp, the ramps
+/// sampled at every offset either has; a colour reads as a flat ramp of the
+/// other's kind. `None` for anything else (an image, two kinds), which then
+/// shows the end's at once.
+fn lerp_brush(a: &Brush, b: &Brush, t: f64, fade: f32) -> Option<Brush> {
+    use mastik_core::GradientBrush;
+    use mastik_core::peniko::{ColorStop, Gradient, GradientKind};
+    let flat = |c: Color, like: &GradientBrush| GradientBrush {
+        gradient: Gradient {
+            stops: [0.0, 1.0]
+                .into_iter()
+                .map(|offset| ColorStop {
+                    offset,
+                    color: c.into(),
+                })
+                .collect::<Vec<_>>()
+                .as_slice()
+                .into(),
+            ..like.gradient.clone()
+        },
+        ..like.clone()
+    };
+    let (x, y) = match (a, b) {
+        (Brush::Solid(x), Brush::Solid(y)) => return Some(Brush::Solid(lerp_color(*x, *y, fade))),
+        (Brush::Gradient(x), Brush::Gradient(y)) => (x.clone(), y.clone()),
+        (Brush::Solid(c), Brush::Gradient(y)) => (flat(*c, y), y.clone()),
+        (Brush::Gradient(x), Brush::Solid(c)) => (x.clone(), flat(*c, x)),
+        _ => return None,
+    };
+    let pt = |p: Point, q: Point| p.lerp(q, t);
+    let m = |p: f32, q: f32| p + (q - p) * t as f32;
+    let kind = match (x.gradient.kind, y.gradient.kind) {
+        (GradientKind::Linear(p), GradientKind::Linear(q)) => {
+            GradientKind::Linear(mastik_core::peniko::LinearGradientPosition {
+                start: pt(p.start, q.start),
+                end: pt(p.end, q.end),
+            })
+        }
+        (GradientKind::Radial(p), GradientKind::Radial(q)) => {
+            GradientKind::Radial(mastik_core::peniko::RadialGradientPosition {
+                start_center: pt(p.start_center, q.start_center),
+                start_radius: m(p.start_radius, q.start_radius).max(0.0),
+                end_center: pt(p.end_center, q.end_center),
+                end_radius: m(p.end_radius, q.end_radius).max(0.0),
+            })
+        }
+        (GradientKind::Sweep(p), GradientKind::Sweep(q)) => {
+            GradientKind::Sweep(mastik_core::peniko::SweepGradientPosition {
+                center: pt(p.center, q.center),
+                start_angle: m(p.start_angle, q.start_angle),
+                end_angle: m(p.end_angle, q.end_angle),
+            })
+        }
+        _ => return None,
+    };
+    let mut offsets: Vec<f32> = x
+        .gradient
+        .stops
+        .iter()
+        .chain(y.gradient.stops.iter())
+        .map(|s| s.offset)
+        .collect();
+    offsets.sort_by(f32::total_cmp);
+    offsets.dedup();
+    let stops: Vec<ColorStop> = offsets
+        .into_iter()
+        .map(|o| ColorStop {
+            offset: o,
+            color: lerp_color(
+                ramp_at(&x.gradient.stops, o),
+                ramp_at(&y.gradient.stops, o),
+                fade,
+            )
+            .into(),
+        })
+        .collect();
+    Some(Brush::Gradient(GradientBrush {
+        gradient: Gradient {
+            kind,
+            stops: stops.as_slice().into(),
+            ..y.gradient
+        },
+        transform: lerp_affine(x.transform, y.transform, t),
+        opacity: m(x.opacity, y.opacity).clamp(0.0, 1.0),
+    }))
+}
+
+/// A ramp's colour at `offset`, straight between the stops either side; past
+/// the ends, the end's.
+fn ramp_at(stops: &[mastik_core::peniko::ColorStop], offset: f32) -> Color {
+    let srgb = |s: &mastik_core::peniko::ColorStop| s.color.to_alpha_color();
+    let Some(first) = stops.first() else {
+        return Color::TRANSPARENT;
+    };
+    if offset <= first.offset {
+        return srgb(first);
+    }
+    for w in stops.windows(2) {
+        let (p, q) = (&w[0], &w[1]);
+        if offset <= q.offset {
+            let span = q.offset - p.offset;
+            let k = match span > f32::EPSILON {
+                true => (offset - p.offset) / span,
+                false => 1.0,
+            };
+            return lerp_color(srgb(p), srgb(q), k);
+        }
+    }
+    stops.last().map_or(Color::TRANSPARENT, srgb)
+}
+
 fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let (x, y) = (a.components, b.components);
     Color::new([
@@ -940,5 +1079,69 @@ mod tests {
             0.5,
         );
         assert_eq!(moved.translation(), Vec2::new(5.0, 2.0));
+    }
+
+    fn linear(end: f64, stops: &[(f32, Color)]) -> Brush {
+        use mastik_core::peniko::{ColorStop, Gradient};
+        let stops: Vec<ColorStop> = stops
+            .iter()
+            .map(|(offset, c)| ColorStop {
+                offset: *offset,
+                color: (*c).into(),
+            })
+            .collect();
+        Brush::Gradient(mastik_core::GradientBrush {
+            gradient: Gradient {
+                stops: stops.as_slice().into(),
+                ..Gradient::new_linear((0.0, 0.0), (end, 0.0))
+            },
+            transform: Affine::IDENTITY,
+            opacity: 1.0,
+        })
+    }
+
+    /// Two linear ramps half way: the end moves half way, and a ramp of two
+    /// stops against one of three is sampled at all three offsets.
+    ///
+    /// flip: `lerp_brush` keeping the start's offsets alone → fails at the
+    /// offsets' `assert_eq`.
+    #[test]
+    fn a_gradient_moves_its_end_and_its_ramp() {
+        let (black, white) = (Color::from_rgb8(0, 0, 0), Color::from_rgb8(255, 255, 255));
+        let a = linear(100.0, &[(0.0, black), (1.0, black)]);
+        let b = linear(200.0, &[(0.0, white), (0.5, black), (1.0, white)]);
+        let Some(Brush::Gradient(g)) = lerp_brush(&a, &b, 0.5, 0.5) else {
+            panic!("two linear ramps move");
+        };
+        let mastik_core::peniko::GradientKind::Linear(p) = g.gradient.kind else {
+            panic!("still linear");
+        };
+        assert_eq!(p.end, Point::new(150.0, 0.0), "the end moves half way");
+        let offsets: Vec<f32> = g.gradient.stops.iter().map(|s| s.offset).collect();
+        assert_eq!(offsets, [0.0, 0.5, 1.0]);
+        let grey = |i: usize| {
+            g.gradient.stops[i]
+                .color
+                .to_alpha_color::<mastik_core::peniko::color::Srgb>()
+                .components[0]
+        };
+        assert!((grey(0) - 0.5).abs() < 1e-6, "an end stop is half way");
+        assert!(grey(1).abs() < 1e-6, "the middle stop is half way");
+    }
+
+    /// A colour against a gradient reads as a flat ramp, so it fades into it;
+    /// a gradient against an image cannot move.
+    #[test]
+    fn a_colour_fades_into_a_gradient() {
+        let red = Color::from_rgb8(255, 0, 0);
+        let b = linear(100.0, &[(0.0, Color::from_rgb8(0, 0, 255)), (1.0, red)]);
+        let Some(Brush::Gradient(g)) = lerp_brush(&Brush::Solid(red), &b, 0.5, 0.5) else {
+            panic!("a colour and a ramp move");
+        };
+        let first = g.gradient.stops[0]
+            .color
+            .to_alpha_color::<mastik_core::peniko::color::Srgb>();
+        assert!((first.components[0] - 0.5).abs() < 1e-6);
+        assert!((first.components[2] - 0.5).abs() < 1e-6);
     }
 }

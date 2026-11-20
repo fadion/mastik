@@ -4857,7 +4857,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "set_flows",
-        doc: "Replace a page's prototype flows: each a name, a start frame and starting variable values",
+        doc: "Replace a page's prototype flows: each a name, a start frame, starting modes and starting variable values",
         params: &[
             req("page", NODE, "the page"),
             req(
