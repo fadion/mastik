@@ -22,28 +22,17 @@ remains is below.
   ends with the app, needs no account and never leaves the network.
 - **Annotations in inspect mode.** The exported player's inspect panel does not show a picked
   layer's annotation (`Node::note`), which the packed document already carries.
-- **A hover leave trigger.** *While hovering* puts back what its actions did when the pointer
-  leaves, but nothing can start on leaving: closing a menu after a delay, a fade out.
-- **Touch gestures as triggers.** Long press, double tap and a swipe with a direction. *Drag*
-  fires on any direction past four units, so a swipe left and a swipe right cannot do different
-  things.
-- **A scroll position trigger.** Actions that run when a scrolling frame's offset crosses a
-  value, in either direction: a header that shrinks, a button shown past a point. With it, a
-  layer property driven by the offset across a range (parallax, a fading header).
-- **Set a variable mode.** An action that switches the mode a collection reads, for the whole
-  prototype or one frame: dark mode or another language mid-play. Today only a flow's starting
-  values and *Set variable* change what variables read.
-- **Keep scroll on navigate.** *Navigate* resets every scrolling frame inside its destination
-  (`play.md`, *Actions*); an option on the action to keep the offsets, so a tab bar returning to
-  a long list lands where it left.
-- **A layer that follows the drag.** *Drag* is a trigger only: the layer under it does not move.
-  Moving it, held to an axis and a range, released to a snap point or back, with actions on
-  release, gives swipe to dismiss, a slider's thumb and a sheet pulled down.
-- **Scroll snapping.** A scrolling frame that rests on its children's edges (or every page of its
-  own size) after a drag or a wheel, so a carousel stops on a card.
-- **Smart animate's other properties.** It interpolates transform, box size, opacity and solid
-  fills (`play.md`, *Motion*); corner radii, strokes, gradients, shadows and blur jump. A card
-  growing into a screen needs its radius and shadow to move.
+- **Scroll effects: what is left.** A scroll trigger's point drawn on the canvas and dragged
+  there, instead of typed in *Past*; and hit testing following a scroll effect's move, turn and
+  scale, which it does not (`play.md`, *A scroll effect*).
+- **A layer that follows the drag: what is left.** Its snap points drawn on the canvas as ghosts
+  of the layer and dragged to place them, as a placed overlay is, instead of typed as X and Y;
+  and *Settle* timing fields in *Dragging* (`Follow::settle` keeps its default spring)
+  (`design/prototyping-authoring.md`, *The Prototype card*).
+- **Modes, snapping and smart animate: what is left.** A flow that starts at a mode, as it starts
+  at variable values; *Set mode* and the state card offering a kit's collections, which play
+  already sets but the UI lists only the document's own; a snapping frame's rest points drawn on
+  the canvas; gradients moving under smart animate (`play.md`, *Motion*), which still jump.
 - **Responsive playback.** *Fit*, *Fill width* and *Actual size* all scale the screen as drawn. A
   fourth scaling lays the frame out again at the player's width through its flex, grid and width
   queries, so a resized window or a phone of another size shows the real layout.

@@ -59,6 +59,7 @@ fn red_to_blue() -> (Document, Take) {
                     Action::Navigate {
                         to: b,
                         transition: Transition::INSTANT,
+                        keep_scroll: false,
                     },
                 )],
             },

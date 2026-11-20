@@ -1,8 +1,8 @@
 //! What a shell draws: the frames on screen and the patches over the copy.
 
-use mastik_core::kurbo::{Affine, Point, Rect, Size};
+use mastik_core::kurbo::{Affine, Point, Rect, RoundedRectRadii, Size};
 use mastik_core::peniko::Color;
-use mastik_core::{NodeId, Paint};
+use mastik_core::{Effect, Keyed, NodeId, Paint};
 
 /// One frame of play to draw, in **screen space**: the current screen frame's box
 /// with its top-left at the origin, one unit a document pixel. The shell scales
@@ -58,6 +58,11 @@ pub struct Patch {
     pub visible: Option<bool>,
     /// The node's paint, its brushes literal.
     pub paint: Option<Paint>,
+    /// The node's corner radii (a frame's, a rectangle's; a polygon's or star's
+    /// one radius as the top-left).
+    pub radii: Option<RoundedRectRadii>,
+    /// The node's effect stack, its numbers literal.
+    pub effects: Option<Vec<Keyed<Effect>>>,
 }
 
 impl Patch {
@@ -70,6 +75,8 @@ impl Patch {
             opacity: None,
             visible: None,
             paint: None,
+            radii: None,
+            effects: None,
         }
     }
 }

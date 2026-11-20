@@ -54,6 +54,7 @@ fn navigate(to: NodeId) -> Action {
     Action::Navigate {
         to,
         transition: Transition::default(),
+        keep_scroll: false,
     }
 }
 

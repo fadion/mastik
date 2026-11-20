@@ -680,6 +680,7 @@ fn interactions_come_in_as_reactions_and_flows_as_flows() {
         { "eventType": "after-delay", "delay": 600, "actionType": "open-overlay",
           "destination": "sheet" },
         { "eventType": "mouse-leave", "actionType": "prev-screen" },
+        { "eventType": "mouse-up", "actionType": "prev-screen" },
     ]);
     let mut home = shape("home", "frame", ROOT, (0.0, 0.0, 200.0, 100.0));
     home["shapes"] = json!(["button"]);
@@ -694,9 +695,14 @@ fn interactions_come_in_as_reactions_and_flows_as_flows() {
     ));
     let doc = &r.doc;
     let reactions = doc.get(one(doc, "button")).unwrap().reactions();
-    assert_eq!(reactions.len(), 2);
+    assert_eq!(reactions.len(), 3);
+    assert_eq!(
+        reactions[2].value.trigger,
+        Trigger::HoverLeave,
+        "mouse leave"
+    );
     match &reactions[0].value.actions[0].value {
-        Action::Navigate { to, transition } => {
+        Action::Navigate { to, transition, .. } => {
             assert_eq!(*to, one(doc, "cart"));
             assert_eq!(
                 (transition.kind, transition.direction, transition.timing),

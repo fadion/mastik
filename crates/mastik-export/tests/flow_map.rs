@@ -128,6 +128,7 @@ fn shop() -> (Document, [NodeId; 5], VarId) {
                 vec![Action::Navigate {
                     to: cart,
                     transition: ease(TransitionKind::Push, 300),
+                    keep_scroll: false,
                 }],
             ),
         },
@@ -139,6 +140,7 @@ fn shop() -> (Document, [NodeId; 5], VarId) {
                 vec![Action::Navigate {
                     to: help,
                     transition: Transition::INSTANT,
+                    keep_scroll: false,
                 }],
             ),
         },

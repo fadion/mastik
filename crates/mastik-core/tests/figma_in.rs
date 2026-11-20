@@ -1039,7 +1039,7 @@ fn interactions_come_in_as_reactions_and_starting_points_as_flows() {
         .map(|k| &k.value)
         .collect();
     match actions[..] {
-        [Action::Navigate { to, transition }, Action::Back] => {
+        [Action::Navigate { to, transition, .. }, Action::Back] => {
             assert_eq!(*to, one(doc, "2:1"), "goes to Cart");
             assert_eq!(transition.kind, TransitionKind::SmartAnimate);
             assert_eq!(

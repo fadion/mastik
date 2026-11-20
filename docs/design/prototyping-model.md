@@ -11,7 +11,7 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
 | Field | Type | Holds |
 | --- | --- | --- |
 | `Node::reactions` | `Vec<Keyed<Reaction>>` | The layer's triggers and the actions each runs, in order |
-| `Node::play` | `LayerPlay` | A frame's scroll axis; a child's pin; an input binding |
+| `Node::play` | `LayerPlay` | A frame's scroll axis and snap (`Snap`, `SnapAlign`); a child's pin; an input binding; how the layer follows a drag (`Follow`); properties that follow a scroll (`ScrollEffect`) |
 | `Page::flows` | `Vec<Keyed<Flow>>` | Named ways into the page's prototype |
 | `Page::play` | `PagePlay` | Device preset name, scaling, the default transition for a new link |
 | `Document::play_export` | `PlayExport` | Which flows the HTML export takes, which it opens on, device frame, player bar, hotspot hints, a scaling override |
@@ -20,11 +20,21 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
   variant value's tied browser state.
 - **A reaction** is a `Trigger` and an ordered `Vec<Keyed<Action>>`. Each action has its own item
   id, nested ones under a `Conditional` too.
-- **Triggers**: `Click`, `HoverEnter`, `HoverWhile`, `Press`, `PressWhile`, `Drag`, `Key` (plain or
-  Shift-ed), `After { ms }`, `VariableChanges { var }`, `FrameOpens`.
-- **Actions**: `Navigate`, `Back`, `OpenOverlay`, `CloseOverlay`, `SwapOverlay`, `ScrollTo`,
-  `ChangeState` (an instance and the variant main it switches to), `SetVariable` (`Set`,
-  `Increment`, `Toggle`), `Conditional` (branches, then `otherwise`), `OpenUrl`, `RunScript`. Every
+- **Triggers**: `Click`, `DoubleClick`, `HoverEnter`, `HoverWhile`, `HoverLeave`, `Press`,
+  `PressWhile`, `LongPress { ms }`, `Drag`, `Swipe { side }` (left, right, up, down), `Drop { at
+  }` (a layer that follows the drag come to rest: `DropAt::Anywhere`, `Drawn`, or a `Point` by
+  its item id, which may dangle), `ScrollPast
+  { frame, at, going }` (a scrolling frame's offset crossing `at`, going forward, back or either;
+  forward is down, or right on a sideways frame), `Key` (plain or Shift-ed), `After { ms }`,
+  `VariableChanges { var }`, `FrameOpens`. A scroll trigger's frame is a layer target like an
+  action's: `Trigger::layer_target` names it, `Trigger::map_layers` (through
+  `prototype::map_layers`) carries it through the copy remaps, and it may dangle.
+- **Actions**: `Navigate` (with `keep_scroll`, off by default), `Back`, `OpenOverlay`,
+  `CloseOverlay`, `SwapOverlay`, `ScrollTo`, `ChangeState` (an instance and the variant main it
+  switches to), `SetVariable` (`Set`, `Increment`, `Toggle`), `SetMode` (a mode, and a
+  `ModeScope`: `Everywhere` by default, or `Screen`), `Conditional` (branches, then `otherwise`),
+  `OpenUrl`, `RunScript`. `SetMode` stores only the mode: its collection is the one the mode
+  belongs to, the document's or a kit's. Every
   action that moves the screen carries a `Transition`: a kind, a direction read by the
   directional kinds and smart animate (a side, or `None`, which is smart animate's alone and
   which the others read as left; the default is `None`, and a smart animate written without a
@@ -37,8 +47,24 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
   holding the action, so a menu stays by its button wherever the button sits, an instance's
   included.
 - **`LayerPlay`'s frame fields are inert on any other kind**, and its pin is read only inside a
-  scrolling frame. An `Input` binds a variable; on an instance it names the boolean variant
+  scrolling frame. `snap` is `None`, `Children` or `Pages`; `snap_align` (`Start`, `Centre`,
+  `End`) is read under `Children` only. An `Input` binds a variable; on an instance it names the boolean variant
   property that shows it, on a text layer none (it binds a string).
+- **A layer that follows the drag is a `LayerPlay` setting, not a reaction**: `follow:
+  Option<Follow>`. `axis` reuses `ScrollAxis` (`Both` by default; `None` reads as both); `range`
+  is `FollowRange::Free`, `Parent` or `Points`; `release` is `Release::Stays`, `Returns` or
+  `Snaps`; `settle` is a `Timing`, by default a spring of mass 1, stiffness 300, damping 30;
+  `points` is a keyed list of `DragPoint`s, each a name and an offset from where the layer is
+  drawn. The drawn place is always the first point, named `DRAWN_POINT` (*Open*), and never
+  listed, so it cannot be renamed or removed. What play does with it is `play.md`.
+- **A scroll effect is a `LayerPlay` setting, not a reaction**: `scroll_effect:
+  Option<ScrollEffect>`, a range `from..to` on the offset of the nearest scrolling frame above
+  the layer (in units, down, or across for a frame that scrolls sideways only) and `props`, a
+  list of `EffectEnds`: a `ScrollProp` with its `start` and `end` value. The properties are
+  `Opacity` (0–1, in place of the layer's own), `MoveX` and `MoveY` (units from where it is
+  drawn), `Scale` (a factor about its centre) and `Rotation` (degrees about its centre). The
+  scroll is the timing, so there is no curve and no keyframe past the two ends. What play does
+  with it is `play.md`.
 - A **flow** is a name, a start frame and starting variable cells, which beat the modes' values.
 - **Expressions** (`prototype::Expr`: a condition, *Set variable*'s value) are stored as source text,
   a variable written `{<actor-hex>:<seq>}` so a rename never breaks one. The language is in
@@ -60,11 +86,15 @@ page's flows and play settings, so the inverse of a removal brings them back.
   0..=1), on an action or a page's default transition (`OpError::BadPlay`), or a non-finite
   overlay position or backdrop on an overlay action (`OverlaySettings::is_usable`;
   `ReactionError::BadOverlay`).
+- A non-finite scroll trigger point (`ReactionError::BadScrollPoint`).
+- A `LayerPlay` whose follow settle timing is not usable or whose snap point or scroll-effect
+  number is not finite (`LayerPlay::is_usable`; `OpError::BadPlay`). Here the loader drops the
+  node's follow and scroll effect instead of refusing the file.
 - A repeated id: an action id within one list (`ReactionError::DuplicateAction`), a reaction id on
   a layer (`Node::check_item_ids`), a flow id on a page.
 
 **Targets dangle by design.** Neither the door nor the loader checks that an action's target, a
-flow's start, an input's variable or a named script exists. Play skips a missing one, and undo of
+flow's start, an input's variable, a *Set mode*'s mode or a named script exists. Play skips a missing one, and undo of
 the delete mends it. A target has nothing to draw, so keeping it costs nothing. An input's
 variable counts as a target here, not as a binding, which the loader does refuse when dangling
 (§5.3f).

@@ -138,6 +138,7 @@ fn fixture() -> Fixture {
                 Action::Navigate {
                     to: settings,
                     transition: Transition::default(),
+                    keep_scroll: false,
                 },
             ),
         },

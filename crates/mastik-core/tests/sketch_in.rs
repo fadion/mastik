@@ -925,7 +925,7 @@ fn flows_come_in_as_reactions_and_hotspots_as_boxes() {
     let link = first("Rect");
     assert_eq!(link.trigger, Trigger::Click, "the rectangle's link");
     match &link.actions[0].value {
-        Action::Navigate { to, transition } => {
+        Action::Navigate { to, transition, .. } => {
             assert_eq!(*to, one(doc, "Cart"));
             assert_eq!(
                 (transition.kind, transition.direction),

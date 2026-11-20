@@ -7510,7 +7510,8 @@ fn set_reactions_reads_the_short_forms_and_refuses_an_unasked_script() {
         actions[0],
         &Action::Navigate {
             to: b,
-            transition: push
+            transition: push,
+            keep_scroll: false,
         },
         "the page's transition"
     );

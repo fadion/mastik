@@ -57,8 +57,11 @@ otherwise the player returns over the canvas).
   *Stop recording*, *Export the take as a video* once a take exists, *Open in a window* / *Back
   over the canvas*, *Fullscreen*, and, fullscreen, *Stop playing*. Its commands are buttons, not
   chords: the editor has spent the chords they would want.
-- **The state card** lists the variables with their values; a number or text is typed, a
-  boolean switched, a colour shown. A value set there is an input like any other.
+- **The state card** heads with *Modes* when the document has a collection of two modes or more:
+  one row per such collection of the document's own (`Player::modes`), a dropdown of its modes
+  set on every page, dim with *This screen sets its own ‹Collection› mode* while the screen sets
+  one. The variables follow under a *Values* eyebrow with their values; a number or text is
+  typed, a boolean switched, a colour shown. A value or mode set there is an input like any other.
 - **Private mode** masks the flow's and page's names in the card's head and the window's title.
 - Its texture is the player's own `CanvasRenderer`, drawn whole through
   `mastik_render::play` whenever the scene or the copy changed.

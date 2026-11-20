@@ -752,6 +752,7 @@ fn with_an_interaction(ctx: &egui::Context) -> (MastikApp, crate::panels::protot
                         Action::Navigate {
                             to: frame,
                             transition: Transition::default(),
+                            keep_scroll: false,
                         },
                     )],
                 },

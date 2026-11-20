@@ -1,7 +1,7 @@
 //! Live update: the editor's commits applied to the played copy as they land.
 
 use crate::player::{Fallback, Notice, Player};
-use mastik_core::{OpError, Resolved, Transaction, variant};
+use mastik_core::{NodeId, OpError, Resolved, Transaction, variant};
 
 impl Player {
     /// Apply a transaction the editor committed to its document.
@@ -53,6 +53,18 @@ impl Player {
                 self.states.insert(instance, main);
             }
         }
+        let mut modes: Vec<_> = self.modes.drain().collect();
+        modes.sort();
+        for (id, set) in modes {
+            if self.doc.get(id).is_some() {
+                self.put_modes(id, set);
+            }
+        }
+        // A settle the re-clone cuts short ends where it was going, and drops.
+        for a in std::mem::take(&mut self.anims.moves) {
+            self.moved.insert(a.layer, a.to);
+            self.drops.push((a.layer, a.at));
+        }
         self.anims = Default::default();
     }
 
@@ -82,6 +94,13 @@ impl Player {
         }
         self.history.retain(|v| self.doc.get(v.frame).is_some());
         self.scroll.retain(|f, _| self.doc.get(*f).is_some());
+        self.scroll_seen.retain(|f, _| self.doc.get(*f).is_some());
+        let follows = |doc: &mastik_core::Document, l: &NodeId| {
+            doc.get(*l).is_some_and(|n| n.play().follow.is_some())
+        };
+        self.moved.retain(|l, _| follows(&self.doc, l));
+        self.anims.moves.retain(|a| follows(&self.doc, &a.layer));
+        self.drops.retain(|(l, _)| follows(&self.doc, l));
         self.states.retain(|i, _| self.doc.get(*i).is_some());
         self.auto.retain(|i, _| self.doc.get(*i).is_some());
         if self.focus_shown.is_some_and(|f| self.doc.get(f).is_none()) {

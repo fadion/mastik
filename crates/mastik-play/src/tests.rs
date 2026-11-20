@@ -4,15 +4,15 @@ use crate::{Input, Notice, Player, Start, Take};
 use mastik_core::kurbo::{Affine, Point, RoundedRectRadii, Size, Vec2};
 use mastik_core::peniko::Color;
 use mastik_core::prototype::{
-    Action, Branch, Direction, Easing, Expr, Flow, Input as Bound, LayerPlay, OverlayPosition,
-    OverlaySettings, Pin, Reaction, ScrollAxis, Timing, Transition, TransitionKind, Trigger,
-    VarChange,
+    Action, Branch, Direction, Easing, Expr, Flow, Going, Input as Bound, LayerPlay, ModeScope,
+    OverlayPosition, OverlaySettings, Pin, Reaction, ScrollAxis, Side, Snap, Timing, Transition,
+    TransitionKind, Trigger, VarChange,
 };
 use mastik_core::variable::{CollectionId, TextVars};
 use mastik_core::variant::{Interaction, VariantProp, VariantSet};
 use mastik_core::{
-    Cell, Document, IdSource, Keyed, Mode, ModeId, NodeId, NodeKind, Operation, Placement,
-    TextSizing, TextStyle, Transaction, Value, VarId, VarKind, Variable,
+    Cell, Document, Effect, EffectKind, IdSource, Keyed, Mode, ModeId, NodeId, NodeKind, Operation,
+    Placement, Shadow, TextSizing, TextStyle, Transaction, Value, VarId, VarKind, Variable,
 };
 
 /// The player's own actor in every test.
@@ -189,7 +189,11 @@ fn two_screens(transition: Transition) -> (Fx, NodeId, NodeId, NodeId) {
     fx.on(
         button,
         Trigger::Click,
-        vec![Action::Navigate { to: b, transition }],
+        vec![Action::Navigate {
+            to: b,
+            transition,
+            keep_scroll: false,
+        }],
     );
     (fx, a, b, button)
 }
@@ -324,6 +328,7 @@ fn a_conditional_reads_a_variable() {
                         Action::Navigate {
                             to: c,
                             transition: Transition::INSTANT,
+                            keep_scroll: false,
                         },
                     )],
                 }],
@@ -376,6 +381,7 @@ fn a_flow_starts_values_and_a_change_fires_its_reaction() {
         vec![Action::Navigate {
             to: b,
             transition: Transition::INSTANT,
+            keep_scroll: false,
         }],
     );
     let flow = fx.ids.mint_item();
@@ -490,6 +496,7 @@ fn a_timer_fires_at_its_time() {
         vec![Action::Navigate {
             to: b,
             transition: linear(TransitionKind::Dissolve, 100),
+            keep_scroll: false,
         }],
     );
     let mut p = fx.play(a);
@@ -716,6 +723,7 @@ fn an_overlay_opens_closes_and_backs_out() {
         vec![Action::Navigate {
             to: b,
             transition: Transition::INSTANT,
+            keep_scroll: false,
         }],
     );
     let mut p = fx.play(a);
@@ -875,6 +883,7 @@ fn smart_animate_pairs_layers_by_name() {
         vec![Action::Navigate {
             to: b,
             transition: linear(TransitionKind::SmartAnimate, 100),
+            keep_scroll: false,
         }],
     );
     let mut p = fx.play(a);
@@ -930,6 +939,7 @@ fn smart_animate_with_no_side_fades() {
         vec![Action::Navigate {
             to: b,
             transition: fade,
+            keep_scroll: false,
         }],
     );
     let mut p = fx.play(a);
@@ -1369,4 +1379,561 @@ fn a_take_replays_to_the_same_state() {
     assert_eq!(r.history(), p.history());
     assert_eq!(number(r, n), number(&p, n));
     assert_eq!(r.scene(), p.scene(), "the same scene");
+}
+
+// ── Gestures ────────────────────────────────────────────────────────────────
+
+/// A frame 200 by 100 holding a card (10,10 50×30), and a number variable.
+fn one_card() -> (Fx, NodeId, NodeId, VarId) {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let card = fx.rect(a, "Card", 10.0, 10.0, 50.0, 30.0);
+    let n = fx.var("n", VarKind::Number, Cell::Number(0.0));
+    (fx, a, card, n)
+}
+
+fn add(var: VarId, by: f64) -> Action {
+    Action::SetVariable {
+        var,
+        change: VarChange::Increment { by },
+    }
+}
+
+/// *On leave* runs once as the pointer leaves the layer, and again when it
+/// leaves the player from over it.
+///
+/// flip: `Player::rehover` not firing *HoverLeave* for the layers left → fails at
+/// "left once".
+#[test]
+fn leaving_a_layer_fires_on_leave() {
+    let (mut fx, a, card, n) = one_card();
+    fx.on(card, Trigger::HoverLeave, vec![add(n, 1.0)]);
+    let mut p = fx.play(a);
+    p.input(Input::PointerMove(Point::new(20.0, 20.0)));
+    assert_eq!(number(&p, n), 0.0, "entering is not leaving");
+    p.input(Input::PointerMove(Point::new(150.0, 80.0)));
+    assert_eq!(number(&p, n), 1.0, "left once");
+    p.input(Input::PointerMove(Point::new(20.0, 20.0)));
+    p.input(Input::PointerLeave);
+    assert_eq!(number(&p, n), 2.0, "leaving the player leaves the layer");
+}
+
+/// On a layer with a click and a double click, one click waits out the double
+/// click's window and then runs; two quick clicks run the double click alone.
+///
+/// flip: `Player::click` firing the click at once → fails at "held until the
+/// window passes".
+#[test]
+fn a_double_click_holds_the_click() {
+    let (mut fx, a, card, n) = one_card();
+    fx.on(card, Trigger::Click, vec![add(n, 1.0)]);
+    fx.on(card, Trigger::DoubleClick, vec![add(n, 10.0)]);
+    let mut p = fx.play(a);
+    click(&mut p, 20.0, 20.0);
+    assert_eq!(number(&p, n), 0.0, "held until the window passes");
+    assert!(p.is_moving(), "a held click keeps the clock asked for");
+    p.tick(300.0);
+    assert_eq!(number(&p, n), 1.0, "the click runs once no second came");
+    click(&mut p, 20.0, 20.0);
+    p.tick(100.0);
+    click(&mut p, 20.0, 20.0);
+    p.tick(300.0);
+    assert_eq!(number(&p, n), 11.0, "the double click, and no click");
+}
+
+/// A layer with a click and no double click runs its click at once.
+#[test]
+fn a_lone_click_is_not_held() {
+    let (mut fx, a, card, n) = one_card();
+    fx.on(card, Trigger::Click, vec![add(n, 1.0)]);
+    let mut p = fx.play(a);
+    click(&mut p, 20.0, 20.0);
+    assert_eq!(number(&p, n), 1.0);
+}
+
+/// A long press fires at its time while held and spends the press, so no click
+/// follows; a shorter press is a click.
+///
+/// flip: `Player::fire_gestures` not setting `spent` → fails at "no click after
+/// a long press".
+#[test]
+fn a_long_press_fires_while_held_and_takes_the_click() {
+    let (mut fx, a, card, n) = one_card();
+    fx.on(card, Trigger::Click, vec![add(n, 1.0)]);
+    fx.on(card, Trigger::LongPress { ms: 500 }, vec![add(n, 10.0)]);
+    let mut p = fx.play(a);
+    let at = Point::new(20.0, 20.0);
+    p.input(Input::PointerMove(at));
+    p.input(Input::PointerDown(at));
+    p.tick(499.0);
+    assert_eq!(number(&p, n), 0.0, "not yet");
+    p.tick(2.0);
+    assert_eq!(number(&p, n), 10.0, "fired while held");
+    p.input(Input::PointerUp(at));
+    assert_eq!(number(&p, n), 10.0, "no click after a long press");
+    p.input(Input::PointerDown(at));
+    p.tick(100.0);
+    p.input(Input::PointerUp(at));
+    p.tick(1000.0);
+    assert_eq!(number(&p, n), 11.0, "a short press is a click");
+}
+
+/// A quick drag left fires *On swipe left* and not the right; a slow one is no
+/// swipe; a drag the other way is left to the scroll.
+///
+/// flip: `side_of` reading the move's sign backwards → fails at "swiped left".
+#[test]
+fn a_swipe_goes_by_its_side_and_its_speed() {
+    let (mut fx, a, card, n) = one_card();
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    fx.rect(a, "Long", 0.0, 50.0, 10.0, 300.0);
+    fx.on(card, Trigger::Swipe { side: Side::Left }, vec![add(n, 1.0)]);
+    fx.on(
+        card,
+        Trigger::Swipe { side: Side::Right },
+        vec![add(n, 10.0)],
+    );
+    let mut p = fx.play(a);
+    let drag = |p: &mut Player, from: (f64, f64), to: (f64, f64), ms: f64| {
+        let mid = ((from.0 + to.0) / 2.0, (from.1 + to.1) / 2.0);
+        p.input(Input::PointerMove(from.into()));
+        p.input(Input::PointerDown(from.into()));
+        p.input(Input::PointerMove(mid.into()));
+        p.tick(ms);
+        p.input(Input::PointerMove(to.into()));
+        p.input(Input::PointerUp(to.into()));
+    };
+    drag(&mut p, (55.0, 20.0), (15.0, 22.0), 100.0);
+    assert_eq!(number(&p, n), 1.0, "swiped left");
+    drag(&mut p, (55.0, 20.0), (15.0, 22.0), 2000.0);
+    assert_eq!(number(&p, n), 1.0, "a slow drag is no swipe");
+    drag(&mut p, (20.0, 38.0), (22.0, 12.0), 100.0);
+    assert_eq!(number(&p, n), 1.0, "up is no side the card takes");
+    assert_eq!(
+        p.scroll_offset(a),
+        Vec2::new(0.0, 26.0),
+        "the frame scrolled"
+    );
+}
+
+/// A scroll trigger fires once as the offset crosses its point the way it
+/// goes, a jump across included, and not while past it.
+///
+/// flip: `Player::check_scrolls` testing `now >= at` alone (while past, not the
+/// crossing) → fails at "not again while past".
+#[test]
+fn a_scroll_trigger_fires_on_the_crossing() {
+    let (mut fx, a, card, n) = one_card();
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    fx.rect(a, "Long", 0.0, 50.0, 10.0, 400.0);
+    let past = |going| Trigger::ScrollPast {
+        frame: a,
+        at: 100.0,
+        going,
+    };
+    fx.on(card, past(Going::Forward), vec![add(n, 1.0)]);
+    fx.on(card, past(Going::Back), vec![add(n, 10.0)]);
+    let mut p = fx.play(a);
+    let wheel = |p: &mut Player, dy: f64| {
+        p.input(Input::Wheel {
+            at: Point::new(100.0, 50.0),
+            delta: Vec2::new(0.0, dy),
+        });
+    };
+    wheel(&mut p, 60.0);
+    assert_eq!(number(&p, n), 0.0, "short of the point");
+    wheel(&mut p, 60.0);
+    assert_eq!(number(&p, n), 1.0, "crossed going down");
+    wheel(&mut p, 60.0);
+    assert_eq!(number(&p, n), 1.0, "not again while past");
+    wheel(&mut p, -500.0);
+    assert_eq!(number(&p, n), 11.0, "a jump back across fires once");
+}
+
+// ── Scroll kept, modes, snapping ────────────────────────────────────────────
+
+/// A scrolling frame A (200 by 100, content 300 tall) and a frame B; the key
+/// `B` goes to B, and the key `A` comes back to A keeping scroll when `keep`.
+fn there_and_back(keep: bool) -> (Fx, NodeId, NodeId) {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    let long = fx.rect(a, "Long", 0.0, 0.0, 200.0, 300.0);
+    let back = fx.rect(b, "Back", 0.0, 0.0, 20.0, 20.0);
+    let go = |to, keep_scroll| Action::Navigate {
+        to,
+        transition: Transition::INSTANT,
+        keep_scroll,
+    };
+    let key = |k: &str| Trigger::Key {
+        key: k.into(),
+        shift: false,
+    };
+    fx.on(long, key("B"), vec![go(b, false)]);
+    fx.on(back, key("A"), vec![go(a, keep)]);
+    (fx, a, b)
+}
+
+/// *Navigate* with *Keep scroll position* opens its frame where it was left;
+/// without, at its top; *Back* past a kept navigation keeps it too.
+///
+/// flip: `Player::show` clearing the offsets whatever `keep` says → fails at
+/// "kept where it was left".
+#[test]
+fn navigate_keeps_scroll_when_asked() {
+    for keep in [false, true] {
+        let (fx, a, _) = there_and_back(keep);
+        let mut p = fx.play(a);
+        p.input(Input::Wheel {
+            at: Point::new(100.0, 50.0),
+            delta: Vec2::new(0.0, 80.0),
+        });
+        key(&mut p, "B", false);
+        key(&mut p, "A", false);
+        let want = if keep { 80.0 } else { 0.0 };
+        assert_eq!(
+            p.scroll_offset(a),
+            Vec2::new(0.0, want),
+            "kept where it was left (keep: {keep})"
+        );
+    }
+}
+
+/// *Set mode* switches what a variable reads for the run, everywhere or on the
+/// screen alone, and the state card's row follows; the document is untouched
+/// and a restart starts from the saved modes.
+///
+/// flip: `Player::set_mode_on` filtering by the wrong collection (keeping the
+/// old mode beside the new) → fails at "reads the dark column".
+#[test]
+fn set_mode_switches_what_variables_read() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let light = fx.mode;
+    let dark = fx.ids.mint_mode();
+    fx.apply(vec![Operation::AddMode {
+        collection: CollectionId::FIRST,
+        mode: Mode {
+            id: dark,
+            name: "Dark".into(),
+        },
+        index: 1,
+        cells: vec![],
+    }]);
+    let n = fx.ids.mint_var();
+    fx.apply(vec![Operation::AddVariable {
+        var: Variable {
+            id: n,
+            name: "n".into(),
+            kind: VarKind::Number,
+            cells: [(light, Cell::Number(1.0)), (dark, Cell::Number(2.0))].into(),
+            scope: None,
+            origin: None,
+            forked: None,
+            description: String::new(),
+        },
+    }]);
+    let card = fx.rect(a, "Card", 10.0, 10.0, 50.0, 30.0);
+    fx.on(
+        card,
+        Trigger::Click,
+        vec![Action::SetMode {
+            mode: dark,
+            scope: ModeScope::Everywhere,
+        }],
+    );
+    let mut p = fx.play(a);
+    assert_eq!(number(&p, n), 1.0);
+    assert_eq!(p.modes()[0].current, light);
+    click(&mut p, 20.0, 20.0);
+    assert_eq!(number(&p, n), 2.0, "reads the dark column");
+    assert_eq!(p.modes()[0].current, dark, "the card follows");
+    assert!(!p.modes()[0].screen_sets, "set on the page, not the screen");
+    assert_eq!(
+        fx.doc.resolve_var(a, n),
+        Some(Value::Number(1.0)),
+        "the document is untouched"
+    );
+    p.input(Input::SetMode(light));
+    assert_eq!(number(&p, n), 1.0, "a pick from the card");
+    p.restart();
+    assert_eq!(number(&p, n), 1.0, "a restart reads the saved modes");
+}
+
+/// A carousel 100 wide of four 100-wide cards, snapping to its children: a
+/// wheel gesture moves one card, and a short quick drag one card.
+///
+/// flip: `Player::wheel` scrolling a snapping frame freely instead of calling
+/// `snap_step` → fails at "one step per gesture". Taking out `snap_step`'s
+/// guard on a step under way does not bite: a second notch steps from the
+/// partial offset to the same card, so the guard only keeps the motion from
+/// restarting.
+#[test]
+fn a_snapping_frame_rests_on_its_children() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 100.0, 100.0);
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Horizontal,
+            snap: Snap::Children,
+            ..LayerPlay::default()
+        },
+    );
+    for i in 0..4 {
+        fx.rect(
+            a,
+            &format!("Card {i}"),
+            f64::from(i) * 100.0,
+            0.0,
+            100.0,
+            100.0,
+        );
+    }
+    let mut p = fx.play(a);
+    let wheel = |p: &mut Player, dx: f64| {
+        p.input(Input::Wheel {
+            at: Point::new(50.0, 50.0),
+            delta: Vec2::new(dx, 0.0),
+        });
+    };
+    wheel(&mut p, 5.0);
+    wheel(&mut p, 5.0);
+    p.tick(1000.0);
+    assert_eq!(
+        p.scroll_offset(a),
+        Vec2::new(100.0, 0.0),
+        "one step per gesture"
+    );
+    // A short drag leftward (content forward) moves on one card.
+    p.input(Input::PointerMove(Point::new(60.0, 50.0)));
+    p.input(Input::PointerDown(Point::new(60.0, 50.0)));
+    p.input(Input::PointerMove(Point::new(50.0, 50.0)));
+    p.tick(50.0);
+    p.input(Input::PointerMove(Point::new(40.0, 50.0)));
+    p.input(Input::PointerUp(Point::new(40.0, 50.0)));
+    p.tick(1000.0);
+    assert_eq!(p.scroll_offset(a), Vec2::new(200.0, 0.0), "a drag steps on");
+    wheel(&mut p, -5.0);
+    p.tick(1000.0);
+    assert_eq!(p.scroll_offset(a), Vec2::new(100.0, 0.0), "and back");
+}
+
+/// Smart animate moves a paired layer's corner radius and its drop shadow
+/// rather than jumping to the end's.
+///
+/// flip: `Smart::patch_in` leaving `radii` unset → fails at "the radius half
+/// way".
+#[test]
+fn smart_animate_moves_radius_and_shadow() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    let box_a = fx.rect(a, "Box", 0.0, 0.0, 40.0, 40.0);
+    let box_b = fx.node(
+        b,
+        "Box",
+        NodeKind::Rect {
+            size: Size::new(40.0, 40.0),
+            corner_radii: RoundedRectRadii::from_single_radius(20.0),
+            corner_smoothing: 0.0,
+        },
+        (0.0, 0.0),
+    );
+    let mut shadow = |blur: f64| {
+        vec![Keyed::new(
+            fx.ids.mint_item(),
+            Effect::new(EffectKind::DropShadow(Shadow {
+                blur,
+                ..Shadow::default()
+            })),
+        )]
+    };
+    let (sa, sb) = (shadow(0.0), shadow(10.0));
+    fx.apply(vec![
+        Operation::SetEffects {
+            id: box_a,
+            effects: sa,
+        },
+        Operation::SetEffects {
+            id: box_b,
+            effects: sb,
+        },
+    ]);
+    fx.on(
+        box_a,
+        Trigger::Click,
+        vec![Action::Navigate {
+            to: b,
+            transition: linear(TransitionKind::SmartAnimate, 100),
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 5.0, 5.0);
+    p.tick(50.0);
+    let s = p.scene();
+    let patch = s.patches.iter().find(|x| x.node == box_b).expect("patched");
+    assert_eq!(
+        patch.radii.map(|r| r.top_left),
+        Some(10.0),
+        "the radius half way"
+    );
+    let blur = patch.effects.as_ref().and_then(|e| match &e[0].value.kind {
+        EffectKind::DropShadow(s) => Some(s.blur),
+        _ => None,
+    });
+    assert_eq!(blur, Some(5.0), "the shadow's blur half way");
+}
+
+/// A sheet that follows the drag down, held to its axis, settles on the point
+/// nearest where it is let go and then runs its drops: the one for that point
+/// and the one for anywhere, not another point's.
+///
+/// flip: `Player::follow_release` settling at the drawn place for *Snaps* →
+/// fails at "rests at Closed".
+#[test]
+fn a_following_layer_snaps_to_its_point_and_drops() {
+    use mastik_core::prototype::{DragPoint, DropAt, Follow, Release};
+    let (mut fx, a, sheet, n) = one_card();
+    let (peek, closed) = (fx.ids.mint_item(), fx.ids.mint_item());
+    let point = |name: &str, y| DragPoint {
+        name: name.into(),
+        x: 0.0,
+        y,
+    };
+    fx.play_settings(
+        sheet,
+        LayerPlay {
+            follow: Some(Follow {
+                axis: ScrollAxis::Vertical,
+                release: Release::Snaps,
+                settle: Timing::Ease {
+                    curve: Easing::Linear,
+                    ms: 100,
+                },
+                points: vec![
+                    Keyed::new(peek, point("Peek", 30.0)),
+                    Keyed::new(closed, point("Closed", 60.0)),
+                ],
+                ..Follow::default()
+            }),
+            ..LayerPlay::default()
+        },
+    );
+    fx.on(
+        sheet,
+        Trigger::Drop {
+            at: DropAt::Anywhere,
+        },
+        vec![add(n, 1.0)],
+    );
+    fx.on(
+        sheet,
+        Trigger::Drop {
+            at: DropAt::Point(closed),
+        },
+        vec![add(n, 10.0)],
+    );
+    fx.on(
+        sheet,
+        Trigger::Drop {
+            at: DropAt::Point(peek),
+        },
+        vec![add(n, 100.0)],
+    );
+    let mut p = fx.play(a);
+    p.input(Input::PointerMove(Point::new(20.0, 20.0)));
+    p.input(Input::PointerDown(Point::new(20.0, 20.0)));
+    p.input(Input::PointerMove(Point::new(25.0, 40.0)));
+    p.tick(500.0);
+    p.input(Input::PointerMove(Point::new(30.0, 72.0)));
+    assert_eq!(p.moved(sheet), Vec2::new(0.0, 52.0), "held to its axis");
+    p.input(Input::PointerUp(Point::new(30.0, 72.0)));
+    assert_eq!(number(&p, n), 0.0, "no drop before it settles");
+    p.tick(200.0);
+    assert_eq!(p.moved(sheet), Vec2::new(0.0, 60.0), "rests at Closed");
+    assert_eq!(number(&p, n), 11.0, "its point's drop and anywhere's");
+    // It is drawn, and hit, where it rests.
+    let s = p.scene();
+    let shift = s
+        .patches
+        .iter()
+        .find(|x| x.node == sheet)
+        .and_then(|x| x.transform)
+        .map(|t| t.translation());
+    assert_eq!(shift, Some(Vec2::new(10.0, 70.0)));
+    assert_eq!(p.hotspots()[0].rect.y0, 70.0, "hit where it rests");
+}
+
+/// A scroll effect follows its frame's offset linearly across its range and
+/// holds its end past it: half way, half faded and half moved; past the end,
+/// at the end.
+///
+/// flip: `Player::scroll_effect_patch` not clamping the progress → fails at
+/// "held at its end".
+#[test]
+fn a_scroll_effect_follows_the_offset() {
+    use mastik_core::prototype::{EffectEnds, ScrollEffect, ScrollProp};
+    let (mut fx, a, hero, _) = one_card();
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    fx.rect(a, "Long", 0.0, 0.0, 10.0, 500.0);
+    let ends = |prop, start, end| EffectEnds { prop, start, end };
+    fx.play_settings(
+        hero,
+        LayerPlay {
+            scroll_effect: Some(ScrollEffect {
+                from: 0.0,
+                to: 160.0,
+                props: vec![
+                    ends(ScrollProp::Opacity, 1.0, 0.0),
+                    ends(ScrollProp::MoveY, 0.0, 60.0),
+                ],
+            }),
+            ..LayerPlay::default()
+        },
+    );
+    let mut p = fx.play(a);
+    let look = |p: &mut Player, dy: f64| {
+        p.input(Input::Wheel {
+            at: Point::new(100.0, 50.0),
+            delta: Vec2::new(0.0, dy),
+        });
+        let s = p.scene();
+        let x = s.patches.iter().find(|x| x.node == hero).cloned().unwrap();
+        (x.opacity, x.transform.map(|t| t.translation()))
+    };
+    let (o, at) = look(&mut p, 80.0);
+    assert_eq!(o, Some(0.5));
+    // Placed at 10,10, scrolled up 80, moved down 30.
+    assert_eq!(at, Some(Vec2::new(10.0, -40.0)), "half way");
+    let (o, at) = look(&mut p, 160.0);
+    assert_eq!(o, Some(0.0));
+    // Scrolled up 240, moved down its whole 60.
+    assert_eq!(at, Some(Vec2::new(10.0, -170.0)), "held at its end");
 }

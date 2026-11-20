@@ -3005,6 +3005,7 @@ fn a_publish_leaves_out_actions_whose_targets_are_outside_the_main() {
     let navigate = Action::Navigate {
         to: checkout,
         transition: Transition::default(),
+        keep_scroll: false,
     };
     let change = Action::ChangeState {
         instance: card_icon,

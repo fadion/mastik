@@ -3383,6 +3383,9 @@ impl Document {
         play: &crate::prototype::LayerPlay,
         dirty: &mut DirtySet,
     ) -> Result<Operation, OpError> {
+        if !play.is_usable() {
+            return Err(OpError::BadPlay);
+        }
         let node = self.nodes.get_mut(&id).ok_or(OpError::NoSuchNode(id))?;
         let old = std::mem::replace(&mut node.play, play.clone());
         dirty.0.insert(id);

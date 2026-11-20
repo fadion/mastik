@@ -5,11 +5,17 @@ use crate::anim::{ScreenAnim, ScrollAnim, Smart};
 use crate::player::{MAX_DEPTH, Notice, Overlay, Player, Request, Visit};
 use mastik_core::kurbo::{Point, Vec2};
 use mastik_core::prototype::{
-    self, Action, Direction, OverlaySettings, ScrollAxis, Transition, TransitionKind, Trigger,
-    VarChange,
+    self, Action, Direction, ModeScope, OverlaySettings, Pin, ScrollAxis, Snap, SnapAlign,
+    Transition, TransitionKind, Trigger, VarChange,
 };
-use mastik_core::variable::{Value, VarId};
-use mastik_core::{ItemId, Keyed, NodeId, subtree_nodes, variant};
+
+/// A drag on a snapping frame let go within this many milliseconds is thrown…
+const QUICK_MS: f64 = 300.0;
+/// …carrying on at its pace for this long before the nearest rest point is
+/// picked.
+const THROW_MS: f64 = 200.0;
+use mastik_core::variable::{ModeId, Value, VarId};
+use mastik_core::{ItemId, Keyed, NodeId, Operation, Transaction, subtree_nodes, variant};
 
 /// What an action under a *while* trigger did, so ending the hover or the press
 /// can put it back.
@@ -23,6 +29,8 @@ pub(crate) enum Undo {
     Overlays(usize),
     /// How long the history was before a navigation.
     Screen(usize),
+    /// A page's or frame's modes before a *Set mode*.
+    Modes(NodeId, Vec<ModeId>),
 }
 
 impl Player {
@@ -100,12 +108,16 @@ impl Player {
         undo: &mut Vec<Undo>,
     ) {
         match &k.value {
-            Action::Navigate { to, transition } => {
+            Action::Navigate {
+                to,
+                transition,
+                keep_scroll,
+            } => {
                 let Some(to) = self.target(holder, k.id, *to, true) else {
                     return;
                 };
                 undo.push(Undo::Screen(self.history.len()));
-                self.navigate(to, *transition);
+                self.navigate(to, *transition, *keep_scroll);
             }
             Action::Back => {
                 if self.overlays.is_empty() {
@@ -244,6 +256,30 @@ impl Player {
                 }
                 self.run_actions(holder, trigger, otherwise, undo);
             }
+            Action::SetMode { mode, scope } => {
+                let t = self.doc.variables();
+                let known = t.collection_of_mode(*mode).is_some() || t.kit_mode_of(*mode).is_some();
+                if !known {
+                    self.notice_once(
+                        holder,
+                        k.id,
+                        Notice::Missing {
+                            layer: holder,
+                            action: k.id,
+                        },
+                    );
+                    return;
+                }
+                let at = match scope {
+                    ModeScope::Everywhere => self.doc.page_ids().collect(),
+                    ModeScope::Screen => vec![self.screen],
+                };
+                for id in at {
+                    if let Some(was) = self.set_mode_on(id, *mode) {
+                        undo.push(Undo::Modes(id, was));
+                    }
+                }
+            }
             Action::OpenUrl { url } => {
                 let lower = url.trim().to_ascii_lowercase();
                 if lower.starts_with("http://") || lower.starts_with("https://") {
@@ -288,43 +324,83 @@ impl Player {
                         self.back();
                     }
                 }
+                Undo::Modes(id, was) => self.put_modes(id, was),
             }
+        }
+    }
+
+    /// Set `mode` on node `id` of the copy (a page's root or a frame) in place
+    /// of any mode of its collection there. Answers the modes it held before,
+    /// `None` when nothing changed.
+    pub(crate) fn set_mode_on(&mut self, id: NodeId, mode: ModeId) -> Option<Vec<ModeId>> {
+        let was = self.doc.get(id)?.modes().to_vec();
+        let t = self.doc.variables();
+        let mut modes: Vec<ModeId> = was
+            .iter()
+            .copied()
+            .filter(|m| !mastik_core::variable::same_collection(t, *m, mode))
+            .collect();
+        modes.push(mode);
+        modes.sort();
+        if modes == was {
+            return None;
+        }
+        self.put_modes(id, modes);
+        Some(was)
+    }
+
+    /// Give node `id` of the copy exactly `modes`, remembered so a live edit's
+    /// fresh copy gets them again.
+    pub(crate) fn put_modes(&mut self, id: NodeId, modes: Vec<ModeId>) {
+        let tx = Transaction(vec![Operation::SetModes {
+            id,
+            modes: modes.clone(),
+        }]);
+        if self.commit(tx).is_ok() {
+            self.modes.insert(id, modes);
         }
     }
 
     // ── Moves ────────────────────────────────────────────────────────────────
 
     /// Show `to` as the screen, closing every overlay, with `to` the frame *Back*
-    /// leaves from.
-    pub(crate) fn navigate(&mut self, to: NodeId, transition: Transition) {
+    /// leaves from. With `keep`, `to`'s scrolling frames open where they were
+    /// last left.
+    pub(crate) fn navigate(&mut self, to: NodeId, transition: Transition, keep: bool) {
         if to == self.screen {
             return;
         }
         self.history.push(Visit {
             frame: self.screen,
             transition,
+            keep,
         });
-        self.show(to, transition);
+        self.show(to, transition, keep);
     }
 
     /// Pop the history: the frame before, by the reverse of the transition that
-    /// left it.
+    /// left it, at its offsets when that navigation kept them.
     pub(crate) fn back(&mut self) {
         if let Some(visit) = self.history.pop() {
-            self.show(visit.frame, reversed(visit.transition));
+            self.show(visit.frame, reversed(visit.transition), visit.keep);
         }
     }
 
-    fn show(&mut self, to: NodeId, transition: Transition) {
+    fn show(&mut self, to: NodeId, transition: Transition, keep: bool) {
         while let Some(o) = self.overlays.pop() {
             self.on_close(o.frame);
         }
         self.anims.closing.clear();
         self.anims.overlays.clear();
         let from = self.screen;
-        // A scrolling frame inside the frame shown starts at its top.
-        let inside = subtree_nodes(&self.doc, &[to]);
-        self.scroll.retain(|k, _| !inside.contains(k));
+        // A scrolling frame inside the frame shown starts at its top, unless
+        // kept; the offsets of every screen left stay for the run either way.
+        if !keep {
+            let inside = subtree_nodes(&self.doc, &[to]);
+            self.scroll.retain(|k, _| !inside.contains(k));
+            // Not a scroll back past a point: the frame opens at its top.
+            self.scroll_seen.retain(|k, _| !inside.contains(k));
+        }
         self.anims.screen = (transition.kind != TransitionKind::Instant).then(|| ScreenAnim {
             from,
             to,
@@ -454,6 +530,189 @@ impl Player {
                 0.0
             },
         )
+    }
+
+    /// The offsets `frame` comes to rest at along one axis (`x`: across),
+    /// ascending; empty when it does not snap on that axis.
+    pub(crate) fn snap_points(&self, frame: NodeId, x: bool) -> Vec<f64> {
+        let (Some(n), Some(f)) = (self.doc.get(frame), self.rect(frame)) else {
+            return Vec::new();
+        };
+        let axis = self.scrolls(frame);
+        let on = match x {
+            true => matches!(axis, ScrollAxis::Horizontal | ScrollAxis::Both),
+            false => matches!(axis, ScrollAxis::Vertical | ScrollAxis::Both),
+        };
+        if !on {
+            return Vec::new();
+        }
+        let far = self.clamp_scroll(frame, Vec2::new(f64::MAX, f64::MAX));
+        let (max, size, origin) = match x {
+            true => (far.x, f.width(), f.x0),
+            false => (far.y, f.height(), f.y0),
+        };
+        let play = n.play();
+        let mut out: Vec<f64> = match play.snap {
+            Snap::None => return Vec::new(),
+            Snap::Pages => {
+                let mut v = Vec::new();
+                let mut k = 0.0;
+                while size > 0.0 && k < max && v.len() < 10_000 {
+                    v.push(k);
+                    k += size;
+                }
+                v.push(max);
+                v
+            }
+            Snap::Children => {
+                let spans: Vec<(f64, f64)> = n
+                    .children()
+                    .iter()
+                    .filter(|c| {
+                        self.doc
+                            .get(**c)
+                            .is_some_and(|c| c.visible() && c.play().pin != Pin::Fixed)
+                    })
+                    .filter_map(|c| self.rect(*c))
+                    .map(|r| match x {
+                        true => (r.x0 - origin, r.x1 - origin),
+                        false => (r.y0 - origin, r.y1 - origin),
+                    })
+                    .collect();
+                // The first child's lead is the frame's inset, on both ends.
+                let inset = spans.iter().map(|s| s.0).fold(f64::INFINITY, f64::min);
+                let inset = if inset.is_finite() {
+                    inset.max(0.0)
+                } else {
+                    0.0
+                };
+                spans
+                    .iter()
+                    .map(|(a, b)| match play.snap_align {
+                        SnapAlign::Start => a - inset,
+                        SnapAlign::Centre => (a + b) / 2.0 - size / 2.0,
+                        SnapAlign::End => b - (size - inset),
+                    })
+                    .collect()
+            }
+        };
+        for v in &mut out {
+            *v = v.clamp(0.0, max.max(0.0));
+        }
+        out.sort_by(f64::total_cmp);
+        out.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        out
+    }
+
+    /// Whether `frame` snaps on either axis.
+    pub(crate) fn snaps(&self, frame: NodeId) -> bool {
+        self.doc
+            .get(frame)
+            .is_some_and(|n| n.play().snap != Snap::None)
+            && self.scrolls(frame) != ScrollAxis::None
+    }
+
+    /// One wheel step on a snapping frame: to the next rest point toward
+    /// `delta`. A step under way swallows the rest of its gesture, so a
+    /// trackpad's stream of small deltas moves one step. Answers whether it
+    /// moved.
+    pub(crate) fn snap_step(&mut self, frame: NodeId, delta: Vec2) -> bool {
+        if self.anims.scrolls.iter().any(|a| a.frame == frame) {
+            return true;
+        }
+        let at = self.scroll_offset(frame);
+        let step = |pts: &[f64], from: f64, d: f64| -> f64 {
+            match d.partial_cmp(&0.0) {
+                Some(std::cmp::Ordering::Greater) => pts
+                    .iter()
+                    .copied()
+                    .find(|p| *p > from + 0.5)
+                    .unwrap_or(from),
+                Some(std::cmp::Ordering::Less) => pts
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|p| *p < from - 0.5)
+                    .unwrap_or(from),
+                _ => from,
+            }
+        };
+        let (px, py) = (
+            self.snap_points(frame, true),
+            self.snap_points(frame, false),
+        );
+        let to = Vec2::new(
+            if px.is_empty() {
+                at.x
+            } else {
+                step(&px, at.x, delta.x)
+            },
+            if py.is_empty() {
+                at.y
+            } else {
+                step(&py, at.y, delta.y)
+            },
+        );
+        self.settle_scroll(frame, to)
+    }
+
+    /// Bring a snapping frame to rest after a drag that started at offset
+    /// `start` and took `ms`: at least one step the way it was dragged, and
+    /// further by how fast it was let go.
+    pub(crate) fn snap_release(&mut self, frame: NodeId, start: Vec2, ms: f64) {
+        let at = self.scroll_offset(frame);
+        let pick = |pts: &[f64], s: f64, now: f64| -> f64 {
+            if pts.is_empty() {
+                return now;
+            }
+            let moved = now - s;
+            // A quick release carries on for a while at its pace.
+            let ahead = match ms <= QUICK_MS {
+                true => now + moved / ms.max(1.0) * THROW_MS,
+                false => now,
+            };
+            let near = pts
+                .iter()
+                .copied()
+                .min_by(|a, b| (a - ahead).abs().total_cmp(&(b - ahead).abs()))
+                .unwrap_or(now);
+            let next = match moved.partial_cmp(&0.0) {
+                Some(std::cmp::Ordering::Greater) => pts.iter().copied().find(|p| *p > s + 0.5),
+                Some(std::cmp::Ordering::Less) => pts.iter().rev().copied().find(|p| *p < s - 0.5),
+                _ => None,
+            };
+            match next {
+                Some(n) if (near - s) * moved.signum() < (n - s) * moved.signum() => n,
+                _ => near,
+            }
+        };
+        let to = Vec2::new(
+            pick(&self.snap_points(frame, true), start.x, at.x),
+            pick(&self.snap_points(frame, false), start.y, at.y),
+        );
+        self.settle_scroll(frame, to);
+    }
+
+    /// Move `frame`'s offset to `to` by the page's new-link timing. Answers
+    /// whether it will move.
+    fn settle_scroll(&mut self, frame: NodeId, to: Vec2) -> bool {
+        let from = self.scroll_offset(frame);
+        if to == from {
+            return false;
+        }
+        let timing = self
+            .doc
+            .page(self.page)
+            .map_or(Transition::default().timing, |p| p.play.transition.timing);
+        self.anims.scrolls.retain(|a| a.frame != frame);
+        self.anims.scrolls.push(ScrollAnim {
+            frame,
+            from,
+            to,
+            start: self.now,
+            timing,
+        });
+        true
     }
 
     /// Scroll `frame` by `delta`, as far as its content allows. Answers whether

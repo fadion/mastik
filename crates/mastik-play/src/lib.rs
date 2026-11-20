@@ -16,6 +16,7 @@
 
 mod actions;
 mod anim;
+mod drag;
 mod input;
 mod live;
 pub mod motion;
@@ -28,6 +29,8 @@ mod take;
 mod tests;
 
 pub use input::Input;
-pub use player::{Fallback, Notice, Player, Request, Start, StartError, ValueError, ValueRow};
+pub use player::{
+    Fallback, ModeRow, Notice, Player, Request, Start, StartError, ValueError, ValueRow,
+};
 pub use scene::{Hotspot, Layer, Patch, Scene};
 pub use take::{Replay, Take};

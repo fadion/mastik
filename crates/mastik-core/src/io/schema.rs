@@ -737,7 +737,16 @@ impl NodeDto {
                 false => String::new(),
             },
             reactions: self.reactions,
-            play: self.play,
+            // What the door would refuse is dropped, not the file: a follow or
+            // scroll effect whose numbers are not finite.
+            play: match self.play.is_usable() {
+                true => self.play,
+                false => crate::prototype::LayerPlay {
+                    follow: None,
+                    scroll_effect: None,
+                    ..self.play
+                },
+            },
             detached_from,
             origin: self
                 .origin

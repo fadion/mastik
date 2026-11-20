@@ -208,9 +208,18 @@ fn trigger_words(doc: &Document, t: &Trigger) -> String {
         Trigger::Click => "On click".into(),
         Trigger::HoverEnter => "On hover".into(),
         Trigger::HoverWhile => "While hovering".into(),
+        Trigger::HoverLeave => "On leave".into(),
+        Trigger::DoubleClick => "On double click".into(),
         Trigger::Press => "On press".into(),
         Trigger::PressWhile => "While pressed".into(),
+        Trigger::LongPress { .. } => "On long press".into(),
         Trigger::Drag => "On drag".into(),
+        Trigger::Swipe { side } => format!("On swipe {}", side_word(*side)),
+        Trigger::Drop { .. } => "On drop".into(),
+        Trigger::ScrollPast { frame, at, .. } => {
+            let name = doc.get(*frame).map_or("a missing frame", |n| n.name());
+            format!("When {name} scrolls past {at}")
+        }
         Trigger::Key { key, shift } => match shift {
             true => format!("On the key Shift+{key}"),
             false => format!("On the key {key}"),
@@ -218,6 +227,16 @@ fn trigger_words(doc: &Document, t: &Trigger) -> String {
         Trigger::After { ms } => format!("After {ms} ms"),
         Trigger::VariableChanges { var } => format!("When {} changes", var_name(doc, *var)),
         Trigger::FrameOpens => "When the frame opens".into(),
+    }
+}
+
+fn side_word(side: mastik_core::prototype::Side) -> &'static str {
+    use mastik_core::prototype::Side;
+    match side {
+        Side::Left => "left",
+        Side::Right => "right",
+        Side::Up => "up",
+        Side::Down => "down",
     }
 }
 
@@ -237,7 +256,7 @@ fn action_words(doc: &Document, holder: NodeId, a: &Action) -> String {
         layer_name(doc, holder, id)
     };
     match a {
-        Action::Navigate { to, transition } => {
+        Action::Navigate { to, transition, .. } => {
             format!("go to {}{}", layer(*to), transition_words(transition))
         }
         Action::Back => "go back".into(),
@@ -311,6 +330,27 @@ fn action_words(doc: &Document, holder: NodeId, a: &Action) -> String {
                 );
             }
             out
+        }
+        Action::SetMode { mode, scope } => {
+            let t = doc.variables();
+            let words = t
+                .collection_of_mode(*mode)
+                .and_then(|c| {
+                    let m = c.modes.iter().find(|m| m.id == *mode)?;
+                    Some((c.name.clone(), m.name.clone()))
+                })
+                .or_else(|| {
+                    let (kit, m) = t.kit_mode_of(*mode)?;
+                    Some((kit.to_owned(), m.name.clone()))
+                });
+            let here = match scope {
+                mastik_core::prototype::ModeScope::Everywhere => "",
+                mastik_core::prototype::ModeScope::Screen => " on this screen",
+            };
+            match words {
+                Some((c, m)) => format!("set {c} to {}{here}", quoted(Some(&m))),
+                None => "set a missing mode".into(),
+            }
         }
         Action::OpenUrl { url } => format!("open {url}"),
         Action::RunScript { script } => format!(

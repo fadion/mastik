@@ -56,9 +56,11 @@ pub(crate) fn reaction_ops(
             for step in link.steps {
                 let to = |fid: &str| nodes.get(fid).copied();
                 let action = match step {
-                    Step::Navigate(f, transition) => {
-                        to(&f).map(|to| Action::Navigate { to, transition })
-                    }
+                    Step::Navigate(f, transition) => to(&f).map(|to| Action::Navigate {
+                        to,
+                        transition,
+                        keep_scroll: false,
+                    }),
                     Step::Overlay(f, transition) => to(&f).map(|overlay| Action::OpenOverlay {
                         overlay,
                         settings: Default::default(),
@@ -197,6 +199,7 @@ fn figma_trigger(t: &Value) -> Option<Trigger> {
         "ON_PRESS" => Trigger::PressWhile,
         "ON_DRAG" => Trigger::Drag,
         "MOUSE_ENTER" => Trigger::HoverEnter,
+        "MOUSE_LEAVE" => Trigger::HoverLeave,
         "MOUSE_DOWN" => Trigger::Press,
         "AFTER_TIMEOUT" => Trigger::After {
             ms: (num(t, "timeout") * 1000.0).clamp(0.0, 3.6e6).round() as u32,
@@ -355,6 +358,7 @@ pub(crate) fn penpot(shape: &Value, tally: &mut Tally) -> Vec<Link> {
             "mouse-press" => Trigger::Press,
             "mouse-over" => Trigger::HoverWhile,
             "mouse-enter" => Trigger::HoverEnter,
+            "mouse-leave" => Trigger::HoverLeave,
             "after-delay" => Trigger::After {
                 ms: num(i, "delay").clamp(0.0, 3.6e6).round() as u32,
             },

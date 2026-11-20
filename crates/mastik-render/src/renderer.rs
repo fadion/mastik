@@ -579,20 +579,33 @@ impl RenderOverrides {
     }
 
     /// A prototype's play patches as one preview over the played copy: each
-    /// patch's transform, box size, opacity, visibility and paint as the node's
-    /// override. No layout runs: play has laid out both ends of what it moves.
+    /// patch's transform, box size, corner radii, opacity, visibility, paint and
+    /// effects as the node's override. No layout runs: play has laid out both ends of what it moves.
     pub fn from_play(doc: &Document, res: &Resolved, patches: &[mastik_play::Patch]) -> Self {
         let mut out = Self::default();
         for p in patches {
             if let Some(t) = p.transform {
                 out.place(doc, p.node, t);
             }
-            if let Some(size) = p.size
+            if (p.size.is_some() || p.radii.is_some())
                 && let Some(mut kind) = res.used_kind(doc, p.node).cloned()
-                && let Some(s) = kind.box_size_mut()
             {
-                *s = size;
-                out.set_kind(doc, res, p.node, kind);
+                let mut changed = false;
+                if let (Some(size), Some(s)) = (p.size, kind.box_size_mut()) {
+                    *s = size;
+                    changed = true;
+                }
+                if let Some(radii) = p.radii {
+                    changed |= kind.set_corner_radii(radii);
+                }
+                if changed {
+                    out.set_kind(doc, res, p.node, kind);
+                    out.mark_moved(doc, p.node);
+                }
+            }
+            if let Some(effects) = &p.effects {
+                out.entry(p.node).effects = Some(effects.clone());
+                // A growing shadow reaches past the bounds the node was culled by.
                 out.mark_moved(doc, p.node);
             }
             if let Some(paint) = &p.paint {

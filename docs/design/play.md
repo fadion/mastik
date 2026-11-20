@@ -43,12 +43,15 @@ it. It lives on the copy's variable table (`Variables::set_played`, through
 ## Play state
 
 Held by the `Player`, never in the copy: the screen frame and its page; *Back*'s history (each
-entry the frame left and the transition that left it); the open overlays with their settings and
-opening transition; the play values; scroll offsets per scrolling frame; the main each instance
-play switched was switched to (carried across a re-clone); instances showing an interaction state
+entry the frame left, the transition that left it and whether that navigation kept scroll); the
+open overlays with their settings and opening transition; the play values; scroll offsets per
+scrolling frame and how far each layer that follows the drag was moved, both kept for the run;
+the settles that ended with their drops still to run; the main each instance play switched was switched to and the
+modes *Set mode* gave each page or frame (both carried across a re-clone); instances showing an interaction state
 by themselves, with the main to return to; the layers bound as inputs; the pointer, the layers
-under it, a press in progress, the focused input; *while* reactions in force with what to put
-back; pending timers; motions under way; notices, the script log and requests for the shell.
+under it, a press in progress with its long presses due, a click held for a double click, the
+focused input; *while* reactions in force with what to put back; the scroll offsets the scroll
+triggers last saw; pending timers; motions under way; notices, the script log and requests for the shell.
 
 ## The shell's contract
 
@@ -59,16 +62,17 @@ pointer events back into it.
 | Call | What it does |
 | --- | --- |
 | `Player::new(doc, Start::Flow(r) \| Start::Frame(f), actor)` | Start; `StartError` when the flow or frame is not there |
-| `input(Input) -> bool` | Pointer move, down, up, leave; wheel; a key; text; a state-card value. Answers whether the prototype used it, so an unused Escape goes back to the editor |
-| `tick(ms)` | Advance time: timers fire at their own times, motions move on |
+| `input(Input) -> bool` | Pointer move, down, up, leave; wheel; a key; text; a state-card value or mode. Answers whether the prototype used it, so an unused Escape goes back to the editor |
+| `tick(ms)` | Advance time: timers, held clicks and long presses fire at their own times, motions move on |
 | `scene() -> Scene` | What to draw now |
 | `hotspots()` | The rectangles of the layers that take a person's act in the frame that takes input, for the hints |
 | `values()`, `set_value(var, value)` | The state card's rows, and setting one (recorded in a take; reactions to the change fire) |
+| `modes()` | The state card's modes (`ModeRow`): each of the document's collections with two modes or more, the mode the screen reads, and whether the screen sets one itself. A pick is `Input::SetMode`, set on every page and recorded in a take |
 | `apply_edit(&tx)` | Live update: an editor commit |
 | `take_notices()`, `take_requests()`, `log()` | What to say once; what to do (open a URL); scripts' prints and failures |
 | `take_dirty()` | Nodes of the copy whose drawing changed, for the renderer |
 | `document()`, `resolved()` | The copy to draw, and its derived state |
-| `screen()`, `page()`, `overlays()`, `history()`, `scroll_offset(f)`, `focused()`, `now()` | Play state, read-only |
+| `screen()`, `page()`, `overlays()`, `history()`, `scroll_offset(f)`, `moved(id)`, `focused()`, `now()` | Play state, read-only |
 | `is_moving()` | Whether anything changes without input; a shell may stop ticking while false |
 | `has_scripts()` | Whether any *Run script* exists, for the scripts disclosure at start |
 | `restart()`, `record()`, `stop_recording() -> Take`, `Replay` | Restart; takes |
@@ -79,10 +83,11 @@ box, its top-left at `at`, with an opacity and, for an overlay, a backdrop colou
 beneath (already faded). Two screen layers are drawn while a transition runs; each open or
 closing overlay adds one.
 
-**A `Patch`** replaces, for this frame only, one node's local transform, box size, own opacity,
-visibility or paint (with literal brushes) — the granularity of the renderer's per-node
-override, so `RenderOverrides::from_play` turns each into one `NodeOverride` (a transform, a
-kind with its box size set, a paint, an opacity, a visibility) without `mastik-play` depending
+**A `Patch`** replaces, for this frame only, one node's local transform, box size, corner radii,
+own opacity, visibility, paint (with literal brushes) or effect stack (with literal numbers) — the
+granularity of the renderer's per-node override, so `RenderOverrides::from_play` turns each into
+one `NodeOverride` (a transform, a kind with its box size and radii set, a paint, effects, an
+opacity, a visibility) without `mastik-play` depending
 on the renderer; `mastik_render::play` draws the scene on either backend (`render.md`, *Play*). A
 transform patch moves a node but layout is not run on the patch: smart animate has already laid
 out both ends.
@@ -91,19 +96,44 @@ out both ends.
 
 - A **pointer trigger fires on the deepest layer under the pointer that has one**, then stops;
   a layer inside an instance shown in its *Disabled* state is passed over. Click fires on release
-  if the press did not become a drag, over what was under the press.
+  if the press did not become a drag and no long press spent it, over what was under the press.
+- **A click goes to the deepest layer with *On click* or *On double click*.** When that layer has
+  a double click, the click is held `DOUBLE_MS` (250 ms): a second click on the same layer within
+  it fires the double click and no click; otherwise the held click runs as a click on what was
+  under the first (at once, if the next click lands elsewhere). A layer with only *On click* is
+  never delayed, so only a layer that asks for a double click pays for it.
+- **A long press** is due its `ms` after the press on the deepest layer with one, and fires while
+  the press is held and has not become a drag; it spends the press, so no click follows. A drag
+  cancels it. Held clicks and long presses are timed through `tick` as *After* timers are, and
+  `is_moving` stays true while one waits.
 - **Hit testing is by box**, not ink: a layer with a box (a frame, a shape) by its box, any other
-  by its bounds, each moved by the scrolling frames above it. A group is hit only through its
+  by its bounds, each moved by the scrolling frames above it and by how far it and the layers
+  above it were dragged (`child_offset`), not by a scroll effect. A group is hit only through its
   children. A clipping or scrolling frame cuts off what is outside it. A click on the box that
   holds an input text focuses it, since an empty text has no width.
 - **Overlays are modal.** A press outside the top overlay closes it when its *close when clicking
   outside* is on, and reaches nothing beneath either way.
-- *Hover enter* runs once per layer the pointer enters; *while hovering* and *while pressed* record
-  what their actions did and put it back, newest first, when the pointer leaves or the press ends:
-  a variable's previous play value, an instance's previous main, overlays opened, a navigation
-  (one *Back*).
-- A **drag** is a press that moves more than four units. A drag reaction on the pressed chain
-  takes it; otherwise the nearest scrolling frame in the chain scrolls with it.
+- *Hover enter* runs once per layer the pointer enters, *On leave* once per layer it leaves (the
+  player included); *while hovering* and *while pressed* record what their actions did and put it
+  back, newest first, when the pointer leaves or the press ends: a variable's previous play value,
+  an instance's previous main, overlays opened, a navigation (one *Back*). *On leave* fires only
+  for a layer still in a shown frame — one that went with its frame is gone, not left — and not
+  in a *Disabled* instance.
+- A **drag** is a press that moves more than four units. A swipe reaction anywhere in the pressed
+  chain toward the side the move is going (its longer axis) takes it whole. Otherwise the deepest
+  layer in the chain that follows the drag moves with it (*A layer that follows the drag*) and a
+  drag reaction on the chain fires as well; the nearest scrolling frame in the chain scrolls with
+  it only when neither took it. So a card can take left and right while its list scrolls up and
+  down.
+- **A swipe** holds the drag: nothing fires and nothing scrolls while it moves. On release, the
+  side is read again from the whole move, and the deepest layer with a swipe toward it fires if
+  the move went at least 30 units that way, more along than across, and was released within
+  300 ms or averaged 0.5 units a millisecond — a slow drag ending to one side is no swipe.
+- ***On drop*** (`Trigger::Drop`) fires on a layer that follows the drag once it has come to rest
+  after a release: when its settle ends in `tick` (`Player::drops`, run after the motions
+  advance), or at once when the release moves it nowhere. The reactions for *anywhere* run, and
+  those for the point it reached (`DropAt::Drawn` or a `DropAt::Point`); *Stays* and *Returns*
+  reach only *anywhere*. A trigger whose point is gone never fires.
 - A **key** fires *key* reactions in the frame that takes input whose key matches (letters without
   regard to case) and whose Shift matches. While an input text is focused, keys are text: Backspace
   deletes, Enter and Escape leave the field. While an input instance is focused, Space and Enter
@@ -118,6 +148,13 @@ out both ends.
   the tick's end.
 - *Frame opens* runs when the screen or an overlay opens; *variable changes* runs on every shown
   frame's layers when a play value changes what the variable reads.
+- **A scroll trigger** (`ScrollPast`) on a shown frame's layer, outside a *Disabled* instance,
+  fires when its frame (read through `resolve_target`) crosses `at` the way it asks: forward when the offset was below `at` and is
+  now at or past it, back when it was at or past and is now below. A sideways frame's horizontal
+  offset is read, any other's vertical. It is checked after every input and every `tick` step
+  against the offsets last seen, so a jump across (*Scroll to*, a wheel) fires once and resting
+  past the point fires nothing. A navigation that does not keep scroll forgets the destination's
+  seen offsets with its scroll, so reopening at the top is not a crossing back. A trigger whose frame is gone never fires.
 - Reactions setting each other off are followed sixteen deep, then cut with a `Loop` notice.
 
 ## Actions
@@ -125,15 +162,18 @@ out both ends.
 - **Targets are read through `prototype::resolve_target`**, so a reaction a main gives its instance
   acts on the instance's own layer. A target not there — or not a frame where a frame is needed —
   is skipped with one `Missing` notice per action.
-- **Navigate** closes every overlay, pushes the history and resets the scroll of the frames inside
-  the destination. Navigating to the screen itself does nothing.
+- **Navigate** closes every overlay and pushes the history. The player keeps every screen's scroll
+  offsets for the run; `Player::show` resets those of the frames inside the destination unless
+  the action keeps scroll (`keep_scroll`), and *Back* to a screen keeps them when the navigation
+  that left it did (`Visit::keep`). Navigating to the screen itself does nothing.
 - **Back** closes the top overlay when one is open, by the reverse of its opening transition;
   otherwise it pops the history by the reverse of the transition that left that frame (a move in
   becomes a move out from the other side; a push or slide comes from the other side).
 - **Open overlay** places the frame by the action's `OverlaySettings`; **swap** replaces the top
   one, placed by its own action's; **close** closes it by the transition given. A manual position
   is measured from the opening layer's top-left as drawn when it opens (`Player::drawn_corner`:
-  in its shown frame, moved by an overlay's place and the scrolls above it), which the overlay
+  in its shown frame, moved by an overlay's place, the scrolls above it and any drag it follows),
+  which the overlay
   keeps (`Overlay::anchor`); a swap reads it before the top overlay goes, since the layer may be
   in it.
 - **Scroll to** scrolls the nearest scrolling frame holding the layer until the layer's top-left is
@@ -143,6 +183,12 @@ out both ends.
 - **Set variable** evaluates against the copy at the reaction's layer (play values included);
   increment applies to numbers and toggle to booleans, and anything else is skipped. A value that
   does not change what the variable reads fires nothing.
+- **Set mode** commits `SetModes` on the copy in place of any mode of the same collection there:
+  on every page root for *Everywhere*, so a frame that sets its own mode keeps it and a by-width
+  collection is held at that mode; on the screen frame for *This screen*. The player remembers
+  what it gave each node (`put_modes`), so a live edit's re-clone puts it back; a *while* trigger
+  undoes it (`Undo::Modes`). A mode in neither the document's collections nor a kit's is skipped
+  with `Missing`. Nothing animates. *Restart* and a new flow start from the document's own modes.
 - **Conditional** runs the first branch whose condition is true, else `otherwise`; a condition
   that errs or is not true or false is skipped with a notice.
 - **Open URL** asks the shell (`Request::OpenUrl`) for `http` and `https` addresses only.
@@ -188,6 +234,54 @@ can still move; a drag scrolls as above. Each child of a scrolling frame is draw
 frame's top or left edge and stays there. Scrolling is a patch on each child's transform over
 whatever else patched it.
 
+**Snapping** (`LayerPlay::snap`): a frame that snaps rests on points along each axis it scrolls
+(`Player::snap_points`), clamped to its scroll range.
+
+- *Pages* rests on whole steps of the frame's size, and on the far end.
+- *Children* rests on each visible, non-fixed child, by `snap_align`: *Start* brings its leading
+  edge to the frame's inset, *End* its trailing edge to the inset from the far side, *Centre* its
+  centre to the frame's. The inset is the first child's lead, used on both ends.
+- A wheel gesture moves one point (`snap_step`); while that step moves, further wheel events on
+  the frame are swallowed, so a trackpad's stream of deltas is one step.
+- A drag scrolls freely; its release (`snap_release`) moves at least one point the way it went.
+  Let go within 300 ms, it is carried 200 ms on at its pace and rests on the point nearest there.
+- The settle runs on the page's new-link timing.
+
+## A layer that follows the drag
+
+A layer whose `LayerPlay::follow` is set moves with a drag that starts on it (`drag.rs`); one in
+a *Disabled* instance does not. Its places are offsets from where it is drawn.
+
+- **While dragged** it moves by the pointer's travel since the press, held to its axis (*None*
+  reads as both) and to its range: *Free* has none; *Parent* keeps its box inside its parent's,
+  and still along an axis where its box is the larger; *Points* keeps it between its outermost points
+  on each axis, the drawn place counting as one. Past its range it moves at a third of the
+  pointer's pace (`GIVE`), so the edge is felt.
+- **Let go**, *Stays* holds it back into its range, *Returns* takes it to where it is drawn, and
+  *Snaps* to the point nearest where it is let go — or, let go within 300 ms of the press, nearest
+  where it would be after carrying on 200 ms at its pace, as a snapping frame's drag does. The
+  drawn place is always a point. It moves there on `Follow::settle`, then drops (*On drop*,
+  *Triggers*).
+- **How far it moved** (`Player::moved`) is drawn as a translation patch over whatever else
+  patched the layer, after the scroll's (`scroll_patches`), and counted in hit testing, the
+  hotspots and `drawn_shift` through `child_offset`, so it is hit, and an overlay is placed from
+  it, where it is drawn.
+
+## A scroll effect
+
+A layer whose `LayerPlay::scroll_effect` is set changes with the offset of the nearest scrolling
+frame above it: the vertical offset, or the horizontal one for a frame that scrolls sideways only.
+
+- **Progress** is linear across `from..to` and held at its ends outside it; a range of no length
+  steps at `to`. Each listed property goes from its start to its end value; one not listed stays
+  at rest.
+- **Drawn** as a patch after the scroll's and the drag's (`scroll_effect_patch`): the opacity, clamped
+  to 0–1, in place of the layer's own, then a move, and a turn and scale about the layer's centre,
+  over whatever placed it.
+- **Hit testing does not follow it**: a layer is hit where it is placed, scrolled and dragged.
+- The layers with an effect are listed once (`Player::effects`, by `prepare`) as play starts and
+  after a live edit, so a frame's scene does not look for them.
+
 ## Motion
 
 - **Timing**: `motion::progress` for an easing curve over its duration — the CSS set as their
@@ -203,8 +297,13 @@ whatever else patched it.
   name, or for a layer of an instance the lineage key of the main layer it follows, and which of
   its siblings with that key it is — so a pair's parents are paired too. Both ends are laid out
   when it starts and never again. A paired layer's transform (moved, turned the short way, scaled
-  and sheared, each interpolated), box size, opacity and solid fills interpolate; the frame's own
-  paint does too. With no side (`Direction::None`) the unpaired layers fade: the end's in, the
+  and sheared, each interpolated), box size, opacity, solid fills and corner radii (a polygon's or
+  star's one) interpolate; so do stroke widths and solid stroke colours when both ends have as
+  many strokes, and effects when both stacks are the same kinds in the same order (shadows'
+  offset, blur, spread and colour; layer and background blur radii). Gradients, a stack that
+  differs and other effect kinds jump to the end's. The frame's own paint interpolates too. A
+  pair's start is measured where it is drawn less the end's scroll, which `scroll_patches` adds
+  over the tracks, so a kept scroll is not counted twice. With no side (`Direction::None`) the unpaired layers fade: the end's in, the
   outgoing frame's out. Under a named side they move by it, a screen's width or height: the
   end's slide in from the far side to their places, the outgoing frame's slide out toward the
   side, as *push* moves frames, none of them fading. A move, push or slide has no *None* and
@@ -224,7 +323,10 @@ whatever else patched it.
 `Err` there means the shell passed the wrong document and nothing changes), then to the played
 copy. When the copy refuses it — play changed something the edit touches — the copy is cloned again
 from the base and play state carried across by id: the screen, history, overlays, play values,
-scroll offsets, and each instance re-switched to the main play left it on. Motions under way end.
+scroll offsets, each instance re-switched to the main play left it on, and the modes *Set mode*
+gave. Motions under way end; a drag's settle ends where it was going and its drops run. After any
+edit, how far a layer was dragged, its settle and its pending drops are kept only while the layer
+still follows the drag.
 Then what the edit removed falls back, one notice each: a deleted screen to the start frame (else
 the first frame of the document), a deleted overlay closes, a deleted variable's play value goes.
 A variable whose starting value was edited keeps its play value.

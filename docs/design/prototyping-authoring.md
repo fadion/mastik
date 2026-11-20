@@ -23,7 +23,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **Every edit is one transaction** on the saved model through `commit_edit`, named as its
   neighbours: *Add interaction*, *Change trigger*, *Add action*, *Change action*, *Set
   transition*, *Move action*, *Remove action*, *Duplicate interaction*, *Remove interaction*,
-  *Scrolling*, *Overlay*, *Pin*, *Input*, *Add flow*, *Rename flow*, *Change flow*, *Remove
+  *Scrolling*, *Overlay*, *Pin*, *Input*, *Add scroll effect*, *Scroll effect*, *Remove scroll
+  effect*, *Dragging*, *Add snap point*, *Rename snap point*,
+  *Move snap point*, *Remove snap point*, *Add flow*, *Rename flow*, *Change flow*, *Remove
   flow*, *Add starting value*, *Change starting value*, *Remove starting value*, *Device*,
   *Scaling*, *New links*. A list the door refuses (`prototype::check`) is not
   written and the status line says why.
@@ -39,28 +41,42 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *Delete*), then its actions top to bottom; a `ui::card_rule` parts one block from the next. The
   card's own `+` adds *On click* with no actions. The add and `⋯` menus are as wide as their
   longest row (`ui::menu_width`).
-- **Triggers** are offered in two groups under `ui::menu_eyebrow`s, *Pointer* (*On click*, *On press*, *While
-  pressing*, *On hover*, *While hovering*, *On drag*) and *Other* (*Key…*, *After delay*, *When
-  a variable changes*, *When the frame opens*). *When the frame opens* is offered on a top-level
-  frame only (*Only a frame opens*); *When a variable changes* needs a variable. *After delay*
-  adds a delay field, *When a variable changes* a variable dropdown. Changing to a trigger no
-  person fires is refused while the reaction holds *Run script*.
+- **Triggers** are offered in two groups under `ui::menu_eyebrow`s, *Pointer* (*On click*, *On
+  double click*, *On press*, *While pressing*, *On long press*, *On hover*, *While hovering*, *On
+  leave*, *On drag*, *On swipe*, *On drop*) and *Other* (*Key…*, *After delay*, *When a variable
+  changes*, *When scrolled past*, *When the frame opens*). *On drop* needs a layer that follows
+  the drag (*Only a layer that follows the drag drops*); *When the frame opens* is offered on a
+  top-level frame only (*Only a frame opens*); *When a variable changes* needs a variable; *When scrolled
+  past* needs a scrolling frame at or above the layer or on its screen (*No frame here scrolls*).
+  Changing to a trigger no person fires is refused while the reaction holds *Run script*.
+- **A trigger's fields sit under its head**, each change one *Change trigger* step:
+
+  | Trigger | Fields | Head |
+  | --- | --- | --- |
+  | *After delay* | *Delay* (ms) | *After 2 s* |
+  | *When a variable changes* | a variable dropdown | *When ‹variable› changes* |
+  | *On long press* | *Hold* (ms, new at 500, 100 to 10 000) | *On long press* |
+  | *On swipe* | a *Left · Right · Up · Down* `ui::segmented` | *On swipe left* |
+  | *On drop* | *At*, a dropdown behind `icon::CROSSHAIR_SIMPLE`: *Anywhere*, and under *Release* *Snaps* also *Open* and each snap point; its face names the trigger's point as the head does, offered or not | *On drop anywhere*, *On drop at Closed*, *On drop at a missing snap point* |
+  | *When scrolled past* | a frame dropdown (the scrolling frames at or above the layer, nearest first, then the rest of its screen's); *Past* (px, new at 100); which way, a *Down · Up · Either* `ui::segmented` (*Right · Left · Either* on a sideways frame) | *When Feed scrolls past 240*, *… going up*, *… either way* |
 - ***Key…* captures the next key**: a focused field, *Press a key*, takes the next plain or
   `Shift`-ed key as the trigger (its `egui::Key` name). A `Ctrl` or `Alt` chord is refused, those
   staying the editor's while playing; `Escape` or a click away gives up.
 - **The add menu** groups the actions by what they move: *Go* (*Navigate to*, *Back*, *Scroll
   to*, *Open link*), *Overlay* (*Open*, *Swap*, *Close overlay*), *State* (*Change to*, *Set
-  variable*, *Conditional*, *Run script*). What the layer cannot take is dimmed with its reason
+  variable*, *Set mode*, *Conditional*, *Run script*). What the layer cannot take is dimmed with its reason
   (`prototype::action_refusal`): *Run script* under a trigger no person fires (*A script runs only
   when someone acts*) or with no document script; *Change to* off an instance of a set's variant
-  (*Not a component*); *Set variable* with no variable; a screen action with no frame to go to.
+  (*Not a component*); *Set variable* with no variable; *Set mode* with no collection of two
+  modes or more (*No collection has a second mode*); a screen action with no frame to go to.
   A new action names the likeliest target (`prototype::new_action`): another screen than the
   layer's own, mains last; the layer's own instance and a variant other than its current one; the
-  first variable or script. It opens its popover at once, except *Back*, which has nothing to set.
+  first variable or script; the first collection with two modes, at a mode the holder's screen
+  does not read now, *Everywhere*. It opens its popover at once, except *Back*, which has nothing to set.
 - **An action is one row**, a `ui::field_row_pressable` that opens its popover (*Back*'s opens
   none, having nothing to set, and says what it does under the pointer): a grip, its
   glyph, its verb, its target in accent ink, its transition's timing (kind and duration, or
-  *Spring*) as a faint caption note as a menu row's accelerator is, and `×`; the grip and `×` keep
+  *Spring*; *Keeps scroll · …* on a navigation that keeps scroll) as a faint caption note as a menu row's accelerator is, and `×`; the grip and `×` keep
   their own press. The verb and the target share what the timing and `×` leave, the verb first,
   each cut rather than run under the timing. The rows stand `NEST` in from their trigger. A row
   drags by its grip to
@@ -79,11 +95,17 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   grip alone), the action's fields, then its transition. Opened by a click on a connector, it
   is not closed by that click (`ProtoState::opened_on_canvas`): the canvas runs first, so the
   popover draws on the click's own frame. A screen action picks a top-level frame, each
-  page's under its eyebrow; *Scroll to* a layer of the holder's screen; *Change to* a variant of the instance's
+  page's under its eyebrow, and *Navigate to* adds *Keep scroll position*, a `ui::switch_row`
+  (*Back* has none: it keeps scroll as the navigation it undoes did); *Scroll to* a layer of the holder's screen; *Change to* a variant of the instance's
   set; *Set variable* a variable, then *Set* / *Increment* / *Toggle* (*Increment* for a number,
   *Toggle* for a boolean) and its expression or step; *Conditional* one expression per branch
   (`ui::labelled` *If* / *Else if*), *Add else if* and a branch's `×`; *Open link* an address, refused unless `http` or `https`;
   *Run script* a document script by name.
+- ***Set mode*'s popover**: *Collection* (the document's own collections with two modes or more;
+  a new pick starts at a mode the holder's screen does not read now), *Mode*, and *Where*
+  (*Everywhere* · *This screen*), then a note: a by-width collection is held at the mode at any
+  width; under *Everywhere*, frames that set their own mode keep it. Its row reads *Set Theme to
+  Dark*, as *Set variable*'s reads *Set*, and *… · this screen* under *This screen*.
 - ***Open overlay* and *Swap overlay* show how the frame shows** (`overlay_fields`, one
   *Overlay* step): *Position* (the centre, the top and bottom thirds' left, centre and right, or
   *Manual*), *Close on a click outside*, *Darken behind it* (black at 40% when turned on) and,
@@ -122,11 +144,30 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 ## The Prototype card
 
 - **A frame**: *Scrolling* (*None*, *Vertical*, *Horizontal*, *Both*), the children pinned in it
-  listed under it (*Top bar · Fixed*). How a frame shows as an overlay is its opening action's,
+  listed under it (*Top bar · Fixed*). Once the frame scrolls, *Snap* (*None*, *Children*,
+  *Pages*), and under *Children* a second segmented row, *Start* · *Centre* · *End*; each change
+  is a *Scrolling* step. The rest points are not drawn on the canvas. How a frame shows as an overlay is its opening action's,
   set in that action's popover.
 - **A child of a frame**: *In a scrolling frame*, *Scrolls* / *Fixed* / *Sticky*, dimmed with
   *The frame does not scroll* while its parent does not. The pin is set here, on the child's own
   card, rather than in the layers panel's menu.
+- ***With the scroll***, on any layer below a page's top level (`scroll_effect_section`): `+`
+  adds an effect from 0 to 160 px, *Opacity* 100% to 0% (*Add scroll effect*), dimmed with *The
+  frame does not scroll* when no scrolling frame is above the layer. Then *From* and *To* (px),
+  and a row per property (*Opacity*, *Move Y*, *Move X*, *Scale*, *Rotation*: its name and `×`)
+  over its start and end fields, opacity and scale in %, rotation in °. Each number is one
+  *Scroll effect* step; `×` removes a property, and with the last the effect (*Remove scroll
+  effect*);
+  `+` offers the properties not yet there, each added at rest at both ends (*Add scroll effect*).
+- ***Dragging***, on any layer below a page's top level (`dragging_section`): *Follows the drag*,
+  a `ui::switch_row`, then while it is on *Axis* (`icon::ARROWS_OUT_CARDINAL`,
+  `ARROWS_HORIZONTAL`, `ARROWS_VERTICAL`, tipped *Both*, *Horizontal*, *Vertical*), *Range*
+  (*Free* · *Within its parent* · *Snap points*) and *Release* (*Stays* · *Returns* · *Snaps*,
+  *Snaps* dimmed with *Add a snap point first*), each change a *Dragging* step. Under *Snap
+  points*, the fixed line *Open · where drawn*, then a row per point (`drag_point_row`): its
+  name, `×`, and its X and Y from where the layer is drawn; `+` adds *Point n*, n the first number no point
+  is named by, n × 100 down.
+  The settle timing has no fields yet and keeps its default.
 - **An input**: a text layer binds a string variable; an instance a boolean one and the set's
   two-valued property that shows it. `×` unbinds.
 - **The page** (nothing selected): *Device* (*None*, then the phone and tablet frame templates by name, each group under its
@@ -223,8 +264,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   main*, per item. A reaction the instance removed is a ghost row with *Restore* and *Push removal
   to main*. The card's header counts and resets them as every card does (`card_of`:
   `SetReactions` is *Interactions*, `SetPlay` *Prototype*).
-- **Kit publishing** leaves out of a kit main every action whose target lies outside it
-  (`kit::left_out`); the publish line names them (*· left out Card's Navigate to Checkout, whose
+- **Kit publishing** leaves out of a kit main every action whose target lies outside it, and
+  every reaction whose scroll trigger watches a frame outside it (`kit::left_out`); the publish line names them (*· left out Card's Navigate to Checkout, whose
   target is outside the component*), in the app's popover as in the MCP's `publish_kit`
   (`kits.md`).
 

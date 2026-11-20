@@ -28,7 +28,7 @@ use crate::document::Document;
 use crate::id::NodeId;
 use crate::item::{ItemId, Keyed};
 use crate::script::ScriptId;
-use crate::variable::{Cell, VarId};
+use crate::variable::{Cell, ModeId, VarId};
 use peniko::Color;
 use serde::{Deserialize, Serialize};
 
@@ -67,13 +67,38 @@ pub enum Trigger {
     HoverEnter,
     /// While the pointer is over the layer; leaving it undoes what the actions did.
     HoverWhile,
+    /// The pointer leaves the layer, or the player; the actions run once.
+    HoverLeave,
+    /// Two clicks in quick succession. On a layer that also has a click, the
+    /// click waits until a second can no longer come.
+    DoubleClick,
     /// The pointer goes down on the layer.
     Press,
     /// While the pointer is held down on the layer.
     PressWhile,
+    /// The pointer held down on the layer for `ms` without dragging; the press
+    /// is then spent, so no click follows.
+    LongPress { ms: u32 },
     /// A drag starting on the layer; inside a scrolling frame it takes the drag
     /// from the scroll.
     Drag,
+    /// A quick drag toward `side`, released. Asked before *Drag* and the
+    /// scroll, so a card can take left and right while its list scrolls.
+    Swipe { side: Side },
+    /// A layer that follows the drag has settled after a release, at `at`.
+    Drop {
+        #[serde(default, skip_serializing_if = "is_default")]
+        at: DropAt,
+    },
+    /// A scrolling frame's offset crosses `at` going `going`: once per crossing,
+    /// a jump across it included.
+    ScrollPast {
+        #[serde(with = "wire")]
+        frame: NodeId,
+        at: f64,
+        #[serde(default, skip_serializing_if = "is_default")]
+        going: Going,
+    },
     /// A key, plain or Shift-ed; Ctrl and Alt chords belong to the editor.
     Key {
         /// The key's name as the player reads it (`"A"`, `"Enter"`, `"ArrowLeft"`).
@@ -98,6 +123,49 @@ impl Trigger {
             Trigger::After { .. } | Trigger::VariableChanges { .. } | Trigger::FrameOpens
         )
     }
+
+    /// The layer the trigger watches, other than its holder: a scroll
+    /// trigger's frame.
+    pub fn layer_target(&self) -> Option<NodeId> {
+        match self {
+            Trigger::ScrollPast { frame, .. } => Some(*frame),
+            _ => None,
+        }
+    }
+
+    /// This trigger with the layer it watches passed through `f`.
+    pub fn map_layers(&self, f: &mut impl FnMut(NodeId) -> NodeId) -> Trigger {
+        match self {
+            Trigger::ScrollPast { frame, at, going } => Trigger::ScrollPast {
+                frame: f(*frame),
+                at: *at,
+                going: *going,
+            },
+            other => other.clone(),
+        }
+    }
+}
+
+/// The side a swipe goes toward.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Side {
+    #[default]
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Which way a scroll must cross a scroll trigger's point. On a frame that
+/// scrolls sideways, *forward* is rightward.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Going {
+    /// Into the content: down, or right.
+    #[default]
+    Forward,
+    /// Back toward the start: up, or left.
+    Back,
+    Either,
 }
 
 /// One thing a reaction does.
@@ -112,6 +180,11 @@ pub enum Action {
         #[serde(with = "wire")]
         to: NodeId,
         transition: Transition,
+        /// Whether the destination's scrolling frames open where play last left
+        /// them in this run, rather than at their top. *Back* to a screen keeps
+        /// its offsets when the navigation that left it kept them.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_scroll: bool,
     },
     /// Pop the navigation history; with an overlay open, close the top overlay.
     Back,
@@ -151,6 +224,13 @@ pub enum Action {
     },
     /// Change a variable's play value.
     SetVariable { var: VarId, change: VarChange },
+    /// Switch the collection `mode` belongs to to `mode`, for the rest of the
+    /// run: a mode set in play is play state, never the document's.
+    SetMode {
+        mode: ModeId,
+        #[serde(default, skip_serializing_if = "is_default")]
+        scope: ModeScope,
+    },
     /// The first branch whose condition holds runs its actions; else `otherwise`.
     Conditional {
         branches: Vec<Branch>,
@@ -203,9 +283,14 @@ impl Action {
                 .collect()
         };
         match self {
-            Action::Navigate { to, transition } => Action::Navigate {
+            Action::Navigate {
+                to,
+                transition,
+                keep_scroll,
+            } => Action::Navigate {
                 to: f(*to),
                 transition: *transition,
+                keep_scroll: *keep_scroll,
             },
             Action::OpenOverlay {
                 overlay,
@@ -319,6 +404,16 @@ pub struct Branch {
     pub when: Expr,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Keyed<Action>>,
+}
+
+/// Where [`Action::SetMode`] sets its mode, as the editor would.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ModeScope {
+    /// On every page, so a frame that pins a mode of its own keeps it.
+    #[default]
+    Everywhere,
+    /// On the screen shown, which beats the page.
+    Screen,
 }
 
 /// How [`Action::SetVariable`] changes the value.
@@ -470,18 +565,196 @@ pub struct LayerPlay {
     /// On a frame: the axis it scrolls along when its content overflows.
     #[serde(default, skip_serializing_if = "is_default")]
     pub scroll: ScrollAxis,
+    /// On a scrolling frame: where it comes to rest after a drag or the wheel.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub snap: Snap,
+    /// On a frame that snaps to its children: which of a child's edges it
+    /// brings to the frame's.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub snap_align: SnapAlign,
     /// On a child of a scrolling frame: whether it scrolls with the content.
     #[serde(default, skip_serializing_if = "is_default")]
     pub pin: Pin,
     /// The variable this layer is an input for, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<Input>,
+    /// Whether, and how, the layer moves with a drag that starts on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<Follow>,
+    /// Properties that follow the nearest scrolling frame's offset above the
+    /// layer across a range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_effect: Option<ScrollEffect>,
+}
+
+/// A layer's properties driven by a scrolling frame's offset: linear across
+/// `from..to`, each holding its end value outside it. The scroll is the
+/// timing, so there is no curve.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScrollEffect {
+    /// Where on the offset the effect starts and ends, in units along the
+    /// frame's scroll (down, or across for a frame that scrolls sideways).
+    pub from: f64,
+    pub to: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<EffectEnds>,
+}
+
+impl ScrollEffect {
+    /// Whether every number is finite.
+    pub fn is_usable(&self) -> bool {
+        [self.from, self.to].iter().all(|x| x.is_finite())
+            && self
+                .props
+                .iter()
+                .all(|p| p.start.is_finite() && p.end.is_finite())
+    }
+}
+
+/// One property of a [`ScrollEffect`], with its value at the start and end
+/// of the range.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EffectEnds {
+    pub prop: ScrollProp,
+    pub start: f64,
+    pub end: f64,
+}
+
+/// What a scroll effect can drive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ScrollProp {
+    /// 0–1, the layer's opacity in place of its own.
+    Opacity,
+    /// Units across, from where it is drawn.
+    MoveX,
+    /// Units down, from where it is drawn.
+    MoveY,
+    /// A factor about its centre, 1 as drawn.
+    Scale,
+    /// Degrees about its centre.
+    Rotation,
+}
+
+impl ScrollProp {
+    pub const ALL: [ScrollProp; 5] = [
+        ScrollProp::Opacity,
+        ScrollProp::MoveY,
+        ScrollProp::MoveX,
+        ScrollProp::Scale,
+        ScrollProp::Rotation,
+    ];
+
+    /// Its value with no effect.
+    pub fn rest(self) -> f64 {
+        match self {
+            ScrollProp::Opacity | ScrollProp::Scale => 1.0,
+            _ => 0.0,
+        }
+    }
+}
+
+/// A layer that follows the drag: held to an axis and a range, and on release
+/// staying, going back, or settling on a point.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Follow {
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub axis: ScrollAxis,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub range: FollowRange,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub release: Release,
+    /// How it settles after a release that moves it.
+    #[serde(default = "settle_timing")]
+    pub settle: Timing,
+    /// The places it can rest, each an offset from where it is drawn. Where it
+    /// is drawn is a point too, always the first, so it is not listed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<Keyed<DragPoint>>,
+}
+
+impl Default for Follow {
+    fn default() -> Self {
+        Follow {
+            axis: ScrollAxis::Both,
+            range: FollowRange::default(),
+            release: Release::default(),
+            settle: settle_timing(),
+            points: Vec::new(),
+        }
+    }
+}
+
+fn settle_timing() -> Timing {
+    Timing::Spring {
+        mass: 1.0,
+        stiffness: 300.0,
+        damping: 30.0,
+    }
+}
+
+/// How far a following layer may go.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FollowRange {
+    #[default]
+    Free,
+    /// Its box stays inside its parent's.
+    Parent,
+    /// Between its outermost points.
+    Points,
+}
+
+/// What a following layer does when let go.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Release {
+    /// Stays where it is let go.
+    #[default]
+    Stays,
+    /// Goes back to where it is drawn.
+    Returns,
+    /// Settles on the nearest point, or the next one a quick release throws it to.
+    Snaps,
+}
+
+/// A named place a following layer can rest, as an offset from where it is
+/// drawn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DragPoint {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// The name of the point where a following layer is drawn.
+pub const DRAWN_POINT: &str = "Open";
+
+/// Where a *Drop* trigger asks the layer to have come to rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DropAt {
+    #[default]
+    Anywhere,
+    /// Where it is drawn: [`DRAWN_POINT`].
+    Drawn,
+    /// One of [`Follow::points`]; a removed one never matches.
+    Point(ItemId),
 }
 
 impl LayerPlay {
     /// Whether it holds nothing but defaults.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// Whether its numbers are finite and its settle timing usable, as the
+    /// door requires.
+    pub fn is_usable(&self) -> bool {
+        let follow = self.follow.as_ref().is_none_or(|f| {
+            f.settle.is_usable()
+                && f.points
+                    .iter()
+                    .all(|p| p.value.x.is_finite() && p.value.y.is_finite())
+        });
+        let effect = self.scroll_effect.as_ref().is_none_or(|e| e.is_usable());
+        follow && effect
     }
 }
 
@@ -496,6 +769,29 @@ pub enum ScrollAxis {
     Vertical,
     Horizontal,
     Both,
+}
+
+/// Where a scrolling frame comes to rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Snap {
+    /// Wherever it is let go.
+    #[default]
+    None,
+    /// On its children's edges, as [`SnapAlign`] says.
+    Children,
+    /// On whole steps of its own width or height.
+    Pages,
+}
+
+/// Which edge of a child a frame snapping to its children rests on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SnapAlign {
+    /// The child's leading edge at the frame's leading inset.
+    #[default]
+    Start,
+    Centre,
+    /// The child's trailing edge at the frame's trailing inset.
+    End,
 }
 
 /// How a scrolling frame's child behaves as its content scrolls.
@@ -685,6 +981,8 @@ pub enum ReactionError {
     BadOverlay,
     #[error("two actions in one list share the id {0:?}")]
     DuplicateAction(ItemId),
+    #[error("a scroll trigger's point is a finite number")]
+    BadScrollPoint,
 }
 
 /// Checks a layer's reactions as the door takes them: a script only under a
@@ -692,6 +990,11 @@ pub enum ReactionError {
 /// never checked — they may dangle.
 pub fn check(reactions: &[Keyed<Reaction>]) -> Result<(), ReactionError> {
     for r in reactions {
+        if let Trigger::ScrollPast { at, .. } = r.trigger
+            && !at.is_finite()
+        {
+            return Err(ReactionError::BadScrollPoint);
+        }
         check_list(&r.trigger, &r.actions)?;
     }
     Ok(())
@@ -764,7 +1067,7 @@ pub fn map_layers(
         .iter()
         .map(|r| {
             r.map(|r| Reaction {
-                trigger: r.trigger.clone(),
+                trigger: r.trigger.map_layers(f),
                 actions: r
                     .actions
                     .iter()

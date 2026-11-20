@@ -328,7 +328,8 @@ pub fn left_out(doc: &Document) -> Vec<LeftOut> {
 /// lies outside it taken out of its reactions, nested ones included, and a
 /// reaction this leaves with no action dropped; answers what it took out. A
 /// change of state is judged by its instance alone: the variant it switches to
-/// is a main the kit carries. A target is read as its holder reads it
+/// is a main the kit carries. A reaction whose trigger watches a frame outside
+/// (a scroll trigger) is taken out whole. A target is read as its holder reads it
 /// ([`crate::prototype::resolve_target`]), so a nested instance's reaction that
 /// names its own layers is kept.
 fn kept_inside(doc: &Document, captured: &mut [Node]) -> Vec<LeftOut> {
@@ -381,6 +382,12 @@ fn kept_inside(doc: &Document, captured: &mut [Node]) -> Vec<LeftOut> {
             .reactions
             .iter()
             .filter_map(|r| {
+                // A trigger watching a frame outside never fires in the kit:
+                // the whole reaction is left out.
+                if r.trigger.layer_target().is_some_and(|t| !reaches(t)) {
+                    taken.extend(r.actions.iter().map(|k| k.value.clone()));
+                    return None;
+                }
                 let before = taken.len();
                 let actions = kept(&r.actions, &reaches, &mut taken);
                 let emptied = actions.is_empty() && taken.len() > before;

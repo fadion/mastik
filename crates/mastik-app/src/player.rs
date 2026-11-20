@@ -513,6 +513,14 @@ fn bar(ui: &mut egui::Ui, p: &Playing) -> Option<BarAct> {
 /// The state card's rows: each variable with its value, set by typing (a
 /// number or text) or a switch (a boolean). A colour is shown, not set.
 fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
+    let modes = p.player.modes();
+    if !modes.is_empty() {
+        ui.label(ui::eyebrow("Modes"));
+        for (i, row) in modes.iter().enumerate() {
+            mode_row(ui, p, i, row);
+        }
+        ui.label(ui::eyebrow("Values"));
+    }
     let rows = p.player.values();
     if rows.is_empty() {
         ui::empty_note(ui, "No variables");
@@ -578,6 +586,49 @@ fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
                 }
             },
         );
+    }
+}
+
+/// One collection's row in the state card: its name and a dropdown of its modes.
+/// A pick sets the mode on every page, as *Set mode* does by default; a screen
+/// that sets its own shows that one, the dropdown dim.
+fn mode_row(ui: &mut egui::Ui, p: &mut Playing, i: usize, row: &mastik_play::ModeRow) {
+    let w = ui.available_width();
+    let mut pick = None;
+    ui.allocate_ui_with_layout(
+        egui::vec2(w, ui::CONTROL_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let name = egui::RichText::new(&row.name)
+                .size(ui::SMALL_PT)
+                .color(theme::text::muted());
+            ui.add_sized(
+                egui::vec2(w * 0.45, ui::CONTROL_H),
+                egui::Label::new(name).truncate(),
+            );
+            let shown = row
+                .modes
+                .iter()
+                .find(|(m, _)| *m == row.current)
+                .map_or(String::new(), |(_, n)| n.clone());
+            let field = ui.available_width();
+            let r = ui.add_enabled_ui(!row.screen_sets, |ui| {
+                ui::fitted_combo(ui, ("play-mode", i), field, &shown, &shown, |ui| {
+                    ui::menu_rows(ui);
+                    for (m, n) in &row.modes {
+                        let on = *m == row.current;
+                        if ui.selectable_label(on, n).clicked() && !on {
+                            pick = Some(*m);
+                        }
+                    }
+                })
+            });
+            r.response
+                .on_disabled_hover_text(format!("This screen sets its own {} mode", row.name));
+        },
+    );
+    if let Some(m) = pick {
+        p.player.input(mastik_play::Input::SetMode(m));
     }
 }
 
@@ -1200,6 +1251,7 @@ mod tests {
         let navigate = Action::Navigate {
             to: b,
             transition: Transition::default(),
+            keep_scroll: false,
         };
         let mut ops = vec![
             frame(a, 0.0, "A"),

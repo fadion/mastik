@@ -7,10 +7,14 @@
 use crate::motion::progress;
 use crate::player::{Overlay, Player};
 use crate::scene::{Layer, Patch, Scene};
-use mastik_core::kurbo::{Affine, Point, Size, Vec2};
+use mastik_core::kurbo::{Affine, Point, RoundedRectRadii, Size, Vec2};
 use mastik_core::peniko::Color;
-use mastik_core::prototype::{Direction, Timing, Transition, TransitionKind};
-use mastik_core::{Brush, BrushSource, NodeId, Paint, subtree_nodes};
+use mastik_core::prototype::{
+    Direction, ScrollAxis, ScrollProp, Timing, Transition, TransitionKind,
+};
+use mastik_core::{
+    Brush, BrushSource, Effect, EffectKind, Keyed, NodeId, Paint, Shadow, subtree_nodes,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// How long the hotspot hints flash after a click on nothing, in milliseconds.
@@ -28,6 +32,8 @@ pub(crate) struct Anims {
     pub(crate) closing: Vec<Closing>,
     pub(crate) states: Vec<StateAnim>,
     pub(crate) scrolls: Vec<ScrollAnim>,
+    /// Layers that follow the drag, settling after a release.
+    pub(crate) moves: Vec<crate::drag::MoveAnim>,
 }
 
 impl Anims {
@@ -37,6 +43,7 @@ impl Anims {
             && self.closing.is_empty()
             && self.states.is_empty()
             && self.scrolls.is_empty()
+            && self.moves.is_empty()
     }
 
     pub(crate) fn open(&mut self, frame: NodeId, transition: Transition, now: f64) {
@@ -107,6 +114,9 @@ pub(crate) struct Look {
     fills: Option<Vec<Color>>,
     /// Its paint with literal brushes.
     paint: Paint,
+    radii: Option<RoundedRectRadii>,
+    /// Its effects with literal numbers.
+    effects: Vec<Keyed<Effect>>,
 }
 
 /// One paired layer: where it goes from and to.
@@ -181,12 +191,16 @@ impl Smart {
             match by_path.get(&path) {
                 Some(&from) => {
                     pair.insert(from, id);
+                    // The end's scroll (a kept one) is added over the tracks by
+                    // `scroll_patches`, so the start is measured without it.
+                    let mut start = p.look_scrolled(a, from);
+                    start.rel = Affine::translate(-p.drawn_shift(id)) * start.rel;
                     smart.tracks.push(Track {
                         node: id,
                         parent: parent.filter(|q| *q != b && smart.tracked(*q)),
                         parent_rel: parent.map_or(Affine::IDENTITY, |q| p.look(b, q).rel),
                         root: false,
-                        from: p.look_scrolled(a, from),
+                        from: start,
                         to: p.look(b, id),
                     });
                 }
@@ -326,15 +340,47 @@ impl Smart {
                 let o = tr.from.opacity + (tr.to.opacity - tr.from.opacity) * t as f32;
                 patch.opacity = Some(o.clamp(0.0, 1.0));
             }
+            let mut paint = tr.to.paint.clone();
+            let mut painted = false;
             if let (Some(a), Some(b)) = (&tr.from.fills, &tr.to.fills)
                 && a.len() == b.len()
                 && a != b
             {
-                let mut paint = tr.to.paint.clone();
                 for (f, (x, y)) in paint.fills.iter_mut().zip(a.iter().zip(b)) {
                     f.brush = BrushSource::Literal(Brush::Solid(lerp_color(*x, *y, fade)));
                 }
+                painted = true;
+            }
+            if tr.from.paint.strokes.len() == paint.strokes.len()
+                && tr.from.paint.strokes != paint.strokes
+            {
+                for (s, a) in paint.strokes.iter_mut().zip(&tr.from.paint.strokes) {
+                    s.width = mix(a.width, s.width, t).max(0.0);
+                    if let (Some(Brush::Solid(x)), Some(Brush::Solid(y))) =
+                        (a.brush.literal(), s.brush.literal())
+                    {
+                        s.brush = BrushSource::Literal(Brush::Solid(lerp_color(*x, *y, fade)));
+                    }
+                }
+                painted = true;
+            }
+            if painted {
                 patch.paint = Some(paint);
+            }
+            if let (Some(a), Some(b)) = (tr.from.radii, tr.to.radii)
+                && a != b
+            {
+                patch.radii = Some(RoundedRectRadii::new(
+                    mix(a.top_left, b.top_left, t).max(0.0),
+                    mix(a.top_right, b.top_right, t).max(0.0),
+                    mix(a.bottom_right, b.bottom_right, t).max(0.0),
+                    mix(a.bottom_left, b.bottom_left, t).max(0.0),
+                ));
+            }
+            if tr.from.effects != tr.to.effects
+                && let Some(effects) = lerp_effects(&tr.from.effects, &tr.to.effects, t)
+            {
+                patch.effects = Some(effects);
             }
             let _ = n;
         }
@@ -395,12 +441,13 @@ impl Player {
     pub(crate) fn look(&self, reference: NodeId, id: NodeId) -> Look {
         let world = |x| self.res.world_transform(x).unwrap_or(Affine::IDENTITY);
         let rel = world(reference).inverse() * world(id);
-        let (opacity, paint) = match self.doc.get(id) {
+        let (opacity, paint, effects) = match self.doc.get(id) {
             Some(n) => (
                 n.opacity(),
                 self.doc.resolved_paint(id, n.paint()).into_owned(),
+                self.doc.resolved_effects(id, n.effects()).into_owned(),
             ),
-            None => (1.0, Paint::default()),
+            None => (1.0, Paint::default(), Vec::new()),
         };
         let fills = paint
             .fills
@@ -410,12 +457,15 @@ impl Player {
                 _ => None,
             })
             .collect();
+        let kind = self.res.used_kind(&self.doc, id);
         Look {
             rel,
-            size: self.res.used_kind(&self.doc, id).and_then(|k| k.box_size()),
+            size: kind.and_then(|k| k.box_size()),
             opacity,
             fills,
             paint,
+            radii: kind.and_then(|k| k.corner_radii()),
+            effects,
         }
     }
 
@@ -475,6 +525,17 @@ impl Player {
         }
         self.scroll.extend(scrolled);
         self.anims.scrolls.retain(|a| !done(a.start, &a.timing));
+        let mut settled = Vec::new();
+        for a in &self.anims.moves {
+            let (t, finished) = progress(&a.timing, now - a.start);
+            let at = if finished { a.to } else { a.from.lerp(a.to, t) };
+            settled.push((a.layer, at));
+            if finished {
+                self.drops.push((a.layer, a.at));
+            }
+        }
+        self.moved.extend(settled);
+        self.anims.moves.retain(|a| !done(a.start, &a.timing));
         if self
             .anims
             .screen
@@ -564,9 +625,10 @@ impl Player {
         }
     }
 
-    /// Each scrolling frame's children moved by its offset, by their pins, over
-    /// whatever else patched them. The outgoing frame of a smart animate is left
-    /// alone: its layers move with their pairs.
+    /// Each scrolling frame's children moved by its offset, by their pins, and
+    /// each layer that follows the drag by how far it was moved, then each
+    /// scroll effect, over whatever else patched them. The outgoing frame of a
+    /// smart animate is left alone: its layers move with their pairs.
     fn scroll_patches(&self, skip: Option<NodeId>, out: &mut Patches) {
         let mut frames: Vec<NodeId> = self.scroll.keys().copied().collect();
         frames.sort();
@@ -578,7 +640,7 @@ impl Player {
                 continue;
             };
             for c in n.children().to_vec() {
-                let shift = self.child_offset(frame, c);
+                let shift = self.scroll_shift(frame, c);
                 if shift == Vec2::ZERO {
                     continue;
                 }
@@ -590,6 +652,84 @@ impl Player {
                 let local = patch.transform.unwrap_or(placed);
                 patch.transform = Some(Affine::translate(shift) * local);
             }
+        }
+        // Layers that follow the drag, over the rest; the outgoing frame's
+        // move with their pairs, as its scroll does.
+        let outgoing = |id: NodeId| skip.is_some_and(|s| self.under(id, s));
+        let mut moved: Vec<(NodeId, Vec2)> = self.moved.iter().map(|(k, v)| (*k, *v)).collect();
+        moved.sort_by_key(|(id, _)| *id);
+        for (id, off) in moved {
+            if off == Vec2::ZERO || self.doc.get(id).is_none() || outgoing(id) {
+                continue;
+            }
+            let placed = self
+                .res
+                .used_local(&self.doc, id)
+                .unwrap_or(Affine::IDENTITY);
+            let patch = out.get(id);
+            let local = patch.transform.unwrap_or(placed);
+            patch.transform = Some(Affine::translate(off) * local);
+        }
+        for id in self.effects.clone() {
+            if !outgoing(id) {
+                self.scroll_effect_patch(id, out);
+            }
+        }
+    }
+
+    /// `id`'s scroll effect at the nearest scrolling frame's offset above it:
+    /// its opacity in place of its own, then a move, scale and turn about its
+    /// centre over whatever placed it.
+    fn scroll_effect_patch(&self, id: NodeId, out: &mut Patches) {
+        let Some(n) = self.doc.get(id) else { return };
+        let Some(e) = n.play().scroll_effect.clone() else {
+            return;
+        };
+        let mut at = n.parent();
+        while let Some(f) = at.filter(|f| self.scrolls(*f) == ScrollAxis::None) {
+            at = self.doc.get(f).and_then(|n| n.parent());
+        }
+        let Some(frame) = at else { return };
+        let offset = self.scroll_offset(frame);
+        let along = match self.scrolls(frame) {
+            ScrollAxis::Horizontal => offset.x,
+            _ => offset.y,
+        };
+        let t = match e.to - e.from {
+            span if span.abs() < f64::EPSILON => f64::from(u8::from(along >= e.to)),
+            span => ((along - e.from) / span).clamp(0.0, 1.0),
+        };
+        let value = |p: ScrollProp| {
+            e.props
+                .iter()
+                .find(|x| x.prop == p)
+                .map_or(p.rest(), |x| x.start + (x.end - x.start) * t)
+        };
+        let has = |p: ScrollProp| e.props.iter().any(|x| x.prop == p);
+        let placed = self
+            .res
+            .used_local(&self.doc, id)
+            .unwrap_or(Affine::IDENTITY);
+        let centre = self
+            .res
+            .used_kind(&self.doc, id)
+            .and_then(|k| k.box_size())
+            .map_or(Point::ZERO, |s| Point::new(s.width / 2.0, s.height / 2.0));
+        let patch = out.get(id);
+        if has(ScrollProp::Opacity) {
+            patch.opacity = Some(value(ScrollProp::Opacity).clamp(0.0, 1.0) as f32);
+        }
+        let turns = has(ScrollProp::Scale) || has(ScrollProp::Rotation);
+        let moves = has(ScrollProp::MoveX) || has(ScrollProp::MoveY);
+        if turns || moves {
+            let local = patch.transform.unwrap_or(placed);
+            let c = local * centre;
+            let about = Affine::translate(c.to_vec2())
+                * Affine::rotate(value(ScrollProp::Rotation).to_radians())
+                * Affine::scale(value(ScrollProp::Scale))
+                * Affine::translate(-c.to_vec2());
+            let shift = Vec2::new(value(ScrollProp::MoveX), value(ScrollProp::MoveY));
+            patch.transform = Some(Affine::translate(shift) * about * local);
         }
     }
 
@@ -675,6 +815,56 @@ fn overlay_layer(
         backdrop: o.settings.backdrop.map(|c| c.multiply_alpha(fade)),
         overlay: true,
     }
+}
+
+fn mix(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t
+}
+
+/// Two effect stacks at `t` between them: shadows' offsets, blurs, spreads and
+/// colours and the blurs' radii move. `None` when the stacks are not the same
+/// kinds in the same order, which then show the end's at once.
+fn lerp_effects(a: &[Keyed<Effect>], b: &[Keyed<Effect>], t: f64) -> Option<Vec<Keyed<Effect>>> {
+    if a.len() != b.len() {
+        return None;
+    }
+    let shadow = |x: &Shadow, y: &Shadow| Shadow {
+        offset: x.offset.lerp(y.offset, t),
+        blur: mix(x.blur, y.blur, t).max(0.0),
+        spread: mix(x.spread, y.spread, t),
+        color: lerp_color(x.color, y.color, t.clamp(0.0, 1.0) as f32),
+        ..y.clone()
+    };
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| {
+            let kind = match (&x.value.kind, &y.value.kind) {
+                (EffectKind::DropShadow(p), EffectKind::DropShadow(q)) => {
+                    EffectKind::DropShadow(shadow(p, q))
+                }
+                (EffectKind::InnerShadow(p), EffectKind::InnerShadow(q)) => {
+                    EffectKind::InnerShadow(shadow(p, q))
+                }
+                (EffectKind::LayerBlur { radius: p }, EffectKind::LayerBlur { radius: q }) => {
+                    EffectKind::LayerBlur {
+                        radius: mix(*p, *q, t).max(0.0),
+                    }
+                }
+                (
+                    EffectKind::BackgroundBlur { radius: p },
+                    EffectKind::BackgroundBlur { radius: q },
+                ) => EffectKind::BackgroundBlur {
+                    radius: mix(*p, *q, t).max(0.0),
+                },
+                (p, q) if std::mem::discriminant(p) == std::mem::discriminant(q) => q.clone(),
+                _ => return None,
+            };
+            Some(y.map(|e| Effect {
+                kind: kind.clone(),
+                ..e.clone()
+            }))
+        })
+        .collect()
 }
 
 fn lerp_color(a: Color, b: Color, t: f32) -> Color {

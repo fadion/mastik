@@ -7764,6 +7764,7 @@ pub fn tree(doc: &Document, id: NodeId) -> Option<Value> {
         .filter_map(|l| own_reactions(doc, *l))
         .flatten()
     {
+        referred.extend(r.trigger.layer_target().map(|t| t.to_wire()));
         for k in &r.actions {
             referred.extend(k.value.layer_targets().iter().map(|t| t.to_wire()));
         }

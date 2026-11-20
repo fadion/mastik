@@ -13,11 +13,12 @@ use eframe::egui;
 use mastik_core::id::NodeId;
 use mastik_core::item::{ItemId, Keyed};
 use mastik_core::prototype::{
-    Action, Branch, Direction, Easing, Expr, Flow, Input, LayerPlay, OverlayPosition,
-    OverlaySettings, PagePlay, Pin, Reaction, Scaling, ScrollAxis, Timing, Transition,
-    TransitionKind, Trigger, VarChange,
+    Action, Branch, DRAWN_POINT, Direction, DragPoint, DropAt, Easing, EffectEnds, Expr, Flow,
+    Follow, FollowRange, Going, Input, LayerPlay, ModeScope, OverlayPosition, OverlaySettings,
+    PagePlay, Pin, Reaction, Release, Scaling, ScrollAxis, ScrollEffect, ScrollProp, Side, Snap,
+    SnapAlign, Timing, Transition, TransitionKind, Trigger, VarChange,
 };
-use mastik_core::variable::{Cell, VarId, VarKind};
+use mastik_core::variable::{Cell, ModeId, VarId, VarKind};
 use mastik_core::{Document, NodeKind, Operation, Transaction};
 
 /// Prototype mode's state between frames: its open popover, a typed field's
@@ -115,6 +116,7 @@ pub(crate) enum ActionKind {
     CloseOverlay,
     ChangeState,
     SetVariable,
+    SetMode,
     Conditional,
     RunScript,
 }
@@ -145,6 +147,7 @@ impl ActionKind {
             &[
                 ActionKind::ChangeState,
                 ActionKind::SetVariable,
+                ActionKind::SetMode,
                 ActionKind::Conditional,
                 ActionKind::RunScript,
             ],
@@ -161,6 +164,7 @@ impl ActionKind {
             Action::ScrollTo { .. } => Self::ScrollTo,
             Action::ChangeState { .. } => Self::ChangeState,
             Action::SetVariable { .. } => Self::SetVariable,
+            Action::SetMode { .. } => Self::SetMode,
             Action::Conditional { .. } => Self::Conditional,
             Action::OpenUrl { .. } => Self::OpenUrl,
             Action::RunScript { .. } => Self::RunScript,
@@ -179,6 +183,7 @@ impl ActionKind {
             Self::CloseOverlay => "Close overlay",
             Self::ChangeState => "Change to",
             Self::SetVariable => "Set variable",
+            Self::SetMode => "Set mode",
             Self::Conditional => "Conditional",
             Self::RunScript => "Run script",
         }
@@ -195,6 +200,7 @@ impl ActionKind {
             Self::CloseOverlay => icon::OVERLAY_CLOSE,
             Self::ChangeState => icon::CHANGE_STATE,
             Self::SetVariable => icon::BRACKETS_CURLY,
+            Self::SetMode => icon::MODE,
             Self::Conditional => icon::CONDITIONAL,
             Self::RunScript => icon::FILE_CODE,
         }
@@ -202,14 +208,46 @@ impl ActionKind {
 }
 
 /// A trigger's words, as its block's head says them.
-pub(crate) fn trigger_label(doc: &Document, t: &Trigger) -> String {
+pub(crate) fn trigger_label(doc: &Document, holder: NodeId, t: &Trigger) -> String {
     match t {
         Trigger::Click => "On click".into(),
         Trigger::HoverEnter => "On hover".into(),
         Trigger::HoverWhile => "While hovering".into(),
+        Trigger::HoverLeave => "On leave".into(),
+        Trigger::DoubleClick => "On double click".into(),
         Trigger::Press => "On press".into(),
         Trigger::PressWhile => "While pressing".into(),
+        Trigger::LongPress { .. } => "On long press".into(),
         Trigger::Drag => "On drag".into(),
+        Trigger::Swipe { side } => format!("On swipe {}", side_word(*side)),
+        Trigger::Drop { at } => match at {
+            DropAt::Anywhere => "On drop anywhere".into(),
+            DropAt::Drawn => format!("On drop at {DRAWN_POINT}"),
+            DropAt::Point(p) => match drag_point(doc, holder, *p) {
+                Some(name) => format!("On drop at {name}"),
+                None => "On drop at a missing snap point".into(),
+            },
+        },
+        Trigger::ScrollPast {
+            frame: id,
+            at,
+            going,
+        } => {
+            let frame = match doc.get(*id) {
+                Some(n) => n.name().to_owned(),
+                None => "a missing frame".into(),
+            };
+            let going = match going {
+                Going::Forward => "",
+                Going::Back if sideways(doc, *id) => " going left",
+                Going::Back => " going up",
+                Going::Either => " either way",
+            };
+            format!(
+                "When {frame} scrolls past {}{going}",
+                ui::number(0)(*at, 0..=0)
+            )
+        }
         Trigger::Key { key, shift } if key.is_empty() => match shift {
             true => "Key Shift+…".into(),
             false => "Key …".into(),
@@ -225,6 +263,56 @@ pub(crate) fn trigger_label(doc: &Document, t: &Trigger) -> String {
     }
 }
 
+/// The name of snap point `p` of the layer `holder` that follows the drag.
+fn drag_point(doc: &Document, holder: NodeId, p: ItemId) -> Option<String> {
+    let follow = doc.get(holder)?.play().follow.clone()?;
+    let point = follow.points.iter().find(|k| k.id == p)?;
+    Some(point.value.name.clone())
+}
+
+/// A swipe's side in a block head's words.
+fn side_word(side: Side) -> &'static str {
+    match side {
+        Side::Left => "left",
+        Side::Right => "right",
+        Side::Up => "up",
+        Side::Down => "down",
+    }
+}
+
+/// Whether `frame` scrolls sideways only, so a scroll trigger on it reads
+/// right and left rather than down and up.
+fn sideways(doc: &Document, frame: NodeId) -> bool {
+    doc.get(frame)
+        .is_some_and(|n| n.play().scroll == ScrollAxis::Horizontal)
+}
+
+/// The scrolling frames a scroll trigger on `id` can watch: those at or above
+/// it, nearest first, then the rest of its screen's.
+fn scrolling_frames(doc: &Document, id: NodeId) -> Vec<NodeId> {
+    let scrolls = |x: NodeId| {
+        doc.get(x).is_some_and(|n| {
+            matches!(n.kind(), NodeKind::Artboard { .. }) && n.play().scroll != ScrollAxis::None
+        })
+    };
+    let mut out = Vec::new();
+    let mut at = Some(id);
+    while let Some(x) = at {
+        if scrolls(x) {
+            out.push(x);
+        }
+        at = doc.get(x).and_then(|n| n.parent());
+    }
+    if let Some(screen) = screen_of(doc, id) {
+        for x in mastik_core::subtree_nodes(doc, &[screen]) {
+            if scrolls(x) && !out.contains(&x) {
+                out.push(x);
+            }
+        }
+    }
+    out
+}
+
 /// `2 s` for whole seconds, `300 ms` otherwise.
 fn duration_words(ms: u32) -> String {
     match ms {
@@ -236,14 +324,41 @@ fn duration_words(ms: u32) -> String {
 
 /// The triggers the head's menu offers, grouped: the pointer's, then the rest.
 /// `Key` is offered as *Key…*, which waits for the key.
-const POINTER_TRIGGERS: [Trigger; 6] = [
+const POINTER_TRIGGERS: [Trigger; 10] = [
     Trigger::Click,
+    Trigger::DoubleClick,
     Trigger::Press,
     Trigger::PressWhile,
+    Trigger::LongPress { ms: LONG_PRESS_MS },
     Trigger::HoverEnter,
     Trigger::HoverWhile,
+    Trigger::HoverLeave,
     Trigger::Drag,
+    Trigger::Swipe { side: Side::Left },
 ];
+
+/// How long a new long press is held, in milliseconds.
+const LONG_PRESS_MS: u32 = 500;
+/// The span of the offset a new scroll effect covers, in units.
+const NEW_EFFECT_SPAN: f64 = 160.0;
+
+/// A scroll effect property's name, its field's unit, and the factor its
+/// stored value is shown at (opacity and scale as percentages).
+fn scroll_prop_words(p: ScrollProp) -> (&'static str, &'static str, f64) {
+    match p {
+        ScrollProp::Opacity => ("Opacity", "%", 100.0),
+        ScrollProp::MoveY => ("Move Y", "px", 1.0),
+        ScrollProp::MoveX => ("Move X", "px", 1.0),
+        ScrollProp::Scale => ("Scale", "%", 100.0),
+        ScrollProp::Rotation => ("Rotation", "°", 1.0),
+    }
+}
+
+/// How far apart new snap points are placed down from where a layer is drawn,
+/// in units: each new one a step further, to be moved where it belongs.
+const NEW_POINT_STEP: f64 = 100.0;
+/// The offset a new scroll trigger fires at, in units.
+const NEW_SCROLL_POINT: f64 = 100.0;
 
 fn same_trigger_kind(a: &Trigger, b: &Trigger) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
@@ -288,6 +403,14 @@ const TRANSITION_KINDS: [TransitionKind; 7] = [
     TransitionKind::MoveOut,
     TransitionKind::Push,
     TransitionKind::Slide,
+];
+
+/// A swipe's sides, as the transition's direction names them.
+const SIDES: [(Side, &str); 4] = [
+    (Side::Left, "Left"),
+    (Side::Right, "Right"),
+    (Side::Up, "Up"),
+    (Side::Down, "Down"),
 ];
 
 const DIRECTIONS: [(Direction, &str); 5] = [
@@ -800,6 +923,16 @@ fn target_words(doc: &Document, holder: NodeId, a: &Action) -> (String, Option<&
                 .unwrap_or_default(),
             None,
         ),
+        Action::SetMode { mode, scope } => match mode_words(doc, *mode) {
+            Some((collection, mode)) => {
+                let here = match scope {
+                    ModeScope::Everywhere => "",
+                    ModeScope::Screen => " · this screen",
+                };
+                (format!("{collection} to {mode}{here}"), None)
+            }
+            None => ("Missing mode".into(), Some("Missing mode")),
+        },
         Action::OpenUrl { url } => (url.clone(), None),
         Action::RunScript { script } => match doc.script(*script) {
             Some(s) => (s.name.clone(), None),
@@ -807,6 +940,27 @@ fn target_words(doc: &Document, holder: NodeId, a: &Action) -> (String, Option<&
         },
         Action::Back | Action::CloseOverlay { .. } => (String::new(), None),
     }
+}
+
+/// The collections *Set mode* can switch: the document's with two modes or
+/// more, in order.
+fn switchable_collections(doc: &Document) -> Vec<&mastik_core::variable::Collection> {
+    doc.variables()
+        .collections()
+        .iter()
+        .filter(|c| c.modes.len() > 1)
+        .collect()
+}
+
+/// A mode's collection and its own name, `None` for a mode not there.
+fn mode_words(doc: &Document, mode: ModeId) -> Option<(String, String)> {
+    let t = doc.variables();
+    if let Some(c) = t.collection_of_mode(mode) {
+        let m = c.modes.iter().find(|m| m.id == mode)?;
+        return Some((c.name.clone(), m.name.clone()));
+    }
+    let (kit, m) = t.kit_mode_of(mode)?;
+    Some((kit.to_owned(), m.name.clone()))
 }
 
 /// The transition a new link on `page` takes: the page's own default.
@@ -835,6 +989,7 @@ pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Op
         ActionKind::Navigate => Action::Navigate {
             to: other_screen()?,
             transition,
+            keep_scroll: false,
         },
         ActionKind::Back => Action::Back,
         ActionKind::ScrollTo => Action::ScrollTo {
@@ -879,6 +1034,16 @@ pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Op
             };
             Action::SetVariable { var: v.id, change }
         }
+        ActionKind::SetMode => {
+            // The first such collection, at the mode it does not read now.
+            let c = switchable_collections(doc).into_iter().next()?;
+            let now = own.and_then(|s| doc.mode_at(s, c.id));
+            let mode = c.modes.iter().find(|m| Some(m.id) != now)?.id;
+            Action::SetMode {
+                mode,
+                scope: ModeScope::Everywhere,
+            }
+        }
         ActionKind::Conditional => Action::Conditional {
             branches: vec![Branch {
                 when: Expr("true".into()),
@@ -908,6 +1073,9 @@ pub(crate) fn action_refusal(
         ActionKind::ChangeState if state_instance(doc, holder).is_none() => Some("Not a component"),
         ActionKind::SetVariable if doc.variables().iter().next().is_none() => {
             Some("This document has no variables")
+        }
+        ActionKind::SetMode if switchable_collections(doc).is_empty() => {
+            Some("No collection has a second mode")
         }
         ActionKind::ScrollTo if new_action(doc, holder, kind).is_none() => {
             Some("Only a layer in a frame can be scrolled to")
@@ -1045,6 +1213,7 @@ pub(crate) fn with_link(
         Action::Navigate {
             to,
             transition: page_transition(doc, doc.page_of(id)),
+            keep_scroll: false,
         },
     );
     match list.iter_mut().find(|r| r.trigger == Trigger::Click) {
@@ -2064,7 +2233,7 @@ impl MastikApp {
                     }
                 }
                 for gone in ghosts {
-                    let label = trigger_label(&app.session.doc, &gone.trigger);
+                    let label = trigger_label(&app.session.doc, id, &gone.trigger);
                     let lead = super::component::GhostLead::Glyph(icon::INTERACTION);
                     match super::component::ghost_row(ui, lead, &label) {
                         Some(ui::ResetOrPush::Reset) => {
@@ -2272,6 +2441,189 @@ impl MastikApp {
                 };
                 self.proto_valve(resp_id, v, &resp, "Change trigger", icon::INTERACTION, tx);
             }
+            Trigger::LongPress { ms } => {
+                let mut v = f64::from(*ms);
+                let resp_id = ui.id().with(("hold", r.id));
+                if let Some(x) = self.proto.scrub.filter(|(i, _)| *i == resp_id) {
+                    v = x.1;
+                }
+                let resp = ui::value_field_suffixed(
+                    ui,
+                    egui::vec2(ui.available_width(), h),
+                    Prefix::Text("Hold"),
+                    Some(ui::Suffix {
+                        text: "ms",
+                        clickable: false,
+                        tooltip: "",
+                    }),
+                    &mut v,
+                    Scrub::whole(10.0).range(100.0..=10_000.0),
+                    |d| d.custom_formatter(ui::number(0)),
+                )
+                .0
+                .on_hover_text("How long the pointer is held down before the actions run");
+                let ms_new = v.round().clamp(100.0, 10_000.0) as u32;
+                let tx = match ms_new != *ms {
+                    true => Transaction(vec![Operation::SetReactions {
+                        id,
+                        reactions: with(&|x: &mut Reaction| {
+                            x.trigger = Trigger::LongPress { ms: ms_new }
+                        }),
+                    }]),
+                    false => Transaction::default(),
+                };
+                self.proto_valve(resp_id, v, &resp, "Change trigger", icon::INTERACTION, tx);
+            }
+            Trigger::Drop { at } => {
+                let at = *at;
+                let follow = self
+                    .session
+                    .doc
+                    .get(id)
+                    .and_then(|n| n.play().follow.clone());
+                // Only a layer that snaps rests at a point it can be told by.
+                let snaps = follow.as_ref().is_some_and(|f| f.release == Release::Snaps);
+                let mut options = vec![(DropAt::Anywhere, "Anywhere".to_string())];
+                if snaps {
+                    options.push((DropAt::Drawn, DRAWN_POINT.to_string()));
+                    for p in follow.iter().flat_map(|f| &f.points) {
+                        options.push((DropAt::Point(p.id), p.value.name.clone()));
+                    }
+                }
+                // Named as the head names it, offered or not.
+                let shown = match at {
+                    DropAt::Anywhere => "Anywhere".to_string(),
+                    DropAt::Drawn => DRAWN_POINT.to_string(),
+                    DropAt::Point(p) => drag_point(&self.session.doc, id, p)
+                        .unwrap_or_else(|| "Missing snap point".into()),
+                };
+                let mut pick = None;
+                ui::labelled(ui, "At", |ui| {
+                    let w = ui.available_width();
+                    let face = ui::glyph_and_text(icon::CROSSHAIR_SIMPLE, &shown);
+                    ui::fitted_combo(ui, ("drop-at", r.id), w, face, &shown, |ui| {
+                        ui::menu_rows(ui);
+                        for (o, n) in &options {
+                            if ui.selectable_label(*o == at, n).clicked() && *o != at {
+                                pick = Some(*o);
+                            }
+                        }
+                    });
+                });
+                if let Some(at) = pick {
+                    out.write = Some((
+                        with(&|x: &mut Reaction| x.trigger = Trigger::Drop { at }),
+                        "Change trigger",
+                        icon::INTERACTION,
+                    ));
+                }
+            }
+            Trigger::Swipe { side } => {
+                let cur = SIDES.iter().position(|(s, _)| s == side).unwrap_or(0);
+                let pick = ui::segmented_tipped(
+                    ui,
+                    ui.available_width(),
+                    ui::SEGMENT_CELL_H,
+                    SIDES.len(),
+                    cur,
+                    |_| true,
+                    |_| "The side the swipe goes toward",
+                    |p, i, r, on| ui::segment_label(p, r, SIDES[i].1, on),
+                );
+                if let Some(i) = pick.filter(|i| *i != cur) {
+                    let side = SIDES[i].0;
+                    out.write = Some((
+                        with(&|x: &mut Reaction| x.trigger = Trigger::Swipe { side }),
+                        "Change trigger",
+                        icon::INTERACTION,
+                    ));
+                }
+            }
+            Trigger::ScrollPast { frame, at, going } => {
+                let (frame, at, going) = (*frame, *at, *going);
+                let w = ui.available_width();
+                let options = scrolling_frames(&self.session.doc, id);
+                let shown = mastik_core::prototype::resolve_target(&self.session.doc, id, frame);
+                let doc = &self.session.doc;
+                if let Some(f) = layer_combo(ui, doc, ("past-frame", r.id), shown, &options, w) {
+                    out.write = Some((
+                        with(&|x: &mut Reaction| {
+                            x.trigger = Trigger::ScrollPast {
+                                frame: f,
+                                at,
+                                going,
+                            }
+                        }),
+                        "Change trigger",
+                        icon::INTERACTION,
+                    ));
+                }
+                let mut v = at;
+                let resp_id = ui.id().with(("past", r.id));
+                if let Some(x) = self.proto.scrub.filter(|(i, _)| *i == resp_id) {
+                    v = x.1;
+                }
+                let resp = ui::value_field_suffixed(
+                    ui,
+                    egui::vec2(w, h),
+                    Prefix::Text("Past"),
+                    Some(ui::Suffix {
+                        text: "px",
+                        clickable: false,
+                        tooltip: "",
+                    }),
+                    &mut v,
+                    Scrub::whole(1.0).range(0.0..=100_000.0),
+                    |d| d.custom_formatter(ui::number(0)),
+                )
+                .0
+                .on_hover_text("How far the frame has scrolled into its content");
+                let at_new = v.round().clamp(0.0, 100_000.0);
+                let tx = match at_new != at {
+                    true => Transaction(vec![Operation::SetReactions {
+                        id,
+                        reactions: with(&|x: &mut Reaction| {
+                            x.trigger = Trigger::ScrollPast {
+                                frame,
+                                at: at_new,
+                                going,
+                            }
+                        }),
+                    }]),
+                    false => Transaction::default(),
+                };
+                self.proto_valve(resp_id, v, &resp, "Change trigger", icon::INTERACTION, tx);
+                let words = match sideways(&self.session.doc, shown) {
+                    true => ["Right", "Left", "Either"],
+                    false => ["Down", "Up", "Either"],
+                };
+                let goings = [Going::Forward, Going::Back, Going::Either];
+                let cur = goings.iter().position(|g| *g == going).unwrap_or(0);
+                let pick = ui::segmented_tipped(
+                    ui,
+                    w,
+                    ui::SEGMENT_CELL_H,
+                    3,
+                    cur,
+                    |_| true,
+                    |i| match i {
+                        0 => "When it scrolls into the content past the point",
+                        1 => "When it scrolls back past the point",
+                        _ => "Each time it crosses the point",
+                    },
+                    |p, i, r, on| ui::segment_label(p, r, words[i], on),
+                );
+                if let Some(i) = pick.filter(|i| *i != cur) {
+                    let going = goings[i];
+                    out.write = Some((
+                        with(&|x: &mut Reaction| {
+                            x.trigger = Trigger::ScrollPast { frame, at, going }
+                        }),
+                        "Change trigger",
+                        icon::INTERACTION,
+                    ));
+                }
+            }
             Trigger::VariableChanges { var } => {
                 if let Some(v) = self.variable_combo(ui, ("when-var", r.id), Some(*var), None) {
                     out.write = Some((
@@ -2362,9 +2714,10 @@ impl MastikApp {
         w: f32,
     ) -> Option<TriggerPick> {
         let doc = &self.session.doc;
-        let label = trigger_label(doc, &r.trigger);
+        let label = trigger_label(doc, id, &r.trigger);
         let a_screen = screen_of(doc, id) == Some(id);
         let first_var = doc.variables().iter().next().map(|v| v.id);
+        let first_scroller = scrolling_frames(doc, id).first().copied();
         let mut pick = None;
         let current = r.trigger.clone();
         let face = ui::glyph_and_text(icon::INTERACTION, &label);
@@ -2373,9 +2726,25 @@ impl MastikApp {
             ui::menu_eyebrow(ui, "Pointer");
             for t in POINTER_TRIGGERS {
                 let on = same_trigger_kind(&t, &current);
-                if ui.selectable_label(on, trigger_label(doc, &t)).clicked() && !on {
+                // The menu names the gesture; its side is picked under the head.
+                let label = match t {
+                    Trigger::Swipe { .. } => "On swipe".into(),
+                    _ => trigger_label(doc, id, &t),
+                };
+                if ui.selectable_label(on, label).clicked() && !on {
                     pick = Some(TriggerPick::Set(t));
                 }
+            }
+            let follows = doc.get(id).is_some_and(|n| n.play().follow.is_some());
+            let on = matches!(current, Trigger::Drop { .. });
+            let row = ui.add_enabled_ui(follows, |ui| ui.selectable_label(on, "On drop"));
+            let row = row
+                .inner
+                .on_disabled_hover_text("Only a layer that follows the drag drops");
+            if row.clicked() && !on {
+                pick = Some(TriggerPick::Set(Trigger::Drop {
+                    at: DropAt::Anywhere,
+                }));
             }
             ui::menu_sep(ui);
             ui::menu_eyebrow(ui, "Other");
@@ -2399,6 +2768,21 @@ impl MastikApp {
                 && let Some(var) = first_var
             {
                 pick = Some(TriggerPick::Set(Trigger::VariableChanges { var }));
+            }
+            let on = matches!(current, Trigger::ScrollPast { .. });
+            let row = ui.add_enabled_ui(first_scroller.is_some(), |ui| {
+                ui.selectable_label(on, "When scrolled past")
+            });
+            let row = row.inner.on_disabled_hover_text("No frame here scrolls");
+            if row.clicked()
+                && !on
+                && let Some(frame) = first_scroller
+            {
+                pick = Some(TriggerPick::Set(Trigger::ScrollPast {
+                    frame,
+                    at: NEW_SCROLL_POINT,
+                    going: Going::Forward,
+                }));
             }
             let on = matches!(current, Trigger::FrameOpens);
             let row = ui.add_enabled_ui(a_screen, |ui| {
@@ -2688,9 +3072,14 @@ impl MastikApp {
         let doc = &self.session.doc;
         let kind = ActionKind::of(&k.value);
         let (target, missing) = target_words(doc, id, &k.value);
-        let chip = transition_of(&k.value).map(|t| transition_chip(&t));
+        let chip = transition_of(&k.value).map(|t| match &k.value {
+            Action::Navigate {
+                keep_scroll: true, ..
+            } => format!("Keeps scroll · {}", transition_chip(&t)),
+            _ => transition_chip(&t),
+        });
         let verb = match &k.value {
-            Action::SetVariable { .. } => "Set",
+            Action::SetVariable { .. } | Action::SetMode { .. } => "Set",
             Action::Conditional { .. } => "If",
             _ => kind.label(),
         };
@@ -2896,12 +3285,31 @@ impl MastikApp {
         let h = ui::CONTROL_H;
         let mut out = None;
         match &k.value {
-            Action::Navigate { to, transition } => {
+            Action::Navigate {
+                to,
+                transition,
+                keep_scroll,
+            } => {
                 if let Some(t) = frame_combo(ui, doc, ("to", k.id), *to, id, w) {
                     out = Some((
                         Action::Navigate {
                             to: t,
                             transition: *transition,
+                            keep_scroll: *keep_scroll,
+                        },
+                        "Change action",
+                        icon::ARROW_RIGHT,
+                    ));
+                }
+                if ui::switch_row(ui, "Keep scroll position", *keep_scroll, h)
+                    .on_hover_text("Open the frame scrolled where it was last left, not at its top")
+                    .clicked()
+                {
+                    out = Some((
+                        Action::Navigate {
+                            to: *to,
+                            transition: *transition,
+                            keep_scroll: !*keep_scroll,
                         },
                         "Change action",
                         icon::ARROW_RIGHT,
@@ -2974,6 +3382,87 @@ impl MastikApp {
                 }
                 if doc.get(inst).is_some() {
                     ui::selection_note(ui, &format!("Switches “{}”", name(doc, inst)));
+                }
+            }
+            Action::SetMode { mode, scope } => {
+                let (mode, scope) = (*mode, *scope);
+                let cols = switchable_collections(doc);
+                let col = cols.iter().find(|c| c.has(mode)).copied();
+                let col_name = col.map_or("Missing collection".to_string(), |c| c.name.clone());
+                let mut pick = None;
+                ui::labelled(ui, "Collection", |ui| {
+                    let face = ui::glyph_and_text(icon::MODE, &col_name);
+                    ui::fitted_combo(ui, ("mode-col", k.id), w, face, &col_name, |ui| {
+                        ui::menu_rows(ui);
+                        for c in &cols {
+                            let on = col.is_some_and(|x| x.id == c.id);
+                            if ui.selectable_label(on, &c.name).clicked() && !on {
+                                // A new collection starts at the mode it does not
+                                // read now, as a new action does.
+                                let now = screen_of(doc, id).and_then(|s| doc.mode_at(s, c.id));
+                                pick = c.modes.iter().find(|m| Some(m.id) != now).map(|m| m.id);
+                            }
+                        }
+                    });
+                });
+                let mode_name = col
+                    .and_then(|c| c.modes.iter().find(|m| m.id == mode))
+                    .map_or("Missing mode".to_string(), |m| m.name.clone());
+                ui::labelled(ui, "Mode", |ui| {
+                    ui::fitted_combo(ui, ("mode-mode", k.id), w, &mode_name, &mode_name, |ui| {
+                        ui::menu_rows(ui);
+                        for m in col.map_or(&[][..], |c| &c.modes[..]) {
+                            let on = m.id == mode;
+                            if ui.selectable_label(on, &m.name).clicked() && !on {
+                                pick = Some(m.id);
+                            }
+                        }
+                    });
+                });
+                let mut scope_new = scope;
+                ui::labelled(ui, "Where", |ui| {
+                    let cur = usize::from(scope == ModeScope::Screen);
+                    let got = ui::segmented_tipped(
+                        ui,
+                        w,
+                        ui::SEGMENT_CELL_H,
+                        2,
+                        cur,
+                        |_| true,
+                        |i| match i {
+                            0 => "On every page; a frame that sets its own mode keeps it",
+                            _ => "On the screen shown, over the page's",
+                        },
+                        |p, i, r, on| ui::segment_label(p, r, ["Everywhere", "This screen"][i], on),
+                    );
+                    if let Some(i) = got.filter(|i| *i != cur) {
+                        scope_new = [ModeScope::Everywhere, ModeScope::Screen][i];
+                    }
+                });
+                if let Some(c) = col {
+                    let note = match (c.breakpoints.is_some(), scope_new) {
+                        (true, _) => format!(
+                            "{} picks its mode by width; setting it holds {mode_name} at any width.",
+                            c.name
+                        ),
+                        (false, ModeScope::Everywhere) => {
+                            format!("Frames that set their own {} mode keep it.", c.name)
+                        }
+                        (false, ModeScope::Screen) => String::new(),
+                    };
+                    if !note.is_empty() {
+                        ui::selection_note(ui, &note);
+                    }
+                }
+                if pick.is_some() || scope_new != scope {
+                    out = Some((
+                        Action::SetMode {
+                            mode: pick.unwrap_or(mode),
+                            scope: scope_new,
+                        },
+                        "Change action",
+                        icon::MODE,
+                    ));
                 }
             }
             Action::SetVariable { var, change } => {
@@ -3888,6 +4377,63 @@ impl MastikApp {
                         );
                     }
                 });
+                // Snap appears once the frame scrolls, as the pinned rows do.
+                if play.scroll != ScrollAxis::None {
+                    ui::labelled(ui, "Snap", |ui| {
+                        let snaps = [Snap::None, Snap::Children, Snap::Pages];
+                        let cur = snaps.iter().position(|s| *s == play.snap).unwrap_or(0);
+                        let pick = ui::segmented_tipped(
+                            ui,
+                            w,
+                            ui::SEGMENT_CELL_H,
+                            3,
+                            cur,
+                            |_| true,
+                            |i| match i {
+                                0 => "Rests wherever it is let go",
+                                1 => "Rests on its children's edges",
+                                _ => "Rests on whole steps of its own size",
+                            },
+                            |p, i, r, on| {
+                                ui::segment_label(p, r, ["None", "Children", "Pages"][i], on)
+                            },
+                        );
+                        if let Some(i) = pick.filter(|i| *i != cur) {
+                            let mut p = play.clone();
+                            p.snap = snaps[i];
+                            next = Some((p, "Scrolling"));
+                        }
+                        // *Pages* has one answer, so it takes no edge.
+                        if play.snap == Snap::Children {
+                            let aligns = [SnapAlign::Start, SnapAlign::Centre, SnapAlign::End];
+                            let cur = aligns
+                                .iter()
+                                .position(|a| *a == play.snap_align)
+                                .unwrap_or(0);
+                            let pick = ui::segmented_tipped(
+                                ui,
+                                w,
+                                ui::SEGMENT_CELL_H,
+                                3,
+                                cur,
+                                |_| true,
+                                |i| match i {
+                                    0 => "A child's leading edge rests at the frame's",
+                                    1 => "A child rests centred in the frame",
+                                    _ => "A child's trailing edge rests at the frame's",
+                                },
+                                |p, i, r, on| {
+                                    ui::segment_label(p, r, ["Start", "Centre", "End"][i], on)
+                                },
+                            );
+                            if let Some(i) = pick.filter(|i| *i != cur) {
+                                let mut p = play.clone();
+                                p.snap_align = aligns[i];
+                                next = Some((p, "Scrolling"));
+                            }
+                        }
+                    });
+                }
             }
             if parent.is_some() {
                 ui::labelled(ui, "In a scrolling frame", |ui| {
@@ -3918,6 +4464,10 @@ impl MastikApp {
                         next = Some((p, "Pin"));
                     }
                 });
+            }
+            if parent.is_some() {
+                app.scroll_effect_section(ui, id, &play, w, &mut next);
+                app.dragging_section(ui, id, &play, w, &mut next);
             }
             if text || instance {
                 ui::labelled(ui, "Input", |ui| {
@@ -4003,6 +4553,428 @@ impl MastikApp {
             self.session.name_step(label, icon::INTERACTION);
             self.commit_edit(Transaction(vec![Operation::SetPlay { id, play: p }]));
         }
+    }
+
+    /// The Prototype card's *Dragging*: whether the layer follows the drag, its
+    /// axis, range and release, and its snap points as offsets from where it is
+    /// drawn, the drawn place first and fixed.
+    fn dragging_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        play: &LayerPlay,
+        w: f32,
+        next: &mut Option<(LayerPlay, &'static str)>,
+    ) {
+        ui::labelled(ui, "Dragging", |ui| {
+            let on = play.follow.is_some();
+            if ui::switch_row(ui, "Follows the drag", on, ui::CONTROL_H)
+                .on_hover_text("While playing, the layer moves with a drag that starts on it")
+                .clicked()
+            {
+                let mut p = play.clone();
+                p.follow = match on {
+                    true => None,
+                    false => Some(Follow::default()),
+                };
+                *next = Some((p, "Dragging"));
+            }
+            let Some(f) = play.follow.clone() else {
+                return;
+            };
+            let with = |g: &dyn Fn(&mut Follow)| {
+                let mut p = play.clone();
+                if let Some(f) = &mut p.follow {
+                    g(f);
+                }
+                p
+            };
+            ui::labelled(ui, "Axis", |ui| {
+                let axes = [
+                    ScrollAxis::Both,
+                    ScrollAxis::Horizontal,
+                    ScrollAxis::Vertical,
+                ];
+                let cur = axes.iter().position(|a| *a == f.axis).unwrap_or(0);
+                let pick = ui::segmented_tipped(
+                    ui,
+                    w,
+                    ui::SEGMENT_CELL_H,
+                    3,
+                    cur,
+                    |_| true,
+                    |i| ["Both", "Horizontal", "Vertical"][i],
+                    |p, i, r, on| {
+                        let g = [
+                            icon::ARROWS_OUT_CARDINAL,
+                            icon::ARROWS_HORIZONTAL,
+                            icon::ARROWS_VERTICAL,
+                        ][i];
+                        ui::segment_glyph(p, r, g, on)
+                    },
+                );
+                if let Some(i) = pick.filter(|i| *i != cur) {
+                    *next = Some((with(&|f| f.axis = axes[i]), "Dragging"));
+                }
+            });
+            ui::labelled(ui, "Range", |ui| {
+                let ranges = [FollowRange::Free, FollowRange::Parent, FollowRange::Points];
+                let cur = ranges.iter().position(|r| *r == f.range).unwrap_or(0);
+                let pick = ui::segmented_tipped(
+                    ui,
+                    w,
+                    ui::SEGMENT_CELL_H,
+                    3,
+                    cur,
+                    |_| true,
+                    |i| match i {
+                        0 => "Goes wherever it is dragged",
+                        1 => "Its box stays inside its parent's",
+                        _ => "Between its outermost snap points",
+                    },
+                    |p, i, r, on| {
+                        ui::segment_label(p, r, ["Free", "Within its parent", "Snap points"][i], on)
+                    },
+                );
+                if let Some(i) = pick.filter(|i| *i != cur) {
+                    *next = Some((with(&|f| f.range = ranges[i]), "Dragging"));
+                }
+            });
+            ui::labelled(ui, "Release", |ui| {
+                let releases = [Release::Stays, Release::Returns, Release::Snaps];
+                let cur = releases.iter().position(|r| *r == f.release).unwrap_or(0);
+                let has_points = !f.points.is_empty();
+                let pick = ui::segmented_tipped(
+                    ui,
+                    w,
+                    ui::SEGMENT_CELL_H,
+                    3,
+                    cur,
+                    |i| i != 2 || has_points,
+                    |i| match (i, has_points) {
+                        (0, _) => "Stays where it is let go",
+                        (1, _) => "Goes back to where it is drawn",
+                        (_, false) => "Add a snap point first",
+                        _ => {
+                            "Settles on the nearest point, or the next a quick release throws it to"
+                        }
+                    },
+                    |p, i, r, on| ui::segment_label(p, r, ["Stays", "Returns", "Snaps"][i], on),
+                );
+                if let Some(i) = pick.filter(|i| *i != cur) {
+                    *next = Some((with(&|f| f.release = releases[i]), "Dragging"));
+                }
+            });
+            ui::labelled(ui, "Snap points", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon_text(
+                        icon::CROSSHAIR_SIMPLE,
+                        14.0,
+                        theme::text::muted(),
+                    ));
+                    ui.label(
+                        egui::RichText::new(format!("{DRAWN_POINT} · where drawn"))
+                            .size(ui::SMALL_PT)
+                            .color(theme::text::muted()),
+                    );
+                });
+                let mut gone = None;
+                for k in &f.points {
+                    self.drag_point_row(ui, id, play, k, w, &mut gone);
+                }
+                if let Some(p) = gone {
+                    *next = Some((
+                        with(&|f| f.points.retain(|k| k.id != p)),
+                        "Remove snap point",
+                    ));
+                }
+                if ui::field_button(ui, icon::PLUS, ui::CONTROL_H, FieldButton::Off)
+                    .on_hover_text("Add a snap point")
+                    .clicked()
+                {
+                    let item = self.session.ids.mint_item();
+                    // The first free number, so no two points share a name.
+                    let taken = |n: usize| {
+                        f.points
+                            .iter()
+                            .any(|p| p.value.name == format!("Point {n}"))
+                    };
+                    let n = (1..).find(|n| !taken(*n)).unwrap_or(1);
+                    *next = Some((
+                        with(&|f| {
+                            f.points.push(Keyed::new(
+                                item,
+                                DragPoint {
+                                    name: format!("Point {n}"),
+                                    x: 0.0,
+                                    y: NEW_POINT_STEP * n as f64,
+                                },
+                            ))
+                        }),
+                        "Add snap point",
+                    ));
+                }
+            });
+        });
+    }
+
+    /// The Prototype card's *With the scroll*: the range of the nearest
+    /// scrolling frame's offset the effect spans, and a row per property with
+    /// its value at each end. Dim on a layer no scrolling frame holds.
+    fn scroll_effect_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        play: &LayerPlay,
+        w: f32,
+        next: &mut Option<(LayerPlay, &'static str)>,
+    ) {
+        let doc = &self.session.doc;
+        let mut at = doc.get(id).and_then(|n| n.parent());
+        let mut scrolled = false;
+        while let Some(f) = at {
+            if doc.get(f).is_some_and(|n| {
+                matches!(n.kind(), NodeKind::Artboard { .. }) && n.play().scroll != ScrollAxis::None
+            }) {
+                scrolled = true;
+                break;
+            }
+            at = doc.get(f).and_then(|n| n.parent());
+        }
+        let with = |e: Option<ScrollEffect>| {
+            let mut p = play.clone();
+            p.scroll_effect = e;
+            p
+        };
+        ui::labelled(ui, "With the scroll", |ui| {
+            let Some(e) = play.scroll_effect.clone() else {
+                let add = ui.add_enabled_ui(scrolled, |ui| {
+                    ui::field_button(ui, icon::PLUS, ui::CONTROL_H, FieldButton::Off)
+                });
+                let add = add
+                    .inner
+                    .on_hover_text("Add a property that follows the scroll")
+                    .on_disabled_hover_text("The frame does not scroll");
+                if add.clicked() {
+                    *next = Some((
+                        with(Some(ScrollEffect {
+                            from: 0.0,
+                            to: NEW_EFFECT_SPAN,
+                            props: vec![EffectEnds {
+                                prop: ScrollProp::Opacity,
+                                start: 1.0,
+                                end: 0.0,
+                            }],
+                        })),
+                        "Add scroll effect",
+                    ));
+                }
+                return;
+            };
+            let tx = |e: ScrollEffect| {
+                Transaction(vec![Operation::SetPlay {
+                    id,
+                    play: with(Some(e)),
+                }])
+            };
+            // A field over one number of the effect, `k` its shown scale.
+            let field = |app: &mut Self,
+                         ui: &mut egui::Ui,
+                         key: (usize, bool),
+                         prefix: &'static str,
+                         suffix: &'static str,
+                         value: f64,
+                         k: f64,
+                         set: &dyn Fn(&mut ScrollEffect, f64)| {
+                let rid = ui.id().with(("effect", key));
+                let mut v = value * k;
+                if let Some(x) = app.proto.scrub.filter(|(i, _)| *i == rid) {
+                    v = x.1;
+                }
+                let resp = ui::value_field_suffixed(
+                    ui,
+                    egui::vec2((w - COL) / 2.0, ui::CONTROL_H),
+                    Prefix::Text(prefix),
+                    (!suffix.is_empty()).then_some(ui::Suffix {
+                        text: suffix,
+                        clickable: false,
+                        tooltip: "",
+                    }),
+                    &mut v,
+                    Scrub::whole(1.0),
+                    |d| d.custom_formatter(ui::number(0)),
+                )
+                .0;
+                let v = v.round();
+                let t = match (v / k - value).abs() > 1e-9 {
+                    true => {
+                        let mut e2 = e.clone();
+                        set(&mut e2, v / k);
+                        tx(e2)
+                    }
+                    false => Transaction::default(),
+                };
+                app.proto_valve(rid, v, &resp, "Scroll effect", icon::INTERACTION, t);
+            };
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = COL;
+                field(
+                    self,
+                    ui,
+                    (usize::MAX, false),
+                    "From",
+                    "px",
+                    e.from,
+                    1.0,
+                    &|e, v| e.from = v,
+                );
+                field(
+                    self,
+                    ui,
+                    (usize::MAX, true),
+                    "To",
+                    "px",
+                    e.to,
+                    1.0,
+                    &|e, v| e.to = v,
+                );
+            });
+            let mut gone = None;
+            for (i, p) in e.props.iter().enumerate() {
+                let (word, suffix, k) = scroll_prop_words(p.prop);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = COL;
+                    ui.label(
+                        egui::RichText::new(word)
+                            .size(ui::SMALL_PT)
+                            .color(theme::text::muted()),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
+                            .on_hover_text("Remove")
+                            .clicked()
+                        {
+                            gone = Some(i);
+                        }
+                    });
+                });
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = COL;
+                    field(self, ui, (i, false), "", suffix, p.start, k, &|e, v| {
+                        e.props[i].start = v
+                    });
+                    field(self, ui, (i, true), "", suffix, p.end, k, &|e, v| {
+                        e.props[i].end = v
+                    });
+                });
+            }
+            if let Some(i) = gone {
+                let mut e2 = e.clone();
+                e2.props.remove(i);
+                let left = (!e2.props.is_empty()).then_some(e2);
+                *next = Some((with(left), "Remove scroll effect"));
+            }
+            let missing: Vec<ScrollProp> = ScrollProp::ALL
+                .into_iter()
+                .filter(|p| !e.props.iter().any(|x| x.prop == *p))
+                .collect();
+            if !missing.is_empty() {
+                let plus = ui::field_button(ui, icon::PLUS, ui::CONTROL_H, FieldButton::Off)
+                    .on_hover_text("Add a property");
+                let mut pick = None;
+                egui::Popup::menu(&plus).gap(ui::MENU_GAP).show(|ui| {
+                    ui::popup_rows(ui);
+                    let words = missing.iter().map(|p| scroll_prop_words(*p).0);
+                    ui.set_width(ui::menu_width(ui.ctx(), words, false));
+                    for p in &missing {
+                        if ui
+                            .selectable_label(false, scroll_prop_words(*p).0)
+                            .clicked()
+                        {
+                            pick = Some(*p);
+                        }
+                    }
+                });
+                if let Some(p) = pick {
+                    let mut e2 = e.clone();
+                    e2.props.push(EffectEnds {
+                        prop: p,
+                        start: p.rest(),
+                        end: p.rest(),
+                    });
+                    *next = Some((with(Some(e2)), "Add scroll effect"));
+                }
+            }
+        });
+    }
+
+    /// One snap point's row: its name, then its offset across and down.
+    fn drag_point_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        play: &LayerPlay,
+        k: &Keyed<DragPoint>,
+        w: f32,
+        gone: &mut Option<ItemId>,
+    ) {
+        let set = |g: &dyn Fn(&mut DragPoint)| {
+            let mut p = play.clone();
+            if let Some(f) = &mut p.follow
+                && let Some(x) = f.points.iter_mut().find(|x| x.id == k.id)
+            {
+                g(&mut x.value);
+            }
+            Transaction(vec![Operation::SetPlay { id, play: p }])
+        };
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = COL;
+            let name_w = w - ui::CONTROL_H - COL;
+            let mut text = k.value.name.clone();
+            let r = ui::text_field(ui, egui::vec2(name_w, ui::CONTROL_H), &mut text, "Name");
+            if r.lost_focus() && !text.trim().is_empty() && text != k.value.name {
+                let name = text.trim().to_owned();
+                self.session
+                    .name_step("Rename snap point", icon::CROSSHAIR_SIMPLE);
+                self.commit_edit(set(&|p| p.name = name.clone()));
+            }
+            if ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
+                .on_hover_text("Remove snap point")
+                .clicked()
+            {
+                *gone = Some(k.id);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = COL;
+            let half = (w - COL) / 2.0;
+            for (axis, label) in [(true, "X"), (false, "Y")] {
+                let rid = ui.id().with(("point", k.id, axis));
+                let mut v = if axis { k.value.x } else { k.value.y };
+                if let Some(x) = self.proto.scrub.filter(|(i, _)| *i == rid) {
+                    v = x.1;
+                }
+                let resp = ui::value_field_suffixed(
+                    ui,
+                    egui::vec2(half, ui::CONTROL_H),
+                    Prefix::Text(label),
+                    None,
+                    &mut v,
+                    Scrub::whole(1.0),
+                    |d| d.custom_formatter(ui::number(0)),
+                )
+                .0;
+                let v = v.round();
+                let tx = match v != (if axis { k.value.x } else { k.value.y }) {
+                    true => set(&|p| match axis {
+                        true => p.x = v,
+                        false => p.y = v,
+                    }),
+                    false => Transaction::default(),
+                };
+                self.proto_valve(rid, v, &resp, "Move snap point", icon::CROSSHAIR_SIMPLE, tx);
+            }
+        });
     }
 
     /// The page's *Flows*: one row per flow, its name and its start frame; `+`
@@ -4782,7 +5754,7 @@ mod tests {
         let r = f.app.session.doc.get(f.add).unwrap().reactions().to_vec();
         assert!(matches!(
             r.as_slice(),
-            [k] if matches!(k.actions.as_slice(), [a] if a.value == Action::Navigate { to: f.cart, transition: Transition::default() })
+            [k] if matches!(k.actions.as_slice(), [a] if a.value == Action::Navigate { to: f.cart, transition: Transition::default(), keep_scroll: false })
         ));
         assert!(f.app.session.undo());
         assert!(
@@ -4962,6 +5934,7 @@ mod tests {
                 Action::Navigate {
                     to: f.cart,
                     transition: t,
+                    keep_scroll: false,
                 },
             ),
             keyed(
@@ -4974,6 +5947,7 @@ mod tests {
                             Action::Navigate {
                                 to: gone,
                                 transition: t,
+                                keep_scroll: false,
                             },
                         )],
                     }],
@@ -5062,6 +6036,7 @@ mod tests {
             Action::Navigate {
                 to,
                 transition: Transition::default(),
+                keep_scroll: false,
             },
         );
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
@@ -5317,6 +6292,7 @@ mod tests {
             let nav = Action::Navigate {
                 to,
                 transition: Transition::default(),
+                keep_scroll: false,
             };
             let action = match nested_case {
                 false => nav,

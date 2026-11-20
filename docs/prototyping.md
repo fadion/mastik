@@ -15,7 +15,7 @@ variables, conditions and Luau; the output is a real player, not a slideshow of 
 | Part | File |
 | --- | --- |
 | The saved model: reactions, play settings, flows, the export settings, dangling targets, instances and copies | `design/prototyping-model.md` |
-| The engine: the played copy, play values and state, triggers and actions, inputs and focus, scrolling, motion (smart animate's direction, states that loop), live update, takes and video, expressions | `design/play.md` |
+| The engine: the played copy, play values and state, triggers and actions, inputs and focus, scrolling, a layer that follows the drag, a scroll effect, motion (smart animate's direction, states that loop), live update, takes and video, expressions | `design/play.md` |
 | Drawing a frame of play on either backend | `design/render.md` *Play* |
 | Authoring: prototype mode, connectors, the link dots, flow chips, instances, kit publishing, agents | `design/prototyping-authoring.md` |
 | The player in the app: present mode, following the editor, over the canvas, detached, fullscreen, keys, the bar, the export card, video and the flow map | `design/prototyping-player.md` |

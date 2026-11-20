@@ -2,7 +2,7 @@
 //! through.
 
 use crate::anim::Anims;
-use crate::input::{Press, While};
+use crate::input::{Press, Tap, While};
 use crate::take::Recording;
 use mastik_core::kurbo::{Point, Rect, Size, Vec2};
 use mastik_core::prototype::{self, FlowRef, OverlaySettings, Transition, Trigger};
@@ -87,6 +87,19 @@ pub struct ValueRow {
     pub kit: Option<String>,
 }
 
+/// One row of the state card's modes: a collection of two modes or more and
+/// the mode play reads on the screen shown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModeRow {
+    pub name: String,
+    /// Its modes in order, by id and name.
+    pub modes: Vec<(mastik_core::variable::ModeId, String)>,
+    pub current: mastik_core::variable::ModeId,
+    /// Whether the screen sets a mode of it itself, which a pick for every
+    /// page does not reach.
+    pub screen_sets: bool,
+}
+
 /// Why a value from the state card was not taken.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ValueError {
@@ -113,6 +126,8 @@ pub(crate) struct Overlay {
 pub(crate) struct Visit {
     pub(crate) frame: NodeId,
     pub(crate) transition: Transition,
+    /// Whether the navigation that left it kept scroll, so *Back* does too.
+    pub(crate) keep: bool,
 }
 
 /// An `After` reaction waiting for its time.
@@ -160,18 +175,32 @@ pub struct Player {
     pub(crate) values: BTreeMap<VarId, Value>,
     /// Scroll offsets by scrolling frame, each positive into the content.
     pub(crate) scroll: FxHashMap<NodeId, Vec2>,
+    /// How far each layer that follows the drag has been moved from where it
+    /// is drawn: play state, kept for the run like a scroll offset.
+    pub(crate) moved: FxHashMap<NodeId, Vec2>,
+    /// Layers whose settle finished, waiting for their *Drop* reactions.
+    pub(crate) drops: Vec<(NodeId, prototype::DropAt)>,
+    /// The offsets as the scroll triggers last saw them, to tell a crossing.
+    pub(crate) scroll_seen: FxHashMap<NodeId, Vec2>,
     /// The variant main each instance play switched was switched to, carried
     /// across a re-clone.
     pub(crate) states: FxHashMap<NodeId, NodeId>,
+    /// The modes *Set mode* gave each page or frame, carried across a re-clone.
+    pub(crate) modes: FxHashMap<NodeId, Vec<mastik_core::variable::ModeId>>,
     /// Instances showing an interaction state (hover, pressed) by themselves,
     /// with the main to return to.
     pub(crate) auto: FxHashMap<NodeId, NodeId>,
     /// The layers bound as inputs.
     pub(crate) inputs: Vec<(NodeId, prototype::Input)>,
+    /// The layers with a scroll effect, found as play starts and after a live
+    /// edit, so a frame's scene need not look for them.
+    pub(crate) effects: Vec<NodeId>,
     pub(crate) pointer: Option<Point>,
     /// The layers under the pointer, deepest first.
     pub(crate) hovered: Vec<NodeId>,
     pub(crate) press: Option<Press>,
+    /// A click waiting to see whether it becomes a double click.
+    pub(crate) tap: Option<Tap>,
     /// The input holding focus: a text being typed into, or an input instance
     /// Tab reached. Set through `Player::set_focus` alone.
     pub(crate) focus: Option<NodeId>,
@@ -214,12 +243,18 @@ impl Player {
             overlays: Vec::new(),
             values: BTreeMap::new(),
             scroll: FxHashMap::default(),
+            scroll_seen: FxHashMap::default(),
+            moved: FxHashMap::default(),
+            drops: Vec::new(),
             states: FxHashMap::default(),
+            modes: FxHashMap::default(),
             auto: FxHashMap::default(),
             inputs: Vec::new(),
+            effects: Vec::new(),
             pointer: None,
             hovered: Vec::new(),
             press: None,
+            tap: None,
             focus: None,
             focus_shown: None,
             whiles: Vec::new(),
@@ -318,7 +353,10 @@ impl Player {
     /// Whether anything will change without input: a transition, a timer, the
     /// hints' flash. A shell may stop ticking while this is false.
     pub fn is_moving(&self) -> bool {
-        !self.anims.is_empty() || !self.timers.is_empty() || self.flash.is_some()
+        !self.anims.is_empty()
+            || !self.timers.is_empty()
+            || self.flash.is_some()
+            || self.gesture_due().is_some()
     }
 
     /// Whether the document holds a *Run script* action anywhere, so the shell
@@ -358,8 +396,8 @@ impl Player {
         self.dirty.drain().collect()
     }
 
-    /// Advance play's clock by `ms`: due timers fire at their own times, and
-    /// transitions move on.
+    /// Advance play's clock by `ms`: due timers and gestures (a held click, a
+    /// long press) fire at their own times, and transitions move on.
     pub fn tick(&mut self, ms: f64) {
         let until = self.now + ms.max(0.0);
         for _ in 0..MAX_FIRES {
@@ -369,15 +407,34 @@ impl Player {
                 .enumerate()
                 .filter(|(_, t)| t.due <= until)
                 .min_by(|a, b| a.1.due.total_cmp(&b.1.due))
-                .map(|(i, _)| i);
-            let Some(i) = next else { break };
-            let timer = self.timers.remove(i);
-            self.now = self.now.max(timer.due);
-            self.advance_anims();
-            self.fire_timer(timer);
+                .map(|(i, t)| (i, t.due));
+            let gesture = self.gesture_due().filter(|d| *d <= until);
+            match (next, gesture) {
+                (None, None) => break,
+                (Some((_, t)), Some(g)) if g <= t => {
+                    self.now = self.now.max(g);
+                    self.advance_anims();
+                    self.fire_gestures();
+                }
+                (None, Some(g)) => {
+                    self.now = self.now.max(g);
+                    self.advance_anims();
+                    self.fire_gestures();
+                }
+                (Some((i, _)), _) => {
+                    let timer = self.timers.remove(i);
+                    self.now = self.now.max(timer.due);
+                    self.advance_anims();
+                    self.fire_timer(timer);
+                }
+            }
+            self.fire_drops();
+            self.check_scrolls();
         }
         self.now = until;
         self.advance_anims();
+        self.fire_drops();
+        self.check_scrolls();
         if self
             .flash
             .is_some_and(|f| self.now - f >= crate::anim::FLASH_MS)
@@ -400,6 +457,28 @@ impl Player {
                     value: self.doc.resolve_var(self.screen, v.id)?,
                     played: self.values.contains_key(&v.id),
                     kit: v.kit().map(str::to_owned),
+                })
+            })
+            .collect()
+    }
+
+    /// The state card's modes: each of the document's collections with two
+    /// modes or more, and the mode it reads on the screen shown.
+    pub fn modes(&self) -> Vec<ModeRow> {
+        let screen_modes = self.doc.get(self.screen).map(|n| n.modes().to_vec());
+        self.doc
+            .variables()
+            .collections()
+            .iter()
+            .filter(|c| c.modes.len() > 1)
+            .filter_map(|c| {
+                Some(ModeRow {
+                    name: c.name.clone(),
+                    modes: c.modes.iter().map(|m| (m.id, m.name.clone())).collect(),
+                    current: self.doc.mode_at(self.screen, c.id)?,
+                    screen_sets: screen_modes
+                        .as_ref()
+                        .is_some_and(|ms| ms.iter().any(|m| c.has(*m))),
                 })
             })
             .collect()
@@ -448,6 +527,16 @@ impl Player {
             .filter_map(|id| Some((id, self.doc.get(id)?.play().input.clone()?)))
             .collect();
         self.inputs.sort_by_key(|(id, _)| *id);
+        self.effects = self
+            .doc
+            .node_ids()
+            .filter(|id| {
+                self.doc
+                    .get(*id)
+                    .is_some_and(|n| n.play().scroll_effect.is_some())
+            })
+            .collect();
+        self.effects.sort();
         let mut binds = Vec::new();
         for (id, input) in &self.inputs {
             let Some(n) = self.doc.get(*id) else { continue };

@@ -73,6 +73,7 @@ fn each_layer_draws_at_its_place_in_screen_space() {
                 ms: 100,
             },
         },
+        keep_scroll: false,
     };
     doc.apply(&Transaction(vec![Operation::SetReactions {
         id: a,

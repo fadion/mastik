@@ -5,13 +5,24 @@ use crate::actions::Undo;
 use crate::player::Player;
 use crate::scene::Hotspot;
 use mastik_core::kurbo::{Point, Vec2};
-use mastik_core::prototype::{Pin, ScrollAxis, Trigger};
-use mastik_core::variable::{Value, VarId};
+use mastik_core::prototype::{self, Going, Pin, ScrollAxis, Side, Trigger};
+use mastik_core::variable::{ModeId, Value, VarId};
 use mastik_core::variant::{self, Interaction};
-use mastik_core::{NodeId, NodeKind, subtree_nodes};
+use mastik_core::{ItemId, NodeId, NodeKind, subtree_nodes};
 
 /// How far, in screen units, a press moves before it is a drag.
 const DRAG_SLOP: f64 = 4.0;
+/// How long after a click a second one makes a double click, in milliseconds.
+/// A layer with both waits this long before its click runs, so only such a
+/// layer is slowed.
+pub(crate) const DOUBLE_MS: f64 = 250.0;
+/// How far a swipe goes toward its side, in screen units.
+const SWIPE_MIN: f64 = 30.0;
+/// A drag released within this many milliseconds is quick enough for a swipe…
+const SWIPE_MS: f64 = 300.0;
+/// …as is one moving at least this many units a millisecond; a slow drag that
+/// ends to one side is a drag, not a swipe.
+const SWIPE_SPEED: f64 = 0.5;
 
 /// One thing the person did, in screen space ([`crate::Scene`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +50,9 @@ pub enum Input {
         var: VarId,
         value: Value,
     },
+    /// A mode picked from the state card: set everywhere, as *Set mode* sets
+    /// it by default.
+    SetMode(ModeId),
 }
 
 /// A press in progress.
@@ -51,6 +65,29 @@ pub(crate) struct Press {
     pub(crate) dragging: bool,
     /// The scrolling frame a drag scrolls, once it is one.
     pub(crate) scroller: Option<NodeId>,
+    /// The scroller's offset when the drag took it, for a snap's step.
+    pub(crate) scroll_start: Vec2,
+    /// The layer that follows this drag, with how far it was moved before.
+    pub(crate) follower: Option<(NodeId, Vec2)>,
+    /// When the press went down, in play's milliseconds.
+    pub(crate) at: f64,
+    /// The long-press reactions waiting, each with its holder and when it is due.
+    pub(crate) long: Vec<(NodeId, ItemId, f64)>,
+    /// Whether a long press took it: no click follows.
+    pub(crate) spent: bool,
+    /// Whether a swipe reaction took the drag, so nothing else moves with it.
+    pub(crate) swipe: bool,
+}
+
+/// A click held back because a second could still make it a double click.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Tap {
+    /// The layer whose double click a second click would fire.
+    pub(crate) layer: NodeId,
+    /// When the first click came up.
+    pub(crate) at: f64,
+    /// What was under it, for the click it runs if no second comes.
+    pub(crate) chain: Vec<NodeId>,
 }
 
 /// A *while* reaction in force, and what to put back when it ends.
@@ -75,7 +112,7 @@ impl Player {
         if let Some(r) = &mut self.recording {
             r.inputs.push((self.now, input.clone()));
         }
-        match input {
+        let used = match input {
             Input::PointerMove(p) => self.pointer_move(p),
             Input::PointerDown(p) => self.pointer_down(p),
             Input::PointerUp(p) => self.pointer_up(p),
@@ -91,7 +128,17 @@ impl Player {
                 self.set_play(var, value);
                 true
             }
-        }
+            Input::SetMode(mode) => {
+                let pages: Vec<NodeId> = self.doc.page_ids().collect();
+                let mut used = false;
+                for page in pages {
+                    used |= self.set_mode_on(page, mode).is_some();
+                }
+                used
+            }
+        };
+        self.check_scrolls();
+        used
     }
 
     /// The places the person can act on in the frame that takes input (the top
@@ -109,14 +156,19 @@ impl Player {
                 matches!(
                     r.value.trigger,
                     Trigger::Click
+                        | Trigger::DoubleClick
                         | Trigger::Press
                         | Trigger::PressWhile
+                        | Trigger::LongPress { .. }
                         | Trigger::Drag
+                        | Trigger::Swipe { .. }
                         | Trigger::HoverEnter
                         | Trigger::HoverWhile
+                        | Trigger::HoverLeave
                 )
             });
-            if !(acts || n.play().input.is_some()) || !self.doc.shown_through(id) {
+            let takes = n.play().input.is_some() || n.play().follow.is_some();
+            if !(acts || takes) || !self.doc.shown_through(id) {
                 continue;
             }
             if let Some(r) = self.rect(id) {
@@ -191,8 +243,14 @@ impl Player {
     }
 
     /// How far `child` of `parent` is drawn from where it is placed: a scrolling
-    /// frame's offset, by the child's pin.
+    /// frame's offset, by the child's pin, and how far the child was dragged
+    /// when it follows the drag.
     pub(crate) fn child_offset(&self, parent: NodeId, child: NodeId) -> Vec2 {
+        self.scroll_shift(parent, child) + self.moved(child)
+    }
+
+    /// The scroll part of [`Self::child_offset`].
+    pub(crate) fn scroll_shift(&self, parent: NodeId, child: NodeId) -> Vec2 {
         let Some(s) = self.scroll.get(&parent).copied() else {
             return Vec2::ZERO;
         };
@@ -235,18 +293,36 @@ impl Player {
         if let Some(mut press) = self.press.take() {
             if !press.dragging && (p - press.start).hypot() > DRAG_SLOP {
                 press.dragging = true;
-                // A drag reaction takes the drag; else the nearest scrolling frame.
-                if !self.fire(&press.chain, &|t| *t == Trigger::Drag) {
+                press.long.clear();
+                // A swipe toward the way it is going takes the drag; else a drag
+                // reaction; else the nearest scrolling frame.
+                let side = side_of(p - press.start);
+                press.swipe = self.holder(&press.chain, &|t| *t == Trigger::Swipe { side });
+                // A layer that follows the drag moves with it, its drag
+                // reactions firing too; neither leaves it to the scroll.
+                press.follower = match press.swipe {
+                    true => None,
+                    false => self.follower(&press.chain).map(|l| (l, self.moved(l))),
+                };
+                let dragged = !press.swipe && self.fire(&press.chain, &|t| *t == Trigger::Drag);
+                if !press.swipe && !dragged && press.follower.is_none() {
                     press.scroller = press
                         .chain
                         .iter()
                         .copied()
                         .find(|f| self.scrolls(*f) != ScrollAxis::None);
+                    if let Some(f) = press.scroller {
+                        press.scroll_start = self.scroll_offset(f);
+                    }
                 }
                 used = true;
             }
             if let Some(f) = press.scroller {
                 used |= self.scroll_by(f, press.last - p);
+            }
+            if let Some((layer, start)) = press.follower {
+                self.follow_to(layer, start, p - press.start);
+                used = true;
             }
             press.last = p;
             self.press = Some(press);
@@ -282,12 +358,30 @@ impl Player {
             .find(|id| self.is_text_input(*id))
             .or(held);
         self.set_focus(focus);
+        let long = self
+            .picked(&chain, &|t| matches!(t, Trigger::LongPress { .. }))
+            .into_iter()
+            .filter_map(|(id, r)| {
+                let n = self.doc.get(id)?;
+                let reaction = n.reactions().iter().find(|k| k.id == r)?;
+                let Trigger::LongPress { ms } = reaction.value.trigger else {
+                    return None;
+                };
+                Some((id, r, self.now + f64::from(ms)))
+            })
+            .collect();
         self.press = Some(Press {
             last: p,
             start: p,
             chain: chain.clone(),
             dragging: false,
             scroller: None,
+            scroll_start: Vec2::ZERO,
+            follower: None,
+            at: self.now,
+            long,
+            spent: false,
+            swipe: false,
         });
         let mut used = self.fire(&chain, &|t| *t == Trigger::Press);
         used |= self.fire_while(&chain, true);
@@ -318,6 +412,28 @@ impl Player {
             }
         }
         if press.dragging {
+            if let Some(f) = press.scroller.filter(|f| self.snaps(*f)) {
+                self.snap_release(f, press.scroll_start, self.now - press.at);
+            }
+            if let Some((layer, _)) = press.follower {
+                self.follow_release(layer, p - press.start, self.now - press.at);
+            }
+            if press.swipe {
+                let d = p - press.start;
+                let side = side_of(d);
+                let (along, across) = match side {
+                    Side::Left | Side::Right => (d.x.abs(), d.y.abs()),
+                    Side::Up | Side::Down => (d.y.abs(), d.x.abs()),
+                };
+                let ms = (self.now - press.at).max(1.0);
+                let quick = ms <= SWIPE_MS || along / ms >= SWIPE_SPEED;
+                if along >= SWIPE_MIN && along > across && quick {
+                    self.fire(&press.chain, &|t| *t == Trigger::Swipe { side });
+                }
+            }
+            return true;
+        }
+        if press.spent {
             return true;
         }
         let mut used = false;
@@ -332,7 +448,7 @@ impl Player {
             self.set_play(var, Value::Boolean(!b));
             used = true;
         }
-        used |= self.fire(&press.chain, &|t| *t == Trigger::Click);
+        used |= self.click(&press.chain);
         if !used && self.focus.is_none() {
             self.flash = Some(self.now);
         }
@@ -343,7 +459,14 @@ impl Player {
         let chain = self.hit(at).chain;
         for f in chain {
             let axis = self.scrolls(f);
-            if axis != ScrollAxis::None && self.scroll_by(f, delta) {
+            if axis == ScrollAxis::None {
+                continue;
+            }
+            let moved = match self.snaps(f) {
+                true => self.snap_step(f, delta),
+                false => self.scroll_by(f, delta),
+            };
+            if moved {
                 return true;
             }
         }
@@ -382,6 +505,13 @@ impl Player {
             }
             if self.auto.contains_key(&id) {
                 self.rest(id);
+            }
+            // A layer that went with its frame is not left: it is gone.
+            if !self.disabled(id) && self.frame_of(id).is_some() {
+                let leave = self.picked(&[id], &|t| *t == Trigger::HoverLeave);
+                for (id, r) in leave {
+                    self.run_reaction(id, r, None);
+                }
             }
         }
         for id in entered {
@@ -502,6 +632,17 @@ impl Player {
     /// one; a layer inside a disabled instance is passed over. Answers whether
     /// any ran.
     pub(crate) fn fire(&mut self, chain: &[NodeId], want: &dyn Fn(&Trigger) -> bool) -> bool {
+        let picked = self.picked(chain, want);
+        let used = !picked.is_empty();
+        for (id, r) in picked {
+            self.run_reaction(id, r, None);
+        }
+        used
+    }
+
+    /// The reactions [`Self::fire`] would run: those `want` picks on the deepest
+    /// layer of `chain` that has one, with that layer.
+    fn picked(&self, chain: &[NodeId], want: &dyn Fn(&Trigger) -> bool) -> Vec<(NodeId, ItemId)> {
         for &id in chain {
             if self.disabled(id) {
                 continue;
@@ -513,19 +654,134 @@ impl Player {
                     n.reactions()
                         .iter()
                         .filter(|r| want(&r.value.trigger))
-                        .map(|r| r.id)
+                        .map(|r| (id, r.id))
                         .collect()
                 })
                 .unwrap_or_default();
-            if picked.is_empty() {
-                continue;
+            if !picked.is_empty() {
+                return picked;
             }
-            for r in picked {
-                self.run_reaction(id, r, None);
+        }
+        Vec::new()
+    }
+
+    /// Whether some layer of `chain` has a reaction `want` picks.
+    fn holder(&self, chain: &[NodeId], want: &dyn Fn(&Trigger) -> bool) -> bool {
+        !self.picked(chain, want).is_empty()
+    }
+
+    /// A click on `chain`. When the layer it goes to has a double click, the
+    /// click is held until a second can no longer come, and a second within
+    /// [`DOUBLE_MS`] fires the double click instead.
+    fn click(&mut self, chain: &[NodeId]) -> bool {
+        let either = |t: &Trigger| matches!(t, Trigger::Click | Trigger::DoubleClick);
+        let target = self.picked(chain, &either).first().map(|(id, _)| *id);
+        if let Some(tap) = self.tap.take() {
+            if Some(tap.layer) == target && self.now - tap.at <= DOUBLE_MS {
+                return self.fire(&[tap.layer], &|t| *t == Trigger::DoubleClick);
             }
+            // Another layer was clicked: the held click is no longer waiting.
+            self.fire(&tap.chain, &|t| *t == Trigger::Click);
+        }
+        let Some(target) = target else {
+            return false;
+        };
+        if self.holder(&[target], &|t| *t == Trigger::DoubleClick) {
+            self.tap = Some(Tap {
+                layer: target,
+                at: self.now,
+                chain: chain.to_vec(),
+            });
             return true;
         }
-        false
+        self.fire(chain, &|t| *t == Trigger::Click)
+    }
+
+    /// When the next gesture waiting on time is due: a held click, or a long
+    /// press.
+    pub(crate) fn gesture_due(&self) -> Option<f64> {
+        let tap = self.tap.as_ref().map(|t| t.at + DOUBLE_MS);
+        let long = self
+            .press
+            .as_ref()
+            .and_then(|p| p.long.iter().map(|l| l.2).min_by(f64::total_cmp));
+        [tap, long].into_iter().flatten().min_by(f64::total_cmp)
+    }
+
+    /// Fire the gestures due by now: a held click whose second never came, and
+    /// the long presses held long enough, which spend the press.
+    pub(crate) fn fire_gestures(&mut self) {
+        if let Some(tap) = self.tap.take_if(|t| t.at + DOUBLE_MS <= self.now) {
+            self.fire(&tap.chain, &|t| *t == Trigger::Click);
+        }
+        let now = self.now;
+        let due: Vec<(NodeId, ItemId)> = match &mut self.press {
+            Some(p) => {
+                let due = p
+                    .long
+                    .iter()
+                    .filter(|l| l.2 <= now)
+                    .map(|l| (l.0, l.1))
+                    .collect();
+                p.long.retain(|l| l.2 > now);
+                due
+            }
+            None => Vec::new(),
+        };
+        if due.is_empty() {
+            return;
+        }
+        if let Some(p) = &mut self.press {
+            p.spent = true;
+        }
+        for (id, r) in due {
+            self.run_reaction(id, r, None);
+        }
+    }
+
+    /// Fire the scroll triggers whose point a scrolling frame crossed since the
+    /// last look, and remember the offsets for the next.
+    pub(crate) fn check_scrolls(&mut self) {
+        if self.scroll == self.scroll_seen {
+            return;
+        }
+        let mut fire = Vec::new();
+        for frame in self.shown() {
+            for id in subtree_nodes(&self.doc, &[frame]) {
+                let Some(n) = self.doc.get(id) else { continue };
+                for r in n.reactions() {
+                    let Trigger::ScrollPast {
+                        frame: f,
+                        at,
+                        going,
+                    } = r.value.trigger
+                    else {
+                        continue;
+                    };
+                    let f = prototype::resolve_target(&self.doc, id, f);
+                    let along = |v: Vec2| match self.scrolls(f) {
+                        ScrollAxis::Horizontal => v.x,
+                        _ => v.y,
+                    };
+                    let was = along(self.scroll_seen.get(&f).copied().unwrap_or(Vec2::ZERO));
+                    let now = along(self.scroll_offset(f));
+                    let forward = was < at && now >= at;
+                    let back = was >= at && now < at;
+                    let hit = match going {
+                        Going::Forward => forward,
+                        Going::Back => back,
+                        Going::Either => forward || back,
+                    };
+                    if hit && !self.disabled(id) {
+                        fire.push((id, r.id));
+                    }
+                }
+            }
+        }
+        self.scroll_seen = self.scroll.clone();
+        for (id, r) in fire {
+            self.run_reaction(id, r, None);
+        }
     }
 
     /// [`Self::fire`] for the *while pressed* reactions, each recording what to
@@ -735,5 +991,15 @@ impl Player {
         };
         self.set_play(var, Value::Boolean(!b));
         true
+    }
+}
+
+/// The side a move of `d` goes toward most.
+fn side_of(d: Vec2) -> Side {
+    match d.x.abs() >= d.y.abs() {
+        true if d.x < 0.0 => Side::Left,
+        true => Side::Right,
+        false if d.y < 0.0 => Side::Up,
+        false => Side::Down,
     }
 }

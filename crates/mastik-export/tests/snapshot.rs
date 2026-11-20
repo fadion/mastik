@@ -1540,6 +1540,7 @@ fn a_layers_reactions_are_in_its_node() {
                 Action::Navigate {
                     to: f.artboard,
                     transition: Transition::default(),
+                    keep_scroll: false,
                 },
             )],
         },
