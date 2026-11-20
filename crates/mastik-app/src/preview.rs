@@ -176,6 +176,15 @@ pub enum Drag {
         from: NodeId,
         edge: usize,
     },
+    /// Moving a manual overlay's ghost on the canvas: the action placing it, the
+    /// world point the press took, and its offset from the opening layer then and
+    /// now. The release writes `now` as the action's position.
+    OverlayAt {
+        action: crate::panels::prototype::ActionAt,
+        grab: Point,
+        from: Vec2,
+        now: Vec2,
+    },
     /// Rubber-band selection from `origin` to the current pointer, of layers or,
     /// in the node tool, of points. Either selects live.
     Marquee {

@@ -147,6 +147,7 @@ fn fixture() -> Fixture {
                 &mut ids,
                 Action::OpenOverlay {
                     overlay: modal,
+                    settings: Default::default(),
                     transition: Transition::default(),
                 },
             ),

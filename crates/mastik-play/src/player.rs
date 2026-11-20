@@ -101,6 +101,9 @@ pub enum ValueError {
 pub(crate) struct Overlay {
     pub(crate) frame: NodeId,
     pub(crate) settings: OverlaySettings,
+    /// The top-left of the layer that opened it, in screen space as it was
+    /// drawn then: where a manual position is measured from.
+    pub(crate) anchor: Point,
     /// The transition it opened with, played in reverse when *Back* closes it.
     pub(crate) transition: Transition,
 }
@@ -523,8 +526,23 @@ impl Player {
             P::BottomLeft => Point::new(0.0, bottom),
             P::BottomCentre => Point::new(cx, bottom),
             P::BottomRight => Point::new(right, bottom),
-            P::Manual { x, y } => Point::new(x, y),
+            P::Manual { x, y } => o.anchor + Vec2::new(x, y),
         }
+    }
+
+    /// `id`'s top-left in screen space as drawn now: in the shown frame holding
+    /// it, moved by that frame's place (an overlay's) and by any scroll above it.
+    /// The screen's origin when no shown frame holds it.
+    pub(crate) fn drawn_corner(&self, id: NodeId) -> Point {
+        let Some(frame) = self.frame_of(id) else {
+            return Point::ZERO;
+        };
+        let at = match self.overlays.iter().find(|o| o.frame == frame) {
+            Some(o) => self.overlay_at(o),
+            None => Point::ZERO,
+        };
+        let corner = self.rect(id).map_or(self.origin(id), |r| r.origin());
+        corner + self.drawn_shift(id) + (at - self.origin(frame))
     }
 
     /// The frames shown and acted on, bottom first: the screen, then each overlay.

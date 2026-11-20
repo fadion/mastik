@@ -154,6 +154,7 @@ fn shop() -> (Document, [NodeId; 5], VarId) {
                             open_id,
                             Action::OpenOverlay {
                                 overlay: sheet,
+                                settings: Default::default(),
                                 transition: ease(TransitionKind::Dissolve, 200),
                             },
                         )],

@@ -1430,11 +1430,10 @@ pub fn example(model: &str) -> Option<Value> {
             { "trigger": "Click", "actions": [{ "Navigate": { "to": "7e5b:40" } }] },
             { "trigger": "HoverWhile", "actions": [{ "ChangeState": {
                 "instance": "7e5b:12", "to": "7e5b:31", "transition": "SmartAnimate" } }] },
+            { "trigger": "Click", "actions": [{ "OpenOverlay": { "overlay": "7e5b:52",
+                "settings": { "position": "BottomCentre", "backdrop": "#00000066" } } }] },
         ]),
-        "LayerPlay" => serde_json::json!({
-            "scroll": "Vertical",
-            "overlay": { "position": "BottomCentre", "backdrop": "#00000066" },
-        }),
+        "LayerPlay" => serde_json::json!({ "scroll": "Vertical" }),
         "[Flow]" => serde_json::json!([{ "name": "Checkout", "start": "7e5b:40" }]),
         "PagePlay" => serde_json::json!({
             "scaling": "Fit",
@@ -5934,19 +5933,13 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "set_play",
-        doc: "Replace layers' prototype settings: a frame's scroll and overlay, a child's pin, an input",
+        doc: "Replace layers' prototype settings: a frame's scroll, a child's pin, an input",
         params: &[
             req("nodes", NODES, "the layers"),
             req("play", ParamKind::Model("LayerPlay"), "the settings"),
         ],
         run: |ctx, a| {
             let play = a.model::<crate::prototype::LayerPlay>("play")?;
-            if !play.is_usable() {
-                return Err(a.invalid(
-                    "play",
-                    "at `play.overlay`: an overlay's position and backdrop are finite numbers",
-                ));
-            }
             let ops = existing_layers(ctx, a)?
                 .into_iter()
                 .map(|id| Operation::SetPlay {
@@ -7248,12 +7241,6 @@ fn tree_ops(
         });
     }
     if let Some(play) = &tree.play {
-        if !play.is_usable() {
-            return Err(a.invalid(
-                "tree",
-                "at `play.overlay`: an overlay's position and backdrop are finite numbers",
-            ));
-        }
         late.push(Operation::SetPlay {
             id,
             play: play.clone(),

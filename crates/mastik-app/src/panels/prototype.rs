@@ -12,8 +12,9 @@ use eframe::egui;
 use mastik_core::id::NodeId;
 use mastik_core::item::{ItemId, Keyed};
 use mastik_core::prototype::{
-    Action, Branch, Direction, Easing, Expr, Flow, Input, LayerPlay, OverlayPosition, PagePlay,
-    Pin, Reaction, Scaling, ScrollAxis, Timing, Transition, TransitionKind, Trigger, VarChange,
+    Action, Branch, Direction, Easing, Expr, Flow, Input, LayerPlay, OverlayPosition,
+    OverlaySettings, PagePlay, Pin, Reaction, Scaling, ScrollAxis, Timing, Transition,
+    TransitionKind, Trigger, VarChange,
 };
 use mastik_core::variable::{Cell, VarId, VarKind};
 use mastik_core::{Document, NodeKind, Operation, Transaction};
@@ -39,6 +40,13 @@ pub(crate) struct ProtoState {
     /// The unselected layer wearing link dots, noted as the canvas draws so a
     /// press next frame aims at the dots it saw (`note_link_hover`).
     pub knob_hover: std::cell::Cell<Option<NodeId>>,
+    /// A manual overlay's X or Y held in its field, so the canvas ghost follows
+    /// the scrub before it commits.
+    pub held_at: Option<(ItemId, mastik_core::kurbo::Vec2)>,
+    /// The placed overlay's ghost as the canvas drew it last frame, in screen
+    /// space: what a press aims at, and what keeps a click on it from closing
+    /// the popover.
+    pub ghost_rect: std::cell::Cell<Option<egui::Rect>>,
 }
 
 /// One action of one layer's reaction, by item ids, nested ones included.
@@ -58,8 +66,8 @@ pub(crate) enum DraftKey {
     Url(ItemId),
     /// A flow's name.
     FlowName(ItemId),
-    /// An overlay's backdrop colour, by the overlay frame.
-    Backdrop(NodeId),
+    /// An overlay action's backdrop colour.
+    Backdrop(ItemId),
     /// A flow's starting value, by its place in the flow's list.
     FlowValue(ItemId, usize),
 }
@@ -278,6 +286,18 @@ const EASINGS: [(Easing, &str); 6] = [
     (Easing::EaseOut, "Ease out"),
     (Easing::EaseInOut, "Ease in and out"),
     (Easing::Cubic([0.22, 1.0, 0.36, 1.0]), "Custom curve"),
+];
+
+/// An overlay's positions, in the *Position* menu's order.
+const OVERLAY_POSITIONS: [(OverlayPosition, &str); 8] = [
+    (OverlayPosition::Centre, "Centre"),
+    (OverlayPosition::TopLeft, "Top left"),
+    (OverlayPosition::TopCentre, "Top centre"),
+    (OverlayPosition::TopRight, "Top right"),
+    (OverlayPosition::BottomLeft, "Bottom left"),
+    (OverlayPosition::BottomCentre, "Bottom centre"),
+    (OverlayPosition::BottomRight, "Bottom right"),
+    (OverlayPosition::Manual { x: 0.0, y: 0.0 }, "Manual"),
 ];
 
 fn easing_label(e: Easing) -> &'static str {
@@ -714,10 +734,12 @@ pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Op
         },
         ActionKind::OpenOverlay => Action::OpenOverlay {
             overlay: other_screen()?,
+            settings: OverlaySettings::default(),
             transition,
         },
         ActionKind::SwapOverlay => Action::SwapOverlay {
             overlay: other_screen()?,
+            settings: OverlaySettings::default(),
             transition,
         },
         ActionKind::CloseOverlay => Action::CloseOverlay { transition },
@@ -1246,8 +1268,10 @@ impl MastikApp {
         ppp: f32,
     ) {
         if !self.prototype_tab {
+            self.proto.ghost_rect.set(None);
             return;
         }
+        self.draw_placing(ui, painter, rect, ppp);
         self.draw_flow_chips(ui, painter, rect, ppp);
         let doc = &self.session.doc;
         let page = self.session.page;
@@ -1426,6 +1450,167 @@ impl MastikApp {
         self.write_reactions(from, list, "Add interaction", icon::INTERACTION);
         self.session.info(format!("Linked to “{target}”"));
     }
+
+    /// The overlay being placed by hand: while the Prototype tab is up and the
+    /// open popover is an *Open overlay* or *Swap overlay* at *Manual* on a layer
+    /// of this page. Its offset is the one being dragged or typed, else the saved.
+    pub(crate) fn overlay_placing(&self) -> Option<Placing> {
+        if !self.prototype_tab {
+            return None;
+        }
+        let at = self.proto.open?;
+        let doc = &self.session.doc;
+        if doc.page_of(at.node) != Some(self.session.page) {
+            return None;
+        }
+        let r = doc
+            .get(at.node)?
+            .reactions()
+            .iter()
+            .find(|r| r.id == at.reaction)?;
+        let (overlay, settings) = match &find(&r.actions, at.action)?.value {
+            Action::OpenOverlay {
+                overlay, settings, ..
+            }
+            | Action::SwapOverlay {
+                overlay, settings, ..
+            } => (*overlay, *settings),
+            _ => return None,
+        };
+        let OverlayPosition::Manual { x, y } = settings.position else {
+            return None;
+        };
+        let frame = mastik_core::prototype::resolve_target(doc, at.node, overlay);
+        if !is_frame(doc, frame) {
+            return None;
+        }
+        let offset = match self.drag {
+            Drag::OverlayAt { action, now, .. } if action == at => now,
+            _ => self
+                .proto
+                .held_at
+                .filter(|(a, _)| *a == at.action)
+                .map_or(mastik_core::kurbo::Vec2::new(x, y), |(_, v)| v),
+        };
+        Some(Placing { at, frame, offset })
+    }
+
+    /// Where the overlay being placed sits in world space: its offset from the
+    /// top-left of the opening layer's box, at the frame's drawn size.
+    pub(crate) fn placing_rect(&self, p: &Placing) -> Option<mastik_core::kurbo::Rect> {
+        let q = self.world_quad(p.at.node)?;
+        let corner = q.iter().fold(q[0], |m, c| {
+            mastik_core::kurbo::Point::new(m.x.min(c.x), m.y.min(c.y))
+        });
+        let size = self
+            .session
+            .resolved
+            .used_kind(&self.session.doc, p.frame)?
+            .box_size()?;
+        Some(mastik_core::kurbo::Rect::from_origin_size(
+            corner + p.offset,
+            size,
+        ))
+    }
+
+    /// The overlay being placed, drawn as itself at half strength over the page
+    /// where it would open: the chrome ghost `draw_canvas` installs each frame.
+    pub(crate) fn overlay_ghost(&self) -> Option<(NodeId, mastik_render::Ghost)> {
+        let p = self.overlay_placing()?;
+        let r = self.placing_rect(&p)?;
+        let doc = &self.session.doc;
+        let page = self.session.page;
+        let mut node =
+            mastik_render::ghost_as_drawn(doc, &self.session.resolved, p.frame, PLACING_ACTOR)?;
+        node.transform = mastik_core::kurbo::Affine::translate(r.origin().to_vec2());
+        node.opacity *= PLACING_ALPHA;
+        Some((
+            p.frame,
+            mastik_render::Ghost {
+                parent: page,
+                index: doc.get(page)?.children().len(),
+                node,
+            },
+        ))
+    }
+
+    /// Whether a press at `screen` takes the placed overlay's ghost, as it was
+    /// drawn last frame.
+    pub(crate) fn ghost_at(&self, screen: egui::Pos2) -> bool {
+        self.prototype_tab
+            && self
+                .proto
+                .ghost_rect
+                .get()
+                .is_some_and(|r| r.contains(screen))
+            && self.overlay_placing().is_some()
+    }
+
+    /// The ghost's drop: the offset it was dragged to, in whole points, written
+    /// as the action's manual position, one *Overlay* step.
+    pub(crate) fn drop_overlay(&mut self, at: ActionAt, now: mastik_core::kurbo::Vec2) {
+        let doc = &self.session.doc;
+        let Some(n) = doc.get(at.node) else { return };
+        let mut list = n.reactions().to_vec();
+        let Some(r) = list.iter_mut().find(|r| r.id == at.reaction) else {
+            return;
+        };
+        let Some(k) = find_mut(&mut r.value.actions, at.action) else {
+            return;
+        };
+        let (Action::OpenOverlay { settings, .. } | Action::SwapOverlay { settings, .. }) =
+            &mut k.value
+        else {
+            return;
+        };
+        let position = OverlayPosition::Manual {
+            x: now.x.round(),
+            y: now.y.round(),
+        };
+        if settings.position == position {
+            return;
+        }
+        settings.position = position;
+        self.write_reactions(at.node, list, "Overlay", icon::OVERLAY_OPEN);
+    }
+
+    /// The placed overlay's ring, over its ghost: the selection's blue, heavier
+    /// under the pointer or while dragged. Notes the ghost's screen box for the
+    /// next frame's press.
+    fn draw_placing(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
+        let shown = self.overlay_placing().and_then(|p| {
+            let r = self.placing_rect(&p)?;
+            let a = self.to_screen(r.origin(), rect, ppp);
+            let b = self.to_screen(mastik_core::kurbo::Point::new(r.x1, r.y1), rect, ppp);
+            Some(egui::Rect::from_two_pos(a, b))
+        });
+        self.proto.ghost_rect.set(shown);
+        let Some(r) = shown else { return };
+        let hot = matches!(self.drag, Drag::OverlayAt { .. })
+            || ui.ctx().pointer_hover_pos().is_some_and(|p| r.contains(p));
+        let w = if hot { 2.0 } else { 1.0 };
+        painter.rect_stroke(
+            r,
+            0.0,
+            egui::Stroke::new(w, color::SELECT),
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
+/// The actor a placed overlay's ghost ids are minted under: ids no document
+/// holds, read only by the scene walk.
+const PLACING_ACTOR: u64 = 0x0FE4;
+/// How strongly the placed overlay's ghost draws.
+const PLACING_ALPHA: f32 = 0.5;
+
+/// A manual overlay being placed on the canvas: the action placing it, the frame
+/// it opens, and its offset from the opening layer's top-left.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Placing {
+    pub at: ActionAt,
+    pub frame: NodeId,
+    pub offset: mastik_core::kurbo::Vec2,
 }
 
 // --- the tab ------------------------------------------------------------------
@@ -2405,7 +2590,8 @@ impl MastikApp {
                 over_overlay,
                 on_menu: menu.contains_pointer(),
                 on_head: head.contains_pointer(),
-                on_picker: false,
+                // The overlay's ghost on the canvas is this popover's to move.
+                on_picker: ctx.pointer_latest_pos().is_some_and(|p| self.ghost_at(p)),
                 in_gesture: ctx.dragged_id().is_some() || self.gesture_cancelled,
                 press_away,
             })
@@ -2458,33 +2644,33 @@ impl MastikApp {
             }
             Action::OpenOverlay {
                 overlay,
+                settings,
                 transition,
-            } => {
-                if let Some(t) = frame_combo(ui, doc, ("to", k.id), *overlay, id, w) {
-                    out = Some((
-                        Action::OpenOverlay {
-                            overlay: t,
-                            transition: *transition,
-                        },
-                        "Change action",
-                        icon::OVERLAY_OPEN,
-                    ));
-                }
-                ui::selection_note(ui, "Placed by the frame's own overlay settings");
             }
-            Action::SwapOverlay {
+            | Action::SwapOverlay {
                 overlay,
+                settings,
                 transition,
             } => {
+                let swap = matches!(k.value, Action::SwapOverlay { .. });
+                let make = |overlay: NodeId, settings: OverlaySettings| match swap {
+                    true => Action::SwapOverlay {
+                        overlay,
+                        settings,
+                        transition: *transition,
+                    },
+                    false => Action::OpenOverlay {
+                        overlay,
+                        settings,
+                        transition: *transition,
+                    },
+                };
+                let glyph = ActionKind::of(&k.value).glyph();
                 if let Some(t) = frame_combo(ui, doc, ("to", k.id), *overlay, id, w) {
-                    out = Some((
-                        Action::SwapOverlay {
-                            overlay: t,
-                            transition: *transition,
-                        },
-                        "Change action",
-                        icon::OVERLAY_SWAP,
-                    ));
+                    out = Some((make(t, *settings), "Change action", glyph));
+                }
+                if let Some(s) = self.overlay_fields(ui, k.id, *settings, w) {
+                    out = Some((make(*overlay, s), "Overlay", glyph));
                 }
             }
             Action::ScrollTo { layer, transition } => {
@@ -3040,6 +3226,178 @@ impl MastikApp {
         out
     }
 
+    /// An overlay action's rows: where it shows, *Close on a click outside*,
+    /// *Darken behind it* and, while darkened, the shade's colour and strength.
+    /// *Manual* adds X and Y, measured from the layer that opens it; the frame is
+    /// placed by dragging its ghost on the canvas, the fields being for the last
+    /// point. Answers as [`Self::transition_fields`] does.
+    fn overlay_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        action: ItemId,
+        o: OverlaySettings,
+        w: f32,
+    ) -> Option<OverlaySettings> {
+        let mut out = None;
+        let mut numbers: Vec<(egui::Response, egui::Id, f64, OverlaySettings)> = Vec::new();
+        ui::labelled(ui, "Position", |ui| {
+            let same = |a: &OverlayPosition, b: &OverlayPosition| {
+                std::mem::discriminant(a) == std::mem::discriminant(b)
+            };
+            let shown = OVERLAY_POSITIONS
+                .iter()
+                .find(|(p, _)| same(p, &o.position))
+                .map_or("Centre", |(_, l)| *l);
+            let mut pick = None;
+            ui.scope(|ui| {
+                ui::combo_height(ui);
+                egui::ComboBox::from_id_salt(("overlay-at", action))
+                    .icon(ui::combo_chevron)
+                    .width(w)
+                    .selected_text(ui::combo_text(shown))
+                    .show_ui(ui, |ui| {
+                        ui::menu_rows(ui);
+                        for (p, l) in OVERLAY_POSITIONS {
+                            let on = same(&p, &o.position);
+                            if ui.selectable_label(on, l).clicked() && !on {
+                                pick = Some(p);
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Where the frame shows over the screen");
+            });
+            if let Some(p) = pick {
+                out = Some(OverlaySettings { position: p, ..o });
+            }
+            if let OverlayPosition::Manual { x, y } = o.position {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = COL;
+                    let half = (w - COL) / 2.0;
+                    let mut held = None;
+                    for (i, (label, v0)) in [("X", x), ("Y", y)].into_iter().enumerate() {
+                        let rid = ui.id().with(("overlay-xy", action, i));
+                        let mut v = self
+                            .proto
+                            .scrub
+                            .filter(|(r, _)| *r == rid)
+                            .map_or(v0, |(_, v)| v);
+                        let resp = ui::value_field(
+                            ui,
+                            egui::vec2(half, ui::CONTROL_H),
+                            Prefix::Text(label),
+                            &mut v,
+                            Scrub::whole(0.5),
+                            |d| d.custom_formatter(ui::number(1)),
+                        )
+                        .on_hover_text("From the top-left of the layer that opens it");
+                        let at = match i {
+                            0 => mastik_core::kurbo::Vec2::new(v, y),
+                            _ => mastik_core::kurbo::Vec2::new(x, v),
+                        };
+                        if resp.dragged() || resp.has_focus() {
+                            held = Some((action, at));
+                        }
+                        let position = OverlayPosition::Manual { x: at.x, y: at.y };
+                        numbers.push((resp, rid, v, OverlaySettings { position, ..o }));
+                    }
+                    self.proto.held_at = held;
+                });
+                ui::selection_note(ui, "Drag the frame on the canvas to place it");
+            }
+        });
+        if ui::switch_row(
+            ui,
+            "Close on a click outside",
+            o.close_outside,
+            ui::CONTROL_H,
+        )
+        .clicked()
+        {
+            out = Some(OverlaySettings {
+                close_outside: !o.close_outside,
+                ..o
+            });
+        }
+        if ui::switch_row(ui, "Darken behind it", o.backdrop.is_some(), ui::CONTROL_H)
+            .on_hover_text("Draw a shade over the screen beneath the overlay")
+            .clicked()
+        {
+            out = Some(OverlaySettings {
+                backdrop: match o.backdrop {
+                    Some(_) => None,
+                    None => Some(mastik_core::peniko::Color::from_rgba8(0, 0, 0, 102)),
+                },
+                ..o
+            });
+        }
+        if let Some(c) = o.backdrop {
+            // The shade's colour, typed as every colour field takes one; the
+            // shade below keeps its own strength.
+            let key = DraftKey::Backdrop(action);
+            let ctx = ui.ctx().clone();
+            let [r, g, b, _] = c.to_rgba8().to_u8_array();
+            let shown = format!("{r:02x}{g:02x}{b:02x}");
+            let mut text = ui::Draft::live(&mut self.proto.draft, &ctx, key)
+                .map_or(shown.clone(), |d| d.text.clone());
+            let ink = crate::colour_text::parse(&text).map_or(egui::Color32::TRANSPARENT, |t| {
+                ui::color_to_egui(t.color(1.0))
+            });
+            let resp = ui::colour_text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, ink)
+                .on_hover_text("The colour of the shade behind the overlay");
+            if let Some(typed) = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)
+                && typed != shown
+                && let Some(t) = crate::colour_text::parse(&typed)
+            {
+                out = Some(OverlaySettings {
+                    backdrop: Some(t.color(c.components[3])),
+                    ..o
+                });
+            }
+            let rid = ui.id().with(("backdrop", action));
+            let a0 = f64::from(c.components[3]) * 100.0;
+            let mut v = self
+                .proto
+                .scrub
+                .filter(|(r, _)| *r == rid)
+                .map_or(a0, |(_, v)| v);
+            let resp = ui::value_field_suffixed(
+                ui,
+                egui::vec2(w, ui::CONTROL_H),
+                Prefix::Text("Shade"),
+                Some(ui::Suffix {
+                    text: "%",
+                    clickable: false,
+                    tooltip: "",
+                }),
+                &mut v,
+                Scrub::whole(0.5).range(0.0..=100.0),
+                |d| d.custom_formatter(ui::number(0)),
+            )
+            .0
+            .on_hover_text("How dark the shade behind the overlay is");
+            let mut c2 = c;
+            c2.components[3] = (v.clamp(0.0, 100.0) / 100.0) as f32;
+            numbers.push((
+                resp,
+                rid,
+                v,
+                OverlaySettings {
+                    backdrop: Some(c2),
+                    ..o
+                },
+            ));
+        }
+        for (resp, rid, v, next) in numbers {
+            self.proto_hold(rid, v, &resp);
+            let engaged = resp.dragged() || resp.has_focus();
+            if next != o && !engaged && interacting(&resp) && !self.gesture_cancelled {
+                out = Some(next);
+            }
+        }
+        out
+    }
+
     /// Hold a number field's value while it is scrubbed or typed, and let go once
     /// it is not. A right-click calls the scrub off (`cancel_gesture`): nothing
     /// is held until the button is let go.
@@ -3236,7 +3594,6 @@ impl MastikApp {
             return;
         }
         let mut next: Option<(LayerPlay, &'static str)> = None;
-        let mut numbers: Vec<(egui::Response, egui::Id, f64, LayerPlay)> = Vec::new();
         self.panel(ui, "Prototype", None, |app, ui| {
             let w = ui.available_width();
             if frame {
@@ -3267,119 +3624,6 @@ impl MastikApp {
                                 .size(ui::SMALL_PT)
                                 .color(theme::text::dim()),
                         );
-                    }
-                });
-                ui::labelled(ui, "As an overlay", |ui| {
-                    let o = play.overlay;
-                    let positions: [(OverlayPosition, &str); 8] = [
-                        (OverlayPosition::Centre, "Centre"),
-                        (OverlayPosition::TopLeft, "Top left"),
-                        (OverlayPosition::TopCentre, "Top centre"),
-                        (OverlayPosition::TopRight, "Top right"),
-                        (OverlayPosition::BottomLeft, "Bottom left"),
-                        (OverlayPosition::BottomCentre, "Bottom centre"),
-                        (OverlayPosition::BottomRight, "Bottom right"),
-                        (OverlayPosition::Manual { x: 0.0, y: 0.0 }, "Manual"),
-                    ];
-                    let same = |a: &OverlayPosition, b: &OverlayPosition| std::mem::discriminant(a) == std::mem::discriminant(b);
-                    let shown = positions.iter().find(|(p, _)| same(p, &o.position)).map_or("Centre", |(_, l)| *l);
-                    let mut pick = None;
-                    ui.scope(|ui| {
-                        ui::combo_height(ui);
-                        egui::ComboBox::from_id_salt(("overlay-at", id))
-                            .icon(ui::combo_chevron)
-                            .width(w)
-                            .selected_text(ui::combo_text(shown))
-                            .show_ui(ui, |ui| {
-                                ui::menu_rows(ui);
-                                for (p, l) in positions {
-                                    let on = same(&p, &o.position);
-                                    if ui.selectable_label(on, l).clicked() && !on {
-                                        pick = Some(p);
-                                    }
-                                }
-                            })
-                            .response
-                            .on_hover_text("Where the frame shows when it opens as an overlay");
-                    });
-                    if let Some(p) = pick {
-                        let mut x = play.clone();
-                        x.overlay.position = p;
-                        next = Some((x, "Overlay"));
-                    }
-                    if let OverlayPosition::Manual { x, y } = o.position {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = COL;
-                            let half = (w - COL) / 2.0;
-                            for (i, (label, v0)) in [("X", x), ("Y", y)].into_iter().enumerate() {
-                                let rid = ui.id().with(("overlay-xy", id, i));
-                                let mut v = app.proto.scrub.filter(|(r, _)| *r == rid).map_or(v0, |(_, v)| v);
-                                let resp = ui::value_field(ui, egui::vec2(half, ui::CONTROL_H), Prefix::Text(label), &mut v, Scrub::whole(0.5), |d| d.custom_formatter(ui::number(1)));
-                                let mut p = play.clone();
-                                p.overlay.position = match i {
-                                    0 => OverlayPosition::Manual { x: v, y },
-                                    _ => OverlayPosition::Manual { x, y: v },
-                                };
-                                numbers.push((resp, rid, v, p));
-                            }
-                        });
-                    }
-                    if ui::switch_row(ui, "Close on a click outside", o.close_outside, ui::CONTROL_H).clicked() {
-                        let mut p = play.clone();
-                        p.overlay.close_outside = !o.close_outside;
-                        next = Some((p, "Overlay"));
-                    }
-                    if ui::switch_row(ui, "Darken behind it", o.backdrop.is_some(), ui::CONTROL_H)
-                        .on_hover_text("Draw a shade over the screen beneath the overlay")
-                        .clicked()
-                    {
-                        let mut p = play.clone();
-                        p.overlay.backdrop = match o.backdrop {
-                            Some(_) => None,
-                            None => Some(mastik_core::peniko::Color::from_rgba8(0, 0, 0, 102)),
-                        };
-                        next = Some((p, "Overlay"));
-                    }
-                    if let Some(c) = o.backdrop {
-                        // The shade's colour, typed as every colour field takes
-                        // one; the shade below keeps its own strength.
-                        let key = DraftKey::Backdrop(id);
-                        let ctx = ui.ctx().clone();
-                        let [r, g, b, _] = c.to_rgba8().to_u8_array();
-                        let shown = format!("{r:02x}{g:02x}{b:02x}");
-                        let mut text = ui::Draft::live(&mut app.proto.draft, &ctx, key)
-                            .map_or(shown.clone(), |d| d.text.clone());
-                        let ink = crate::colour_text::parse(&text)
-                            .map_or(egui::Color32::TRANSPARENT, |t| ui::color_to_egui(t.color(1.0)));
-                        let resp = ui::colour_text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, ink)
-                            .on_hover_text("The colour of the shade behind the overlay");
-                        if let Some(typed) = ui::Draft::follow(&mut app.proto.draft, &resp, key, &text)
-                            && typed != shown
-                            && let Some(t) = crate::colour_text::parse(&typed)
-                        {
-                            let mut p = play.clone();
-                            p.overlay.backdrop = Some(t.color(c.components[3]));
-                            next = Some((p, "Overlay"));
-                        }
-                        let rid = ui.id().with(("backdrop", id));
-                        let a0 = f64::from(c.components[3]) * 100.0;
-                        let mut v = app.proto.scrub.filter(|(r, _)| *r == rid).map_or(a0, |(_, v)| v);
-                        let resp = ui::value_field_suffixed(
-                            ui,
-                            egui::vec2(w, ui::CONTROL_H),
-                            Prefix::Text("Shade"),
-                            Some(ui::Suffix { text: "%", clickable: false, tooltip: "" }),
-                            &mut v,
-                            Scrub::whole(0.5).range(0.0..=100.0),
-                            |d| d.custom_formatter(ui::number(0)),
-                        )
-                        .0
-                        .on_hover_text("How dark the shade behind the overlay is");
-                        let mut p = play.clone();
-                        let mut c2 = c;
-                        c2.components[3] = (v.clamp(0.0, 100.0) / 100.0) as f32;
-                        p.overlay.backdrop = Some(c2);
-                        numbers.push((resp, rid, v, p));
                     }
                 });
             }
@@ -3475,13 +3719,6 @@ impl MastikApp {
                 });
             }
         });
-        for (resp, rid, v, p) in numbers {
-            let tx = match p != play {
-                true => Transaction(vec![Operation::SetPlay { id, play: p }]),
-                false => Transaction::default(),
-            };
-            self.proto_valve(rid, v, &resp, "Overlay", icon::OVERLAY_OPEN, tx);
-        }
         if let Some((p, label)) = next {
             self.session.name_step(label, icon::INTERACTION);
             self.commit_edit(Transaction(vec![Operation::SetPlay { id, play: p }]));
@@ -4524,6 +4761,79 @@ mod tests {
                     dashed: true
                 },
             ]
+        );
+    }
+
+    /// `action` on *Add to cart* as reaction `item(10)`'s one action `item(1)`,
+    /// with the Prototype tab up.
+    fn one_action(f: &mut F, action: Action) -> ActionAt {
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetReactions {
+                    id: f.add,
+                    reactions: vec![Keyed::new(
+                        item(10),
+                        Reaction {
+                            trigger: Trigger::Click,
+                            actions: vec![keyed(1, action)],
+                        },
+                    )],
+                }]))
+        );
+        f.app.prototype_tab = true;
+        ActionAt {
+            node: f.add,
+            reaction: item(10),
+            action: item(1),
+        }
+    }
+
+    /// A manual overlay's ghost sits at its offset from the opening layer's
+    /// top-left, at half strength, wearing ids no document holds; a drop writes
+    /// the offset in whole points.
+    /// flip: `placing_rect` measuring from the page's origin → fails at "by the layer".
+    #[test]
+    fn a_manual_overlay_is_placed_by_its_ghost() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let overlay = f.cart;
+        let at = one_action(
+            &mut f,
+            Action::OpenOverlay {
+                overlay,
+                settings: OverlaySettings {
+                    position: OverlayPosition::Manual { x: 0.0, y: 48.0 },
+                    ..OverlaySettings::default()
+                },
+                transition: Transition::default(),
+            },
+        );
+        assert!(f.app.overlay_placing().is_none(), "no popover, no ghost");
+        f.app.session.selection.set(vec![f.add]);
+        f.app.proto.open = Some(at);
+        let p = f.app.overlay_placing().expect("placing");
+        let r = f.app.placing_rect(&p).expect("a box");
+        assert_eq!(
+            (r.x0, r.y0, r.width(), r.height()),
+            (20.0, 68.0, 400.0, 800.0),
+            "by the layer"
+        );
+        let (_, ghost) = f.app.overlay_ghost().expect("a ghost");
+        assert_eq!(ghost.node.transform.translation(), Vec2::new(20.0, 68.0));
+        assert_eq!(ghost.node.opacity, PLACING_ALPHA);
+        assert!(
+            f.app.session.doc.get(ghost.node.id).is_none(),
+            "its own ids"
+        );
+        f.app.drop_overlay(at, Vec2::new(10.4, 30.6));
+        let n = f.app.session.doc.get(f.add).expect("the layer");
+        let Action::OpenOverlay { settings, .. } = &n.reactions()[0].actions[0].value else {
+            panic!("fixture: the overlay action");
+        };
+        assert_eq!(
+            settings.position,
+            OverlayPosition::Manual { x: 10.0, y: 31.0 }
         );
     }
 

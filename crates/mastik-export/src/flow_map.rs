@@ -244,6 +244,7 @@ fn action_words(doc: &Document, holder: NodeId, a: &Action) -> String {
         Action::OpenOverlay {
             overlay,
             transition,
+            ..
         } => format!(
             "open {} as an overlay{}",
             layer(*overlay),
@@ -255,6 +256,7 @@ fn action_words(doc: &Document, holder: NodeId, a: &Action) -> String {
         Action::SwapOverlay {
             overlay,
             transition,
+            ..
         } => format!(
             "swap the overlay for {}{}",
             layer(*overlay),

@@ -11,7 +11,7 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
 | Field | Type | Holds |
 | --- | --- | --- |
 | `Node::reactions` | `Vec<Keyed<Reaction>>` | The layer's triggers and the actions each runs, in order |
-| `Node::play` | `LayerPlay` | A frame's scroll axis and overlay defaults; a child's pin; an input binding |
+| `Node::play` | `LayerPlay` | A frame's scroll axis; a child's pin; an input binding |
 | `Page::flows` | `Vec<Keyed<Flow>>` | Named ways into the page's prototype |
 | `Page::play` | `PagePlay` | Device preset name, scaling, the default transition for a new link |
 | `Document::play_export` | `PlayExport` | Which flows the HTML export takes, which it opens on, device frame, player bar, hotspot hints, a scaling override |
@@ -29,6 +29,13 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
   directional kinds and smart animate (a side, or `None`, which is smart animate's alone and
   which the others read as left; the default is `None`, and a smart animate written without a
   direction through the MCP takes `None` too), and a `Timing` (an easing curve over a duration, or a spring).
+- **An overlay is shown as its action says, not as its frame does.** `OpenOverlay` and
+  `SwapOverlay` carry `OverlaySettings`: a position (the centre, a top or bottom third's left,
+  centre or right, or `Manual`), whether a click outside closes it, and a backdrop colour or
+  none. One frame opened from two places may sit by each, a menu by its button and a sheet at
+  the foot. `Manual { x, y }` is the overlay's top-left measured from the top-left of the layer
+  holding the action, so a menu stays by its button wherever the button sits, an instance's
+  included.
 - **`LayerPlay`'s frame fields are inert on any other kind**, and its pin is read only inside a
   scrolling frame. An `Input` binds a variable; on an instance it names the boolean variant
   property that shows it, on a text layer none (it binds a string).
@@ -50,8 +57,9 @@ page's flows and play settings, so the inverse of a removal brings them back.
   (`Trigger::is_a_persons_act`; `ReactionError::ScriptUnasked`). Under those a script would run
   unasked, which the document never does.
 - An unusable timing (`Timing::is_usable`: finite, a spring's numbers positive, a cubic's x within
-  0..=1), on an action, a page's default transition, or a non-finite overlay position or backdrop
-  (`LayerPlay::is_usable`; `OpError::BadPlay`).
+  0..=1), on an action or a page's default transition (`OpError::BadPlay`), or a non-finite
+  overlay position or backdrop on an overlay action (`OverlaySettings::is_usable`;
+  `ReactionError::BadOverlay`).
 - A repeated id: an action id within one list (`ReactionError::DuplicateAction`), a reaction id on
   a layer (`Node::check_item_ids`), a flow id on a page.
 

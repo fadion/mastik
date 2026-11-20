@@ -93,7 +93,7 @@ pub struct Node {
     href: String,              // a link's address, empty = none; kept while the element is not a link
     note: String,              // the layer's annotation, empty = none; never drawn
     reactions: Vec<Keyed<Reaction>>, // prototype triggers and their actions; never drawn (prototyping-model.md)
-    play: LayerPlay,           // a frame's scroll and overlay defaults, a child's pin, an input; never drawn
+    play: LayerPlay,           // a frame's scroll, a child's pin, an input; never drawn
     modes: Vec<ModeId>,        // the modes a FRAME or page sets for itself and contents, at most one per
                                // collection, id order; a collection with none inherits — §5.3f
     queries: Vec<Breakpoints>, // a FRAME's width queries: per collection, each mode's minimum width,

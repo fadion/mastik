@@ -4,8 +4,9 @@ use crate::{Input, Notice, Player, Start, Take};
 use mastik_core::kurbo::{Affine, Point, RoundedRectRadii, Size, Vec2};
 use mastik_core::peniko::Color;
 use mastik_core::prototype::{
-    Action, Branch, Direction, Easing, Expr, Flow, Input as Bound, LayerPlay, OverlaySettings, Pin,
-    Reaction, ScrollAxis, Timing, Transition, TransitionKind, Trigger, VarChange,
+    Action, Branch, Direction, Easing, Expr, Flow, Input as Bound, LayerPlay, OverlayPosition,
+    OverlaySettings, Pin, Reaction, ScrollAxis, Timing, Transition, TransitionKind, Trigger,
+    VarChange,
 };
 use mastik_core::variable::{CollectionId, TextVars};
 use mastik_core::variant::{Interaction, VariantProp, VariantSet};
@@ -693,22 +694,16 @@ fn an_overlay_opens_closes_and_backs_out() {
     let b = fx.frame("B", 300.0, 200.0, 100.0);
     let menu = fx.frame("Menu", 600.0, 100.0, 50.0);
     let shade = Color::from_rgba8(0, 0, 0, 128);
-    fx.play_settings(
-        menu,
-        LayerPlay {
-            overlay: OverlaySettings {
-                backdrop: Some(shade),
-                ..OverlaySettings::default()
-            },
-            ..LayerPlay::default()
-        },
-    );
     let open = fx.rect(b, "Open", 0.0, 0.0, 40.0, 40.0);
     fx.on(
         open,
         Trigger::Click,
         vec![Action::OpenOverlay {
             overlay: menu,
+            settings: OverlaySettings {
+                backdrop: Some(shade),
+                ..OverlaySettings::default()
+            },
             transition: Transition::INSTANT,
         }],
     );
@@ -739,6 +734,54 @@ fn an_overlay_opens_closes_and_backs_out() {
     click(&mut p, 190.0, 90.0);
     assert!(p.overlays().is_empty(), "a click outside closes it");
     assert_eq!(p.screen(), b);
+}
+
+/// A manual overlay sits at its offset from the layer that opens it, and one
+/// frame opened by two actions sits as each says.
+///
+/// flip: `Player::overlay_at` reading `Manual` from the screen's corner, not the
+/// anchor → fails at "by its button".
+#[test]
+fn a_manual_overlay_sits_by_the_layer_that_opens_it() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let menu = fx.frame("Menu", 300.0, 60.0, 40.0);
+    let button = fx.rect(a, "Button", 120.0, 30.0, 40.0, 20.0);
+    let manual = OverlaySettings {
+        position: OverlayPosition::Manual { x: 0.0, y: 24.0 },
+        ..OverlaySettings::default()
+    };
+    fx.on(
+        button,
+        Trigger::Click,
+        vec![Action::OpenOverlay {
+            overlay: menu,
+            settings: manual,
+            transition: Transition::INSTANT,
+        }],
+    );
+    let other = fx.rect(a, "Other", 0.0, 0.0, 20.0, 20.0);
+    fx.on(
+        other,
+        Trigger::Click,
+        vec![Action::OpenOverlay {
+            overlay: menu,
+            settings: OverlaySettings::default(),
+            transition: Transition::INSTANT,
+        }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 130.0, 40.0);
+    let top = p.scene().layers.last().cloned().unwrap();
+    assert_eq!(top.at, Point::new(120.0, 54.0), "by its button");
+    p.restart();
+    click(&mut p, 10.0, 10.0);
+    let top = p.scene().layers.last().cloned().unwrap();
+    assert_eq!(
+        top.at,
+        Point::new(70.0, 30.0),
+        "centred, by the other action"
+    );
 }
 
 // ── Scrolling ───────────────────────────────────────────────────────────────

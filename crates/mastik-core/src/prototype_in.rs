@@ -61,10 +61,12 @@ pub(crate) fn reaction_ops(
                     }
                     Step::Overlay(f, transition) => to(&f).map(|overlay| Action::OpenOverlay {
                         overlay,
+                        settings: Default::default(),
                         transition,
                     }),
                     Step::Swap(f, transition) => to(&f).map(|overlay| Action::SwapOverlay {
                         overlay,
+                        settings: Default::default(),
                         transition,
                     }),
                     Step::ScrollTo(f, transition) => {

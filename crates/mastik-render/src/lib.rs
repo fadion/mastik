@@ -34,5 +34,5 @@ pub use images::{
     ADJUSTED_BYTES, DECODED_BYTES, DecodeError, HISTOGRAM_BINS, ImageStore, PREVIEW_EDGE, Pixels,
     THUMB_BASE, ThumbKey, luminance_histogram,
 };
-pub use renderer::{Ghost, GhostNode, NodeOverride, RenderOverrides, Viewport};
+pub use renderer::{Ghost, GhostNode, NodeOverride, RenderOverrides, Viewport, ghost_as_drawn};
 pub use scene::{ScenePainter, StrokePaint, TextRun};

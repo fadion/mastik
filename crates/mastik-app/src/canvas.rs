@@ -2465,10 +2465,13 @@ impl MastikApp {
                             egui::CursorIcon::Move,
                             Some(Bitmap::Arrow(Some(Badge::Pivot))),
                         )
-                    } else if matches!(self.drag, Drag::Link { .. })
-                        || pointer.is_some_and(|p| self.link_knob_at(p, rect, ppp).is_some())
+                    } else if matches!(self.drag, Drag::Link { .. } | Drag::OverlayAt { .. })
+                        || pointer.is_some_and(|p| {
+                            self.link_knob_at(p, rect, ppp).is_some() || self.ghost_at(p)
+                        })
                     {
-                        // A link dot is taken ahead of the box's handles under it.
+                        // A link dot or a placed overlay's ghost is taken ahead
+                        // of the box's handles under it.
                         self.rest_cursor(None)
                     } else {
                         match &self.drag {
@@ -2990,6 +2993,14 @@ impl MastikApp {
             self.session.info("Drag the dot onto a frame to link to it");
             return;
         }
+        // Nor does a click on a placed overlay's ghost, which only drags.
+        if self.tool.selects()
+            && clicked
+            && let Some(p) = resp.interact_pointer_pos()
+            && self.ghost_at(p)
+        {
+            return;
+        }
 
         if self.tool.selects()
             && clicked
@@ -3215,6 +3226,7 @@ impl MastikApp {
     ) -> bool {
         self.on_pivot(screen, rect, ppp).is_some()
             || self.link_knob_at(screen, rect, ppp).is_some()
+            || self.ghost_at(screen)
             || self.gradient_claims(screen, rect, ppp)
             || self.set_plus_at(screen, rect, ppp).is_some()
             || self.shape_handle_at(screen, rect, ppp).is_some()
@@ -3256,6 +3268,19 @@ impl MastikApp {
                 self.session.selection.set(vec![from]);
             }
             self.drag = Drag::Link { from, edge };
+            return;
+        }
+
+        // A manual overlay's ghost, over the artwork it hangs above.
+        if self.ghost_at(grab)
+            && let Some(p) = self.overlay_placing()
+        {
+            self.drag = Drag::OverlayAt {
+                action: p.at,
+                grab: grab_world,
+                from: p.offset,
+                now: p.offset,
+            };
             return;
         }
 
@@ -3389,6 +3414,17 @@ impl MastikApp {
             ui.ctx().request_repaint();
             return;
         }
+        // The ghost follows the pointer in whole points; the chrome ghost is
+        // rebuilt from it next frame.
+        if let Drag::OverlayAt {
+            grab, from, now, ..
+        } = &mut self.drag
+        {
+            let d = world - *grab;
+            *now = *from + Vec2::new(d.x.round(), d.y.round());
+            ui.ctx().request_repaint();
+            return;
+        }
         match &self.drag {
             Drag::Pan => self.pan_by_drag(ui, resp),
             Drag::Move { anchor } => {
@@ -3513,6 +3549,7 @@ impl MastikApp {
             | Drag::CropResize { .. }
             | Drag::Pivot { .. }
             | Drag::Link { .. }
+            | Drag::OverlayAt { .. }
             | Drag::Guide(_)
             | Drag::TextSelect
             | Drag::None => {}
@@ -3717,6 +3754,7 @@ impl MastikApp {
                 self.session.selection.set_pivot(f);
             }
             Drag::Link { from, .. } => self.drop_link(from, world),
+            Drag::OverlayAt { action, now, .. } => self.drop_overlay(action, now),
             // Guide and crop releases are finished by their own input paths.
             Drag::CropPan { .. }
             | Drag::CropResize { .. }
@@ -10824,7 +10862,7 @@ impl MastikApp {
     ) {
         // The mode's own artwork, re-installed every frame, downstream of every way
         // the state can change; before `render_inputs` takes the borrow.
-        let ghost = self.image_ghost();
+        let ghost = self.image_ghost().or_else(|| self.overlay_ghost());
         self.session.set_chrome_ghost(ghost);
         let ink = self
             .outline_view

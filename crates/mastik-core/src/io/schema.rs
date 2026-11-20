@@ -644,11 +644,6 @@ impl NodeDto {
         }
         crate::prototype::check(&self.reactions)
             .map_err(|e| IoError::Integrity(format!("node {id:?}: {e}")))?;
-        if !self.play.is_usable() {
-            return Err(IoError::Integrity(format!(
-                "node {id:?}: a prototype setting is not usable"
-            )));
-        }
         // Dropped, like `clip`, on a kind it does not apply to.
         let element = self
             .element

@@ -130,8 +130,12 @@ out both ends.
 - **Back** closes the top overlay when one is open, by the reverse of its opening transition;
   otherwise it pops the history by the reverse of the transition that left that frame (a move in
   becomes a move out from the other side; a push or slide comes from the other side).
-- **Open overlay** places the frame by its own `OverlaySettings`; **swap** replaces the top one;
-  **close** closes it by the transition given.
+- **Open overlay** places the frame by the action's `OverlaySettings`; **swap** replaces the top
+  one, placed by its own action's; **close** closes it by the transition given. A manual position
+  is measured from the opening layer's top-left as drawn when it opens (`Player::drawn_corner`:
+  in its shown frame, moved by an overlay's place and the scrolls above it), which the overlay
+  keeps (`Overlay::anchor`); a swap reads it before the top overlay goes, since the layer may be
+  in it.
 - **Scroll to** scrolls the nearest scrolling frame holding the layer until the layer's top-left is
   at the frame's, as far as the content allows.
 - **Change state** is `variant::switch` committed on the copy, so ids survive. An authored change

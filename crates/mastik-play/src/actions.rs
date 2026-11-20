@@ -3,9 +3,10 @@
 
 use crate::anim::{ScreenAnim, ScrollAnim, Smart};
 use crate::player::{MAX_DEPTH, Notice, Overlay, Player, Request, Visit};
-use mastik_core::kurbo::Vec2;
+use mastik_core::kurbo::{Point, Vec2};
 use mastik_core::prototype::{
-    self, Action, Direction, ScrollAxis, Transition, TransitionKind, Trigger, VarChange,
+    self, Action, Direction, OverlaySettings, ScrollAxis, Transition, TransitionKind, Trigger,
+    VarChange,
 };
 use mastik_core::variable::{Value, VarId};
 use mastik_core::{ItemId, Keyed, NodeId, subtree_nodes, variant};
@@ -115,13 +116,15 @@ impl Player {
             }
             Action::OpenOverlay {
                 overlay,
+                settings,
                 transition,
             } => {
                 let Some(frame) = self.target(holder, k.id, *overlay, true) else {
                     return;
                 };
                 undo.push(Undo::Overlays(self.overlays.len()));
-                self.open_overlay(frame, *transition);
+                let anchor = self.drawn_corner(holder);
+                self.open_overlay(frame, *settings, anchor, *transition);
             }
             Action::CloseOverlay { transition } => {
                 if !self.overlays.is_empty() {
@@ -130,16 +133,19 @@ impl Player {
             }
             Action::SwapOverlay {
                 overlay,
+                settings,
                 transition,
             } => {
                 let Some(frame) = self.target(holder, k.id, *overlay, true) else {
                     return;
                 };
                 undo.push(Undo::Overlays(self.overlays.len()));
+                // Read before the top goes: the holder may be in it.
+                let anchor = self.drawn_corner(holder);
                 if let Some(top) = self.overlays.pop() {
                     self.on_close(top.frame);
                 }
-                self.open_overlay(frame, *transition);
+                self.open_overlay(frame, *settings, anchor, *transition);
             }
             Action::ScrollTo { layer, transition } => {
                 let Some(layer) = self.target(holder, k.id, *layer, false) else {
@@ -337,15 +343,19 @@ impl Player {
         self.rehover();
     }
 
-    pub(crate) fn open_overlay(&mut self, frame: NodeId, transition: Transition) {
-        let settings = self
-            .doc
-            .get(frame)
-            .map(|n| n.play().overlay)
-            .unwrap_or_default();
+    /// Open `frame` over the screen as `settings` say; `anchor` is the screen
+    /// point a manual position is measured from.
+    pub(crate) fn open_overlay(
+        &mut self,
+        frame: NodeId,
+        settings: OverlaySettings,
+        anchor: Point,
+        transition: Transition,
+    ) {
         self.overlays.push(Overlay {
             frame,
             settings,
+            anchor,
             transition,
         });
         if transition.kind != TransitionKind::Instant {

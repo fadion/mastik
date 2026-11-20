@@ -71,6 +71,13 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *Toggle* for a boolean) and its expression or step; *Conditional* one expression per branch
   (`ui::labelled` *If* / *Else if*), *Add else if* and a branch's `×`; *Open link* an address, refused unless `http` or `https`;
   *Run script* a document script by name.
+- ***Open overlay* and *Swap overlay* show how the frame shows** (`overlay_fields`, one
+  *Overlay* step): *Position* (the centre, the top and bottom thirds' left, centre and right, or
+  *Manual*), *Close on a click outside*, *Darken behind it* (black at 40% when turned on) and,
+  while it is on, the shade's colour (`ui::colour_text_field`, its alpha kept) and *Shade*, its
+  opacity. *Manual* adds X and Y, from the top-left of the layer holding the action, and the
+  note *Drag the frame on the canvas to place it*: the fields are for the last point, the canvas
+  is where it is placed (*Placing an overlay*, below).
 - **Expressions show names.** The field writes a variable `{name}`
   (`Expr::with_names`) and stores its id (`Expr::from_names`), so a rename never breaks it. What
   does not read, names no variable, or (for *Set variable*'s value and a condition) comes to
@@ -92,10 +99,8 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
 ## The Prototype card
 
 - **A frame**: *Scrolling* (*None*, *Vertical*, *Horizontal*, *Both*), the children pinned in it
-  listed under it (*Top bar · Fixed*); *As an overlay*: its position (the centre, the top and
-  bottom thirds' left, centre and right, or *Manual* with X and Y), *Close on a click outside*, *Darken behind it* (black at 40% when turned on), and
-  while it is on the shade's colour (`ui::colour_text_field`, its alpha kept) and *Shade*, its
-  opacity.
+  listed under it (*Top bar · Fixed*). How a frame shows as an overlay is its opening action's,
+  set in that action's popover.
 - **A child of a frame**: *In a scrolling frame*, *Scrolls* / *Fixed* / *Sticky*, dimmed with
   *The frame does not scroll* while its parent does not. The pin is set here, on the child's own
   card, rather than in the layers panel's menu.
@@ -163,6 +168,16 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   frame stacked leftward. Under the pointer it lifts by a white wash at alpha 26, as the crop's
   *Done* pill does. A click plays that flow over the canvas (`prototyping-player.md`). Private
   mode masks the names.
+- **Placing an overlay** (`overlay_placing`): while an *Open overlay* or *Swap overlay* popover
+  at *Manual* is open on a layer of this page, the frame it opens is drawn over the page at half
+  strength (`PLACING_ALPHA`) at its place, a chrome ghost (`overlay_ghost`, installed by
+  `draw_canvas` beside the crop's) built as the frame draws by `mastik_render::ghost_as_drawn`
+  (layout's boxes, the cached text and boolean outlines, ids minted under `PLACING_ACTOR` so no
+  lookup reaches the frame itself), ringed in `color::SELECT`, heavier under the pointer. A press
+  on it drags it (`Drag::OverlayAt`), ahead of the box handles under it; the release writes the
+  offset in whole points as one *Overlay* step (`drop_overlay`). A click on it does nothing and
+  keeps the popover open. The ghost follows an X or Y field while it is scrubbed or typed
+  (`ProtoState::held_at`).
 
 ## Components
 
@@ -185,10 +200,10 @@ the tree remapped to the layer the tree makes (`mcp.md`, `export.md`). There is 
 
 ## Traps
 
-- **A link dot is a press target the canvas must know.** `link_knob_at` answers in
-  `begin_select_drag`, `chrome_claims`, the Select tool's cursor and the click path; left out of
-  any of them, a press on a dot starts a resize, a move, a guide, or a pick that drops the
-  selection. `chrome_claims` must walk the same order as `begin_select_drag`
+- **A link dot and a placed overlay's ghost are press targets the canvas must know.**
+  `link_knob_at` and `ghost_at` answer in `begin_select_drag`, `chrome_claims`, the Select tool's
+  cursor and the click path; left out of any of them, a press there starts a resize, a move, a
+  guide, or a pick that drops the selection (and with it the popover placing the ghost). `chrome_claims` must walk the same order as `begin_select_drag`
   (`a_guide_does_not_steal_a_press_the_chrome_claims`).
 - **The Prototype tab must not draw the Design cards' state.** Switching closes the inspector's
   popovers and a key capture, since both are keyed to cards the other tab does not draw.

@@ -121,7 +121,7 @@ pub enum OpError {
     EmptyGeometry, BooleanAbandoned,   // empty is the user's to fix; abandoned is not
     NoSuchGuide, DuplicateGuide, BadGuideOwner,
     DuplicateItemId, BadLink,          // checked after the last op
-    BadReaction, BadPlay,              // prototype::check; an unusable timing or overlay value
+    BadReaction, BadPlay,              // prototype::check (an unusable timing or overlay value); a page's unusable timing
     NoSuchVariable, DuplicateVariable, NoSuchMode, DuplicateMode, Variables(VarRule), /* ... */
 }
 ```

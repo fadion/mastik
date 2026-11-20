@@ -115,18 +115,23 @@ pub enum Action {
     },
     /// Pop the navigation history; with an overlay open, close the top overlay.
     Back,
-    /// Open a frame as an overlay, placed by its own [`LayerPlay::overlay`].
+    /// Open a frame as an overlay, shown as `settings` say. The settings are the
+    /// action's, not the frame's: one frame opened from two places may sit by each.
     OpenOverlay {
         #[serde(with = "wire")]
         overlay: NodeId,
+        #[serde(default, skip_serializing_if = "is_default")]
+        settings: OverlaySettings,
         transition: Transition,
     },
     /// Close the top overlay.
     CloseOverlay { transition: Transition },
-    /// Replace the top overlay with another frame.
+    /// Replace the top overlay with another frame, shown as `settings` say.
     SwapOverlay {
         #[serde(with = "wire")]
         overlay: NodeId,
+        #[serde(default, skip_serializing_if = "is_default")]
+        settings: OverlaySettings,
         transition: Transition,
     },
     /// Scroll the frame holding `layer` until it is in view.
@@ -204,16 +209,20 @@ impl Action {
             },
             Action::OpenOverlay {
                 overlay,
+                settings,
                 transition,
             } => Action::OpenOverlay {
                 overlay: f(*overlay),
+                settings: *settings,
                 transition: *transition,
             },
             Action::SwapOverlay {
                 overlay,
+                settings,
                 transition,
             } => Action::SwapOverlay {
                 overlay: f(*overlay),
+                settings: *settings,
                 transition: *transition,
             },
             Action::ScrollTo { layer, transition } => Action::ScrollTo {
@@ -461,9 +470,6 @@ pub struct LayerPlay {
     /// On a frame: the axis it scrolls along when its content overflows.
     #[serde(default, skip_serializing_if = "is_default")]
     pub scroll: ScrollAxis,
-    /// On a frame: how it shows when opened as an overlay.
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub overlay: OverlaySettings,
     /// On a child of a scrolling frame: whether it scrolls with the content.
     #[serde(default, skip_serializing_if = "is_default")]
     pub pin: Pin,
@@ -476,11 +482,6 @@ impl LayerPlay {
     /// Whether it holds nothing but defaults.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
-    }
-
-    /// Whether every number in it is finite.
-    pub fn is_usable(&self) -> bool {
-        self.overlay.is_usable()
     }
 }
 
@@ -509,7 +510,7 @@ pub enum Pin {
     Sticky,
 }
 
-/// A frame's defaults as an overlay.
+/// How an overlay action shows its frame.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OverlaySettings {
     #[serde(default)]
@@ -533,7 +534,8 @@ impl Default for OverlaySettings {
 }
 
 impl OverlaySettings {
-    fn is_usable(&self) -> bool {
+    /// Whether its position and backdrop are finite numbers.
+    pub fn is_usable(&self) -> bool {
         let backdrop = self
             .backdrop
             .is_none_or(|c| c.components.iter().all(|x| x.is_finite()));
@@ -564,7 +566,9 @@ pub enum OverlayPosition {
     BottomLeft,
     BottomCentre,
     BottomRight,
-    /// The overlay's top-left at this point of the screen.
+    /// The overlay's top-left this far from the top-left of the layer that opens
+    /// it, so a menu stays by its button wherever the button (or an instance of
+    /// it) sits.
     Manual {
         x: f64,
         y: f64,
@@ -677,6 +681,8 @@ pub enum ReactionError {
     ScriptUnasked(Trigger),
     #[error("a transition's timing is not usable")]
     BadTiming,
+    #[error("an overlay's position and backdrop are finite numbers")]
+    BadOverlay,
     #[error("two actions in one list share the id {0:?}")]
     DuplicateAction(ItemId),
 }
@@ -711,6 +717,11 @@ fn check_list(trigger: &Trigger, list: &[Keyed<Action>]) -> Result<(), ReactionE
                 if !transition.timing.is_usable() =>
             {
                 return Err(ReactionError::BadTiming);
+            }
+            Action::OpenOverlay { settings, .. } | Action::SwapOverlay { settings, .. }
+                if !settings.is_usable() =>
+            {
+                return Err(ReactionError::BadOverlay);
             }
             Action::Conditional {
                 branches,

@@ -2284,6 +2284,57 @@ fn ghost_subtree(doc: &Document, nodes: &[mastik_core::Node]) -> Option<GhostNod
     build_ghost(doc, root, &by_id, &mut FxHashMap::default())
 }
 
+/// A ghost of the document's own `root` and its subtree **as drawn**: layout's
+/// boxes and places, the cached text and boolean outlines, bound values resolved,
+/// so it draws as the layer does. Its ids are minted under `actor`, so no lookup
+/// by id reaches the layers it copies. The root keeps its own local transform;
+/// the caller places it.
+pub fn ghost_as_drawn(
+    doc: &Document,
+    res: &mastik_core::Resolved,
+    root: NodeId,
+    actor: u64,
+) -> Option<GhostNode> {
+    fn walk(
+        doc: &Document,
+        res: &mastik_core::Resolved,
+        id: NodeId,
+        ids: &mut mastik_core::IdSource,
+    ) -> Option<GhostNode> {
+        let node = doc.get(id)?;
+        let kind = res.used_kind_of(node).clone();
+        let paint = mastik_core::paint_box::drawn_paint(
+            doc.resolved_paint(id, node.paint()),
+            mastik_core::paint_box::paint_box(doc, node.size_vars(), node.kind()),
+            &kind,
+        )
+        .into_owned();
+        let mine = ids.mint();
+        let mut children = Vec::with_capacity(node.children().len());
+        for c in node.children() {
+            children.extend(walk(doc, res, *c, ids));
+        }
+        Some(GhostNode {
+            id: mine,
+            transform: res.used_local(doc, id).unwrap_or_else(|| node.transform()),
+            text: res.text_layout(id).cloned().or_else(|| shaped(&kind)),
+            path: res.boolean_path(id).cloned(),
+            kind,
+            paint,
+            effects: doc.resolved_effects(id, node.effects()).into_owned(),
+            opacity: doc.drawn_opacity_of(node),
+            blend: node.blend(),
+            visible: doc.shown(id),
+            clip: node.clip(),
+            mask: node.mask(),
+            mask_mode: node.mask_mode(),
+            mask_inverted: node.mask_inverted(),
+            children,
+        })
+    }
+    walk(doc, res, root, &mut mastik_core::IdSource::new(actor))
+}
+
 /// A captured node's kind at its drawn size: a bound width, height, content or
 /// family resolved through `doc` in the default mode, [`ghost_shown`]'s reading
 /// (their literals are 0 or empty).
