@@ -47,6 +47,12 @@ pub(crate) struct ProtoState {
     /// space: what a press aims at, and what keeps a click on it from closing
     /// the popover.
     pub ghost_rect: std::cell::Cell<Option<egui::Rect>>,
+    /// Each connector as the canvas drew it last frame, in screen space, with
+    /// the action it draws: what a click on one aims at.
+    pub links_drawn: std::cell::RefCell<Vec<(ActionAt, Vec<egui::Pos2>)>>,
+    /// The connector under the pointer as the canvas drew it, whose layer the
+    /// hover outline rings (`link_hover`).
+    pub link_hot: std::cell::Cell<Option<ActionAt>>,
 }
 
 /// One action of one layer's reaction, by item ids, nested ones included.
@@ -809,10 +815,12 @@ pub(crate) fn action_refusal(
     }
 }
 
-/// The connectors of one action list on `holder`, nested lists' dashed.
+/// The connectors of one action list of reaction `reaction` on `holder`, nested
+/// lists' dashed.
 fn layer_links(
     doc: &Document,
     holder: NodeId,
+    reaction: ItemId,
     list: &[Keyed<Action>],
     dashed: bool,
     out: &mut Vec<Link>,
@@ -827,6 +835,11 @@ fn layer_links(
                     from: holder,
                     to: mastik_core::prototype::resolve_target(doc, holder, *t),
                     dashed: dashed || overlay,
+                    at: ActionAt {
+                        node: holder,
+                        reaction,
+                        action: k.id,
+                    },
                 });
             }
             Action::Conditional {
@@ -834,9 +847,9 @@ fn layer_links(
                 otherwise,
             } => {
                 for b in branches {
-                    layer_links(doc, holder, &b.actions, true, out);
+                    layer_links(doc, holder, reaction, &b.actions, true, out);
                 }
-                layer_links(doc, holder, otherwise, true, out);
+                layer_links(doc, holder, reaction, otherwise, true, out);
             }
             _ => {}
         }
@@ -851,6 +864,8 @@ pub(crate) struct Link {
     pub to: NodeId,
     /// Inside a conditional, or opening an overlay.
     pub dashed: bool,
+    /// The action it draws, which a click on it opens.
+    pub at: ActionAt,
 }
 
 /// Every connector on `page`: each navigate or overlay action of each layer.
@@ -859,10 +874,38 @@ pub(crate) fn links_on(doc: &Document, page: NodeId) -> Vec<Link> {
     for id in descendants(doc, page) {
         let Some(n) = doc.get(id) else { continue };
         for r in n.reactions() {
-            layer_links(doc, id, &r.actions, false, &mut out);
+            layer_links(doc, id, r.id, &r.actions, false, &mut out);
         }
     }
     out
+}
+
+/// How far from a connector's line a press still takes it: wider than its ink,
+/// so it need not be hit on the pixel.
+const LINK_PICK: f32 = LINK_W / 2.0 + 5.0;
+/// A hovered connector's weight.
+const LINK_HOT_W: f32 = LINK_W + 1.5;
+
+/// How far `p` is from the polyline `pts`.
+fn polyline_distance(pts: &[egui::Pos2], p: egui::Pos2) -> f32 {
+    match pts {
+        [] => f32::INFINITY,
+        [a] => a.distance(p),
+        _ => pts
+            .windows(2)
+            .map(|w| {
+                let (a, b) = (w[0], w[1]);
+                let ab = b - a;
+                let l = ab.length_sq();
+                let t = if l > 0.0 {
+                    ((p - a).dot(ab) / l).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                p.distance(a + ab * t)
+            })
+            .fold(f32::INFINITY, f32::min),
+    }
 }
 
 /// `reactions` on `id` with a click navigating to `to` added: to the layer's
@@ -1050,9 +1093,15 @@ fn curve(a: egui::Pos2, out_a: egui::Vec2, b: egui::Pos2, out_b: egui::Vec2) -> 
         .collect()
 }
 
-/// Stroke `pts` as a connector with an arrowhead on its last point. The line
-/// stops at the head's base, so its weight never shows past the tip.
-fn paint_link(painter: &egui::Painter, mut pts: Vec<egui::Pos2>, dashed: bool, ink: egui::Color32) {
+/// Stroke `pts` as a connector `w` thick with an arrowhead on its last point. The
+/// line stops at the head's base, so its weight never shows past the tip.
+fn paint_link(
+    painter: &egui::Painter,
+    mut pts: Vec<egui::Pos2>,
+    dashed: bool,
+    ink: egui::Color32,
+    w: f32,
+) {
     let Some(&tip) = pts.last() else { return };
     let (dir, keep) = match pts.iter().rposition(|p| p.distance(tip) >= HEAD_LEN) {
         Some(i) => ((tip - pts[i]).normalized(), i + 1),
@@ -1065,7 +1114,7 @@ fn paint_link(painter: &egui::Painter, mut pts: Vec<egui::Pos2>, dashed: bool, i
     pts.truncate(keep);
     if !pts.is_empty() {
         pts.push(base);
-        let stroke = egui::Stroke::new(LINK_W, ink);
+        let stroke = egui::Stroke::new(w, ink);
         match dashed {
             true => painter.extend(egui::Shape::dashed_line(&pts, stroke, 6.0, 4.0)),
             false => {
@@ -1250,10 +1299,59 @@ impl MastikApp {
         self.proto.knob_hover.set(next);
     }
 
-    /// The layer the hover outline rings for its link dots, while the pointer
-    /// is on one of them outside the layer.
+    /// The layer the hover outline rings for the Prototype tab: the one whose
+    /// connector is under the pointer, which a click selects; else the one
+    /// wearing link dots, while the pointer is on one of them outside it.
     pub(crate) fn link_hover(&self) -> Option<NodeId> {
-        self.proto.knob_hover.get().filter(|_| self.prototype_tab)
+        if !self.prototype_tab {
+            return None;
+        }
+        self.proto
+            .link_hot
+            .get()
+            .map(|a| a.node)
+            .or_else(|| self.proto.knob_hover.get())
+    }
+
+    /// Whether a connector under `screen` answers the pointer: with a selecting
+    /// tool, no gesture under way, and no link dot or placed overlay's ghost
+    /// there, which take a press first.
+    fn connector_live(&self, screen: egui::Pos2, rect: egui::Rect, ppp: f32) -> bool {
+        self.tool.selects()
+            && self.hover_chrome_live()
+            && matches!(self.drag, Drag::None)
+            && self.link_knob_at(screen, rect, ppp).is_none()
+            && !self.ghost_at(screen)
+    }
+
+    /// The action whose connector is at `screen`, the nearest within
+    /// [`LINK_PICK`] of the connectors drawn last frame.
+    pub(crate) fn connector_at(
+        &self,
+        screen: egui::Pos2,
+        rect: egui::Rect,
+        ppp: f32,
+    ) -> Option<ActionAt> {
+        if !self.prototype_tab || !self.connector_live(screen, rect, ppp) {
+            return None;
+        }
+        self.proto
+            .links_drawn
+            .borrow()
+            .iter()
+            .map(|(at, pts)| (*at, polyline_distance(pts, screen)))
+            .filter(|(_, d)| *d <= LINK_PICK)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(at, _)| at)
+    }
+
+    /// A click on a connector: select the layer holding its action and open
+    /// that action's popover, so it is edited where it lives.
+    pub(crate) fn open_link(&mut self, at: ActionAt) {
+        if self.session.selection.single() != Some(at.node) {
+            self.session.selection.set(vec![at.node]);
+        }
+        self.proto.open = Some(at);
     }
 
     /// The connectors from each layer with a navigate or overlay action to its
@@ -1269,12 +1367,17 @@ impl MastikApp {
     ) {
         if !self.prototype_tab {
             self.proto.ghost_rect.set(None);
+            self.proto.link_hot.set(None);
+            self.proto.links_drawn.borrow_mut().clear();
             return;
         }
         self.draw_placing(ui, painter, rect, ppp);
         self.draw_flow_chips(ui, painter, rect, ppp);
         let doc = &self.session.doc;
         let page = self.session.page;
+        // Each connector's action, ink, line and warning glyph, before any is
+        // painted, so the hovered one can be drawn last and heavier.
+        let mut drawn: Vec<(Link, egui::Color32, Vec<egui::Pos2>, Option<egui::Pos2>)> = Vec::new();
         for link in links_on(doc, page) {
             let Some(from) = self.selection_quad(link.from, rect, ppp) else {
                 continue;
@@ -1294,11 +1397,11 @@ impl MastikApp {
                     here.then(|| self.selection_quad(link.to, rect, ppp))
                         .flatten(),
                 );
-            let (ink, pts) = match ends {
+            let (ink, pts, warning) = match ends {
                 Some(((ea, eb), to)) => {
                     let (a, out_a) = screen_edge(from, ea);
                     let (b, out_b) = screen_edge(to, eb);
-                    (blue, curve(a, out_a, b, out_b))
+                    (blue, curve(a, out_a, b, out_b), None)
                 }
                 None => {
                     let frame = screen_of(doc, link.from)
@@ -1312,31 +1415,58 @@ impl MastikApp {
                         .unwrap_or(1);
                     let (a, out) = screen_edge(from, edge);
                     let b = a + out * STUB;
-                    let ink = match doc.get(link.to) {
-                        None => color::error(),
-                        Some(_) => blue,
+                    let (ink, warning) = match doc.get(link.to) {
+                        None => (color::error(), Some(b + out * 11.0)),
+                        Some(_) => (blue, None),
                     };
-                    if doc.get(link.to).is_none() {
-                        painter.text(
-                            b + out * 11.0,
-                            egui::Align2::CENTER_CENTER,
-                            icon::WARNING,
-                            theme::icon_font(12.0),
-                            ink,
-                        );
-                    }
-                    (ink, vec![a, b])
+                    (ink, vec![a, b], warning)
                 }
             };
-            let start = pts.first().copied();
-            paint_link(painter, pts, link.dashed, ink);
+            drawn.push((link, ink, pts, warning));
+        }
+        let pointer = ui.ctx().pointer_latest_pos();
+        let hot = pointer
+            .filter(|p| self.connector_live(*p, rect, ppp))
+            .and_then(|p| {
+                drawn
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, _, pts, _))| (i, polyline_distance(pts, p)))
+                    .filter(|(_, d)| *d <= LINK_PICK)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(i, _)| i)
+            });
+        let order = (0..drawn.len()).filter(|i| Some(*i) != hot).chain(hot);
+        for i in order {
+            let (link, ink, pts, warning) = &drawn[i];
+            let lit = Some(i) == hot;
+            // Under the pointer: the selection's full blue, a step heavier.
+            let (ink, w) = match lit {
+                true if *ink != color::error() => (color::SELECT, LINK_HOT_W),
+                true => (*ink, LINK_HOT_W),
+                false => (*ink, LINK_W),
+            };
+            if let Some(at) = warning {
+                painter.text(
+                    *at,
+                    egui::Align2::CENTER_CENTER,
+                    icon::WARNING,
+                    theme::icon_font(12.0),
+                    ink,
+                );
+            }
+            paint_link(painter, pts.clone(), link.dashed, ink, w);
             // A dot where it leaves, so every connector has a starting point.
-            if let Some(a) = start {
-                painter.circle(a, KNOB_R, color::POINT, egui::Stroke::new(1.5, ink));
+            if let Some(a) = pts.first() {
+                painter.circle(*a, KNOB_R, color::POINT, egui::Stroke::new(1.5, ink));
             }
         }
+        self.proto.link_hot.set(hot.map(|i| drawn[i].0.at));
+        *self.proto.links_drawn.borrow_mut() = drawn
+            .into_iter()
+            .map(|(link, _, pts, _)| (link.at, pts))
+            .collect();
         // The link being pulled, from the dot it left, and the screen it would land on.
-        let pointer = ui.ctx().pointer_latest_pos();
         let pulled = match self.drag {
             Drag::Link { from, edge } => Some((from, edge)),
             _ => None,
@@ -1353,7 +1483,13 @@ impl MastikApp {
                     egui::Stroke::new(2.0, color::SELECT),
                 ));
             }
-            paint_link(painter, curve(at, out, b, out_b), false, color::SELECT);
+            paint_link(
+                painter,
+                curve(at, out, b, out_b),
+                false,
+                color::SELECT,
+                LINK_W,
+            );
         }
         // The dots near the pointer, filled where it would take one or one is
         // pulled, as a shape's dragged corner dot is.
@@ -4753,12 +4889,22 @@ mod tests {
                 Link {
                     from: f.add,
                     to: f.cart,
-                    dashed: false
+                    dashed: false,
+                    at: ActionAt {
+                        node: f.add,
+                        reaction: item(10),
+                        action: item(1),
+                    },
                 },
                 Link {
                     from: f.add,
                     to: gone,
-                    dashed: true
+                    dashed: true,
+                    at: ActionAt {
+                        node: f.add,
+                        reaction: item(10),
+                        action: item(3),
+                    },
                 },
             ]
         );
@@ -4787,6 +4933,47 @@ mod tests {
             reaction: item(10),
             action: item(1),
         }
+    }
+
+    /// A connector answers a press a few points off its line, not one well
+    /// clear of it, and a click on it selects its layer with the action open.
+    /// flip: `LINK_PICK` at the line's half-width → fails at "off the line".
+    #[test]
+    fn a_click_on_a_connector_opens_its_action() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let to = f.cart;
+        let at = one_action(
+            &mut f,
+            Action::Navigate {
+                to,
+                transition: Transition::default(),
+            },
+        );
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let painter = ui.painter().clone();
+            f.app.draw_prototype_links(ui, &painter, rect, 1.0);
+        });
+        let mid = {
+            let drawn = f.app.proto.links_drawn.borrow();
+            assert_eq!(drawn.len(), 1, "fixture: one connector drawn");
+            drawn[0].1[drawn[0].1.len() / 2]
+        };
+        assert_eq!(
+            f.app.connector_at(mid + egui::vec2(0.0, 6.0), rect, 1.0),
+            Some(at),
+            "off the line"
+        );
+        assert_eq!(
+            f.app.connector_at(mid + egui::vec2(0.0, 14.0), rect, 1.0),
+            None,
+            "well clear of it"
+        );
+        f.app.session.selection.set(vec![f.cart]);
+        f.app.open_link(at);
+        assert_eq!(f.app.session.selection.single(), Some(f.add));
+        assert_eq!(f.app.proto.open, Some(at));
     }
 
     /// A manual overlay's ghost sits at its offset from the opening layer's

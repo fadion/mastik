@@ -162,12 +162,15 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   frame while the pointer is still on one of its dots, since they sit half outside it. The hover
   outline keeps ringing that layer meanwhile (`link_hover`). A press aims at the dots drawn last
   frame.
-- **Flow chips** (`flow_chips`), while the Prototype tab is up: each flow's name behind the
-  `PLAY` glyph on a `color::BADGE` pill (the canvas badges' blue, `ui::pill_ink(BADGE)` ink) over
-  its start frame's top-right corner, `FLOW_CHIP_PAD_R` (7) of air after the words, several on one
-  frame stacked leftward. Under the pointer it lifts by a white wash at alpha 26, as the crop's
-  *Done* pill does. A click plays that flow over the canvas (`prototyping-player.md`). Private
-  mode masks the names.
+- **A connector is a press target** (`connector_at`): the pointer within `LINK_PICK` (5 past
+  its half-width) of a connector's line, stub or head takes it, the nearest when several are
+  near. Under the pointer it is drawn last, in `color::SELECT` (a dangling one keeps the error
+  colour) and `LINK_HOT_W` thick, and the hover outline rings the layer holding it
+  (`link_hover`), the layer a click selects. A click selects that layer and opens the
+  connector's action's popover in its *Interactions* card (`open_link`), so the link is edited
+  where it lives. Link dots and a placed overlay's ghost come first; a press-drag on a connector
+  starts what it would start elsewhere. The connectors are hit as drawn last frame
+  (`ProtoState::links_drawn`).
 - **Placing an overlay** (`overlay_placing`): while an *Open overlay* or *Swap overlay* popover
   at *Manual* is open on a layer of this page, the frame it opens is drawn over the page at half
   strength (`PLACING_ALPHA`) at its place, a chrome ghost (`overlay_ghost`, installed by
@@ -178,6 +181,12 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   offset in whole points as one *Overlay* step (`drop_overlay`). A click on it does nothing and
   keeps the popover open. The ghost follows an X or Y field while it is scrubbed or typed
   (`ProtoState::held_at`).
+- **Flow chips** (`flow_chips`), while the Prototype tab is up: each flow's name behind the
+  `PLAY` glyph on a `color::BADGE` pill (the canvas badges' blue, `ui::pill_ink(BADGE)` ink) over
+  its start frame's top-right corner, `FLOW_CHIP_PAD_R` (7) of air after the words, several on one
+  frame stacked leftward. Under the pointer it lifts by a white wash at alpha 26, as the crop's
+  *Done* pill does. A click plays that flow over the canvas (`prototyping-player.md`). Private
+  mode masks the names.
 
 ## Components
 

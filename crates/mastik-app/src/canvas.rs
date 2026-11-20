@@ -3001,6 +3001,15 @@ impl MastikApp {
         {
             return;
         }
+        // A click on a connector opens its action on the layer holding it.
+        if self.tool.selects()
+            && clicked
+            && let Some(p) = resp.interact_pointer_pos()
+            && let Some(at) = self.connector_at(p, rect, ppp)
+        {
+            self.open_link(at);
+            return;
+        }
 
         if self.tool.selects()
             && clicked
