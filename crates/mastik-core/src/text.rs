@@ -135,6 +135,21 @@ pub fn register_fonts_as(bytes: Vec<u8>, family: &str) -> bool {
 static ALIASES: std::sync::LazyLock<std::sync::Mutex<HashMap<u64, Arc<str>>>> =
     std::sync::LazyLock::new(Default::default);
 
+/// The family `font`'s file was registered under by [`register_fonts_as`], if it
+/// was: what another engine shaping the same text registers it under.
+pub fn font_alias(font: &FontData) -> Option<String> {
+    let aliases = ALIASES.lock().ok()?;
+    aliases.get(&font.data.id()).map(|f| f.to_string())
+}
+
+/// Whether `font` is one of the bundled Inter faces, which every engine holds.
+pub fn is_bundled(font: &FontData) -> bool {
+    let bytes = font.data.data();
+    bundled_inter()
+        .iter()
+        .any(|b| std::ptr::eq(b.as_ptr(), bytes.as_ptr()) || *b == bytes)
+}
+
 /// [`register_fonts`] for faces a layout already holds, sharing their bytes.
 ///
 /// A worker thread's engine holds only Inter, so one that shapes a document's
