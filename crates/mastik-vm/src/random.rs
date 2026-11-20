@@ -73,11 +73,21 @@ impl Rng {
     }
 }
 
+/// A Luau integer as 64 bits: mlua's `Integer` is 32 bits on wasm32, where the
+/// exported page runs scripts, and 64 on the desktop.
+#[allow(
+    clippy::useless_conversion,
+    reason = "the conversion is a no-op only where `Integer` is i64"
+)]
+fn wide(i: mlua::Integer) -> i64 {
+    i64::from(i)
+}
+
 /// The seed `v` as 64 bits: a whole number as itself, so `random(1)` and
 /// `random(1.0)` agree; another number by its bits; a string by its FNV-1a hash.
 pub(crate) fn seed_of(v: &Value) -> Option<(u64, String)> {
     match v {
-        Value::Integer(i) => Some((i.cast_unsigned(), i.to_string())),
+        Value::Integer(i) => Some((wide(*i).cast_unsigned(), i.to_string())),
         Value::Number(n) if n.is_finite() => {
             let shown = crate::format_number(*n);
             if n.fract() == 0.0 && n.abs() < 9.0e15 {
@@ -102,7 +112,7 @@ pub(crate) fn seed_of(v: &Value) -> Option<(u64, String)> {
 /// `v` as a whole number for a draw's bound, or why not.
 fn bound(v: &Value) -> Result<i64, String> {
     let n = match v {
-        Value::Integer(i) => return Ok(*i),
+        Value::Integer(i) => return Ok(wide(*i)),
         Value::Number(n) => *n,
         _ => return Err("takes whole numbers".into()),
     };

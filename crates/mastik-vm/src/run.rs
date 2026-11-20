@@ -8,7 +8,27 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::time::Instant;
+
+/// The browser build's stand-in for std's clock, which `wasm32-unknown-unknown`
+/// does not have: no time ever passes, so there the step budget alone bounds a
+/// run.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(Clone, Copy, Debug)]
+struct Instant;
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl Instant {
+    fn now() -> Self {
+        Instant
+    }
+
+    fn elapsed(&self) -> Duration {
+        Duration::ZERO
+    }
+}
 
 use mastik_core::NodeId;
 use mastik_core::verbs::{self, ParamKind};
