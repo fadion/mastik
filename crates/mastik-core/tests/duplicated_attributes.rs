@@ -33,7 +33,11 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("a readable directory") {
         let path = entry.expect("a readable entry").path();
         if path.is_dir() {
-            if path.file_name().is_some_and(|n| n != "target") {
+            // A vendored crate is someone else's source, kept as it was published.
+            if path
+                .file_name()
+                .is_some_and(|n| n != "target" && n != "vendor")
+            {
                 rust_files(&path, out);
             }
         } else if path.extension().is_some_and(|e| e == "rs") {

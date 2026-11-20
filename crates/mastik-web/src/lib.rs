@@ -11,6 +11,8 @@
 #![cfg(target_arch = "wasm32")]
 
 mod shell;
+#[cfg(feature = "scripts")]
+mod wasi;
 
 use mastik_core::kurbo::{Point, Rect, Size};
 use mastik_core::measure;

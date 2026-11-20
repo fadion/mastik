@@ -22,3 +22,26 @@ CARGO_TARGET_DIR="$target" cargo build --release --locked
 wasm-bindgen --target no-modules --no-typescript --out-dir "$out" \
   "$target/wasm32-unknown-unknown/release/mastik_web.wasm"
 echo "wrote $out/mastik_web_bg.wasm and $out/mastik_web.js"
+
+# With `WASI_SDK` naming an unpacked wasi-sdk, the player that runs scripts too,
+# into `<out>-scripts`: Luau's C++ built by wasi-sdk's clang against its wasip1
+# sysroot, linked with its exception-handling libc++ (`SPIKE.md` says why each
+# setting is there). An export packs it only when its prototype runs a script.
+if [ -n "${WASI_SDK:-}" ]; then
+  s="$WASI_SDK/share/wasi-sysroot"
+  shim="$target-scripts/shim"
+  mkdir -p "$shim"
+  ln -sf "$s/lib/wasm32-wasip1/eh/libc++.a" "$shim/libstdc++.a"
+  flags="--target=wasm32-wasip1 --sysroot=$s -fwasm-exceptions -mllvm -wasm-use-legacy-eh=false -include stdlib.h"
+  CC_wasm32_unknown_unknown="$WASI_SDK/bin/clang" \
+  CXX_wasm32_unknown_unknown="$WASI_SDK/bin/clang++" \
+  AR_wasm32_unknown_unknown="$WASI_SDK/bin/llvm-ar" \
+  CXXSTDLIB_wasm32_unknown_unknown=c++ \
+  CFLAGS_wasm32_unknown_unknown="$flags" \
+  CXXFLAGS_wasm32_unknown_unknown="$flags" \
+  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C panic=unwind -C target-feature=+exception-handling -L $shim -L $s/lib/wasm32-wasip1/eh -L $s/lib/wasm32-wasip1 -l static=c++ -l static=c++abi -l static=unwind -l static=wasi-emulated-process-clocks -l static=c -C link-arg=--allow-multiple-definition" \
+  CARGO_TARGET_DIR="$target-scripts" cargo build --release --locked --features scripts
+  wasm-bindgen --target no-modules --no-typescript --out-dir "$out-scripts" \
+    "$target-scripts/wasm32-unknown-unknown/release/mastik_web.wasm"
+  echo "wrote $out-scripts/mastik_web_bg.wasm and $out-scripts/mastik_web.js"
+fi

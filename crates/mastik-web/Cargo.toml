@@ -10,6 +10,11 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# The player that runs *Run script*: Luau's C++ through wasi-sdk (`build.sh`
+# with `WASI_SDK`), packed only into a file whose prototype runs a script.
+scripts = ["mastik-play/scripts"]
+
 # Its own workspace, toolchain (`rust-toolchain.toml`) and build settings
 # (`.cargo/config.toml`), read when cargo runs in this directory: the page needs a
 # nightly std built to unwind, and none of that may reach the app's build.
@@ -21,10 +26,9 @@ crate-type = ["cdylib"]
 lto = true
 codegen-units = 1
 strip = true
-
 [dependencies]
 mastik-core = { path = "../mastik-core" }
-# Without `scripts`: Luau's C++ does not build for the page.
+# `scripts` only through this crate's own feature (`build.sh` builds both).
 mastik-play = { path = "../mastik-play", default-features = false }
 mastik-render = { path = "../mastik-render" }
 wgpu = "=29.0.4"
@@ -40,3 +44,9 @@ web-sys = { version = "=0.3.85", features = [
   "ImageData",
   "console",
 ] }
+
+# mlua 0.11.6, the version `mastik-vm` pins, with its Luau heap dump left out on
+# wasm32-unknown-unknown, where `libc` declares no stdio (`vendor/README.md`).
+# This workspace's only: the app builds the published crate.
+[patch.crates-io]
+mlua = { path = "vendor/mlua" }
