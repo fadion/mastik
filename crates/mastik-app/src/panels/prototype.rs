@@ -304,10 +304,10 @@ const PREVIEW_REST_MS: f64 = 600.0;
 /// How many pieces the preview's curve is drawn in.
 const PREVIEW_STEPS: usize = 96;
 
-/// A transition's timing drawn as its value over time, the target dashed so a
-/// spring's overshoot shows, over a lane where a dot moves as the transition
-/// would. Under the pointer both dots play in real time, rest at the end and
-/// play again; a timing changed meanwhile starts them over.
+/// A transition's timing drawn as its value over time in the accent, the target
+/// dashed so a spring's overshoot shows, over a lane where a dot moves as the
+/// transition would. Under the pointer both dots play in real time, rest at the
+/// end and play again; a timing changed meanwhile starts them over.
 fn motion_preview(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash + std::fmt::Debug,
@@ -343,20 +343,13 @@ fn motion_preview(
     let x_of = |f: f64| graph.left() + f as f32 * graph.width();
     let lane_x = |v: f64| lane.left() + ((v - lo) / span) as f32 * lane.width();
     let rule = egui::Stroke::new(1.0, color::divider());
-    let faint = egui::Stroke::new(1.0, theme::text::faint());
-    p.line_segment(
-        [
-            egui::pos2(graph.left(), y_of(0.0)),
-            egui::pos2(graph.right(), y_of(0.0)),
-        ],
-        rule,
-    );
+    let spring = matches!(timing, Timing::Spring { .. });
     p.extend(egui::Shape::dashed_line(
         &[
             egui::pos2(graph.left(), y_of(1.0)),
             egui::pos2(graph.right(), y_of(1.0)),
         ],
-        faint,
+        rule,
         3.0,
         3.0,
     ));
@@ -365,22 +358,23 @@ fn motion_preview(
         .enumerate()
         .map(|(i, v)| egui::pos2(x_of(i as f64 / PREVIEW_STEPS as f64), y_of(*v)))
         .collect();
-    p.add(egui::Shape::line(
-        line,
-        egui::Stroke::new(1.5, theme::text::strong()),
-    ));
-    // The lane: a track from where it starts to where it lands, each end ticked.
+    let ink = color::accent_400();
+    p.add(egui::Shape::line(line, egui::Stroke::new(2.0, ink)));
+    // The lane: a track from where it starts to where it lands; a spring's
+    // landing ticked, dotted, as the point it overshoots.
     let mid = lane.center().y;
     p.line_segment(
         [egui::pos2(lane.left(), mid), egui::pos2(lane.right(), mid)],
         rule,
     );
-    for v in [0.0, 1.0] {
-        let x = lane_x(v);
-        p.line_segment(
-            [egui::pos2(x, lane.top()), egui::pos2(x, lane.bottom())],
-            faint,
-        );
+    if spring {
+        let x = lane_x(1.0);
+        p.extend(egui::Shape::dotted_line(
+            &[egui::pos2(x, lane.top()), egui::pos2(x, lane.bottom())],
+            theme::text::faint(),
+            3.0,
+            0.75,
+        ));
     }
     // Played under the pointer, from the time the pointer came or the timing changed.
     let key = ui.id().with(("motion-preview", salt));
@@ -403,30 +397,34 @@ fn motion_preview(
             None
         }
     };
-    let ink = color::accent_400();
     let edge = egui::Stroke::new(1.5, color::field());
+    // A spring runs until it settles: said in the graph's lower right, which
+    // its curve has left by then, over the curve where an undershoot reaches.
+    // A curve's duration is in the field above.
+    if spring {
+        p.text(
+            egui::pos2(graph.right(), graph.bottom()),
+            egui::Align2::RIGHT_BOTTOM,
+            format!("Settles in {} ms", total.round()),
+            egui::FontId::proportional(ui::SMALL_PT),
+            theme::text::muted(),
+        );
+    }
     match played {
         Some(ms) => {
             let v = at(ms);
-            p.circle(egui::pos2(x_of(ms / total), y_of(v)), 4.0, ink, edge);
+            p.circle(
+                egui::pos2(x_of(ms / total), y_of(v)),
+                4.0,
+                theme::text::strong(),
+                edge,
+            );
             p.circle(egui::pos2(lane_x(v), mid), 5.0, ink, edge);
         }
         None => {
             p.circle(egui::pos2(lane_x(0.0), mid), 5.0, ink, edge);
         }
     }
-    // How long it runs, a spring's until it settles.
-    let words = match timing {
-        Timing::Ease { .. } => format!("{} ms", total.round()),
-        Timing::Spring { .. } => format!("Settles in {} ms", total.round()),
-    };
-    p.text(
-        egui::pos2(graph.right(), graph.top()),
-        egui::Align2::RIGHT_TOP,
-        words,
-        egui::FontId::proportional(ui::SMALL_PT),
-        theme::text::faint(),
-    );
     resp
 }
 

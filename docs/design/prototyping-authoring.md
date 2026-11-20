@@ -94,10 +94,12 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   0..1), and a *Duration*; a spring is mass, stiffness and damping. Fields sharing a line stand
   `ui::CARD_COL_GAP` apart. Under them, **the motion preview** (`motion_preview`): the timing
   as its value over time on the Curves graph's ground, from `mastik_play::motion` so it is what
-  plays, the target dashed and the range grown to show a spring's overshoot, and under it a lane
-  where a dot moves as the transition would, its start and landing ticked; the run's length in
-  the corner (*300 ms*, a spring's *Settles in 640 ms*). Under the pointer a dot plays along the
-  curve and the lane in real time, rests `PREVIEW_REST_MS` and plays again; a timing changed
+  plays: the curve in `accent_400`, the target dashed in the divider's ink and the range grown to
+  show a spring's overshoot, and under it a lane where a dot moves as the transition would, a
+  spring's landing ticked with a dotted line. A spring says *Settles in 640 ms* in the graph's
+  lower right, which its curve has left by then; a curve's duration is the field above. Under
+  the pointer a dot in the strong text ink plays along the curve and the lane's accent dot along
+  the lane in real time, rests `PREVIEW_REST_MS` and plays again; a timing changed
   meanwhile, or a field scrubbed, starts it over from what is held. *Instant* shows the kind
   alone. A pick is answered without returning early: every row still draws that frame from the old value, so the popover is never one frame
   short of its rows (an egui popup that shrinks does not grow back).
