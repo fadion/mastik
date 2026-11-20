@@ -53,21 +53,28 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   A new action names the likeliest target (`prototype::new_action`): another screen than the
   layer's own, mains last; the layer's own instance and a variant other than its current one; the
   first variable or script. It opens its popover at once, except *Back*, which has nothing to set.
-- **An action is one row**, a `ui::field_row_pressable` that opens its popover: a grip, its
+- **An action is one row**, a `ui::field_row_pressable` that opens its popover (*Back*'s opens
+  none, having nothing to set, and says what it does under the pointer): a grip, its
   glyph, its verb, its target in accent ink, its transition's timing (kind and duration, or
   *Spring*) as a faint caption note as a menu row's accelerator is, and `×`; the grip and `×` keep
-  their own press. The rows stand `NEST` in from their trigger. A row drags by its grip to
+  their own press. The verb and the target share what the timing and `×` leave, the verb first,
+  each cut rather than run under the timing. The rows stand `NEST` in from their trigger. A row
+  drags by its grip to
   another place in its own list (a reaction's, or one branch's), carried under the pointer with
-  its branches while the others make room, as an Effects row is (`InFlight::action_drag`); the
+  its branches from where it was held (`inspector::carried_unit`) while the others make room, as
+  an Effects row is (`InFlight::action_drag`); the
   release is one *Move action* step, and a right-click or `Escape` puts it back. The
   grip is inert while the list holds one action. A target that is gone is drawn in the error
   colour behind the warning glyph (*Missing frame*, *Missing layer*, *Missing variable*, …), kept
   so it can be mended, and skipped while playing. A conditional's branches follow it as heads in
-  mono accent (*if …*, *else if …*, *else*), each as tall as its `+` (the close button's box),
+  mono accent (*if …*, *else if …*, *else*), each one caption line tall (`BRANCH_HEAD_H`), taking
+  `BRANCH_TUCK` of the rows' gap back above and below, its `+` reaching to the close button's box,
   their actions indented under them. A target is read as the layer holding the reaction reads it
   (`prototype::resolve_target`), so an instance's names its own layers.
-- **The row's popover**, in the popover lane: the verb's head with *Move up* / *Move down* (each
-  in the close button's box) and close, the action's fields, then its transition. A screen action picks a top-level frame, each
+- **The row's popover**, in the popover lane: the verb's head and close (an action moves by its
+  grip alone), the action's fields, then its transition. Opened by a click on a connector, it
+  is not closed by that click (`ProtoState::opened_on_canvas`): the canvas runs first, so the
+  popover draws on the click's own frame. A screen action picks a top-level frame, each
   page's under its eyebrow; *Scroll to* a layer of the holder's screen; *Change to* a variant of the instance's
   set; *Set variable* a variable, then *Set* / *Increment* / *Toggle* (*Increment* for a number,
   *Toggle* for a boolean) and its expression or step; *Conditional* one expression per branch
@@ -103,7 +110,8 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   lower right, which its curve has left by then; a curve's duration is the field above. Under
   the pointer a dot in the strong text ink plays along the curve and the lane's accent dot along
   the lane in real time, rests `PREVIEW_REST_MS` and plays again; a timing changed
-  meanwhile, or a field scrubbed, starts it over from what is held. *Instant* shows the kind
+  meanwhile, or a field scrubbed, starts it over from what is held; on the frame a field lets go
+  it draws the timing being written, not the saved one. *Instant* shows the kind
   alone. A pick is answered without returning early: every row still draws that frame from the old value, so the popover is never one frame
   short of its rows (an egui popup that shrinks does not grow back).
 
@@ -142,7 +150,8 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   `CURVE_STEP` on screen so it stays smooth zoomed in. It is `LINK_W` thick in `color::SELECT`
   for the selection's links and `color::SELECT_DIM` for the rest, with a filled `HEAD_LEN` ×
   2·`HEAD_HALF` arrowhead; the line stops at the head's base so its weight never shows past the
-  tip. A link in a conditional or opening an overlay is dashed (6 on, 4 off). A target that is
+  tip. The line says when it is followed (`LinkLine`): a navigate's solid, an overlay's dashed (6
+  on, 4 off), and any in a conditional dotted, round dots the line's width a dash's length apart. A target that is
   gone is a short red stub ending in the warning glyph; one on another page a short stub in the
   connector's ink. A stub leaves by the edge facing out of the frame its layer is in
   (`stub_edge`, in world space: along the axis the layer's centre is further off the frame's, so
@@ -197,7 +206,7 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   (`ProtoState::held_at`).
 - **Flow chips** (`flow_chips`), while the Prototype tab is up: each flow's name behind the
   `PLAY` glyph on a `color::BADGE` pill (the canvas badges' blue, `ui::pill_ink(BADGE)` ink) over
-  its start frame's top-right corner, `FLOW_CHIP_PAD_R` (7) of air after the words, several on one
+  its start frame's top-right corner, `FLOW_CHIP_PAD_R` (9) of air after the words, several on one
   frame stacked leftward. Under the pointer it lifts by a white wash at alpha 26, as the crop's
   *Done* pill does. A click plays that flow over the canvas (`prototyping-player.md`). Private
   mode masks the names.

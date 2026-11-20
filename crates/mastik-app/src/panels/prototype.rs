@@ -52,6 +52,10 @@ pub(crate) struct ProtoState {
     /// The connector under the pointer as the canvas drew it, whose layer the
     /// hover outline rings (`link_hover`).
     pub link_hot: std::cell::Cell<Option<ActionAt>>,
+    /// The open popover was opened by a click on a connector. The canvas runs
+    /// before the inspector, so the popover first draws on that click's frame,
+    /// where the click would read as one away from it and close it.
+    pub opened_on_canvas: bool,
 }
 
 /// One action of one layer's reaction, by item ids, nested ones included.
@@ -566,31 +570,6 @@ pub(crate) fn remove(list: &mut Vec<Keyed<Action>>, id: ItemId) -> bool {
     })
 }
 
-/// Move the action `id` one place up (`up`) or down within its own list; whether
-/// it moved.
-pub(crate) fn shift(list: &mut [Keyed<Action>], id: ItemId, up: bool) -> bool {
-    if let Some(i) = list.iter().position(|k| k.id == id) {
-        let j = match up {
-            true => i.checked_sub(1),
-            false => (i + 1 < list.len()).then_some(i + 1),
-        };
-        return match j {
-            Some(j) => {
-                list.swap(i, j);
-                true
-            }
-            None => false,
-        };
-    }
-    list.iter_mut().any(|k| match &mut k.value {
-        Action::Conditional {
-            branches,
-            otherwise,
-        } => branches.iter_mut().any(|b| shift(&mut b.actions, id, up)) || shift(otherwise, id, up),
-        _ => false,
-    })
-}
-
 /// Move the action `id` to `to` within its own list, `to` counted among the
 /// list without it; whether it moved.
 pub(crate) fn move_to(list: &mut Vec<Keyed<Action>>, id: ItemId, to: usize) -> bool {
@@ -609,23 +588,6 @@ pub(crate) fn move_to(list: &mut Vec<Keyed<Action>>, id: ItemId, to: usize) -> b
                 || move_to(otherwise, id, to)
         }
         _ => false,
-    })
-}
-
-/// Where the action `id` sits in its list and how long that list is.
-fn position(list: &[Keyed<Action>], id: ItemId) -> Option<(usize, usize)> {
-    if let Some(i) = list.iter().position(|k| k.id == id) {
-        return Some((i, list.len()));
-    }
-    list.iter().find_map(|k| match &k.value {
-        Action::Conditional {
-            branches,
-            otherwise,
-        } => branches
-            .iter()
-            .find_map(|b| position(&b.actions, id))
-            .or_else(|| position(otherwise, id)),
-        _ => None,
     })
 }
 
@@ -959,14 +921,14 @@ pub(crate) fn action_refusal(
     }
 }
 
-/// The connectors of one action list of reaction `reaction` on `holder`, nested
-/// lists' dashed.
+/// The connectors of one action list of reaction `reaction` on `holder`; a
+/// nested (`conditional`) list's are dotted.
 fn layer_links(
     doc: &Document,
     holder: NodeId,
     reaction: ItemId,
     list: &[Keyed<Action>],
-    dashed: bool,
+    conditional: bool,
     out: &mut Vec<Link>,
 ) {
     for k in list {
@@ -974,11 +936,15 @@ fn layer_links(
             Action::Navigate { to: t, .. }
             | Action::OpenOverlay { overlay: t, .. }
             | Action::SwapOverlay { overlay: t, .. } => {
-                let overlay = !matches!(k.value, Action::Navigate { .. });
+                let line = match k.value {
+                    _ if conditional => LinkLine::Dotted,
+                    Action::Navigate { .. } => LinkLine::Solid,
+                    _ => LinkLine::Dashed,
+                };
                 out.push(Link {
                     from: holder,
                     to: mastik_core::prototype::resolve_target(doc, holder, *t),
-                    dashed: dashed || overlay,
+                    line,
                     at: ActionAt {
                         node: holder,
                         reaction,
@@ -1006,10 +972,20 @@ pub(crate) struct Link {
     pub from: NodeId,
     /// The target as the holder reads it; it may be gone.
     pub to: NodeId,
-    /// Inside a conditional, or opening an overlay.
-    pub dashed: bool,
+    pub line: LinkLine,
     /// The action it draws, which a click on it opens.
     pub at: ActionAt,
+}
+
+/// How a connector's line is drawn: what it says about when it is followed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LinkLine {
+    /// A navigate, always taken.
+    Solid,
+    /// An overlay opened or swapped over the screen.
+    Dashed,
+    /// Inside a conditional, taken only when its branch is: an overlay's too.
+    Dotted,
 }
 
 /// Every connector on `page`: each navigate or overlay action of each layer.
@@ -1242,7 +1218,7 @@ fn curve(a: egui::Pos2, out_a: egui::Vec2, b: egui::Pos2, out_b: egui::Vec2) -> 
 fn paint_link(
     painter: &egui::Painter,
     mut pts: Vec<egui::Pos2>,
-    dashed: bool,
+    line: LinkLine,
     ink: egui::Color32,
     w: f32,
 ) {
@@ -1259,10 +1235,14 @@ fn paint_link(
     if !pts.is_empty() {
         pts.push(base);
         let stroke = egui::Stroke::new(w, ink);
-        match dashed {
-            true => painter.extend(egui::Shape::dashed_line(&pts, stroke, 6.0, 4.0)),
-            false => {
+        match line {
+            LinkLine::Solid => {
                 painter.add(egui::Shape::line(pts, stroke));
+            }
+            LinkLine::Dashed => painter.extend(egui::Shape::dashed_line(&pts, stroke, 6.0, 4.0)),
+            // Round dots the line's width across, a dash's length apart.
+            LinkLine::Dotted => {
+                painter.extend(egui::Shape::dotted_line(&pts, ink, 6.0, w / 2.0));
             }
         }
     }
@@ -1278,7 +1258,7 @@ fn paint_link(
 const FLOW_CHIP_H: f32 = 20.0;
 const FLOW_CHIP_GAP: f32 = 6.0;
 /// The air after a flow chip's words, to the pill's round end.
-const FLOW_CHIP_PAD_R: f32 = 7.0;
+const FLOW_CHIP_PAD_R: f32 = 9.0;
 
 impl MastikApp {
     /// The flow chips on the current page while the Prototype tab is up: each
@@ -1500,6 +1480,7 @@ impl MastikApp {
             self.session.selection.set(vec![at.node]);
         }
         self.proto.open = Some(at);
+        self.proto.opened_on_canvas = true;
     }
 
     /// The connectors from each layer with a navigate or overlay action to its
@@ -1603,7 +1584,7 @@ impl MastikApp {
                     ink,
                 );
             }
-            paint_link(painter, pts.clone(), link.dashed, ink, w);
+            paint_link(painter, pts.clone(), link.line, ink, w);
             // A dot where it leaves, so every connector has a starting point.
             if let Some(a) = pts.first() {
                 painter.circle(*a, KNOB_R, color::POINT, egui::Stroke::new(1.5, ink));
@@ -1634,7 +1615,7 @@ impl MastikApp {
             paint_link(
                 painter,
                 curve(at, out, b, out_b),
-                false,
+                LinkLine::Solid,
                 color::SELECT,
                 LINK_W,
             );
@@ -1930,6 +1911,12 @@ const POP_W: f32 = crate::app::POPOVER_W;
 const COL: f32 = ui::CARD_COL_GAP;
 /// An action's indent under its trigger, and a nested one's under its branch head.
 const NEST: f32 = 16.0;
+/// What *Back* does: its row's tooltip, since it has no popover to say it in.
+const BACK_NOTE: &str = "Goes back a screen; with an overlay open, closes it";
+/// A branch head's height, one line of its caption, and how much of the rows'
+/// gap it takes back above and below, so it sits close to the rows it heads.
+const BRANCH_HEAD_H: f32 = 14.0;
+const BRANCH_TUCK: f32 = 4.0;
 
 impl MastikApp {
     /// Show or put away the Prototype tab, and say so.
@@ -2602,7 +2589,8 @@ impl MastikApp {
                     // Its popover's `Area` would not follow the row.
                     self.proto.open = None;
                 }
-                if row.open {
+                // *Back* has nothing to set, so its row opens no popover.
+                if row.open && !matches!(k.value, Action::Back) {
                     self.proto.open = (!open).then(|| at(k.id));
                 }
                 if row.remove {
@@ -2671,9 +2659,12 @@ impl MastikApp {
         indent: f32,
     ) -> Option<ActionKind> {
         let mut picked = None;
-        // As tall as its `+`, the close button's box: a head is a caption over
-        // the rows it heads, not a row of its own.
-        let h = ui::CLOSE_BUTTON_W;
+        // A head is a caption over the rows it heads, not a row of its own: one
+        // line tall, the rows' gap tucked in on both sides, its `+` reaching
+        // past the line to the close button's box.
+        let h = BRANCH_HEAD_H;
+        let reach = ((ui::CLOSE_BUTTON_W - h) / 2.0) as i8;
+        ui.add_space(-BRANCH_TUCK);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = COL;
             ui.add_space(indent);
@@ -2696,12 +2687,21 @@ impl MastikApp {
             );
             let plus = ui
                 .push_id(salt, |ui| {
-                    ui::icon_button(ui, icon::PLUS, h, ui::CLOSE_GLYPH_PT, false, true)
+                    ui::icon_button_padded(
+                        ui,
+                        icon::PLUS,
+                        egui::Vec2::splat(h),
+                        ui::CLOSE_GLYPH_PT,
+                        false,
+                        true,
+                        egui::Margin::same(reach),
+                    )
                 })
                 .inner
                 .on_hover_text("Add an action to this branch");
             picked = self.add_action_menu(&plus, id, trigger);
         });
+        ui.add_space(-BRANCH_TUCK);
         picked
     }
 
@@ -2733,53 +2733,73 @@ impl MastikApp {
                 ui.add_space(indent);
                 let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
                 // The grip and × sit over the row's press and keep their own.
-                let (_, resp) =
-                    ui::field_row_pressable(ui, size, open, true, |ui, _| {
-                        ui.spacing_mut().item_spacing.x = COL;
-                        let g = ui::grip(ui, reorderable, size.y);
-                        out.grabbed = g.drag_started();
+                let (_, resp) = ui::field_row_pressable(ui, size, open, true, |ui, _| {
+                    ui.spacing_mut().item_spacing.x = COL;
+                    let g = ui::grip(ui, reorderable, size.y);
+                    out.grabbed = g.drag_started();
+                    let ink = match missing {
+                        Some(_) => color::error(),
+                        None => theme::text::muted(),
+                    };
+                    let glyph = if missing.is_some() {
+                        icon::WARNING
+                    } else {
+                        kind.glyph()
+                    };
+                    ui.label(theme::icon_text(glyph, 14.0, ink));
+                    let verb = egui::RichText::new(verb)
+                        .size(ui::SMALL_PT)
+                        .color(match missing {
+                            Some(_) => color::error(),
+                            None => theme::text::strong(),
+                        });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui::icon_button(
+                            ui,
+                            icon::X,
+                            ui::CLOSE_BUTTON_W,
+                            ui::CLOSE_GLYPH_PT,
+                            false,
+                            true,
+                        )
+                        .on_hover_text("Remove")
+                        .clicked()
+                        {
+                            out.remove = true;
+                        }
+                        // The timing as a faint note, as a menu row's accelerator.
+                        if let Some(chip) = &chip {
+                            ui.label(
+                                egui::RichText::new(chip)
+                                    .size(ui::CAPTION_PT)
+                                    .color(theme::text::faint()),
+                            );
+                        }
                         let ink = match missing {
                             Some(_) => color::error(),
-                            None => theme::text::muted(),
+                            None => color::accent_200(),
                         };
-                        let glyph = if missing.is_some() {
-                            icon::WARNING
-                        } else {
-                            kind.glyph()
-                        };
-                        ui.label(theme::icon_text(glyph, 14.0, ink));
-                        ui.label(egui::RichText::new(verb).size(ui::SMALL_PT).color(
-                            match missing {
-                                Some(_) => color::error(),
-                                None => theme::text::strong(),
-                            },
-                        ));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui::icon_button(
-                                ui,
-                                icon::X,
-                                ui::CLOSE_BUTTON_W,
-                                ui::CLOSE_GLYPH_PT,
-                                false,
-                                true,
-                            )
-                            .on_hover_text("Remove")
-                            .clicked()
-                            {
-                                out.remove = true;
-                            }
-                            // The timing as a faint note, as a menu row's accelerator.
-                            if let Some(chip) = &chip {
-                                ui.label(
-                                    egui::RichText::new(chip)
-                                        .size(ui::CAPTION_PT)
-                                        .color(theme::text::faint()),
-                                );
-                            }
-                            let ink = match missing {
-                                Some(_) => color::error(),
-                                None => color::accent_200(),
-                            };
+                        // The verb and the target share what the timing and ×
+                        // leave, the verb first; each is cut rather than run
+                        // under the timing.
+                        let room = ui.available_width();
+                        let layout = egui::Layout::left_to_right(egui::Align::Center);
+                        ui.with_layout(layout, |ui| {
+                            let verb_w = egui::WidgetText::from(verb.clone())
+                                .into_galley(
+                                    ui,
+                                    Some(egui::TextWrapMode::Extend),
+                                    f32::INFINITY,
+                                    egui::TextStyle::Body,
+                                )
+                                .size()
+                                .x;
+                            let h = ui.available_height();
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(verb_w.min(room), h),
+                                layout,
+                                |ui| ui.add(egui::Label::new(verb).truncate()),
+                            );
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(&target).size(ui::SMALL_PT).color(ink),
@@ -2788,10 +2808,12 @@ impl MastikApp {
                             );
                         });
                     });
+                });
                 let tip = match missing {
                     Some(gone) => format!(
                         "{gone}: skipped while playing. Pick another target, or undo the delete"
                     ),
+                    None if kind == ActionKind::Back => BACK_NOTE.to_string(),
                     None => format!("Edit {}", kind.label().to_lowercase()),
                 };
                 let resp = resp.on_hover_text(tip);
@@ -2823,9 +2845,7 @@ impl MastikApp {
         let anchor = Self::popover_anchor(&ctx, head.rect, POP_W);
         let mut close = false;
         let mut edit: Option<(Action, &'static str, &'static str)> = None;
-        let mut moved: Option<bool> = None;
         let kind = ActionKind::of(&k.value);
-        let place = position(&r.actions, action);
         let menu = egui::Area::new(egui::Id::new(("proto-action", action)))
             .order(egui::Order::Foreground)
             .fixed_pos(anchor)
@@ -2849,44 +2869,6 @@ impl MastikApp {
                             if ui::close_button(ui).clicked() {
                                 close = true;
                             }
-                            let (i, n) = place.unwrap_or((0, 1));
-                            let down = ui.add_enabled_ui(i + 1 < n, |ui| {
-                                ui::icon_button(
-                                    ui,
-                                    icon::ARROW_DOWN,
-                                    ui::CLOSE_BUTTON_W,
-                                    ui::CLOSE_GLYPH_PT,
-                                    false,
-                                    true,
-                                )
-                            });
-                            if down.inner.on_hover_text("Move down").clicked() {
-                                moved = Some(false);
-                            }
-                            let up = ui.add_enabled_ui(i > 0, |ui| {
-                                // The ↑ glyph sits a point low in its box: raised
-                                // a point to line up with ↓ and ×.
-                                let (slot, _) = ui.allocate_exact_size(
-                                    egui::Vec2::splat(ui::CLOSE_BUTTON_W),
-                                    egui::Sense::hover(),
-                                );
-                                ui.put(
-                                    slot.translate(egui::vec2(0.0, -1.0)),
-                                    |ui: &mut egui::Ui| {
-                                        ui::icon_button(
-                                            ui,
-                                            icon::ARROW_UP,
-                                            ui::CLOSE_BUTTON_W,
-                                            ui::CLOSE_GLYPH_PT,
-                                            false,
-                                            true,
-                                        )
-                                    },
-                                )
-                            });
-                            if up.inner.on_hover_text("Move up").clicked() {
-                                moved = Some(true);
-                            }
                         });
                     });
                     if let Some(e) = self.action_fields(ui, id, &r.trigger, &k, inner) {
@@ -2906,17 +2888,19 @@ impl MastikApp {
             })
             .response;
         let press_away = super::press_began_away(&ctx, menu.layer_id.id, menu.rect, head.rect);
+        let opening_click = std::mem::take(&mut self.proto.opened_on_canvas);
         if close
-            || super::dismissed_by_click(super::ClickAway {
-                clicked: ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)),
-                over_overlay,
-                on_menu: menu.contains_pointer(),
-                on_head: head.contains_pointer(),
-                // The overlay's ghost on the canvas is this popover's to move.
-                on_picker: ctx.pointer_latest_pos().is_some_and(|p| self.ghost_at(p)),
-                in_gesture: ctx.dragged_id().is_some() || self.gesture_cancelled,
-                press_away,
-            })
+            || (!opening_click
+                && super::dismissed_by_click(super::ClickAway {
+                    clicked: ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)),
+                    over_overlay,
+                    on_menu: menu.contains_pointer(),
+                    on_head: head.contains_pointer(),
+                    // The overlay's ghost on the canvas is this popover's to move.
+                    on_picker: ctx.pointer_latest_pos().is_some_and(|p| self.ghost_at(p)),
+                    in_gesture: ctx.dragged_id().is_some() || self.gesture_cancelled,
+                    press_away,
+                }))
         {
             self.proto.open = None;
         }
@@ -2925,14 +2909,6 @@ impl MastikApp {
             self.proto.open = None;
         }
         let mut v = r.value.clone();
-        if let Some(up) = moved {
-            shift(&mut v.actions, action, up);
-            return Some((
-                v,
-                "Move action",
-                if up { icon::ARROW_UP } else { icon::ARROW_DOWN },
-            ));
-        }
         let (a, label, glyph) = edit?;
         find_mut(&mut v.actions, action)?.value = a;
         Some((v, label, glyph))
@@ -3248,7 +3224,7 @@ impl MastikApp {
                 }
             }
             Action::Back => {
-                ui::selection_note(ui, "Goes back a screen; with an overlay open, closes it");
+                ui::selection_note(ui, BACK_NOTE);
             }
             Action::CloseOverlay { .. } => {
                 ui::selection_note(ui, "Closes the overlay on top");
@@ -3522,11 +3498,12 @@ impl MastikApp {
             }
         }
         // The timing a field holds while it is scrubbed or typed, so the preview
-        // follows it before it commits.
-        let shown = numbers
+        // follows it before it commits; on the frame it commits, the one written,
+        // or the preview shows the saved timing for a frame.
+        let held = numbers
             .iter()
             .find(|(r, ..)| r.dragged() || r.has_focus())
-            .map_or(t.timing, |(.., next)| next.timing);
+            .map(|(.., next)| next.timing);
         for (resp, rid, v, next) in numbers {
             self.proto_hold(rid, v, &resp);
             let engaged = resp.dragged() || resp.has_focus();
@@ -3534,6 +3511,7 @@ impl MastikApp {
                 out = Some(next);
             }
         }
+        let shown = held.or(out.map(|o| o.timing)).unwrap_or(t.timing);
         motion_preview(ui, salt, shown, w);
         out
     }
@@ -4646,27 +4624,16 @@ mod tests {
         ]
     }
 
-    /// An action nested in a branch is found, moved within its own list and
-    /// removed by id. flip: `shift` without its descent into branches → fails at
-    /// "moves inside its branch".
+    /// An action nested in a branch is found and removed by id.
+    /// flip: `remove` without its descent into branches → fails at the removal.
     #[test]
     fn nested_actions_are_reached_by_id() {
         let mut list = nested();
         assert!(find(&list, item(5)).is_some(), "the else's action");
-        assert!(shift(&mut list, item(4), true), "moves inside its branch");
-        let Action::Conditional { branches, .. } = &list[1].value else {
-            panic!("fixture: the conditional");
-        };
-        assert_eq!(branches[0].actions[0].id, item(4));
-        assert!(
-            !shift(&mut list, item(4), true),
-            "the top of its list stays"
-        );
         assert!(remove(&mut list, item(5)));
         assert!(find(&list, item(5)).is_none());
         let at = list_at(&mut list, Place::Otherwise(item(2))).expect("the else");
         assert!(at.is_empty(), "the else is empty once its action goes");
-        assert_eq!(position(&list, item(3)), Some((1, 2)));
     }
 
     /// A dragged action lands at its drop place inside its own branch, counted
@@ -5013,7 +4980,7 @@ mod tests {
         );
     }
 
-    /// The canvas's connectors: one per navigate, dashed inside a conditional, a
+    /// The canvas's connectors: one per navigate, dotted inside a conditional, a
     /// dangling one kept with its gone target.
     #[test]
     fn connectors_follow_the_actions() {
@@ -5068,7 +5035,7 @@ mod tests {
                 Link {
                     from: f.add,
                     to: f.cart,
-                    dashed: false,
+                    line: LinkLine::Solid,
                     at: ActionAt {
                         node: f.add,
                         reaction: item(10),
@@ -5078,7 +5045,7 @@ mod tests {
                 Link {
                     from: f.add,
                     to: gone,
-                    dashed: true,
+                    line: LinkLine::Dotted,
                     at: ActionAt {
                         node: f.add,
                         reaction: item(10),
@@ -5365,6 +5332,126 @@ mod tests {
             "the first action is now last"
         );
         assert_eq!(f.app.session.history.undo_depth(), depth + 1, "one step");
+    }
+
+    /// A click on a connector opens its action's popover and the popover stays
+    /// open, the action at the top of its reaction or inside a branch alike: the
+    /// popover first draws on the click's own frame.
+    /// flip: `action_popover` without its `opened_on_canvas` excuse → fails at
+    /// "stays open".
+    #[test]
+    fn a_connectors_click_opens_a_popover_that_stays() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        for nested_case in [false, true] {
+            let mut f = fixture(&ctx);
+            let to = f.cart;
+            let nav = Action::Navigate {
+                to,
+                transition: Transition::default(),
+            };
+            let action = match nested_case {
+                false => nav,
+                true => Action::Conditional {
+                    branches: vec![Branch {
+                        when: Expr("true".into()),
+                        actions: vec![keyed(3, nav)],
+                    }],
+                    otherwise: vec![],
+                },
+            };
+            let mut at = one_action(&mut f, action);
+            if nested_case {
+                at.action = item(3);
+            }
+            f.app.session.selection.set(vec![f.cart]);
+            let away = egui::pos2(1000.0, 500.0);
+            let ev = |pressed| egui::Event::PointerButton {
+                pos: away,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            for _ in 0..3 {
+                draw(&mut f.app, &ctx);
+            }
+            let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 2400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                let _ = ctx.run_ui(input, |ui| {
+                    ui.set_max_width(280.0);
+                    app.inspector_ui(ui)
+                });
+            };
+            frame(&mut f.app, vec![egui::Event::PointerMoved(away), ev(true)]);
+            // The canvas hears the click before the inspector draws.
+            f.app.open_link(at);
+            frame(&mut f.app, vec![ev(false)]);
+            let mut seen = vec![f.app.proto.open];
+            for _ in 0..3 {
+                frame(&mut f.app, vec![]);
+                seen.push(f.app.proto.open);
+            }
+            assert_eq!(seen, vec![Some(at); 4], "stays open, nested: {nested_case}");
+            // A later click away still closes it.
+            let far = egui::pos2(1350.0, 2300.0);
+            let at_far = |pressed| egui::Event::PointerButton {
+                pos: far,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            frame(
+                &mut f.app,
+                vec![egui::Event::PointerMoved(far), at_far(true)],
+            );
+            frame(&mut f.app, vec![at_far(false)]);
+            assert_eq!(f.app.proto.open, None, "a click away closes it");
+        }
+    }
+
+    /// An action's verb is cut before its timing note rather than run under it.
+    /// flip: `action_row` laying the verb out whole before the timing → fails at
+    /// "ends before the timing".
+    #[test]
+    fn an_actions_verb_stops_short_of_its_timing() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let overlay = f.cart;
+        one_action(
+            &mut f,
+            Action::OpenOverlay {
+                overlay,
+                settings: OverlaySettings::default(),
+                transition: Transition::default(),
+            },
+        );
+        f.app.session.selection.set_one(f.add);
+        let mut out = draw(&mut f.app, &ctx);
+        for _ in 0..2 {
+            out = draw(&mut f.app, &ctx);
+        }
+        let ink = |starts: &str| {
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text.starts_with(starts) => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+        };
+        let verb = ink("Open overlay").expect("the verb");
+        let timing = ink("Dissolve").expect("the timing");
+        assert!(
+            verb.right() <= timing.left(),
+            "ends before the timing: {verb:?} {timing:?}"
+        );
     }
 
     /// The tab shows the Prototype cards in place of the Design ones, and the

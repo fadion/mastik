@@ -695,14 +695,32 @@ pub(super) fn carried_unit<R>(
 ) -> (R, egui::Rect) {
     let id = ui.id().with(salt);
     let builder = egui::UiBuilder::new().id(id);
+    // Where in the entry it was taken, so a tall one (a conditional with its
+    // branches) stays where it was held instead of centring on the pointer.
+    let held = id.with("carried-grab");
     if !carrying {
         let out = ui.scope_builder(builder, body);
+        ui.ctx().data_mut(|d| d.remove::<f32>(held));
         return (out.inner, out.response.rect);
     }
     let layer = egui::LayerId::new(egui::Order::Tooltip, id);
     let out = ui.scope_builder(builder.layer_id(layer), body);
     if let Some(p) = ui.ctx().pointer_interact_pos() {
-        let dy = p.y - out.response.rect.center().y;
+        let rect = out.response.rect;
+        // Read on the carry's first frame, while the entry is still in its slot.
+        let origin = ui.ctx().input(|i| i.pointer.press_origin()).map(|o| o.y);
+        let kept = ui.ctx().data(|d| d.get_temp::<f32>(held));
+        let grab = match kept {
+            Some(g) => g,
+            None => {
+                let g = origin.map_or(rect.height() / 2.0, |y| {
+                    (y - rect.top()).clamp(0.0, rect.height())
+                });
+                ui.ctx().data_mut(|d| d.insert_temp(held, g));
+                g
+            }
+        };
+        let dy = p.y - grab - rect.top();
         ui.ctx().transform_layer_shapes(
             layer,
             egui::emath::TSTransform::from_translation(egui::vec2(0.0, dy)),
@@ -13672,6 +13690,61 @@ mod carry_tests {
         assert_eq!(
             resting[0].min.x, carried[0].min.x,
             "the carried row drifted horizontally"
+        );
+    }
+    /// A tall unit taken near its top moves with the pointer from where it was
+    /// held, not by its centre to the pointer.
+    /// flip: `carried_unit` centring the unit on the pointer → fails at "held".
+    #[test]
+    fn a_tall_carried_unit_stays_where_it_was_held() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let tall = |ctx: &egui::Context, carry: bool, events: Vec<egui::Event>| {
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.set_max_width(220.0);
+                    carried_unit(ui, carry, ("probe", 0), |ui| {
+                        ui::field_row(ui, egui::vec2(200.0, 200.0), |ui| {
+                            ui.label("tall");
+                        });
+                    });
+                },
+            )
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Rect(r) if r.fill == color::field() => Some(r.rect),
+                _ => None,
+            })
+            .expect("the ground")
+        };
+        let resting = tall(&ctx, false, vec![]);
+        let grab = egui::pos2(100.0, resting.top() + 10.0);
+        let _ = tall(
+            &ctx,
+            false,
+            vec![
+                egui::Event::PointerMoved(grab),
+                egui::Event::PointerButton {
+                    pos: grab,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        let carried = tall(
+            &ctx,
+            true,
+            vec![egui::Event::PointerMoved(grab + egui::vec2(0.0, 50.0))],
+        );
+        assert!(
+            (carried.top() - (resting.top() + 50.0)).abs() < 1.0,
+            "held: {resting:?} → {carried:?}"
         );
     }
 }
