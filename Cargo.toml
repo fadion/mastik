@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The prototype player for the browser: its own workspace, toolchain and lockfile
+# (`docs/design/prototyping-export.md`), so the nightly it needs never reaches this
+# build.
+exclude = ["crates/mastik-web"]
 
 [workspace.package]
 edition = "2024"

@@ -580,6 +580,10 @@ pub struct Variables {
     /// A frame read as if it were this wide, for the mode it picks by width —
     /// only in a preview's table ([`Self::with_width`]), never saved.
     pub(crate) previewed_width: Option<(NodeId, f64)>,
+    /// A played copy's variable values ([`Self::set_played`]), which beat every
+    /// mode. Empty outside a player; never saved and never written by an
+    /// operation.
+    pub(crate) played: BTreeMap<VarId, Value>,
 }
 
 impl Default for Variables {
@@ -589,6 +593,7 @@ impl Default for Variables {
             vars: BTreeMap::new(),
             kits: BTreeMap::new(),
             previewed_width: None,
+            played: BTreeMap::new(),
         }
     }
 }
@@ -852,6 +857,10 @@ impl Variables {
         let mut at = var;
         for _ in 0..=self.vars.len() {
             let v = self.vars.get(&at)?;
+            // A play value beats every mode, at each step of an alias too.
+            if let Some(played) = self.played.get(&at) {
+                return Some(played.clone());
+            }
             let col = match v.kit() {
                 None => self.column_at(v, set)?,
                 Some(kit) => {
@@ -902,6 +911,9 @@ impl Variables {
             let Some(v) = self.vars.get(&at) else {
                 continue;
             };
+            if let Some(played) = self.played.get(&at).filter(|p| !out.contains(p)) {
+                out.push(played.clone());
+            }
             for cell in v.cells.values() {
                 let value = match cell {
                     Cell::Color(c) => Value::Color(*c),
@@ -946,6 +958,30 @@ impl Variables {
             previewed_width: Some((frame, width)),
             ..self.clone()
         }
+    }
+
+    /// The play values a player has set ([`Self::set_played`]).
+    pub fn played(&self) -> &BTreeMap<VarId, Value> {
+        &self.played
+    }
+
+    /// Set the play values: each beats every mode wherever its variable is read,
+    /// a kit's variable and an alias's step included. A player's copy only — the
+    /// table is never saved, and no operation writes or undoes it. A value for a
+    /// variable not here, or of another kind, is left out.
+    pub fn set_played(&mut self, values: BTreeMap<VarId, Value>) {
+        let fits = |var: &VarId, value: &Value| {
+            let kind = match value {
+                Value::Color(_) => VarKind::Color,
+                Value::Number(n) if n.is_finite() => VarKind::Number,
+                Value::Number(_) => return false,
+                Value::Boolean(_) => VarKind::Boolean,
+                Value::String(_) => VarKind::String,
+            };
+            self.kind_of(*var) == Some(kind)
+        };
+        let kept = values.into_iter().filter(|(k, v)| fits(k, v)).collect();
+        self.played = kept;
     }
 
     /// The kind `var` resolves to.
@@ -4358,6 +4394,7 @@ mod tests {
             vars: BTreeMap::new(),
             kits: Default::default(),
             previewed_width: None,
+            played: Default::default(),
         };
         t.vars.insert(
             brand,

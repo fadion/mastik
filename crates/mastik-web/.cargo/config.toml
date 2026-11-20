@@ -1,0 +1,16 @@
+# Read only when cargo runs in this directory, so none of it reaches the app.
+#
+# The page unwinds as the desktop does: mastik-core's `catch_unwind` guards round
+# flo_curves and i_overlay need it, and a stable wasm32 std is built for abort.
+# Unwinding in wasm is the exception-handling proposal, which every current
+# browser runs.
+[build]
+target = "wasm32-unknown-unknown"
+# Beside the app's own build, under the ignored `target/`, never mixed with it.
+target-dir = "../../target/web"
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "panic=unwind", "-C", "target-feature=+exception-handling"]
+
+[unstable]
+build-std = ["std", "panic_unwind"]

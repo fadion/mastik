@@ -319,6 +319,9 @@ enum ExportFormat {
     Penpot,
     /// The whole document as a `.sketch` file.
     Sketch,
+    /// The prototype as one HTML file, the pages its export settings' flows
+    /// reach (`mastik_export::prototype`).
+    Prototype,
 }
 
 impl ExportFormat {
@@ -335,6 +338,7 @@ impl ExportFormat {
             ExportFormat::Html | ExportFormat::React | ExportFormat::Vue => "zip",
             ExportFormat::Penpot => "penpot",
             ExportFormat::Sketch => "sketch",
+            ExportFormat::Prototype => "html",
         }
     }
 
@@ -342,7 +346,10 @@ impl ExportFormat {
     fn whole_document(self) -> bool {
         matches!(
             self,
-            ExportFormat::Json | ExportFormat::Penpot | ExportFormat::Sketch
+            ExportFormat::Json
+                | ExportFormat::Penpot
+                | ExportFormat::Sketch
+                | ExportFormat::Prototype
         )
     }
 
@@ -371,6 +378,7 @@ impl ExportFormat {
             ExportFormat::Vue => "--vue",
             ExportFormat::Penpot => "--penpot",
             ExportFormat::Sketch => "--sketch",
+            ExportFormat::Prototype => "--prototype",
         }
     }
 }
@@ -805,7 +813,7 @@ const EXPORT_USAGE: &str = "usage: mastik export <file.mastik> [--svg|--pdf|--ht
          [--page <name|n>] [--layer <name|id>]... [-o <out>]\n       \
          mastik export <file.mastik> --png|--jpeg|--webp [--scale <n>|--width <px>|--height <px>] \
          [--quality <1-100>] [--page <name|n>] [--layer <name|id>]... [-o <out>]\n       \
-         mastik export <file.mastik> --json|--penpot|--sketch [-o <out>]\n       \
+         mastik export <file.mastik> --json|--penpot|--sketch|--prototype [-o <out>]\n       \
          mastik export <file.mastik> --ico|--icns [--sizes 16,32,48] [--page <name|n>] \
          [--layer <name|id>] [-o <out>]\n       \
          mastik export <file.mastik> --pdf --frames [--outlines] [--page <name|n>] [-o <out>]\n       \
@@ -870,6 +878,7 @@ fn parse_export(args: &[String]) -> Result<Command, String> {
             "--vue" => format = Some(ExportFormat::Vue),
             "--penpot" => format = Some(ExportFormat::Penpot),
             "--sketch" => format = Some(ExportFormat::Sketch),
+            "--prototype" => format = Some(ExportFormat::Prototype),
             "--all" => all = true,
             "--folders" => folders = true,
             "--outlines" => outlines = true,
@@ -1643,6 +1652,7 @@ fn run_export(e: &OneOff) -> Result<(), String> {
                 .ok_or_else(|| format!("{file}: {subject} has nothing to draw"))?;
             mastik_export::icon::encode(format, &entries).unwrap_or_default()
         }
+        ExportFormat::Prototype => prototype_html(&doc, file)?.into_bytes(),
     };
 
     std::fs::write(&out_path, data)
@@ -1651,6 +1661,54 @@ fn run_export(e: &OneOff) -> Result<(), String> {
     let note = if replaced { " (replaced)" } else { "" };
     println!("wrote {}{note}", out_path.display());
     Ok(())
+}
+
+/// `--prototype`: the HTML player of `doc`'s chosen flows. The installed faces of
+/// the families the document names are registered first, so the file carries the
+/// fonts the canvas would draw with.
+fn prototype_html(doc: &mastik_core::Document, file: &str) -> Result<String, String> {
+    let (wasm, glue) = player_build()?;
+    mcp::system_fonts::SystemFonts::load().register_for(doc);
+    let player = mastik_export::prototype::Player {
+        wasm: &wasm,
+        glue: &glue,
+    };
+    let parts =
+        mastik_export::prototype::Parts::of(doc, player).map_err(|e| format!("{file}: {e}"))?;
+    Ok(parts.html())
+}
+
+/// The browser player `crates/mastik-web/build.sh` writes: from the folder
+/// `MASTIK_PLAYER_DIR` names, else `player` beside the executable or one folder up
+/// (`target/player` for a `cargo run` build).
+fn player_build() -> Result<(Vec<u8>, String), String> {
+    const WASM: &str = "mastik_web_bg.wasm";
+    const GLUE: &str = "mastik_web.js";
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(dir) = std::env::var_os("MASTIK_PLAYER_DIR") {
+        dirs.push(dir.into());
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        for dir in exe.ancestors().skip(1).take(2) {
+            dirs.push(dir.join("player"));
+        }
+    }
+    for dir in &dirs {
+        if let (Ok(wasm), Ok(glue)) = (
+            std::fs::read(dir.join(WASM)),
+            std::fs::read_to_string(dir.join(GLUE)),
+        ) {
+            return Ok((wasm, glue));
+        }
+    }
+    Err(format!(
+        "no browser player found (looked for {WASM} in {}); build it with \
+         crates/mastik-web/build.sh, or name its folder in MASTIK_PLAYER_DIR",
+        dirs.iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// Headless run of the document's own export settings (§7).
@@ -2624,6 +2682,7 @@ mod tests {
             ("--vue", ExportFormat::Vue),
             ("--penpot", ExportFormat::Penpot),
             ("--sketch", ExportFormat::Sketch),
+            ("--prototype", ExportFormat::Prototype),
         ] {
             assert_eq!(
                 export(&["a.mastik", flag]).unwrap(),

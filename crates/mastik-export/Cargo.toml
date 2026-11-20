@@ -57,6 +57,10 @@ hayro-svg.workspace = true
 # Reads `hayro-svg`'s markup to merge glyphs into lines (`pdf_in`). The version
 # `mastik-core`'s `svg_in` reads with, so this declares an edge, not a tree.
 roxmltree = "0.20.0"
+# The prototype's HTML export: its payload is one gzip stream, which a browser's
+# `DecompressionStream` reads, written into the page as base64.
+flate2 = "1.1.11"
+base64 = "0.22.1"
 
 [dev-dependencies]
 # Inflates a PDF's streams so `tests/pdf.rs` can read the text mapping krilla

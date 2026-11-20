@@ -80,6 +80,9 @@ const RULES: &[(&str, &[&str])] = &[
     // Command Mode's language runs over the document alone; the bar and the
     // editor that draw it are the app's.
     ("mastik-vm", HEADLESS),
+    // The prototype player's engine builds for the browser too; the shells
+    // that draw it bring the renderer.
+    ("mastik-play", HEADLESS),
 ];
 
 /// What `mastik-core` may declare: §3's permitted list, which must stay set-equal
