@@ -808,6 +808,13 @@ impl MastikApp {
                 no_flows.then_some("Add a flow in the Prototype tab first"),
             ),
         );
+        push(
+            &mut out,
+            Cmd::verb(
+                Item::ExportFlowMap,
+                no_flows.then_some("Add a flow in the Prototype tab first"),
+            ),
+        );
         for item in [
             Item::Save,
             Item::NewDocument,

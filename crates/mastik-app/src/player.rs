@@ -425,6 +425,8 @@ enum BarAct {
     Attach,
     Fullscreen,
     Close,
+    /// Write the last take as a video.
+    ExportTake,
 }
 
 /// The player's bar: its commands as icon buttons, `hint`-ed as the rest of
@@ -470,6 +472,15 @@ fn bar(ui: &mut egui::Ui, p: &Playing) -> Option<BarAct> {
             false => (icon::RECORD, "Record a take"),
         };
         button(ui, g, recording, tip, BarAct::Record);
+        if p.take.is_some() && !recording {
+            button(
+                ui,
+                icon::EXPORT,
+                false,
+                "Export the take as a video",
+                BarAct::ExportTake,
+            );
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             if p.place != Place::Fullscreen {
@@ -1013,6 +1024,11 @@ impl crate::app::MastikApp {
             BarAct::Detach => self.place_player(ctx, Place::Detached),
             BarAct::Attach => self.place_player(ctx, Place::Over),
             BarAct::Fullscreen => self.place_player(ctx, Place::Fullscreen),
+            BarAct::ExportTake => {
+                if let Some(take) = self.playing.as_ref().and_then(|p| p.take.clone()) {
+                    self.export_take(take);
+                }
+            }
             BarAct::Restart | BarAct::Hints | BarAct::Card | BarAct::Record => {
                 let Some(p) = self.playing.as_mut() else {
                     return;

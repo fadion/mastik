@@ -2885,6 +2885,7 @@ impl MastikApp {
             Action::ExportCode(target) => self.export_code(target),
             Action::ExportEditable(format) => self.export_editable(format),
             Action::ExportPrototype => self.open_prototype_export(),
+            Action::ExportFlowMap => self.export_flow_map(),
             Action::PlaceImage => self.place_image_action(),
             Action::InsertPicker => self.toggle_kit_picker(),
             Action::AssetsBrowser => self.toggle_assets(),

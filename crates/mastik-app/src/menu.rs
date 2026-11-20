@@ -467,6 +467,8 @@ pub enum Item {
     ExportEditable(crate::panels::EditableFormat),
     /// `Action::ExportPrototype`: the prototype as one HTML file.
     ExportPrototype,
+    /// `Action::ExportFlowMap`: each flow as a PDF page for review.
+    ExportFlowMap,
     /// `Action::Present`: the top-level frames one at a time, fullscreen.
     Present,
     /// `Action::Play`: the prototype played over the canvas.
@@ -1184,6 +1186,7 @@ impl Item {
             ),
             Item::ExportEditable(f) => s(f.label(), icon::EXPORT, None, Group::Export),
             Item::ExportPrototype => s("Export prototype…", icon::EXPORT, None, Group::Export),
+            Item::ExportFlowMap => s("Export flow map…", icon::EXPORT, None, Group::Export),
             Item::Tool(tool) => {
                 let (label, glyph) = match tool {
                     Tool::Select => ("Tool: Select", icon::CURSOR),
@@ -1423,6 +1426,7 @@ impl Item {
             Item::ExportCode(_) => &["code", "html", "react", "vue", "zip"],
             Item::ExportEditable(f) => f.aliases(),
             Item::ExportPrototype => &["html", "prototype", "player", "share", "web"],
+            Item::ExportFlowMap => &["pdf", "flows", "sign-off", "review", "interactions"],
             Item::ToggleHidden => &["hide", "show", "visibility"],
             Item::ToggleLocked => &["lock", "unlock"],
             Item::Delete => &["remove"],
@@ -1594,6 +1598,7 @@ impl Item {
             Item::ExportCode(t) => Action::ExportCode(t),
             Item::ExportEditable(f) => Action::ExportEditable(f),
             Item::ExportPrototype => Action::ExportPrototype,
+            Item::ExportFlowMap => Action::ExportFlowMap,
             Item::Tool(tool) => Action::ChooseTool(tool),
             Item::PlaceImage => Action::PlaceImage,
             Item::ZoomIn => Action::ZoomIn,
@@ -4027,6 +4032,7 @@ impl MastikApp {
             | Item::ExportCode(_)
             | Item::ExportEditable(_)
             | Item::ExportPrototype
+            | Item::ExportFlowMap
             | Item::Present
             | Item::Play
             | Item::CheckContrast

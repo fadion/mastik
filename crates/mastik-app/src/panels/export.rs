@@ -2872,6 +2872,101 @@ impl MastikApp {
     }
 }
 
+impl MastikApp {
+    /// Write the flow map, a PDF of each flow, to a file the person names, on an
+    /// export worker.
+    pub(crate) fn export_flow_map(&mut self) {
+        if crate::prototype_export::every_flow(&self.session.doc).is_empty() {
+            self.session
+                .info("Add a flow in the Prototype tab to export a flow map".to_string());
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_directory(self.export_start_dir())
+            .add_filter("PDF", &["pdf"])
+            .set_file_name("Flow map.pdf")
+            .save_file()
+        else {
+            return;
+        };
+        let (doc, resolved) = (self.session.doc.clone(), self.session.resolved.clone());
+        let asker = self.session.path.clone();
+        let label = "flow map".to_string();
+        self.spawn_export(label, move |cancel| {
+            if cancel.cancelled() {
+                return Delivered::cancelled();
+            }
+            mastik_core::text::register_font_data(&resolved.text_fonts());
+            let made = mastik_export::flow_map::flow_map(&doc, &resolved);
+            if !cancel.begin_write() {
+                return Delivered::cancelled();
+            }
+            let written = match made {
+                Some(bytes) => std::fs::write(&path, bytes).map_err(|e| e.to_string()),
+                None => Err("the document has no flows".to_string()),
+            };
+            Delivered {
+                asker,
+                written: usize::from(written.is_ok()),
+                failed: written.err(),
+                name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
+                ..Delivered::empty(path.parent().map(Into::into).unwrap_or_default())
+            }
+        });
+    }
+
+    /// Write the player's last take as a video, GIF or MP4 by the name the
+    /// person gives it, replayed frame by frame on an export worker.
+    pub(crate) fn export_take(&mut self, take: mastik_play::Take) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_directory(self.export_start_dir())
+            .add_filter("MP4 video", &["mp4"])
+            .add_filter("Animated GIF", &["gif"])
+            .set_file_name("Take.mp4")
+            .save_file()
+        else {
+            return;
+        };
+        let format = match path.extension().and_then(|e| e.to_str()) {
+            Some(e) if e.eq_ignore_ascii_case("gif") => mastik_export::video::Format::Gif,
+            _ => mastik_export::video::Format::Mp4,
+        };
+        let (doc, resolved) = (self.session.doc.clone(), self.session.resolved.clone());
+        let asker = self.session.path.clone();
+        let label = path
+            .file_name()
+            .map_or_else(|| "video".into(), |n| n.to_string_lossy().into_owned());
+        self.spawn_export(label, move |cancel| {
+            mastik_core::text::register_font_data(&resolved.text_fonts());
+            let options = mastik_export::video::Options {
+                format,
+                fps: 30,
+                scale: 2.0,
+            };
+            let made = mastik_export::video::video(
+                &doc,
+                &take,
+                crate::session::random_actor(),
+                &options,
+                &mut |_, _| !cancel.cancelled(),
+            );
+            if !cancel.begin_write() {
+                return Delivered::cancelled();
+            }
+            let written = made
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+            Delivered {
+                asker,
+                written: usize::from(written.is_ok()),
+                failed: written.err(),
+                name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
+                ..Delivered::empty(path.parent().map(Into::into).unwrap_or_default())
+            }
+        });
+    }
+}
+
 /// The prototype's one HTML file, written to `path`.
 fn write_prototype(
     doc: &mastik_core::Document,
