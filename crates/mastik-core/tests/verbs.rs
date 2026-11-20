@@ -7530,3 +7530,110 @@ fn set_reactions_reads_the_short_forms_and_refuses_an_unasked_script() {
         "names the reaction: {why}"
     );
 }
+
+/// `get_tree` carries reactions and play settings in `set_reactions`' short
+/// forms, keeping the id of a layer a reaction targets; `insert_subtree` writes
+/// them back, a target inside the tree moved to its copy and one outside kept. A
+/// copy writes its reactions too, so a new instance follows its new main.
+///
+/// flip: `tree` not calling `put_prototype` → fails at the frame's `play`;
+/// `tree_reactions` not remapping → fails at "the target inside moves".
+#[test]
+fn get_tree_and_insert_subtree_carry_reactions() {
+    let (mut doc, mut ids, page) = blank();
+    let make = |doc: &mut Document, ids: &mut IdSource, parent: NodeId, kind: Value| {
+        run(
+            doc,
+            ids,
+            "create_node",
+            json!({ "parent": parent.to_wire(), "kind": kind }),
+        )[0]
+    };
+    let f = make(&mut doc, &mut ids, page, frame(300.0, 300.0));
+    let b = make(&mut doc, &mut ids, page, frame(100.0, 100.0));
+    let card = make(&mut doc, &mut ids, f, rect(50.0, 50.0));
+    let button = make(&mut doc, &mut ids, f, rect(20.0, 20.0));
+    let main = make(&mut doc, &mut ids, f, frame(30.0, 30.0));
+    run(
+        &mut doc,
+        &mut ids,
+        "make_component",
+        json!({ "nodes": [main.to_wire()] }),
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [main.to_wire()], "reactions": [
+            { "trigger": "Click", "actions": [{ "Navigate": { "to": b.to_wire() } }] }
+        ] }),
+    );
+    let instance = run(
+        &mut doc,
+        &mut ids,
+        "create_instance",
+        json!({ "main": main.to_wire(), "parent": f.to_wire() }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [button.to_wire()], "reactions": [
+            { "trigger": "Click", "actions": [
+                { "ScrollTo": { "layer": card.to_wire() } },
+                { "Navigate": { "to": b.to_wire() } },
+            ] }
+        ] }),
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_play",
+        json!({ "nodes": [f.to_wire()], "play": { "scroll": "Vertical" } }),
+    );
+    let read = verbs::tree(&doc, f).expect("a tree");
+    let kids = read["children"].as_array().unwrap();
+    assert_eq!(read["play"], json!({ "scroll": "Vertical" }), "{read}");
+    assert!(
+        kids[1]["reactions"][0]["actions"][0]["ScrollTo"].is_object(),
+        "the reactions are read: {read}"
+    );
+    assert_eq!(
+        kids[0]["id"],
+        json!(card.to_wire()),
+        "a target keeps its id"
+    );
+    assert_eq!(
+        kids[3]["reactions"], kids[2]["reactions"],
+        "the instance's are its main's: {read}"
+    );
+    let copy = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": read }),
+    )[0];
+    let made = doc.get(copy).unwrap().children().to_vec();
+    let actions = doc.get(made[1]).unwrap().reactions()[0].actions.clone();
+    use mastik_core::prototype::Action;
+    assert!(
+        matches!(actions[0].value, Action::ScrollTo { layer, .. } if layer == made[0]),
+        "the target inside moves: {:?}",
+        actions[0].value
+    );
+    assert!(
+        matches!(actions[1].value, Action::Navigate { to, .. } if to == b),
+        "the target outside stays"
+    );
+    assert_eq!(
+        doc.get(made[3]).unwrap().reactions(),
+        doc.get(made[2]).unwrap().reactions(),
+        "the new instance follows the new main"
+    );
+    assert_eq!(
+        doc.get(copy).unwrap().play(),
+        doc.get(f).unwrap().play(),
+        "the play settings"
+    );
+    let _ = instance;
+}
