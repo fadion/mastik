@@ -116,7 +116,7 @@ impl MastikApp {
     pub(crate) fn open_prototype_export(&mut self) {
         if every_flow(&self.session.doc).is_empty() {
             self.session
-                .info("Add a flow in the Prototype tab to export a prototype".to_string());
+                .info("Add a flow in prototype mode to export a prototype".to_string());
             return;
         }
         self.proto_export = Some(ExportCard {

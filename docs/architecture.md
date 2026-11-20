@@ -65,7 +65,7 @@ Read the file for the exact wording before relying on one.
 | `app-image-editing.md` | 9.4 | Image fills and image editing |
 | `charts.md` | — | Charts: a frame carrying a chart description, its generated parts, the Chart card, the data window, import and the linked data file, flatten, and binding its colours to variables |
 | `inspector.md` | 9.4 | The inspector cards, an annotation's card and its mark on the canvas |
-| `prototyping-authoring.md` | — | The inspector's Prototype tab, the interactions and Prototype cards, connectors, the link dots and flow chips, instances' interactions, kit publishing, agents |
+| `prototyping-authoring.md` | — | Prototype mode, the interactions and Prototype cards, connectors, the link dots and flow chips, instances' interactions, kit publishing, agents |
 | `prototyping-player.md` | — | The player in the app: starting and stopping, present mode as the player, following the editor's commits, over the canvas, detached and fullscreen, its keys, bar and state card, the export card, video from a take and the flow map |
 | `type-panel.md` | 9.4 | The Type panel and typography popup |
 | `font-picker.md` | 9.4 | The font picker |

@@ -719,14 +719,14 @@ selects its layer, `Shift` + a label adds it; a label is two letters, the first 
 
 - **View toggles are one action**, `Action::ToggleView(ViewSwitch)`: rulers, guides, guide lock,
   grid, layout grid, layers panel, history, minimap, size preview, toolbar, messages, outline mode, pixel preview, focus, private
-  mode, the marquee's shape (lasso), align by visual centre, the inspector's Prototype tab and the
+  mode, the marquee's shape (lasso), align by visual centre, prototype mode and the
   snap switches.
   `ViewSwitch` also drives both dropdowns' rows, labelled by one `label()` but for the View menu's
   short *Panels ▸* list, so a row and the state it drives stay in step while the chord is a second
   caller that never sees the row. The lasso has no row: `Q`, the palette and the rail's Select slot carry it. Align by visual
-  centre has none either, and no chord: the Align card's head and the palette carry it. The
-  Prototype tab is the same: no row and no chord, since prototyping adds none; the inspector's
-  *Design* | *Prototype* switch and the palette's *Prototype tab* carry it. A *Key…* trigger's
+  centre has none either, and no chord: the Align card's head and the palette carry it. Prototype
+  mode is the same: no row and no chord, since prototyping adds none; the top bar's button left of
+  *Play* and the palette's *Prototype mode* carry it. A *Key…* trigger's
   capture field takes the next plain or `Shift`-ed key as the trigger, refuses a `Ctrl` or `Alt`
   chord and gives up on `Escape`.
 - **Not `Action`s**: the clipboard trio and `Ctrl+A` in a text session, and `Tab` nesting a list,

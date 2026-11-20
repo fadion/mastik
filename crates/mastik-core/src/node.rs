@@ -520,7 +520,7 @@ impl Node {
     pub fn exports(&self) -> &[Keyed<crate::export::ExportSpec>] {
         &self.exports
     }
-    /// The reactions on this layer, in the order the Prototype tab shows them.
+    /// The reactions on this layer, in the order prototype mode shows them.
     /// A target is read through [`crate::prototype::resolve_target`].
     pub fn reactions(&self) -> &[Keyed<crate::prototype::Reaction>] {
         &self.reactions

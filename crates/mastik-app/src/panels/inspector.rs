@@ -979,8 +979,7 @@ impl MastikApp {
         // Before any card is drawn.
         self.gather_card_overrides();
         ui::set_push_refusal(ui.ctx(), self.selection_push_refusal());
-        self.inspector_tabs(ui);
-        if self.prototype_tab {
+        if self.prototype_mode {
             self.prototype_inspector(ui);
             return;
         }

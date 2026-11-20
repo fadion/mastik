@@ -169,7 +169,7 @@ pub enum Drag {
     Pivot {
         target: Target,
     },
-    /// Pulling a link from the Prototype tab's link dot on `from`'s `edge` (an
+    /// Pulling a link from prototype mode's link dot on `from`'s `edge` (an
     /// index into its screen quad): drawn from the live pointer, and on release
     /// over a screen one *Navigate to* it commits.
     Link {

@@ -201,7 +201,7 @@ pub(crate) fn notice_text(n: &Notice) -> String {
 }
 
 /// An egui key as the player names it, for a key trigger: the same name the
-/// Prototype tab records.
+/// prototype mode records.
 fn key_name(key: egui::Key) -> String {
     key.name().to_string()
 }

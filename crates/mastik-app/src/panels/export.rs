@@ -2878,7 +2878,7 @@ impl MastikApp {
     pub(crate) fn export_flow_map(&mut self) {
         if crate::prototype_export::every_flow(&self.session.doc).is_empty() {
             self.session
-                .info("Add a flow in the Prototype tab to export a flow map".to_string());
+                .info("Add a flow in prototype mode to export a flow map".to_string());
             return;
         }
         let Some(path) = rfd::FileDialog::new()

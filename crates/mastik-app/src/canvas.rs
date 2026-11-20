@@ -2984,7 +2984,7 @@ impl MastikApp {
             return;
         }
 
-        // A click on a Prototype tab link dot links nothing and keeps the selection.
+        // A click on a prototype mode link dot links nothing and keeps the selection.
         if self.tool.selects()
             && clicked
             && let Some(p) = resp.interact_pointer_pos()
@@ -3270,7 +3270,7 @@ impl MastikApp {
             return;
         }
 
-        // The Prototype tab's link dots, over the box handles they sit on. A
+        // Prototype mode's link dots, over the box handles they sit on. A
         // hovered layer's dot selects it, so the Interactions card shows the link.
         if let Some((from, edge)) = self.link_knob_at(grab, rect, ppp) {
             if self.session.selection.single() != Some(from) {
@@ -11095,7 +11095,7 @@ impl MastikApp {
         // The key layer, over the selection boxes.
         self.draw_key_outline(painter, rect, ppp);
 
-        // The prototype's connectors and link dots, while the Prototype tab is up.
+        // The prototype's connectors and link dots, while prototype mode is on.
         if chrome && self.mode == Mode::Normal {
             self.draw_prototype_links(ui, painter, rect, ppp);
             // Each annotated layer's mark, its note on hover.

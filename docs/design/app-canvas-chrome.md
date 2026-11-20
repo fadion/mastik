@@ -316,8 +316,11 @@ colour deficiencies barely move.
 
 ## The top bar's right cluster
 
-Between undo/redo and the zoom readout: **View** (eye + caret), **Snap** (magnet + caret) and
-**Tools** (toolbox + caret), so the bar reads View · Snap · Tools · zoom · Settings.
+After undo and redo, a rule, then **Prototype mode** (`icon::INTERACTION`, lit while on;
+`prototyping-authoring.md`) and **Play** (lit while a prototype plays; `prototyping-player.md`),
+a rule, **View** (eye + caret), **Snap** (magnet + caret) and **Tools** (toolbox + caret), a rule,
+then the zoom readout and Settings. Prototype mode sits beside Play because it changes both the
+canvas and the inspector, and authoring and playing are one spot.
 
 **The resource meter** (`meter.rs`), left of undo behind a rule, while Settings' *Show resource meter*
 is on (off by default): CPU (`icon::CPU`) and memory (`MEMORY`), each

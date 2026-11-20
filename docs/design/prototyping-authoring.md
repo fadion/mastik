@@ -1,18 +1,22 @@
 # Prototyping: authoring
 
-Where a prototype is made: the inspector's Prototype tab, the connectors and the link dots on the
-canvas, an instance's interactions, kit publishing, and what agents read and write. The saved model
-it edits is `prototyping-model.md`; the player is `play.md`. Code:
+Where a prototype is made: prototype mode's inspector cards, the connectors and the link dots on
+the canvas, an instance's interactions, kit publishing, and what agents read and write. The saved
+model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 `crates/mastik-app/src/panels/prototype.rs`, a link dot's drag in `canvas.rs` (`Drag::Link`).
 
-## The Prototype tab
+## Prototype mode
 
-- **A tab of the inspector, not a mode.** `MastikApp::inspector_tabs` heads every inspector state
-  with `ui::segmented` *Design* | *Prototype*, a card of its own; the palette's *Prototype tab*
-  (`ViewSwitch::PrototypeTab`, `icon::INTERACTION`) flips it. **No chord**: the keymap's chords
-  are spent, and a prototyping chord would mean two things. Tools, selection and the layers panel
-  are unchanged, so a frame can be nudged without leaving the tab. The tab is the window's
-  (`MastikApp::prototype_tab`), never saved.
+- **A workspace mode, not an inspector tab.** It changes the canvas (connectors, link dots, flow
+  chips, the hover outline) as well as the inspector's cards, so it is a `ViewSwitch` beside
+  outline, focus and private mode (`ViewSwitch::PrototypeMode`, *Prototype mode*). Its switch is
+  an `icon::INTERACTION` icon button in the top bar, immediately left of *Play*, so authoring and
+  playing are one spot; lit while on, its tooltip *Prototype mode*, or *Leave prototype mode*
+  while lit; a click calls `set_prototype_mode`, which says *Prototype mode on* / *off* on the
+  status line. The palette's row flips it too. **No chord and no menu**: the keymap's chords are
+  spent, and a prototyping chord would mean two things. Tools, selection and the layers panel are
+  unchanged, so a frame can be nudged without leaving the mode. The mode is the window's
+  (`MastikApp::prototype_mode`), never saved.
 - **What it shows.** One layer: its identity (glyph, name, a screen's size or *Instance*), the
   *Interactions* card and the *Prototype* card. Nothing selected: the page card, *Flows* and the
   page's *Prototype* card. Several layers: *Prototype one layer at a time*.
@@ -139,7 +143,7 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
 
 ## On the canvas
 
-- **Connectors** (`draw_prototype_links`), only while the Prototype tab is up and the chrome
+- **Connectors** (`draw_prototype_links`), only in prototype mode and while the chrome
   shows: from each layer's box to each navigate or overlay target's box on the same page
   (`prototype::links_on`). A connector leaves by the middle of its layer's edge that faces the
   target's centre and enters by the middle of the target's edge facing that start
@@ -204,7 +208,7 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   layer there is hovered or picked (`pointed_at`), and no link dot there is taken. A click on it
   does nothing and keeps the popover open. The ghost follows an X or Y field while it is scrubbed or typed
   (`ProtoState::held_at`).
-- **Flow chips** (`flow_chips`), while the Prototype tab is up: each flow's name behind the
+- **Flow chips** (`flow_chips`), in prototype mode: each flow's name behind the
   `PLAY` glyph on a `color::BADGE` pill (the canvas badges' blue, `ui::pill_ink(BADGE)` ink) over
   its start frame's top-right corner, `FLOW_CHIP_PAD_R` (9) of air after the words, several on one
   frame stacked leftward. Under the pointer it lifts by a white wash at alpha 26, as the crop's
@@ -237,5 +241,5 @@ the tree remapped to the layer the tree makes (`mcp.md`, `export.md`). There is 
   cursor and the click path; left out of any of them, a press there starts a resize, a move, a
   guide, or a pick that drops the selection (and with it the popover placing the ghost). `chrome_claims` must walk the same order as `begin_select_drag`
   (`a_guide_does_not_steal_a_press_the_chrome_claims`).
-- **The Prototype tab must not draw the Design cards' state.** Switching closes the inspector's
-  popovers and a key capture, since both are keyed to cards the other tab does not draw.
+- **Prototype mode must not draw the Design cards' state.** Switching closes the inspector's
+  popovers and a key capture, since both are keyed to cards the other mode does not draw.

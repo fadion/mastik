@@ -1344,7 +1344,8 @@ pub mod icon {
     /// *System health*: a pulse line. Not [`GAUGE`], whose dial is JPEG quality.
     pub const PULSE: &str = "\u{f089}";
     /// A prototype's interactions: a pointer clicking, with the click's rays.
-    /// The Prototype tab's palette row, its trigger rows and its undo steps.
+    /// Prototype mode's top-bar button and palette row, its trigger rows and its
+    /// undo steps.
     pub const INTERACTION: &str = "\u{f08a}";
     /// *Change to*, an instance switched to another variant: a square turning
     /// into the filled one. Not [`SWAP`], which replaces text or an instance.

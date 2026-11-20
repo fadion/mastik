@@ -732,7 +732,7 @@ fn with_auto_layout(ctx: &egui::Context) -> MastikApp {
     app
 }
 
-/// [`with_auto_layout`]'s child selected in the Prototype tab, holding a click
+/// [`with_auto_layout`]'s child selected in prototype mode, holding a click
 /// that navigates to its frame; answers where that action is, for its popover.
 fn with_an_interaction(ctx: &egui::Context) -> (MastikApp, crate::panels::prototype::ActionAt) {
     use mastik_core::prototype::{Action, Reaction, Transition, Trigger};
@@ -759,7 +759,7 @@ fn with_an_interaction(ctx: &egui::Context) -> (MastikApp, crate::panels::protot
         }]))
         .expect("an interaction");
     app.session.selection.set_one(child);
-    app.prototype_tab = true;
+    app.prototype_mode = true;
     let at = crate::panels::prototype::ActionAt {
         node: child,
         reaction: r,
@@ -1270,14 +1270,34 @@ fn sweep_on(theme: Theme) {
     let mut app = with_auto_layout(&ctx);
     let found = inspector(&ctx, &mut app);
     check("auto layout", app, found);
-    // The Prototype tab: a frame's cards, a child's interaction and its popover.
+    // Prototype mode: a frame's cards, a child's interaction and its popover.
+    // The frame holds a reaction of its own, or its cards paint too few grounds
+    // for the sweep's floor.
     let mut app = with_auto_layout(&ctx);
-    app.prototype_tab = true;
+    let frame = app.session.selection.ids()[0];
+    let r = app.session.ids.mint_item();
+    let a = app.session.ids.mint_item();
+    app.session
+        .try_commit(Transaction(vec![Operation::SetReactions {
+            id: frame,
+            reactions: vec![mastik_core::Keyed::new(
+                r,
+                mastik_core::prototype::Reaction {
+                    trigger: mastik_core::prototype::Trigger::Click,
+                    actions: vec![mastik_core::Keyed::new(
+                        a,
+                        mastik_core::prototype::Action::Back,
+                    )],
+                },
+            )],
+        }]))
+        .expect("the frame's reaction");
+    app.prototype_mode = true;
     let found = inspector(&ctx, &mut app);
-    check("prototype tab, a frame", app, found);
+    check("prototype mode, a frame", app, found);
     let (mut app, _) = with_an_interaction(&ctx);
     let found = inspector(&ctx, &mut app);
-    check("prototype tab, an interaction", app, found);
+    check("prototype mode, an interaction", app, found);
     let (mut app, at) = with_an_interaction(&ctx);
     let found = opened(&ctx, &mut app, move |_, a| a.proto.open = Some(at));
     check("prototype action popover", app, found);

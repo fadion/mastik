@@ -8162,7 +8162,7 @@ fn actions_in(
 /// A transition as written, completed from `base`: left out it is `base`, a word
 /// is its kind, and an object's missing fields are `base`'s — except that a smart
 /// animate named without a direction takes none, so its new layers fade, as the
-/// Prototype tab picks it.
+/// prototype mode picks it.
 fn transition_in(given: Option<Value>, base: &Value) -> Value {
     let smart_without_side = |t: &mut Map<String, Value>, named: bool| {
         let smart = t

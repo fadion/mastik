@@ -425,7 +425,7 @@ const SWITCHES: [ViewSwitch; 23] = [
     ViewSwitch::Private,
     ViewSwitch::AlignVisual,
     ViewSwitch::SizeBadge,
-    ViewSwitch::PrototypeTab,
+    ViewSwitch::PrototypeMode,
 ];
 
 /// The highlighted row's ground: the accent at 18%.
@@ -805,14 +805,14 @@ impl MastikApp {
             &mut out,
             Cmd::verb(
                 Item::ExportPrototype,
-                no_flows.then_some("Add a flow in the Prototype tab first"),
+                no_flows.then_some("Add a flow in prototype mode first"),
             ),
         );
         push(
             &mut out,
             Cmd::verb(
                 Item::ExportFlowMap,
-                no_flows.then_some("Add a flow in the Prototype tab first"),
+                no_flows.then_some("Add a flow in prototype mode first"),
             ),
         );
         for item in [

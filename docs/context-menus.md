@@ -470,7 +470,7 @@ It closes on a choice and on a press outside it or its ⋯. It holds the keyboar
 routing has a branch for the Scripts window (`Scripts::holds_keys`), where `Escape` closes only the
 menu and §8's keys walk and run its rows (`read_nav` into `Scripts::menu_nav`).
 
-### 6.11 An interaction (the Prototype tab)
+### 6.11 An interaction (prototype mode)
 
 An interaction's head carries `⋯` (`egui::Popup::menu`, `ui::popup_rows`): *Duplicate* (every item
 id minted afresh, nested actions' too), a rule, *Delete* in danger styling. On an instance, the

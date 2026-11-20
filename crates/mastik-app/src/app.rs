@@ -920,11 +920,11 @@ pub struct MastikApp {
     /// Keyed by node too, so a selection change cannot leave it editing another layer's
     /// effect. At most one.
     pub(crate) effect_menu: Option<(NodeId, usize)>,
-    /// The inspector's Prototype tab is up (`panels::prototype`), in place of the
-    /// Design cards. Per window, never saved: the tab is how the inspector is
-    /// looked at, not part of a document.
-    pub(crate) prototype_tab: bool,
-    /// The Prototype tab's open popover, typed fields and key capture.
+    /// Prototype mode is on (`panels::prototype`): the inspector shows its cards in
+    /// place of the Design cards. Toggled by the top bar's button and the palette.
+    /// Per window, never saved: the mode is how the document is looked at, not part of it.
+    pub(crate) prototype_mode: bool,
+    /// Prototype mode's open popover, typed fields and key capture.
     pub(crate) proto: crate::panels::ProtoState,
     /// Which tab of image editing's card is showing; a preference kept across entries.
     /// The card is open exactly while `Tool::ImageEdit` is.
@@ -2105,7 +2105,7 @@ impl MastikApp {
             synced_selection: Default::default(),
             stroke_menu: None,
             effect_menu: None,
-            prototype_tab: false,
+            prototype_mode: false,
             proto: Default::default(),
             image_tab: ImageCard::default(),
             crop_aspect: Default::default(),
@@ -3458,7 +3458,7 @@ impl MastikApp {
         if let Some(copies) = self.in_flight.mirror_copies_scrub.take() {
             self.mirror_mut().copies = copies;
         }
-        // And the Prototype tab's held number: its field shows the saved one again.
+        // And prototype mode's held number: its field shows the saved one again.
         self.proto.scrub = None;
         // And *Generate scale…*'s step count.
         if let Some(steps) = self.in_flight.scale_scrub.take() {
@@ -8354,7 +8354,7 @@ impl MastikApp {
                     }
 
                     // Right cluster, reading the resource meter (when on) · undo/redo ·
-                    // View · Snap · Tools · zoom · Settings;
+                    // | Prototype mode · Play | View · Snap · Tools | zoom · Settings;
                     // laid out `right_to_left`, so added in mirror order.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = TOP_GAP;
@@ -8386,6 +8386,19 @@ impl MastikApp {
                                 false => self.dispatch(&ctx, crate::input::Action::Play),
                             }
                         }
+                        // *Prototype mode*, left of Play: it swaps the inspector's
+                        // cards and draws the connectors, so it sits over both.
+                        let proto = self.prototype_mode;
+                        if icon_button(ui, icon::INTERACTION, 26.0, 16.0, proto, true)
+                            .on_hover_text(match proto {
+                                true => "Leave prototype mode",
+                                false => "Prototype mode",
+                            })
+                            .clicked()
+                        {
+                            self.set_prototype_mode(!proto);
+                        }
+                        top_rule(ui);
 
                         // Only the buttons' enabled state; the arms finish the text
                         // session (itself an undo step) before acting.
@@ -8959,7 +8972,7 @@ impl MastikApp {
             ViewSwitch::Lasso => self.lasso,
             ViewSwitch::Private => self.prefs.private,
             ViewSwitch::AlignVisual => self.align_visual,
-            ViewSwitch::PrototypeTab => self.prototype_tab,
+            ViewSwitch::PrototypeMode => self.prototype_mode,
         }
     }
 
@@ -9031,8 +9044,8 @@ impl MastikApp {
                 return;
             }
             ViewSwitch::AlignVisual => self.align_visual = on,
-            ViewSwitch::PrototypeTab => {
-                self.set_prototype_tab(on);
+            ViewSwitch::PrototypeMode => {
+                self.set_prototype_mode(on);
                 return;
             }
         }
@@ -15867,6 +15880,30 @@ mod library_wiring_tests {
             "CPU, memory, then undo: {cpu} {memory} {undo}"
         );
         assert_eq!(glyph_x(&mut app, icon::GAUGE), None, "no frame rate");
+    }
+
+    /// Prototype mode's button sits between redo and Play.
+    /// flip: add the button before Play in `top_bar` → fails at the order assertion.
+    #[test]
+    fn prototype_mode_sits_left_of_play() {
+        use crate::theme::icon;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let out = ctx.run_ui(Default::default(), |ui| app.top_bar(ui));
+        let x = |glyph: &str| {
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == glyph => Some(t.pos.x),
+                _ => None,
+            })
+        };
+        let redo = x(icon::ARROW_U_UP_RIGHT).expect("redo");
+        let mode = x(icon::INTERACTION).expect("the mode button");
+        let play = x(icon::PLAY).expect("play");
+        assert!(
+            redo < mode && mode < play,
+            "redo, prototype mode, then play: {redo} {mode} {play}"
+        );
     }
 
     /// The breadcrumb draws `Project / Document`, and just the document when

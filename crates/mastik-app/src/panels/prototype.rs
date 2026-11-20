@@ -1,4 +1,4 @@
-//! The inspector's Prototype tab (`docs/design/prototyping-authoring.md`): a
+//! Prototype mode's inspector cards (`docs/design/prototyping-authoring.md`): a
 //! layer's interactions, its play settings, and with nothing selected the page's
 //! flows and prototype settings. Every edit is one transaction on the saved model
 //! (`mastik_core::prototype`); nothing here plays.
@@ -20,7 +20,7 @@ use mastik_core::prototype::{
 use mastik_core::variable::{Cell, VarId, VarKind};
 use mastik_core::{Document, NodeKind, Operation, Transaction};
 
-/// The Prototype tab's state between frames: its open popover, a typed field's
+/// Prototype mode's state between frames: its open popover, a typed field's
 /// draft, the key a key trigger waits for, and a scrubbed number in flight.
 #[derive(Default)]
 pub(crate) struct ProtoState {
@@ -77,7 +77,7 @@ pub(crate) struct ActionDrag {
     pub slots: super::paint::Slots,
 }
 
-/// What a typed field of the tab is for.
+/// What a typed field of prototype mode is for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum DraftKey {
     /// A conditional's branch condition, or *Set variable*'s value (branch 0).
@@ -681,7 +681,7 @@ pub(crate) fn is_link(url: &str) -> bool {
     (u.starts_with("https://") && u.len() > 8) || (u.starts_with("http://") && u.len() > 7)
 }
 
-// --- the document, as the tab reads it -------------------------------------------
+// --- the document, as prototype mode reads it ------------------------------------
 
 /// The top-level frames of every page, page by page: what *Navigate to* and the
 /// overlay actions go to.
@@ -966,7 +966,7 @@ fn layer_links(
     }
 }
 
-/// One connector the canvas draws while the Prototype tab is up.
+/// One connector the canvas draws while prototype mode is on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Link {
     pub from: NodeId,
@@ -1261,7 +1261,7 @@ const FLOW_CHIP_GAP: f32 = 6.0;
 const FLOW_CHIP_PAD_R: f32 = 9.0;
 
 impl MastikApp {
-    /// The flow chips on the current page while the Prototype tab is up: each
+    /// The flow chips on the current page while prototype mode is on: each
     /// flow's name over its start frame's top-right corner, which plays it.
     /// Each chip's flow, rect and words; a frame starting several flows stacks
     /// them leftward.
@@ -1271,7 +1271,7 @@ impl MastikApp {
         rect: egui::Rect,
         ppp: f32,
     ) -> Vec<(mastik_core::prototype::FlowRef, egui::Rect, String)> {
-        if !self.prototype_tab {
+        if !self.prototype_mode {
             return Vec::new();
         }
         let doc = &self.session.doc;
@@ -1360,10 +1360,10 @@ impl MastikApp {
         }
     }
 
-    /// The layers wearing link dots, while the Prototype tab is up and a
+    /// The layers wearing link dots, while prototype mode is on and a
     /// selecting tool is in hand: the one selected layer, then the hovered one.
     fn knob_layers(&self) -> Vec<NodeId> {
-        if !self.prototype_tab || !self.tool.selects() {
+        if !self.prototype_mode || !self.tool.selects() {
             return Vec::new();
         }
         let mut out: Vec<NodeId> = self.session.selection.single().into_iter().collect();
@@ -1409,7 +1409,7 @@ impl MastikApp {
         ppp: f32,
         resp: &egui::Response,
     ) {
-        let live = self.prototype_tab && self.tool.selects() && self.hover_chrome_live();
+        let live = self.prototype_mode && self.tool.selects() && self.hover_chrome_live();
         let next = live
             .then(|| {
                 let p = resp.hover_pos()?;
@@ -1427,11 +1427,11 @@ impl MastikApp {
         self.proto.knob_hover.set(next);
     }
 
-    /// The layer the hover outline rings for the Prototype tab: the one whose
+    /// The layer the hover outline rings in prototype mode: the one whose
     /// connector is under the pointer, which a click selects; else the one
     /// wearing link dots, while the pointer is on one of them outside it.
     pub(crate) fn link_hover(&self) -> Option<NodeId> {
-        if !self.prototype_tab {
+        if !self.prototype_mode {
             return None;
         }
         self.proto
@@ -1460,7 +1460,7 @@ impl MastikApp {
         rect: egui::Rect,
         ppp: f32,
     ) -> Option<ActionAt> {
-        if !self.prototype_tab || !self.connector_live(screen, rect, ppp) {
+        if !self.prototype_mode || !self.connector_live(screen, rect, ppp) {
             return None;
         }
         self.proto
@@ -1494,7 +1494,7 @@ impl MastikApp {
         rect: egui::Rect,
         ppp: f32,
     ) {
-        if !self.prototype_tab {
+        if !self.prototype_mode {
             self.proto.ghost_rect.set(None);
             self.proto.link_hot.set(None);
             self.proto.links_drawn.borrow_mut().clear();
@@ -1716,11 +1716,11 @@ impl MastikApp {
         self.session.info(format!("Linked to “{target}”"));
     }
 
-    /// The overlay being placed by hand: while the Prototype tab is up and the
+    /// The overlay being placed by hand: while prototype mode is on and the
     /// open popover is an *Open overlay* or *Swap overlay* at *Manual* on a layer
     /// of this page. Its offset is the one being dragged or typed, else the saved.
     pub(crate) fn overlay_placing(&self) -> Option<Placing> {
-        if !self.prototype_tab {
+        if !self.prototype_mode {
             return None;
         }
         let at = self.proto.open?;
@@ -1802,7 +1802,7 @@ impl MastikApp {
     /// Whether a press at `screen` takes the placed overlay's ghost, as it was
     /// drawn last frame.
     pub(crate) fn ghost_at(&self, screen: egui::Pos2) -> bool {
-        self.prototype_tab
+        self.prototype_mode
             && self
                 .proto
                 .ghost_rect
@@ -1903,7 +1903,7 @@ pub(crate) struct Placing {
     pub offset: mastik_core::kurbo::Vec2,
 }
 
-// --- the tab ------------------------------------------------------------------
+// --- prototype mode -----------------------------------------------------------
 
 /// The popover's width.
 const POP_W: f32 = crate::app::POPOVER_W;
@@ -1919,52 +1919,20 @@ const BRANCH_HEAD_H: f32 = 14.0;
 const BRANCH_TUCK: f32 = 4.0;
 
 impl MastikApp {
-    /// Show or put away the Prototype tab, and say so.
-    pub(crate) fn set_prototype_tab(&mut self, on: bool) {
-        if self.prototype_tab != on {
+    /// Turn prototype mode on or off, and say so.
+    pub(crate) fn set_prototype_mode(&mut self, on: bool) {
+        if self.prototype_mode != on {
             self.close_inspector_popovers();
             self.proto.capture = None;
         }
-        self.prototype_tab = on;
+        self.prototype_mode = on;
         self.session.info(match on {
-            true => "Prototype tab",
-            false => "Design tab",
+            true => "Prototype mode on",
+            false => "Prototype mode off",
         });
     }
 
-    /// The inspector's head: *Design* | *Prototype*, a segmented control on a card
-    /// of its own over every other card.
-    pub(super) fn inspector_tabs(&mut self, ui: &mut egui::Ui) {
-        let mut pick = None;
-        ui.push_id("inspector-tabs", |ui| {
-            ui::card(ui, |ui| {
-                let w = ui.available_width();
-                pick = ui::segmented_tipped(
-                    ui,
-                    w,
-                    ui::SEGMENT_CELL_H,
-                    2,
-                    usize::from(self.prototype_tab),
-                    |_| true,
-                    |i| match i {
-                        0 => "The layer's look and layout",
-                        _ => "How the layer behaves when the prototype plays",
-                    },
-                    |p, i, r, on| ui::segment_label(p, r, ["Design", "Prototype"][i], on),
-                );
-            });
-        });
-        if let Some(i) = pick {
-            let on = i == 1;
-            if on != self.prototype_tab {
-                self.close_inspector_popovers();
-                self.proto.capture = None;
-                self.prototype_tab = on;
-            }
-        }
-    }
-
-    /// The Prototype tab's cards for what is selected.
+    /// Prototype mode's cards for what is selected.
     pub(super) fn prototype_inspector(&mut self, ui: &mut egui::Ui) {
         if self
             .proto
@@ -1999,8 +1967,8 @@ impl MastikApp {
         }
     }
 
-    /// The layer's identity in the Prototype tab: its glyph and name, and what it
-    /// is, without the Design tab's rows.
+    /// The layer's identity in prototype mode: its glyph and name, and what it
+    /// is, without the Design cards' rows.
     fn proto_identity(&mut self, ui: &mut egui::Ui, id: NodeId) {
         let doc = &self.session.doc;
         let Some(n) = doc.get(id) else { return };
@@ -4801,7 +4769,7 @@ mod tests {
     fn dropping_a_link_on_a_screen_links_to_it() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
-        f.app.prototype_tab = true;
+        f.app.prototype_mode = true;
         f.app.session.selection.set_one(f.add);
         f.app
             .drop_link(f.add, mastik_core::kurbo::Point::new(100.0, 100.0));
@@ -4831,7 +4799,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
-        f.app.prototype_tab = true;
+        f.app.prototype_mode = true;
         f.app.session.selection.set_one(f.add);
         let q = f.app.selection_quad(f.add, rect, 1.0).expect("on screen");
         let dots = knob_dots(q);
@@ -4858,11 +4826,11 @@ mod tests {
             Some((f.add, dots[0].0)),
             "the hovered layer's"
         );
-        f.app.prototype_tab = false;
+        f.app.prototype_mode = false;
         assert_eq!(
             f.app.link_knob_at(dots[0].1, rect, 1.0),
             None,
-            "the Design tab's none"
+            "design mode's none"
         );
     }
 
@@ -5057,7 +5025,7 @@ mod tests {
     }
 
     /// `action` on *Add to cart* as reaction `item(10)`'s one action `item(1)`,
-    /// with the Prototype tab up.
+    /// with prototype mode on.
     fn one_action(f: &mut F, action: Action) -> ActionAt {
         assert!(
             f.app
@@ -5073,7 +5041,7 @@ mod tests {
                     )],
                 }]))
         );
-        f.app.prototype_tab = true;
+        f.app.prototype_mode = true;
         ActionAt {
             node: f.add,
             reaction: item(10),
@@ -5454,21 +5422,18 @@ mod tests {
         );
     }
 
-    /// The tab shows the Prototype cards in place of the Design ones, and the
-    /// page's flows with nothing selected.
+    /// Prototype mode shows the Prototype cards in place of the Design ones, and
+    /// the page's flows with nothing selected.
     #[test]
-    fn the_prototype_tab_shows_its_own_cards() {
+    fn prototype_mode_shows_its_own_cards() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         f.app.session.selection.set_one(f.home);
         draw(&mut f.app, &ctx);
-        assert!(
-            f.app.cards_drawn.contains(&"Fill"),
-            "fixture: the Design tab"
-        );
+        assert!(f.app.cards_drawn.contains(&"Fill"), "fixture: design mode");
         assert!(!f.app.cards_drawn.contains(&"Interactions"));
         f.app
-            .set_view_switch(crate::input::ViewSwitch::PrototypeTab, true);
+            .set_view_switch(crate::input::ViewSwitch::PrototypeMode, true);
         f.app.cards_drawn.clear();
         draw(&mut f.app, &ctx);
         assert!(f.app.cards_drawn.contains(&"Interactions"));
@@ -5512,7 +5477,7 @@ mod tests {
             1,
             "fixture: the instance follows its main"
         );
-        f.app.prototype_tab = true;
+        f.app.prototype_mode = true;
         f.app.session.selection.set_one(f.inst);
         let clean = draw(&mut f.app, &ctx);
         let before = crate::ui::painted_override_dots(&clean).len();

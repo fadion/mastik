@@ -1321,7 +1321,7 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         | O::SetScriptName { .. }
         | O::SetScriptSource { .. }
         | O::SetPlayExport { .. } => None,
-        // The Prototype tab's cards.
+        // Prototype mode's cards.
         O::SetReactions { .. } => Some("Interactions"),
         O::SetPlay { .. } => Some("Prototype"),
     }
