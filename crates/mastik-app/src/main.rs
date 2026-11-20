@@ -1681,8 +1681,10 @@ fn prototype_html(doc: &mastik_core::Document, file: &str) -> Result<String, Str
 }
 
 /// The browser player `crates/mastik-web/build.sh` writes: from the folder
-/// `MASTIK_PLAYER_DIR` names, else `player` beside the executable or one folder up
-/// (`target/player` for a `cargo run` build).
+/// `MASTIK_PLAYER_DIR` names, else `player` beside the executable (Windows, the
+/// Linux archive and AppImage) or one folder up (`target/player` for a `cargo
+/// run` build), else where a package puts data: `../share/mastik/player` from
+/// `/usr/bin`, `../Resources/player` from a macOS bundle's `Contents/MacOS`.
 pub(crate) fn player_build() -> Result<(Vec<u8>, String), String> {
     const WASM: &str = "mastik_web_bg.wasm";
     const GLUE: &str = "mastik_web.js";
@@ -1693,6 +1695,10 @@ pub(crate) fn player_build() -> Result<(Vec<u8>, String), String> {
     if let Ok(exe) = std::env::current_exe() {
         for dir in exe.ancestors().skip(1).take(2) {
             dirs.push(dir.join("player"));
+        }
+        if let Some(up) = exe.parent().and_then(|d| d.parent()) {
+            dirs.push(up.join("share").join("mastik").join("player"));
+            dirs.push(up.join("Resources").join("player"));
         }
     }
     for dir in &dirs {

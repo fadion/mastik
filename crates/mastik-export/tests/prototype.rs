@@ -349,6 +349,124 @@ fn the_page_holds_the_packed_parts() {
     assert_eq!(doc.page_ids().count(), 3, "the pruned one");
 }
 
+/// The page's script calls only methods `mastik-web`'s player exports, and
+/// every method a shell owes play is called: frame, the pointer, wheel and keys,
+/// the hints, opened addresses and notices. The page is never built here, so a
+/// renamed or dropped method would otherwise surface only in a browser.
+///
+/// flip: renaming `Player::over_hotspot` in `mastik-web` → fails at "the player
+/// exports".
+#[test]
+fn the_page_calls_only_what_the_player_exports() {
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let html = Parts::of(
+        &f.doc,
+        Player {
+            wasm: WASM,
+            glue: GLUE,
+        },
+    )
+    .expect("parts")
+    .html();
+    let lib = include_str!("../../mastik-web/src/lib.rs");
+    let exported: Vec<&str> = lib
+        .split("pub fn ")
+        .skip(1)
+        .filter_map(|s| s.split('(').next())
+        .collect();
+    let mut called: Vec<&str> = html
+        .split("player.")
+        .skip(1)
+        .filter_map(|s| {
+            let name = s.split('(').next()?;
+            name.chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_')
+                .then_some(name)
+        })
+        .collect();
+    called.sort_unstable();
+    called.dedup();
+    for name in &called {
+        assert!(exported.contains(name), "the player exports {name}");
+    }
+    for owed in [
+        "frame",
+        "pointer_down",
+        "pointer_move",
+        "pointer_up",
+        "pointer_leave",
+        "wheel",
+        "key",
+        "hotspots",
+        "take_urls",
+        "take_notices",
+        "restart",
+        "layer_at",
+        "layer_box",
+        "measures",
+    ] {
+        assert!(called.contains(&owed), "the page calls {owed}");
+    }
+    assert!(html.contains("requestAnimationFrame"), "ticks by frame");
+}
+
+/// Inspect mode's data goes in: every layer's CSS as *Copy as CSS* writes it, and
+/// the files a layer's export settings write, rendered, under the layer's id.
+///
+/// flip: `inspect_files` skipping every layer → fails at "the button's PNG".
+#[test]
+fn inspect_carries_each_layers_css_and_export_files() {
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let button = f
+        .doc
+        .node_ids()
+        .find(|id| f.doc.get(*id).is_some_and(|n| n.name() == "Button"))
+        .expect("the button");
+    let spec = mastik_core::ExportSpec::new(
+        mastik_core::ExportFormat::Png,
+        mastik_core::ExportScale::Times(1.0),
+    );
+    f.doc
+        .apply(&Transaction(vec![Operation::SetExports {
+            id: button,
+            exports: keyed_by_position([spec]),
+        }]))
+        .expect("export settings");
+    let parts = Parts::of(
+        &f.doc,
+        Player {
+            wasm: WASM,
+            glue: GLUE,
+        },
+    )
+    .expect("parts");
+    let mut pruned = prune(&f.doc).expect("pruned");
+    let res = mastik_core::Resolved::settled(&mut pruned);
+    let css = parts
+        .css
+        .iter()
+        .find(|(id, _)| *id == button)
+        .map(|(_, c)| c.as_str());
+    assert_eq!(
+        css,
+        Some(mastik_export::code::css_of(&pruned, &res, &[button]).as_str()),
+        "the button's CSS, as Copy as CSS writes it"
+    );
+    assert!(
+        !parts.css.iter().any(|(id, _)| pruned.is_page(*id)),
+        "no page is a layer to inspect"
+    );
+    let file = parts
+        .files
+        .iter()
+        .find(|f| f.layer == button)
+        .expect("the button's PNG");
+    assert_eq!(file.path, "Button.png");
+    assert_eq!(&file.bytes[..8], b"\x89PNG\r\n\x1a\n");
+}
+
 /// The size estimate is never under the file written and not far over it: the
 /// parts at gzip's fastest level against its best.
 ///

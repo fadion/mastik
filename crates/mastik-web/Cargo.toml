@@ -24,6 +24,8 @@ strip = true
 
 [dependencies]
 mastik-core = { path = "../mastik-core" }
+# Without `scripts`: Luau's C++ does not build for the page.
+mastik-play = { path = "../mastik-play", default-features = false }
 mastik-render = { path = "../mastik-render" }
 wgpu = "=29.0.4"
 # Pinned below 0.2.126, whose closures must be `UnwindSafe` under `panic=unwind`,

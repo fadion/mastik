@@ -1,15 +1,15 @@
 # Prototyping: the HTML export
 
 How a prototype becomes one HTML file a client opens with a double-click: the browser build of
-the player, the trim to the chosen flows, the fonts, and the packing. What is not built yet (the
-export dialog, the player bar, the play engine in the page, *Run script* in the page) is in
-`prototyping.md` §8 and §10. Code:
-`crates/mastik-web` (the page's player), `mastik-export/src/prototype.rs` (the packer),
-`mastik export --prototype` (the CLI).
+the player, the trim to the chosen flows, the fonts, the packing, and the page playing. What is
+not built yet (the export dialog, *Run script* in the page) is in `prototyping.md` §8 and §10.
+Code: `crates/mastik-web` (the page's player), `mastik-export/src/prototype.rs` (the packer and
+the page's script), `mastik export --prototype` (the CLI).
 
 ## The browser build
 
-The page runs `mastik-core` and `mastik-render` compiled to `wasm32-unknown-unknown`, drawing
+The page runs `mastik-core`, `mastik-play` (without `scripts`) and `mastik-render` compiled to
+`wasm32-unknown-unknown`, drawing
 with vello on WebGPU, else with `vello_cpu` into a 2D canvas. Both are the canvas's own
 renderer, so the page draws what the editor draws.
 
@@ -33,9 +33,12 @@ renderer, so the page draws what the editor draws.
   `mastik_web::start` awaits the GPU setup before it holds a `Resolved`.
 - **Luau is not in the page.** `mlua` builds Luau's C++ with `cc`, which needs a C++
   compiler and a C/C++ runtime for the target; `wasm32-unknown-unknown` has neither, and the
-  build fails at `mlua-sys`. Hosting it would take Emscripten or wasi-sdk (downloads beyond
-  rustup), or a Luau built apart and loaded beside the player. Until then an exported file does
-  not run *Run script*.
+  build fails at `mlua-sys`. Moving the player to `wasm32-unknown-emscripten`, which `mlua`
+  supports, is closed: `wasm-bindgen` and wgpu's WebGPU backend need `wasm32-unknown-unknown`.
+  What remains is Luau's C++ compiled by clang against wasi-sdk's sysroot (libc, libc++) into
+  the same module, or a second module beside the player that runs a script on a copy and hands
+  back its operations; `prototyping.md` §10 holds the question. Until then the page plays
+  without `scripts` and *Run script* is skipped with a notice.
 - **What the player's code may not use**, because the page has none of it: threads
   (`std::thread::spawn` fails; `available_parallelism` errs, which the CPU effects' banding
   already reads as one), `std::time::Instant`/`SystemTime` (they panic; time comes from
@@ -60,7 +63,11 @@ the DevTools protocol):
 - A panic caught by `catch_unwind` in a module built this way returns its fallback value
   (run under Node).
 - A face the CLI found installed (Georgia) is embedded and drawn in the page.
-- The wasm is about 11.8 MB, 4.0 MB gzipped; it carries the bundled Inter, which the page
+- A file of two frames, a scrolling list, a push, an overlay and *Back* plays in the in-app
+  pane through WebGPU and through `?cpu` over HTTP: the wheel scrolls the list, the push draws
+  both frames mid-way, the overlay opens and closes, hints show, and no animation frame is
+  asked for while play is still.
+- The wasm is about 12.9 MB, 4.3 MB gzipped; it carries the bundled Inter, which the page
   never has to embed again.
 
 ## What goes in
@@ -101,8 +108,9 @@ as `serve` does.
 ## The file
 
 - **One gzip stream** holds a container: `MSTKPLAY`, a `u32` version (1), then per entry a
-  kind byte (1 the wasm, 2 the document, 3 a font whose name is its alias), the name and the
-  data, each behind a little-endian `u32` length. The packer writes it and the page's own
+  kind byte (1 the wasm, 2 the document, 3 a font whose name is its alias, 4 a layer's CSS
+  named by its id, 5 a file of a layer's export settings named by its id, a newline and its
+  path), the name and the data, each behind a little-endian `u32` length. The packer writes it and the page's own
   script reads it; nothing else does.
 - The stream is **base64'd once** into a `<script type="application/octet-stream">`, decoded
   in the page, unpacked with `DecompressionStream("gzip")`, and the wasm is instantiated from
@@ -117,14 +125,63 @@ as `serve` does.
 
 ## The player in the page
 
-`mastik_web::start(canvas, document, cpu)` loads the document, settles it, and shows one
-screen, `Player::screen`: the start frame of the flow the export opens on, fitted to the
-window. That method is the seam the play engine fills: it will own the played copy and the
-current screen, and the shell keeps drawing and the canvas.
+`mastik_web::start(canvas, document, cpu)` loads the document and starts `mastik-play`'s
+`Player` on the flow the export opens on (`PlayExport::opens`, else the first flow, else the
+first page's first frame). The page plays on what it loaded: there is no original to protect,
+and the engine is the in-app player's, so the two behave the same. The shell keeps only the
+canvas, the drawing and the page around them.
+
+- **Each animation frame** `Player::frame(ms, room, dpr)` ticks the engine by the time since
+  the last frame, places the screen, and draws `scene()` through `mastik_render::play` — on
+  either backend, the canvas's backing store sized to the scene at the placement's scale times
+  the device pixel ratio. A frame whose scene, dirty nodes and pixel size are unchanged is not
+  drawn. The page asks for the next frame only while `is_moving()`; an input or a resize
+  asks for one, the first ticking by 0.
+- **Placing** (`shell::place`): the scaling is `PlayExport::scaling`, else the screen's page's
+  own. *Fit* scales the whole device to the room, up or down; *Actual size* is one CSS pixel
+  a unit; *Fill width* fits the width. A screen larger than the room grows the stage, which
+  scrolls. The device frame, when the export shows it and the page names a device, is a dark
+  bezel 14 units wide round the screen, 24 CSS pixels from the window's edges under *Fit*;
+  a screen under 600 units on its short side wears a phone's corners (40), else a tablet's (18).
+- **Input** goes to the engine in screen space, mapped back by the placement's scale: the
+  canvas's pointer down, move, up, leave and cancel (captured during a press), the wheel
+  (deltas in lines or pages made pixels; the page scrolls when no frame used it), and the
+  window's keys without Ctrl, Alt or Meta. A key is named as a key trigger records it (egui's
+  `Key::name`: `Left`, `Space`, `Comma`); while an input is focused a printable key is text.
+- **Addresses** play asks to open (`take_requests`) open in a new tab from inside the input
+  handler that caused them, while the browser still counts the act the viewer's. Notices go to
+  the console; `ScriptsOff` is shown to the viewer once.
+- **The player bar**, when the export shows it, runs along the foot: the flow's name (a list
+  of the file's flows when it holds several, switching plays that flow from its start),
+  *Restart*, *Hints* when the export shows hotspot hints, and *Inspect*.
+- **Hotspot hints** are drawn on a 2D canvas over the screen: `hotspots()` as rectangles in the
+  selection blue, held while *Hints* is on, else at `Scene::hint_flash`'s strength after a click
+  on nothing. The pointer is a hand over a hotspot.
+- **Inspect mode**, the bar's *Inspect* switch, stops interactions (the pointer leaves the
+  prototype; keys go nowhere but Escape, which drops the pick) and opens a panel beside the
+  stage. A click picks the topmost visible layer under it in the frame on top, by box
+  (`Player::layer_at`); the picked layer is outlined, the hovered one dashed, and the distances
+  between them — or to the picked layer's parent while nothing else is hovered — are drawn as
+  the canvas's `Alt` measure quotes them (`mastik_core::measure::between`, its labels and
+  colours). The panel shows the layer's name, its CSS as *Copy as CSS* writes it with a *Copy*
+  button, and the files its export settings write, to download. The page has no exporter, so
+  both are made when the file is: `prototype::inspect_css` for every layer (a layer whose CSS
+  is over 32 KB is left out, and the panel says to copy it from Mastik) and
+  `prototype::inspect_files`, rendered through `plan`. Boxes are read off the played copy's
+  layout, moved by scroll offsets; a sticky or fixed child is boxed where it would scroll to.
+- The page's arithmetic (`shell.rs`: placing, the pointer's and wheel's mapping, key names)
+  builds on the desktop too, and `mastik-export`'s `tests/web_shell.rs` includes and tests it;
+  `tests/prototype.rs` checks the page's script calls only what the player exports.
 
 ## Where the CLI finds the player
 
 `mastik export doc.mastik --prototype -o out.html` reads `mastik_web_bg.wasm` and
 `mastik_web.js` from `MASTIK_PLAYER_DIR`, else `player/` beside the executable or one folder up
-(`target/player`, where `build.sh` writes them). Shipping the player beside the release
-executable is part of the release build, not yet done.
+(`target/player`, where `build.sh` writes them), else `../share/mastik/player` or
+`../Resources/player` from the executable's folder.
+
+The release ships it on every platform: the Release workflow's `player` job runs `build.sh`
+once on the pinned nightly and hands the folder to each leg, which puts it in `player/` beside
+the executable (the Windows zip and installer, the Linux archive and AppImage), in
+`Contents/Resources/player` in the macOS bundle, and in `/usr/share/mastik/player` in the .deb
+and .rpm (`packaging/linux/stage-payload.sh`, from `MASTIK_PLAYER_DIR` or `target/player`).

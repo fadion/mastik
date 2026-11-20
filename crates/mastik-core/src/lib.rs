@@ -58,6 +58,7 @@ pub mod knife;
 pub mod layout;
 pub mod marker;
 pub mod matching;
+pub mod measure;
 pub mod merge;
 pub mod meta;
 pub mod naming;

@@ -195,6 +195,58 @@ pub fn fonts_used(doc: &Document, res: &Resolved) -> Vec<FontFile> {
     out
 }
 
+/// The longest CSS a layer carries for inspect mode. A frame's is its whole
+/// subtree's rules, so a large screen's would weigh more than it is worth to
+/// someone inspecting; past this the page says to copy it from the app.
+pub const INSPECT_CSS_MAX: usize = 32 * 1024;
+
+/// Each layer's CSS as *Copy as CSS* writes it ([`crate::code::css_of`]), for
+/// every layer on `doc`'s pages but the pages themselves, in document order. A
+/// layer whose CSS is longer than [`INSPECT_CSS_MAX`] is left out.
+pub fn inspect_css(doc: &Document, res: &Resolved) -> Vec<(NodeId, String)> {
+    let pages: Vec<NodeId> = doc.page_ids().collect();
+    let layers = mastik_core::subtree_nodes(doc, &pages);
+    layers
+        .into_iter()
+        .filter(|id| !pages.contains(id))
+        .filter_map(|id| {
+            let css = crate::code::css_of(doc, res, &[id]);
+            (!css.is_empty() && css.len() <= INSPECT_CSS_MAX).then_some((id, css))
+        })
+        .collect()
+}
+
+/// One file a layer's export settings write, for inspect mode to offer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InspectFile {
+    pub layer: NodeId,
+    /// Its name as the export would write it, folders included.
+    pub path: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Every file the layers' own export settings write ([`crate::plan::plan`]), rendered
+/// now, since the page carries no exporter.
+pub fn inspect_files(doc: &Document, res: &Resolved) -> Vec<InspectFile> {
+    let pages: Vec<NodeId> = doc.page_ids().collect();
+    let mut out = Vec::new();
+    for id in mastik_core::subtree_nodes(doc, &pages) {
+        if doc.get(id).is_none_or(|n| n.exports().is_empty()) {
+            continue;
+        }
+        for file in crate::plan::plan(doc, res, &[id], Default::default()) {
+            if let Some(bytes) = crate::plan::render(doc, res, &file) {
+                out.push(InspectFile {
+                    layer: id,
+                    path: file.path,
+                    bytes,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// What one exported file holds, before it is packed.
 #[derive(Clone, Debug)]
 pub struct Parts<'a> {
@@ -204,16 +256,22 @@ pub struct Parts<'a> {
     pub fonts: Vec<FontFile>,
     /// The page's title: the flow the file opens on.
     pub title: String,
+    /// What inspect mode shows, written here because the page carries no
+    /// exporter: [`inspect_css`] and [`inspect_files`].
+    pub css: Vec<(NodeId, String)>,
+    pub files: Vec<InspectFile>,
 }
 
 impl<'a> Parts<'a> {
-    /// [`prune`] `doc`, lay the result out and gather its fonts. Fonts are those
-    /// registered with this thread's shaping engine, so the caller registers the
-    /// document's families first, as the canvas has.
+    /// [`prune`] `doc`, lay the result out and gather its fonts and what inspect
+    /// mode shows. Fonts are those registered with this thread's shaping engine,
+    /// so the caller registers the document's families first, as the canvas has.
     pub fn of(doc: &Document, player: Player<'a>) -> Result<Self, PackError> {
         let mut pruned = prune(doc)?;
         let res = Resolved::settled(&mut pruned);
         let fonts = fonts_used(&pruned, &res);
+        let css = inspect_css(&pruned, &res);
+        let files = inspect_files(&pruned, &res);
         let title = pruned
             .play_export()
             .opens
@@ -230,6 +288,8 @@ impl<'a> Parts<'a> {
             document,
             fonts,
             title,
+            css,
+            files,
         })
     }
 
@@ -298,6 +358,11 @@ pub enum Entry {
     Document = 2,
     /// A font file; its name is the alias, empty for none.
     Font = 3,
+    /// A layer's CSS for inspect mode; its name is the layer's id.
+    Css = 4,
+    /// A file a layer's export settings write; its name is the layer's id, a
+    /// newline, and the file's path.
+    File = 5,
 }
 
 /// The parts laid end to end: [`MAGIC`], [`CONTAINER_VERSION`] as `u32` LE, then
@@ -322,6 +387,13 @@ fn container(parts: &Parts<'_>) -> Vec<u8> {
             font.alias.as_deref().unwrap_or(""),
             &font.bytes,
         );
+    }
+    for (id, css) in &parts.css {
+        entry(Entry::Css, &id.to_wire(), css.as_bytes());
+    }
+    for file in &parts.files {
+        let name = format!("{}\n{}", file.layer.to_wire(), file.path);
+        entry(Entry::File, &name, &file.bytes);
     }
     out
 }
@@ -357,24 +429,71 @@ const HEAD: &str = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
 <meta name=\"generator\" content=\"Mastik\">\n";
 
+/// The page's look: the stage the screen is placed on (scrolling when the screen
+/// is larger), the device frame behind it, the hints canvas over it, inspect
+/// mode's panel beside it, and the player bar along the foot.
 const STYLE: &str = "<style>
 html, body { margin: 0; height: 100%; background: #1e1e1e; color: #e6e6e6;
-  font: 14px system-ui, sans-serif; }
-body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
-canvas { display: block; background: #fff; }
-#status { position: fixed; inset: auto 0 16px 0; text-align: center; }
+  font: 13px system-ui, sans-serif; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+#main { flex: 1; min-height: 0; display: flex; }
+#stage { flex: 1; min-width: 0; overflow: auto; }
+#inspect { flex: none; width: 320px; overflow: auto; padding: 12px; box-sizing: border-box;
+  background: #252527; border-left: 1px solid #333336; }
+#inspect[hidden] { display: none; }
+#inspect h2 { margin: 0 0 8px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+#inspect h3 { margin: 16px 0 6px; font-size: 11px; font-weight: 600; color: #9a9aa0;
+  text-transform: uppercase; letter-spacing: 0.04em; display: flex; align-items: center; }
+#inspect h3 button { margin-left: auto; text-transform: none; letter-spacing: 0; }
+#inspect pre { margin: 0; padding: 8px; border-radius: 5px; background: #1b1b1d;
+  font: 12px ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+#inspect p { margin: 0; color: #9a9aa0; }
+#inspect a { display: block; padding: 4px 0; color: #63b3f5; }
+#inspect button { height: 22px; padding: 0 8px; border: 0; border-radius: 5px;
+  background: #333336; color: #e6e6e6; font: inherit; font-size: 12px; cursor: pointer; }
+#room { position: relative; }
+#device { position: absolute; background: #0d0d0e;
+  box-shadow: 0 0 0 1px #3a3a3d, 0 16px 48px rgba(0, 0, 0, 0.5); }
+#screen, #hints { position: absolute; display: block; }
+#screen { background: #fff; touch-action: none; }
+#hints { pointer-events: none; }
+#bar { flex: none; display: flex; align-items: center; gap: 6px; height: 40px;
+  padding: 0 12px; background: #252527; border-top: 1px solid #333336; }
+#bar[hidden] { display: none; }
+#name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#bar button, #bar select { height: 26px; padding: 0 10px; border: 0; border-radius: 5px;
+  background: #333336; color: #e6e6e6; font: inherit; cursor: pointer; }
+#bar button:hover, #bar select:hover { background: #3d3d41; }
+#bar button[aria-pressed=\"true\"] { background: #2b5f8f; }
+#status, #toast { position: fixed; inset: auto 0 56px 0; text-align: center; pointer-events: none; }
+#toast span { padding: 6px 12px; border-radius: 6px; background: #333336; }
+#toast[hidden] { display: none; }
 </style>
 ";
 
-const BODY: &str = "<canvas id=\"screen\" width=\"1\" height=\"1\"></canvas>\n\
-<div id=\"status\">Opening the prototype…</div>\n";
+const BODY: &str = "<div id=\"main\"><main id=\"stage\"><div id=\"room\">\
+<div id=\"device\" hidden></div>\
+<canvas id=\"screen\" width=\"1\" height=\"1\"></canvas>\
+<canvas id=\"hints\" width=\"1\" height=\"1\"></canvas></div></main>\
+<aside id=\"inspect\" hidden></aside></div>\n\
+<nav id=\"bar\" hidden><span id=\"name\"></span><select id=\"flows\" hidden \
+aria-label=\"Flow\"></select><button id=\"restart\" type=\"button\">Restart</button>\
+<button id=\"hint-switch\" type=\"button\" aria-pressed=\"false\" hidden>Hints</button>\
+<button id=\"inspect-switch\" type=\"button\" aria-pressed=\"false\">Inspect</button></nav>\n\
+<div id=\"status\">Opening the prototype…</div>\n<div id=\"toast\" hidden><span></span></div>\n";
 
 /// Unpacks the payload, loads the player from its bytes, registers the fonts and
-/// draws. `?cpu` in the address forces the CPU renderer. The outcome is left on
-/// `<body>` as `data-backend` or `data-error`, for whoever checks the page.
-const BOOT: &str = r#"(async () => {
-  const status = document.getElementById("status");
-  const canvas = document.getElementById("screen");
+/// plays: each animation frame ticks the engine by the time since the last and
+/// draws, and stops asking for frames while nothing moves and no input came. The
+/// canvas's pointer, wheel and the window's keys go to the player in CSS pixels
+/// from the canvas; an address play opens goes to a new tab from the input that
+/// asked for it, while the browser still counts it the viewer's act. `?cpu` in
+/// the address forces the CPU renderer. The outcome is left on `<body>` as
+/// `data-backend` or `data-error`, for whoever checks the page.
+const BOOT: &str = r##"(async () => {
+  const $ = id => document.getElementById(id);
+  const status = $("status");
+  const canvas = $("screen");
   try {
     if (typeof DecompressionStream === "undefined") {
       throw new Error("This browser cannot open the prototype: it lacks DecompressionStream.");
@@ -395,19 +514,7 @@ const BOOT: &str = r#"(async () => {
     for (const font of parts.fonts) wasm_bindgen.add_font(font.bytes, font.alias || undefined);
     const cpu = new URLSearchParams(location.search).has("cpu");
     const player = await wasm_bindgen.start(canvas, parts.document, cpu);
-    const [w, h] = player.screen_size();
-    const draw = () => {
-      const scale = Math.min(innerWidth / w, innerHeight / h);
-      const cssW = Math.max(1, Math.floor(w * scale));
-      const cssH = Math.max(1, Math.floor(h * scale));
-      canvas.style.width = cssW + "px";
-      canvas.style.height = cssH + "px";
-      canvas.width = Math.round(cssW * devicePixelRatio);
-      canvas.height = Math.round(cssH * devicePixelRatio);
-      player.draw(canvas.width, canvas.height);
-    };
-    draw();
-    addEventListener("resize", draw);
+    play(player, parts);
     status.remove();
     document.body.dataset.backend = player.backend();
   } catch (e) {
@@ -416,13 +523,263 @@ const BOOT: &str = r#"(async () => {
     console.error(e);
   }
 
+  function play(player, parts) {
+    const stage = $("stage"), room = $("room"), device = $("device");
+    const hints = $("hints"), hintCtx = hints.getContext("2d");
+    const bar = $("bar"), flowList = $("flows"), hintSwitch = $("hint-switch");
+    const panel = $("inspect"), inspectSwitch = $("inspect-switch");
+    let last = null, queued = false, hintsOn = false, hintsShown = false, placed = "";
+    // Inspect mode: interactions stop, and a click picks the layer under it.
+    let inspecting = false, picked = "", over = "";
+
+    const wake = () => {
+      if (!queued) { queued = true; requestAnimationFrame(frame); }
+    };
+    function frame(t) {
+      queued = false;
+      const ms = last === null ? 0 : t - last;
+      const p = player.frame(ms, stage.clientWidth, stage.clientHeight, devicePixelRatio);
+      place(p);
+      drawHints(p[10]);
+      if (p[9]) { last = t; wake(); } else last = null;
+    }
+    function place(p) {
+      const [, sw, sh, x, y, w, h, b, r] = p;
+      const key = p.slice(1, 9).join() + "|" + devicePixelRatio;
+      if (key === placed) return;
+      placed = key;
+      const px = v => v + "px";
+      room.style.width = px(sw);
+      room.style.height = px(sh);
+      for (const c of [canvas, hints]) {
+        Object.assign(c.style, { left: px(x), top: px(y), width: px(w), height: px(h), borderRadius: px(r) });
+      }
+      hints.width = Math.max(1, Math.round(w * devicePixelRatio));
+      hints.height = Math.max(1, Math.round(h * devicePixelRatio));
+      hintsShown = true;
+      device.hidden = b === 0;
+      Object.assign(device.style, {
+        left: px(x - b), top: px(y - b), width: px(w + 2 * b), height: px(h + 2 * b), borderRadius: px(r + b),
+      });
+    }
+    function drawHints(flash) {
+      if (inspecting) return drawInspect();
+      const alpha = player.hotspot_hints() ? (hintsOn ? 1 : flash) : 0;
+      if (alpha <= 0 && !hintsShown) return;
+      const d = devicePixelRatio;
+      hintCtx.clearRect(0, 0, hints.width, hints.height);
+      hintsShown = alpha > 0;
+      if (!hintsShown) return;
+      const r = player.hotspots();
+      hintCtx.lineWidth = 2 * d;
+      hintCtx.fillStyle = `rgba(99, 179, 245, ${0.2 * alpha})`;
+      hintCtx.strokeStyle = `rgba(99, 179, 245, ${alpha})`;
+      for (let i = 0; i < r.length; i += 4) {
+        hintCtx.fillRect(r[i] * d, r[i + 1] * d, r[i + 2] * d, r[i + 3] * d);
+        hintCtx.strokeRect(r[i] * d + d, r[i + 1] * d + d, r[i + 2] * d - 2 * d, r[i + 3] * d - 2 * d);
+      }
+    }
+    // The picked layer's box, the hovered one's, and the distances between them
+    // (or to the picked layer's parent) as the canvas's Alt measure draws them.
+    function drawInspect() {
+      const d = devicePixelRatio, c = hintCtx;
+      c.clearRect(0, 0, hints.width, hints.height);
+      hintsShown = true;
+      const box = (id, width, dash) => {
+        const b = id ? player.layer_box(id) : [];
+        if (b.length !== 4) return;
+        c.lineWidth = width * d;
+        c.setLineDash(dash.map(v => v * d));
+        c.strokeStyle = "#63b3f5";
+        c.strokeRect(b[0] * d, b[1] * d, b[2] * d, b[3] * d);
+      };
+      if (over !== picked) box(over, 1, [4, 3]);
+      box(picked, 2, []);
+      c.setLineDash([]);
+      if (!picked) return;
+      c.font = `${11 * d}px system-ui, sans-serif`;
+      c.textAlign = "center";
+      c.textBaseline = "middle";
+      for (const m of player.measures(picked, over === picked ? "" : over)) {
+        const [axis, at, from, to, label] = m.split("|");
+        const [a, f, t] = [Number(at) * d, Number(from) * d, Number(to) * d];
+        const [x0, y0, x1, y1] = axis === "h" ? [f, a, t, a] : [a, f, a, t];
+        c.strokeStyle = c.fillStyle = "#f26d6d";
+        c.lineWidth = d;
+        c.beginPath();
+        c.moveTo(x0, y0);
+        c.lineTo(x1, y1);
+        c.stroke();
+        const [mx, my] = [(x0 + x1) / 2, (y0 + y1) / 2];
+        const w = c.measureText(label).width + 8 * d, h = 15 * d;
+        c.beginPath();
+        c.roundRect(mx - w / 2, my - h / 2, w, h, 4 * d);
+        c.fill();
+        c.fillStyle = "#2b0c0c";
+        c.fillText(label, mx, my);
+      }
+    }
+    // The panel for the picked layer: its name, its CSS as Copy as CSS writes
+    // it, and the files its export settings write.
+    function showPanel() {
+      panel.replaceChildren();
+      const el = (tag, text) => {
+        const e = document.createElement(tag);
+        if (text !== undefined) e.textContent = text;
+        panel.append(e);
+        return e;
+      };
+      if (!picked) {
+        el("p", "Click a layer to inspect it.");
+        return;
+      }
+      el("h2", player.layer_name(picked));
+      const css = parts.css.get(picked);
+      const head = el("h3", "CSS");
+      if (css) {
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.textContent = "Copy";
+        copy.addEventListener("click", () => navigator.clipboard.writeText(css).then(
+          () => toast("Copied the CSS"), () => toast("The browser refused the clipboard")));
+        head.append(copy);
+        el("pre", css);
+      } else {
+        el("p", "Too long to carry in the file; copy it from Mastik.");
+      }
+      const files = parts.files.get(picked) || [];
+      el("h3", "Export");
+      if (!files.length) el("p", "No export settings.");
+      for (const f of files) {
+        const a = el("a", f.path);
+        a.href = URL.createObjectURL(new Blob([f.bytes]));
+        a.download = f.path.split("/").pop();
+      }
+    }
+    function setInspecting(on) {
+      inspecting = on;
+      picked = over = "";
+      inspectSwitch.setAttribute("aria-pressed", String(on));
+      panel.hidden = !on;
+      canvas.style.cursor = on ? "crosshair" : "";
+      if (on) { player.pointer_leave(); showPanel(); }
+      placed = "";
+      after();
+    }
+    // Opened here, inside the event that asked, so the browser lets the tab open.
+    function after() {
+      for (const url of player.take_urls()) open(url, "_blank", "noopener");
+      for (const n of player.take_notices()) {
+        if (n.startsWith("!")) toast(n.slice(1)); else console.warn(n);
+      }
+      wake();
+    }
+    let toastTimer = 0;
+    function toast(text) {
+      const t = $("toast");
+      t.firstChild.textContent = text;
+      t.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+    }
+    const local = e => {
+      const r = canvas.getBoundingClientRect();
+      return [e.clientX - r.left, e.clientY - r.top];
+    };
+
+    canvas.addEventListener("pointerdown", e => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      if (inspecting) {
+        picked = player.layer_at(...local(e));
+        showPanel();
+        return after();
+      }
+      canvas.setPointerCapture(e.pointerId);
+      player.pointer_down(...local(e));
+      after();
+    });
+    canvas.addEventListener("pointermove", e => {
+      const [x, y] = local(e);
+      if (inspecting) {
+        over = player.layer_at(x, y);
+        return after();
+      }
+      player.pointer_move(x, y);
+      canvas.style.cursor = player.over_hotspot(x, y) ? "pointer" : "";
+      after();
+    });
+    canvas.addEventListener("pointerup", e => {
+      if (e.button !== 0 || inspecting) return;
+      player.pointer_up(...local(e));
+      after();
+    });
+    canvas.addEventListener("pointercancel", () => { player.pointer_leave(); after(); });
+    canvas.addEventListener("pointerleave", e => {
+      if (inspecting) { over = ""; return after(); }
+      if (canvas.hasPointerCapture(e.pointerId)) return;
+      player.pointer_leave();
+      after();
+    });
+    canvas.addEventListener("wheel", e => {
+      const [x, y] = local(e);
+      if (player.wheel(x, y, e.deltaX, e.deltaY, e.deltaMode, stage.clientHeight)) e.preventDefault();
+      after();
+    }, { passive: false });
+    addEventListener("keydown", e => {
+      if (e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
+      if (e.target instanceof Element && (bar.contains(e.target) || panel.contains(e.target))) return;
+      if (inspecting) {
+        if (e.key === "Escape") { picked = ""; showPanel(); after(); }
+        return;
+      }
+      if (player.key(e.key, e.shiftKey)) e.preventDefault();
+      after();
+    });
+    addEventListener("resize", wake);
+
+    if (player.player_bar()) {
+      bar.hidden = false;
+      const flows = player.flows();
+      if (flows.length > 1) {
+        flows.forEach((name, i) => flowList.add(new Option(name, String(i))));
+        flowList.value = String(player.flow());
+        flowList.hidden = false;
+      } else {
+        $("name").textContent = flows[0] || "";
+      }
+      flowList.addEventListener("change", () => {
+        player.play_flow(Number(flowList.value));
+        flowList.blur();
+        after();
+      });
+      $("restart").addEventListener("click", e => {
+        player.restart();
+        e.currentTarget.blur();
+        after();
+      });
+      hintSwitch.hidden = !player.hotspot_hints();
+      hintSwitch.addEventListener("click", () => {
+        hintsOn = !hintsOn;
+        hintSwitch.setAttribute("aria-pressed", String(hintsOn));
+        hintSwitch.blur();
+        wake();
+      });
+      inspectSwitch.addEventListener("click", () => {
+        setInspecting(!inspecting);
+        inspectSwitch.blur();
+      });
+    }
+    wake();
+  }
+
   function unpack(bytes) {
     const magic = new TextDecoder().decode(bytes.subarray(0, 8));
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (magic !== "MSTKPLAY" || view.getUint32(8, true) !== 1) {
       throw new Error("The prototype's data is damaged or from another version.");
     }
-    const out = { wasm: null, document: null, fonts: [] };
+    const out = { wasm: null, document: null, fonts: [], css: new Map(), files: new Map() };
     let at = 12;
     const take = () => {
       const len = view.getUint32(at, true);
@@ -437,8 +794,14 @@ const BOOT: &str = r#"(async () => {
       if (kind === 1) out.wasm = data;
       else if (kind === 2) out.document = data;
       else if (kind === 3) out.fonts.push({ bytes: data, alias: name });
+      else if (kind === 4) out.css.set(name, new TextDecoder().decode(data));
+      else if (kind === 5) {
+        const [layer, path] = name.split("\n");
+        if (!out.files.has(layer)) out.files.set(layer, []);
+        out.files.get(layer).push({ path, bytes: data });
+      }
     }
     return out;
   }
 })();
-"#;
+"##;

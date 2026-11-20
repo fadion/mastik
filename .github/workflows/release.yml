@@ -25,7 +25,9 @@ name: Release
 # build tool can still poison what it builds; what it can no longer do is write
 # to the repository, move a tag, or edit an earlier Release's feed.
 #
-# `workflow_dispatch` runs `build` alone: `publish` and `pages` are gated on
+# `player`, which builds the browser player, is read-only as `build` is.
+#
+# `workflow_dispatch` runs `player` and `build` alone: `publish` and `pages` are gated on
 # `github.ref_type == 'tag'`. A tag is the expensive way to discover a packaging
 # mistake, and a manual run builds and packs every leg with nothing at stake —
 # and leaves each leg's assets on the run page, under the names they would ship
@@ -43,8 +45,45 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── The browser player ──────────────────────────────────────────────────
+  # The wasm and loader `mastik export --prototype` packs into every exported
+  # file, built once (wasm is the same on every platform) on the pinned
+  # nightly `crates/mastik-web/rust-toolchain.toml` names, and handed to each
+  # `build` leg, which puts it where the app looks: `player/` beside the
+  # executable, `Contents/Resources/player` in the .app, and
+  # `/usr/share/mastik/player` in the .deb and .rpm.
+  player:
+    name: Build the browser player
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      # Named from the folder's own toolchain file, so the two never disagree.
+      - name: Install the player's toolchain
+        working-directory: crates/mastik-web
+        run: |
+          set -euo pipefail
+          channel="$(grep -m1 '^channel' rust-toolchain.toml | cut -d'"' -f2)"
+          rustup toolchain install "$channel" --profile minimal \
+            --component rust-src --target wasm32-unknown-unknown
+      # Pinned to the `wasm-bindgen` crate `crates/mastik-web/Cargo.toml` holds;
+      # `build.sh` refuses any other version.
+      - name: Install wasm-bindgen-cli
+        run: cargo install --locked wasm-bindgen-cli --version 0.2.108
+      - name: Build the player
+        run: bash crates/mastik-web/build.sh target/player
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: player
+          path: target/player/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
   build:
     name: Build (${{ matrix.target }})
+    needs: player
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -77,6 +116,12 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+
+      # Where a `cargo run` build and `packaging/linux/stage-payload.sh` look.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: player
+          path: target/player
 
       # The only guard a channel name has. Nothing in the Rust tree names one —
       # `update.rs` leaves Velopack's `UpdateOptions` unset — so `cargo test`
@@ -185,6 +230,7 @@ jobs:
           set -euo pipefail
           mkdir dist
           cp target/x86_64-unknown-linux-gnu/release/mastik dist/
+          cp -r target/player dist/player
           cp LICENSE THIRD-PARTY-NOTICES.md README.md dist/
           cp crates/mastik-core/assets/fonts/OFL.txt dist/Inter-OFL.txt
           cp licenses/*.txt dist/
@@ -216,6 +262,7 @@ jobs:
           # `PATHEXT` is `.COM;.EXE;…`, so a bare `mastik` at a prompt resolves to
           # the console twin while shortcuts and Explorer keep the GUI .exe.
           Copy-Item target/release/mastik-cli.exe dist/mastik.com
+          Copy-Item -Recurse target/player dist/player
           Copy-Item LICENSE, THIRD-PARTY-NOTICES.md, README.md dist/
           Copy-Item crates/mastik-core/assets/fonts/OFL.txt dist/Inter-OFL.txt
           Copy-Item licenses/*.txt dist/
@@ -231,6 +278,8 @@ jobs:
           set -euo pipefail
           mkdir dist
           bash packaging/macos/build-app.sh "$VPK_VERSION" target/release/mastik dist
+          # Data, not code, so in Resources, where the app looks from Contents/MacOS.
+          cp -R target/player dist/Mastik.app/Contents/Resources/player
 
       # ── Velopack: the self-updating artifacts ────────────────────────────
       # A per-user Setup.exe that installs to %LocalAppData% with no UAC prompt,

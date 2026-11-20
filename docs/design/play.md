@@ -239,6 +239,6 @@ by id, `{<actor-hex>:<seq>}`.
 
 `mastik-play` depends on `mastik-core` and, behind `scripts`, `mastik-vm`; nothing renders or
 draws (`deps_forbidden` holds it to the headless list). The page's player (`crates/mastik-web`)
-does not use it yet. The page builds `mastik-core` to unwind on a pinned nightly
-(`prototyping-export.md` *The browser build*); `mlua` does not build for that target, so the page
-would take the engine without `scripts`.
+runs it on a pinned nightly that unwinds (`prototyping-export.md` *The browser build*), without
+`scripts`: `mlua` does not build for that target, so a *Run script* there is skipped with
+`ScriptsOff`.
