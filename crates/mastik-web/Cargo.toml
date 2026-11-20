@@ -1,0 +1,40 @@
+[package]
+name = "mastik-web"
+edition = "2024"
+# Never released on its own: the player ships inside an exported HTML file, so it
+# carries no version for the release flow to bump.
+version = "0.0.0"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Its own workspace, toolchain (`rust-toolchain.toml`) and build settings
+# (`.cargo/config.toml`), read when cargo runs in this directory: the page needs a
+# nightly std built to unwind, and none of that may reach the app's build.
+[workspace]
+
+# The wasm goes into every exported file, so it is built for size of download:
+# whole-program optimisation, no symbols. Unwinding stays (`.cargo/config.toml`).
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[dependencies]
+mastik-core = { path = "../mastik-core" }
+mastik-render = { path = "../mastik-render" }
+wgpu = "=29.0.4"
+# Pinned below 0.2.126, whose closures must be `UnwindSafe` under `panic=unwind`,
+# which wgpu 29's WebGPU backend does not satisfy. 0.2.108 is the oldest wgpu
+# 29 takes; the four move together, and `wasm-bindgen-cli` must match exactly.
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+web-sys = { version = "=0.3.85", features = [
+  "CanvasRenderingContext2d",
+  "HtmlCanvasElement",
+  "ImageData",
+  "console",
+] }

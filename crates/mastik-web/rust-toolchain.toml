@@ -1,0 +1,8 @@
+# The player's toolchain, read only when cargo runs in this directory. A nightly,
+# because the page's std must be rebuilt to unwind (`-Zbuild-std`): mastik-core
+# refuses `panic = "abort"`, and stable's wasm32 std is built for abort.
+[toolchain]
+channel = "nightly-2026-11-20"
+components = ["rust-src", "rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"
