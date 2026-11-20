@@ -1,15 +1,15 @@
 # Prototyping: the HTML export
 
 How a prototype becomes one HTML file a client opens with a double-click: the browser build of
-the player, the trim to the chosen flows, the fonts, and the packing. What is not built yet (the
-export dialog, the player bar, the play engine in the page, *Run script* in the page) is in
-`prototyping.md` §8 and §10. Code:
-`crates/mastik-web` (the page's player), `mastik-export/src/prototype.rs` (the packer),
-`mastik export --prototype` (the CLI).
+the player, the trim to the chosen flows, the fonts, the packing, and the page playing. What is
+not built yet (the export dialog, *Run script* in the page) is in `prototyping.md` §8 and §10.
+Code: `crates/mastik-web` (the page's player), `mastik-export/src/prototype.rs` (the packer and
+the page's script), `mastik export --prototype` (the CLI).
 
 ## The browser build
 
-The page runs `mastik-core` and `mastik-render` compiled to `wasm32-unknown-unknown`, drawing
+The page runs `mastik-core`, `mastik-play` (without `scripts`) and `mastik-render` compiled to
+`wasm32-unknown-unknown`, drawing
 with vello on WebGPU, else with `vello_cpu` into a 2D canvas. Both are the canvas's own
 renderer, so the page draws what the editor draws.
 
@@ -60,7 +60,11 @@ the DevTools protocol):
 - A panic caught by `catch_unwind` in a module built this way returns its fallback value
   (run under Node).
 - A face the CLI found installed (Georgia) is embedded and drawn in the page.
-- The wasm is about 11.8 MB, 4.0 MB gzipped; it carries the bundled Inter, which the page
+- A file of two frames, a scrolling list, a push, an overlay and *Back* plays in the in-app
+  pane through WebGPU and through `?cpu` over HTTP: the wheel scrolls the list, the push draws
+  both frames mid-way, the overlay opens and closes, hints show, and no animation frame is
+  asked for while play is still.
+- The wasm is about 12.9 MB, 4.3 MB gzipped; it carries the bundled Inter, which the page
   never has to embed again.
 
 ## What goes in
@@ -117,10 +121,41 @@ as `serve` does.
 
 ## The player in the page
 
-`mastik_web::start(canvas, document, cpu)` loads the document, settles it, and shows one
-screen, `Player::screen`: the start frame of the flow the export opens on, fitted to the
-window. That method is the seam the play engine fills: it will own the played copy and the
-current screen, and the shell keeps drawing and the canvas.
+`mastik_web::start(canvas, document, cpu)` loads the document and starts `mastik-play`'s
+`Player` on the flow the export opens on (`PlayExport::opens`, else the first flow, else the
+first page's first frame). The page plays on what it loaded: there is no original to protect,
+and the engine is the in-app player's, so the two behave the same. The shell keeps only the
+canvas, the drawing and the page around them.
+
+- **Each animation frame** `Player::frame(ms, room, dpr)` ticks the engine by the time since
+  the last frame, places the screen, and draws `scene()` through `mastik_render::play` — on
+  either backend, the canvas's backing store sized to the scene at the placement's scale times
+  the device pixel ratio. A frame whose scene, dirty nodes and pixel size are unchanged is not
+  drawn. The page asks for the next frame only while `is_moving()`; an input or a resize
+  asks for one, the first ticking by 0.
+- **Placing** (`shell::place`): the scaling is `PlayExport::scaling`, else the screen's page's
+  own. *Fit* scales the whole device to the room, up or down; *Actual size* is one CSS pixel
+  a unit; *Fill width* fits the width. A screen larger than the room grows the stage, which
+  scrolls. The device frame, when the export shows it and the page names a device, is a dark
+  bezel 14 units wide round the screen, 24 CSS pixels from the window's edges under *Fit*;
+  a screen under 600 units on its short side wears a phone's corners (40), else a tablet's (18).
+- **Input** goes to the engine in screen space, mapped back by the placement's scale: the
+  canvas's pointer down, move, up, leave and cancel (captured during a press), the wheel
+  (deltas in lines or pages made pixels; the page scrolls when no frame used it), and the
+  window's keys without Ctrl, Alt or Meta. A key is named as a key trigger records it (egui's
+  `Key::name`: `Left`, `Space`, `Comma`); while an input is focused a printable key is text.
+- **Addresses** play asks to open (`take_requests`) open in a new tab from inside the input
+  handler that caused them, while the browser still counts the act the viewer's. Notices go to
+  the console; `ScriptsOff` is shown to the viewer once.
+- **The player bar**, when the export shows it, runs along the foot: the flow's name (a list
+  of the file's flows when it holds several, switching plays that flow from its start),
+  *Restart*, and *Hints* when the export shows hotspot hints.
+- **Hotspot hints** are drawn on a 2D canvas over the screen: `hotspots()` as rectangles in the
+  selection blue, held while *Hints* is on, else at `Scene::hint_flash`'s strength after a click
+  on nothing. The pointer is a hand over a hotspot.
+- The page's arithmetic (`shell.rs`: placing, the pointer's and wheel's mapping, key names)
+  builds on the desktop too, and `mastik-export`'s `tests/web_shell.rs` includes and tests it;
+  `tests/prototype.rs` checks the page's script calls only what the player exports.
 
 ## Where the CLI finds the player
 

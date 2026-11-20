@@ -927,12 +927,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mastik-play"
+version = "0.17.0"
+dependencies = [
+ "mastik-core",
+ "rustc-hash 2.1.3",
+ "thiserror",
+]
+
+[[package]]
 name = "mastik-render"
 version = "0.17.0"
 dependencies = [
  "image",
  "kurbo",
  "mastik-core",
+ "mastik-play",
  "moxcms",
  "peniko",
  "rustc-hash 2.1.3",
@@ -947,6 +957,7 @@ version = "0.0.0"
 dependencies = [
  "js-sys",
  "mastik-core",
+ "mastik-play",
  "mastik-render",
  "wasm-bindgen",
  "wasm-bindgen-futures",

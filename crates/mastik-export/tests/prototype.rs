@@ -349,6 +349,65 @@ fn the_page_holds_the_packed_parts() {
     assert_eq!(doc.page_ids().count(), 3, "the pruned one");
 }
 
+/// The page's script calls only methods `mastik-web`'s player exports, and
+/// every method a shell owes play is called: frame, the pointer, wheel and keys,
+/// the hints, opened addresses and notices. The page is never built here, so a
+/// renamed or dropped method would otherwise surface only in a browser.
+///
+/// flip: renaming `Player::over_hotspot` in `mastik-web` → fails at "the player
+/// exports".
+#[test]
+fn the_page_calls_only_what_the_player_exports() {
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let html = Parts::of(
+        &f.doc,
+        Player {
+            wasm: WASM,
+            glue: GLUE,
+        },
+    )
+    .expect("parts")
+    .html();
+    let lib = include_str!("../../mastik-web/src/lib.rs");
+    let exported: Vec<&str> = lib
+        .split("pub fn ")
+        .skip(1)
+        .filter_map(|s| s.split('(').next())
+        .collect();
+    let mut called: Vec<&str> = html
+        .split("player.")
+        .skip(1)
+        .filter_map(|s| {
+            let name = s.split('(').next()?;
+            name.chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_')
+                .then_some(name)
+        })
+        .collect();
+    called.sort_unstable();
+    called.dedup();
+    for name in &called {
+        assert!(exported.contains(name), "the player exports {name}");
+    }
+    for owed in [
+        "frame",
+        "pointer_down",
+        "pointer_move",
+        "pointer_up",
+        "pointer_leave",
+        "wheel",
+        "key",
+        "hotspots",
+        "take_urls",
+        "take_notices",
+        "restart",
+    ] {
+        assert!(called.contains(&owed), "the page calls {owed}");
+    }
+    assert!(html.contains("requestAnimationFrame"), "ticks by frame");
+}
+
 /// The size estimate is never under the file written and not far over it: the
 /// parts at gzip's fastest level against its best.
 ///

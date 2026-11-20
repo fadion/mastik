@@ -357,24 +357,54 @@ const HEAD: &str = "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
 <meta name=\"generator\" content=\"Mastik\">\n";
 
+/// The page's look: the stage the screen is placed on (scrolling when the screen
+/// is larger), the device frame behind it, the hints canvas over it, and the
+/// player bar along the foot.
 const STYLE: &str = "<style>
 html, body { margin: 0; height: 100%; background: #1e1e1e; color: #e6e6e6;
-  font: 14px system-ui, sans-serif; }
-body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
-canvas { display: block; background: #fff; }
-#status { position: fixed; inset: auto 0 16px 0; text-align: center; }
+  font: 13px system-ui, sans-serif; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+#stage { flex: 1; min-height: 0; overflow: auto; }
+#room { position: relative; }
+#device { position: absolute; background: #0d0d0e;
+  box-shadow: 0 0 0 1px #3a3a3d, 0 16px 48px rgba(0, 0, 0, 0.5); }
+#screen, #hints { position: absolute; display: block; }
+#screen { background: #fff; touch-action: none; }
+#hints { pointer-events: none; }
+#bar { flex: none; display: flex; align-items: center; gap: 6px; height: 40px;
+  padding: 0 12px; background: #252527; border-top: 1px solid #333336; }
+#bar[hidden] { display: none; }
+#name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#bar button, #bar select { height: 26px; padding: 0 10px; border: 0; border-radius: 5px;
+  background: #333336; color: #e6e6e6; font: inherit; cursor: pointer; }
+#bar button:hover, #bar select:hover { background: #3d3d41; }
+#bar button[aria-pressed=\"true\"] { background: #2b5f8f; }
+#status, #toast { position: fixed; inset: auto 0 56px 0; text-align: center; pointer-events: none; }
+#toast span { padding: 6px 12px; border-radius: 6px; background: #333336; }
+#toast[hidden] { display: none; }
 </style>
 ";
 
-const BODY: &str = "<canvas id=\"screen\" width=\"1\" height=\"1\"></canvas>\n\
-<div id=\"status\">Opening the prototype…</div>\n";
+const BODY: &str = "<main id=\"stage\"><div id=\"room\"><div id=\"device\" hidden></div>\
+<canvas id=\"screen\" width=\"1\" height=\"1\"></canvas>\
+<canvas id=\"hints\" width=\"1\" height=\"1\"></canvas></div></main>\n\
+<nav id=\"bar\" hidden><span id=\"name\"></span><select id=\"flows\" hidden \
+aria-label=\"Flow\"></select><button id=\"restart\" type=\"button\">Restart</button>\
+<button id=\"hint-switch\" type=\"button\" aria-pressed=\"false\" hidden>Hints</button></nav>\n\
+<div id=\"status\">Opening the prototype…</div>\n<div id=\"toast\" hidden><span></span></div>\n";
 
 /// Unpacks the payload, loads the player from its bytes, registers the fonts and
-/// draws. `?cpu` in the address forces the CPU renderer. The outcome is left on
-/// `<body>` as `data-backend` or `data-error`, for whoever checks the page.
+/// plays: each animation frame ticks the engine by the time since the last and
+/// draws, and stops asking for frames while nothing moves and no input came. The
+/// canvas's pointer, wheel and the window's keys go to the player in CSS pixels
+/// from the canvas; an address play opens goes to a new tab from the input that
+/// asked for it, while the browser still counts it the viewer's act. `?cpu` in
+/// the address forces the CPU renderer. The outcome is left on `<body>` as
+/// `data-backend` or `data-error`, for whoever checks the page.
 const BOOT: &str = r#"(async () => {
-  const status = document.getElementById("status");
-  const canvas = document.getElementById("screen");
+  const $ = id => document.getElementById(id);
+  const status = $("status");
+  const canvas = $("screen");
   try {
     if (typeof DecompressionStream === "undefined") {
       throw new Error("This browser cannot open the prototype: it lacks DecompressionStream.");
@@ -395,25 +425,154 @@ const BOOT: &str = r#"(async () => {
     for (const font of parts.fonts) wasm_bindgen.add_font(font.bytes, font.alias || undefined);
     const cpu = new URLSearchParams(location.search).has("cpu");
     const player = await wasm_bindgen.start(canvas, parts.document, cpu);
-    const [w, h] = player.screen_size();
-    const draw = () => {
-      const scale = Math.min(innerWidth / w, innerHeight / h);
-      const cssW = Math.max(1, Math.floor(w * scale));
-      const cssH = Math.max(1, Math.floor(h * scale));
-      canvas.style.width = cssW + "px";
-      canvas.style.height = cssH + "px";
-      canvas.width = Math.round(cssW * devicePixelRatio);
-      canvas.height = Math.round(cssH * devicePixelRatio);
-      player.draw(canvas.width, canvas.height);
-    };
-    draw();
-    addEventListener("resize", draw);
+    play(player);
     status.remove();
     document.body.dataset.backend = player.backend();
   } catch (e) {
     status.textContent = String(e && e.message || e);
     document.body.dataset.error = String(e && e.message || e);
     console.error(e);
+  }
+
+  function play(player) {
+    const stage = $("stage"), room = $("room"), device = $("device");
+    const hints = $("hints"), hintCtx = hints.getContext("2d");
+    const bar = $("bar"), flowList = $("flows"), hintSwitch = $("hint-switch");
+    let last = null, queued = false, hintsOn = false, hintsShown = false, placed = "";
+
+    const wake = () => {
+      if (!queued) { queued = true; requestAnimationFrame(frame); }
+    };
+    function frame(t) {
+      queued = false;
+      const ms = last === null ? 0 : t - last;
+      const p = player.frame(ms, stage.clientWidth, stage.clientHeight, devicePixelRatio);
+      place(p);
+      drawHints(p[10]);
+      if (p[9]) { last = t; wake(); } else last = null;
+    }
+    function place(p) {
+      const [, sw, sh, x, y, w, h, b, r] = p;
+      const key = p.slice(1, 9).join() + "|" + devicePixelRatio;
+      if (key === placed) return;
+      placed = key;
+      const px = v => v + "px";
+      room.style.width = px(sw);
+      room.style.height = px(sh);
+      for (const c of [canvas, hints]) {
+        Object.assign(c.style, { left: px(x), top: px(y), width: px(w), height: px(h), borderRadius: px(r) });
+      }
+      hints.width = Math.max(1, Math.round(w * devicePixelRatio));
+      hints.height = Math.max(1, Math.round(h * devicePixelRatio));
+      hintsShown = true;
+      device.hidden = b === 0;
+      Object.assign(device.style, {
+        left: px(x - b), top: px(y - b), width: px(w + 2 * b), height: px(h + 2 * b), borderRadius: px(r + b),
+      });
+    }
+    function drawHints(flash) {
+      const alpha = player.hotspot_hints() ? (hintsOn ? 1 : flash) : 0;
+      if (alpha <= 0 && !hintsShown) return;
+      const d = devicePixelRatio;
+      hintCtx.clearRect(0, 0, hints.width, hints.height);
+      hintsShown = alpha > 0;
+      if (!hintsShown) return;
+      const r = player.hotspots();
+      hintCtx.lineWidth = 2 * d;
+      hintCtx.fillStyle = `rgba(99, 179, 245, ${0.2 * alpha})`;
+      hintCtx.strokeStyle = `rgba(99, 179, 245, ${alpha})`;
+      for (let i = 0; i < r.length; i += 4) {
+        hintCtx.fillRect(r[i] * d, r[i + 1] * d, r[i + 2] * d, r[i + 3] * d);
+        hintCtx.strokeRect(r[i] * d + d, r[i + 1] * d + d, r[i + 2] * d - 2 * d, r[i + 3] * d - 2 * d);
+      }
+    }
+    // Opened here, inside the event that asked, so the browser lets the tab open.
+    function after() {
+      for (const url of player.take_urls()) open(url, "_blank", "noopener");
+      for (const n of player.take_notices()) {
+        if (n.startsWith("!")) toast(n.slice(1)); else console.warn(n);
+      }
+      wake();
+    }
+    let toastTimer = 0;
+    function toast(text) {
+      const t = $("toast");
+      t.firstChild.textContent = text;
+      t.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+    }
+    const local = e => {
+      const r = canvas.getBoundingClientRect();
+      return [e.clientX - r.left, e.clientY - r.top];
+    };
+
+    canvas.addEventListener("pointerdown", e => {
+      if (e.button !== 0) return;
+      canvas.setPointerCapture(e.pointerId);
+      player.pointer_down(...local(e));
+      e.preventDefault();
+      after();
+    });
+    canvas.addEventListener("pointermove", e => {
+      const [x, y] = local(e);
+      player.pointer_move(x, y);
+      canvas.style.cursor = player.over_hotspot(x, y) ? "pointer" : "";
+      after();
+    });
+    canvas.addEventListener("pointerup", e => {
+      if (e.button !== 0) return;
+      player.pointer_up(...local(e));
+      after();
+    });
+    canvas.addEventListener("pointercancel", () => { player.pointer_leave(); after(); });
+    canvas.addEventListener("pointerleave", e => {
+      if (canvas.hasPointerCapture(e.pointerId)) return;
+      player.pointer_leave();
+      after();
+    });
+    canvas.addEventListener("wheel", e => {
+      const [x, y] = local(e);
+      if (player.wheel(x, y, e.deltaX, e.deltaY, e.deltaMode, stage.clientHeight)) e.preventDefault();
+      after();
+    }, { passive: false });
+    addEventListener("keydown", e => {
+      if (e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
+      if (e.target instanceof Element && bar.contains(e.target)) return;
+      if (player.key(e.key, e.shiftKey)) e.preventDefault();
+      after();
+    });
+    addEventListener("resize", wake);
+
+    if (player.player_bar()) {
+      bar.hidden = false;
+      const flows = player.flows();
+      if (flows.length > 1) {
+        flows.forEach((name, i) => flowList.add(new Option(name, String(i))));
+        flowList.value = String(player.flow());
+        flowList.hidden = false;
+      } else {
+        $("name").textContent = flows[0] || "";
+      }
+      flowList.addEventListener("change", () => {
+        player.play_flow(Number(flowList.value));
+        flowList.blur();
+        after();
+      });
+      $("restart").addEventListener("click", e => {
+        player.restart();
+        e.currentTarget.blur();
+        after();
+      });
+      hintSwitch.hidden = !player.hotspot_hints();
+      hintSwitch.addEventListener("click", () => {
+        hintsOn = !hintsOn;
+        hintSwitch.setAttribute("aria-pressed", String(hintsOn));
+        hintSwitch.blur();
+        wake();
+      });
+    }
+    wake();
   }
 
   function unpack(bytes) {
