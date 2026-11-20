@@ -245,6 +245,55 @@ impl Action {
             other => other.clone(),
         }
     }
+
+    /// This action with every variable it reads or sets passed through `var`
+    /// and every script it runs through `script`, nested actions' included.
+    pub fn map_refs(
+        &self,
+        var: &mut dyn FnMut(VarId) -> VarId,
+        script: &mut dyn FnMut(ScriptId) -> ScriptId,
+    ) -> Action {
+        match self {
+            Action::SetVariable { var: v, change } => Action::SetVariable {
+                var: var(*v),
+                change: match change {
+                    VarChange::Set { to } => VarChange::Set {
+                        to: to.map_vars(var),
+                    },
+                    other => other.clone(),
+                },
+            },
+            Action::RunScript { script: s } => Action::RunScript { script: script(*s) },
+            Action::Conditional {
+                branches,
+                otherwise,
+            } => {
+                let branches = branches
+                    .iter()
+                    .map(|b| Branch {
+                        when: b.when.map_vars(var),
+                        actions: map_refs_in(&b.actions, var, script),
+                    })
+                    .collect();
+                Action::Conditional {
+                    branches,
+                    otherwise: map_refs_in(otherwise, var, script),
+                }
+            }
+            other => other.clone(),
+        }
+    }
+}
+
+/// [`Action::map_refs`] over a list of actions.
+fn map_refs_in(
+    list: &[Keyed<Action>],
+    var: &mut dyn FnMut(VarId) -> VarId,
+    script: &mut dyn FnMut(ScriptId) -> ScriptId,
+) -> Vec<Keyed<Action>> {
+    list.iter()
+        .map(|k| k.map(|a| a.map_refs(var, script)))
+        .collect()
 }
 
 /// `f` on `action` and every action nested in it, depth first.
@@ -710,6 +759,52 @@ pub fn map_layers(
             })
         })
         .collect()
+}
+
+/// `reactions` with every variable they read or set (a *variable changes*
+/// trigger's too) passed through `var` and every script they run through
+/// `script`.
+pub fn map_refs(
+    reactions: &[Keyed<Reaction>],
+    var: &mut dyn FnMut(VarId) -> VarId,
+    script: &mut dyn FnMut(ScriptId) -> ScriptId,
+) -> Vec<Keyed<Reaction>> {
+    reactions
+        .iter()
+        .map(|r| {
+            r.map(|r| Reaction {
+                trigger: match &r.trigger {
+                    Trigger::VariableChanges { var: v } => {
+                        Trigger::VariableChanges { var: var(*v) }
+                    }
+                    other => other.clone(),
+                },
+                actions: map_refs_in(&r.actions, var, script),
+            })
+        })
+        .collect()
+}
+
+/// The variables `reactions` read or set and the scripts they run, each once,
+/// in the order met.
+pub fn refs(reactions: &[Keyed<Reaction>]) -> (Vec<VarId>, Vec<ScriptId>) {
+    let (mut vars, mut scripts) = (Vec::new(), Vec::new());
+    let _ = map_refs(
+        reactions,
+        &mut |v| {
+            if !vars.contains(&v) {
+                vars.push(v);
+            }
+            v
+        },
+        &mut |s| {
+            if !scripts.contains(&s) {
+                scripts.push(s);
+            }
+            s
+        },
+    );
+    (vars, scripts)
 }
 
 /// The layer `target` names when read from a reaction on `holder`. A reaction on

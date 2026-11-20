@@ -94,6 +94,10 @@ pub(crate) fn node_vars(n: &Node) -> impl Iterator<Item = VarId> + '_ {
         .chain(n.item.limit_vars.iter().flatten().copied())
         .chain(n.visible_var)
         .chain(n.opacity_var)
+        // A prototype's: the variables its reactions read and set, and the one
+        // an input binds.
+        .chain(crate::prototype::refs(&n.reactions).0)
+        .chain(n.play.input.as_ref().map(|i| i.var))
 }
 
 /// The variables and styles `nodes` read in `vars` and `styles`, **closed**: a
@@ -337,6 +341,12 @@ impl Plan {
         if let Some(x) = &mut n.opacity_var {
             v(x);
         }
+        if !n.reactions.is_empty() {
+            n.reactions = self.apply_reactions(&n.reactions);
+        }
+        if let Some(i) = &mut n.play.input {
+            v(&mut i.var);
+        }
         for m in n.modes.iter_mut() {
             if let Some(to) = self.modes.get(m) {
                 *m = *to;
@@ -349,6 +359,19 @@ impl Plan {
                 n.styles.set(slot, Some(*to));
             }
         }
+    }
+
+    /// `reactions` with the variables they read and set pointed at the
+    /// consumer's copies.
+    pub(crate) fn apply_reactions(
+        &self,
+        reactions: &[crate::Keyed<crate::prototype::Reaction>],
+    ) -> Vec<crate::Keyed<crate::prototype::Reaction>> {
+        crate::prototype::map_refs(
+            reactions,
+            &mut |x| *self.vars.get(&x).unwrap_or(&x),
+            &mut |s| s,
+        )
     }
 
     /// A style's value with its paints pointed at the consumer's variables.
