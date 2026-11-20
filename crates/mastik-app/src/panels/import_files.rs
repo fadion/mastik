@@ -3160,8 +3160,9 @@ mod tests {
         };
         assert_eq!(o.sub, "From Marketing site.sketch, which is unchanged");
         assert!(o.text().contains("1 artboard"), "{}", o.text());
+        // Its link maps to a reaction, so it comes in rather than being reported.
         assert!(
-            o.report.iter().any(|r| r.what == "Prototype links"),
+            !o.report.iter().any(|r| r.what == "Prototype links"),
             "{:?}",
             o.report
         );
@@ -3653,7 +3654,8 @@ mod tests {
         };
         assert_eq!(o.title, "Checkout flow is in the library");
         assert_eq!(o.sub, "Read from Figma, which is unchanged");
-        assert!(o.report.iter().any(|r| r.what == "Prototype interactions"));
+        // Its interaction maps to a reaction, so it comes in rather than being reported.
+        assert!(!o.report.iter().any(|r| r.what == "Prototype interactions"));
         assert_eq!(listed(&f).len(), 1);
     }
 
