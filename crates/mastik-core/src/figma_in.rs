@@ -130,7 +130,9 @@ pub fn read(
         taken: Names::default(),
         families: BTreeMap::new(),
         pending_type: None,
+        links: Vec::new(),
     };
+    let mut flows = Vec::new();
     for (i, page) in pages.iter().enumerate() {
         let id = if i == 0 { first } else { b.ids.mint() };
         let name = str_of(page, "name").to_owned();
@@ -156,6 +158,20 @@ pub fn read(
         }
         for (j, child) in arr(page, "children").iter().enumerate() {
             b.node(child, id, j, Affine::IDENTITY, None);
+        }
+        let starts: Vec<(String, String)> = arr(page, "flowStartingPoints")
+            .iter()
+            .map(|f| (str_of(f, "name").to_owned(), str_of(f, "nodeId").to_owned()))
+            .collect();
+        flows.push((id, starts));
+    }
+    // Once every node is made, so a link to a later frame finds it.
+    let links = std::mem::take(&mut b.links);
+    let reactions = crate::prototype_in::reaction_ops(links, &b.nodes, b.ids, &mut b.tally);
+    b.ops.extend(reactions);
+    for (page, starts) in flows {
+        if let Some(op) = crate::prototype_in::flow_op(page, &starts, &b.nodes, b.ids) {
+            b.ops.push(op);
         }
     }
     let ops = std::mem::take(&mut b.ops);
@@ -222,6 +238,8 @@ struct Builder<'a> {
     /// The text style the text node about to be made is bound to, found while
     /// its kind was read and written once the node exists.
     pending_type: Option<StyleId>,
+    /// Each node's prototype links, made reactions once every node is made.
+    links: Vec<(NodeId, Vec<crate::prototype_in::Link>)>,
 }
 
 impl Builder<'_> {
@@ -335,6 +353,10 @@ impl Builder<'_> {
         });
         let fid = str_of(n, "id").to_owned();
         self.nodes.insert(fid.clone(), id);
+        let links = crate::prototype_in::figma(n, &mut self.tally);
+        if !links.is_empty() {
+            self.links.push((id, links));
+        }
         self.flags(id, n, kind);
         self.paint(id, n, kind, size);
         if let Some(style) = self.pending_type.take() {
@@ -516,11 +538,6 @@ impl Builder<'_> {
 
     /// Count what a node carries that has no counterpart.
     fn notes(&mut self, n: &Value) {
-        if n.get("transitionNodeID").is_some_and(|t| !t.is_null())
-            || !arr(n, "interactions").is_empty()
-        {
-            self.count("Prototype interactions", 1, "", "Left out");
-        }
         if matches!(str_of(n, "layoutMode"), "HORIZONTAL" | "VERTICAL" | "GRID") {
             self.count("Auto layout", 1, "frames", "Kept at their drawn positions");
         }
