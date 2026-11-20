@@ -225,7 +225,7 @@ pub struct InspectFile {
     pub bytes: Vec<u8>,
 }
 
-/// Every file the layers' own export settings write ([`crate::plan`]), rendered
+/// Every file the layers' own export settings write ([`crate::plan::plan`]), rendered
 /// now, since the page carries no exporter.
 pub fn inspect_files(doc: &Document, res: &Resolved) -> Vec<InspectFile> {
     let pages: Vec<NodeId> = doc.page_ids().collect();
