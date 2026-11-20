@@ -578,6 +578,42 @@ impl RenderOverrides {
         Some(world)
     }
 
+    /// A prototype's play patches as one preview over the played copy: each
+    /// patch's transform, box size, opacity, visibility and paint as the node's
+    /// override. No layout runs: play has laid out both ends of what it moves.
+    pub fn from_play(doc: &Document, res: &Resolved, patches: &[mastik_play::Patch]) -> Self {
+        let mut out = Self::default();
+        for p in patches {
+            if let Some(t) = p.transform {
+                out.place(doc, p.node, t);
+            }
+            if let Some(size) = p.size
+                && let Some(mut kind) = res.used_kind(doc, p.node).cloned()
+                && let Some(s) = kind.box_size_mut()
+            {
+                *s = size;
+                out.set_kind(doc, res, p.node, kind);
+                out.mark_moved(doc, p.node);
+            }
+            if let Some(paint) = &p.paint {
+                out.set_paint(p.node, paint.clone());
+            }
+            if p.opacity.is_some() || p.visible.is_some() {
+                let entry = out.entry(p.node);
+                entry.opacity = p.opacity.or(entry.opacity);
+                entry.visible = p.visible.or(entry.visible);
+            }
+        }
+        out
+    }
+
+    /// Draw `id` under the local transform `local`, it and everything under it
+    /// uncullable by its stale bounds.
+    pub(crate) fn place(&mut self, doc: &Document, id: NodeId, local: Affine) {
+        self.entry(id).transform = Some(local);
+        self.mark_moved(doc, id);
+    }
+
     /// Project a pending transaction onto the derived layer.
     ///
     /// `None` means the transaction cannot be previewed this way and the caller

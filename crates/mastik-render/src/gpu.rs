@@ -1100,6 +1100,48 @@ impl VelloGpuRenderer {
         self.draw(device, queue, scene, jobs, vp, target, base_color)
     }
 
+    /// One frame of a prototype's play into `target`, sized `vp.pixel_size`:
+    /// `scene` over the played copy, with `vp` a view of screen space
+    /// ([`crate::play::viewport`]) and `patches` [`crate::play::overrides`] of the
+    /// same scene. `base_color` clears the target first.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_play(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        doc: &Document,
+        res: &Resolved,
+        vp: &Viewport,
+        patches: &RenderOverrides,
+        play: &mastik_play::Scene,
+        target: &TextureView,
+        base_color: Color,
+        images: &ImageStore,
+    ) -> Result<(), vello::Error> {
+        let mut painter = GpuScenePainter {
+            root: Scene::new(),
+            fx: Vec::new(),
+            jobs: Vec::new(),
+            base: scene::device_base(vp),
+            limit: Rect::new(0.0, 0.0, vp.pixel_size.0 as f64, vp.pixel_size.1 as f64),
+            budget: f64::from(vp.pixel_size.0) * f64::from(vp.pixel_size.1),
+            images,
+            pinned: false,
+            ground: Some(base_color).filter(|c| c.components[3] >= 1.0),
+        };
+        crate::play::build(doc, res, vp, patches, play, &mut painter);
+        self.pinned = painter.pinned;
+        self.draw(
+            device,
+            queue,
+            painter.root,
+            painter.jobs,
+            vp,
+            target,
+            base_color,
+        )
+    }
+
     /// Draw the frame [`Self::render`] would draw into `target`, but only what
     /// lands in `regions`: the walk skips everything else, so outside them
     /// `target` holds the ground and stray ink, for the caller to cover (with

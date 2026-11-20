@@ -142,6 +142,40 @@ impl VelloCpuRenderer {
         let straight = color::straight_rgba8_from_premul(pixmap.data_as_u8_slice());
         (straight, w, h)
     }
+
+    /// One frame of a prototype's play, `scene` over the played copy, drawn at
+    /// `scale` pixels per screen unit to a straight-alpha RGBA8 buffer: a video's
+    /// frame from a take, and the reference the GPU shells draw the same as.
+    pub fn render_play_to_rgba(
+        &mut self,
+        doc: &Document,
+        res: &Resolved,
+        images: &ImageStore,
+        scene: &mastik_play::Scene,
+        scale: f64,
+    ) -> (Vec<u8>, u32, u32) {
+        let vp = crate::play::viewport(scene, scale);
+        let patches = crate::play::overrides(doc, res, scene);
+        let (w, h) = vp.pixel_size;
+        let mut ctx = RenderContext::new_with(w as u16, h as u16, export_settings());
+        let mut resources = Resources::new();
+        {
+            let mut painter = CpuPainter {
+                images,
+                image_memo: FxHashMap::default(),
+                root: &mut ctx,
+                fx: Vec::new(),
+                base: scene::device_base(&vp),
+                resources: &mut resources,
+            };
+            crate::play::build(doc, res, &vp, &patches, scene, &mut painter);
+        }
+        ctx.flush();
+        let mut pixmap = Pixmap::new(w as u16, h as u16);
+        ctx.render_with(&mut pixmap, &mut resources, raster_settings());
+        let straight = color::straight_rgba8_from_premul(pixmap.data_as_u8_slice());
+        (straight, w, h)
+    }
 }
 
 /// The widest or tallest buffer `vello_cpu` can be asked for, in pixels.

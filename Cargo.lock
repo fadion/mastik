@@ -2629,6 +2629,7 @@ dependencies = [
  "image",
  "kurbo",
  "mastik-core",
+ "mastik-play",
  "moxcms",
  "peniko",
  "png",

@@ -21,6 +21,8 @@ pub mod gpu;
 pub mod grid_ink;
 pub mod images;
 mod outline_only;
+/// A prototype's play `Scene` drawn through the scene walk.
+pub mod play;
 pub mod renderer;
 pub mod scene;
 mod tight_stroke;
