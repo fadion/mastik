@@ -161,5 +161,11 @@ canvas, the drawing and the page around them.
 
 `mastik export doc.mastik --prototype -o out.html` reads `mastik_web_bg.wasm` and
 `mastik_web.js` from `MASTIK_PLAYER_DIR`, else `player/` beside the executable or one folder up
-(`target/player`, where `build.sh` writes them). Shipping the player beside the release
-executable is part of the release build, not yet done.
+(`target/player`, where `build.sh` writes them), else `../share/mastik/player` or
+`../Resources/player` from the executable's folder.
+
+The release ships it on every platform: the Release workflow's `player` job runs `build.sh`
+once on the pinned nightly and hands the folder to each leg, which puts it in `player/` beside
+the executable (the Windows zip and installer, the Linux archive and AppImage), in
+`Contents/Resources/player` in the macOS bundle, and in `/usr/share/mastik/player` in the .deb
+and .rpm (`packaging/linux/stage-payload.sh`, from `MASTIK_PLAYER_DIR` or `target/player`).

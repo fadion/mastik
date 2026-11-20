@@ -93,6 +93,10 @@ cp -a %{_sourcedir}/payload/. %{buildroot}/
 %doc %{_datadir}/doc/mastik/emoji-icon-font-LICENSE.txt
 %dir %{_datadir}/doc/mastik
 %{_bindir}/mastik
+%dir %{_datadir}/mastik
+%dir %{_datadir}/mastik/player
+%{_datadir}/mastik/player/mastik_web_bg.wasm
+%{_datadir}/mastik/player/mastik_web.js
 %{_datadir}/applications/%{appid}.desktop
 %{_datadir}/metainfo/%{appid}.metainfo.xml
 %{_datadir}/mime/packages/%{appid}.xml

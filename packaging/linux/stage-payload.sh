@@ -28,6 +28,11 @@ APP_ID="io.github.fadion.Mastik"
 # the same icon set the same way.
 ICON="${REPO}/icons/icon.png"
 
+# The browser player `mastik export --prototype` packs, as
+# crates/mastik-web/build.sh leaves it; installed where the app looks from
+# /usr/bin, ../share/mastik/player.
+PLAYER="${MASTIK_PLAYER_DIR:-${REPO}/target/player}"
+
 # The licence texts of the third-party material the binary embeds (the bundled
 # emoji and egui's built-in fallback fonts - THIRD-PARTY-NOTICES.md has which is
 # which). Named one by one so each is checked to exist below, the same as every
@@ -43,6 +48,8 @@ required=("$BINARY" \
     "${REPO}/THIRD-PARTY-NOTICES.md" \
     "${REPO}/README.md" \
     "${REPO}/crates/mastik-core/assets/fonts/OFL.txt" \
+    "${PLAYER}/mastik_web_bg.wasm" \
+    "${PLAYER}/mastik_web.js" \
     "$ICON")
 for l in $LICENSE_FILES; do
     required+=("${REPO}/licenses/${l}")
@@ -74,9 +81,12 @@ mkdir -p "${ROOT}/usr/bin" \
     "${ROOT}/usr/share/metainfo" \
     "${ROOT}/usr/share/mime/packages" \
     "${ROOT}/usr/share/icons/hicolor/512x512/apps" \
-    "${ROOT}/usr/share/doc/mastik"
+    "${ROOT}/usr/share/doc/mastik" \
+    "${ROOT}/usr/share/mastik/player"
 
 install -m 0755 "$BINARY" "${ROOT}/usr/bin/mastik"
+install -m 0644 "${PLAYER}/mastik_web_bg.wasm" "${PLAYER}/mastik_web.js" \
+    "${ROOT}/usr/share/mastik/player/"
 install -m 0644 "${HERE}/${APP_ID}.desktop" "${ROOT}/usr/share/applications/${APP_ID}.desktop"
 # The .mastik type. dpkg's and rpm's shared-mime-info triggers rebuild the database
 # when this directory changes, so neither package carries a scriptlet for it.
