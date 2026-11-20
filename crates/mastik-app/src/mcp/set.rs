@@ -33,7 +33,21 @@ const SET_PROPS: &[(&str, &str, bool, &str)] = &[
     ("element", "set_element", false, "element"),
     ("link", "set_link", false, "href"),
     ("transform", "set_transform", false, "transform"),
+    ("reactions", "set_reactions", true, "reactions"),
+    // A page's are `set_page_play`'s ([`page_verb`]).
+    ("play", "set_play", true, "play"),
+    ("flows", "set_flows", false, "flows"),
 ];
+
+/// The setter `set` writes `verb`'s property through on pages, one page at a
+/// time under `page`: a page's prototype settings are not a layer's.
+fn page_verb(verb: &str, pages: bool) -> Option<&'static str> {
+    match (verb, pages) {
+        ("set_play", true) => Some("set_page_play"),
+        ("set_flows", _) => Some("set_flows"),
+        _ => None,
+    }
+}
 
 /// The names agents write for what `set` takes otherwise: `x`, `y` for `at`,
 /// `width`, `height` for `size`, `corner_radius` for `geometry`, `fill` and
@@ -133,6 +147,7 @@ pub(super) fn set(
         ),
     };
     let wire: Vec<Value> = ids.iter().map(|id| json!(id.to_wire())).collect();
+    let pages = ids.iter().all(|id| s.doc.is_page(*id));
     let mut steps = Vec::new();
     let mut step = |tool: &str, args: Value| steps.push(json!({ "tool": tool, "args": args }));
     for (prop, verb, all, param) in SET_PROPS {
@@ -143,7 +158,11 @@ pub(super) fn set(
             m.insert((*param).into(), v.clone());
             Value::Object(m)
         };
-        if *all {
+        if let Some(verb) = page_verb(verb, pages) {
+            for id in &wire {
+                step(verb, with("page", id.clone()));
+            }
+        } else if *all {
             step(verb, with("nodes", json!(wire)));
         } else {
             for id in &wire {
@@ -635,6 +654,72 @@ mod tests {
             json!({ "nodes": [id], "props": { "colour": "#fff" } }),
         );
         assert!(bad.is_error, "an unknown property is refused");
+    }
+
+    /// `set` writes a layer's reactions and play settings as one undo step, an
+    /// item without an id given one, and a page's flows and play settings;
+    /// `get_node` reads each back. Run script under a timer is refused naming
+    /// the reaction.
+    ///
+    /// flip: `get_node` without its page entry's fields → fails at "the page's
+    /// flows"; `set` routing a page's `play` to `set_play` → fails at the page's
+    /// `set` as refused.
+    #[test]
+    fn set_writes_the_prototype_and_get_node_reads_it() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let a = rect(&mut engine, &mut docs, 1, "A");
+        let b = rect(&mut engine, &mut docs, 1, "B");
+        let depth = docs.session.history.undo_depth();
+        let props = json!({
+            "reactions": [{ "trigger": "Click", "actions": [{ "Navigate": { "to": b } }] }],
+            "play": { "scroll": "vertical" },
+        });
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            1,
+            "set",
+            json!({ "nodes": [a], "props": props }),
+        ));
+        assert_eq!(docs.session.history.undo_depth(), depth + 1, "one step");
+        let out = call(&mut engine, &mut docs, 1, "get_node", json!({ "id": a }));
+        let read = ok(&out)["nodes"][0].clone();
+        let reaction = &read["reactions"][0];
+        assert_eq!(reaction["actions"][0]["Navigate"]["to"], json!(b), "{read}");
+        assert!(reaction["id"].is_string(), "given an id: {read}");
+        assert_eq!(read["play"]["scroll"], "Vertical");
+
+        let page = docs.session.doc.first_page().to_wire();
+        let props = json!({ "flows": [{ "name": "Main", "start": a }],
+            "play": { "scaling": "FillWidth" } });
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            1,
+            "set",
+            json!({ "nodes": [page], "props": props }),
+        ));
+        let out = call(&mut engine, &mut docs, 1, "get_node", json!({ "id": page }));
+        let read = ok(&out)["nodes"][0].clone();
+        assert_eq!(read["flows"][0]["name"], "Main", "the page's flows: {read}");
+        assert_eq!(read["play"]["scaling"], "FillWidth");
+
+        let unasked = json!([{ "trigger": { "After": { "ms": 500 } },
+            "actions": [{ "RunScript": { "script": "abc:1" } }] }]);
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "set",
+            json!({ "nodes": [a], "props": { "reactions": unasked } }),
+        );
+        let why = format!("{:?}", out.content);
+        assert!(out.is_error, "refused");
+        assert!(
+            why.contains("reactions[0]") && why.contains("Run script"),
+            "{why}"
+        );
     }
 
     /// `set`'s fill on a text whose style carries a colour clears that colour so

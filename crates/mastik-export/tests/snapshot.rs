@@ -1520,3 +1520,48 @@ fn a_paths_points_carry_their_handles_in_and_out() {
     );
     assert_eq!(handles(1), (Some(15.0), Some(-5.0), Some(15.0), Some(5.0)));
 }
+
+/// A layer's reactions are in its node, in the shape `set_reactions` takes with
+/// the page's transition left out, and a layer with none has no key.
+///
+/// flip: `node_snapshot` writing no reactions → fails at "the rect's reaction".
+#[test]
+fn a_layers_reactions_are_in_its_node() {
+    use mastik_core::prototype::{Action, Reaction, Transition, Trigger};
+    use mastik_core::{IdSource, Keyed, Operation, Transaction};
+    let mut f = common::fixture();
+    let mut ids = IdSource::new(0x5A);
+    let reactions = vec![Keyed::new(
+        ids.mint_item(),
+        Reaction {
+            trigger: Trigger::Click,
+            actions: vec![Keyed::new(
+                ids.mint_item(),
+                Action::Navigate {
+                    to: f.artboard,
+                    transition: Transition::default(),
+                },
+            )],
+        },
+    )];
+    f.doc
+        .apply(&Transaction(vec![Operation::SetReactions {
+            id: f.rect,
+            reactions,
+        }]))
+        .unwrap();
+    let snap = snapshot(&f.doc, &f.res);
+    let node = |id| snap.nodes.iter().find(|n| n.id == wire(id)).unwrap();
+    let read = node(f.rect).reactions.clone().expect("the rect's reaction");
+    assert_eq!(
+        read[0]["actions"][0],
+        serde_json::json!({
+            "id": read[0]["actions"][0]["id"],
+            "Navigate": { "to": wire(f.artboard) },
+        }),
+        "the page's transition left out: {read}"
+    );
+    assert!(node(f.text).reactions.is_none());
+    let json = serde_json::to_string(&snap).unwrap();
+    assert_eq!(json.matches("\"reactions\"").count(), 1, "absent elsewhere");
+}

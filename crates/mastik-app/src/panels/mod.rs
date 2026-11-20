@@ -20,6 +20,7 @@ pub(crate) mod layers;
 mod layout;
 pub(crate) mod paint;
 mod picker;
+pub(crate) mod prototype;
 pub(crate) mod push;
 pub(crate) mod styles;
 mod typography;
@@ -53,6 +54,8 @@ pub(crate) use picker::Picker;
 /// The picker's window id, for the eyedropper tests' layer fixture.
 #[cfg(test)]
 pub(crate) use picker::layer_id as picker_layer_id;
+/// The Prototype tab's state between frames.
+pub(crate) use prototype::ProtoState;
 pub(crate) use typography::TypeSubject;
 /// A value delete awaiting its confirmation (§15 D996).
 pub(crate) use variants::ValueDelete;

@@ -545,6 +545,10 @@ pub enum ViewSwitch {
     /// The width × height pill under the selection (`canvas::draw_size_badge`), on by
     /// default and unbound. A shape being drawn keeps its pill either way.
     SizeBadge,
+    /// The inspector's Prototype tab (`MastikApp::prototype_tab`), in the palette
+    /// beside the inspector's own Design · Prototype switch. Unbound, since
+    /// prototyping adds no chord, and on no menu. Never saved.
+    PrototypeTab,
 }
 
 impl ViewSwitch {
@@ -576,6 +580,7 @@ impl ViewSwitch {
             Self::AskAssistant => "Show ask assistant",
             Self::AssistantScope => "Show assistant scope",
             Self::SizeBadge => "Show dimension badge",
+            Self::PrototypeTab => "Prototype tab",
         }
     }
 
@@ -623,7 +628,7 @@ impl ViewSwitch {
     /// `#[cfg(test)]` because the tests are its only readers; an `#[allow]` would
     /// keep every item it names alive.
     #[cfg(test)]
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Rulers,
         Self::Guides,
         Self::GuideLock,
@@ -648,6 +653,7 @@ impl ViewSwitch {
         Self::AskAssistant,
         Self::AssistantScope,
         Self::SizeBadge,
+        Self::PrototypeTab,
     ];
 
     /// The Snap menu's rows.

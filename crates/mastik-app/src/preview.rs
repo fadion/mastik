@@ -169,6 +169,11 @@ pub enum Drag {
     Pivot {
         target: Target,
     },
+    /// Pulling a link from the Prototype tab's knob on `from`: drawn from the
+    /// live pointer, and on release over a screen one *Navigate to* it commits.
+    Link {
+        from: NodeId,
+    },
     /// Rubber-band selection from `origin` to the current pointer, of layers or,
     /// in the node tool, of points. Either selects live.
     Marquee {

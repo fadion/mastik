@@ -470,6 +470,17 @@ It closes on a choice and on a press outside it or its ⋯. It holds the keyboar
 routing has a branch for the Scripts window (`Scripts::holds_keys`), where `Escape` closes only the
 menu and §8's keys walk and run its rows (`read_nav` into `Scripts::menu_nav`).
 
+### 6.11 An interaction (the Prototype tab)
+
+An interaction's head carries `⋯` (`egui::Popup::menu`, `ui::popup_rows`): *Duplicate* (every item
+id minted afresh, nested actions' too), a rule, *Delete* in danger styling. On an instance, the
+head's override slot takes a right-click as every reset does (`ui::reset_push_menu`): *Reset to
+main* and *Push to main*, the push disabled with the inspector's push refusal. A ghost row (an
+interaction the instance removed) offers *Restore* and *Push removal to main*. Its head's `+` and a
+conditional branch's `+` open the add-action menu: the actions in three groups (*Go*, *Overlay*,
+*State*), each the layer cannot take shown dimmed with its reason as the tooltip
+(`prototype::action_refusal`).
+
 ---
 
 ## 7. Deliberately not in these menus

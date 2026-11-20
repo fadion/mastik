@@ -316,5 +316,11 @@
  { "name": "points-along", "codepoint": "U+F07A", "stroke": "M1.5 6.5H4.5V9.5H1.5ZM6.5 6.5H9.5V9.5H6.5ZM11.5 6.5H14.5V9.5H11.5ZM4.5 8H6.5M9.5 8H11.5" },
  { "name": "ridges", "codepoint": "U+F07B", "stroke": "M1.5 10.5L3.667 5.5L5.833 10.5L8 5.5L10.167 10.5L12.333 5.5L14.5 10.5" },
  { "name": "grain", "codepoint": "U+F088", "fill": "M2.4 3.5a1.1 1.1 0 1 0 2.2 0a1.1 1.1 0 1 0 -2.2 0ZM11.4 4.5a1.1 1.1 0 1 0 2.2 0a1.1 1.1 0 1 0 -2.2 0ZM9.9 9a1.1 1.1 0 1 0 2.2 0a1.1 1.1 0 1 0 -2.2 0ZM6.4 12.5a1.1 1.1 0 1 0 2.2 0a1.1 1.1 0 1 0 -2.2 0ZM7.75 2.75a0.75 0.75 0 1 0 1.5 0a0.75 0.75 0 1 0 -1.5 0ZM4.75 7.5a0.75 0.75 0 1 0 1.5 0a0.75 0.75 0 1 0 -1.5 0ZM2.25 12a0.75 0.75 0 1 0 1.5 0a0.75 0.75 0 1 0 -1.5 0ZM12.25 13a0.75 0.75 0 1 0 1.5 0a0.75 0.75 0 1 0 -1.5 0Z" },
- { "name": "pulse", "codepoint": "U+F089", "stroke": "M1.5 8.5H4.5L6 4.5L9.5 12.5L11 8.5H14.5" }
+ { "name": "pulse", "codepoint": "U+F089", "stroke": "M1.5 8.5H4.5L6 4.5L9.5 12.5L11 8.5H14.5" },
+ { "name": "interaction", "codepoint": "U+F08A", "stroke": "M6.5 6.5V14.5L8.75 12.25L10.5 14.5L12 13.5L10.25 11.25H13.5ZM5.5 1.5V3.5M1.5 5.5H3.5M2.75 2.75L4 4" },
+ { "name": "change-state", "codepoint": "U+F08B", "stroke": "M1.5 9.5H6.5V14.5H1.5ZM4 7.5V5.5C4 4.4 4.9 3.5 6 3.5H8M6.5 2L8 3.5L6.5 5", "fill": "M9 1H15V7H9Z" },
+ { "name": "overlay-open", "codepoint": "U+F08C", "stroke": "M3.5 1.5H12.5V14.5H3.5ZM8 7V3.5M6.5 5L8 3.5L9.5 5", "fill": "M3.5 9.5H12.5V14.5H3.5Z" },
+ { "name": "overlay-close", "codepoint": "U+F08D", "stroke": "M3.5 1.5H12.5V14.5H3.5ZM8 3.5V7M6.5 5.5L8 7L9.5 5.5", "fill": "M3.5 9.5H12.5V14.5H3.5Z" },
+ { "name": "overlay-swap", "codepoint": "U+F08E", "stroke": "M3.5 1.5H12.5V14.5H3.5ZM6 4H10M9 3L10 4L9 5M10 6.5H6M7 5.5L6 6.5L7 7.5", "fill": "M3.5 9.5H12.5V14.5H3.5Z" },
+ { "name": "conditional", "codepoint": "U+F08F", "stroke": "M8 1.5L11 4.5L8 7.5L5 4.5ZM5 4.5H3.5V14.5M11 4.5H12.5V14.5M2 13L3.5 14.5L5 13M11 13L12.5 14.5L14 13" }
 ]

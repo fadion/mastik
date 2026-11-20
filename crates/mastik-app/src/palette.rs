@@ -402,7 +402,7 @@ const TEXT_CHORDS: [TextChord; 13] = [
     TextChord::Align(mastik_core::TextAlign::Justify),
 ];
 
-const SWITCHES: [ViewSwitch; 22] = [
+const SWITCHES: [ViewSwitch; 23] = [
     ViewSwitch::Rulers,
     ViewSwitch::Guides,
     ViewSwitch::GuideLock,
@@ -425,6 +425,7 @@ const SWITCHES: [ViewSwitch; 22] = [
     ViewSwitch::Private,
     ViewSwitch::AlignVisual,
     ViewSwitch::SizeBadge,
+    ViewSwitch::PrototypeTab,
 ];
 
 /// The highlighted row's ground: the accent at 18%.

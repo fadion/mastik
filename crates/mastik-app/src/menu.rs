@@ -620,7 +620,8 @@ impl ViewState {
             | ViewSwitch::AlignVisual
             | ViewSwitch::AskAssistant
             | ViewSwitch::AssistantScope
-            | ViewSwitch::SizeBadge => None,
+            | ViewSwitch::SizeBadge
+            | ViewSwitch::PrototypeTab => None,
         }
     }
 }
@@ -1082,6 +1083,7 @@ impl Item {
                     ViewSwitch::AskAssistant => icon::SPARKLE,
                     ViewSwitch::AssistantScope => icon::SCOPE_FRAME,
                     ViewSwitch::SizeBadge => icon::BOUNDING_BOX,
+                    ViewSwitch::PrototypeTab => icon::INTERACTION,
                     // Placeholders: no menu builds a row for these, and spelling
                     // them out makes a new switch a compile error here.
                     ViewSwitch::Layers
@@ -6414,7 +6416,10 @@ mod view_switch_registry_tests {
             .count();
             assert_eq!(
                 on,
-                usize::from(!matches!(sw, ViewSwitch::Lasso | ViewSwitch::AlignVisual)),
+                usize::from(!matches!(
+                    sw,
+                    ViewSwitch::Lasso | ViewSwitch::AlignVisual | ViewSwitch::PrototypeTab
+                )),
                 "{} is on {on} of the View menu's groups and the Snap menu",
                 sw.label()
             );

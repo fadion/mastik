@@ -732,6 +732,42 @@ fn with_auto_layout(ctx: &egui::Context) -> MastikApp {
     app
 }
 
+/// [`with_auto_layout`]'s child selected in the Prototype tab, holding a click
+/// that navigates to its frame; answers where that action is, for its popover.
+fn with_an_interaction(ctx: &egui::Context) -> (MastikApp, crate::panels::prototype::ActionAt) {
+    use mastik_core::prototype::{Action, Reaction, Transition, Trigger};
+    let mut app = with_auto_layout(ctx);
+    let frame = app.session.selection.ids()[0];
+    let child = app.session.doc.get(frame).expect("the frame").children()[0];
+    let (r, a) = (app.session.ids.mint_item(), app.session.ids.mint_item());
+    app.session
+        .try_commit(Transaction(vec![Operation::SetReactions {
+            id: child,
+            reactions: vec![mastik_core::Keyed::new(
+                r,
+                Reaction {
+                    trigger: Trigger::Click,
+                    actions: vec![mastik_core::Keyed::new(
+                        a,
+                        Action::Navigate {
+                            to: frame,
+                            transition: Transition::default(),
+                        },
+                    )],
+                },
+            )],
+        }]))
+        .expect("an interaction");
+    app.session.selection.set_one(child);
+    app.prototype_tab = true;
+    let at = crate::panels::prototype::ActionAt {
+        node: child,
+        reaction: r,
+        action: a,
+    };
+    (app, at)
+}
+
 /// A selected component set, `Size: Small, Large` × `State: Default, Hover,
 /// Pressed`, two variants at Default, with Hover tied (and Pressed by its name),
 /// so the Variants card shows its noted chips and its Element row.
@@ -1234,6 +1270,17 @@ fn sweep_on(theme: Theme) {
     let mut app = with_auto_layout(&ctx);
     let found = inspector(&ctx, &mut app);
     check("auto layout", app, found);
+    // The Prototype tab: a frame's cards, a child's interaction and its popover.
+    let mut app = with_auto_layout(&ctx);
+    app.prototype_tab = true;
+    let found = inspector(&ctx, &mut app);
+    check("prototype tab, a frame", app, found);
+    let (mut app, _) = with_an_interaction(&ctx);
+    let found = inspector(&ctx, &mut app);
+    check("prototype tab, an interaction", app, found);
+    let (mut app, at) = with_an_interaction(&ctx);
+    let found = opened(&ctx, &mut app, move |_, a| a.proto.open = Some(at));
+    check("prototype action popover", app, found);
     // Every section open, so each kind of row the card has is measured.
     let mut app = with_a_chart(&ctx);
     app.close_chart_data();

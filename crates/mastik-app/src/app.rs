@@ -894,6 +894,12 @@ pub struct MastikApp {
     /// Keyed by node too, so a selection change cannot leave it editing another layer's
     /// effect. At most one.
     pub(crate) effect_menu: Option<(NodeId, usize)>,
+    /// The inspector's Prototype tab is up (`panels::prototype`), in place of the
+    /// Design cards. Per window, never saved: the tab is how the inspector is
+    /// looked at, not part of a document.
+    pub(crate) prototype_tab: bool,
+    /// The Prototype tab's open popover, typed fields and key capture.
+    pub(crate) proto: crate::panels::ProtoState,
     /// Which tab of image editing's card is showing; a preference kept across entries.
     /// The card is open exactly while `Tool::ImageEdit` is.
     pub(crate) image_tab: ImageCard,
@@ -2072,6 +2078,8 @@ impl MastikApp {
             synced_selection: Default::default(),
             stroke_menu: None,
             effect_menu: None,
+            prototype_tab: false,
+            proto: Default::default(),
             image_tab: ImageCard::default(),
             crop_aspect: Default::default(),
             unused_cache: Default::default(),
@@ -2458,6 +2466,7 @@ impl MastikApp {
                 self.effect_menu = None;
                 self.export_menu = false;
                 self.export_row_open = None;
+                self.proto.open = None;
             }
             // Before the keymap: a tab key moves every key after it to another document.
             if let Some(key) = crate::tabs::read_keys(&ctx) {
@@ -8870,6 +8879,7 @@ impl MastikApp {
             ViewSwitch::Lasso => self.lasso,
             ViewSwitch::Private => self.prefs.private,
             ViewSwitch::AlignVisual => self.align_visual,
+            ViewSwitch::PrototypeTab => self.prototype_tab,
         }
     }
 
@@ -8941,6 +8951,10 @@ impl MastikApp {
                 return;
             }
             ViewSwitch::AlignVisual => self.align_visual = on,
+            ViewSwitch::PrototypeTab => {
+                self.set_prototype_tab(on);
+                return;
+            }
         }
         self.session
             .info(format!("{} {}", sw.label(), if on { "on" } else { "off" }));
@@ -9706,6 +9720,7 @@ impl MastikApp {
             || self.effect_menu.is_some()
             || self.export_menu
             || self.export_row_open.is_some()
+            || self.proto.open.is_some()
     }
 
     /// Put the inspector's own popovers away, for a card opening in their lane.
@@ -9716,6 +9731,7 @@ impl MastikApp {
         self.effect_menu = None;
         self.export_menu = false;
         self.export_row_open = None;
+        self.proto.open = None;
     }
 
     /// What a new detached picker opens [`POPOVER_GAP`] left of: the inspector's cards,
@@ -9746,6 +9762,7 @@ impl MastikApp {
             || self.effect_menu.is_some()
             || self.export_menu
             || self.export_row_open.is_some()
+            || self.proto.open.is_some()
             || self.contrast.as_ref().is_some_and(|c| c.owns_escape())
             || self.vision_owns_escape()
             || self.size_preview_owns_escape()
@@ -10181,7 +10198,7 @@ mod tests {
     /// widening the scan would self-match.
     #[test]
     fn only_the_layers_panel_commits_without_the_committer() {
-        let panels: [(&str, &str); 22] = [
+        let panels: [(&str, &str); 23] = [
             ("binding.rs", include_str!("panels/binding.rs")),
             ("chart.rs", include_str!("panels/chart.rs")),
             ("chart_picture.rs", include_str!("panels/chart_picture.rs")),
@@ -10199,6 +10216,7 @@ mod tests {
             ("layout/grid.rs", include_str!("panels/layout/grid.rs")),
             ("paint.rs", include_str!("panels/paint.rs")),
             ("picker.rs", include_str!("panels/picker.rs")),
+            ("prototype.rs", include_str!("panels/prototype.rs")),
             ("push.rs", include_str!("panels/push.rs")),
             ("styles.rs", include_str!("panels/styles.rs")),
             ("typography.rs", include_str!("panels/typography.rs")),

@@ -1298,6 +1298,17 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
                 }
             }
             let mut answer = json!({ "nodes": nodes });
+            // A page's flows and prototype settings are its page entry's, read
+            // with its root as `set` writes them.
+            if let Some(p) = snap.pages.iter().find(|p| p.id == id)
+                && let Some(root) = answer["nodes"].get_mut(0).and_then(Value::as_object_mut)
+            {
+                for (k, v) in [("flows", &p.flows), ("play", &p.play)] {
+                    if let Some(v) = v {
+                        root.insert(k.into(), v.clone());
+                    }
+                }
+            }
             // Below the root, a layer's page and frame are the root's or the
             // root itself: written once, on the root.
             if let Some(Value::Array(list)) = answer.get_mut("nodes")

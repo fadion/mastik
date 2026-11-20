@@ -1,8 +1,9 @@
 //! The short forms an agent may write and `get_tree` answers in, and their
 //! expansion into the model's own serde shapes.
 //!
-//! A colour under `Solid`, `color` or `Color`, or a gradient stop's `color`, may
-//! be `"#rgb"`, `"#rgba"`, `"#rrggbb"` or `"#rrggbbaa"`. A fill or stroke may be
+//! A colour under `Solid`, `color`, `Color` or an overlay's `backdrop`, or a
+//! gradient stop's `color`, may be `"#rgb"`, `"#rgba"`, `"#rrggbb"` or
+//! `"#rrggbbaa"`. A fill or stroke may be
 //! a bare colour; its `brush` may be one, or be written `color` with an `opacity`
 //! folded in; and it leaves out what a new one has (shown, 1px wide, mitre join,
 //! butt cap, no dashes). A text kind's `style` leaves out what
@@ -33,7 +34,7 @@
 use serde_json::{Map, Value};
 
 /// The keys whose value is one colour in the model's own shape.
-const COLOUR_KEYS: [&str; 3] = ["Solid", "color", "Color"];
+const COLOUR_KEYS: [&str; 4] = ["Solid", "color", "Color", "backdrop"];
 
 /// What a stroke has unless it says otherwise, as its serde shape spells it.
 fn stroke_defaults() -> [(&'static str, Value); 6] {
