@@ -913,6 +913,38 @@ fn knob_dots(q: [egui::Pos2; 4]) -> Vec<(usize, egui::Pos2, egui::Vec2)> {
         .collect()
 }
 
+/// How close the pointer comes to an edge before that edge's link dot shows:
+/// wide enough to see it coming, so a box does not wear four dots at once.
+/// Never less than [`KNOB_PICK`], so a dot that takes a press is one drawn.
+const KNOB_REVEAL: f32 = 28.0;
+const _: () = assert!(KNOB_REVEAL >= KNOB_PICK);
+
+/// How far `p` is from edge `edge` of the quad `q`, as a segment.
+fn edge_distance(q: [egui::Pos2; 4], edge: usize, p: egui::Pos2) -> f32 {
+    let (a, b) = (q[edge], q[(edge + 1) % 4]);
+    let ab = b - a;
+    let l = ab.length_sq();
+    let t = if l > 0.0 {
+        ((p - a).dot(ab) / l).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance(a + ab * t)
+}
+
+/// Where a link to nothing on this page leaves `from`, and its direction: the
+/// side facing out of the frame it is in, the way off the screen. A screen of
+/// its own, or a layer at its frame's middle, leaves by its right.
+fn stub_side(from: egui::Rect, frame: Option<egui::Rect>) -> (egui::Pos2, egui::Vec2) {
+    let d = frame.map_or(egui::Vec2::ZERO, |f| from.center() - f.center());
+    match () {
+        _ if d.x.abs() >= d.y.abs() && d.x < 0.0 => (from.left_center(), -egui::Vec2::X),
+        _ if d.x.abs() >= d.y.abs() => (from.right_center(), egui::Vec2::X),
+        _ if d.y < 0.0 => (from.center_top(), -egui::Vec2::Y),
+        _ => (from.center_bottom(), egui::Vec2::Y),
+    }
+}
+
 /// Where a connector leaves `from` and enters `to`, each with its side's
 /// outward direction: the facing sides when they stand apart across, else
 /// bottom to top or top to bottom.
@@ -988,6 +1020,8 @@ fn paint_link(painter: &egui::Painter, mut pts: Vec<egui::Pos2>, dashed: bool, i
 /// A flow chip's height on the canvas, and the gap it keeps above its frame.
 const FLOW_CHIP_H: f32 = 20.0;
 const FLOW_CHIP_GAP: f32 = 6.0;
+/// The air after a flow chip's words, to the pill's round end.
+const FLOW_CHIP_PAD_R: f32 = 7.0;
 
 impl MastikApp {
     /// The flow chips on the current page while the Prototype tab is up: each
@@ -1020,7 +1054,8 @@ impl MastikApp {
                     .size()
                     .x
             });
-            let w = text_w + 12.0 + 14.0;
+            // The glyph's room on the left, the words, and air on the right.
+            let w = text_w + 22.0 + FLOW_CHIP_PAD_R;
             // Leftward of any chip this frame already wears.
             let right = out
                 .iter()
@@ -1056,33 +1091,34 @@ impl MastikApp {
     }
 
     /// Draw the flow chips: the play glyph and the flow's name on a pill of
-    /// the accent.
+    /// the canvas badges' blue, lifted under the pointer as the crop's *Done* is.
     fn draw_flow_chips(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
         let hover = ui.ctx().pointer_hover_pos();
+        let ink = ui::pill_ink(color::BADGE);
         for (_, chip, words) in self.flow_chips(ui, rect, ppp) {
             let lit = hover.is_some_and(|p| chip.contains(p));
             painter.rect_filled(
                 chip,
                 FLOW_CHIP_H / 2.0,
                 match lit {
-                    true => color::accent(),
-                    false => color::accent_a(220),
+                    true => color::BADGE.blend(egui::Color32::from_white_alpha(26)),
+                    false => color::BADGE,
                 },
             );
-            // text-ink: words on the chip's solid accent.
+            // text-ink: words on the chip's badge blue, in the badges' own ink.
             painter.text(
                 egui::pos2(chip.left() + 13.0, chip.center().y),
                 egui::Align2::CENTER_CENTER,
                 icon::PLAY,
                 theme::icon_font(10.0),
-                color::on_accent(),
+                ink,
             );
             painter.text(
                 egui::pos2(chip.left() + 22.0, chip.center().y),
                 egui::Align2::LEFT_CENTER,
                 words,
                 egui::FontId::proportional(ui::SMALL_PT),
-                color::on_accent(),
+                ink,
             );
         }
     }
@@ -1104,7 +1140,8 @@ impl MastikApp {
     }
 
     /// The link dot at `screen`, the nearest within reach: its layer and the
-    /// edge it sits on.
+    /// edge it sits on. Within reach of a dot is near its edge, so the dot
+    /// answering is one drawn ([`KNOB_REVEAL`]).
     pub(crate) fn link_knob_at(
         &self,
         screen: egui::Pos2,
@@ -1157,7 +1194,8 @@ impl MastikApp {
 
     /// The connectors from each layer with a navigate or overlay action to its
     /// target, the selection's lit and the rest dim; a dangling one is a red
-    /// stub with the warning glyph. Then the link dots, and the link one pulls.
+    /// stub with the warning glyph; each wears a dot where it leaves. Then the
+    /// link dots near the pointer, and the link one pulls.
     pub(crate) fn draw_prototype_links(
         &self,
         ui: &egui::Ui,
@@ -1191,15 +1229,19 @@ impl MastikApp {
                     (blue, curve(a, out_a, b, out_b))
                 }
                 None => {
-                    let a = from.right_center();
-                    let b = a + egui::vec2(STUB, 0.0);
+                    let frame = screen_of(doc, link.from)
+                        .filter(|s| *s != link.from)
+                        .and_then(|s| self.selection_quad(s, rect, ppp))
+                        .map(quad_box);
+                    let (a, out) = stub_side(from, frame);
+                    let b = a + out * STUB;
                     let ink = match doc.get(link.to) {
                         None => color::error(),
                         Some(_) => blue,
                     };
                     if doc.get(link.to).is_none() {
                         painter.text(
-                            b + egui::vec2(11.0, 0.0),
+                            b + out * 11.0,
                             egui::Align2::CENTER_CENTER,
                             icon::WARNING,
                             theme::icon_font(12.0),
@@ -1209,7 +1251,12 @@ impl MastikApp {
                     (ink, vec![a, b])
                 }
             };
+            let start = pts.first().copied();
             paint_link(painter, pts, link.dashed, ink);
+            // A dot where it leaves, so every connector has a starting point.
+            if let Some(a) = start {
+                painter.circle(a, KNOB_R, color::POINT, egui::Stroke::new(1.5, ink));
+            }
         }
         // The link being pulled, from the dot it left, and the screen it would land on.
         let pointer = ui.ctx().pointer_latest_pos();
@@ -1222,30 +1269,24 @@ impl MastikApp {
             && let Some(q) = self.selection_quad(from, rect, ppp)
             && let Some((_, at, out)) = knob_dots(q).into_iter().find(|(e, ..)| *e == edge)
         {
-            let world = self.to_world(p, rect, ppp);
-            if let Some(target) = self.link_target(from, world)
-                && let Some(q) = self.selection_quad(target, rect, ppp)
-            {
+            let (b, out_b, target) = self.pulled_end(from, p, rect, ppp);
+            if let Some(t) = target {
                 painter.add(egui::Shape::closed_line(
-                    q.to_vec(),
+                    t.to_vec(),
                     egui::Stroke::new(2.0, color::SELECT),
                 ));
             }
-            paint_link(
-                painter,
-                curve(at, out, p, egui::Vec2::ZERO),
-                false,
-                color::SELECT,
-            );
+            paint_link(painter, curve(at, out, b, out_b), false, color::SELECT);
         }
-        // The dots, filled where the pointer would take one or one is pulled,
-        // as a shape's dragged corner dot is.
+        // The dots near the pointer, filled where it would take one or one is
+        // pulled, as a shape's dragged corner dot is.
         let hot = pulled.or_else(|| pointer.and_then(|p| self.link_knob_at(p, rect, ppp)));
         for id in self.knob_layers() {
             let Some(q) = self.selection_quad(id, rect, ppp) else {
                 continue;
             };
             for (edge, at, _) in knob_dots(q) {
+                let near = pointer.is_some_and(|p| edge_distance(q, edge, p) <= KNOB_REVEAL);
                 if hot == Some((id, edge)) {
                     painter.circle(
                         at,
@@ -1253,7 +1294,7 @@ impl MastikApp {
                         color::SELECT,
                         egui::Stroke::new(1.5, color::POINT),
                     );
-                } else {
+                } else if near {
                     painter.circle(
                         at,
                         KNOB_R,
@@ -1262,6 +1303,31 @@ impl MastikApp {
                     );
                 }
             }
+        }
+    }
+
+    /// Where a link pulled from `from` ends with the pointer at `p`, and the
+    /// direction it arrives against: over a screen it would land on, snapped to
+    /// that screen's facing side for as long as the pointer stays inside it
+    /// (with the screen's quad, to ring); elsewhere, the pointer itself.
+    fn pulled_end(
+        &self,
+        from: NodeId,
+        p: egui::Pos2,
+        rect: egui::Rect,
+        ppp: f32,
+    ) -> (egui::Pos2, egui::Vec2, Option<[egui::Pos2; 4]>) {
+        let world = self.to_world(p, rect, ppp);
+        let snapped = self
+            .link_target(from, world)
+            .and_then(|t| self.selection_quad(t, rect, ppp))
+            .zip(self.selection_quad(from, rect, ppp));
+        match snapped {
+            Some((t, q)) => {
+                let (_, _, b, out_b) = connector_ends(quad_box(q), quad_box(t));
+                (b, out_b, Some(t))
+            }
+            None => (p, egui::Vec2::ZERO, None),
         }
     }
 
@@ -4238,6 +4304,69 @@ mod tests {
                 .fold(0.0, f32::max);
             assert!(worst <= CURVE_STEP * 1.5, "a short piece: {worst}");
         }
+    }
+
+    /// A stub to nothing on the page leaves by the side facing out of its
+    /// frame. flip: `stub_side` always answering the right → fails at "out the top".
+    #[test]
+    fn a_stub_leaves_out_of_its_frame() {
+        let frame = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 800.0));
+        let layer =
+            |x: f32, y: f32| egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(60.0, 20.0));
+        let top = layer(200.0, 30.0);
+        assert_eq!(
+            stub_side(top, Some(frame)),
+            (top.center_top(), -egui::Vec2::Y),
+            "out the top"
+        );
+        let left = layer(40.0, 400.0);
+        assert_eq!(
+            stub_side(left, Some(frame)).1,
+            -egui::Vec2::X,
+            "out the left"
+        );
+        let low = layer(220.0, 780.0);
+        assert_eq!(
+            stub_side(low, Some(frame)).1,
+            egui::Vec2::Y,
+            "out the bottom"
+        );
+        assert_eq!(
+            stub_side(frame, None),
+            (frame.right_center(), egui::Vec2::X),
+            "a screen's right"
+        );
+    }
+
+    /// A pulled link snaps to the facing side of a screen it would land on,
+    /// keeping it while the pointer is anywhere inside, and follows the pointer
+    /// out. flip: `pulled_end` answering the pointer over a screen → fails at
+    /// "snapped to the screen's facing side".
+    #[test]
+    fn a_pulled_link_snaps_into_the_screen_under_it() {
+        let ctx = egui::Context::default();
+        let f = fixture(&ctx);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
+        let q = f.app.selection_quad(f.add, rect, 1.0).expect("on screen");
+        let (edge, mid, _) = knob_dots(q)[0];
+        assert!(edge_distance(q, edge, mid) < 0.01, "the dot is on its edge");
+        assert!(edge_distance(q, edge, quad_box(q).center()) > 0.0);
+        let cart = quad_box(f.app.selection_quad(f.cart, rect, 1.0).expect("the cart"));
+        let from = quad_box(q);
+        let side = connector_ends(from, cart).2;
+        for p in [cart.center(), cart.right_center() - egui::vec2(4.0, 0.0)] {
+            let (b, out_b, ring) = f.app.pulled_end(f.add, p, rect, 1.0);
+            assert_eq!(b, side, "snapped to the screen's facing side");
+            assert_eq!(out_b, -egui::Vec2::X);
+            assert!(ring.is_some(), "the screen is ringed");
+        }
+        let outside = cart.right_center() + egui::vec2(60.0, 0.0);
+        let (b, out_b, ring) = f.app.pulled_end(f.add, outside, rect, 1.0);
+        assert_eq!(
+            (b, out_b, ring),
+            (outside, egui::Vec2::ZERO, None),
+            "out, it follows"
+        );
     }
 
     /// The canvas's connectors: one per navigate, dashed inside a conditional, a

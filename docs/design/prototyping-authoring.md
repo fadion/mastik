@@ -33,9 +33,8 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
 
 - **One block per reaction**: the trigger's dropdown, `+` (add an action) and `⋯` (*Duplicate*,
   *Delete*), then its actions top to bottom; a `ui::card_rule` parts one block from the next. The
-  card's own `+` adds *On click* with no actions. The add and `⋯` menus are a fixed `MENU_W`
-  (a width, not a floor: `menu_row` takes the available width, which in a popup runs to the
-  screen's edge).
+  card's own `+` adds *On click* with no actions. The add and `⋯` menus are as wide as their
+  longest row (`ui::menu_width`).
 - **Triggers** are offered in two groups under `ui::menu_eyebrow`s, *Pointer* (*On click*, *On press*, *While
   pressing*, *On hover*, *While hovering*, *On drag*) and *Other* (*Key…*, *After delay*, *When
   a variable changes*, *When the frame opens*). *When the frame opens* is offered on a top-level
@@ -53,7 +52,7 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   (*Not a component*); *Set variable* with no variable; a screen action with no frame to go to.
   A new action names the likeliest target (`prototype::new_action`): another screen than the
   layer's own, mains last; the layer's own instance and a variant other than its current one; the
-  first variable or script. It opens its popover at once.
+  first variable or script. It opens its popover at once, except *Back*, which has nothing to set.
 - **An action is one row**, a `ui::field_row_pressable` that opens its popover: a grip, its
   glyph, its verb, its target in accent ink, its transition's timing (kind and duration, or
   *Spring*) as a faint caption note as a menu row's accelerator is, and `×`; the grip and `×` keep
@@ -124,17 +123,27 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   for the selection's links and `color::SELECT_DIM` for the rest, with a filled `HEAD_LEN` ×
   2·`HEAD_HALF` arrowhead; the line stops at the head's base so its weight never shows past the
   tip. A link in a conditional or opening an overlay is dashed (6 on, 4 off). A target that is
-  gone is a short red stub ending in the warning glyph; one on another page a short stub. They
-  are egui shapes over the rendered page, recomputed from the document, never in the scene.
-- **Link dots** (`knob_dots`), with a selecting tool: every edge of the one selected layer's
-  screen quad, and of the hovered unselected one, wears a dot at its middle, `color::POINT` with a
-  1.5 `color::SELECT` ring at `KNOB_R`. The dot a press would take, or the one being pulled, grows
-  to `KNOB_HOT_R` and fills `SELECT` with a `POINT` ring, as a shape's dragged corner dot does;
-  `KNOB_R` sits a size above the corner dots so the two handles do not read as one. A press
-  within `KNOB_PICK` of a dot takes it ahead of the box's resize handles (`link_knob_at`, after
-  only the pivot), and the cursor stays the rest arrow over it. Pulling a hovered layer's dot
-  selects that layer first, so the *Interactions* card shows the link. The pulled link leaves its
-  dot along the edge's outward direction to the pointer and rings the screen under it; released
+  gone is a short red stub ending in the warning glyph; one on another page a short stub in the
+  connector's ink. A stub leaves by the side facing out of the frame its layer is in
+  (`stub_side`: the dominant axis of the layer's centre less the frame's; a screen of its own
+  leaves by its right), the glyph beyond its end the same way, so it points off the screen.
+  Every connector and stub wears a dot where it leaves, a rest link dot's (`POINT`, 1.5 ring)
+  ringed in its own ink, so each has a visible start. They are egui shapes over the rendered
+  page, recomputed from the document, never in the scene.
+- **Link dots** (`knob_dots`), with a selecting tool, on the one selected layer's screen quad and
+  the hovered unselected one's: an edge shows the dot at its middle only while the pointer is
+  within `KNOB_REVEAL` (28) of that edge as a segment (`edge_distance`), so a box never wears four
+  dots at once. At rest a dot is `color::POINT` with a 1.5 `color::SELECT` ring at `KNOB_R`. The
+  dot a press would take, or the one being pulled, is always drawn, grown to `KNOB_HOT_R` and
+  filled `SELECT` with a `POINT` ring, as a shape's dragged corner dot is; `KNOB_R` sits a size
+  above the corner dots so the two handles do not read as one. A press within `KNOB_PICK` of a dot
+  takes it ahead of the box's resize handles (`link_knob_at`, after only the pivot), and the
+  cursor stays the rest arrow over it; `KNOB_REVEAL >= KNOB_PICK` is asserted at compile time, so a
+  dot that answers a press is one drawn. Pulling a hovered layer's dot selects that layer first,
+  so the *Interactions* card shows the link. The pulled link leaves its dot along the edge's
+  outward direction. While the pointer is anywhere over a screen it would land on (`link_target`),
+  its end snaps to that screen's facing side as a connector's would enter it (`pulled_end`, by
+  `connector_ends`) and the screen is ringed; elsewhere it ends at the pointer. Released
   over a top-level frame other than the layer's own, it commits one *Navigate to* with the page's
   default transition as *Add interaction*, joining the layer's first click
   (`prototype::with_link`). A click on a dot links nothing and says how to use it; a drop
@@ -145,8 +154,10 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   outline keeps ringing that layer meanwhile (`link_hover`). A press aims at the dots drawn last
   frame.
 - **Flow chips** (`flow_chips`), while the Prototype tab is up: each flow's name behind the
-  `PLAY` glyph on an accent pill over its start frame's top-right corner, several on one frame
-  stacked leftward. A click plays that flow over the canvas (`prototyping-player.md`). Private
+  `PLAY` glyph on a `color::BADGE` pill (the canvas badges' blue, `ui::pill_ink(BADGE)` ink) over
+  its start frame's top-right corner, `FLOW_CHIP_PAD_R` (7) of air after the words, several on one
+  frame stacked leftward. Under the pointer it lifts by a white wash at alpha 26, as the crop's
+  *Done* pill does. A click plays that flow over the canvas (`prototyping-player.md`). Private
   mode masks the names.
 
 ## Components
