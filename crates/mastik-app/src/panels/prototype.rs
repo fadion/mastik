@@ -2412,53 +2412,47 @@ impl MastikApp {
         let first_var = doc.variables().iter().next().map(|v| v.id);
         let mut pick = None;
         let current = r.trigger.clone();
-        ui.scope(|ui| {
-            ui::combo_height(ui);
-            egui::ComboBox::from_id_salt(("trigger", r.id))
-                .icon(ui::combo_chevron)
-                .width(w)
-                .selected_text(ui::glyph_and_text(icon::INTERACTION, &label))
-                .show_ui(ui, |ui| {
-                    ui::menu_rows(ui);
-                    ui::menu_eyebrow(ui, "Pointer");
-                    for t in POINTER_TRIGGERS {
-                        let on = same_trigger_kind(&t, &current);
-                        if ui.selectable_label(on, trigger_label(doc, &t)).clicked() && !on {
-                            pick = Some(TriggerPick::Set(t));
-                        }
-                    }
-                    ui::menu_sep(ui);
-                    ui::menu_eyebrow(ui, "Other");
-                    let on = matches!(current, Trigger::Key { .. });
-                    if ui.selectable_label(on, "Key…").clicked() {
-                        pick = Some(TriggerPick::Key);
-                    }
-                    let on = matches!(current, Trigger::After { .. });
-                    if ui.selectable_label(on, "After delay").clicked() && !on {
-                        pick = Some(TriggerPick::Set(Trigger::After { ms: 1000 }));
-                    }
-                    let on = matches!(current, Trigger::VariableChanges { .. });
-                    let row = ui.add_enabled_ui(first_var.is_some(), |ui| {
-                        ui.selectable_label(on, "When a variable changes")
-                    });
-                    let row = row
-                        .inner
-                        .on_disabled_hover_text("This document has no variables");
-                    if row.clicked()
-                        && !on
-                        && let Some(var) = first_var
-                    {
-                        pick = Some(TriggerPick::Set(Trigger::VariableChanges { var }));
-                    }
-                    let on = matches!(current, Trigger::FrameOpens);
-                    let row = ui.add_enabled_ui(a_screen, |ui| {
-                        ui.selectable_label(on, "When the frame opens")
-                    });
-                    let row = row.inner.on_disabled_hover_text("Only a frame opens");
-                    if row.clicked() && !on {
-                        pick = Some(TriggerPick::Set(Trigger::FrameOpens));
-                    }
-                });
+        let face = ui::glyph_and_text(icon::INTERACTION, &label);
+        ui::fitted_combo(ui, ("trigger", r.id), w, face, &label, |ui| {
+            ui::menu_rows(ui);
+            ui::menu_eyebrow(ui, "Pointer");
+            for t in POINTER_TRIGGERS {
+                let on = same_trigger_kind(&t, &current);
+                if ui.selectable_label(on, trigger_label(doc, &t)).clicked() && !on {
+                    pick = Some(TriggerPick::Set(t));
+                }
+            }
+            ui::menu_sep(ui);
+            ui::menu_eyebrow(ui, "Other");
+            let on = matches!(current, Trigger::Key { .. });
+            if ui.selectable_label(on, "Key…").clicked() {
+                pick = Some(TriggerPick::Key);
+            }
+            let on = matches!(current, Trigger::After { .. });
+            if ui.selectable_label(on, "After delay").clicked() && !on {
+                pick = Some(TriggerPick::Set(Trigger::After { ms: 1000 }));
+            }
+            let on = matches!(current, Trigger::VariableChanges { .. });
+            let row = ui.add_enabled_ui(first_var.is_some(), |ui| {
+                ui.selectable_label(on, "When a variable changes")
+            });
+            let row = row
+                .inner
+                .on_disabled_hover_text("This document has no variables");
+            if row.clicked()
+                && !on
+                && let Some(var) = first_var
+            {
+                pick = Some(TriggerPick::Set(Trigger::VariableChanges { var }));
+            }
+            let on = matches!(current, Trigger::FrameOpens);
+            let row = ui.add_enabled_ui(a_screen, |ui| {
+                ui.selectable_label(on, "When the frame opens")
+            });
+            let row = row.inner.on_disabled_hover_text("Only a frame opens");
+            if row.clicked() && !on {
+                pick = Some(TriggerPick::Set(Trigger::FrameOpens));
+            }
         });
         pick
     }
@@ -3233,20 +3227,14 @@ impl MastikApp {
                     .find(|(s, _)| s == script)
                     .map_or("Missing script".to_string(), |(_, n)| n.clone());
                 let mut pick = None;
-                ui.scope(|ui| {
-                    ui::combo_height(ui);
-                    egui::ComboBox::from_id_salt(("script", k.id))
-                        .icon(ui::combo_chevron)
-                        .width(w)
-                        .selected_text(ui::glyph_and_text(icon::FILE_CODE, &current))
-                        .show_ui(ui, |ui| {
-                            ui::menu_rows(ui);
-                            for (s, n) in &scripts {
-                                if ui.selectable_label(s == script, n).clicked() && s != script {
-                                    pick = Some(*s);
-                                }
-                            }
-                        });
+                let face = ui::glyph_and_text(icon::FILE_CODE, &current);
+                ui::fitted_combo(ui, ("script", k.id), w, face, &current, |ui| {
+                    ui::menu_rows(ui);
+                    for (s, n) in &scripts {
+                        if ui.selectable_label(s == script, n).clicked() && s != script {
+                            pick = Some(*s);
+                        }
+                    }
                 });
                 if let Some(s) = pick {
                     out = Some((
@@ -3283,27 +3271,21 @@ impl MastikApp {
         let h = ui::CONTROL_H;
         let mut out = None;
         let mut kind_pick = None;
-        ui.scope(|ui| {
-            ui::combo_height(ui);
-            egui::ComboBox::from_id_salt(("kind", salt))
-                .icon(ui::combo_chevron)
-                .width(w)
-                .selected_text(ui::combo_text(transition_label(t.kind)))
-                .show_ui(ui, |ui| {
-                    ui::menu_rows(ui);
-                    for k in TRANSITION_KINDS {
-                        if ui
-                            .selectable_label(k == t.kind, transition_label(k))
-                            .clicked()
-                            && k != t.kind
-                        {
-                            kind_pick = Some(k);
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("How the screen moves to the next");
-        });
+        let kind = transition_label(t.kind);
+        ui::fitted_combo(ui, ("kind", salt), w, ui::combo_text(kind), kind, |ui| {
+            ui::menu_rows(ui);
+            for k in TRANSITION_KINDS {
+                if ui
+                    .selectable_label(k == t.kind, transition_label(k))
+                    .clicked()
+                    && k != t.kind
+                {
+                    kind_pick = Some(k);
+                }
+            }
+        })
+        .response
+        .on_hover_text("How the screen moves to the next");
         // A pick is answered, but every row below still draws from `t` this
         // frame, so the popover is never one frame short of its rows.
         if let Some(k) = kind_pick {
@@ -3401,21 +3383,16 @@ impl MastikApp {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = COL;
                     let half = (w - COL) / 2.0;
-                    ui.scope(|ui| {
-                        ui::combo_height(ui);
-                        egui::ComboBox::from_id_salt(("curve", salt))
-                            .icon(ui::combo_chevron)
-                            .width(half)
-                            .selected_text(ui::combo_text(easing_label(curve)))
-                            .show_ui(ui, |ui| {
-                                ui::menu_rows(ui);
-                                for (e, l) in EASINGS {
-                                    let on = easing_label(curve) == l;
-                                    if ui.selectable_label(on, l).clicked() && !on {
-                                        curve_pick = Some(e);
-                                    }
-                                }
-                            });
+                    let shown = easing_label(curve);
+                    let face = ui::combo_text(shown);
+                    ui::fitted_combo(ui, ("curve", salt), half, face, shown, |ui| {
+                        ui::menu_rows(ui);
+                        for (e, l) in EASINGS {
+                            let on = shown == l;
+                            if ui.selectable_label(on, l).clicked() && !on {
+                                curve_pick = Some(e);
+                            }
+                        }
                     });
                     let rid = ui.id().with(("ms", salt));
                     let mut v = self
@@ -3584,24 +3561,18 @@ impl MastikApp {
                 .find(|(p, _)| same(p, &o.position))
                 .map_or("Centre", |(_, l)| *l);
             let mut pick = None;
-            ui.scope(|ui| {
-                ui::combo_height(ui);
-                egui::ComboBox::from_id_salt(("overlay-at", action))
-                    .icon(ui::combo_chevron)
-                    .width(w)
-                    .selected_text(ui::combo_text(shown))
-                    .show_ui(ui, |ui| {
-                        ui::menu_rows(ui);
-                        for (p, l) in OVERLAY_POSITIONS {
-                            let on = same(&p, &o.position);
-                            if ui.selectable_label(on, l).clicked() && !on {
-                                pick = Some(p);
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text("Where the frame shows over the screen");
-            });
+            let face = ui::combo_text(shown);
+            ui::fitted_combo(ui, ("overlay-at", action), w, face, shown, |ui| {
+                ui::menu_rows(ui);
+                for (p, l) in OVERLAY_POSITIONS {
+                    let on = same(&p, &o.position);
+                    if ui.selectable_label(on, l).clicked() && !on {
+                        pick = Some(p);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Where the frame shows over the screen");
             if let Some(p) = pick {
                 out = Some(OverlaySettings { position: p, ..o });
             }
@@ -3785,24 +3756,18 @@ impl MastikApp {
         };
         let mut pick = None;
         let w = ui.available_width();
-        ui.scope(|ui| {
-            ui::combo_height(ui);
-            egui::ComboBox::from_id_salt(salt)
-                .icon(ui::combo_chevron)
-                .width(w)
-                .selected_text(ui::glyph_and_text(icon::BRACKETS_CURLY, &shown))
-                .show_ui(ui, |ui| {
-                    ui::menu_rows(ui);
-                    if vars.is_empty() {
-                        ui::menu_note(ui, "No variables of that kind");
-                    }
-                    for (v, n) in &vars {
-                        let on = current == Some(*v);
-                        if ui.selectable_label(on, n).clicked() && !on {
-                            pick = Some(*v);
-                        }
-                    }
-                });
+        let face = ui::glyph_and_text(icon::BRACKETS_CURLY, &shown);
+        ui::fitted_combo(ui, salt, w, face, &shown, |ui| {
+            ui::menu_rows(ui);
+            if vars.is_empty() {
+                ui::menu_note(ui, "No variables of that kind");
+            }
+            for (v, n) in &vars {
+                let on = current == Some(*v);
+                if ui.selectable_label(on, n).clicked() && !on {
+                    pick = Some(*v);
+                }
+            }
         });
         pick
     }
@@ -3928,10 +3893,15 @@ impl MastikApp {
             let w = ui.available_width();
             if frame {
                 ui::labelled(ui, "Scrolling", |ui| {
-                    let cur = [ScrollAxis::None, ScrollAxis::Vertical, ScrollAxis::Horizontal, ScrollAxis::Both]
-                        .iter()
-                        .position(|a| *a == play.scroll)
-                        .unwrap_or(0);
+                    let cur = [
+                        ScrollAxis::None,
+                        ScrollAxis::Vertical,
+                        ScrollAxis::Horizontal,
+                        ScrollAxis::Both,
+                    ]
+                    .iter()
+                    .position(|a| *a == play.scroll)
+                    .unwrap_or(0);
                     let pick = ui::segmented_tipped(
                         ui,
                         w,
@@ -3940,15 +3910,31 @@ impl MastikApp {
                         cur,
                         |_| true,
                         |_| "The axis the frame scrolls on when its content overflows",
-                        |p, i, r, on| ui::segment_label(p, r, ["None", "Vertical", "Horizontal", "Both"][i], on),
+                        |p, i, r, on| {
+                            ui::segment_label(
+                                p,
+                                r,
+                                ["None", "Vertical", "Horizontal", "Both"][i],
+                                on,
+                            )
+                        },
                     );
                     if let Some(i) = pick.filter(|i| *i != cur) {
                         let mut p = play.clone();
-                        p.scroll = [ScrollAxis::None, ScrollAxis::Vertical, ScrollAxis::Horizontal, ScrollAxis::Both][i];
+                        p.scroll = [
+                            ScrollAxis::None,
+                            ScrollAxis::Vertical,
+                            ScrollAxis::Horizontal,
+                            ScrollAxis::Both,
+                        ][i];
                         next = Some((p, "Scrolling"));
                     }
                     for (who, pin) in &pinned {
-                        let word = if *pin == Pin::Fixed { "Fixed" } else { "Sticky" };
+                        let word = if *pin == Pin::Fixed {
+                            "Fixed"
+                        } else {
+                            "Sticky"
+                        };
                         ui.label(
                             egui::RichText::new(format!("{who} · {word}"))
                                 .size(ui::SMALL_PT)
@@ -3959,7 +3945,10 @@ impl MastikApp {
             }
             if parent.is_some() {
                 ui::labelled(ui, "In a scrolling frame", |ui| {
-                    let cur = [Pin::Scrolls, Pin::Fixed, Pin::Sticky].iter().position(|p| *p == play.pin).unwrap_or(0);
+                    let cur = [Pin::Scrolls, Pin::Fixed, Pin::Sticky]
+                        .iter()
+                        .position(|p| *p == play.pin)
+                        .unwrap_or(0);
                     let pick = ui::segmented_tipped(
                         ui,
                         w,
@@ -3973,7 +3962,9 @@ impl MastikApp {
                             (true, 1) => "Stays where it is drawn",
                             _ => "Scrolls until it reaches its place, then stays",
                         },
-                        |p, i, r, on| ui::segment_label(p, r, ["Scrolls", "Fixed", "Sticky"][i], on),
+                        |p, i, r, on| {
+                            ui::segment_label(p, r, ["Scrolls", "Fixed", "Sticky"][i], on)
+                        },
                     );
                     if let Some(i) = pick.filter(|i| *i != cur) {
                         let mut p = play.clone();
@@ -3984,18 +3975,32 @@ impl MastikApp {
             }
             if text || instance {
                 ui::labelled(ui, "Input", |ui| {
-                    let kind = if text { VarKind::String } else { VarKind::Boolean };
+                    let kind = if text {
+                        VarKind::String
+                    } else {
+                        VarKind::Boolean
+                    };
                     let current = play.input.as_ref().map(|i| i.var);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = COL;
-                        let cw = if current.is_some() { w - ui::CONTROL_H - COL } else { w };
+                        let cw = if current.is_some() {
+                            w - ui::CONTROL_H - COL
+                        } else {
+                            w
+                        };
                         ui.scope(|ui| {
                             ui.set_width(cw);
-                            if let Some(v) = app.variable_combo(ui, ("input", id), current, Some(kind)) {
+                            if let Some(v) =
+                                app.variable_combo(ui, ("input", id), current, Some(kind))
+                            {
                                 let mut p = play.clone();
                                 let property = match text {
                                     true => None,
-                                    false => p.input.as_ref().and_then(|i| i.property.clone()).or_else(|| bool_props.first().cloned()),
+                                    false => p
+                                        .input
+                                        .as_ref()
+                                        .and_then(|i| i.property.clone())
+                                        .or_else(|| bool_props.first().cloned()),
                                 };
                                 p.input = Some(Input { var: v, property });
                                 next = Some((p, "Input"));
@@ -4014,30 +4019,29 @@ impl MastikApp {
                     if !text && let Some(input) = &play.input {
                         let shown = input.property.clone().unwrap_or_else(|| "None".into());
                         let mut pick = None;
-                        ui.scope(|ui| {
-                            ui::combo_height(ui);
-                            egui::ComboBox::from_id_salt(("input-prop", id))
-                                .icon(ui::combo_chevron)
-                                .width(w)
-                                .selected_text(ui::combo_text(&shown))
-                                .show_ui(ui, |ui| {
-                                    ui::menu_rows(ui);
-                                    if bool_props.is_empty() {
-                                        ui::menu_note(ui, "The set has no two-valued property");
-                                    }
-                                    for p in &bool_props {
-                                        let on = input.property.as_deref() == Some(p);
-                                        if ui.selectable_label(on, p).clicked() && !on {
-                                            pick = Some(p.clone());
-                                        }
-                                    }
-                                })
-                                .response
-                                .on_hover_text("The property that shows the variable, such as a checkbox's Checked");
-                        });
+                        let face = ui::combo_text(&shown);
+                        ui::fitted_combo(ui, ("input-prop", id), w, face, &shown, |ui| {
+                            ui::menu_rows(ui);
+                            if bool_props.is_empty() {
+                                ui::menu_note(ui, "The set has no two-valued property");
+                            }
+                            for p in &bool_props {
+                                let on = input.property.as_deref() == Some(p);
+                                if ui.selectable_label(on, p).clicked() && !on {
+                                    pick = Some(p.clone());
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "The property that shows the variable, such as a checkbox's Checked",
+                        );
                         if let Some(prop) = pick {
                             let mut p = play.clone();
-                            p.input = Some(Input { var: input.var, property: Some(prop) });
+                            p.input = Some(Input {
+                                var: input.var,
+                                property: Some(prop),
+                            });
                             next = Some((p, "Input"));
                         }
                     }
@@ -4339,37 +4343,31 @@ impl MastikApp {
             ui::labelled(ui, "Device", |ui| {
                 let shown = play.device.clone().unwrap_or_else(|| "None".into());
                 let mut pick: Option<Option<String>> = None;
-                ui.scope(|ui| {
-                    ui::combo_height(ui);
-                    egui::ComboBox::from_id_salt(("device", page))
-                        .icon(ui::combo_chevron)
-                        .width(w)
-                        .selected_text(ui::glyph_and_text(icon::DEVICES, &shown))
-                        .show_ui(ui, |ui| {
-                            ui::menu_rows(ui);
-                            if ui.selectable_label(play.device.is_none(), "None").clicked()
-                                && play.device.is_some()
-                            {
-                                pick = Some(None);
+                let face = ui::glyph_and_text(icon::DEVICES, &shown);
+                ui::fitted_combo(ui, ("device", page), w, face, &shown, |ui| {
+                    ui::menu_rows(ui);
+                    if ui.selectable_label(play.device.is_none(), "None").clicked()
+                        && play.device.is_some()
+                    {
+                        pick = Some(None);
+                    }
+                    for (group, entries) in FRAME_PRESETS
+                        .iter()
+                        .filter(|(g, _)| matches!(*g, "PHONE" | "TABLET"))
+                    {
+                        ui::menu_sep(ui);
+                        ui::menu_eyebrow(ui, group);
+                        for (n, pw, ph) in entries.iter() {
+                            let on = play.device.as_deref() == Some(*n);
+                            let row = ui.selectable_label(on, format!("{n}, {pw} × {ph}"));
+                            if row.clicked() && !on {
+                                pick = Some(Some((*n).to_string()));
                             }
-                            for (group, entries) in FRAME_PRESETS
-                                .iter()
-                                .filter(|(g, _)| matches!(*g, "PHONE" | "TABLET"))
-                            {
-                                ui::menu_sep(ui);
-                                ui::menu_eyebrow(ui, group);
-                                for (n, pw, ph) in entries.iter() {
-                                    let on = play.device.as_deref() == Some(*n);
-                                    let row = ui.selectable_label(on, format!("{n}, {pw} × {ph}"));
-                                    if row.clicked() && !on {
-                                        pick = Some(Some((*n).to_string()));
-                                    }
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text("The device drawn round the screen while playing");
-                });
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("The device drawn round the screen while playing");
                 if let Some(d) = pick {
                     next = Some((
                         PagePlay {
@@ -4448,32 +4446,26 @@ fn frame_combo(
     let all = screens(doc);
     let paged = all.len() > 1;
     let mut pick = None;
-    ui.scope(|ui| {
-        ui::combo_height(ui);
-        egui::ComboBox::from_id_salt(salt)
-            .icon(ui::combo_chevron)
-            .width(w)
-            .selected_text(ui::glyph_and_text(icon::FRAME, &shown))
-            .show_ui(ui, |ui| {
-                ui::menu_rows(ui);
-                let mut first = true;
-                for (page, frames) in &all {
-                    if paged && !frames.is_empty() {
-                        if !first {
-                            ui::menu_sep(ui);
-                        }
-                        first = false;
-                        let p = crate::private::page(doc, *page).into_owned();
-                        ui::menu_eyebrow(ui, &p);
-                    }
-                    for f in frames {
-                        let on = *f == current;
-                        if ui.selectable_label(on, name(doc, *f)).clicked() && !on {
-                            pick = Some(*f);
-                        }
-                    }
+    let face = ui::glyph_and_text(icon::FRAME, &shown);
+    ui::fitted_combo(ui, salt, w, face, &shown, |ui| {
+        ui::menu_rows(ui);
+        let mut first = true;
+        for (page, frames) in &all {
+            if paged && !frames.is_empty() {
+                if !first {
+                    ui::menu_sep(ui);
                 }
-            });
+                first = false;
+                let p = crate::private::page(doc, *page).into_owned();
+                ui::menu_eyebrow(ui, &p);
+            }
+            for f in frames {
+                let on = *f == current;
+                if ui.selectable_label(on, name(doc, *f)).clicked() && !on {
+                    pick = Some(*f);
+                }
+            }
+        }
     });
     pick
 }
@@ -4492,21 +4484,14 @@ fn layer_combo(
         None => "Missing layer".into(),
     };
     let mut pick = None;
-    ui.scope(|ui| {
-        ui::combo_height(ui);
-        egui::ComboBox::from_id_salt(salt)
-            .icon(ui::combo_chevron)
-            .width(w)
-            .selected_text(ui::combo_text(&shown))
-            .show_ui(ui, |ui| {
-                ui::menu_rows(ui);
-                for o in options {
-                    let on = *o == current;
-                    if ui.selectable_label(on, name(doc, *o)).clicked() && !on {
-                        pick = Some(*o);
-                    }
-                }
-            });
+    ui::fitted_combo(ui, salt, w, ui::combo_text(&shown), &shown, |ui| {
+        ui::menu_rows(ui);
+        for o in options {
+            let on = *o == current;
+            if ui.selectable_label(on, name(doc, *o)).clicked() && !on {
+                pick = Some(*o);
+            }
+        }
     });
     pick
 }

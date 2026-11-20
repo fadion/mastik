@@ -4989,6 +4989,57 @@ pub fn combo_height(ui: &mut egui::Ui) {
     ui.spacing_mut().button_padding.y = 0.0;
 }
 
+/// A dropdown exactly `width` wide whatever its choice is called: a [`combo_height`]
+/// `ComboBox` with [`combo_chevron`] whose `face` is cut with an ellipsis to fit,
+/// and only then says `whole` under the pointer. For a choice named by the person
+/// (a layer, a variable, a script), which would otherwise widen its card.
+///
+/// egui cuts the face against the room its parent offers, not `.width()`, so the
+/// box is allocated here at `width`, and the cut is measured as egui lays it.
+pub fn fitted_combo<R>(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    face: impl Into<egui::WidgetText>,
+    whole: &str,
+    menu: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let face = face.into();
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, CONTROL_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            combo_height(ui);
+            let s = ui.spacing();
+            let room = width - 2.0 * s.button_padding.x - s.icon_spacing - s.icon_width;
+            let cut = face
+                .clone()
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Truncate),
+                    room,
+                    egui::TextStyle::Button,
+                )
+                .elided;
+            let out = egui::ComboBox::from_id_salt(salt)
+                .icon(combo_chevron)
+                .width(width)
+                .truncate()
+                .selected_text(face)
+                .show_ui(ui, menu);
+            let response = match cut {
+                true => out.response.on_hover_text(whole),
+                false => out.response,
+            };
+            egui::InnerResponse {
+                inner: out.inner,
+                response,
+            }
+        },
+    )
+    .inner
+}
+
 /// Height of a [`level_bar`]: a reading, thinner than any control.
 pub const LEVEL_BAR_H: f32 = 5.0;
 
@@ -10523,6 +10574,28 @@ mod tests {
         pass(vec![button(false)]);
         let (_, focused, _) = pass(Vec::new());
         assert!(focused, "the press focused the field");
+    }
+
+    /// A dropdown whose choice is too long for it keeps its width in a row with
+    /// room to spare, its face cut to fit.
+    /// flip: `fitted_combo` without `.truncate()` → fails at "kept its width".
+    #[test]
+    fn a_fitted_combo_keeps_its_width_whatever_its_choice_is_called() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let long = "When the checkout total changes after a coupon";
+        let mut rect = None;
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            ui.horizontal(|ui| {
+                let r = fitted_combo(ui, "fit", 120.0, combo_text(long), long, |_| ());
+                rect = Some(r.response.rect);
+            });
+        });
+        let rect = rect.expect("drawn");
+        assert!(
+            (rect.width() - 120.0).abs() < 0.5,
+            "kept its width: {rect:?}"
+        );
     }
 
     /// A refused field keeps its row's width, its edit shortened by the slot
