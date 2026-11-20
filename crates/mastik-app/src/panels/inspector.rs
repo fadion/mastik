@@ -690,7 +690,7 @@ fn paint_unit<S, A, B>(
 pub(super) fn carried_unit<R>(
     ui: &mut egui::Ui,
     carrying: bool,
-    salt: (&'static str, usize),
+    salt: impl std::hash::Hash + std::fmt::Debug,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, egui::Rect) {
     let id = ui.id().with(salt);

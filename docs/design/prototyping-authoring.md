@@ -56,13 +56,15 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **An action is one row**, a `ui::field_row_pressable` that opens its popover: a grip, its
   glyph, its verb, its target in accent ink, its transition's timing (kind and duration, or
   *Spring*) as a faint caption note as a menu row's accelerator is, and `×`; the grip and `×` keep
-  their own press. A row drags by its grip to
-  another place in its own list (a reaction's, or one branch's), one *Move action* step; the
+  their own press. The rows stand `NEST` in from their trigger. A row drags by its grip to
+  another place in its own list (a reaction's, or one branch's), carried under the pointer with
+  its branches while the others make room, as an Effects row is (`InFlight::action_drag`); the
+  release is one *Move action* step, and a right-click or `Escape` puts it back. The
   grip is inert while the list holds one action. A target that is gone is drawn in the error
   colour behind the warning glyph (*Missing frame*, *Missing layer*, *Missing variable*, …), kept
   so it can be mended, and skipped while playing. A conditional's branches follow it as heads in
-  mono accent (*if …*, *else if …*, *else*), each with its own `+`, their actions indented under
-  them. A target is read as the layer holding the reaction reads it
+  mono accent (*if …*, *else if …*, *else*), each as tall as its `+` (the close button's box),
+  their actions indented under them. A target is read as the layer holding the reaction reads it
   (`prototype::resolve_target`), so an instance's names its own layers.
 - **The row's popover**, in the popover lane: the verb's head with *Move up* / *Move down* (each
   in the close button's box) and close, the action's fields, then its transition. A screen action picks a top-level frame, each
@@ -81,8 +83,9 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **Expressions show names.** The field writes a variable `{name}`
   (`Expr::with_names`) and stores its id (`Expr::from_names`), so a rename never breaks it. What
   does not read, names no variable, or (for *Set variable*'s value and a condition) comes to
-  another kind than wanted (`Expr::kind`) is kept as typed, ringed, with the reason under the
-  field (`ui::field_refusal`) and the range `ExprError::at` names underlined
+  another kind than wanted (`Expr::kind`) is kept as typed, ringed, with the reason on the
+  warning glyph inside the field's right end (`ui::refusable_field`, as an address and a flow's
+  starting value are refused) and the range `ExprError::at` names underlined
   (`ui::field_underline`), and nothing is written until it reads.
 - **Transitions** (`transition_fields`, also the page's *New links*): the kind; for *Move in*,
   *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`) and *Smart animate*, a

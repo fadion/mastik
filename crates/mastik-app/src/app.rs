@@ -212,6 +212,8 @@ pub(crate) struct InFlight {
     pub(crate) effect_drag: Option<crate::panels::paint::EffectDrag>,
     /// A grid track row being dragged up or down its list.
     pub(crate) track_drag: Option<crate::panels::paint::TrackDrag>,
+    /// An Interactions action being dragged up or down its list.
+    pub(crate) action_drag: Option<crate::panels::prototype::ActionDrag>,
     /// The export setting being scrubbed (the JPEG quality, an SVG's precision), which
     /// spec it belongs to, and its in-flight value; `RenderOverrides` cannot preview
     /// `SetExports`, and committing every frame would make it uncancellable.
@@ -426,6 +428,22 @@ mod in_flight_tests {
                     track_drag: Some(crate::panels::paint::TrackDrag {
                         anchor: Some(id),
                         rows: false,
+                        from: 0,
+                        to: 1,
+                        slots: Default::default(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            (
+                "action_drag",
+                InFlight {
+                    action_drag: Some(crate::panels::prototype::ActionDrag {
+                        at: crate::panels::prototype::ActionAt {
+                            node: id,
+                            reaction: mastik_core::item::ItemId(id),
+                            action: mastik_core::item::ItemId(id),
+                        },
                         from: 0,
                         to: 1,
                         slots: Default::default(),
@@ -3375,6 +3393,7 @@ impl MastikApp {
         self.in_flight.paint_drag = None;
         self.in_flight.effect_drag = None;
         self.in_flight.track_drag = None;
+        self.in_flight.action_drag = None;
         // `gesture_cancelled` stops the release placing it.
         if let Some(p) = self.kit_picker.as_mut() {
             p.cancel_drag();

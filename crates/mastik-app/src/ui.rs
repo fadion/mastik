@@ -3678,6 +3678,60 @@ pub fn field_refusal(ui: &mut egui::Ui, why: &str) {
     );
 }
 
+/// The slot at a [`refusable_field`]'s right end that holds its warning glyph.
+const REFUSAL_SLOT_W: f32 = 22.0;
+
+/// A [`text_field`] that can be refused: while `refused` holds a reason, the
+/// field wears the error ring and, inside its right end, the warning glyph in
+/// the error colour, which says the reason under the pointer. Kept inside the
+/// field so a row holding it beside other controls keeps its width.
+pub fn refusable_field(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    text: &mut String,
+    hint: &str,
+    refused: Option<&str>,
+) -> egui::Response {
+    let pt = Scale::of(size.y).text_pt();
+    let font = egui::FontId::proportional(pt);
+    ui.scope(|ui| {
+        if refused.is_some() {
+            ui.visuals_mut().widgets.inactive.bg_stroke = refused_stroke();
+        }
+        let frame = edit_frame(ui, &font, size.y - FIELD_BORDER_H, FIELD_PAD_X);
+        field_row_inset(ui, size, 0.0, 0.0, |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let room = match refused {
+                Some(_) => ui.available_width() - REFUSAL_SLOT_W,
+                None => f32::INFINITY,
+            };
+            let edit = frame.add(
+                ui,
+                room,
+                egui::TextEdit::singleline(text)
+                    .font(font)
+                    .hint_text(egui::RichText::new(hint).size(pt)),
+            );
+            if let Some(why) = refused {
+                let (slot, glyph) = ui.allocate_exact_size(
+                    egui::vec2(REFUSAL_SLOT_W, size.y - FIELD_BORDER_H),
+                    egui::Sense::hover(),
+                );
+                ui.painter().text(
+                    slot.center(),
+                    egui::Align2::CENTER_CENTER,
+                    icon::WARNING,
+                    theme::icon_font(CONTROL_GLYPH_PT),
+                    color::error(),
+                );
+                glyph.on_hover_text(why);
+            }
+            edit
+        })
+    })
+    .inner
+}
+
 /// The width of a [`secret_field`]'s eye button, with the gap before it.
 const SECRET_EYE_W: f32 = 26.0;
 /// The eye button's own box.
@@ -10469,6 +10523,45 @@ mod tests {
         pass(vec![button(false)]);
         let (_, focused, _) = pass(Vec::new());
         assert!(focused, "the press focused the field");
+    }
+
+    /// A refused field keeps its row's width, its edit shortened by the slot
+    /// that draws the warning glyph inside its right end.
+    /// flip: `refusable_field` giving the edit the whole row when refused →
+    /// fails at "the row's width", the glyph's slot pushed past it.
+    #[test]
+    fn a_refused_field_says_why_inside_its_own_width() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut text = "Fadion".to_string();
+        let mut seen = None;
+        let out = ctx.run_ui(Default::default(), |ui| {
+            let left = ui.cursor().min.x;
+            let resp = refusable_field(
+                ui,
+                egui::vec2(200.0, CONTROL_H),
+                &mut text,
+                "",
+                Some("Not a word expressions know"),
+            );
+            seen = Some((left, resp.rect, ui.min_rect()));
+        });
+        let (left, edit, row) = seen.expect("drawn");
+        assert!(
+            (row.width() - 200.0).abs() < 0.5,
+            "the row's width: {row:?}"
+        );
+        assert!(
+            edit.right() <= left + 200.0 - REFUSAL_SLOT_W + 0.5,
+            "the edit leaves the glyph its slot: {edit:?}"
+        );
+        let glyph = out.shapes.iter().any(|s| match &s.shape {
+            egui::Shape::Text(t) => {
+                t.galley.job.text == icon::WARNING && t.pos.x > left + 200.0 - REFUSAL_SLOT_W
+            }
+            _ => false,
+        });
+        assert!(glyph, "the warning glyph inside the right end");
     }
 
     /// A search box holding text shows a clear button with an arrow pointer; a

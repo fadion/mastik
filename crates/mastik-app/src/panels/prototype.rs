@@ -3,7 +3,8 @@
 //! flows and prototype settings. Every edit is one transaction on the saved model
 //! (`mastik_core::prototype`); nothing here plays.
 
-use super::inspector::{FRAME_PRESETS, identity_card, identity_glyph, interacting};
+use super::inspector::{FRAME_PRESETS, carried_unit, identity_card, identity_glyph, interacting};
+use super::paint;
 use crate::app::MastikApp;
 use crate::preview::Drag;
 use crate::theme::{self, color, icon};
@@ -35,8 +36,6 @@ pub(crate) struct ProtoState {
     /// Where in a refused expression's typed text the fault is, for its field's
     /// underline.
     pub expr_fault: Option<(DraftKey, std::ops::Range<usize>)>,
-    /// The action being dragged by its grip.
-    pub dragging: Option<ActionAt>,
     /// The unselected layer wearing link dots, noted as the canvas draws so a
     /// press next frame aims at the dots it saw (`note_link_hover`).
     pub knob_hover: std::cell::Cell<Option<NodeId>>,
@@ -61,6 +60,17 @@ pub(crate) struct ActionAt {
     pub node: NodeId,
     pub reaction: ItemId,
     pub action: ItemId,
+}
+
+/// An action dragged by its grip up or down its own list (a reaction's, or one
+/// branch's), shown at its landing while it is carried, as an Effects row is.
+/// `from` and `to` index that list; `slots` are its rows as last laid out.
+#[derive(PartialEq)]
+pub(crate) struct ActionDrag {
+    pub at: ActionAt,
+    pub from: usize,
+    pub to: usize,
+    pub slots: super::paint::Slots,
 }
 
 /// What a typed field of the tab is for.
@@ -1918,7 +1928,7 @@ pub(crate) struct Placing {
 const POP_W: f32 = crate::app::POPOVER_W;
 /// Between two controls on one line.
 const COL: f32 = ui::CARD_COL_GAP;
-/// A nested action's indent under its branch head.
+/// An action's indent under its trigger, and a nested one's under its branch head.
 const NEST: f32 = 16.0;
 
 impl MastikApp {
@@ -2117,6 +2127,11 @@ impl MastikApp {
                 }
             },
         );
+        // A drag whose list this card no longer draws lands nothing and ends at
+        // the release, so it cannot stay in flight.
+        if self.in_flight.action_drag.is_some() && !ui.input(|i| i.pointer.primary_down()) {
+            self.in_flight.action_drag = None;
+        }
         if add {
             let mut list = reactions.clone();
             list.push(Keyed::new(
@@ -2313,9 +2328,9 @@ impl MastikApp {
             }
             _ => {}
         }
-        // --- the actions -----------------------------------------------------
+        // --- the actions, one step in under their trigger ---------------------
         let mut list_out = ListOut::default();
-        self.action_rows(ui, id, r, &r.actions, 0.0, &mut list_out);
+        self.action_rows(ui, id, r, &r.actions, NEST, &mut list_out);
         if let Some(place) = list_out.add {
             add_place = Some(place);
         }
@@ -2536,6 +2551,10 @@ impl MastikApp {
     }
 
     /// A list of actions, each a row, a conditional's branches nested under it.
+    /// A row dragged by its grip is carried under the pointer with its branches
+    /// while the others make room where it would land, as an Effects row is; the
+    /// release moves it, and a right-click or `Escape` (`cancel_gesture`) puts
+    /// it back.
     fn action_rows(
         &mut self,
         ui: &mut egui::Ui,
@@ -2545,97 +2564,104 @@ impl MastikApp {
         indent: f32,
         out: &mut ListOut,
     ) {
-        // Each row's rect, for where a dragged one would land among them.
-        let mut rows: Vec<(ItemId, egui::Rect)> = Vec::new();
-        for k in list {
-            let open = self.proto.open
-                == Some(ActionAt {
-                    node: id,
-                    reaction: r.id,
-                    action: k.id,
-                });
-            let (row, resp) = self.action_row(ui, id, k, indent, open, list.len() > 1);
-            rows.push((k.id, resp.rect));
-            if row.grabbed {
-                self.proto.dragging = Some(ActionAt {
-                    node: id,
-                    reaction: r.id,
-                    action: k.id,
-                });
-            }
-            if row.open {
-                self.proto.open = match open {
-                    true => None,
-                    false => Some(ActionAt {
-                        node: id,
-                        reaction: r.id,
-                        action: k.id,
-                    }),
-                };
-            }
-            if row.remove {
-                out.remove = Some(k.id);
-            }
-            if open {
-                out.head = Some(resp);
-            }
-            if let Action::Conditional {
-                branches,
-                otherwise,
-            } = &k.value
-            {
-                for (i, b) in branches.iter().enumerate() {
-                    let word = if i == 0 { "if" } else { "else if" };
-                    let text = format!("{word} {}", expr_shown(&self.session.doc, &b.when));
-                    if let Some(kind) =
-                        self.branch_head(ui, id, &r.trigger, (k.id, i), &text, indent + NEST)
-                    {
-                        out.add = Some((Place::Branch(k.id, i), kind));
+        let at = |action: ItemId| ActionAt {
+            node: id,
+            reaction: r.id,
+            action,
+        };
+        let held = |d: &ActionDrag| {
+            d.at.node == id
+                && d.at.reaction == r.id
+                && list.get(d.from).is_some_and(|k| k.id == d.at.action)
+        };
+        let n = list.len();
+        // Advanced against last frame's slots, before the rows are laid out.
+        let y = ui.ctx().input(|i| i.pointer.interact_pos()).map(|p| p.y);
+        let moved = self
+            .in_flight
+            .action_drag
+            .as_mut()
+            .filter(|d| held(d))
+            .map(|d| {
+                if let Some(y) = y
+                    && !d.slots.is_empty()
+                {
+                    d.to = paint::forward_landing(n, d.to.min(n - 1), d.slots.gap(y));
+                }
+                (d.from, d.to)
+            });
+        let carrying = moved.map(|(from, _)| from);
+        let mut slots = paint::Slots::default();
+        for index in paint::forward_order(n, moved) {
+            let k = &list[index];
+            let open = self.proto.open == Some(at(k.id));
+            let carried = carrying == Some(index);
+            let (_, rect) = carried_unit(ui, carried, ("action", k.id), |ui| {
+                let (row, resp) = self.action_row(ui, id, k, indent, open, n > 1);
+                if row.grabbed {
+                    self.in_flight.action_drag = Some(ActionDrag {
+                        at: at(k.id),
+                        from: index,
+                        to: index,
+                        slots: paint::Slots::default(),
+                    });
+                    // Its popover's `Area` would not follow the row.
+                    self.proto.open = None;
+                }
+                if row.open {
+                    self.proto.open = (!open).then(|| at(k.id));
+                }
+                if row.remove {
+                    out.remove = Some(k.id);
+                }
+                if open && !carried {
+                    out.head = Some(resp);
+                }
+                if let Action::Conditional {
+                    branches,
+                    otherwise,
+                } = &k.value
+                {
+                    for (i, b) in branches.iter().enumerate() {
+                        let word = if i == 0 { "if" } else { "else if" };
+                        let text = format!("{word} {}", expr_shown(&self.session.doc, &b.when));
+                        if let Some(kind) =
+                            self.branch_head(ui, id, &r.trigger, (k.id, i), &text, indent + NEST)
+                        {
+                            out.add = Some((Place::Branch(k.id, i), kind));
+                        }
+                        self.action_rows(ui, id, r, &b.actions, indent + NEST, out);
                     }
-                    self.action_rows(ui, id, r, &b.actions, indent + NEST, out);
+                    if let Some(kind) = self.branch_head(
+                        ui,
+                        id,
+                        &r.trigger,
+                        (k.id, usize::MAX),
+                        "else",
+                        indent + NEST,
+                    ) {
+                        out.add = Some((Place::Otherwise(k.id), kind));
+                    }
+                    self.action_rows(ui, id, r, otherwise, indent + NEST, out);
                 }
-                if let Some(kind) = self.branch_head(
-                    ui,
-                    id,
-                    &r.trigger,
-                    (k.id, usize::MAX),
-                    "else",
-                    indent + NEST,
-                ) {
-                    out.add = Some((Place::Otherwise(k.id), kind));
-                }
-                self.action_rows(ui, id, r, otherwise, indent + NEST, out);
-            }
+            });
+            slots.push(rect.top(), rect.bottom());
         }
-        // A drag held by one of this list's rows: the line where it would land,
-        // and the move once it is let go.
-        let Some(d) = self.proto.dragging else {
+        // The carried row's list keeps its slots for next frame, and its release
+        // is read from the pointer: a carried row's responses are empty.
+        let Some(d) = self.in_flight.action_drag.as_mut().filter(|d| held(d)) else {
             return;
         };
-        if d.node != id || d.reaction != r.id || !rows.iter().any(|(a, _)| *a == d.action) {
-            return;
-        }
-        let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_down()));
-        let Some(p) = pointer else {
-            return;
-        };
-        let others: Vec<&(ItemId, egui::Rect)> =
-            rows.iter().filter(|(a, _)| *a != d.action).collect();
-        let to = others.iter().filter(|(_, rr)| rr.center().y < p.y).count();
-        if down {
+        d.slots = slots;
+        if ui.ctx().input(|i| i.pointer.primary_down()) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-            let y = match others.get(to) {
-                Some((_, rr)) => rr.top() - 1.0,
-                None => others.last().map_or(p.y, |(_, rr)| rr.bottom() + 1.0),
-            };
-            let x = rows
-                .first()
-                .map_or(ui.max_rect().x_range(), |(_, rr)| rr.x_range());
-            ui.painter()
-                .hline(x, y, egui::Stroke::new(2.0, color::accent()));
-        } else {
-            self.proto.dragging = None;
-            out.reorder = Some((d.action, to));
+            ui.ctx().request_repaint();
+            return;
+        }
+        if let Some(d) = self.in_flight.action_drag.take()
+            && d.to != d.from
+        {
+            out.reorder = Some((d.at.action, d.to));
         }
     }
 
@@ -2651,12 +2677,15 @@ impl MastikApp {
         indent: f32,
     ) -> Option<ActionKind> {
         let mut picked = None;
+        // As tall as its `+`, the close button's box: a head is a caption over
+        // the rows it heads, not a row of its own.
+        let h = ui::CLOSE_BUTTON_W;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = COL;
             ui.add_space(indent);
-            let w = ui.available_width() - ui::MENU_ROW_H - COL;
+            let w = ui.available_width() - h - COL;
             ui.allocate_ui_with_layout(
-                egui::vec2(w, ui::MENU_ROW_H),
+                egui::vec2(w, h),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
                     ui.set_width(w);
@@ -2673,7 +2702,7 @@ impl MastikApp {
             );
             let plus = ui
                 .push_id(salt, |ui| {
-                    ui::icon_button(ui, icon::PLUS, ui::MENU_ROW_H, 13.0, false, true)
+                    ui::icon_button(ui, icon::PLUS, h, ui::CLOSE_GLYPH_PT, false, true)
                 })
                 .inner
                 .on_hover_text("Add an action to this branch");
@@ -3794,26 +3823,18 @@ impl MastikApp {
         let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
         let refused = live.as_ref().and_then(|d| d.refused.clone());
         let mut text = live.map_or(shown.clone(), |d| d.text.clone());
-        let resp = ui
-            .scope(|ui| {
-                if refused.is_some() {
-                    ui.visuals_mut().widgets.inactive.bg_stroke = ui::refused_stroke();
-                }
-                ui::text_field(
-                    ui,
-                    egui::vec2(w, ui::CONTROL_H),
-                    &mut text,
-                    "An expression, such as {count} + 1",
-                )
-            })
-            .inner;
-        if let Some(why) = &refused {
-            if let Some((k, at)) = &self.proto.expr_fault
-                && *k == key
-            {
-                ui::field_underline(ui, &resp, ui::CONTROL_H, &text, at.clone());
-            }
-            ui::field_refusal(ui, why);
+        let resp = ui::refusable_field(
+            ui,
+            egui::vec2(w, ui::CONTROL_H),
+            &mut text,
+            "An expression, such as {count} + 1",
+            refused.as_deref(),
+        );
+        if refused.is_some()
+            && let Some((k, at)) = &self.proto.expr_fault
+            && *k == key
+        {
+            ui::field_underline(ui, &resp, ui::CONTROL_H, &text, at.clone());
         }
         let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
         if typed == shown {
@@ -3839,10 +3860,13 @@ impl MastikApp {
         let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
         let refused = live.as_ref().and_then(|d| d.refused.clone());
         let mut text = live.map_or(url.to_string(), |d| d.text.clone());
-        let resp = ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, "https://");
-        if let Some(why) = &refused {
-            ui::field_refusal(ui, why);
-        }
+        let resp = ui::refusable_field(
+            ui,
+            egui::vec2(w, ui::CONTROL_H),
+            &mut text,
+            "https://",
+            refused.as_deref(),
+        );
         let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
         let typed = typed.trim().to_string();
         if typed == url {
@@ -4243,17 +4267,13 @@ impl MastikApp {
         let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
         let refused = live.as_ref().and_then(|d| d.refused.clone());
         let mut text = live.map_or(shown.clone(), |d| d.text.clone());
-        let resp = ui
-            .scope(|ui| {
-                if refused.is_some() {
-                    ui.visuals_mut().widgets.inactive.bg_stroke = ui::refused_stroke();
-                }
-                ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, "Value")
-            })
-            .inner;
-        if let Some(why) = &refused {
-            resp.clone().on_hover_text(why);
-        }
+        let resp = ui::refusable_field(
+            ui,
+            egui::vec2(w, ui::CONTROL_H),
+            &mut text,
+            "Value",
+            refused.as_deref(),
+        );
         let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
         if typed == shown {
             return None;
@@ -5271,6 +5291,95 @@ mod tests {
             ui.set_max_width(280.0);
             app.inspector_ui(ui)
         })
+    }
+
+    /// An action carried to the bottom of its list lands last on the release, in
+    /// one step; a cancelled carry lands nothing.
+    /// flip: `action_rows` leaving `to` at `from` (no `forward_landing`) → fails
+    /// at "the first action is now last".
+    #[test]
+    fn an_action_dragged_to_the_bottom_lands_last() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let at = one_action(&mut f, Action::Back);
+        let three = vec![Keyed::new(
+            item(10),
+            Reaction {
+                trigger: Trigger::Click,
+                actions: vec![
+                    keyed(1, Action::Back),
+                    keyed(2, Action::Back),
+                    keyed(3, Action::Back),
+                ],
+            },
+        )];
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetReactions {
+                    id: f.add,
+                    reactions: three,
+                }]))
+        );
+        f.app.session.selection.set_one(f.add);
+        let order = |app: &MastikApp| -> Vec<ItemId> {
+            app.session.doc.get(f.add).unwrap().reactions()[0]
+                .actions
+                .iter()
+                .map(|k| k.id)
+                .collect()
+        };
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 2400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                app.inspector_ui(ui)
+            });
+        };
+        let low = egui::pos2(100.0, 2300.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: low,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let carry = |app: &mut MastikApp| {
+            for _ in 0..3 {
+                frame(app, vec![]);
+            }
+            app.in_flight.action_drag = Some(ActionDrag {
+                at,
+                from: 0,
+                to: 0,
+                slots: paint::Slots::default(),
+            });
+            frame(app, vec![egui::Event::PointerMoved(low), button(true)]);
+            frame(app, vec![]);
+        };
+        // Cancelled: the release lands nothing.
+        carry(&mut f.app);
+        assert!(f.app.cancel_gesture(&ctx), "a carried action is a gesture");
+        frame(&mut f.app, vec![button(false)]);
+        assert_eq!(order(&f.app), vec![item(1), item(2), item(3)], "put back");
+        // Let go: the first action lands last, in one step.
+        carry(&mut f.app);
+        let depth = f.app.session.history.undo_depth();
+        frame(&mut f.app, vec![button(false)]);
+        assert!(f.app.in_flight.action_drag.is_none(), "the release ends it");
+        assert_eq!(
+            order(&f.app),
+            vec![item(2), item(3), item(1)],
+            "the first action is now last"
+        );
+        assert_eq!(f.app.session.history.undo_depth(), depth + 1, "one step");
     }
 
     /// The tab shows the Prototype cards in place of the Design ones, and the
