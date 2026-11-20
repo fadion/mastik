@@ -97,6 +97,9 @@ cp -a %{_sourcedir}/payload/. %{buildroot}/
 %dir %{_datadir}/mastik/player
 %{_datadir}/mastik/player/mastik_web_bg.wasm
 %{_datadir}/mastik/player/mastik_web.js
+%dir %{_datadir}/mastik/player-scripts
+%{_datadir}/mastik/player-scripts/mastik_web_bg.wasm
+%{_datadir}/mastik/player-scripts/mastik_web.js
 %{_datadir}/applications/%{appid}.desktop
 %{_datadir}/metainfo/%{appid}.metainfo.xml
 %{_datadir}/mime/packages/%{appid}.xml
