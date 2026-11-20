@@ -33,9 +33,12 @@ renderer, so the page draws what the editor draws.
   `mastik_web::start` awaits the GPU setup before it holds a `Resolved`.
 - **Luau is not in the page.** `mlua` builds Luau's C++ with `cc`, which needs a C++
   compiler and a C/C++ runtime for the target; `wasm32-unknown-unknown` has neither, and the
-  build fails at `mlua-sys`. Hosting it would take Emscripten or wasi-sdk (downloads beyond
-  rustup), or a Luau built apart and loaded beside the player. Until then an exported file does
-  not run *Run script*.
+  build fails at `mlua-sys`. Moving the player to `wasm32-unknown-emscripten`, which `mlua`
+  supports, is closed: `wasm-bindgen` and wgpu's WebGPU backend need `wasm32-unknown-unknown`.
+  What remains is Luau's C++ compiled by clang against wasi-sdk's sysroot (libc, libc++) into
+  the same module, or a second module beside the player that runs a script on a copy and hands
+  back its operations; `prototyping.md` §10 holds the question. Until then the page plays
+  without `scripts` and *Run script* is skipped with a notice.
 - **What the player's code may not use**, because the page has none of it: threads
   (`std::thread::spawn` fails; `available_parallelism` errs, which the CPU effects' banding
   already reads as one), `std::time::Instant`/`SystemTime` (they panic; time comes from
@@ -105,8 +108,9 @@ as `serve` does.
 ## The file
 
 - **One gzip stream** holds a container: `MSTKPLAY`, a `u32` version (1), then per entry a
-  kind byte (1 the wasm, 2 the document, 3 a font whose name is its alias), the name and the
-  data, each behind a little-endian `u32` length. The packer writes it and the page's own
+  kind byte (1 the wasm, 2 the document, 3 a font whose name is its alias, 4 a layer's CSS
+  named by its id, 5 a file of a layer's export settings named by its id, a newline and its
+  path), the name and the data, each behind a little-endian `u32` length. The packer writes it and the page's own
   script reads it; nothing else does.
 - The stream is **base64'd once** into a `<script type="application/octet-stream">`, decoded
   in the page, unpacked with `DecompressionStream("gzip")`, and the wasm is instantiated from
@@ -149,10 +153,22 @@ canvas, the drawing and the page around them.
   the console; `ScriptsOff` is shown to the viewer once.
 - **The player bar**, when the export shows it, runs along the foot: the flow's name (a list
   of the file's flows when it holds several, switching plays that flow from its start),
-  *Restart*, and *Hints* when the export shows hotspot hints.
+  *Restart*, *Hints* when the export shows hotspot hints, and *Inspect*.
 - **Hotspot hints** are drawn on a 2D canvas over the screen: `hotspots()` as rectangles in the
   selection blue, held while *Hints* is on, else at `Scene::hint_flash`'s strength after a click
   on nothing. The pointer is a hand over a hotspot.
+- **Inspect mode**, the bar's *Inspect* switch, stops interactions (the pointer leaves the
+  prototype; keys go nowhere but Escape, which drops the pick) and opens a panel beside the
+  stage. A click picks the topmost visible layer under it in the frame on top, by box
+  (`Player::layer_at`); the picked layer is outlined, the hovered one dashed, and the distances
+  between them — or to the picked layer's parent while nothing else is hovered — are drawn as
+  the canvas's `Alt` measure quotes them (`mastik_core::measure::between`, its labels and
+  colours). The panel shows the layer's name, its CSS as *Copy as CSS* writes it with a *Copy*
+  button, and the files its export settings write, to download. The page has no exporter, so
+  both are made when the file is: `prototype::inspect_css` for every layer (a layer whose CSS
+  is over 32 KB is left out, and the panel says to copy it from Mastik) and
+  `prototype::inspect_files`, rendered through `plan`. Boxes are read off the played copy's
+  layout, moved by scroll offsets; a sticky or fixed child is boxed where it would scroll to.
 - The page's arithmetic (`shell.rs`: placing, the pointer's and wheel's mapping, key names)
   builds on the desktop too, and `mastik-export`'s `tests/web_shell.rs` includes and tests it;
   `tests/prototype.rs` checks the page's script calls only what the player exports.

@@ -12,10 +12,11 @@
 
 mod shell;
 
-use mastik_core::kurbo::{Point, Size};
+use mastik_core::kurbo::{Point, Rect, Size};
+use mastik_core::measure;
 use mastik_core::peniko::Color;
 use mastik_core::prototype::FlowRef;
-use mastik_core::{Document, NodeKind};
+use mastik_core::{Document, NodeId, NodeKind, subtree_nodes};
 use mastik_play::{Input, Notice, Request, Scene, Start};
 use mastik_render::{ImageStore, VelloCpuRenderer, VelloGpuRenderer, Viewport};
 use shell::Placement;
@@ -115,7 +116,7 @@ fn flows(doc: &Document) -> Vec<(FlowRef, String)> {
 }
 
 /// The first page's first frame, where a file with no flow opens.
-fn first_frame(doc: &Document) -> Option<mastik_core::NodeId> {
+fn first_frame(doc: &Document) -> Option<NodeId> {
     let page = doc.first_page();
     doc.get(page)?.children().iter().copied().find(|c| {
         doc.get(*c)
@@ -344,11 +345,123 @@ impl Player {
             })
             .collect()
     }
+
+    // ── Inspect mode ────────────────────────────────────────────────────────
+
+    /// The topmost visible layer under (`x`, `y`) CSS pixels in the frame on top
+    /// (the top overlay, else the screen), by its box, as its id; empty over
+    /// none. The frame itself counts, under its children.
+    pub fn layer_at(&self, x: f64, y: f64) -> String {
+        let at = self.at(x, y);
+        let Some((scene, _)) = &self.drawn else {
+            return String::new();
+        };
+        let Some(top) = scene.layers.last() else {
+            return String::new();
+        };
+        let doc = self.play.document();
+        let hidden = |id: NodeId| doc.get(id).is_none_or(|n| !n.visible());
+        let mut hit = None;
+        for id in subtree_nodes(doc, &[top.frame]) {
+            let shown = !std::iter::successors(Some(id), |n| doc.get(*n)?.parent())
+                .take_while(|n| *n != top.frame)
+                .any(hidden);
+            if shown && self.screen_rect(id).is_some_and(|r| r.contains(at)) {
+                hit = Some(id);
+            }
+        }
+        hit.map(NodeId::to_wire).unwrap_or_default()
+    }
+
+    /// `id`'s box, `[x, y, w, h]` in CSS pixels from the canvas; empty when the
+    /// layer is not on a shown frame.
+    pub fn layer_box(&self, id: &str) -> Vec<f64> {
+        let s = self.scale();
+        NodeId::from_wire(id)
+            .and_then(|id| self.screen_rect(id))
+            .map(|r| vec![r.x0 * s, r.y0 * s, r.width() * s, r.height() * s])
+            .unwrap_or_default()
+    }
+
+    /// `id`'s name; empty for none.
+    pub fn layer_name(&self, id: &str) -> String {
+        NodeId::from_wire(id)
+            .and_then(|id| self.play.document().get(id))
+            .map(|n| n.name().to_string())
+            .unwrap_or_default()
+    }
+
+    /// The distances between `a` and `b` as the canvas's `Alt` measure quotes
+    /// them (`mastik_core::measure::between`), with `b` empty meaning `a`'s
+    /// parent. Each is `"h"` or `"v"` (the line's direction), where it sits,
+    /// where it runs from and to, all CSS pixels from the canvas, and its label,
+    /// joined by `|`.
+    pub fn measures(&self, a: &str, b: &str) -> Vec<String> {
+        let Some(a) = NodeId::from_wire(a) else {
+            return Vec::new();
+        };
+        let b = match b {
+            "" => self.play.document().get(a).and_then(|n| n.parent()),
+            b => NodeId::from_wire(b),
+        };
+        let (Some(ra), Some(rb)) = (self.screen_rect(a), b.and_then(|b| self.screen_rect(b)))
+        else {
+            return Vec::new();
+        };
+        let s = self.scale();
+        measure::between(ra, rb)
+            .into_iter()
+            .map(|m| {
+                let axis = match m.axis {
+                    measure::Axis::Horizontal => "h",
+                    measure::Axis::Vertical => "v",
+                };
+                let label = measure::label(m.distance());
+                format!("{axis}|{}|{}|{}|{label}", m.at * s, m.from * s, m.to * s)
+            })
+            .collect()
+    }
 }
 
 impl Player {
     fn scale(&self) -> f64 {
         self.placed.map_or(1.0, |p| p.scale)
+    }
+
+    /// `id`'s box in screen space where the last scene drew it: its own box, or
+    /// its bounds for a layer with none, moved from its frame's world place to
+    /// the frame's place on screen and by every scrolling frame above it. `None`
+    /// when no shown frame holds it.
+    fn screen_rect(&self, id: NodeId) -> Option<Rect> {
+        let (scene, _) = self.drawn.as_ref()?;
+        let doc = self.play.document();
+        let res = self.play.resolved();
+        let chain: Vec<NodeId> =
+            std::iter::successors(Some(id), |n| doc.get(*n)?.parent()).collect();
+        let layer = scene
+            .layers
+            .iter()
+            .rev()
+            .find(|l| chain.contains(&l.frame))?;
+        let world = |n: NodeId| -> Option<Rect> {
+            match res.used_kind(doc, n)?.box_size() {
+                Some(size) => Some(
+                    res.world_transform(n)?
+                        .transform_rect_bbox(Rect::from_origin_size(Point::ZERO, size)),
+                ),
+                None => res.world_bounds(n),
+            }
+        };
+        let origin = res.world_transform(layer.frame)? * Point::ZERO;
+        let scroll = chain
+            .iter()
+            .skip(1)
+            .take_while(|n| **n != layer.frame)
+            .chain(std::iter::once(&layer.frame).filter(|f| **f != id))
+            .fold(mastik_core::kurbo::Vec2::ZERO, |v, f| {
+                v + self.play.scroll_offset(*f)
+            });
+        Some(world(id)? + (layer.at - origin) - scroll)
     }
 
     fn at(&self, x: f64, y: f64) -> Point {
