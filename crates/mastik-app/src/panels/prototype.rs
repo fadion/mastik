@@ -1298,9 +1298,6 @@ const POP_W: f32 = crate::app::POPOVER_W;
 const COL: f32 = ui::CARD_COL_GAP;
 /// A nested action's indent under its branch head.
 const NEST: f32 = 16.0;
-/// The add and more menus' width: a width, not a floor, since `menu_row` takes
-/// the available width, which in a popup's `Area` runs to the screen's edge.
-const MENU_W: f32 = 180.0;
 
 impl MastikApp {
     /// Show or put away the Prototype tab, and say so.
@@ -1606,7 +1603,8 @@ impl MastikApp {
                 .gap(ui::MENU_GAP)
                 .show(|ui| {
                     ui::popup_rows(ui);
-                    ui.set_width(MENU_W);
+                    let w = ui::menu_width(ui.ctx(), ["Duplicate", "Delete"], true);
+                    ui.set_width(w);
                     dup = ui::menu_item(ui, icon::COPY, "Duplicate", ui::MENU_ROW_H).clicked();
                     ui::menu_sep(ui);
                     delete = ui::menu_row(
@@ -1711,11 +1709,14 @@ impl MastikApp {
                             "Add action",
                             kind.glyph(),
                         ));
-                        self.proto.open = Some(ActionAt {
-                            node: id,
-                            reaction: r.id,
-                            action: item,
-                        });
+                        // *Back* has nothing to set, so no popover opens for it.
+                        if kind != ActionKind::Back {
+                            self.proto.open = Some(ActionAt {
+                                node: id,
+                                reaction: r.id,
+                                action: item,
+                            });
+                        }
                     }
                 }
                 None => self
@@ -1883,7 +1884,10 @@ impl MastikApp {
             .gap(ui::MENU_GAP)
             .show(|ui| {
                 ui::popup_rows(ui);
-                ui.set_width(MENU_W);
+                let labels = ActionKind::GROUPS
+                    .iter()
+                    .flat_map(|(_, kinds)| kinds.iter().map(|k| k.label()));
+                ui.set_width(ui::menu_width(ui.ctx(), labels, true));
                 for (i, (group, kinds)) in ActionKind::GROUPS.iter().enumerate() {
                     if i > 0 {
                         ui::menu_sep(ui);
@@ -2215,13 +2219,24 @@ impl MastikApp {
                                 moved = Some(false);
                             }
                             let up = ui.add_enabled_ui(i > 0, |ui| {
-                                ui::icon_button(
-                                    ui,
-                                    icon::ARROW_UP,
-                                    ui::CLOSE_BUTTON_W,
-                                    ui::CLOSE_GLYPH_PT,
-                                    false,
-                                    true,
+                                // The ↑ glyph sits a point low in its box: raised
+                                // a point to line up with ↓ and ×.
+                                let (slot, _) = ui.allocate_exact_size(
+                                    egui::Vec2::splat(ui::CLOSE_BUTTON_W),
+                                    egui::Sense::hover(),
+                                );
+                                ui.put(
+                                    slot.translate(egui::vec2(0.0, -1.0)),
+                                    |ui: &mut egui::Ui| {
+                                        ui::icon_button(
+                                            ui,
+                                            icon::ARROW_UP,
+                                            ui::CLOSE_BUTTON_W,
+                                            ui::CLOSE_GLYPH_PT,
+                                            false,
+                                            true,
+                                        )
+                                    },
                                 )
                             });
                             if up.inner.on_hover_text("Move up").clicked() {

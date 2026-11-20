@@ -889,6 +889,20 @@ pub const MENU_ROW_INSET: f32 = 8.0;
 /// column, 9pt of air. A list row with a box in the glyph's place uses it too.
 pub const MENU_LABEL_X: f32 = MENU_ROW_INSET + 15.0 + 9.0;
 
+/// The width of the `Ui` inside a popup menu whose [`menu_row`]s say `labels`,
+/// as wide as its longest row and no wider (`glyph` keeps their glyph column).
+/// Hand it to `set_width`, since a row takes the available width, which in a
+/// popup's `Area` runs to the screen's edge. A card of its own padding and
+/// border is [`menu_check_accel_width`]'s.
+pub fn menu_width<'a>(
+    ctx: &egui::Context,
+    labels: impl IntoIterator<Item = &'a str>,
+    glyph: bool,
+) -> f32 {
+    let rows: Vec<(&str, Option<&str>)> = labels.into_iter().map(|l| (l, None)).collect();
+    menu_rows_width(ctx, &rows, glyph).ceil()
+}
+
 /// The air between a menu row's label and its accelerator; small so every fixed
 /// label stays whole (`a_long_reset_label_is_cut_inside_the_row_and_fixed_labels_are_whole`).
 const MENU_ACCEL_GAP: f32 = 2.0;
@@ -1552,6 +1566,14 @@ pub fn menu_check_accel_width(
     pad: f32,
     floor: f32,
 ) -> f32 {
+    let row = menu_rows_width(ctx, rows, ticks);
+    (row + 2.0 * pad + 2.0 * MENU_BORDER).ceil().max(floor)
+}
+
+/// The width the widest of `rows` takes as [`menu_row`] lays it out: the glyph
+/// column when `glyph` (else the row's inset), the label, the accelerator after
+/// its gap, the inset at the end. The one measure every menu width is built on.
+fn menu_rows_width(ctx: &egui::Context, rows: &[(&str, Option<&str>)], glyph: bool) -> f32 {
     let measure = |text: String, pt: f32| {
         ctx.fonts_mut(|f| {
             f.layout_no_wrap(text, egui::FontId::proportional(pt), egui::Color32::WHITE)
@@ -1568,10 +1590,9 @@ pub fn menu_check_accel_width(
             measure((*label).to_string(), SMALL_PT) + chord
         })
         .fold(0.0, f32::max);
-    // `menu_row`'s label column (or a bare row's inset), then its 8pt right inset.
-    let label_x = if ticks { MENU_LABEL_X } else { 8.0 };
-    let row = label_x + widest + 8.0;
-    (row + 2.0 * pad + 2.0 * MENU_BORDER).ceil().max(floor)
+    // `menu_row`'s label column (or a bare row's inset), then its right inset.
+    let label_x = if glyph { MENU_LABEL_X } else { MENU_ROW_INSET };
+    label_x + widest + MENU_ROW_INSET
 }
 
 /// The weight bold chrome text takes on Inter's `wght` axis.
