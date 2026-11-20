@@ -144,6 +144,8 @@ pub fn read(
                 ground: None,
                 draft: false,
                 modes: Vec::new(),
+                flows: Vec::new(),
+                play: Default::default(),
             });
         }
         if let Some(bg) = page.get("backgroundColor") {

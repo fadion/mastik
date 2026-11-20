@@ -2039,6 +2039,8 @@ mod tests {
                 ground: None,
                 draft: false,
                 modes: Vec::new(),
+                flows: Vec::new(),
+                play: Default::default(),
             },
             boxed(card, first, "Card", (0.0, 0.0), true),
             boxed(price, card, "Price", (5.0, 5.0), false),
@@ -2557,6 +2559,8 @@ mod tests {
                 ground: None,
                 draft: false,
                 modes: Vec::new(),
+                flows: Vec::new(),
+                play: Default::default(),
             },
             boxed(note, archive, "Note", (-3000.0, 800.0), false),
         ])));
@@ -2616,6 +2620,8 @@ mod tests {
             ground: None,
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         }])));
         let doc = &f.app.session.doc;
         let seat = *doc

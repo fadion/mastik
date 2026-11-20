@@ -44,6 +44,8 @@ fn add_page(id: NodeId, index: usize, name: &str) -> Operation {
         ground: Some(Color::from_rgb8(10, 20, 30)),
         draft: false,
         modes: Vec::new(),
+        flows: Vec::new(),
+        play: Default::default(),
     }
 }
 

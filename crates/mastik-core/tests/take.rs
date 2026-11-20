@@ -110,6 +110,8 @@ fn fixture() -> F {
             ground: Some(Color::WHITE),
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         },
         picture("hero", 10),
         picture("old", 20),

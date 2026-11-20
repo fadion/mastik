@@ -462,6 +462,7 @@ pub fn freeze(doc: &Document) -> Option<Published> {
         // they follow the kit's updates.
         doc.scripts().to_vec(),
         Default::default(),
+        Default::default(),
         None,
     );
     debug_assert!(
@@ -753,6 +754,8 @@ fn frozen_page(doc: &Document) -> (Node, crate::page::Page) {
         id,
         ground: doc.own_ground(id),
         draft: false,
+        flows: Vec::new(),
+        play: Default::default(),
     };
     (root, page)
 }
@@ -774,6 +777,7 @@ fn empty_published(doc: &Document) -> Published {
             Default::default(),
             Default::default(),
             Vec::new(),
+            Default::default(),
             Default::default(),
             None,
         ),

@@ -1679,7 +1679,10 @@ impl RenderOverrides {
                 self.ground = Some((*id, *ground));
             }
             // A draft flag and the page order are chrome.
-            Operation::SetPageDraft { .. } | Operation::MovePage { .. } => {}
+            Operation::SetPageDraft { .. }
+            | Operation::SetFlows { .. }
+            | Operation::SetPagePlay { .. }
+            | Operation::MovePage { .. } => {}
             // A page coming or going is structural, as the vault is.
             Operation::AddPage { .. } | Operation::RemovePage { .. } => return None,
             // Nothing the renderer draws, absorbed as a no-op rather than refused so
@@ -1693,6 +1696,8 @@ impl RenderOverrides {
             | Operation::SetProportionsLocked { .. }
             | Operation::SetPivot { .. }
             | Operation::SetExports { .. }
+            | Operation::SetReactions { .. }
+            | Operation::SetPlay { .. }
             | Operation::SetFillHiddenInExport { .. }
             | Operation::SetLayoutGrids { .. }
             // Being a main or linked draws nothing (`changes_ink` agrees), nor does a
@@ -1766,7 +1771,8 @@ impl RenderOverrides {
             Operation::AddScript { .. }
             | Operation::RemoveScript { .. }
             | Operation::SetScriptName { .. }
-            | Operation::SetScriptSource { .. } => {}
+            | Operation::SetScriptSource { .. }
+            | Operation::SetPlayExport { .. } => {}
             // A corner's binding previews as the radii it will draw: the bound corners
             // are resolved through the document (the mode in force is not previewed)
             // over the literal kind earlier ops left, `vars` being the whole binding.

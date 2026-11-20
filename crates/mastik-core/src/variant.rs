@@ -1981,7 +1981,7 @@ pub(crate) fn rewrite(
         let template = doc.capture_subtree(*s_new)?;
         let (mut copy, _) = crate::document::remap_subtree(&template, ids)?;
         for (k, t) in copy.iter_mut().zip(&template) {
-            k.make_copy_of(t.id);
+            k.make_copy_of(t);
         }
         inserts.push((host, *s_new, copy));
     }
@@ -2256,6 +2256,7 @@ fn rekey_lists(new: &Operation, old: &Operation, cur: &Operation) -> (Operation,
         SetStrokes { strokes },
         SetEffects { effects },
         SetExports { exports },
+        SetReactions { reactions },
         SetLayoutGrids { grids }
     )
 }

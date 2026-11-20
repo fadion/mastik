@@ -1121,13 +1121,15 @@ fn hex(v: &Value) -> String {
 /// zero, with that default as JSON. `skipped_keys_are_listed` holds every key
 /// skipped beside a `default = "…"` function, or by an `is_one`, to this list; a
 /// key a wire form defaults that skips by another test must be added by hand.
-const SKIPPED_AT: [(&str, &str); 16] = [
+const SKIPPED_AT: [(&str, &str); 25] = [
     ("alpha", "1"),
     // A shadow's; a node's `blend` is an `Option`, absent at its kind's default.
     ("blend", r#""Normal""#),
+    ("close_outside", "true"),
     ("crop", r#"{"x0":0.0,"y0":0.0,"x1":1.0,"y1":1.0}"#),
     // A noise's, defaulted through its wire form rather than a function.
     ("density", "1.0"),
+    ("device_frame", "true"),
     // `image::DUOTONE_DARK` and `DUOTONE_LIGHT` as the file spells them.
     (
         "duotone_dark",
@@ -1137,16 +1139,27 @@ const SKIPPED_AT: [(&str, &str); 16] = [
         "duotone_light",
         r#"{"components":[0.96862745,0.69803923,0.40392157,1.0]}"#,
     ),
+    ("hotspot_hints", "true"),
     ("marker_size", "1.0"),
     ("opacity", "1"),
+    // The prototype's settings, skipped at their `Default` (`prototype::is_default`).
+    ("overlay", r#"{"position":"Centre"}"#),
+    ("pin", r#""Scrolls""#),
+    ("player_bar", "true"),
     ("precision", "2"),
     ("quality", "90"),
     ("scale", r#"{"Times":1.0}"#),
+    ("scaling", r#""Fit""#),
+    ("scroll", r#""None""#),
     ("sharing", "true"),
     ("shrink", "1"),
     ("skip_ink", "true"),
     ("tile_scale", "1"),
     ("transform", "[1.0,0.0,0.0,1.0,0.0,0.0]"),
+    (
+        "transition",
+        r#"{"kind":"Dissolve","direction":"Left","timing":{"Ease":{"curve":"EaseOut","ms":300}}}"#,
+    ),
 ];
 
 impl Differ<'_> {

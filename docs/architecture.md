@@ -39,6 +39,7 @@ Read the file for the exact wording before relying on one.
 | `text.md` | 5.4, 5.4a | The text node and fonts, spell check |
 | `images.md` | 5.5a | Images; the brush, gradient stops, ends and mixing |
 | `io.md` | 5.11, 5.11a | Save format, schema migration, clipboard envelope, the library block |
+| `prototyping-model.md` | — | The saved prototype: a layer's reactions and play settings, a page's flows, the export settings, their ops, dangling targets, instances and copies |
 | **Render, export, MCP** | | |
 | `render.md` | 6.1–6.3 | The render boundary, `RenderOverrides`, backends |
 | `export.md` | 7 | SVG, PDF, PNG, ICO and ICNS, code export (HTML/CSS, React, Vue), the Penpot and Sketch files, JSON snapshot, the CLI, export doors |
@@ -67,7 +68,7 @@ Read the file for the exact wording before relying on one.
 | `library.md` | 9.5 | The library: dashboard, projects, search and its content index, versions, trash, *Import files*; document tabs (open, park, close, next launch) |
 
 Also in `docs/`: `shortcuts.md` (the keymap), `context-menus.md` (the menus), `prototyping.md`
-(prototyping, decided and not yet built).
+(the parts of prototyping decided and not yet built).
 
 ## Keeping this true
 

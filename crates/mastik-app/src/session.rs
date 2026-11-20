@@ -4511,6 +4511,8 @@ mod tests {
             ground: Some(Color::WHITE),
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         }])));
         let card = add_rect(&mut s);
         let opened = s.history.undo_depth();
@@ -4555,6 +4557,8 @@ mod tests {
             ground: Some(Color::WHITE),
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         }])));
         let away = s.ids.mint();
         assert!(s.commit(Transaction(vec![Operation::CreateNode {

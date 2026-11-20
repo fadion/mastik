@@ -631,6 +631,8 @@ mod tests {
             ground: None,
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         };
         let frame = |id, parent, name: &str| Operation::CreateNode {
             id,

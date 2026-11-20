@@ -514,6 +514,7 @@ pub fn item_removal(
         Operation::SetStrokes { strokes, .. } => strokes.retain(|f| f.id != item),
         Operation::SetEffects { effects, .. } => effects.retain(|f| f.id != item),
         Operation::SetExports { exports, .. } => exports.retain(|f| f.id != item),
+        Operation::SetReactions { reactions, .. } => reactions.retain(|f| f.id != item),
         Operation::SetLayoutGrids { grids, .. } => grids.retain(|f| f.id != item),
         _ => return None,
     }

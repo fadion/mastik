@@ -1049,7 +1049,7 @@ pub fn settle_copy(doc: &Document, template: &[Node], copy: &mut [Node], mains: 
         && nodes.get(&root.id).is_some_and(|n| n.component)
     {
         for (c, t) in copy.iter_mut().zip(template) {
-            c.make_copy_of(t.id);
+            c.make_copy_of(t);
         }
         return true;
     }
@@ -1171,7 +1171,7 @@ fn mains_inside_to_instances(
     }
     for (c, t) in copy.iter_mut().zip(template) {
         if made.contains(&t.id) {
-            c.make_copy_of(t.id);
+            c.make_copy_of(t);
         } else {
             if t.link.is_some_and(|l| made.contains(&l)) {
                 c.link = t.link;

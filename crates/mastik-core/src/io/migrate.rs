@@ -47,6 +47,7 @@ pub(crate) fn migrate(mut value: Value) -> Result<Value, IoError> {
             16 => migrate_16_to_17(&mut value),
             17 => migrate_17_to_18(&mut value),
             18 => migrate_18_to_19(&mut value),
+            19 => migrate_19_to_20(&mut value),
             other => return Err(IoError::UnsupportedVersion(other)),
         }
     }
@@ -485,6 +486,20 @@ fn migrate_18_to_19(value: &mut Value) {
         .filter(|d| d.is_object())
     {
         inner["schema_version"] = Value::from(19u32);
+    }
+}
+
+/// v19 → v20: the prototype (`NodeDto::reactions`, `NodeDto::play`,
+/// `PageDto::flows`, `PageDto::play`, `DocumentDto::play_export`). A number and
+/// nothing else: a v19 file holds none, and the older build would drop them on save.
+fn migrate_19_to_20(value: &mut Value) {
+    value["schema_version"] = Value::from(20u32);
+    if let Some(inner) = value
+        .get_mut("published")
+        .and_then(|p| p.get_mut("document"))
+        .filter(|d| d.is_object())
+    {
+        inner["schema_version"] = Value::from(20u32);
     }
 }
 

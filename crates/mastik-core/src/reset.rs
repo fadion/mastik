@@ -92,6 +92,8 @@ pub fn state_ops(node: &Node) -> Vec<Operation> {
         // Never an override by hand, but a reset puts back the main's all the same.
         element,
         href,
+        reactions,
+        play,
         // A vendored node's provenance (§15 D1012) — never on a copy, so never an
         // override.
         origin: _,
@@ -161,6 +163,14 @@ pub fn state_ops(node: &Node) -> Vec<Operation> {
         O::SetExports {
             id,
             exports: exports.clone(),
+        },
+        O::SetReactions {
+            id,
+            reactions: reactions.clone(),
+        },
+        O::SetPlay {
+            id,
+            play: play.clone(),
         },
         O::SetCredit {
             id,
@@ -513,6 +523,9 @@ fn compare(theirs: &Operation, cur: &Operation) -> Option<Override> {
         (O::SetExports { exports: s, id }, O::SetExports { exports: c, .. }) => {
             return list(s, c, |exports| O::SetExports { id: *id, exports });
         }
+        (O::SetReactions { reactions: s, id }, O::SetReactions { reactions: c, .. }) => {
+            return list(s, c, |reactions| O::SetReactions { id: *id, reactions });
+        }
         (O::SetLayoutGrids { grids: s, id }, O::SetLayoutGrids { grids: c, .. }) => {
             return list(s, c, |grids| O::SetLayoutGrids { id: *id, grids });
         }
@@ -524,6 +537,7 @@ fn compare(theirs: &Operation, cur: &Operation) -> Option<Override> {
         (O::SetInsets { insets: s, .. }, O::SetInsets { insets: c, .. }) => leaves(s, c),
         (O::SetDisplay { display: s, .. }, O::SetDisplay { display: c, .. }) => leaves(s, c),
         (O::SetLayoutItem { item: s, .. }, O::SetLayoutItem { item: c, .. }) => leaves(s, c),
+        (O::SetPlay { play: s, .. }, O::SetPlay { play: c, .. }) => leaves(s, c),
         _ => usize::from(theirs != cur),
     };
     (units > 0).then(|| Override {
@@ -1065,7 +1079,7 @@ fn restore_missing(
             continue;
         };
         for (k, t) in copy.iter_mut().zip(&template) {
-            k.make_copy_of(t.id);
+            k.make_copy_of(t);
         }
         let Some(src_parent) = source_of(doc, p).and_then(|s| doc.get(s)) else {
             continue;

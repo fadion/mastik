@@ -10195,6 +10195,8 @@ mod tests {
                 ground: None,
                 draft: *draft,
                 modes: Vec::new(),
+                flows: Vec::new(),
+                play: Default::default(),
             })
             .collect();
         doc.apply(&mastik_core::Transaction(ops)).unwrap();
@@ -10278,6 +10280,8 @@ mod tests {
                 ground: None,
                 draft: false,
                 modes: Vec::new(),
+                flows: Vec::new(),
+                play: Default::default(),
             })
             .collect();
         doc.apply(&mastik_core::Transaction(ops)).unwrap();

@@ -73,7 +73,7 @@ Decided non-goals are in `docs/non-goals.md`.
 
 - **D978** Instances are linked copies written at the commit, not subtrees derived in `Resolved`.
 - **D979** An override is any value that differs from its source; nothing records it. Instance structure is free, deleting a main detaches its instances, components are document-local, and copying a main makes an instance.
-- **D980** The five item lists (fills, strokes, effects, exports, layout grids) carry ids in a `Keyed<T>` wrapper, so an instance follows its main item by item. A list reset restores the main's list exactly.
+- **D980** A layer's item lists (fills, strokes, effects, exports, layout grids, component properties, prototype reactions) carry ids in a `Keyed<T>` wrapper, so an instance follows its main item by item. A list reset restores the main's list exactly.
 - **D982** A set is a frame around mains; a variant is a main inside it with a derived name (`variant::settle` runs before `propagate`). A component property is a view over fields, never a stored value. A variant switch happens in place, matching layers by lineage key, else by name path.
 - **Variant layers pair by a shared lineage key, name path the fallback.** Copying a variant into its set gives each copied layer its source's key (`Node::lineage`), so the switch, the code export's merge and its states pair layers across a rename. A shared key, not a pointer to the source: a pointer breaks on a chain of copies and when the source is deleted.
 - **D983** Instance swap is a `swap` field beside `link`, rewritten in place by `swap::settle`, only to a main of the same kind.

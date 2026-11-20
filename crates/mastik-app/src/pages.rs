@@ -986,6 +986,8 @@ mod tests {
                 ground: None,
                 draft: false,
                 modes: Vec::new(),
+                flows: Vec::new(),
+                play: Default::default(),
             },
             frame(a, first, 0.0),
             frame(b, second, 500.0),
@@ -1493,6 +1495,8 @@ mod tests {
             ground: None,
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         }])));
         section(&ctx, &mut app, vec![]);
         let rows = section(&ctx, &mut app, vec![]);

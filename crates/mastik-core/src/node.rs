@@ -152,6 +152,14 @@ pub struct Node {
     /// The address a link goes to, in [`crate::element::is_href`]'s form; empty
     /// is none. Kept while the element is not a link, written only while it is.
     pub(crate) href: String,
+    /// The triggers on this layer and the actions they run in a prototype
+    /// (`crate::prototype`). Never drawn, so `Operation::SetReactions` answers
+    /// `false` to `changes_ink`; a copy keeps them, its targets remapped where
+    /// the copied set holds them.
+    pub(crate) reactions: Vec<Keyed<crate::prototype::Reaction>>,
+    /// This layer's prototype settings besides its reactions: a frame's scroll
+    /// and overlay defaults, a child's pin, an input's variable. Never drawn.
+    pub(crate) play: crate::prototype::LayerPlay,
     /// The main component this layer was an instance of before it was detached
     /// (`crate::component::detach`), so a document can count its detached
     /// layers. Never drawn; a copy keeps it, and becoming an instance clears it.
@@ -210,8 +218,12 @@ impl Node {
     /// Make this freshly remapped node a **linked copy** of `source`, clearing
     /// everything main-only (and any swap) in one place for every door that makes
     /// an instance node.
-    pub(crate) fn make_copy_of(&mut self, source: NodeId) {
-        self.link = Some(source);
+    pub(crate) fn make_copy_of(&mut self, source: &Node) {
+        self.link = Some(source.id);
+        // A copy's reactions name its source's layers, unmapped
+        // (`prototype::resolve_target` maps them when read); `remap_subtree` had
+        // pointed them at the new layers, which would make every one an override.
+        self.reactions = source.reactions.clone();
         self.swap = None;
         self.component = false;
         self.set = None;
@@ -387,7 +399,8 @@ impl Node {
             .or_else(|| first_duplicate(&self.effects))
             .or_else(|| first_duplicate(&self.exports))
             .or_else(|| first_duplicate(&self.grids))
-            .or_else(|| first_duplicate(&self.props));
+            .or_else(|| first_duplicate(&self.props))
+            .or_else(|| first_duplicate(&self.reactions));
         match dup {
             Some(item) => Err(crate::op::OpError::DuplicateItemId(self.id, item)),
             None => Ok(()),
@@ -497,6 +510,19 @@ impl Node {
     /// The export specs this layer carries, in the order the panel shows them.
     pub fn exports(&self) -> &[Keyed<crate::export::ExportSpec>] {
         &self.exports
+    }
+    /// The reactions on this layer, in the order the Prototype tab shows them.
+    /// A target is read through [`crate::prototype::resolve_target`].
+    pub fn reactions(&self) -> &[Keyed<crate::prototype::Reaction>] {
+        &self.reactions
+    }
+    /// This layer's prototype settings besides its reactions.
+    pub fn play(&self) -> &crate::prototype::LayerPlay {
+        &self.play
+    }
+    /// Whether this layer has reactions or prototype settings of its own.
+    pub fn in_prototype(&self) -> bool {
+        !self.reactions.is_empty() || !self.play.is_empty()
     }
     /// The layout grids drawn over this layer, in the order the panel shows
     /// them (`crate::layout`).

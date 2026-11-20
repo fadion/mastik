@@ -1241,6 +1241,8 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         | O::Reorder { .. }
         | O::SetPageGround { .. }
         | O::SetPageDraft { .. }
+        | O::SetFlows { .. }
+        | O::SetPagePlay { .. }
         | O::AddPage { .. }
         | O::RemovePage { .. }
         | O::MovePage { .. }
@@ -1291,7 +1293,10 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         | O::AddScript { .. }
         | O::RemoveScript { .. }
         | O::SetScriptName { .. }
-        | O::SetScriptSource { .. } => None,
+        | O::SetScriptSource { .. }
+        | O::SetReactions { .. }
+        | O::SetPlay { .. }
+        | O::SetPlayExport { .. } => None,
     }
 }
 

@@ -326,6 +326,8 @@ mod leak {
                     ground: None,
                     draft: false,
                     modes: Vec::new(),
+                    flows: Vec::new(),
+                    play: Default::default(),
                 },
             ]))
             .expect("the fixture commits");

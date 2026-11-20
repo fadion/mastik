@@ -65,6 +65,13 @@ pub(crate) struct DocumentDto {
     /// would drop the scripts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scripts: Vec<crate::script::Script>,
+    /// The prototype's HTML-export settings (`crate::prototype::PlayExport`),
+    /// absent at their defaults. New in v20.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::prototype::PlayExport::is_empty"
+    )]
+    pub play_export: crate::prototype::PlayExport,
     /// The image table, sorted by id on save (invariant 9).
     ///
     /// Near the end for diffs: an embedded image is the largest and least-changing
@@ -224,6 +231,13 @@ pub(crate) struct PageDto {
     pub ground: Option<Color>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub draft: bool,
+    /// The page's prototype flows, absent when none. New in v20. A flow's start
+    /// is not checked against the document: it may dangle.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flows: Vec<Keyed<crate::prototype::Flow>>,
+    /// The page's prototype settings, absent at their defaults. New in v20.
+    #[serde(default, skip_serializing_if = "crate::prototype::PagePlay::is_empty")]
+    pub play: crate::prototype::PagePlay,
 }
 
 /// A guide on disk. The id is the same `"<actor-hex>:<seq>"` string a node uses
@@ -388,6 +402,13 @@ pub(crate) struct NodeDto {
     /// `element::is_href`'s form is emptied on load, never refused.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub href: String,
+    /// The layer's prototype reactions (`crate::prototype`), absent when none.
+    /// New in v20. Targets are not checked against the document: they may dangle.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<Keyed<crate::prototype::Reaction>>,
+    /// The layer's other prototype settings, absent at their defaults. New in v20.
+    #[serde(default, skip_serializing_if = "crate::prototype::LayerPlay::is_empty")]
+    pub play: crate::prototype::LayerPlay,
     /// The main a detached layer was an instance of, as a wire id, absent when
     /// none. New in v19. Not checked against the document: the main may since
     /// have been deleted, and the layer was still detached from it.
@@ -553,6 +574,8 @@ impl NodeDto {
             element: n.element,
             chart: n.chart.clone(),
             href: n.href.clone(),
+            reactions: n.reactions.clone(),
+            play: n.play.clone(),
             detached_from: n.detached_from.map(NodeId::to_wire),
             origin: n.origin().map(|o| OriginDto {
                 kit: o.kit.clone(),
@@ -612,6 +635,13 @@ impl NodeDto {
         if let Some(c) = &chart {
             c.validate()
                 .map_err(|e| IoError::Integrity(format!("node {id:?}: {e}")))?;
+        }
+        crate::prototype::check(&self.reactions)
+            .map_err(|e| IoError::Integrity(format!("node {id:?}: {e}")))?;
+        if !self.play.is_usable() {
+            return Err(IoError::Integrity(format!(
+                "node {id:?}: a prototype setting is not usable"
+            )));
         }
         // Dropped, like `clip`, on a kind it does not apply to.
         let element = self
@@ -704,6 +734,8 @@ impl NodeDto {
                 true => self.href,
                 false => String::new(),
             },
+            reactions: self.reactions,
+            play: self.play,
             detached_from,
             origin: self
                 .origin
@@ -876,6 +908,8 @@ impl DocumentDto {
                     id: p.id.to_wire(),
                     ground: p.ground,
                     draft: p.draft,
+                    flows: p.flows.clone(),
+                    play: p.play.clone(),
                 })
                 .collect(),
             vault: doc.vault().map(NodeId::to_wire),
@@ -884,6 +918,7 @@ impl DocumentDto {
             variables: VariablesDto::from_table(doc.variables()),
             styles: doc.styles().iter().cloned().collect(),
             scripts: doc.scripts().to_vec(),
+            play_export: doc.play_export().clone(),
             images,
             meta: doc.meta().clone(),
             tokens_link: doc.tokens_link().cloned(),
@@ -913,11 +948,20 @@ impl DocumentDto {
                     "page {id:?} is listed twice, or is the vault"
                 )));
             }
+            if !dto.play.transition.timing.is_usable()
+                || crate::item::first_duplicate(&dto.flows).is_some()
+            {
+                return Err(IoError::Integrity(format!(
+                    "page {id:?}: a flow id repeats or a prototype setting is not usable"
+                )));
+            }
             pages.push(crate::page::Page {
                 id,
                 // Opaque, always — the same rule the editor applies when setting it.
                 ground: dto.ground.map(|c| c.with_alpha(1.0)),
                 draft: dto.draft,
+                flows: dto.flows.clone(),
+                play: dto.play.clone(),
             });
         }
         if pages.is_empty() {
@@ -1066,6 +1110,7 @@ impl DocumentDto {
             variables,
             styles,
             self.scripts,
+            self.play_export,
             // Taken as written, with nothing minted: a loader that filled in a
             // missing id would make `load` non-deterministic, so the library mints
             // it at first save (`crate::meta::DocumentMeta::id`). `sanitized` is

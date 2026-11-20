@@ -2241,6 +2241,8 @@ mod tests {
             chart: None,
             element: None,
             href: String::new(),
+            reactions: Vec::new(),
+            play: Default::default(),
             detached_from: None,
             origin: None,
             modes: Vec::new(),

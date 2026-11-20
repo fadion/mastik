@@ -96,12 +96,13 @@ copies at every depth through the reverse link map, each level compared against 
     clip, fill in exports, mask, mask mode, mask inversion, fill rule, a frame's mode set (`SetModes`, one field for every collection), its width queries (`SetQueries`, likewise; `reset::state_ops` writes them back), the variable bindings (`SetCornerVars`,
     `SetSpacingVars`, `SetVisibleVar`, `SetSizeVars`, `SetOpacityVar`) and the card
     styles (`SetFillStyle`, `SetStrokeStyle`, `SetEffectsStyle`, `SetTypeStyle`, `SetLayoutStyle`);
-  - **fields** — text/paragraph/block style, insets, display, layout item: a JSON merge
+  - **fields** — text/paragraph/block style, insets, display, layout item, a layer's prototype
+    settings (`SetPlay`): a JSON merge
     (`merge_present`) over the **union** of keys, absence a value of its own, a changed enum variant
     followed whole so two variants never mix. `SetTextVars` and an item's `limit_vars` follow **slot
     by slot**, as the literals beside them follow field by field: compared whole, a copy binding
     another slot kept none of the main's new bindings and drew their placeholder literal 0;
-  - **items** — the keyed lists;
+  - **items** — the keyed lists, a layer's reactions among them (`prototyping-model.md`);
   - **skip** — locks, links, swaps, variant/property ops, everything structural.
 - **An instance root's placement is its own**: `SetTransform`, `SetInsets`, `SetLayoutItem`,
   `SetVisible`, `SetVisibleVar` (`propagate::is_placement`) do not follow onto a root linked straight
@@ -115,8 +116,9 @@ copies at every depth through the reverse link map, each level compared against 
 
 ### Item ids — `item.rs`
 
-Five lists have ids: `Paint::fills`, `Paint::strokes`, `Node::effects`, `Node::exports`,
-`Node::grids` (plus component properties `Node::props`, below). Compared whole, not by item: a grid
+Seven lists have ids: `Paint::fills`, `Paint::strokes`, `Node::effects`, `Node::exports`,
+`Node::grids`, component properties `Node::props` (below) and prototype reactions
+`Node::reactions`, whose actions carry ids of their own (`prototyping-model.md`). Compared whole, not by item: a grid
 template's track list, a gradient's stops, a `Path`'s points, `corner_radii`, text spans.
 
 - Shape: `Keyed<T> { id: ItemId, #[serde(flatten)] value: T }`, derefs to `T`, saves flattened
@@ -130,7 +132,7 @@ template's track list, a gradient's stops, a `Path`'s points, `corner_radii`, te
   `shared_exports_keyed`, `mastik-export/src/plan.rs`).
 - `ItemId` is a newtype over `NodeId`, minted by `IdSource::mint_item` from the global stream — an
   item added locally to an instance and one added later to its main must never collide.
-- Unique **within its list** only: `Node::check_item_ids` (all six lists), run by `Document::apply`
+- Unique **within its list** only: `Node::check_item_ids` (all seven lists), run by `Document::apply`
   over dirty nodes (`OpError::DuplicateItemId`) and by the loader's `schema::verify_integrity`.
   Duplicating a node copies item ids verbatim — the match between a copy's item and its source's.
 - No `From<Vec<T>>`, deliberately. A keyed list is built by keeping the ids it read (`Keyed::map`),

@@ -626,6 +626,8 @@ impl Fixture {
             ground: None,
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         }]);
         id
     }

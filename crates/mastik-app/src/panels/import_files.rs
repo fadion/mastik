@@ -2574,6 +2574,8 @@ mod tests {
             ground: Some(mastik_core::peniko::Color::WHITE),
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         }]))
         .unwrap();
         store::file_document(&f.outside, None, name, &mut doc).unwrap()

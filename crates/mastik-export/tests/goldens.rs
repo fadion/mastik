@@ -511,6 +511,8 @@ fn golden_document() -> (Document, Resolved) {
             ground: Some(Color::from_rgb8(30, 30, 34)),
             draft: true,
             modes: vec![mode],
+            flows: Vec::new(),
+            play: Default::default(),
         },
         Operation::CreateNode {
             id: frame,

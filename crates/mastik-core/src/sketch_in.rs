@@ -385,6 +385,8 @@ impl Builder<'_> {
                 ground: None,
                 draft: false,
                 modes: Vec::new(),
+                flows: Vec::new(),
+                play: Default::default(),
             });
         }
         self.children(page, id, None);

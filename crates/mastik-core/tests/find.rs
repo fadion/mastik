@@ -81,6 +81,8 @@ fn fixture() -> F {
         ground: None,
         draft,
         modes: Vec::new(),
+        flows: Vec::new(),
+        play: Default::default(),
     };
     doc.apply(&Transaction(vec![
         page(checkout, 1, "Checkout", false),

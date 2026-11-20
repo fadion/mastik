@@ -1,7 +1,8 @@
 //! Identity for the items in a layer's lists (§15 D980).
 //!
-//! Five lists on a node (`Paint::fills`, `Paint::strokes`, `Node::effects`,
-//! `Node::exports`, `Node::grids`) are edited as items, each carrying an [`ItemId`]
+//! A node's lists (`Paint::fills`, `Paint::strokes`, `Node::effects`,
+//! `Node::exports`, `Node::grids`, its component properties and its prototype
+//! reactions) are edited as items, each carrying an [`ItemId`]
 //! in a [`Keyed`] wrapper, so an instance's fill follows its main's item by item
 //! once it can add, delete and reorder its own (§5.3d).
 //!
@@ -19,7 +20,7 @@
 use crate::id::{IdSource, NodeId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// The identity of one item in one of a node's five item lists.
+/// The identity of one item in one of a node's item lists, or of a page's flow.
 ///
 /// A newtype over [`NodeId`], minted by the caller from the session stream
 /// (invariant 3 — `apply` never allocates). Unique within its list, not across

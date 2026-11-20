@@ -149,6 +149,8 @@ pub enum Kept {
     Spacer,
     /// A layer with an export.
     Export,
+    /// A layer with reactions or prototype settings: an empty one is a hotspot.
+    Prototype,
     /// A list a style supplies: the list is the style's.
     Style,
     /// A layer in a variant set with interaction states: a state may show it.
@@ -178,6 +180,7 @@ impl Kept {
             Kept::Main { instances } => format!("Main · {instances} instances would detach"),
             Kept::Spacer => "In an auto layout · kept".into(),
             Kept::Export => "Has an export · kept".into(),
+            Kept::Prototype => "In the prototype · kept".into(),
             Kept::Style => "From a style · kept".into(),
             Kept::State => "Paired with a state · kept".into(),
             Kept::Mask => "Masks the layers above · kept".into(),
@@ -677,6 +680,8 @@ impl Run<'_> {
                     Some(Kept::Mask)
                 } else if !n.exports().is_empty() {
                     Some(Kept::Export)
+                } else if n.in_prototype() {
+                    Some(Kept::Prototype)
                 } else if n.component() {
                     Some(Kept::Main {
                         instances: component::instances_of(&self.sim, id).len(),
@@ -734,6 +739,8 @@ impl Run<'_> {
             Some(Kept::Mask)
         } else if !n.exports().is_empty() {
             Some(Kept::Export)
+        } else if n.in_prototype() {
+            Some(Kept::Prototype)
         } else if self.sim.resolved_display(id).is_some() {
             Some(Kept::Layout)
         } else if crate::container::parent_lays_out(&crate::resolve::DocView(&self.sim), id) {

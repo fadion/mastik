@@ -214,6 +214,18 @@ pub enum Operation {
         id: NodeId,
         exports: Vec<Keyed<ExportSpec>>,
     },
+    /// The layer's reactions (`crate::prototype`), written whole like the other
+    /// keyed lists. **Never drawn**: `false` to [`Self::changes_ink`].
+    SetReactions {
+        id: NodeId,
+        reactions: Vec<Keyed<crate::prototype::Reaction>>,
+    },
+    /// The layer's prototype settings besides its reactions, written whole.
+    /// Never drawn.
+    SetPlay {
+        id: NodeId,
+        play: crate::prototype::LayerPlay,
+    },
     /// The columns and rows drawn over this layer (`crate::layout`), written whole.
     /// **Chrome, like the guide operations**: `false` to [`Self::changes_ink`].
     SetLayoutGrids {
@@ -360,6 +372,8 @@ pub enum Operation {
         ground: Option<Color>,
         draft: bool,
         modes: Vec<crate::variable::ModeId>,
+        flows: Vec<Keyed<crate::prototype::Flow>>,
+        play: crate::prototype::PagePlay,
     },
     /// Remove a page. Refused for the last page and for one still holding layers
     /// or guides: deleting a page is those deletes first, then this, so undo
@@ -376,6 +390,22 @@ pub enum Operation {
     SetPageDraft {
         id: NodeId,
         draft: bool,
+    },
+    /// A page's flows (`crate::page::Page::flows`), written whole. A flow's
+    /// start may dangle, as a reaction's target may.
+    SetFlows {
+        id: NodeId,
+        flows: Vec<Keyed<crate::prototype::Flow>>,
+    },
+    /// A page's prototype settings (`crate::page::Page::play`).
+    SetPagePlay {
+        id: NodeId,
+        play: crate::prototype::PagePlay,
+    },
+    /// The document's HTML-export settings (`crate::prototype::PlayExport`).
+    /// Subjectless, as the script operations are.
+    SetPlayExport {
+        settings: crate::prototype::PlayExport,
     },
     /// Place a ruler guide. The caller mints the id, as for a node (§5.2,
     /// invariant 3).
@@ -699,6 +729,8 @@ impl Operation {
             | Operation::SetStrokes { id, .. }
             | Operation::SetEffects { id, .. }
             | Operation::SetExports { id, .. }
+            | Operation::SetReactions { id, .. }
+            | Operation::SetPlay { id, .. }
             | Operation::SetCredit { id, .. }
             | Operation::SetElement { id, .. }
             | Operation::SetChart { id, .. }
@@ -739,6 +771,8 @@ impl Operation {
             // and adding, removing and moving pages is structural.
             | Operation::SetPageGround { .. }
             | Operation::SetPageDraft { .. }
+            | Operation::SetFlows { .. }
+            | Operation::SetPagePlay { .. }
             | Operation::AddPage { .. }
             | Operation::RemovePage { .. }
             | Operation::MovePage { .. }
@@ -783,7 +817,8 @@ impl Operation {
             | Operation::AddScript { .. }
             | Operation::RemoveScript { .. }
             | Operation::SetScriptName { .. }
-            | Operation::SetScriptSource { .. } => None,
+            | Operation::SetScriptSource { .. }
+            | Operation::SetPlayExport { .. } => None,
         }
     }
 
@@ -819,6 +854,8 @@ impl Operation {
             | Operation::SetStrokes { id, .. }
             | Operation::SetEffects { id, .. }
             | Operation::SetExports { id, .. }
+            | Operation::SetReactions { id, .. }
+            | Operation::SetPlay { id, .. }
             | Operation::SetCredit { id, .. }
             | Operation::SetElement { id, .. }
             | Operation::SetChart { id, .. }
@@ -928,6 +965,8 @@ impl Operation {
             // Export settings say what a file would contain; nothing on the
             // canvas draws from them.
             | Operation::SetExports { .. }
+            | Operation::SetReactions { .. }
+            | Operation::SetPlay { .. }
             // The canvas draws a frame's fills whether or not exports keep them.
             | Operation::SetFillHiddenInExport { .. }
             // A layout grid is drawn over a frame and is never in it.
@@ -959,6 +998,8 @@ impl Operation {
             | Operation::RemovePage { .. }
             | Operation::MovePage { .. }
             | Operation::SetPageDraft { .. }
+            | Operation::SetFlows { .. }
+            | Operation::SetPagePlay { .. }
             // Provenance is a label on a node, never ink (§15 D1016).
             | Operation::SetOrigin { .. }
             | Operation::SetDetachedFrom { .. }
@@ -994,7 +1035,8 @@ impl Operation {
             | Operation::AddScript { .. }
             | Operation::RemoveScript { .. }
             | Operation::SetScriptName { .. }
-            | Operation::SetScriptSource { .. } => false,
+            | Operation::SetScriptSource { .. }
+            | Operation::SetPlayExport { .. } => false,
             Operation::CreateNode { .. }
             | Operation::DeleteNode { .. }
             | Operation::InsertSubtree { .. }
@@ -1129,6 +1171,9 @@ impl Operation {
             Operation::SetPageDraft { id, draft } => {
                 doc.page(*id).is_some_and(|p| p.draft == *draft)
             }
+            Operation::SetFlows { id, flows } => doc.page(*id).is_some_and(|p| p.flows == *flows),
+            Operation::SetPagePlay { id, play } => doc.page(*id).is_some_and(|p| p.play == *play),
+            Operation::SetPlayExport { settings } => doc.play_export() == settings,
 
             Operation::SetStyleName { id, name } => {
                 doc.styles().get(*id).is_some_and(|s| s.name == *name)
@@ -1397,6 +1442,10 @@ impl Operation {
             Operation::SetExports { id, exports } => {
                 node(id).is_some_and(|n| n.exports() == exports)
             }
+            Operation::SetReactions { id, reactions } => {
+                node(id).is_some_and(|n| n.reactions() == reactions)
+            }
+            Operation::SetPlay { id, play } => node(id).is_some_and(|n| n.play() == play),
             Operation::SetLayoutGrids { id, grids } => node(id).is_some_and(|n| n.grids() == grids),
             Operation::SetInsets { id, insets } => node(id).is_some_and(|n| {
                 let mut stored = *insets;
@@ -1480,6 +1529,8 @@ impl Transaction {
                 | Operation::Reorder { id, .. }
                 | Operation::SetPageGround { id, .. }
                 | Operation::SetPageDraft { id, .. }
+                | Operation::SetFlows { id, .. }
+                | Operation::SetPagePlay { id, .. }
                 | Operation::AddPage { id, .. }
                 | Operation::RemovePage { id }
                 | Operation::MovePage { id, .. } => Some(*id),
@@ -1873,6 +1924,12 @@ pub enum OpError {
     /// (`crate::container::Grid::is_valid`).
     #[error("a layout value CSS does not accept")]
     BadLayout,
+    /// A layer's reactions failed [`crate::prototype::check`].
+    #[error("{0}")]
+    BadReaction(crate::prototype::ReactionError),
+    /// A layer's or page's prototype settings hold a number that is not usable.
+    #[error("a prototype setting is not usable")]
+    BadPlay,
 }
 
 #[cfg(test)]
@@ -1899,6 +1956,14 @@ mod changes_ink_tests {
             Operation::SetExports {
                 id,
                 exports: vec![],
+            },
+            Operation::SetReactions {
+                id,
+                reactions: vec![],
+            },
+            Operation::SetPlay {
+                id,
+                play: Default::default(),
             },
             Operation::SetLayoutGrids { id, grids: vec![] },
             // Read by exports only; the canvas draws the fills either way.
@@ -1976,10 +2041,20 @@ mod changes_ink_tests {
                 ground: Some(peniko::Color::BLACK),
                 draft: false,
                 modes: Vec::new(),
+                flows: Vec::new(),
+                play: Default::default(),
             },
             Operation::RemovePage { id },
             Operation::MovePage { id, index: 0 },
             Operation::SetPageDraft { id, draft: true },
+            Operation::SetFlows { id, flows: vec![] },
+            Operation::SetPagePlay {
+                id,
+                play: Default::default(),
+            },
+            Operation::SetPlayExport {
+                settings: Default::default(),
+            },
             Operation::SetOrigin { id, origin: None },
             Operation::SetDetachedFrom { id, from: None },
             Operation::AddVariable {
@@ -2035,7 +2110,7 @@ mod changes_ink_tests {
                 source: "print(1)".into(),
             },
         ];
-        assert_eq!(invisible.len(), 49, "the whole false arm");
+        assert_eq!(invisible.len(), 54, "the whole false arm");
         for op in &invisible {
             assert!(
                 !op.changes_ink(),

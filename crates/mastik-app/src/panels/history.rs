@@ -724,6 +724,8 @@ mod tests {
             ground: None,
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         }])));
         for _ in 0..3 {
             whole_frame(&ctx, &mut app, vec![]);

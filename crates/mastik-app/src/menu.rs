@@ -7503,6 +7503,8 @@ mod submenu_tests {
             ground: None,
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         }])));
         frame(&ctx, &mut app, 0.0, None, Vec::new());
         let shapes = frame(&ctx, &mut app, 0.0, None, Vec::new());

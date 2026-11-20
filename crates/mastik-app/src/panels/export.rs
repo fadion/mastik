@@ -4470,6 +4470,8 @@ mod export_all_scope_tests {
                     ground: None,
                     draft: false,
                     modes: Vec::new(),
+                    flows: Vec::new(),
+                    play: Default::default(),
                 });
             } else {
                 ops.push(Operation::SetName {

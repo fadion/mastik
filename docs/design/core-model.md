@@ -12,7 +12,7 @@ mastik-core/src/
 ├─ id.rs           # NodeId { actor, seq }, IdSource
 ├─ node.rs         # Node, NodeKind, Paint, Fill, Stroke, TextStyle, Pivot
 ├─ effect.rs       # Effect, EffectKind, Shadow, Filters — the effect stack and its escape (§5.3a)
-├─ page.rs         # Page { id, ground, draft }, free_name; add, duplicate, delete — the page edits (§5.5)
+├─ page.rs         # Page { id, ground, draft, flows, play }, free_name; add, duplicate, delete — the page edits (§5.5)
 ├─ guide.rs        # Guide, GuideId, GuideAxis — ruler guides; document state, not nodes (§5.5)
 ├─ layout.rs       # LayoutGrid, GridAxis, GridAlign, tracks() — a frame's columns and rows;
 │                  #   chrome over a node, never in the scene (§5.3b)
@@ -35,7 +35,7 @@ mastik-core/src/
    └─ migrate.rs   # migrations old→current
 ```
 
-Other modules are named in their own sections: `container` (layout engine, §5.3c), `component`/`propagate`/`variant`/`swap`/`reset` (§5.3d), `kit` (§5.3e), `variable`/`style`/`tokens` (§5.3f), `boolean`, `edit` (the headless editing arithmetic the canvas's gestures call: resize, rotate, skew, the create builders, the pen's anchors and point edits, `tools.md`), `verbs` (the verb registry MCP, scripts and `mastik run` call, `core-ops.md`), `item` (`Keyed<T>`), `paint_box` (gradients following the box, §6.2), `fit` (curves fitted to a polygon, for *Simplify*, *Offset* and *Outline stroke*, `app-pen-and-nodes.md`), `marker` (a stroke's line ends, §5.3), `symmetry` (a mirrored path's axes and whether they still hold, §5.3), `centroid` (a layer's visual centre, the centre of mass of its ink, for *Align by visual centre*, `tools.md`), `rename` (batch rename's text rule, `app-canvas-chrome.md`), `find` (find and replace in text layers' content, on `rename`'s matcher, `app-canvas-chrome.md`), `diff` and `merge` (`mastik diff`, `mastik merge`, `export.md`), `export` (a layer's export settings, §7), `svg_in` (SVG import, §7.1), `foreign` (what the readers of other tools' files share: the `Archive` trait the zip's entries come through, the `Unmapped` report rows and their `Tally`, `library.md`), `sketch_in`, `penpot_in` and `figma_in` (a `.sketch` or a `.penpot` file, or a Figma file fetched through the REST API, read into a new document, entries through `foreign::Archive` and pictures through `svg_in::ImageSink`, so core holds no zip reader, decoder or network client, `library.md`), `take` (the library import's census of a document and its trim to the chosen pages and parts, through `apply` with the editor's own builders, `library.md`), `image` (the image table, §5.5a), `families` (the font families a document names), `fallback_fonts` (the font subsets a text falls in and the family stack it is shaped against, §5.4a), `meta` (a document's library entry, §5.11a), and under `io/`, `clip` (the clipboard's wire form) and `probe` (the meta read from a file's first bytes).
+Other modules are named in their own sections: `container` (layout engine, §5.3c), `component`/`propagate`/`variant`/`swap`/`reset` (§5.3d), `kit` (§5.3e), `variable`/`style`/`tokens` (§5.3f), `boolean`, `edit` (the headless editing arithmetic the canvas's gestures call: resize, rotate, skew, the create builders, the pen's anchors and point edits, `tools.md`), `verbs` (the verb registry MCP, scripts and `mastik run` call, `core-ops.md`), `item` (`Keyed<T>`), `paint_box` (gradients following the box, §6.2), `fit` (curves fitted to a polygon, for *Simplify*, *Offset* and *Outline stroke*, `app-pen-and-nodes.md`), `marker` (a stroke's line ends, §5.3), `symmetry` (a mirrored path's axes and whether they still hold, §5.3), `centroid` (a layer's visual centre, the centre of mass of its ink, for *Align by visual centre*, `tools.md`), `rename` (batch rename's text rule, `app-canvas-chrome.md`), `find` (find and replace in text layers' content, on `rename`'s matcher, `app-canvas-chrome.md`), `diff` and `merge` (`mastik diff`, `mastik merge`, `export.md`), `export` (a layer's export settings, §7), `svg_in` (SVG import, §7.1), `foreign` (what the readers of other tools' files share: the `Archive` trait the zip's entries come through, the `Unmapped` report rows and their `Tally`, `library.md`), `sketch_in`, `penpot_in` and `figma_in` (a `.sketch` or a `.penpot` file, or a Figma file fetched through the REST API, read into a new document, entries through `foreign::Archive` and pictures through `svg_in::ImageSink`, so core holds no zip reader, decoder or network client, `library.md`), `take` (the library import's census of a document and its trim to the chosen pages and parts, through `apply` with the editor's own builders, `library.md`), `image` (the image table, §5.5a), `families` (the font families a document names), `fallback_fonts` (the font subsets a text falls in and the family stack it is shaped against, §5.4a), `meta` (a document's library entry, §5.11a), `prototype` (the saved prototype model, `prototyping-model.md`), and under `io/`, `clip` (the clipboard's wire form) and `probe` (the meta read from a file's first bytes).
 
 ### 5.2 Identity
 
@@ -91,6 +91,8 @@ pub struct Node {
     chart: Option<Box<chart::Chart>>,   // a frame's chart description; its children are the generated parts (charts.md)
     element: Option<HtmlElement>, // the HTML element code export writes it as; None = Automatic; never drawn
     href: String,              // a link's address, empty = none; kept while the element is not a link
+    reactions: Vec<Keyed<Reaction>>, // prototype triggers and their actions; never drawn (prototyping-model.md)
+    play: LayerPlay,           // a frame's scroll and overlay defaults, a child's pin, an input; never drawn
     modes: Vec<ModeId>,        // the modes a FRAME or page sets for itself and contents, at most one per
                                // collection, id order; a collection with none inherits — §5.3f
     queries: Vec<Breakpoints>, // a FRAME's width queries: per collection, each mode's minimum width,
@@ -203,11 +205,14 @@ pub struct Document {
     guides: Vec<Guide>,                 // ruler guides; kept in id order, so an undone removal restores the list exactly
     published: Option<Arc<kit::Published>>, // a kit's last publish, frozen; outside undo — §5.3e
     laid_widths: LaidWidths,            // querying frames' laid-out widths; derived, never saved or compared
+    play_export: PlayExport,            // the prototype's HTML-export settings (prototyping-model.md)
 }
 pub struct Page {                  // page.rs — what a page has that is not a field of its root
     pub id: NodeId,                // the page's parentless Root node
     pub ground: Option<peniko::Color>, // opaque; behind and around the page's frames; None = the viewer's default
     pub draft: bool,               // left out of everything gathered from every page
+    pub flows: Vec<Keyed<Flow>>,   // named ways into the page's prototype (prototyping-model.md)
+    pub play: PagePlay,            // device, scaling, default transition
 }
 impl Document {
     pub fn new(root_id: NodeId) -> Self;          // one empty page, "Page 1"
@@ -248,7 +253,7 @@ pub struct Guide {                 // guide.rs
   guides moved onto the copies) and `page::delete` (the page's guides, its layers as *Delete* takes
   them, then `RemovePage`; never the last page). Renaming, moving and the draft flag are one op each.
 - A **draft** page is left out of everything that gathers from every page — kit publishing (§5.3e), *Export all* and *Export frames, all pages…* (§7), presenting past the current page, batch rename's *All pages* past the current page, the library cover — and kept by everything aimed at it directly. `gathered_pages` is what those read.
-- **Document state that is not a node:** each page's `ground` and `draft`, and `guides`. People set them for the artwork, not the sitting, so they are saved with the file; neither loosens the document/view-data line (§9.2, §9.3). Which page is current is view state and never saved (`app-chrome.md`, *Pages*).
+- **Document state that is not a node:** each page's `ground`, `draft`, `flows` and `play`, the document's `play_export`, and `guides`. People set them for the artwork, not the sitting, so they are saved with the file; neither loosens the document/view-data line (§9.2, §9.3). Which page is current is view state and never saved (`app-chrome.md`, *Pages*).
 - **`laid_widths` is the one piece of layout output the document holds** (invariant 4 lists it with the other stored derived values): the width each frame with width queries was last laid out at (`Document::settle_widths`, §5.3f). `modes_at`, the `Document` method every resolving reader asks, picks by it. It is an `Arc` map shared on clone whose `PartialEq` is always true, so two documents holding the same nodes compare equal however they were laid; a document never settled reads each frame's own width.
 - A page's `ground` is a colour of its own, opaque, or `None`: no colour of its own, drawn on the viewer's default — the app's theme canvas (`theme::color::canvas()`), `DEFAULT_CANVAS_BACKGROUND` for everything headless (CLI, SVG/PNG, the MCP snapshot). `Document::ground` answers own-or-`DEFAULT_CANVAS_BACKGROUND`, so headless output is the same whichever; `own_ground` answers the stored colour, and the app resolves through `session::page_ground` instead. A new document, a new page made from a page without a colour, and an imported page without a colour of its own start at `None`. It is changed only through `SetPageGround` (invariant 2) and is per page, not an `EditorSession` preference. (§15 D28)
 - `guides` are the lines pulled from the rulers (§9.4). `color: None` follows `DEFAULT_GUIDE_COLOR` (`#a3332d`), so retuning the default carries every never-recoloured guide.

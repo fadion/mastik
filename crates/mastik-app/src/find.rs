@@ -1220,6 +1220,8 @@ mod tests {
                 ground: None,
                 draft: false,
                 modes: Vec::new(),
+                flows: Vec::new(),
+                play: Default::default(),
             },
             // The headline on top of the stack, so it is listed first.
             create(headline, first, text("A team for every team"), "Headline"),

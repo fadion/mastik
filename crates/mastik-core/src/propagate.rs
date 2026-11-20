@@ -101,12 +101,14 @@ fn mode(op: &Operation) -> Mode {
         | Operation::SetInsets { .. }
         | Operation::SetDisplay { .. }
         | Operation::SetLayoutItem { .. }
+        | Operation::SetPlay { .. }
         // Slot by slot, beside the text style's fields (`follow`).
         | Operation::SetTextVars { .. } => Mode::Fields,
         Operation::SetFills { .. }
         | Operation::SetStrokes { .. }
         | Operation::SetEffects { .. }
         | Operation::SetExports { .. }
+        | Operation::SetReactions { .. }
         | Operation::SetLayoutGrids { .. } => Mode::Items,
         // A lock is how one person is editing, not what the layer is.
         Operation::SetLocked { .. }
@@ -130,6 +132,8 @@ fn mode(op: &Operation) -> Mode {
         | Operation::Reorder { .. }
         | Operation::SetPageGround { .. }
         | Operation::SetPageDraft { .. }
+        | Operation::SetFlows { .. }
+        | Operation::SetPagePlay { .. }
         | Operation::AddPage { .. }
         | Operation::RemovePage { .. }
         | Operation::MovePage { .. }
@@ -179,7 +183,8 @@ fn mode(op: &Operation) -> Mode {
         | Operation::AddScript { .. }
         | Operation::RemoveScript { .. }
         | Operation::SetScriptName { .. }
-        | Operation::SetScriptSource { .. } => Mode::Skip,
+        | Operation::SetScriptSource { .. }
+        | Operation::SetPlayExport { .. } => Mode::Skip,
     }
 }
 
@@ -810,7 +815,7 @@ pub fn propagate_structure(
                         continue;
                     };
                     for (c, t) in copy.iter_mut().zip(&nodes) {
-                        c.make_copy_of(t.id);
+                        c.make_copy_of(t);
                     }
                     let siblings = children_of(&sim, src_parent);
                     let kids = children_of(&sim, pc);
@@ -1255,6 +1260,8 @@ pub(crate) fn untouched(
         chart: _,
         element,
         href,
+        reactions,
+        play,
         // Never on a copy: becoming one clears it.
         detached_from: _,
         origin: _,
@@ -1284,6 +1291,8 @@ pub(crate) fn untouched(
         && c.effects == *effects
         && c.pivot == *pivot
         && c.exports == *exports
+        && c.reactions == *reactions
+        && c.play == *play
         && c.grids == *grids
         && c.insets == *insets
         && c.display == *display
@@ -1435,6 +1444,14 @@ pub(crate) fn follow(
             O::SetExports { exports: o, .. },
             O::SetExports { exports: c, .. },
         ) => changed(c, items(o, n, c)).map(|exports| O::SetExports { id: m, exports }),
+        (
+            O::SetReactions { reactions: n, .. },
+            O::SetReactions { reactions: o, .. },
+            O::SetReactions { reactions: c, .. },
+        ) => changed(c, items(o, n, c)).map(|reactions| O::SetReactions { id: m, reactions }),
+        (O::SetPlay { play: n, .. }, O::SetPlay { play: o, .. }, O::SetPlay { play: c, .. }) => {
+            changed(c, fields(o, n, c)).map(|play| O::SetPlay { id: m, play })
+        }
         (
             O::SetLayoutGrids { grids: n, .. },
             O::SetLayoutGrids { grids: o, .. },

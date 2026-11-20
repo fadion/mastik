@@ -78,6 +78,9 @@ pub struct Document {
     /// The scripts stored in this document, in list order (`crate::script`).
     /// Never run by the document, so nothing that draws or checks reads them.
     scripts: Vec<crate::script::Script>,
+    /// The HTML export's settings for this document's prototype
+    /// (`crate::prototype::PlayExport`). Never drawn.
+    play_export: crate::prototype::PlayExport,
     /// The document's library identity — typed name, project, creation stamp
     /// (`crate::meta`).
     ///
@@ -136,6 +139,8 @@ impl Document {
                 id: root_id,
                 ground: None,
                 draft: false,
+                flows: Vec::new(),
+                play: Default::default(),
             }],
             vault: None,
             guides: Vec::new(),
@@ -143,6 +148,7 @@ impl Document {
             variables: Default::default(),
             styles: Default::default(),
             scripts: Vec::new(),
+            play_export: Default::default(),
             // Empty, not minted: a document that has never been through the
             // library has no id, and `Document::new` is also what every test
             // fixture and the starter document use. Minting here would put a
@@ -206,6 +212,8 @@ pub(crate) fn root_node(id: NodeId, name: String) -> Node {
         chart: None,
         element: None,
         href: String::new(),
+        reactions: Vec::new(),
+        play: Default::default(),
         detached_from: None,
         origin: None,
         modes: Vec::new(),
@@ -446,6 +454,11 @@ impl Document {
     /// One stored script, or `None` for an id this document does not hold.
     pub fn script(&self, id: crate::script::ScriptId) -> Option<&crate::script::Script> {
         self.scripts.iter().find(|s| s.id == id)
+    }
+
+    /// The HTML export's settings for this document's prototype.
+    pub fn play_export(&self) -> &crate::prototype::PlayExport {
+        &self.play_export
     }
 
     /// The mode of collection `c` in force at `id` (§5.3f): the one the nearest
@@ -1410,6 +1423,7 @@ impl Document {
         variables: crate::variable::Variables,
         styles: crate::style::Styles,
         scripts: Vec<crate::script::Script>,
+        play_export: crate::prototype::PlayExport,
         meta: DocumentMeta,
         published: Option<crate::kit::Published>,
     ) -> Self {
@@ -1425,6 +1439,7 @@ impl Document {
             variables,
             styles,
             scripts,
+            play_export,
             meta,
             published: published.map(std::sync::Arc::new),
             tokens_link: None,
@@ -1612,6 +1627,7 @@ impl Document {
             variables: Default::default(),
             styles: Default::default(),
             scripts: Vec::new(),
+            play_export: Default::default(),
             meta: DocumentMeta::default(),
             published: None,
             tokens_link: None,
@@ -1754,6 +1770,10 @@ impl Document {
             Operation::SetStrokes { id, strokes } => self.op_set_strokes(*id, strokes, dirty),
             Operation::SetEffects { id, effects } => self.op_set_effects(*id, effects, dirty),
             Operation::SetExports { id, exports } => self.op_set_exports(*id, exports, dirty),
+            Operation::SetReactions { id, reactions } => {
+                self.op_set_reactions(*id, reactions, dirty)
+            }
+            Operation::SetPlay { id, play } => self.op_set_play(*id, play, dirty),
             Operation::SetLayoutGrids { id, grids } => self.op_set_grids(*id, grids, dirty),
             Operation::SetInsets { id, insets } => self.op_set_insets(*id, insets, dirty),
             Operation::SetDisplay { id, display } => self.op_set_display(*id, display, dirty),
@@ -1814,6 +1834,12 @@ impl Document {
             }
             Operation::SetPageGround { id, ground } => self.op_set_page_ground(*id, *ground),
             Operation::SetPageDraft { id, draft } => self.op_set_page_draft(*id, *draft),
+            Operation::SetFlows { id, flows } => self.op_set_flows(*id, flows),
+            Operation::SetPagePlay { id, play } => self.op_set_page_play(*id, play),
+            Operation::SetPlayExport { settings } => {
+                let old = std::mem::replace(&mut self.play_export, settings.clone());
+                Ok(Operation::SetPlayExport { settings: old })
+            }
             Operation::AddPage {
                 id,
                 index,
@@ -1821,7 +1847,11 @@ impl Document {
                 ground,
                 draft,
                 modes,
-            } => self.op_add_page(*id, *index, name, *ground, *draft, modes, dirty),
+                flows,
+                play,
+            } => self.op_add_page(
+                *id, *index, name, *ground, *draft, modes, flows, play, dirty,
+            ),
             Operation::RemovePage { id } => self.op_remove_page(*id, dirty),
             Operation::MovePage { id, index } => self.op_move_page(*id, *index),
             Operation::AddGuide { guide } => self.op_add_guide(*guide),
@@ -2603,6 +2633,8 @@ impl Document {
             chart: None,
             element: None,
             href: String::new(),
+            reactions: Vec::new(),
+            play: Default::default(),
             detached_from: None,
             origin: None,
             modes: Vec::new(),
@@ -3310,6 +3342,36 @@ impl Document {
         Ok(Operation::SetExports { id, exports: old })
     }
 
+    /// Replace a layer's reactions (`crate::prototype`), returning the inverse.
+    fn op_set_reactions(
+        &mut self,
+        id: NodeId,
+        reactions: &[Keyed<crate::prototype::Reaction>],
+        dirty: &mut DirtySet,
+    ) -> Result<Operation, OpError> {
+        crate::prototype::check(reactions).map_err(OpError::BadReaction)?;
+        let node = self.nodes.get_mut(&id).ok_or(OpError::NoSuchNode(id))?;
+        let old = std::mem::replace(&mut node.reactions, reactions.to_vec());
+        dirty.0.insert(id);
+        Ok(Operation::SetReactions { id, reactions: old })
+    }
+
+    /// Replace a layer's prototype settings, returning the inverse.
+    fn op_set_play(
+        &mut self,
+        id: NodeId,
+        play: &crate::prototype::LayerPlay,
+        dirty: &mut DirtySet,
+    ) -> Result<Operation, OpError> {
+        if !play.is_usable() {
+            return Err(OpError::BadPlay);
+        }
+        let node = self.nodes.get_mut(&id).ok_or(OpError::NoSuchNode(id))?;
+        let old = std::mem::replace(&mut node.play, play.clone());
+        dirty.0.insert(id);
+        Ok(Operation::SetPlay { id, play: old })
+    }
+
     /// Replace a layer's layout grids (`crate::layout`), returning the inverse.
     ///
     /// **`op_set_exports`' twin**, down to the dirty mark: a grid is chrome over
@@ -3452,6 +3514,30 @@ impl Document {
         Ok(Operation::SetPageDraft { id, draft: old })
     }
 
+    fn op_set_flows(
+        &mut self,
+        id: NodeId,
+        flows: &[Keyed<crate::prototype::Flow>],
+    ) -> Result<Operation, OpError> {
+        if let Some(item) = crate::item::first_duplicate(flows) {
+            return Err(OpError::DuplicateItemId(id, item));
+        }
+        let old = std::mem::replace(&mut self.page_mut(id)?.flows, flows.to_vec());
+        Ok(Operation::SetFlows { id, flows: old })
+    }
+
+    fn op_set_page_play(
+        &mut self,
+        id: NodeId,
+        play: &crate::prototype::PagePlay,
+    ) -> Result<Operation, OpError> {
+        if !play.transition.timing.is_usable() {
+            return Err(OpError::BadPlay);
+        }
+        let old = std::mem::replace(&mut self.page_mut(id)?.play, play.clone());
+        Ok(Operation::SetPagePlay { id, play: old })
+    }
+
     /// Dirties the new root so `Resolved::update` places it as `rebuild` would.
     #[allow(clippy::too_many_arguments)]
     fn op_add_page(
@@ -3462,6 +3548,8 @@ impl Document {
         ground: Option<Color>,
         draft: bool,
         modes: &[crate::variable::ModeId],
+        flows: &[Keyed<crate::prototype::Flow>],
+        play: &crate::prototype::PagePlay,
         dirty: &mut DirtySet,
     ) -> Result<Operation, OpError> {
         if self.nodes.contains_key(&id) {
@@ -3470,11 +3558,25 @@ impl Document {
         if index > self.pages.len() {
             return Err(OpError::IndexOutOfRange);
         }
+        if let Some(item) = crate::item::first_duplicate(flows) {
+            return Err(OpError::DuplicateItemId(id, item));
+        }
+        if !play.transition.timing.is_usable() {
+            return Err(OpError::BadPlay);
+        }
         let mut root = root_node(id, name.to_string());
         root.modes = modes.to_vec();
         self.nodes.insert(id, root);
-        self.pages
-            .insert(index, crate::page::Page { id, ground, draft });
+        self.pages.insert(
+            index,
+            crate::page::Page {
+                id,
+                ground,
+                draft,
+                flows: flows.to_vec(),
+                play: play.clone(),
+            },
+        );
         dirty.0.insert(id);
         Ok(Operation::RemovePage { id })
     }
@@ -3497,6 +3599,8 @@ impl Document {
             ground: page.ground,
             draft: page.draft,
             modes: root.modes,
+            flows: page.flows,
+            play: page.play,
         })
     }
 
@@ -3988,6 +4092,7 @@ struct Tables {
     variables: crate::variable::Variables,
     styles: crate::style::Styles,
     scripts: Vec<crate::script::Script>,
+    play_export: crate::prototype::PlayExport,
 }
 
 impl<'a> InPlace<'a> {
@@ -4000,6 +4105,7 @@ impl<'a> InPlace<'a> {
             variables: doc.variables.clone(),
             styles: doc.styles.clone(),
             scripts: doc.scripts.clone(),
+            play_export: doc.play_export.clone(),
         };
         #[cfg(debug_assertions)]
         let before = doc.clone();
@@ -4032,6 +4138,7 @@ impl Drop for InPlace<'_> {
         doc.variables = tables.variables;
         doc.styles = tables.styles;
         doc.scripts = tables.scripts;
+        doc.play_export = tables.play_export;
         // Not while unwinding: a second panic would abort.
         #[cfg(debug_assertions)]
         if !std::thread::panicking() && *doc != self.before {
@@ -4086,14 +4193,20 @@ pub fn minted_ids(doc: &Document) -> impl Iterator<Item = NodeId> + '_ {
             .chain(n.effects.iter().map(|k| k.id.0))
             .chain(n.exports.iter().map(|k| k.id.0))
             .chain(n.grids.iter().map(|k| k.id.0))
-            // The component properties' too — the sixth keyed list.
+            // The component properties' too, and the reactions' below.
             .chain(n.props.iter().map(|k| k.id.0))
+            .chain(crate::prototype::item_ids(&n.reactions).map(|i| i.0))
     });
+    let flows = doc
+        .pages
+        .iter()
+        .flat_map(|p| p.flows.iter().map(|k| k.id.0));
     doc.nodes
         .keys()
         .copied()
         .chain(doc.guides.iter().map(|g| g.id.0))
         .chain(items)
+        .chain(flows)
         .chain(doc.variables.ids())
         .chain(doc.styles.ids())
         .chain(doc.scripts.iter().map(|s| s.id.0))
@@ -4238,6 +4351,11 @@ pub fn remap_subtree(template: &[Node], ids: &mut IdSource) -> Option<(Vec<Node>
             // What the layer is in code travels with it, as its name does.
             element: n.element,
             href: n.href.clone(),
+            // A target inside the copied set follows the copy; one outside keeps its id.
+            reactions: crate::prototype::map_layers(&n.reactions, &mut |id| {
+                map.get(&id).copied().unwrap_or(id)
+            }),
+            play: n.play.clone(),
             // A copy of a detached layer was detached from the same main.
             detached_from: n.detached_from,
             // **Never carried** (§15 D1012): a copy of a vendored node does not live
@@ -4532,6 +4650,8 @@ mod tests {
             chart: None,
             element: None,
             href: String::new(),
+            reactions: Vec::new(),
+            play: Default::default(),
             detached_from: None,
             origin: None,
             modes: Vec::new(),

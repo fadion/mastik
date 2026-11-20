@@ -7347,6 +7347,8 @@ mod tests {
             ground: None,
             draft: false,
             modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
         }]))
         .unwrap();
         let before = collapsed_key(&doc);

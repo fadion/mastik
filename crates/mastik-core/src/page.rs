@@ -2,8 +2,8 @@
 //!
 //! A page is a parentless `Root` node listed in [`Document::pages`]. Its layers
 //! are that root's subtree; its name is the root's name and its default mode the
-//! root's [`Node::mode`]. What is not a node field lives in [`Page`]: the ground
-//! and the draft flag.
+//! root's [`Node::mode`]. What is not a node field lives in [`Page`]: the ground,
+//! the draft flag and the prototype's flows and settings.
 //!
 //! Everything else — components, styles, variables, images, the kit vault —
 //! belongs to the document and is shared by every page. Every page has the same
@@ -23,7 +23,7 @@ use peniko::Color;
 pub const PAGE_STEM: &str = "Page";
 
 /// The page-table half of a page: what is not a field of its root node.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Page {
     /// The page's root node.
     pub id: NodeId,
@@ -36,6 +36,10 @@ pub struct Page {
     /// exporting all pages, presenting on past the current page, the library
     /// thumbnail — and kept by everything aimed at it directly.
     pub draft: bool,
+    /// The named ways into this page's prototype (`crate::prototype::Flow`).
+    pub flows: Vec<crate::item::Keyed<crate::prototype::Flow>>,
+    /// The device, scaling and default transition this page plays with.
+    pub play: crate::prototype::PagePlay,
 }
 
 /// `Page N` for the lowest `N ≥ 1` no name in `taken` already uses.
@@ -72,6 +76,8 @@ pub fn add(
         ground,
         draft: false,
         modes: Vec::new(),
+        flows: Vec::new(),
+        play: Default::default(),
     }]);
     (tx, id)
 }
@@ -100,6 +106,8 @@ pub fn duplicate(
         ground: info.ground,
         draft: info.draft,
         modes: root.modes().to_vec(),
+        flows: info.flows.clone(),
+        play: info.play.clone(),
     }];
     let templates: Vec<Vec<crate::node::Node>> = root
         .children()
@@ -127,6 +135,12 @@ pub fn duplicate(
     for (template, nodes) in templates.iter().zip(inserted) {
         for (from, to) in template.iter().zip(nodes) {
             map.insert(from.id(), to.id());
+        }
+    }
+    // The copy's flows start on its own frames.
+    if let Some(Operation::AddPage { flows, .. }) = ops.first_mut() {
+        for f in flows.iter_mut() {
+            f.start = map.get(&f.start).copied().unwrap_or(f.start);
         }
     }
     ops.extend(copies.0);

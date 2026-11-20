@@ -1181,6 +1181,18 @@ fn carried_settings(node: &crate::Node, new: NodeId, to_frame: bool) -> Vec<Oper
             exports: node.exports().to_vec(),
         });
     }
+    if !node.reactions().is_empty() {
+        ops.push(Operation::SetReactions {
+            id: new,
+            reactions: node.reactions().to_vec(),
+        });
+    }
+    if !node.play().is_empty() {
+        ops.push(Operation::SetPlay {
+            id: new,
+            play: node.play().clone(),
+        });
+    }
     ops.extend(carried_mask(node, new));
     ops
 }
@@ -3039,6 +3051,18 @@ pub(crate) fn replace_with_path(
             exports: node.exports().to_vec(),
         });
     }
+    if !node.reactions().is_empty() {
+        ops.push(Operation::SetReactions {
+            id: new,
+            reactions: node.reactions().to_vec(),
+        });
+    }
+    if !node.play().is_empty() {
+        ops.push(Operation::SetPlay {
+            id: new,
+            play: node.play().clone(),
+        });
+    }
     // `Node::fill_rule` derives even-odd for an `Exclude` from the operation, which
     // would die with the container and fill in every hole; carry the effective rule.
     if node.fill_rule() != crate::node::FillRule::default() {
@@ -3379,6 +3403,8 @@ pub fn insert_subtrees_as(
     let mut ops = Vec::with_capacity(placements.len() * 2);
     let mut created = Vec::with_capacity(placements.len());
     let mut names = CopyNames::default();
+    // Every copied layer's new id, across all placements.
+    let mut copied: FxHashMap<NodeId, NodeId> = FxHashMap::default();
 
     for placement in placements {
         let Some((mut nodes, new_root)) = crate::document::remap_subtree(&placement.nodes, ids)
@@ -3386,6 +3412,13 @@ pub fn insert_subtrees_as(
             continue;
         };
         let instance = crate::component::settle_copy(doc, &placement.nodes, &mut nodes, mains);
+        copied.extend(
+            placement
+                .nodes
+                .iter()
+                .zip(&nodes)
+                .map(|(s, c)| (s.id, c.id)),
+        );
         // A variant copied into its own set — *Add variant*, *Duplicate as
         // component* — keeps each layer's key, so its layers pair with their source's.
         let template_root = placement.nodes.iter().find(|n| {
@@ -3427,6 +3460,22 @@ pub fn insert_subtrees_as(
             ops.extend(names.rename(doc, placement.parent, new_root, &was_called));
         }
         created.push(new_root);
+    }
+    // `remap_subtree` sees one template at a time; a reaction in one copy naming a
+    // layer copied in another (frame A navigating to frame B, both copied) follows
+    // the copy too. Not on a linked layer: its reactions name its main's layers,
+    // and its link is remapped only within its own template.
+    for op in &mut ops {
+        if let Operation::InsertSubtree { nodes, .. } = op {
+            for n in nodes
+                .iter_mut()
+                .filter(|n| n.link.is_none() && !n.reactions.is_empty())
+            {
+                n.reactions = crate::prototype::map_layers(&n.reactions, &mut |id| {
+                    copied.get(&id).copied().unwrap_or(id)
+                });
+            }
+        }
     }
 
     (Transaction(ops), created)

@@ -1,7 +1,8 @@
 # Mastik — prototyping
 
-> **Status: decided, not built.** This file holds the design for prototypes until it lands; as each
-> part is built, its rules move to a file under `design/` and leave here.
+> **Status: decided, partly built.** This file holds the design for prototypes until it lands; as
+> each part is built, its rules move to a file under `design/` and leave here. Built so far: the
+> saved model (`design/prototyping-model.md`).
 
 A prototype is the document played: frames linked by interactions, driven by variables and
 scripts, animated between states, shown beside the editor while it is edited, and exported as one
@@ -11,29 +12,17 @@ variables, conditions and Luau; the output is a real player, not a slideshow of 
 
 ## 1. What is saved and what is not
 
-**Saved in the document** — authored, through the commit door, undoable, copied with its layers
-and carried by instances as linked copies:
+**Saved in the document**: built, in `design/prototyping-model.md` — a layer's reactions (the
+interactions), its play settings and input binding, a page's flows and play settings, and the
+export's settings. Still to build around it:
 
-- **Interactions on a layer**: a keyed list, each item a trigger and an ordered list of actions with
-  its own id. An action names its target by id (a frame on any page, an overlay, a layer, a
-  variable, a script) and carries its transition. The core type is not called `Interaction`, which
-  already names a variant value's tied browser state (`variant::Interaction`).
-- **Flows on a page**: named starting frames, each with optional starting values for variables
-  (*Checkout, signed in*).
-- **A frame's prototype settings**: scroll axis and its defaults as an overlay (position, backdrop,
-  close on a click outside). **Fixed** and **sticky** are a child layer's own properties, read only
-  inside a scrolling frame.
-- **A page's prototype settings**: the device drawn around the screen, the scaling (fit, actual
-  size, fill width) and the default transition a new link takes.
-- **Inputs**: a text layer marked as an input binds a string variable; a checkbox or toggle is an
-  instance whose boolean variant property binds a boolean variable. Typing or ticking during play
-  writes the variable's play value (below).
+- **Inputs during play**: typing into an input text layer or ticking an input instance writes the
+  variable's play value (below).
 - **Variables** are the existing ones (colour, number, string, boolean). A variable's starting value
   is its value in the mode in force where it is read, unless the flow sets it.
 - **Scripts** that *Run script* names are document scripts, so the export can carry them. A library
   or kit script is copied into the document to be used.
-- **The export's settings**: which flows go in, which opens, whether the device frame, the player
-  bar and hotspot hints show. The scaling defaults to the page's.
+- **The export's scaling** defaults to the page's when the export names none.
 
 **Play state** — exists only while a prototype runs; never saved, never in history, gone when the
 player closes: the current frame, the history *Back* walks, the open overlays, each variable's
@@ -46,20 +35,16 @@ frames, the in-between frames, the flow map's connectors, hotspot rectangles, an
 
 ### Targets that dangle
 
-A deleted target leaves its action in place, drawn as missing and skipped in play; undo brings both
-back. The loader keeps a dangling interaction target, unlike a dangling variable binding, which it
-refuses: the action has nothing to draw, so keeping it costs nothing and mends on undo. Pasting or
-duplicating layers remaps targets inside the pasted set to the new ids; a target outside it keeps
-its id in the same document and is missing in another.
+The model keeps a dangling target and copies remap targets (`design/prototyping-model.md`). Still
+to build: the Prototype tab draws a missing target as missing, and play skips it. A target outside
+a pasted set is missing when pasted into another document.
 
 ### Interactions on components
 
-Interactions are a field of the layer like any other, so a main's interactions reach its instances
-as linked copies and an instance overrides one by holding a different item under the same id, with
-the override dot and *Reset* every other override has. Push to main and *Reset* work per item.
+How a main's reactions reach its instances, and how a target inside the main is read on a copy, is
+built (`design/prototyping-model.md`). Still to build:
 
-- An action targeting a layer inside the main is remapped to the instance's counterpart, as
-  `remap_subtree` maps lineage keys.
+- The override dot and *Reset* on a reaction in the Prototype tab, as every other override has.
 - A kit main carries only interactions whose targets are inside it (state changes, the kit's own
   variables). Publishing a kit whose main navigates or opens an overlay reports the action and
   leaves it out, since its target lives in the kit's document.
@@ -84,11 +69,10 @@ whole session instead of a gesture.
   to a snapshot taken before it, since the copy has no history to take the step back from. During
   play `sel` is empty, a script's input form is not offered (a script needing input cannot be run
   from an action), and `print` goes to the player's own log.
-- **Only a person's act runs a script.** *Run script* is offered under pointer and key triggers
-  (click, press, hover, drag, a key) and refused under *After delay*, *When a variable changes* and
-  *When the frame opens*, where it would run unasked, which the document never does (D1100). The
-  in-app player shows Command Mode's first-run disclosure before the first script runs, when play
-  starts; the exported file runs its scripts in the same sandbox, against its own copy.
+- **Only a person's act runs a script.** The door refuses *Run script* under a timer, a variable
+  change or a frame opening (`design/prototyping-model.md`, D1100), so the Prototype tab offers it
+  only under pointer and key triggers. The in-app player shows Command Mode's first-run disclosure
+  before the first script runs, when play starts; the exported file runs its scripts in the same sandbox, against its own copy.
 - `RenderOverrides` keeps its narrow job: the frames between two states while a transition, smart
   animate or spring runs, as patches over the copy's `Resolved`.
 - Layers created during play take ids from the player's own actor, so they never collide with the
