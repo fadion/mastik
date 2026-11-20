@@ -19,7 +19,7 @@ use mastik_core::{Brush, Document, ExportText, NodeId, Resolved};
 /// How much denser than the page a filtered layer is rasterized: 4 is 288 dpi at
 /// a point per world unit, less for a layer past 1250 units, since `krilla-svg`
 /// caps a raster at 5000 px a side.
-const FILTER_SCALE: f32 = 4.0;
+pub(crate) const FILTER_SCALE: f32 = 4.0;
 
 /// A PDF and what it could not say exactly: the SVG's `approximated`, plus what the
 /// conversion loses. A PDF is never read back, so the SVG's round-trip notes do not
@@ -149,7 +149,7 @@ fn pdf_framed(
 /// it is shaped in the file that drew it on the canvas. One family's subset files
 /// all give themselves its name, and usvg's glyph fallback, which a lookup by
 /// that name would lean on, stops at the first character none of them has.
-fn page_tree(
+pub(crate) fn page_tree(
     svg: &str,
     fonts: Vec<FontData>,
     missed: &std::sync::Mutex<Vec<(String, String)>>,
@@ -401,7 +401,7 @@ fn stands_in_for(family: &str, face: &str) -> bool {
 
 /// The nodes the SVG writes, in pre-order: a hidden layer is skipped with
 /// everything under it, as `svg::emit_node` skips it.
-fn shown_nodes(doc: &Document, origins: &[NodeId]) -> Vec<NodeId> {
+pub(crate) fn shown_nodes(doc: &Document, origins: &[NodeId]) -> Vec<NodeId> {
     let mut out = Vec::new();
     let mut stack: Vec<NodeId> = origins.iter().rev().copied().collect();
     while let Some(id) = stack.pop() {
@@ -417,7 +417,7 @@ fn shown_nodes(doc: &Document, origins: &[NodeId]) -> Vec<NodeId> {
 
 /// Every font file a shown text layer's layout drew from, once each — fallbacks
 /// included, since a run is the face parley actually resolved.
-fn fonts_used(res: &Resolved, shown: &[NodeId]) -> Vec<FontData> {
+pub(crate) fn fonts_used(res: &Resolved, shown: &[NodeId]) -> Vec<FontData> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for layout in shown.iter().filter_map(|id| res.text_layout(*id)) {
