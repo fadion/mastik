@@ -1,0 +1,25 @@
+[package]
+name = "mastik-play"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The prototype player's engine: a played copy of the document, its play state,
+# triggers and actions, motion, live update and takes. Headless and meant to build
+# for the browser: no rendering, windowing or UI dependency, which
+# `deps_forbidden` checks. A shell (the app's player, the exported page) feeds it
+# events and time and draws what it answers.
+[features]
+default = ["scripts"]
+# *Run script* through Command Mode's Luau. Behind a feature because `mlua`
+# builds Luau's C++ VM, which may not build for the browser; without it a script
+# action is skipped with a notice.
+scripts = ["dep:mastik-vm", "dep:serde_json"]
+
+[dependencies]
+mastik-core = { path = "../mastik-core" }
+rustc-hash.workspace = true
+thiserror.workspace = true
+mastik-vm = { path = "../mastik-vm", optional = true }
+serde_json = { workspace = true, optional = true }

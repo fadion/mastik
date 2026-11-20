@@ -2,9 +2,9 @@
 
 What a prototype is made of in the document: a layer's reactions and play settings, a page's
 flows and play settings, and the document's HTML-export settings. Everything here is authored,
-goes through the commit door, is undoable, saved and copied with its layers. The player, play
-state and the export are not built; their design is in `prototyping.md`. Code:
-`mastik-core/src/prototype.rs` and `prototype/expr.rs`.
+goes through the commit door, is undoable, saved and copied with its layers. The engine that
+plays it and holds play state is `play.md`; the player's shells and the export are designed in
+`prototyping.md`. Code: `mastik-core/src/prototype.rs` and `prototype/expr.rs`.
 
 ## Where it lives
 
@@ -32,8 +32,8 @@ state and the export are not built; their design is in `prototyping.md`. Code:
   property that shows it, on a text layer none (it binds a string).
 - A **flow** is a name, a start frame and starting variable cells, which beat the modes' values.
 - **Expressions** (`prototype::Expr`: a condition, *Set variable*'s value) are stored as source text,
-  a variable written `{<actor-hex>:<seq>}` so a rename never breaks one. The parser and evaluator are
-  not built: `check` answers `Ok`, `eval` answers `ExprError::NotBuilt`.
+  a variable written `{<actor-hex>:<seq>}` so a rename never breaks one. The language is in
+  `play.md` *Expressions*.
 
 ## Operations
 

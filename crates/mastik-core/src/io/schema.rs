@@ -185,6 +185,7 @@ impl VariablesDto {
             vars,
             kits: self.kits,
             previewed_width: None,
+            played: Default::default(),
         })
     }
 }

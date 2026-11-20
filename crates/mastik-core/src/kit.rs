@@ -547,6 +547,7 @@ fn frozen_tables<'a>(
         vars,
         kits,
         previewed_width: None,
+        played: Default::default(),
     };
     let styles = crate::style::Styles::from_list(
         ss.iter()

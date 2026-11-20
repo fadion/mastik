@@ -441,6 +441,18 @@ impl Document {
         &self.variables
     }
 
+    /// Set a played copy's variable values, which beat every mode wherever they
+    /// are read (`Variables::set_played`). Outside the commit door on purpose: a
+    /// play value is play state, never saved, never undone. Answers every layer
+    /// that reads a variable, for the caller's `Resolved::update`.
+    pub fn set_play_values(
+        &mut self,
+        values: std::collections::BTreeMap<crate::variable::VarId, crate::variable::Value>,
+    ) -> DirtySet {
+        self.variables.set_played(values);
+        DirtySet(self.bound_nodes().collect())
+    }
+
     /// The document's styles (§5.3f, `crate::style`).
     pub fn styles(&self) -> &crate::style::Styles {
         &self.styles
