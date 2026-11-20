@@ -226,6 +226,10 @@ impl Smart {
                 false => smart.hide.push(*id),
             }
         }
+        // With no side, the unpaired layers fade.
+        if direction == Direction::None {
+            return smart;
+        }
         let size = p.size(b);
         let d = toward(direction);
         let span = Vec2::new(d.x * size.width, d.y * size.height);
@@ -605,7 +609,7 @@ impl Player {
 /// The side a directional transition moves toward, as a unit vector.
 fn toward(d: Direction) -> Vec2 {
     match d {
-        Direction::Left => Vec2::new(-1.0, 0.0),
+        Direction::Left | Direction::None => Vec2::new(-1.0, 0.0),
         Direction::Right => Vec2::new(1.0, 0.0),
         Direction::Up => Vec2::new(0.0, -1.0),
         Direction::Down => Vec2::new(0.0, 1.0),
@@ -618,6 +622,7 @@ fn opposite(d: Direction) -> Direction {
         Direction::Right => Direction::Left,
         Direction::Up => Direction::Down,
         Direction::Down => Direction::Up,
+        Direction::None => Direction::None,
     }
 }
 

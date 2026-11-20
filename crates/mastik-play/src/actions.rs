@@ -550,6 +550,7 @@ pub(crate) fn reversed(t: Transition) -> Transition {
         Direction::Right => Direction::Left,
         Direction::Up => Direction::Down,
         Direction::Down => Direction::Up,
+        Direction::None => Direction::None,
     };
     let kind = match t.kind {
         TransitionKind::MoveIn => TransitionKind::MoveOut,

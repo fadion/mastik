@@ -393,6 +393,9 @@ pub enum Direction {
     Right,
     Up,
     Down,
+    /// No side: smart animate fades its unpaired layers rather than sliding
+    /// them. A move, push or slide reads it as [`Direction::Left`].
+    None,
 }
 
 /// How a transition moves through time: a curve over a duration, or a spring

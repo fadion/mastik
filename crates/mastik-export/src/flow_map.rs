@@ -341,7 +341,7 @@ fn transition_words(t: &Transition) -> String {
         Some(Direction::Right) => " right",
         Some(Direction::Up) => " up",
         Some(Direction::Down) => " down",
-        None => "",
+        Some(Direction::None) | None => "",
     };
     let timing = match t.timing {
         Timing::Ease { curve, ms } => {

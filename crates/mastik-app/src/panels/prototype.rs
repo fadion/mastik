@@ -259,7 +259,8 @@ const TRANSITION_KINDS: [TransitionKind; 7] = [
     TransitionKind::Slide,
 ];
 
-const DIRECTIONS: [(Direction, &str); 4] = [
+const DIRECTIONS: [(Direction, &str); 5] = [
+    (Direction::None, "None"),
     (Direction::Left, "Left"),
     (Direction::Right, "Right"),
     (Direction::Up, "Up"),
@@ -2503,11 +2504,23 @@ impl MastikApp {
                 .on_hover_text("How the screen moves to the next");
         });
         if let Some(k) = kind_pick {
-            return Some(Transition { kind: k, ..t });
+            // Smart animate starts with no side (its new layers fade); a move
+            // always has one.
+            let direction = match k {
+                TransitionKind::SmartAnimate => Direction::None,
+                _ if t.direction == Direction::None => Direction::Left,
+                _ => t.direction,
+            };
+            return Some(Transition {
+                kind: k,
+                direction,
+                ..t
+            });
         }
         if t.kind == TransitionKind::Instant {
             return None;
         }
+        let smart = t.kind == TransitionKind::SmartAnimate;
         let directional = t.kind.is_directional();
         let cur = DIRECTIONS
             .iter()
@@ -2517,12 +2530,18 @@ impl MastikApp {
             ui,
             w,
             ui::SEGMENT_CELL_H,
-            4,
+            DIRECTIONS.len(),
             cur,
-            |_| directional,
-            |_| match directional {
-                true => "The side it moves toward",
-                false => "Only a move, push or slide has a direction",
+            |i| match i {
+                0 => smart,
+                _ => directional || smart,
+            },
+            |i| match (i, smart, directional) {
+                (0, true, _) => "New layers fade in, gone ones fade out",
+                (0, false, _) => "A move, push or slide needs a side",
+                (_, true, _) => "The side new layers enter from",
+                (_, _, true) => "The side it moves toward",
+                _ => "Only a move, push, slide or smart animate has a direction",
             },
             |p, i, r, on| ui::segment_label(p, r, DIRECTIONS[i].1, on),
         );
