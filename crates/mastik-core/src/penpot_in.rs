@@ -142,6 +142,8 @@ pub fn read(
         families: BTreeMap::new(),
         pages: 0,
         first,
+        links: Vec::new(),
+        flows: Vec::new(),
     };
     let left = files.iter().filter(|(id, _)| !read.contains(id)).count();
     if left > 0 {
@@ -164,6 +166,15 @@ pub fn read(
     }
     if b.pages == 0 {
         return Err(PenpotError::NoPages);
+    }
+    // Once every shape is made, so a link to a later board finds it.
+    let links = std::mem::take(&mut b.links);
+    let reactions = crate::prototype_in::reaction_ops(links, &b.nodes, b.ids, &mut b.tally);
+    b.ops.extend(reactions);
+    for (page, starts) in std::mem::take(&mut b.flows) {
+        if let Some(op) = crate::prototype_in::flow_op(page, &starts, &b.nodes, b.ids) {
+            b.ops.push(op);
+        }
     }
     let ops = std::mem::take(&mut b.ops);
     b.commit(ops)?;
@@ -213,6 +224,10 @@ struct Builder<'a> {
     pages: usize,
     /// The document's own first page, which the first Penpot page becomes.
     first: NodeId,
+    /// Each shape's prototype links, made reactions once every shape is made.
+    links: Vec<(NodeId, Vec<crate::prototype_in::Link>)>,
+    /// Each page's flows, by name and start shape.
+    flows: Vec<(NodeId, Vec<(String, String)>)>,
 }
 
 impl Builder<'_> {
@@ -381,6 +396,8 @@ impl Builder<'_> {
                 });
             }
             self.pages += 1;
+            self.flows
+                .push((id, crate::prototype_in::penpot_flows(&page)));
             if let Some(root) = root {
                 let mut placed = 0;
                 for child in &child_ids(&root) {
@@ -420,9 +437,6 @@ impl Builder<'_> {
             return false;
         }
         let kind = str_of(&shape, "type");
-        if !arr(&shape, "interactions").is_empty() {
-            self.count("Prototype interactions", 1, "", "Left out");
-        }
         if matches!(str_of(&shape, "layout"), "flex" | "grid") {
             self.count(
                 "Flex and grid layout",
@@ -517,6 +531,10 @@ impl Builder<'_> {
             name: Some(str_of(&shape, "name").to_owned()),
         });
         self.nodes.insert(sid.to_owned(), id);
+        let links = crate::prototype_in::penpot(&shape, &mut self.tally);
+        if !links.is_empty() {
+            self.links.push((id, links));
+        }
         if b_of(&shape, "hidden") {
             self.push(Operation::SetVisible { id, visible: false });
         }

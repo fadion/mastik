@@ -61,6 +61,18 @@ roxmltree = "0.20.0"
 # `DecompressionStream` reads, written into the page as base64.
 flate2 = "1.1.11"
 base64 = "0.22.1"
+# Video from a prototype's take (`video`). GIF through the `gif` crate the
+# `image` decoders already compile; MP4 as H.264 through Cisco's OpenH264
+# (BSD-2-Clause), built from its C++ source as `mlua` builds Luau's, so no
+# toolchain is added, muxed by the `mp4` crate (MIT).
+gif = "0.14.2"
+openh264 = { version = "0.9.10", default-features = false, features = ["source"] }
+mp4 = "0.14.0"
+# The sample type `mp4` writes; already in its tree.
+bytes = "1.12.1"
+# The engine a take replays on.
+mastik-play = { path = "../mastik-play" }
+thiserror.workspace = true
 
 [dev-dependencies]
 # Inflates a PDF's streams so `tests/pdf.rs` can read the text mapping krilla

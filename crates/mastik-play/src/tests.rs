@@ -547,6 +547,138 @@ fn typing_writes_the_inputs_variable() {
     assert_eq!(p.focused(), None);
 }
 
+/// Two instances of a set `State: Rest, Focus, Hover` (tied to their states), each
+/// variant holding a text input bound to one string variable: the first
+/// instance low at the left of frame A, the second high at the right. Answers
+/// the frame, the instances, their inputs and the Rest and Focus mains.
+fn two_fields() -> (Fx, NodeId, [NodeId; 2], [NodeId; 2], [NodeId; 2]) {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 300.0, 100.0);
+    let name = fx.var("name", VarKind::String, Cell::String(String::new()));
+    let set = fx.frame("Field", 600.0, 300.0, 100.0);
+    let rest = fx.node(set, "Rest", frame_kind(80.0, 30.0), (0.0, 0.0));
+    let focus = fx.node(set, "Focus", frame_kind(80.0, 30.0), (100.0, 0.0));
+    let hover = fx.node(set, "Hover", frame_kind(80.0, 30.0), (200.0, 0.0));
+    for main in [rest, focus, hover] {
+        let text = fx.node(main, "Value", text_kind(""), (4.0, 4.0));
+        fx.play_settings(
+            text,
+            LayerPlay {
+                input: Some(Bound {
+                    var: name,
+                    property: None,
+                }),
+                ..LayerPlay::default()
+            },
+        );
+    }
+    let mut prop = VariantProp::new("State", vec!["Rest".into(), "Focus".into(), "Hover".into()]);
+    prop.states
+        .insert("Focus".into(), Interaction::FocusVisible);
+    prop.states.insert("Hover".into(), Interaction::Hover);
+    let mut ops: Vec<Operation> = [rest, focus, hover]
+        .iter()
+        .map(|id| Operation::SetComponent {
+            id: *id,
+            component: true,
+        })
+        .collect();
+    ops.push(Operation::SetVariantSet {
+        id: set,
+        set: Some(VariantSet { props: vec![prop] }),
+    });
+    for (id, v) in [(rest, "Rest"), (focus, "Focus"), (hover, "Hover")] {
+        ops.push(Operation::SetVariant {
+            id,
+            values: vec![v.into()],
+        });
+    }
+    fx.apply(ops);
+    let mut instances = [rest; 2];
+    for (i, at) in [(10.0, 60.0), (200.0, 10.0)].into_iter().enumerate() {
+        let (tx, made) = mastik_core::insert_subtrees(
+            &fx.doc,
+            &mut fx.ids,
+            &[Placement {
+                nodes: fx.doc.capture_subtree(rest).unwrap(),
+                parent: a,
+                index: None,
+            }],
+            Default::default(),
+        );
+        fx.apply(tx.0);
+        fx.apply(vec![Operation::SetTransform {
+            id: made[0],
+            transform: Affine::translate(at),
+        }]);
+        instances[i] = made[0];
+    }
+    let inputs = instances.map(|i| fx.doc.get(i).unwrap().children()[0]);
+    (fx, a, instances, inputs, [rest, focus])
+}
+
+fn key(p: &mut Player, key: &str, shift: bool) -> bool {
+    p.input(Input::Key {
+        key: key.into(),
+        shift,
+    })
+}
+
+/// Tab moves focus between a frame's inputs in reading order, round and back
+/// with Shift; the instance holding the focused input shows its *Focus* state
+/// and rests when focus leaves it.
+///
+/// flip: `tab_order` keeping the tree's order → fails at "the higher one first";
+/// `set_focus` not showing the holder's state → fails at "shows focus".
+#[test]
+fn tab_moves_focus_in_reading_order_and_shows_focus() {
+    let (fx, a, [low, high], [low_in, high_in], [rest, focus]) = two_fields();
+    let mut p = fx.play(a);
+    let link = |p: &Player, i: NodeId| p.doc.get(i).unwrap().link();
+    assert!(key(&mut p, "Tab", false));
+    assert_eq!(p.focused(), Some(high_in), "the higher one first");
+    assert_eq!(link(&p, high), Some(focus), "shows focus");
+    assert_eq!(link(&p, low), Some(rest));
+    key(&mut p, "Tab", false);
+    assert_eq!(p.focused(), Some(low_in));
+    assert_eq!(link(&p, high), Some(rest), "rests when focus leaves");
+    assert_eq!(link(&p, low), Some(focus));
+    key(&mut p, "Tab", false);
+    assert_eq!(p.focused(), Some(high_in), "round to the first");
+    key(&mut p, "Tab", true);
+    assert_eq!(p.focused(), Some(low_in), "back with Shift");
+    p.input(Input::Text("Ada".into()));
+    assert_eq!(
+        p.doc.resolve_var(a, p.inputs[0].1.var),
+        Some(Value::String("Ada".into())),
+        "typing still reaches the field"
+    );
+    key(&mut p, "Escape", false);
+    assert_eq!(p.focused(), None);
+    assert_eq!(link(&p, low), Some(rest), "rests");
+}
+
+/// A click into a field shows its instance's *Focus* state, which hovering it
+/// does not replace; a click elsewhere rests it.
+///
+/// flip: `rehover` showing hover over the focused instance → fails at "focus
+/// stays".
+#[test]
+fn a_clicked_field_shows_focus_over_hover() {
+    let (fx, a, [low, _], [low_in, _], [rest, focus]) = two_fields();
+    let mut p = fx.play(a);
+    let link = |p: &Player| p.doc.get(low).unwrap().link();
+    click(&mut p, 40.0, 75.0);
+    assert_eq!(p.focused(), Some(low_in));
+    assert_eq!(link(&p), Some(focus), "shows focus");
+    p.input(Input::PointerMove(Point::new(150.0, 50.0)));
+    p.input(Input::PointerMove(Point::new(40.0, 75.0)));
+    assert_eq!(link(&p), Some(focus), "focus stays");
+    click(&mut p, 150.0, 50.0);
+    assert_eq!(p.focused(), None);
+    assert_eq!(link(&p), Some(rest));
+}
+
 // ── Overlays ────────────────────────────────────────────────────────────────
 
 /// An overlay opens centred over its backdrop; *Back* closes it before it walks
@@ -680,9 +812,11 @@ fn a_frame_scrolls_its_content_by_pin() {
 // ── Motion ──────────────────────────────────────────────────────────────────
 
 /// Smart animate pairs layers by name: the paired one moves and resizes between
-/// its two places, the new one fades in, the outgoing pair is hidden.
+/// its two places, the outgoing pair is hidden, and the unpaired layers slide
+/// toward the direction's side, the new one arriving and the gone one leaving.
 ///
-/// flip: `Player::paths` keying by id instead of name → fails at "paired by name".
+/// flip: `Player::paths` keying by id instead of name → fails at "paired by name";
+/// `Smart::between_frames` leaving `slide` unset → fails at "enters from the right".
 #[test]
 fn smart_animate_pairs_layers_by_name() {
     let mut fx = Fx::new();
@@ -712,9 +846,23 @@ fn smart_animate_pairs_layers_by_name() {
         "paired by name"
     );
     assert_eq!(moved.size, Some(Size::new(30.0, 20.0)));
-    assert_eq!(patch(new).and_then(|x| x.opacity), Some(0.5), "fades in");
+    // Toward the left: half way, the new one is half a screen right of its place.
+    assert_eq!(
+        patch(new)
+            .and_then(|x| x.transform)
+            .map(|t| t.translation()),
+        Some(Vec2::new(100.0, 60.0)),
+        "enters from the right"
+    );
+    assert_eq!(patch(new).and_then(|x| x.opacity), None, "not faded");
     assert_eq!(patch(box_a).and_then(|x| x.visible), Some(false), "hidden");
-    assert_eq!(patch(gone).and_then(|x| x.opacity), Some(0.5), "fades out");
+    assert_eq!(
+        patch(gone)
+            .and_then(|x| x.transform)
+            .map(|t| t.translation()),
+        Some(Vec2::new(50.0, 0.0)),
+        "leaves to the left"
+    );
     let order: Vec<_> = s.layers.iter().map(|l| l.frame).collect();
     assert_eq!(order, vec![b, a], "the outgoing frame over the end");
     p.tick(50.0);
@@ -849,10 +997,79 @@ fn change_state_switches_the_instance() {
     assert!(!p.is_moving());
 }
 
-/// An input instance flips its boolean on a click and shows it by its *Checked*
-/// variant; a value set from the state card switches it too.
+/// A state loops: each variant's *After* changes its instance to the other, and
+/// the new state's timer starts with the change, for as long as the frame shows.
 ///
-/// flip: `Player::sync_inputs` skipping the switch → fails at "shows checked".
+/// flip: `switch_to` not calling `rearm` → fails at "back to rest".
+#[test]
+fn a_state_loops_by_its_variants_after() {
+    let (mut fx, a, instance, [rest, hover, _]) = button_set();
+    for (from, to) in [(rest, hover), (hover, rest)] {
+        fx.on(
+            from,
+            Trigger::After { ms: 100 },
+            vec![Action::ChangeState {
+                instance: from,
+                to,
+                transition: Transition::INSTANT,
+            }],
+        );
+    }
+    assert_eq!(
+        fx.doc.get(instance).unwrap().reactions().len(),
+        1,
+        "the instance follows its main's reaction"
+    );
+    let mut p = fx.play(a);
+    let link = |p: &Player| p.doc.get(instance).unwrap().link();
+    p.tick(99.0);
+    assert_eq!(link(&p), Some(rest), "not before");
+    p.tick(1.0);
+    assert_eq!(link(&p), Some(hover), "after");
+    p.tick(100.0);
+    assert_eq!(link(&p), Some(rest), "back to rest");
+    // One long tick turns the loop five times over.
+    p.tick(1000.0);
+    assert_eq!(link(&p), Some(rest), "an even number of turns");
+    assert!(p.is_moving(), "still looping");
+    assert_eq!(p.take_notices(), vec![], "no loop notice");
+}
+
+/// Two states each changing to the other after nothing still let time move: a
+/// change of state waits at least a frame before its *After* fires.
+///
+/// flip: `rearm` dropping its floor → `tick` spins to `MAX_FIRES` turns at time
+/// zero and fails at "the frame's own timer fires at once".
+#[test]
+fn a_loop_after_nothing_waits_a_frame() {
+    let (mut fx, a, instance, [rest, hover, _]) = button_set();
+    for (from, to) in [(rest, hover), (hover, rest)] {
+        fx.on(
+            from,
+            Trigger::After { ms: 0 },
+            vec![Action::ChangeState {
+                instance: from,
+                to,
+                transition: Transition::INSTANT,
+            }],
+        );
+    }
+    let mut p = fx.play(a);
+    let link = |p: &Player| p.doc.get(instance).unwrap().link();
+    p.tick(1.0);
+    assert_eq!(link(&p), Some(hover), "the frame's own timer fires at once");
+    p.tick(14.0);
+    assert_eq!(link(&p), Some(hover), "one turn per sixteen ms");
+    p.tick(1.0);
+    assert_eq!(link(&p), Some(rest));
+}
+
+/// An input instance flips its boolean on a click and shows it by its *Checked*
+/// variant; a value set from the state card switches it too, and Space flips it
+/// once Tab has focused it.
+///
+/// flip: `Player::sync_inputs` skipping the switch → fails at "shows checked";
+/// `key` not calling `Player::flip` → fails at "Space flips".
 #[test]
 fn a_checkbox_input_writes_and_shows_its_variable() {
     let mut fx = Fx::new();
@@ -913,6 +1130,11 @@ fn a_checkbox_input_writes_and_shows_its_variable() {
     assert_eq!(p.doc.get(boxed).unwrap().link(), Some(on), "shows checked");
     p.set_value(agreed, Value::Boolean(false)).unwrap();
     assert_eq!(p.doc.get(boxed).unwrap().link(), Some(off), "and unchecked");
+    // Tab reaches it, and Space flips it as a click does.
+    assert!(key(&mut p, "Tab", false));
+    assert_eq!(p.focused(), Some(boxed));
+    assert!(key(&mut p, " ", false));
+    assert_eq!(p.doc.get(boxed).unwrap().link(), Some(on), "Space flips");
 }
 
 // ── Scripts ─────────────────────────────────────────────────────────────────

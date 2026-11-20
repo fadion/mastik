@@ -6943,6 +6943,11 @@ pub struct Tree {
     pub props: Option<Vec<crate::variant::Property>>,
     pub description: Option<String>,
     pub doc_link: Option<String>,
+    /// The layer's prototype reactions as `set_reactions` takes them, read when
+    /// the layer is made: a target the tree holds is remapped to its new layer.
+    pub reactions: Option<Value>,
+    /// The layer's prototype settings, as `set_play` takes them.
+    pub play: Option<crate::prototype::LayerPlay>,
     /// Bottom first.
     #[serde(default)]
     pub children: Vec<Tree>,
@@ -7234,10 +7239,60 @@ fn tree_ops(
             url: url.clone(),
         });
     }
+    if let Some(play) = &tree.play {
+        if !play.is_usable() {
+            return Err(a.invalid(
+                "tree",
+                "at `play.overlay`: an overlay's position and backdrop are finite numbers",
+            ));
+        }
+        late.push(Operation::SetPlay {
+            id,
+            play: play.clone(),
+        });
+    }
+    if let Some(written) = &tree.reactions {
+        let reactions = tree_reactions(ctx, a, parent, written, minted)?;
+        late.push(Operation::SetReactions { id, reactions });
+    }
     for (i, child) in tree.children.iter().enumerate() {
         tree_ops(ctx, a, child, id, i, ids, minted, done, late)?;
     }
     Ok(())
+}
+
+/// A tree layer's `reactions`, read as `set_reactions` reads them (a transition
+/// left out is the page's of `parent`) and checked as the door checks them, each
+/// target the tree holds remapped to its new layer.
+fn tree_reactions(
+    ctx: &mut Ctx<'_>,
+    a: &Args<'_>,
+    parent: NodeId,
+    written: &Value,
+    minted: &Minted,
+) -> Result<Vec<Keyed<crate::prototype::Reaction>>, VerbError> {
+    let refused = |why: String| a.invalid("tree", format!("at `reactions`: {why}"));
+    let base = page_transition(ctx.doc, parent);
+    let mut v = written.clone();
+    loosen_model("[Reaction]", "", &mut v).map_err(refused)?;
+    let ids = &mut *ctx.ids;
+    reactions_in(&mut v, &base, &mut || ids.mint_item()).map_err(refused)?;
+    let v = settle::<Vec<Keyed<crate::prototype::Reaction>>>("[Reaction]", v).map_err(refused)?;
+    let read: Vec<Keyed<crate::prototype::Reaction>> =
+        serde_json::from_value(v).map_err(|e| refused(e.to_string()))?;
+    if let Some(twice) = crate::item::first_duplicate(&read) {
+        return Err(refused(format!(
+            "two reactions share the id `{}`",
+            twice.0.to_wire()
+        )));
+    }
+    for (i, r) in read.iter().enumerate() {
+        crate::prototype::check(std::slice::from_ref(r))
+            .map_err(|e| a.invalid("tree", format!("at `reactions[{i}]`: {e}")))?;
+    }
+    Ok(crate::prototype::map_layers(&read, &mut |t| {
+        minted.get(&t).copied().unwrap_or(t)
+    }))
 }
 
 /// The ops binding a tree layer's own fields: each binding written alone, beside
@@ -7705,12 +7760,83 @@ pub fn tree(doc: &Document, id: NodeId) -> Option<Value> {
     if let Some(outer) = outer {
         unlink_members(doc, outer, &mut v);
     }
+    let mut layers = Vec::new();
+    layer_ids(&v, &mut layers);
     let mut referred = std::collections::HashSet::new();
     referenced(&v, &mut referred);
+    for r in layers
+        .iter()
+        .filter_map(|l| own_reactions(doc, *l))
+        .flatten()
+    {
+        for k in &r.actions {
+            referred.extend(k.value.layer_targets().iter().map(|t| t.to_wire()));
+        }
+    }
     keep_referred_ids(&mut v, &referred);
     loose::tighten("tree", &mut v);
     keep_copy_italics(doc, &mut v);
+    put_prototype(doc, &mut v, &mut layers.into_iter());
     Some(v)
+}
+
+/// The ids of a tree's layers, pre-order, as [`full_tree`] writes each.
+fn layer_ids(v: &Value, out: &mut Vec<NodeId>) {
+    if let Some(id) = v
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(NodeId::from_wire)
+    {
+        out.push(id);
+    }
+    for child in v
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        layer_ids(child, out);
+    }
+}
+
+/// The reactions a tree writes on `id`: its own when it has any, and a copy's
+/// even when empty where its source has some, since `insert_subtree` does not
+/// fill a copy's reactions from its main.
+fn own_reactions(doc: &Document, id: NodeId) -> Option<&[Keyed<crate::prototype::Reaction>]> {
+    let n = doc.get(id)?;
+    let source = n.link().and_then(|s| doc.get(s));
+    (!n.reactions().is_empty() || source.is_some_and(|s| !s.reactions().is_empty()))
+        .then(|| n.reactions())
+}
+
+/// Each layer of the tree `v` given its `reactions` and `play` in the short forms
+/// `set_reactions` and `set_play` take, taking the layers' ids from `layers`
+/// pre-order. Written after the tree's own short forms, which do not reach them.
+fn put_prototype(doc: &Document, v: &mut Value, layers: &mut impl Iterator<Item = NodeId>) {
+    let Some(id) = layers.next() else { return };
+    let Value::Object(map) = v else { return };
+    if let Some(reactions) = own_reactions(doc, id) {
+        let base = doc
+            .page_of(id)
+            .and_then(|p| doc.page(p))
+            .map(|p| p.play.transition)
+            .unwrap_or_default();
+        map.insert("reactions".into(), reactions_value(reactions, &base));
+    }
+    if let Some(n) = doc.get(id) {
+        let source = n.link().and_then(|s| doc.get(s));
+        if !n.play().is_empty() || source.is_some_and(|s| !s.play().is_empty()) {
+            map.insert("play".into(), play_value(n.play()));
+        }
+    }
+    for child in map
+        .get_mut("children")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        put_prototype(doc, child, layers);
+    }
 }
 
 /// Put back the `"italic": false` the short forms leave out of a copy's text

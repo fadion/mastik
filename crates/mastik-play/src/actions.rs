@@ -325,13 +325,13 @@ impl Player {
             transition,
             start: self.now,
             smart: (transition.kind == TransitionKind::SmartAnimate)
-                .then(|| Smart::between_frames(self, from, to)),
+                .then(|| Smart::between_frames(self, from, to, transition.direction)),
         });
         if let Some(page) = self.doc.page_of(to) {
             self.page = page;
         }
         self.screen = to;
-        self.focus = None;
+        self.set_focus(None);
         self.on_close(from);
         self.on_open(to);
         self.rehover();
@@ -367,7 +367,7 @@ impl Player {
         }
         self.on_close(o.frame);
         if self.focus.is_some_and(|f| self.frame_of(f).is_none()) {
-            self.focus = None;
+            self.set_focus(None);
         }
         self.rehover();
     }
@@ -490,6 +490,7 @@ impl Player {
         let ok = self.commit(tx).is_ok();
         if ok {
             self.states.insert(instance, to);
+            self.rearm(instance);
         }
         ok
     }

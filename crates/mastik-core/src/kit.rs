@@ -1105,8 +1105,13 @@ pub fn vendor(
         None,
         &crate::tokens::Kept::default(),
     )?;
+    let mut scripts = doc.scripts().to_vec();
+    let mut script_ops = Vec::new();
     for copy in &mut copies {
-        copy.iter_mut().for_each(|n| tokens.apply(n));
+        for n in copy.iter_mut() {
+            tokens.apply(n);
+            carry_scripts(n, src, ids, &mut scripts, &mut script_ops);
+        }
     }
     let mut images: Vec<(crate::ImageId, crate::ImageEntry)> = Vec::new();
     for copy in &copies {
@@ -1123,6 +1128,7 @@ pub fn vendor(
         return Ok((out, shown));
     }
     out.extend(tokens.ops);
+    out.extend(script_ops);
     // Opened only when something goes in — a kit inserting its own main into
     // itself vendors nothing ([`find`]) and must not leave an empty vault.
     let vault = match doc.vault() {
@@ -1142,6 +1148,50 @@ pub fn vendor(
         });
     }
     Ok((out, shown))
+}
+
+/// `n`'s reactions with each *Run script* of a script `src` holds pointed at
+/// the document's own copy of it, since a kit's scripts are not the
+/// document's and play runs document scripts only. The copy is a script in
+/// `held` with the same name and source, else a new one, added to `held` and
+/// by an op in `out`, its name numbered past any taken. A script `src` does not
+/// hold is kept as it is.
+fn carry_scripts(
+    n: &mut Node,
+    src: &Document,
+    ids: &mut IdSource,
+    held: &mut Vec<crate::script::Script>,
+    out: &mut Vec<Operation>,
+) {
+    if crate::prototype::refs(&n.reactions).1.is_empty() {
+        return;
+    }
+    n.reactions = crate::prototype::map_refs(&n.reactions, &mut |v| v, &mut |s| {
+        if held.iter().any(|h| h.id == s) {
+            return s;
+        }
+        let Some(theirs) = src.scripts().iter().find(|x| x.id == s) else {
+            return s;
+        };
+        if let Some(mine) = held
+            .iter()
+            .find(|h| h.name == theirs.name && h.source == theirs.source)
+        {
+            return mine.id;
+        }
+        let script = crate::script::Script {
+            id: ids.mint_script(),
+            name: crate::script::free_name(held, &theirs.name),
+            source: theirs.source.clone(),
+        };
+        out.push(Operation::AddScript {
+            script: script.clone(),
+            index: held.len(),
+        });
+        let id = script.id;
+        held.push(script);
+        id
+    });
 }
 
 /// Every vault node `doc` holds, by its origin's identity.
@@ -1916,10 +1966,12 @@ fn update_in_order(
             changed.push(t);
         }
     }
-    for (d, x, at) in std::mem::take(&mut b.later_reactions) {
+    for (d, _, at) in std::mem::take(&mut b.later_reactions) {
         let (kit, version, published) = kits[at];
         (b.kit, b.version, b.published, b.at) = (kit, version, published, at);
-        let n = published.document().get(x).ok_or(KitError::Incomplete(x))?;
+        // The synced reactions, whose variables and scripts are already the
+        // document's: only the targets still naming the kit's layers move.
+        let n = b.scratch.get(d).ok_or(KitError::Incomplete(d))?;
         let reactions = crate::prototype::map_layers(&n.reactions, &mut |t| b.here(t).unwrap_or(t));
         let from = b.ops.len();
         b.push(Operation::SetReactions { id: d, reactions })?;
@@ -2453,7 +2505,7 @@ impl Builder<'_> {
         // Reactions name the kit's layers: each pointed at the scratch's copy,
         // and one whose copy a later sync makes pointed again once all are done.
         let mut owed = false;
-        want.reactions = crate::prototype::map_layers(&pn.reactions, &mut |t| {
+        want.reactions = crate::prototype::map_layers(&want.reactions, &mut |t| {
             self.here(t).unwrap_or_else(|| {
                 owed |= src.get(t).is_some();
                 t
@@ -2461,6 +2513,12 @@ impl Builder<'_> {
         });
         if owed {
             self.later_reactions.push((d, x, self.at));
+        }
+        let mut scripts = self.scratch.scripts().to_vec();
+        let mut adds = Vec::new();
+        carry_scripts(&mut want, src, ids, &mut scripts, &mut adds);
+        for op in adds {
+            self.push(op)?;
         }
         // 🚨 **Only the fields this kind carries** (§15 D1024): `state_ops`
         // writes every field, and `changes_nothing` never calls paint on a kind

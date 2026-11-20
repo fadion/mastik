@@ -34,7 +34,7 @@ use crate::typography::{
 };
 use crate::variable::{BrushSource, Cell, Mode, VarId, VarKind, Variable};
 use crate::{BlockStyle, TextSizing, VerticalAlign};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -107,15 +107,30 @@ pub fn read(
         names: Names::default(),
         families: BTreeMap::new(),
         archived: crate::keyed_archive::Budget::default(),
+        flows: Vec::new(),
+        overlays: FxHashSet::default(),
     };
     if lost > 0 {
         b.count("Pages missing from the file", lost, "", "Left out");
     }
     b.swatches(&document);
     b.shared_styles(&document);
+    let mut homes = Vec::new();
     for (i, page) in pages.iter().enumerate() {
         let id = if i == 0 { first } else { b.ids.mint() };
         b.page(page, id, i);
+        // An artboard marked as a prototype's start is a flow of its own.
+        let starts: Vec<(String, String)> = arr(page, "layers")
+            .iter()
+            .filter(|l| l.get("isFlowHome").and_then(Value::as_bool) == Some(true))
+            .map(|l| {
+                (
+                    str_of(l, "name").to_owned(),
+                    str_of(l, "do_objectID").to_owned(),
+                )
+            })
+            .collect();
+        homes.push((id, starts));
     }
     // Library symbols are full copies of their masters; they land as local ones.
     let foreign: Vec<Value> = arr(&document, "foreignSymbols")
@@ -136,6 +151,23 @@ pub fn read(
     let ops = std::mem::take(&mut b.ops);
     b.commit(ops)?;
     b.place_instances()?;
+    // Once every layer is made and every instance placed, so a link to a later
+    // artboard finds it and one on an instance lands on the instance itself.
+    let links: Vec<(NodeId, Vec<crate::prototype_in::Link>)> = std::mem::take(&mut b.flows)
+        .into_iter()
+        .filter_map(|(sid, flow)| {
+            let id = *b.layers.get(&sid).filter(|id| b.doc.get(**id).is_some())?;
+            let link = crate::prototype_in::sketch(&flow, &|to| b.overlays.contains(to))?;
+            Some((id, vec![link]))
+        })
+        .collect();
+    let mut ops = crate::prototype_in::reaction_ops(links, &b.layers, b.ids, &mut b.tally);
+    for (page, starts) in homes {
+        ops.extend(crate::prototype_in::flow_op(
+            page, &starts, &b.layers, b.ids,
+        ));
+    }
+    b.commit(ops)?;
     let Builder {
         doc,
         tally,
@@ -210,6 +242,11 @@ struct Builder<'a> {
     families: BTreeMap<String, usize>,
     /// What reading the file's archived text may still cost.
     archived: crate::keyed_archive::Budget,
+    /// Each layer's prototype `flow` by its Sketch id, made a reaction once
+    /// every layer is made and every instance placed.
+    flows: Vec<(String, Value)>,
+    /// The artboards shown as overlays, by Sketch id.
+    overlays: FxHashSet<String>,
 }
 
 impl Builder<'_> {
@@ -466,12 +503,17 @@ impl Builder<'_> {
         }
     }
 
-    /// Count what a layer carries that has no counterpart: prototype links and
-    /// smart layout.
-    fn notes(&mut self, layer: &Value) {
-        if layer.get("flow").is_some() {
+    /// Count the prototype link of a shape drawn as part of its shape group,
+    /// which no layer of its own carries.
+    fn unlinked(&mut self, shape: &Value) {
+        if shape.get("flow").is_some() {
             self.count("Prototype links", 1, "", "Left out");
         }
+    }
+
+    /// Count what a layer carries that has no counterpart: smart layout. A
+    /// layer's prototype link is read with it (`Builder::layer`).
+    fn notes(&mut self, layer: &Value) {
         if str_in(layer, &["groupLayout", "_class"]) == "MSImmutableInferredGroupLayout" {
             self.count("Smart layout", 1, "groups", "Kept at their drawn positions");
         }
@@ -580,9 +622,15 @@ impl Builder<'_> {
                 );
                 true
             }
+            // A hotspot is an empty box that takes the click.
             "MSImmutableHotspotLayer" | "hotspot" => {
-                self.count("Prototype links", 1, "", "Left out");
-                false
+                let kind = NodeKind::Rect {
+                    size: frame.size(),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                };
+                self.create(id, parent, index, kind, frame.placement(), layer);
+                true
             }
             _ => {
                 self.count("Layers of an unknown kind", 1, "", "Left out");
@@ -592,6 +640,17 @@ impl Builder<'_> {
         if made {
             self.layers
                 .insert(str_of(layer, "do_objectID").to_owned(), id);
+            if let Some(flow) = layer.get("flow") {
+                self.flows
+                    .push((str_of(layer, "do_objectID").to_owned(), flow.clone()));
+            }
+            // Sketch's presentation style 1 shows an artboard as an overlay.
+            if class == "artboard"
+                && layer.get("presentationStyle").and_then(Value::as_i64) == Some(1)
+            {
+                self.overlays
+                    .insert(str_of(layer, "do_objectID").to_owned());
+            }
         }
         made
     }
@@ -620,6 +679,7 @@ impl Builder<'_> {
                     let child = self.ids.mint();
                     let f = Frame::of(s);
                     self.notes(s);
+                    self.unlinked(s);
                     let kind = shape_kind(str_of(s, "_class"), s, f.size());
                     self.create(child, id, at, kind, f.placement(), s);
                     self.paint(child, layer, f.size());
@@ -690,6 +750,7 @@ impl Builder<'_> {
                 self.shape_group(child, id, i, s, master);
             } else if is_shape(s) {
                 self.notes(s);
+                self.unlinked(s);
                 let child = self.ids.mint();
                 let f = Frame::of(s);
                 let kind = shape_kind(str_of(s, "_class"), s, f.size());

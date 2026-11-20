@@ -104,10 +104,18 @@ out both ends.
   takes it; otherwise the nearest scrolling frame in the chain scrolls with it.
 - A **key** fires *key* reactions in the frame that takes input whose key matches (letters without
   regard to case) and whose Shift matches. While an input text is focused, keys are text: Backspace
-  deletes, Enter and Escape leave the field.
-- *After* starts when its frame opens and is dropped when the frame closes; *frame opens* runs when
-  the screen or an overlay opens; *variable changes* runs on every shown frame's layers when a play
-  value changes what the variable reads.
+  deletes, Enter and Escape leave the field. While an input instance is focused, Space and Enter
+  flip it, Escape leaves it, and other keys fire as ever. Tab is never a key trigger (*Inputs*).
+- *After* starts when its frame opens and is dropped when the frame closes. Inside an instance it
+  starts again whenever play changes the instance's state, the old state's timers dropped, so a
+  variant whose *After* changes its instance to the next variant is **a state that loops** (a
+  spinner, a skeleton's shimmer) for as long as its frame shows. There is no loop setting: the
+  loop is the variants' own reactions, which every instance follows and a kit publish keeps. An
+  *After* restarted this way waits at least 16 ms, so two states changing to each other after
+  nothing still let time move, and one `tick` fires at most 1024 timers, the loop going on from
+  the tick's end.
+- *Frame opens* runs when the screen or an overlay opens; *variable changes* runs on every shown
+  frame's layers when a play value changes what the variable reads.
 - Reactions setting each other off are followed sixteen deep, then cut with a `Loop` notice.
 
 ## Actions
@@ -147,6 +155,12 @@ out both ends.
   variable through its boolean variant property: the value named `true`/`on`/`yes`/`checked`
   (`false`/`off`/`no`/`unchecked` for false), else the property's second value for true and its
   first for false.
+- **Focus** is held by one input at a time: an input text takes it on a click (or a click on the
+  box holding it), and **Tab** and **Shift+Tab** move it through the inputs of the frame that takes
+  input, input texts and input instances alike, in reading order — topmost, then leftmost, ties to
+  the earlier layer — round from the last to the first. Hidden inputs and those in a *Disabled*
+  instance are passed over. A click on anything else, a navigation, or closing the overlay that
+  holds it takes focus away.
 
 ## A component set's interaction states
 
@@ -154,7 +168,10 @@ With nothing authored, an instance whose set has an interaction-state property s
 *Hover* variant while hovered and its *Pressed* variant while pressed, returning to *Hover* on
 release and to the variant it rests on when the pointer leaves. Only an instance linked to a
 variant main, which `variant::can_switch` allows, plays them. An authored hover reaction on the
-instance replaces the automatic hover. *Disabled* takes no input; *Focus* is not played.
+instance replaces the automatic hover. *Disabled* takes no input. The nearest instance holding
+the focused input (the input itself, for an input instance) whose set has a *Focus* value shows
+it while focus stays; hover does not replace it, a press shows *Pressed* and returns to *Focus*,
+and it rests when focus leaves.
 
 ## Scrolling
 
@@ -181,13 +198,15 @@ whatever else patched it.
   its siblings with that key it is — so a pair's parents are paired too. Both ends are laid out
   when it starts and never again. A paired layer's transform (moved, turned the short way, scaled
   and sheared, each interpolated), box size, opacity and solid fills interpolate; the frame's own
-  paint does too. The end's unpaired layers fade in. The outgoing frame is drawn over the end with
-  its background blank: its paired layers hidden, its unpaired ones fading out, and a paired layer
-  that holds a fading one moving with its pair, its own paint blank. Smart animate has no direction,
-  so nothing enters from a side.
+  paint does too. The unpaired layers move by the transition's direction, a screen's width or
+  height: the end's slide in from the far side to their places, the outgoing frame's slide out
+  toward the side, as *push* moves frames, none of them fading. The outgoing frame is drawn over
+  the end with its background blank: its paired layers hidden, its unpaired ones leaving, and a
+  paired layer that holds a leaving one moving with its pair, its own paint blank. The shift is
+  measured in each layer's parent as it stands at its end.
 - **A change of state** with any transition but *instant* animates as smart animate over the
-  instance, paired by id (the switch keeps them), measured from the instance's parent. Layers the
-  new state lacks are gone at once; its new ones fade in. Siblings moved by the instance's new size
+  instance, paired by id (the switch keeps them), measured from the instance's parent, with no
+  direction. Layers the new state lacks are gone at once; its new ones fade in. Siblings moved by the instance's new size
   jump.
 - A new navigation replaces a screen transition under way.
 
@@ -208,6 +227,16 @@ A variable whose starting value was edited keeps its play value.
 answers the `Take` (start, inputs, length). `Replay::new(doc, take, actor)` plays it on a fresh
 copy; `advance(ms)` gives each input due in that span at its own time, so a replay stepped frame
 by frame for a video reaches exactly the state the run had at each time.
+
+**Video** (`mastik_export::video::video(doc, take, actor, options, progress)`) replays a take on
+a fresh copy at a fixed rate (1 to 60 frames a second), a frame at every frame time from the start
+to the take's length, each drawn by `VelloCpuRenderer::render_play_to_rgba` at the options' scale
+(capped at 4096 pixels a side) over white, every frame cut or padded to the first one's size. A
+GIF loops, each frame on its own palette, its delays carrying their rounding so they add up to
+the take. An MP4 is H.264 from OpenH264 built from source (BSD-2-Clause; the C++ toolchain `mlua`
+already needs builds it, and its patent licence covers only Cisco's own binaries), at even sizes,
+muxed by the `mp4` crate with one sample a frame. `progress` hears each frame and stops the job by
+answering false.
 
 ## Notices
 

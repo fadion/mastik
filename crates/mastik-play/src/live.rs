@@ -84,8 +84,11 @@ impl Player {
         self.scroll.retain(|f, _| self.doc.get(*f).is_some());
         self.states.retain(|i, _| self.doc.get(*i).is_some());
         self.auto.retain(|i, _| self.doc.get(*i).is_some());
+        if self.focus_shown.is_some_and(|f| self.doc.get(f).is_none()) {
+            self.focus_shown = None;
+        }
         if self.focus.is_some_and(|f| self.doc.get(f).is_none()) {
-            self.focus = None;
+            self.set_focus(None);
         }
         if !self.is_frame(self.screen) {
             let start = match self.start {

@@ -987,3 +987,86 @@ fn an_arrow_cap_marks_both_ends() {
         .expect("the caps are reported");
     assert!(row.count.starts_with("2 "), "{}", row.count);
 }
+
+/// A node's interactions come in as reactions: a click navigating by smart
+/// animate with its duration and easing, a link to a frame not brought in and a
+/// trigger with no counterpart counted; the canvas's starting point is a flow.
+///
+/// flip: `figma_curve` not reading `EASE_IN_AND_OUT` → fails at the timing.
+#[test]
+fn interactions_come_in_as_reactions_and_starting_points_as_flows() {
+    use mastik_core::prototype::{Action, Easing, Timing, TransitionKind, Trigger};
+    let go = json!({ "type": "NODE", "destinationId": "2:1", "navigation": "NAVIGATE",
+        "transition": { "type": "SMART_ANIMATE", "direction": "LEFT", "duration": 0.3,
+                        "easing": { "type": "EASE_IN_AND_OUT" } } });
+    let button = node(
+        "1:2",
+        "RECTANGLE",
+        (10.0, 10.0, 40.0, 20.0),
+        json!({ "interactions": [
+            { "trigger": { "type": "ON_CLICK" }, "actions": [go, { "type": "BACK" }] },
+            { "trigger": { "type": "MOUSE_UP" }, "actions": [{ "type": "BACK" }] },
+            { "trigger": { "type": "ON_HOVER" }, "actions": [
+                { "type": "NODE", "destinationId": "9:9", "navigation": "OVERLAY" }
+            ] },
+        ] }),
+    );
+    let home = node(
+        "1:1",
+        "FRAME",
+        (0.0, 0.0, 200.0, 100.0),
+        json!({ "children": [button] }),
+    );
+    let cart = node("2:1", "FRAME", (300.0, 0.0, 200.0, 100.0), json!({}));
+    let file = json!({
+        "name": "Shop",
+        "document": { "id": "0:0", "type": "DOCUMENT", "children": [{
+            "id": "0:1", "name": "Flows", "type": "CANVAS", "children": [home, cart],
+            "flowStartingPoints": [{ "nodeId": "1:1", "name": "Checkout" }],
+        }]},
+    });
+    let mut f = Fetched::default();
+    f.0.insert("file.json".into(), file.to_string().into_bytes());
+    let r = import(f);
+    let doc = &r.doc;
+    let reactions = doc.get(one(doc, "1:2")).unwrap().reactions();
+    assert_eq!(reactions.len(), 1, "the hover's one link went nowhere");
+    assert_eq!(reactions[0].value.trigger, Trigger::Click);
+    let actions: Vec<&Action> = reactions[0]
+        .value
+        .actions
+        .iter()
+        .map(|k| &k.value)
+        .collect();
+    match actions[..] {
+        [Action::Navigate { to, transition }, Action::Back] => {
+            assert_eq!(*to, one(doc, "2:1"), "goes to Cart");
+            assert_eq!(transition.kind, TransitionKind::SmartAnimate);
+            assert_eq!(
+                transition.timing,
+                Timing::Ease {
+                    curve: Easing::EaseInOut,
+                    ms: 300
+                }
+            );
+        }
+        _ => panic!("{actions:?}"),
+    }
+    let page = doc.page_of(one(doc, "1:1")).unwrap();
+    let flows = &doc.page(page).unwrap().flows;
+    assert_eq!(flows.len(), 1);
+    assert_eq!(
+        (flows[0].value.name.as_str(), flows[0].value.start),
+        ("Checkout", one(doc, "1:1"))
+    );
+    let rows: Vec<(&str, &str)> = r
+        .report
+        .iter()
+        .map(|u| (u.what, u.count.as_str()))
+        .collect();
+    assert!(rows.contains(&("Prototype interactions", "1")), "{rows:?}");
+    assert!(
+        rows.contains(&("Prototype links to layers not brought in", "1")),
+        "{rows:?}"
+    );
+}

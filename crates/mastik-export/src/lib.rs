@@ -43,6 +43,7 @@ pub mod context;
 pub mod contrast;
 pub mod dtcg;
 pub mod dtcg_in;
+pub mod flow_map;
 pub mod icon;
 pub mod jpeg;
 pub mod pdf;
@@ -56,6 +57,7 @@ pub mod sketch;
 pub mod snapshot;
 mod stable_id;
 pub mod svg;
+pub mod video;
 pub mod webp;
 
 pub use plan::{PlanOptions, PlannedFile, plan};

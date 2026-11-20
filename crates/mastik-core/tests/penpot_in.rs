@@ -662,3 +662,70 @@ fn an_old_or_foreign_archive_is_refused() {
     let mut ids = IdSource::new(1);
     assert!(read(&mut Files::default(), &mut ids, &mut Pictures).is_err());
 }
+
+/// A shape's interactions come in as reactions — a click navigating by a push
+/// with its duration, direction and easing, an overlay after a delay — one with
+/// no counterpart counted; the page's flow comes in as one.
+///
+/// flip: `penpot_transition` reading the animation's type in kebab-case alone →
+/// fails at "the push".
+#[test]
+fn interactions_come_in_as_reactions_and_flows_as_flows() {
+    use mastik_core::prototype::{Action, Direction, Easing, Timing, TransitionKind, Trigger};
+    let mut button = shape("button", "rect", "home", (10.0, 10.0, 40.0, 20.0));
+    button["interactions"] = json!([
+        { "eventType": "click", "actionType": "navigate", "destination": "cart",
+          "animation": { "animationType": "push", "duration": 250, "easing": "ease-in",
+                         "direction": "right" } },
+        { "eventType": "after-delay", "delay": 600, "actionType": "open-overlay",
+          "destination": "sheet" },
+        { "eventType": "mouse-leave", "actionType": "prev-screen" },
+    ]);
+    let mut home = shape("home", "frame", ROOT, (0.0, 0.0, 200.0, 100.0));
+    home["shapes"] = json!(["button"]);
+    let cart = shape("cart", "frame", ROOT, (300.0, 0.0, 200.0, 100.0));
+    let sheet = shape("sheet", "frame", ROOT, (600.0, 0.0, 100.0, 50.0));
+    let page = json!({ "id": PAGE, "name": "Main", "index": 0,
+        "flows": [{ "id": "fl", "name": "Checkout", "startingFrame": "home" }] });
+    let r = import(export(
+        &["home", "cart", "sheet"],
+        vec![home, button, cart, sheet],
+        &[(&format!("files/{FILE}/pages/{PAGE}.json"), page)],
+    ));
+    let doc = &r.doc;
+    let reactions = doc.get(one(doc, "button")).unwrap().reactions();
+    assert_eq!(reactions.len(), 2);
+    match &reactions[0].value.actions[0].value {
+        Action::Navigate { to, transition } => {
+            assert_eq!(*to, one(doc, "cart"));
+            assert_eq!(
+                (transition.kind, transition.direction, transition.timing),
+                (
+                    TransitionKind::Push,
+                    Direction::Right,
+                    Timing::Ease {
+                        curve: Easing::EaseIn,
+                        ms: 250
+                    }
+                ),
+                "the push"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(reactions[1].value.trigger, Trigger::After { ms: 600 });
+    assert!(matches!(
+        reactions[1].value.actions[0].value,
+        Action::OpenOverlay { overlay, .. } if overlay == one(doc, "sheet")
+    ));
+    let page = doc.page_of(one(doc, "home")).unwrap();
+    let flows = &doc.page(page).unwrap().flows;
+    assert_eq!(flows.len(), 1);
+    assert_eq!(flows[0].value.start, one(doc, "home"));
+    let rows: Vec<(&str, &str)> = r
+        .report
+        .iter()
+        .map(|u| (u.what, u.count.as_str()))
+        .collect();
+    assert_eq!(rows, [("Prototype interactions", "1")]);
+}

@@ -873,11 +873,80 @@ fn what_does_not_map_is_reported() {
     assert_eq!(
         rows,
         [
-            ("Prototype links", "Left out"),
+            ("Prototype links to layers not brought in", "Left out"),
             ("Smart layout", "Kept at their drawn positions"),
         ]
     );
     one(&r.doc, "Rect");
+}
+
+/// A layer's flow is a click going to its artboard by its slide, an artboard
+/// shown as an overlay opening as one, `back` going back; a hotspot is an
+/// empty box taking the click, and a flow's home artboard is a flow.
+///
+/// flip: `Builder::layer` recording no flow → panics in `first`, the rectangle
+/// holding no reaction.
+#[test]
+fn flows_come_in_as_reactions_and_hotspots_as_boxes() {
+    use mastik_core::prototype::{Action, Direction, TransitionKind, Trigger};
+    let mut go = rectangle("R", 0.0, 0.0, json!({}));
+    go["flow"] = json!({ "destinationArtboardID": "B", "animationType": 0 });
+    let hotspot = json!({
+        "_class": "MSImmutableHotspotLayer", "do_objectID": "H", "name": "Hotspot",
+        "frame": frame(50.0, 0.0, 20.0, 20.0),
+        "flow": { "destinationArtboardID": "S", "animationType": -1 },
+    });
+    let mut back = rectangle("K", 0.0, 40.0, json!({}));
+    back["name"] = json!("Back");
+    back["flow"] = json!({ "destinationArtboardID": "back" });
+    let board = |id: &str, name: &str, x: f64, layers: Value| {
+        json!({
+            "_class": "artboard", "do_objectID": id, "name": name, "isVisible": true,
+            "frame": frame(x, 0.0, 200.0, 100.0), "layers": layers,
+        })
+    };
+    let mut home = board("A", "Home", 0.0, json!([go, hotspot]));
+    home["isFlowHome"] = json!(true);
+    let cart = board("B", "Cart", 300.0, json!([back]));
+    let mut sheet = board("S", "Sheet", 600.0, json!([]));
+    sheet["presentationStyle"] = json!(1);
+    let r = import(sketch(
+        &[("P", "Page", json!([home, cart, sheet]))],
+        json!({}),
+        &[],
+    ));
+    let doc = &r.doc;
+    assert!(r.report.is_empty(), "{:?}", r.report);
+    let first = |name: &str| {
+        doc.get(one(doc, name)).unwrap().reactions()[0]
+            .value
+            .clone()
+    };
+    let link = first("Rect");
+    assert_eq!(link.trigger, Trigger::Click, "the rectangle's link");
+    match &link.actions[0].value {
+        Action::Navigate { to, transition } => {
+            assert_eq!(*to, one(doc, "Cart"));
+            assert_eq!(
+                (transition.kind, transition.direction),
+                (TransitionKind::MoveIn, Direction::Left),
+                "a slide from the right moves left"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let hot = one(doc, "Hotspot");
+    assert!(
+        doc.get(hot).unwrap().paint().fills.is_empty(),
+        "an empty box"
+    );
+    assert!(matches!(
+        first("Hotspot").actions[0].value,
+        Action::OpenOverlay { overlay, .. } if overlay == one(doc, "Sheet")
+    ));
+    assert_eq!(first("Back").actions[0].value, Action::Back);
+    let flows = &doc.page(doc.first_page()).unwrap().flows;
+    assert_eq!((flows.len(), flows[0].value.start), (1, one(doc, "Home")));
 }
 
 /// A background blur (blur type 3) lands as one, at its radius, and reports
@@ -1034,13 +1103,13 @@ fn a_name_used_twice_is_numbered_apart() {
     );
 }
 
-/// A layer left out (a hotspot) takes no index, so the siblings after it still
-/// land, in order.
+/// A layer left out (one of a kind Mastik does not know) takes no index, so the
+/// siblings after it still land, in order.
 /// flip: `children` passing the layer's position in the file → the read fails.
 #[test]
 fn a_layer_left_out_leaves_no_gap() {
     let hotspot = json!({
-        "_class": "MSImmutableHotspotLayer", "do_objectID": "H", "name": "Hot",
+        "_class": "somethingNew", "do_objectID": "H", "name": "Hot",
         "frame": frame(0.0, 0.0, 10.0, 10.0),
     });
     let mut a = rectangle("A", 0.0, 0.0, json!({}));

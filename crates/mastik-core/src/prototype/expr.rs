@@ -56,6 +56,23 @@ impl Expr {
             .collect()
     }
 
+    /// The same expression with each variable it names by id passed through
+    /// `f`: what a copy into another document's variables writes.
+    pub fn map_vars(&self, f: &mut dyn FnMut(VarId) -> VarId) -> Expr {
+        let mut out = String::with_capacity(self.0.len());
+        let mut last = 0;
+        for (at, inner) in var_tokens(&self.0) {
+            let Some(id) = by_wire(inner) else { continue };
+            out.push_str(&self.0[last..at.start]);
+            out.push('{');
+            out.push_str(&f(id).0.to_wire());
+            out.push('}');
+            last = at.end;
+        }
+        out.push_str(&self.0[last..]);
+        Expr(out)
+    }
+
     /// Whether it reads: `Ok` when it parses and every `{…}` is an id.
     pub fn check(&self) -> Result<(), ExprError> {
         parse(&self.0, &by_wire).map(|_| ())

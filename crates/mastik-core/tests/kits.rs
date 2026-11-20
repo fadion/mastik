@@ -3089,3 +3089,141 @@ fn a_publish_leaves_out_actions_whose_targets_are_outside_the_main() {
     assert_eq!(actions[1].value, url);
     assert_eq!(changed_in(&d), ours(&d), "after the update");
 }
+
+/// A main's reactions name the kit's variables and scripts; vendored, they name
+/// the consumer's copies — the variable held as a kit variable, a condition's
+/// `{id}` too, and the script copied into the document's own list — and an
+/// update keeps them there without copying the script again.
+///
+/// flip: `Plan::apply` not calling `apply_reactions` → fails at "the
+/// consumer's variable"; `vendor` not calling `carry_scripts` → fails at "the
+/// document's own script"; `Builder::sync` mapping from the published reactions
+/// → fails at "still the consumer's after the update".
+#[test]
+fn vendored_reactions_name_the_consumers_variables_and_scripts() {
+    use mastik_core::Keyed;
+    use mastik_core::prototype::{Action, Branch, Expr, Reaction, Trigger, VarChange};
+    let mut k = kit();
+    let mut lids = IdSource::new(0xAD);
+    let (mode, var, script) = (lids.mint_mode(), lids.mint_var(), lids.mint_script());
+    let when = Expr(format!("{{{}}} == true", var.0.to_wire()));
+    let reactions = vec![Keyed::new(
+        lids.mint_item(),
+        Reaction {
+            trigger: Trigger::Click,
+            actions: vec![
+                Keyed::new(
+                    lids.mint_item(),
+                    Action::SetVariable {
+                        var,
+                        change: VarChange::Toggle,
+                    },
+                ),
+                Keyed::new(
+                    lids.mint_item(),
+                    Action::Conditional {
+                        branches: vec![Branch {
+                            when,
+                            actions: vec![Keyed::new(
+                                lids.mint_item(),
+                                Action::RunScript { script },
+                            )],
+                        }],
+                        otherwise: vec![],
+                    },
+                ),
+            ],
+        },
+    )];
+    k.doc
+        .apply(&Transaction(vec![
+            Operation::AddMode {
+                collection: mastik_core::variable::CollectionId::FIRST,
+                mode: mastik_core::Mode {
+                    id: mode,
+                    name: "Day".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: mastik_core::Variable {
+                    id: var,
+                    name: "open".into(),
+                    kind: mastik_core::VarKind::Boolean,
+                    cells: [(mode, mastik_core::Cell::Boolean(false))].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+            Operation::AddScript {
+                script: mastik_core::Script {
+                    id: script,
+                    name: "Open".into(),
+                    source: "print(1)".into(),
+                },
+                index: 0,
+            },
+            Operation::SetReactions {
+                id: k.card,
+                reactions,
+            },
+        ]))
+        .unwrap();
+    let version = kit::publish(&mut k.doc, None, 1).unwrap();
+    let (mut d, mut ids) = consumer();
+    let page = d.first_page();
+    let (tx, placed) =
+        kit::insert(&d, &mut ids, L_ID, version, published(&k), k.card, page).unwrap();
+    d.apply(&tx).unwrap();
+    let card = d.get(placed).unwrap().link().unwrap();
+    let named = |d: &Document| {
+        let r = &d.get(card).unwrap().reactions()[0];
+        let Action::SetVariable { var: v, .. } = r.actions[0].value else {
+            panic!("not a set variable");
+        };
+        let Action::Conditional { branches, .. } = &r.actions[1].value else {
+            panic!("not a conditional");
+        };
+        let Action::RunScript { script: s } = branches[0].actions[0].value else {
+            panic!("not a script");
+        };
+        (v, branches[0].when.vars(), s)
+    };
+    let (v, when_vars, s) = named(&d);
+    assert!(
+        v != var && d.variables().get(v).is_some_and(|x| x.kit().is_some()),
+        "the consumer's variable"
+    );
+    assert_eq!(when_vars, vec![v], "the condition names it too");
+    let mine = d.scripts().iter().find(|x| x.id == s);
+    assert!(
+        s != script && mine.is_some_and(|x| x.name == "Open" && x.source == "print(1)"),
+        "the document's own script"
+    );
+
+    let mut edited = k.doc.get(k.card).unwrap().reactions().to_vec();
+    edited[0].value.actions.push(Keyed::new(
+        lids.mint_item(),
+        Action::OpenUrl {
+            url: "https://example.com".into(),
+        },
+    ));
+    k.doc
+        .apply(&Transaction(vec![Operation::SetReactions {
+            id: k.card,
+            reactions: edited,
+        }]))
+        .unwrap();
+    kit::publish(&mut k.doc, None, 2).unwrap();
+    accept(&mut d, &mut ids, &k);
+    assert_eq!(d.get(card).unwrap().reactions()[0].actions.len(), 3);
+    assert_eq!(
+        named(&d),
+        (v, vec![v], s),
+        "still the consumer's after the update"
+    );
+    assert_eq!(d.scripts().len(), 1, "the script is not copied again");
+}
