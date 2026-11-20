@@ -126,6 +126,15 @@ pub(crate) struct Timer {
 /// reaction that changes a variable…) before the player stops following.
 pub(crate) const MAX_DEPTH: u32 = 16;
 
+/// The shortest wait of an *After* started by a change of state, in
+/// milliseconds: two states each changing to the other after nothing would
+/// otherwise fire forever without time moving.
+const MIN_LOOP_MS: f64 = 16.0;
+
+/// How many timers one tick fires at most. A tick that spans many turns of a
+/// loop (a hidden player catching up) stops there; the loop goes on from now.
+const MAX_FIRES: usize = 1024;
+
 /// A prototype being played: a copy of the document and everything that exists
 /// only while it plays.
 ///
@@ -345,7 +354,7 @@ impl Player {
     /// transitions move on.
     pub fn tick(&mut self, ms: f64) {
         let until = self.now + ms.max(0.0);
-        loop {
+        for _ in 0..MAX_FIRES {
             let next = self
                 .timers
                 .iter()
@@ -562,6 +571,31 @@ impl Player {
     /// A frame has closed: its timers go.
     pub(crate) fn on_close(&mut self, frame: NodeId) {
         self.timers.retain(|t| t.frame != frame);
+    }
+
+    /// `instance` has changed state: the timers its old state started go, and
+    /// the *After* reactions of the state it shows now start. A variant whose
+    /// *After* changes its instance to the next variant therefore loops for as
+    /// long as its frame is shown.
+    pub(crate) fn rearm(&mut self, instance: NodeId) {
+        let nodes = subtree_nodes(&self.doc, &[instance]);
+        self.timers.retain(|t| !nodes.contains(&t.holder));
+        let Some(frame) = self.frame_of(instance) else {
+            return;
+        };
+        for id in nodes {
+            let Some(n) = self.doc.get(id) else { continue };
+            for r in n.reactions() {
+                if let Trigger::After { ms } = r.value.trigger {
+                    self.timers.push(Timer {
+                        due: self.now + f64::from(ms).max(MIN_LOOP_MS),
+                        holder: id,
+                        reaction: r.id,
+                        frame,
+                    });
+                }
+            }
+        }
     }
 
     fn fire_timer(&mut self, timer: Timer) {

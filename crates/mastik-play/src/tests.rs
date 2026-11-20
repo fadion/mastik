@@ -865,6 +865,73 @@ fn change_state_switches_the_instance() {
     assert!(!p.is_moving());
 }
 
+/// A state loops: each variant's *After* changes its instance to the other, and
+/// the new state's timer starts with the change, for as long as the frame shows.
+///
+/// flip: `switch_to` not calling `rearm` → fails at "back to rest".
+#[test]
+fn a_state_loops_by_its_variants_after() {
+    let (mut fx, a, instance, [rest, hover, _]) = button_set();
+    for (from, to) in [(rest, hover), (hover, rest)] {
+        fx.on(
+            from,
+            Trigger::After { ms: 100 },
+            vec![Action::ChangeState {
+                instance: from,
+                to,
+                transition: Transition::INSTANT,
+            }],
+        );
+    }
+    assert_eq!(
+        fx.doc.get(instance).unwrap().reactions().len(),
+        1,
+        "the instance follows its main's reaction"
+    );
+    let mut p = fx.play(a);
+    let link = |p: &Player| p.doc.get(instance).unwrap().link();
+    p.tick(99.0);
+    assert_eq!(link(&p), Some(rest), "not before");
+    p.tick(1.0);
+    assert_eq!(link(&p), Some(hover), "after");
+    p.tick(100.0);
+    assert_eq!(link(&p), Some(rest), "back to rest");
+    // One long tick turns the loop five times over.
+    p.tick(1000.0);
+    assert_eq!(link(&p), Some(rest), "an even number of turns");
+    assert!(p.is_moving(), "still looping");
+    assert_eq!(p.take_notices(), vec![], "no loop notice");
+}
+
+/// Two states each changing to the other after nothing still let time move: a
+/// change of state waits at least a frame before its *After* fires.
+///
+/// flip: `rearm` dropping its floor → `tick` spins to `MAX_FIRES` turns at time
+/// zero and fails at "the frame's own timer fires at once".
+#[test]
+fn a_loop_after_nothing_waits_a_frame() {
+    let (mut fx, a, instance, [rest, hover, _]) = button_set();
+    for (from, to) in [(rest, hover), (hover, rest)] {
+        fx.on(
+            from,
+            Trigger::After { ms: 0 },
+            vec![Action::ChangeState {
+                instance: from,
+                to,
+                transition: Transition::INSTANT,
+            }],
+        );
+    }
+    let mut p = fx.play(a);
+    let link = |p: &Player| p.doc.get(instance).unwrap().link();
+    p.tick(1.0);
+    assert_eq!(link(&p), Some(hover), "the frame's own timer fires at once");
+    p.tick(14.0);
+    assert_eq!(link(&p), Some(hover), "one turn per sixteen ms");
+    p.tick(1.0);
+    assert_eq!(link(&p), Some(rest));
+}
+
 /// An input instance flips its boolean on a click and shows it by its *Checked*
 /// variant; a value set from the state card switches it too.
 ///

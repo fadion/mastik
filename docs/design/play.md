@@ -105,9 +105,16 @@ out both ends.
 - A **key** fires *key* reactions in the frame that takes input whose key matches (letters without
   regard to case) and whose Shift matches. While an input text is focused, keys are text: Backspace
   deletes, Enter and Escape leave the field.
-- *After* starts when its frame opens and is dropped when the frame closes; *frame opens* runs when
-  the screen or an overlay opens; *variable changes* runs on every shown frame's layers when a play
-  value changes what the variable reads.
+- *After* starts when its frame opens and is dropped when the frame closes. Inside an instance it
+  starts again whenever play changes the instance's state, the old state's timers dropped, so a
+  variant whose *After* changes its instance to the next variant is **a state that loops** (a
+  spinner, a skeleton's shimmer) for as long as its frame shows. There is no loop setting: the
+  loop is the variants' own reactions, which every instance follows and a kit publish keeps. An
+  *After* restarted this way waits at least 16 ms, so two states changing to each other after
+  nothing still let time move, and one `tick` fires at most 1024 timers, the loop going on from
+  the tick's end.
+- *Frame opens* runs when the screen or an overlay opens; *variable changes* runs on every shown
+  frame's layers when a play value changes what the variable reads.
 - Reactions setting each other off are followed sixteen deep, then cut with a `Loop` notice.
 
 ## Actions

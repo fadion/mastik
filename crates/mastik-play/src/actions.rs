@@ -490,6 +490,7 @@ impl Player {
         let ok = self.commit(tx).is_ok();
         if ok {
             self.states.insert(instance, to);
+            self.rearm(instance);
         }
         ok
     }
