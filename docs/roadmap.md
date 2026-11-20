@@ -8,10 +8,25 @@ true.
 
 ## Now · Prototyping
 
-A release of its own: the document played, with interactions, flows,
-variables and scripts during play, smart animate and springs, a player over the canvas, detached
-into its own window or fullscreen, and export as one HTML file running the player in WebAssembly.
-The design and its open questions are in `prototyping.md`.
+A release of its own. The saved model, the play engine, authoring and the HTML file are built;
+what remains is the player shell in the app (over the canvas, detached, fullscreen as present
+mode, the player bar and state card, its keys, private mode, live update from the editor), the
+engine running in the exported page with the export dialog, video from takes, and the flow map
+PDF. The design of each and the open questions are in `prototyping.md`.
+
+- **Release CI ships the browser player.** The release build runs `crates/mastik-web/build.sh`
+  and puts `player/` beside the executable, where `mastik export --prototype` looks; today only
+  a local build (`target/player`) has it.
+- **Run script in the exported page** (`prototyping.md` §10, question 5).
+- **Kit scripts and variables in reactions.** Vendoring and updating a kit leaves a *Set
+  variable*'s variable and a *Run script*'s script naming the kit's ids, which dangle in the
+  consumer; they should re-map to the consumer's copies.
+- **MCP `get_tree` and `insert_subtree` carry reactions**, as `get_node` and `set` do.
+- **Authoring gaps**: drag-reorder of actions (today *Move up* / *Move down*), flow starting
+  values and an overlay's backdrop colour in the UI (today through the MCP), a flow chip on a
+  flow's start frame, and the expression field underlining the range `ExprError::at` names.
+- **A state that loops** (`prototyping.md` §6).
+- **The *Focus* interaction state** in play, with Tab moving between a prototype's inputs.
 
 - **Inspect mode in the exported player.** A switch in the HTML export's player that stops
   interactions and lets the viewer pick layers: a layer's CSS as *Copy as CSS* writes it, distances

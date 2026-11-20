@@ -1,8 +1,11 @@
 # Mastik — prototyping
 
-> **Status: decided, partly built.** This file holds the design for prototypes until it lands; as
-> each part is built, its rules move to a file under `design/` and leave here. Built so far: the
-> saved model (`design/prototyping-model.md`).
+> **Status: decided, partly built.** This file holds the parts of prototyping not yet built; as
+> each part is built, its rules move to a file under `design/` and leave a pointer here. Built: the
+> saved model (`design/prototyping-model.md`), the play engine (`design/play.md`), authoring
+> (`design/prototyping-authoring.md`) and the HTML export's browser build, trim and file
+> (`design/prototyping-export.md`). Still to build: the player in the app, the engine in the
+> exported page with the export dialog, video from takes and the flow map.
 
 A prototype is the document played: frames linked by interactions, driven by variables and
 scripts, animated between states, shown beside the editor while it is edited, and exported as one
@@ -12,22 +15,14 @@ variables, conditions and Luau; the output is a real player, not a slideshow of 
 
 ## 1. What is saved and what is not
 
-**Saved in the document**: built, in `design/prototyping-model.md` — a layer's reactions (the
-interactions), its play settings and input binding, a page's flows and play settings, and the
-export's settings. Still to build around it:
+**Saved in the document**: built, in `design/prototyping-model.md`. Variables' play values,
+starting values and inputs during play are built in `design/play.md`. Still to build around them:
 
-- **Inputs during play**: typing into an input text layer or ticking an input instance writes the
-  variable's play value (below).
-- **Variables** are the existing ones (colour, number, string, boolean). A variable's starting value
-  is its value in the mode in force where it is read, unless the flow sets it.
 - **Scripts** that *Run script* names are document scripts, so the export can carry them. A library
   or kit script is copied into the document to be used.
 - **The export's scaling** defaults to the page's when the export names none.
 
-**Play state** — exists only while a prototype runs; never saved, never in history, gone when the
-player closes: the current frame, the history *Back* walks, the open overlays, each variable's
-current value, each instance's current state, scroll offsets, what is typed into a field or ticked,
-hover and press, any animation under way, and recorded takes (§8).
+**Play state** is built: `design/play.md` *Play state* and *Takes*.
 
 **Derived** — rebuilt when needed, never stored: smart animate's pairing of layers between two
 frames, the in-between frames, the flow map's connectors, hotspot rectangles, and the copy's
@@ -35,64 +30,35 @@ frames, the in-between frames, the flow map's connectors, hotspot rectangles, an
 
 ### Targets that dangle
 
-The model keeps a dangling target and copies remap targets (`design/prototyping-model.md`). Still
-to build: the Prototype tab draws a missing target as missing, and play skips it. A target outside
-a pasted set is missing when pasted into another document.
+Built: the model keeps them and copies remap them (`design/prototyping-model.md`), the Prototype
+tab draws them as missing (`design/prototyping-authoring.md`), and play skips them
+(`design/play.md`).
 
 ### Interactions on components
 
-How a main's reactions reach its instances, and how a target inside the main is read on a copy, is
-built (`design/prototyping-model.md`). Still to build:
-
-- The override dot and *Reset* on a reaction in the Prototype tab, as every other override has.
-- A kit main carries only interactions whose targets are inside it (state changes, the kit's own
-  variables). Publishing a kit whose main navigates or opens an overlay reports the action and
-  leaves it out, since its target lives in the kit's document.
-- A component set's interaction states (*Hover*, *Pressed*, *Focus*, *Disabled*), which exist for
-  code export, switch live in the player by themselves: hovering an instance shows its *Hover*
-  variant with no interaction authored. An authored interaction may change to any other variant.
+Built: the model (`design/prototyping-model.md` *Instances*), the override slot and kit publishing
+(`design/prototyping-authoring.md` *Components*), and *Hover*, *Pressed* and *Disabled* switching
+live in play (`design/play.md`). Still to build: *Focus* switching live as the others do, and Tab
+moving between a prototype's inputs.
 
 ## 2. The player plays a copy
 
-Starting a prototype clones the document. The player changes the clone through a play door in core:
-`Document::apply` with `propagate::owed`'s settle, as the commit door does, so instances follow a
-main changed during play. It keeps no undo history, no autosave and no dirty mark, and drops the
-clone when it stops. Playing therefore never touches the file, which is invariant 5 applied to a
-whole session instead of a gesture.
+Built: the copy, its play door, play values, a change of state, *Run script* with its rollback,
+the patches and the player's own actor are in `design/play.md`. Still to build:
 
-- **Variable values are not transactions.** A variable holds one value per mode and the modes in
-  force differ per layer, so a play value is an override keyed by variable that beats every mode
-  when the copy resolves. Kit variables take play values the same way.
-- **A change of state** (an instance switching variant) is a transaction on the copy, drawn by the
-  same code that draws the canvas.
-- **Run script** runs Command Mode's Luau with a `Host` over the copy. A run that fails is rolled back
-  to a snapshot taken before it, since the copy has no history to take the step back from. During
-  play `sel` is empty, a script's input form is not offered (a script needing input cannot be run
-  from an action), and `print` goes to the player's own log.
-- **Only a person's act runs a script.** The door refuses *Run script* under a timer, a variable
-  change or a frame opening (`design/prototyping-model.md`, D1100), so the Prototype tab offers it
-  only under pointer and key triggers. The in-app player shows Command Mode's first-run disclosure
-  before the first script runs, when play starts; the exported file runs its scripts in the same sandbox, against its own copy.
-- `RenderOverrides` keeps its narrow job: the frames between two states while a transition, smart
-  animate or spring runs, as patches over the copy's `Resolved`.
-- Layers created during play take ids from the player's own actor, so they never collide with the
-  document's.
-- The exported player has no original to protect: it loads the file and plays on what it loaded.
-  The in-app player and the exported one share one engine and behave the same.
+- The in-app player shows Command Mode's first-run disclosure before the first script runs, when
+  play starts (`Player::has_scripts` answers whether it is owed).
+- The exported file runs its scripts in the same sandbox, against its own copy (§10, question 5).
 
 ## 3. Live update
 
-While the editor's document changes, the in-app player applies each committed transaction to its
-copy as well. Ids are caller-minted and operations deterministic (invariants 3 and 8), so the copy
-stays the document plus what play did to it, and play state survives untouched. Only when the copy
-refuses a transaction, because play changed something the edit also touches, does the player
-re-clone and carry its play state across by id.
+Built in the engine: applying each commit to the copy, re-cloning on a refusal, the fallbacks and
+their notices, and an edited starting value keeping its play value (`design/play.md` *Live
+update*). Still to build, in the shell:
 
-- What the edit removed falls back: a deleted current frame to the flow's start, a deleted
-  variable's play value goes, a removed overlay closes. The player says so once, in its own corner.
+- The fallback notices show once, in the player's own corner.
 - Only commits reach the player (it follows `revision`, not `drawn`): a drag, a pen path or text
   being typed shows once it lands, never as a preview. Undo and redo are commits like any other.
-- A variable whose starting value was edited keeps its play value; *Restart* takes the new one.
 - The player follows the document it was started from. Switching the editor to another tab leaves
   it playing that document; it stops when that document closes.
 - Commits arriving faster than the player draws coalesce; a hidden player catches up when shown.
@@ -119,9 +85,10 @@ texture in whichever viewport holds the player.
 **Keys.** While the player has focus, plain and Shift-ed keys belong to the prototype (its text
 fields and key triggers); chords with Ctrl or Alt go to the editor as ever, so `Ctrl+S` and
 `Ctrl+Z` work mid-play. A key trigger may capture only plain and Shift-ed keys. Escape leaves a
-prototype's text field, then hands focus back to the canvas; the player closes from its bar. Prototyping adds no chord to the keymap. The inspector's Prototype tab is reached by its segmented
-control and the palette; *Play* by the top bar's play button, a flow chip and the palette;
-`Ctrl+Alt+Enter` stays present mode, now the fullscreen player. The player's commands (restart,
+prototype's text field, then hands focus back to the canvas; the player closes from its bar.
+Prototyping adds no chord to the keymap (the Prototype tab's reach is in
+`design/prototyping-authoring.md`). *Play* is reached by the top bar's play button, a flow chip
+and the palette; `Ctrl+Alt+Enter` stays present mode, now the fullscreen player. The player's commands (restart,
 hints, detach, record) are buttons: the chords they would want are spent in the editor, and a chord
 that means two things breaks the keymap's rule.
 
@@ -130,81 +97,57 @@ since sharing that window is private mode's case.
 
 ## 5. Interactions
 
-- **Triggers**: click or tap, hover (while and on enter), press (on and while), drag, a key, after a
-  delay, a variable changing, and the frame opening.
-- **Actions**: navigate, back, open, close or swap an overlay, scroll to, change an instance's state,
-  set a variable, a conditional (if, else if, else, on variables and expressions), open a URL, and
-  run a script. One trigger runs several actions in order.
-- **Back** pops the navigation history; with an overlay open it closes the top overlay instead.
-- **Scrolling**: a frame scrolls on its axis when its content overflows; fixed children stay, sticky
-  ones stick at their offset. A drag trigger inside a scrolling frame takes the drag from the
-  scroll. Flex and grid layout reflows inside, as on the canvas.
-- **Hotspot hints**: a click on nothing flashes what can be clicked.
+Built: the triggers, actions, *Back*, scrolling and the hotspot hints' flash are in
+`design/play.md`, their authoring in `design/prototyping-authoring.md`. A sticky child sticks at
+the scrolling frame's edge (`design/play.md` *Scrolling*). The shell still draws the hints (§4).
 
 ## 6. Motion
 
-- **Transitions**: instant, dissolve, move in and out, push, slide, each with a direction.
-- **Smart animate**: layers present in both frames are paired by name and path (an instance's
-  children by lineage key) and every animatable property interpolates. An unpaired layer fades, or
-  under a directional transition enters from its side. Layout is resolved at both ends, never per
-  frame.
-- **Timing**: easing curves (the CSS set and a custom cubic Bézier) and springs (mass, stiffness,
-  damping), per transition.
-- **States of a component** animate between each other the same way, and a state may loop (a
-  spinner, a skeleton's shimmer).
+Built: transitions, smart animate, timing and states animating, in `design/play.md` *Motion*.
+Still to build:
+
+- **Smart animate's direction**: under a direction, an unpaired layer enters from its side. The
+  Prototype tab offers the direction; the engine fades every unpaired layer.
+- **A state that loops** (a spinner, a skeleton's shimmer).
 
 ## 7. Logic and data
 
-- **Variables during play**: set, increment, toggle, and expressions over numbers, strings and
-  booleans (arithmetic, comparison, joining, `not`/`and`/`or`); a bound field redraws as the value
-  changes. Anything past that is a script.
-- **Inputs** (§1) hold real values through their variables.
+Built: variables during play, expressions, inputs and scripts, in `design/play.md`. Still to
+build:
+
 - **Lists from data**: a repeated row filled from a data file, reusing the chart's data model
-  (`charts.md`). Its saved form is §10's third question.
-- **Scripts**: *Run script* gives a prototype what the actions do not — a computed total, a filter, a
-  validation — in the language Command Mode already has.
+  (`charts.md`). Its saved form is §10's first question.
 
 ## 8. Export
 
-- **One HTML file**: the player compiled to WebAssembly, the document, its fonts and its images
-  inside one compressed stream, base64'd once into the page and unpacked by the browser's
-  `DecompressionStream`; the wasm loads from those bytes, not by fetch, so it runs from `file://`
-  without a server. Most parts are already compressed (wasm aside, WOFF2 and JPEG), so the file is
-  about 1.33 times its parts, and the dialog shows that size before writing.
-- **What goes in**: the pages the chosen flows reach, following navigation across pages, with the
-  overlays, components, fonts and images they use. The pruned document must still pass the loader.
-- **Fonts go in whole, whatever their licence**: every face the pruned pages draw with, Google or
-  local, is embedded as the file the canvas drew from, as the PDF export embeds them. A font's
-  embedding bits are not read; the licence is the designer's to keep. Whole files, not subsets,
-  because a prototype's text fields take whatever the viewer types.
-- **Rendering in the browser**: `mastik-core` and `mastik-render`'s vello backend on WebGPU, so the
-  player draws exactly what the canvas draws, falling back to `vello_cpu` in the page where WebGPU
-  is missing.
-- **Recordings**: the player's record button logs a run's inputs with their times (a take, play
-  state). Export replays a take on a fresh copy through the CPU backend, frame by frame, to MP4 or
-  GIF; nothing is captured from the screen.
+Built, in `design/prototyping-export.md`: the one HTML file and its size estimate, what goes in,
+fonts in whole, and the browser build drawing the opening frame through WebGPU or `vello_cpu`.
+Takes are recorded and replayed by the engine (`design/play.md` *Takes*). Still to build:
+
+- **The page plays.** The engine runs in the page, with the device frame, player bar, hotspot
+  hints and scaling (§1) the export's settings name. The exported player has no original to
+  protect: it loads the file and plays on what it loaded, with the same engine as the in-app
+  player, so the two behave the same.
+- **The export dialog**, showing the file's size (`Parts::estimate`) before writing.
+- **Video from a take**: the player's record button, and an export that replays a take on a fresh
+  copy through the CPU backend, frame by frame, to MP4 or GIF; nothing is captured from the
+  screen.
 - **The flow map**: a PDF of each flow's frames with their connectors and every interaction written
   out in words, for review and sign-off.
 
 ## 9. The agent surface
 
-Interactions, flows and the prototype settings are document fields, so MCP's `get_node` and `set`
-read and write them and the snapshot carries them. There is no play tool: an agent checks a
-prototype by reading what it links, not by running it.
+Built: `design/prototyping-authoring.md` *Agents*.
 
 ## 10. Open questions
 
-1. **Building the player for the browser.** `mastik-core` refuses `panic = "abort"`
-   (`boolean.rs`), because `catch_unwind` guards round `flo_curves` and `i_overlay`, and stable
-   `wasm32-unknown-unknown` aborts on panic. `mlua` builds Luau's C++ VM and does not target that
-   triple either. Options: nightly `-Zbuild-std` with wasm exception handling;
-   `wasm32-unknown-emscripten` for everything, which unwinds and hosts Luau, if wgpu's WebGPU works
-   there; or geometry pre-flattened at export so the guarded code never runs in the page, with
-   Luau built apart.
-2. **Lists from data**: how a repeated row and its data file are saved, and how a row's layers bind
+1. **Lists from data**: how a repeated row and its data file are saved, and how a row's layers bind
    a row's cells.
-3. **The video encoder**: a crate and its licence for MP4; GIF needs none.
-4. **A minimised main window**: whether an immediate viewport keeps the detached player drawing.
-5. **Imported prototypes.** The Figma, Penpot and Sketch importers report prototype links as left
-   out. Once interactions exist, the ones that map (navigate, overlay, back, the common
+2. **The video encoder**: a crate and its licence for MP4; GIF needs none.
+3. **A minimised main window**: whether an immediate viewport keeps the detached player drawing.
+4. **Imported prototypes.** The Figma, Penpot and Sketch importers report prototype links as left
+   out. Now that interactions exist, the ones that map (navigate, overlay, back, the common
    transitions) can be read in, and the rest reported as now.
+5. **Run script in the exported file.** §2 promises it, but the page has no Luau: `mlua` builds
+   Luau's C++, which `wasm32-unknown-unknown` cannot compile (`design/prototyping-export.md`).
+   Options: Emscripten, wasi-sdk, or a Luau built apart and loaded beside the player.

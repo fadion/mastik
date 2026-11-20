@@ -350,7 +350,7 @@ therefore runs no one else's code, and there is no warning on open: a run the pe
 inside §8's sandbox, and warnings train people to click *Allow*. A prototype's *Run script* is such
 a run: it fires only from a pointer or key trigger the person acts on while playing, never from a
 frame opening or a variable changing, and it writes the player's copy, not the document
-(`prototyping.md`). A stored script is a tool shipped beside the work; the
+(`play.md`). A stored script is a tool shipped beside the work; the
 document records what its run committed and never needs it.
 
 | Place | Kept | Edited |

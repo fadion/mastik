@@ -17,7 +17,7 @@ git.
 | `docs/non-goals.md` | What is deliberately not built, one line each. |
 | `docs/shortcuts.md` | The keymap. |
 | `docs/context-menus.md` | The context-menu spec. |
-| `docs/prototyping.md` | Prototyping, decided and not yet built: what is saved, the player that plays a copy, where it shows, the export. |
+| `docs/prototyping.md` | Prototyping, decided and not yet built: the player shell and where it shows, the exported page playing, video and the flow map, open questions. |
 | `todo.md` | The maintainer's private scratchpad, untracked. Never record anything there. |
 
 ### Keeping the record

@@ -3,8 +3,8 @@
 The engine that plays a prototype: a copy of the document, the state that exists only while it
 plays, the triggers and actions, motion, live update and takes. It is one crate, `mastik-play`,
 headless, which both shells drive — the in-app player and the exported page — so the two behave
-the same. The saved model it plays is `prototyping-model.md`; the shells, where the player shows
-and the HTML export are `prototyping.md`. Code: `crates/mastik-play`, the play values in
+the same. The saved model it plays is `prototyping-model.md`; the HTML export is
+`prototyping-export.md`; the shells and where the player shows are `prototyping.md`. Code: `crates/mastik-play`, the play values in
 `mastik-core/src/variable.rs`, expressions in `mastik-core/src/prototype/expr.rs`.
 
 ## The copy and its door
@@ -238,6 +238,7 @@ by id, `{<actor-hex>:<seq>}`.
 ## Building for the browser
 
 `mastik-play` depends on `mastik-core` and, behind `scripts`, `mastik-vm`; nothing renders or
-draws (`deps_forbidden` holds it to the headless list). It does not yet build for
-`wasm32-unknown-unknown`: `mastik-core` refuses `panic = "abort"` at compile time, which is the
-open question in `prototyping.md` §10.
+draws (`deps_forbidden` holds it to the headless list). The page's player (`crates/mastik-web`)
+does not use it yet. The page builds `mastik-core` to unwind on a pinned nightly
+(`prototyping-export.md` *The browser build*); `mlua` does not build for that target, so the page
+would take the engine without `scripts`.

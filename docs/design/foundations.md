@@ -42,7 +42,7 @@ Mastik is a native, open-source 2D design tool (Figma-class scope, minimal v1) w
 - Real-time multiplayer: a real future goal. Operation and identity model are designed not to preclude it (§5.2, §12); the sync layer is not built.
 - Plugins.
 - Linked-image loading (§5.5a). Other image-feature non-goals are in §15 D191.
-- Web and mobile. The exported prototype player runs in a browser (`prototyping.md`); the editor does not.
+- Web and mobile. The exported prototype player runs in a browser (`prototyping-export.md`); the editor does not.
 
 ### Non-goals
 
@@ -54,7 +54,7 @@ Versions are pinned in the root `Cargo.toml` `[workspace.dependencies]`; pre-1.0
 
 | Concern | Crate | Notes |
 |---|---|---|
-| Toolchain | Rust edition 2024, stable | `rust-toolchain.toml` |
+| Toolchain | Rust edition 2024, stable | `rust-toolchain.toml`. `crates/mastik-web` alone builds on a pinned nightly, in its own workspace (`prototyping-export.md`) |
 | Windowing | `winit` | `ApplicationHandler` API |
 | GPU | `wgpu` | |
 | Interactive renderer | `vello` (~0.9) | GPU compute |
@@ -86,6 +86,8 @@ mastik/
    ├─ mastik-mcp/             # MCP adapter: the wire, the tool table and schemas, the queue
    ├─ mastik-ai/              # the assistant's agent harnesses: find, seal, spawn, decode
    ├─ mastik-vm/              # Command Mode's language: Luau sandbox, bar sugar, header, completion, `.d.luau`
+   ├─ mastik-play/            # the prototype play engine: played copy, play state, triggers, motion, takes
+   ├─ mastik-web/             # the exported page's player (wasm); its own workspace, excluded from this one
    └─ mastik-app/             # `mastik` binary: GUI shell, tools, panels, `serve`/`export` subcommands
       └─ src/
          ├─ mcp/             # the MCP host: engine and handlers, window and `serve` hosts, endpoint, proxy, grants
@@ -105,6 +107,8 @@ mastik-export ← mastik-core, mastik-render
 mastik-mcp    ← mastik-core
 mastik-ai     ← (no internal deps)
 mastik-vm     ← mastik-core
+mastik-play   ← mastik-core, mastik-vm (behind `scripts`)
+mastik-web    ← mastik-core, mastik-render (its own workspace)
 mastik-app    ← mastik-core, mastik-render, mastik-export, mastik-mcp, mastik-ai, mastik-vm
 ```
 
@@ -116,11 +120,11 @@ mastik-app    ← mastik-core, mastik-render, mastik-export, mastik-mcp, mastik-
 - `mastik-core` MUST NOT depend on `vello*`, `wgpu`, `winit`, `egui`, or any GPU/windowing/UI crate. It must build and pass all tests with no graphics context. Permitted: `kurbo`, `peniko`, `parley` (CPU-only text layout; needed for text bounds, hit-testing and the editing cursor), `rstar`, `serde`, `serde_json`, `rustc-hash`, `thiserror`, `base64` (embedded image bytes), `roxmltree` (XML half of SVG import), `regex` (batch rename's Find), `serde_path_to_error` and `serde_ignored` (a verb's model argument refused naming where it went wrong, and an unknown field refused rather than dropped), `skrifa` and `read-fonts` (font tables read directly), `flo_curves` (boolean solver), `i_overlay` (`=`-pinned; the polygon arithmetic behind *Offset path* and *Outline stroke*), `taffy` (`=`-pinned, features as above). This list must stay set-equal to `mastik-core/Cargo.toml`; `deps_forbidden.rs` holds a copy (`CORE_PERMITTED`) and fails when the manifest differs, while the transitive tree is still checked against a denylist.
 - Only `mastik-render` may depend on `vello` and `vello_cpu`. `wgpu` is shared with `mastik-app` because the GPU backend takes wgpu types and eframe owns the device.
 - Only `mastik-app` may depend on `egui`/`winit`.
-- `mastik-mcp`, `mastik-ai` and `mastik-vm` contain no rendering or UI dependency. `mastik-vm` alone declares `mlua`, which makes it the workspace's one C++ build (no test holds that).
+- `mastik-mcp`, `mastik-ai`, `mastik-vm` and `mastik-play` contain no rendering or UI dependency. `mastik-vm` alone declares `mlua`, which makes it the workspace's one C++ build (no test holds that).
 
 ### Enforcement
 
-`mastik-core/tests/deps_forbidden.rs` inspects the transitive `cargo tree`, read `--workspace` rather than `-p` (with `resolver = "3"` these resolve differently, and every compiling gate resolves workspace-wide). It is a table, `RULES`, one row per rule a dependency tree can express: `mastik-core`, `mastik-mcp`, `mastik-ai` and `mastik-vm` against the headless list; `mastik-render` and `mastik-export` against a second, UI-only list (separate because `glutin_wgl_sys` arrives legitimately under `wgpu-hal` there). The tree is walked once per row.
+`mastik-core/tests/deps_forbidden.rs` inspects the transitive `cargo tree`, read `--workspace` rather than `-p` (with `resolver = "3"` these resolve differently, and every compiling gate resolves workspace-wide). It is a table, `RULES`, one row per rule a dependency tree can express: `mastik-core`, `mastik-mcp`, `mastik-ai`, `mastik-vm` and `mastik-play` against the headless list; `mastik-render` and `mastik-export` against a second, UI-only list (separate because `glutin_wgl_sys` arrives legitimately under `wgpu-hal` there). The tree is walked once per row.
 
 The vello rule is a separate test, `only_mastik_render_declares_vello`, which reads manifests: it is about what a crate may declare, not what a tree may contain. Neither test can express the other's rule.
 

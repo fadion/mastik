@@ -170,6 +170,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **D427/D775** Core and MCP crates stay free of UI and render dependencies, enforced by `deps_forbidden` walking `cargo tree --workspace` against a rules table.
 - **D703** Shared dependency versions are pinned in the workspace `Cargo.toml`.
 - **D445** `panic = "unwind"` is enforced by a `compile_error!`, since `catch_unwind` guards boolean evaluation and font decoding.
+- **2026-11-20 · The exported prototype's player unwinds too, so it is built on a pinned nightly**: `-Zbuild-std=std,panic_unwind` with `-C panic=unwind` and wasm exception handling on `wasm32-unknown-unknown`, in `crates/mastik-web`, a workspace of its own so the nightly never reaches the app (`prototyping-export.md`). The cost: a nightly to keep pinned, wasm-bindgen held at 0.2.108 (later versions want unwind-safe closures wgpu 29 does not pass), and no Luau in the page, since `mlua` cannot build for that target.
 - **D303** `MastikApp::headless(&ctx)` builds the app without GPU, font threads or prefs, so app decisions are testable.
 - **D304** SVG and JSON goldens are byte-compared; PNG goldens are not.
 - **D1095** The MCP tool list covers the model as it is: reads, writes, components, variables, styles, kits and the library. **D1097** Invariant 10 covers document-level actions on §8.3's queue.

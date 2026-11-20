@@ -2,7 +2,8 @@
 
 How a prototype becomes one HTML file a client opens with a double-click: the browser build of
 the player, the trim to the chosen flows, the fonts, and the packing. What is not built yet (the
-export dialog, the player bar, the play engine in the page) is in `prototyping.md` §8. Code:
+export dialog, the player bar, the play engine in the page, *Run script* in the page) is in
+`prototyping.md` §8 and §10. Code:
 `crates/mastik-web` (the page's player), `mastik-export/src/prototype.rs` (the packer),
 `mastik export --prototype` (the CLI).
 

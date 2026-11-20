@@ -1,4 +1,4 @@
-//! The prototype model: what a played document is made of (`docs/prototyping.md` §1).
+//! The prototype model: what a played document is made of.
 //!
 //! Everything here is **saved and authored**: it goes through the commit door, is
 //! undoable, and is copied with its layers. What exists only while a prototype

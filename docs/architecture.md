@@ -2,7 +2,7 @@
 
 Mastik is a native 2D design tool: a Rust workspace of `mastik-core` (the headless document
 model), `mastik-render` (vello on GPU and CPU), `mastik-export` (SVG, PDF, PNG, HTML/CSS, React, Vue, JSON), `mastik-mcp`
-(the agent adapter), `mastik-ai` (the assistant's agent harnesses), `mastik-vm` (Command Mode's Luau) and `mastik-app` (egui + wgpu). This file is the index. The design is in
+(the agent adapter), `mastik-ai` (the assistant's agent harnesses), `mastik-vm` (Command Mode's Luau), `mastik-play` (the prototype play engine) and `mastik-app` (egui + wgpu), with `mastik-web` (the exported prototype's player in WebAssembly) a workspace of its own. This file is the index. The design is in
 `docs/design/`, one file per subsystem. **Open only the file you need.** Headings keep the
 old section numbers, so a `§5.3d` cited from code is found by grepping `docs/design/` for
 `5.3d`.
@@ -40,9 +40,11 @@ Read the file for the exact wording before relying on one.
 | `images.md` | 5.5a | Images; the brush, gradient stops, ends and mixing |
 | `io.md` | 5.11, 5.11a | Save format, schema migration, clipboard envelope, the library block |
 | `prototyping-model.md` | — | The saved prototype: a layer's reactions and play settings, a page's flows, the export settings, their ops, dangling targets, instances and copies |
+| `play.md` | — | The play engine (`mastik-play`): the played copy and its door, play values, play state, the shell's contract, triggers, actions, inputs, scrolling, motion, live update, takes; the expression language |
 | **Render, export, MCP** | | |
 | `render.md` | 6.1–6.3 | The render boundary, `RenderOverrides`, backends |
 | `export.md` | 7 | SVG, PDF, PNG, ICO and ICNS, code export (HTML/CSS, React, Vue), the Penpot and Sketch files, JSON snapshot, the CLI, export doors |
+| `prototyping-export.md` | — | The prototype as one HTML file: the browser build (`mastik-web`, nightly, unwinding), the trim to the chosen flows, fonts, the packed file and its size estimate, where the CLI finds the player |
 | `mcp.md` | 8 | MCP topology, headless mode, concurrency, the tool list (a test parses §8.4), the assistant's tool and grants |
 | `assistant.md` | ai.md 1–7 | The assistant: agent harnesses (`mastik-ai`), sealing, access levels, proposals, the panel, attaching layers, the frame scope, its settings and the agent log |
 | `command-mode.md` | vm.md 1–12 | Command Mode: the Luau sandbox (`mastik-vm`), the bar's sugar, name resolution, collections and properties, one undo step per run, budgets, the log, where scripts live (library, document, kit), the disclosure, the header, the script editor and its language help, the command bar, its `/ai` requests and its Pick focus with leap labels |
@@ -63,6 +65,7 @@ Read the file for the exact wording before relying on one.
 | `app-image-editing.md` | 9.4 | Image fills and image editing |
 | `charts.md` | — | Charts: a frame carrying a chart description, its generated parts, the Chart card, the data window, import and the linked data file, flatten, and binding its colours to variables |
 | `inspector.md` | 9.4 | The inspector cards |
+| `prototyping-authoring.md` | — | The inspector's Prototype tab, the interactions and Prototype cards, connectors and the link knob, instances' interactions, kit publishing, agents |
 | `type-panel.md` | 9.4 | The Type panel and typography popup |
 | `font-picker.md` | 9.4 | The font picker |
 | `library.md` | 9.5 | The library: dashboard, projects, search and its content index, versions, trash, *Import files*; document tabs (open, park, close, next launch) |
