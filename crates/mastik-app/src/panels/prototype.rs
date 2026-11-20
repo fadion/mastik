@@ -36,6 +36,9 @@ pub(crate) struct ProtoState {
     pub expr_fault: Option<(DraftKey, std::ops::Range<usize>)>,
     /// The action being dragged by its grip.
     pub dragging: Option<ActionAt>,
+    /// The unselected layer wearing link dots, noted as the canvas draws so a
+    /// press next frame aims at the dots it saw (`note_link_hover`).
+    pub knob_hover: std::cell::Cell<Option<NodeId>>,
 }
 
 /// One action of one layer's reaction, by item ids, nested ones included.
@@ -841,7 +844,7 @@ pub(crate) fn links_on(doc: &Document, page: NodeId) -> Vec<Link> {
 }
 
 /// `reactions` on `id` with a click navigating to `to` added: to the layer's
-/// first click reaction, or as a new one. What the canvas knob's drop commits.
+/// first click reaction, or as a new one. What a canvas link dot's drop commits.
 pub(crate) fn with_link(
     doc: &Document,
     id: NodeId,
@@ -874,26 +877,73 @@ pub(crate) fn with_link(
 
 // --- the canvas ---------------------------------------------------------------
 
-/// The knob's radius and how far right of the selection's box it sits.
-const KNOB_R: f32 = 6.0;
-const KNOB_GAP: f32 = 10.0;
+/// A link dot's radius at rest and under the pointer: a size up from a shape's
+/// corner dots, so the two handles do not read as one.
+const KNOB_R: f32 = 5.0;
+const KNOB_HOT_R: f32 = 6.0;
+/// How far from a link dot's centre a press still takes it. Wider than its ink
+/// and tested before the box's handles, so the dot on an edge is easy to take
+/// from the resize there.
+const KNOB_PICK: f32 = KNOB_R + 5.0;
+/// A connector's weight, and its arrowhead's length and half-width.
+const LINK_W: f32 = 3.0;
+const HEAD_LEN: f32 = 12.0;
+const HEAD_HALF: f32 = 6.0;
 /// How far a missing or off-page target's stub reaches from its layer.
 const STUB: f32 = 28.0;
+/// The longest straight piece a connector's curve is drawn in, so it stays
+/// smooth however far the canvas is zoomed in.
+const CURVE_STEP: f32 = 3.0;
 
 /// The screen box of a quad.
 fn quad_box(q: [egui::Pos2; 4]) -> egui::Rect {
     egui::Rect::from_points(&q)
 }
 
-/// The cubic from `a` to `b` with level tangents, as points.
-fn curve(a: egui::Pos2, b: egui::Pos2) -> Vec<egui::Pos2> {
-    let reach = ((b.x - a.x).abs() * 0.5).max(24.0);
-    let out = if b.x >= a.x { reach } else { -reach };
-    let c1 = a + egui::vec2(out.abs(), 0.0);
-    let c2 = b - egui::vec2(out, 0.0);
-    (0..=24)
+/// The link dots of a layer's screen quad: each edge's index, its middle, and
+/// the outward direction a link leaves it by. A collapsed edge has none.
+fn knob_dots(q: [egui::Pos2; 4]) -> Vec<(usize, egui::Pos2, egui::Vec2)> {
+    let centre = q.iter().fold(egui::Vec2::ZERO, |s, p| s + p.to_vec2()) / 4.0;
+    (0..4)
+        .filter_map(|i| {
+            let mid = q[i] + (q[(i + 1) % 4] - q[i]) * 0.5;
+            let away = mid.to_vec2() - centre;
+            (away.length() > 0.5).then(|| (i, mid, away.normalized()))
+        })
+        .collect()
+}
+
+/// Where a connector leaves `from` and enters `to`, each with its side's
+/// outward direction: the facing sides when they stand apart across, else
+/// bottom to top or top to bottom.
+fn connector_ends(
+    from: egui::Rect,
+    to: egui::Rect,
+) -> (egui::Pos2, egui::Vec2, egui::Pos2, egui::Vec2) {
+    let (x, y) = (egui::Vec2::X, egui::Vec2::Y);
+    if to.left() >= from.right() {
+        (from.right_center(), x, to.left_center(), -x)
+    } else if to.right() <= from.left() {
+        (from.left_center(), -x, to.right_center(), x)
+    } else if to.center().y >= from.center().y {
+        (from.center_bottom(), y, to.center_top(), -y)
+    } else {
+        (from.center_top(), -y, to.center_bottom(), y)
+    }
+}
+
+/// The cubic from `a`, leaving along `out_a`, to `b`, arriving against `out_b`
+/// (the outward direction of the side it enters; zero for a free end), in
+/// pieces no longer than [`CURVE_STEP`].
+fn curve(a: egui::Pos2, out_a: egui::Vec2, b: egui::Pos2, out_b: egui::Vec2) -> Vec<egui::Pos2> {
+    let reach = ((b - a).length() * 0.4).max(24.0);
+    let c1 = a + out_a * reach;
+    let c2 = b + out_b * reach;
+    let rough = (c1 - a).length() + (c2 - c1).length() + (b - c2).length();
+    let n = ((rough / CURVE_STEP).ceil() as usize).clamp(8, 1024);
+    (0..=n)
         .map(|i| {
-            let t = i as f32 / 24.0;
+            let t = i as f32 / n as f32;
             let u = 1.0 - t;
             let p = a.to_vec2() * (u * u * u)
                 + c1.to_vec2() * (3.0 * u * u * t)
@@ -904,16 +954,32 @@ fn curve(a: egui::Pos2, b: egui::Pos2) -> Vec<egui::Pos2> {
         .collect()
 }
 
-/// An arrowhead at `tip`, pointing along `from → tip`.
-fn arrowhead(painter: &egui::Painter, from: egui::Pos2, tip: egui::Pos2, ink: egui::Color32) {
-    let dir = (tip - from).normalized();
-    if !dir.x.is_finite() {
+/// Stroke `pts` as a connector with an arrowhead on its last point. The line
+/// stops at the head's base, so its weight never shows past the tip.
+fn paint_link(painter: &egui::Painter, mut pts: Vec<egui::Pos2>, dashed: bool, ink: egui::Color32) {
+    let Some(&tip) = pts.last() else { return };
+    let (dir, keep) = match pts.iter().rposition(|p| p.distance(tip) >= HEAD_LEN) {
+        Some(i) => ((tip - pts[i]).normalized(), i + 1),
+        None => ((tip - pts[0]).normalized(), 0),
+    };
+    if dir.length() < 0.5 {
         return;
     }
+    let base = tip - dir * HEAD_LEN;
+    pts.truncate(keep);
+    if !pts.is_empty() {
+        pts.push(base);
+        let stroke = egui::Stroke::new(LINK_W, ink);
+        match dashed {
+            true => painter.extend(egui::Shape::dashed_line(&pts, stroke, 6.0, 4.0)),
+            false => {
+                painter.add(egui::Shape::line(pts, stroke));
+            }
+        }
+    }
     let side = egui::vec2(-dir.y, dir.x);
-    let back = tip - dir * 7.0;
     painter.add(egui::Shape::convex_polygon(
-        vec![tip, back + side * 3.5, back - side * 3.5],
+        vec![tip, base + side * HEAD_HALF, base - side * HEAD_HALF],
         ink,
         egui::Stroke::NONE,
     ));
@@ -990,7 +1056,7 @@ impl MastikApp {
     }
 
     /// Draw the flow chips: the play glyph and the flow's name on a pill of
-    /// the accent, as the knob wears it.
+    /// the accent.
     fn draw_flow_chips(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
         let hover = ui.ctx().pointer_hover_pos();
         for (_, chip, words) in self.flow_chips(ui, rect, ppp) {
@@ -1021,30 +1087,77 @@ impl MastikApp {
         }
     }
 
-    /// The layer whose knob is at `screen`: the one selected layer, while the
-    /// Prototype tab is up and a selecting tool is in hand.
+    /// The layers wearing link dots, while the Prototype tab is up and a
+    /// selecting tool is in hand: the one selected layer, then the hovered one.
+    fn knob_layers(&self) -> Vec<NodeId> {
+        if !self.prototype_tab || !self.tool.selects() {
+            return Vec::new();
+        }
+        let mut out: Vec<NodeId> = self.session.selection.single().into_iter().collect();
+        if let Some(id) = self.proto.knob_hover.get()
+            && !out.contains(&id)
+            && self.session.doc.get(id).is_some()
+        {
+            out.push(id);
+        }
+        out
+    }
+
+    /// The link dot at `screen`, the nearest within reach: its layer and the
+    /// edge it sits on.
     pub(crate) fn link_knob_at(
         &self,
         screen: egui::Pos2,
         rect: egui::Rect,
         ppp: f32,
-    ) -> Option<NodeId> {
-        let (id, at) = self.link_knob(rect, ppp)?;
-        (at.distance(screen) <= KNOB_R + 3.0).then_some(id)
+    ) -> Option<(NodeId, usize)> {
+        self.knob_layers().into_iter().find_map(|id| {
+            knob_dots(self.selection_quad(id, rect, ppp)?)
+                .into_iter()
+                .map(|(edge, at, _)| (edge, at.distance(screen)))
+                .filter(|(_, d)| *d <= KNOB_PICK)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(edge, _)| (id, edge))
+        })
     }
 
-    fn link_knob(&self, rect: egui::Rect, ppp: f32) -> Option<(NodeId, egui::Pos2)> {
-        if !self.prototype_tab || !self.tool.selects() {
-            return None;
-        }
-        let id = self.session.selection.single()?;
-        let b = quad_box(self.selection_quad(id, rect, ppp)?);
-        Some((id, egui::pos2(b.right() + KNOB_GAP, b.center().y)))
+    /// Note which unselected layer wears link dots this frame: the one under
+    /// the pointer, or the one that wore them last frame while the pointer is on
+    /// one of its dots, which sit half outside it.
+    pub(crate) fn note_link_hover(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        ppp: f32,
+        resp: &egui::Response,
+    ) {
+        let live = self.prototype_tab && self.tool.selects() && self.hover_chrome_live();
+        let next = live
+            .then(|| {
+                let p = resp.hover_pos()?;
+                let kept = self.proto.knob_hover.get().filter(|id| {
+                    !self.session.selection.contains(*id)
+                        && self.selection_quad(*id, rect, ppp).is_some_and(|q| {
+                            knob_dots(q)
+                                .iter()
+                                .any(|(_, at, _)| at.distance(p) <= KNOB_PICK)
+                        })
+                });
+                kept.or_else(|| self.hover_target(ui, rect, ppp, resp))
+            })
+            .flatten();
+        self.proto.knob_hover.set(next);
+    }
+
+    /// The layer the hover outline rings for its link dots, while the pointer
+    /// is on one of them outside the layer.
+    pub(crate) fn link_hover(&self) -> Option<NodeId> {
+        self.proto.knob_hover.get().filter(|_| self.prototype_tab)
     }
 
     /// The connectors from each layer with a navigate or overlay action to its
     /// target, the selection's lit and the rest dim; a dangling one is a red
-    /// stub with the warning glyph. Then the knob, and the link it pulls.
+    /// stub with the warning glyph. Then the link dots, and the link one pulls.
     pub(crate) fn draw_prototype_links(
         &self,
         ui: &egui::Ui,
@@ -1063,35 +1176,30 @@ impl MastikApp {
                 continue;
             };
             let lit = self.session.selection.contains(link.from);
+            // The selection's blue: full on the selection's own, softer on the rest.
+            let blue = match lit {
+                true => color::SELECT,
+                false => color::SELECT_DIM,
+            };
             let here = doc.get(link.to).is_some() && doc.page_of(link.to) == Some(page);
             let (ink, pts) = match here
                 .then(|| self.selection_quad(link.to, rect, ppp))
                 .flatten()
             {
                 Some(q) => {
-                    let to = quad_box(q);
-                    let a = egui::pos2(from.right(), from.center().y);
-                    let b = match to.center().x >= from.center().x {
-                        true => egui::pos2(to.left(), to.center().y),
-                        false => egui::pos2(to.right(), to.center().y),
-                    };
-                    let ink = match lit {
-                        true => color::accent(),
-                        false => color::accent_a(90),
-                    };
-                    (ink, curve(a, b))
+                    let (a, out_a, b, out_b) = connector_ends(from, quad_box(q));
+                    (blue, curve(a, out_a, b, out_b))
                 }
                 None => {
-                    let a = egui::pos2(from.right(), from.center().y);
+                    let a = from.right_center();
                     let b = a + egui::vec2(STUB, 0.0);
                     let ink = match doc.get(link.to) {
                         None => color::error(),
-                        Some(_) if lit => color::accent(),
-                        Some(_) => color::accent_a(90),
+                        Some(_) => blue,
                     };
                     if doc.get(link.to).is_none() {
                         painter.text(
-                            b + egui::vec2(9.0, 0.0),
+                            b + egui::vec2(11.0, 0.0),
                             egui::Align2::CENTER_CENTER,
                             icon::WARNING,
                             theme::icon_font(12.0),
@@ -1101,53 +1209,60 @@ impl MastikApp {
                     (ink, vec![a, b])
                 }
             };
-            let stroke = egui::Stroke::new(if lit { 1.5 } else { 1.0 }, ink);
-            match link.dashed {
-                true => {
-                    painter.extend(egui::Shape::dashed_line(&pts, stroke, 4.0, 3.0));
-                }
-                false => {
-                    painter.add(egui::Shape::line(pts.clone(), stroke));
-                }
-            }
-            if let [.., before, tip] = pts.as_slice() {
-                arrowhead(painter, *before, *tip, ink);
-            }
+            paint_link(painter, pts, link.dashed, ink);
         }
-        let Some((id, at)) = self.link_knob(rect, ppp) else {
-            return;
+        // The link being pulled, from the dot it left, and the screen it would land on.
+        let pointer = ui.ctx().pointer_latest_pos();
+        let pulled = match self.drag {
+            Drag::Link { from, edge } => Some((from, edge)),
+            _ => None,
         };
-        if let Drag::Link { from } = self.drag
-            && from == id
-            && let Some(p) = ui.ctx().pointer_latest_pos()
+        if let Some((from, edge)) = pulled
+            && let Some(p) = pointer
+            && let Some(q) = self.selection_quad(from, rect, ppp)
+            && let Some((_, at, out)) = knob_dots(q).into_iter().find(|(e, ..)| *e == edge)
         {
             let world = self.to_world(p, rect, ppp);
-            if let Some(target) = self.link_target(id, world)
+            if let Some(target) = self.link_target(from, world)
                 && let Some(q) = self.selection_quad(target, rect, ppp)
             {
                 painter.add(egui::Shape::closed_line(
                     q.to_vec(),
-                    egui::Stroke::new(2.0, color::accent()),
+                    egui::Stroke::new(2.0, color::SELECT),
                 ));
             }
-            let pts = curve(at, p);
-            painter.add(egui::Shape::line(
-                pts.clone(),
-                egui::Stroke::new(1.5, color::accent()),
-            ));
-            if let [.., before, tip] = pts.as_slice() {
-                arrowhead(painter, *before, *tip, color::accent());
+            paint_link(
+                painter,
+                curve(at, out, p, egui::Vec2::ZERO),
+                false,
+                color::SELECT,
+            );
+        }
+        // The dots, filled where the pointer would take one or one is pulled,
+        // as a shape's dragged corner dot is.
+        let hot = pulled.or_else(|| pointer.and_then(|p| self.link_knob_at(p, rect, ppp)));
+        for id in self.knob_layers() {
+            let Some(q) = self.selection_quad(id, rect, ppp) else {
+                continue;
+            };
+            for (edge, at, _) in knob_dots(q) {
+                if hot == Some((id, edge)) {
+                    painter.circle(
+                        at,
+                        KNOB_HOT_R,
+                        color::SELECT,
+                        egui::Stroke::new(1.5, color::POINT),
+                    );
+                } else {
+                    painter.circle(
+                        at,
+                        KNOB_R,
+                        color::POINT,
+                        egui::Stroke::new(1.5, color::SELECT),
+                    );
+                }
             }
         }
-        painter.circle_filled(at, KNOB_R, color::accent());
-        // text-ink: a mark on the knob's solid accent.
-        painter.text(
-            at,
-            egui::Align2::CENTER_CENTER,
-            icon::INTERACTION,
-            theme::icon_font(9.0),
-            color::on_accent(),
-        );
     }
 
     /// The screen a link from `from` dropped at `world` goes to: the top-level
@@ -1159,12 +1274,12 @@ impl MastikApp {
         (screen_of(doc, from) != Some(screen) && screen != from).then_some(screen)
     }
 
-    /// The knob's drop: one *Navigate to* the screen under the pointer, with the
-    /// page's default transition, as one step.
+    /// A link dot's drop: one *Navigate to* the screen under the pointer, with
+    /// the page's default transition, as one step.
     pub(crate) fn drop_link(&mut self, from: NodeId, world: mastik_core::kurbo::Point) {
         let Some(to) = self.link_target(from, world) else {
             self.session
-                .info("Drop the knob on another frame to link to it");
+                .info("Drop the link on another frame to link to it");
             return;
         };
         let session = &mut self.session;
@@ -3949,7 +4064,7 @@ mod tests {
         assert_eq!(to, f.cart, "another screen than the layer's own");
     }
 
-    /// A link the knob makes takes the page's default transition and joins the
+    /// A link a dot makes takes the page's default transition and joins the
     /// layer's click. flip: `with_link` taking `Transition::default()` → fails at
     /// "the page's default".
     #[test]
@@ -3996,11 +4111,11 @@ mod tests {
         );
     }
 
-    /// Dropping the knob on another screen commits one *Navigate to* as one step;
-    /// on the layer's own screen it links nothing. flip: `link_target` without
-    /// its own-screen test → fails at "nothing on its own frame".
+    /// Dropping a dot's link on another screen commits one *Navigate to* as one
+    /// step; on the layer's own screen it links nothing. flip: `link_target`
+    /// without its own-screen test → fails at "nothing on its own frame".
     #[test]
-    fn dropping_the_knob_on_a_screen_links_to_it() {
+    fn dropping_a_link_on_a_screen_links_to_it() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         f.app.prototype_tab = true;
@@ -4023,6 +4138,80 @@ mod tests {
             f.app.session.doc.get(f.add).unwrap().reactions().is_empty(),
             "one undo step"
         );
+    }
+
+    /// Each edge of the selected layer, and of the hovered one, wears a link dot
+    /// at its middle that takes a press; the layer's middle does not. flip:
+    /// `knob_layers` without the hovered layer → fails at "the hovered layer's".
+    #[test]
+    fn every_edge_wears_a_link_dot() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
+        f.app.prototype_tab = true;
+        f.app.session.selection.set_one(f.add);
+        let q = f.app.selection_quad(f.add, rect, 1.0).expect("on screen");
+        let dots = knob_dots(q);
+        assert_eq!(dots.len(), 4, "one dot an edge");
+        for (edge, at, out) in &dots {
+            let off = *at + *out * (KNOB_PICK - 1.0);
+            assert_eq!(f.app.link_knob_at(off, rect, 1.0), Some((f.add, *edge)));
+        }
+        let middle = quad_box(q).center();
+        assert_eq!(
+            f.app.link_knob_at(middle, rect, 1.0),
+            None,
+            "not its middle"
+        );
+        f.app.session.selection.clear();
+        assert_eq!(
+            f.app.link_knob_at(dots[0].1, rect, 1.0),
+            None,
+            "nothing to wear them"
+        );
+        f.app.proto.knob_hover.set(Some(f.add));
+        assert_eq!(
+            f.app.link_knob_at(dots[0].1, rect, 1.0),
+            Some((f.add, dots[0].0)),
+            "the hovered layer's"
+        );
+        f.app.prototype_tab = false;
+        assert_eq!(
+            f.app.link_knob_at(dots[0].1, rect, 1.0),
+            None,
+            "the Design tab's none"
+        );
+    }
+
+    /// A connector leaves by the side facing its target and is drawn in short
+    /// pieces however long it runs. flip: `curve` at a fixed 24 pieces → fails
+    /// at "a short piece".
+    #[test]
+    fn a_connector_faces_its_target_and_stays_smooth() {
+        let from = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
+        let right = from.translate(egui::vec2(3000.0, 900.0));
+        let (a, out_a, b, out_b) = connector_ends(from, right);
+        assert_eq!((a, out_a), (from.right_center(), egui::Vec2::X));
+        assert_eq!((b, out_b), (right.left_center(), -egui::Vec2::X));
+        let left = from.translate(egui::vec2(-500.0, 0.0));
+        assert_eq!(connector_ends(from, left).0, from.left_center());
+        let below = from.translate(egui::vec2(20.0, 300.0));
+        let (a, _, b, _) = connector_ends(from, below);
+        assert_eq!((a, b), (from.center_bottom(), below.center_top()));
+        let pts = curve(from.right_center(), egui::Vec2::X, b, -egui::Vec2::Y);
+        let long = curve(
+            from.right_center(),
+            egui::Vec2::X,
+            right.left_center(),
+            -egui::Vec2::X,
+        );
+        for p in [&pts, &long] {
+            let worst = p
+                .windows(2)
+                .map(|w| w[0].distance(w[1]))
+                .fold(0.0, f32::max);
+            assert!(worst <= CURVE_STEP * 1.5, "a short piece: {worst}");
+        }
     }
 
     /// The canvas's connectors: one per navigate, dashed inside a conditional, a

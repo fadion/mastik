@@ -2457,7 +2457,7 @@ impl MastikApp {
                 },
                 // Select and Scale differ only in the rest state.
                 Tool::Select | Tool::Scale => {
-                    // The press order (`normal_mode_input`): pivot, handles, guide, rest.
+                    // The press order (`normal_mode_input`): pivot, link dots, handles, guide, rest.
                     if matches!(self.drag, Drag::Pivot { .. })
                         || pointer.is_some_and(|p| self.on_pivot(p, rect, ppp).is_some())
                     {
@@ -2465,6 +2465,11 @@ impl MastikApp {
                             egui::CursorIcon::Move,
                             Some(Bitmap::Arrow(Some(Badge::Pivot))),
                         )
+                    } else if matches!(self.drag, Drag::Link { .. })
+                        || pointer.is_some_and(|p| self.link_knob_at(p, rect, ppp).is_some())
+                    {
+                        // A link dot is taken ahead of the box's handles under it.
+                        self.rest_cursor(None)
                     } else {
                         match &self.drag {
                             // A move or marquee passes over handles and guides it
@@ -2976,14 +2981,13 @@ impl MastikApp {
             return;
         }
 
-        // A click on the Prototype tab's knob links nothing and keeps the selection.
+        // A click on a Prototype tab link dot links nothing and keeps the selection.
         if self.tool.selects()
             && clicked
             && let Some(p) = resp.interact_pointer_pos()
             && self.link_knob_at(p, rect, ppp).is_some()
         {
-            self.session
-                .info("Drag the knob onto a frame to link to it");
+            self.session.info("Drag the dot onto a frame to link to it");
             return;
         }
 
@@ -3245,9 +3249,13 @@ impl MastikApp {
             return;
         }
 
-        // The Prototype tab's knob, over the selection it hangs from.
-        if let Some(from) = self.link_knob_at(grab, rect, ppp) {
-            self.drag = Drag::Link { from };
+        // The Prototype tab's link dots, over the box handles they sit on. A
+        // hovered layer's dot selects it, so the Interactions card shows the link.
+        if let Some((from, edge)) = self.link_knob_at(grab, rect, ppp) {
+            if self.session.selection.single() != Some(from) {
+                self.session.selection.set(vec![from]);
+            }
+            self.drag = Drag::Link { from, edge };
             return;
         }
 
@@ -3708,7 +3716,7 @@ impl MastikApp {
                 let f = self.set_pivot_at(world);
                 self.session.selection.set_pivot(f);
             }
-            Drag::Link { from } => self.drop_link(from, world),
+            Drag::Link { from, .. } => self.drop_link(from, world),
             // Guide and crop releases are finished by their own input paths.
             Drag::CropPan { .. }
             | Drag::CropResize { .. }
@@ -8638,7 +8646,12 @@ impl MastikApp {
             self.stroke_outlines(painter, id, rect, ppp, stroke, self.outline_view(stroke));
             return;
         }
-        let Some(target) = self.hover_target(ui, rect, ppp, resp) else {
+        // A layer wearing link dots stays ringed while the pointer is on a dot
+        // outside it.
+        let Some(target) = self
+            .link_hover()
+            .or_else(|| self.hover_target(ui, rect, ppp, resp))
+        else {
             return;
         };
 
@@ -8685,7 +8698,7 @@ impl MastikApp {
     /// Whether the chrome that answers a *resting* pointer is live this frame —
     /// the hover outline, the key layer's trace, the measure overlay. Not during
     /// a gesture, a text session, or while [`Self::chrome_hidden`] holds.
-    fn hover_chrome_live(&self) -> bool {
+    pub(crate) fn hover_chrome_live(&self) -> bool {
         self.mode == Mode::Normal && self.drag.is_none() && !self.chrome_hidden()
     }
 
@@ -10917,6 +10930,8 @@ impl MastikApp {
         self.draw_warp(painter, rect, ppp);
         self.draw_blend_spine(painter, rect, ppp, resp);
 
+        // Before the hover outline, which rings the layer whose link dots show.
+        self.note_link_hover(ui, rect, ppp, resp);
         self.draw_hover_outline(ui, painter, rect, ppp, resp);
         self.draw_slices(ui, painter, rect, ppp, resp);
         self.draw_panel_hover(painter, rect, ppp);
@@ -11030,7 +11045,7 @@ impl MastikApp {
         // The key layer, over the selection boxes.
         self.draw_key_outline(painter, rect, ppp);
 
-        // The prototype's connectors and the knob, while the Prototype tab is up.
+        // The prototype's connectors and link dots, while the Prototype tab is up.
         if chrome && self.mode == Mode::Normal {
             self.draw_prototype_links(ui, painter, rect, ppp);
             // Each annotated layer's mark, its note on hover.
