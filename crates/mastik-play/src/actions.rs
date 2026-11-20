@@ -331,7 +331,7 @@ impl Player {
             self.page = page;
         }
         self.screen = to;
-        self.focus = None;
+        self.set_focus(None);
         self.on_close(from);
         self.on_open(to);
         self.rehover();
@@ -367,7 +367,7 @@ impl Player {
         }
         self.on_close(o.frame);
         if self.focus.is_some_and(|f| self.frame_of(f).is_none()) {
-            self.focus = None;
+            self.set_focus(None);
         }
         self.rehover();
     }

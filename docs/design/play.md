@@ -104,7 +104,8 @@ out both ends.
   takes it; otherwise the nearest scrolling frame in the chain scrolls with it.
 - A **key** fires *key* reactions in the frame that takes input whose key matches (letters without
   regard to case) and whose Shift matches. While an input text is focused, keys are text: Backspace
-  deletes, Enter and Escape leave the field.
+  deletes, Enter and Escape leave the field. While an input instance is focused, Space and Enter
+  flip it, Escape leaves it, and other keys fire as ever. Tab is never a key trigger (*Inputs*).
 - *After* starts when its frame opens and is dropped when the frame closes. Inside an instance it
   starts again whenever play changes the instance's state, the old state's timers dropped, so a
   variant whose *After* changes its instance to the next variant is **a state that loops** (a
@@ -154,6 +155,12 @@ out both ends.
   variable through its boolean variant property: the value named `true`/`on`/`yes`/`checked`
   (`false`/`off`/`no`/`unchecked` for false), else the property's second value for true and its
   first for false.
+- **Focus** is held by one input at a time: an input text takes it on a click (or a click on the
+  box holding it), and **Tab** and **Shift+Tab** move it through the inputs of the frame that takes
+  input, input texts and input instances alike, in reading order — topmost, then leftmost, ties to
+  the earlier layer — round from the last to the first. Hidden inputs and those in a *Disabled*
+  instance are passed over. A click on anything else, a navigation, or closing the overlay that
+  holds it takes focus away.
 
 ## A component set's interaction states
 
@@ -161,7 +168,10 @@ With nothing authored, an instance whose set has an interaction-state property s
 *Hover* variant while hovered and its *Pressed* variant while pressed, returning to *Hover* on
 release and to the variant it rests on when the pointer leaves. Only an instance linked to a
 variant main, which `variant::can_switch` allows, plays them. An authored hover reaction on the
-instance replaces the automatic hover. *Disabled* takes no input; *Focus* is not played.
+instance replaces the automatic hover. *Disabled* takes no input. The nearest instance holding
+the focused input (the input itself, for an input instance) whose set has a *Focus* value shows
+it while focus stays; hover does not replace it, a press shows *Pressed* and returns to *Focus*,
+and it rests when focus leaves.
 
 ## Scrolling
 

@@ -169,8 +169,11 @@ pub struct Player {
     /// The layers under the pointer, deepest first.
     pub(crate) hovered: Vec<NodeId>,
     pub(crate) press: Option<Press>,
-    /// The input text layer being typed into.
+    /// The input holding focus: a text being typed into, or an input instance
+    /// Tab reached. Set through `Player::set_focus` alone.
     pub(crate) focus: Option<NodeId>,
+    /// The instance showing its *Focus* state for the focused input.
+    pub(crate) focus_shown: Option<NodeId>,
     pub(crate) whiles: Vec<While>,
     pub(crate) timers: Vec<Timer>,
     /// Milliseconds since play started.
@@ -215,6 +218,7 @@ impl Player {
             hovered: Vec::new(),
             press: None,
             focus: None,
+            focus_shown: None,
             whiles: Vec::new(),
             timers: Vec::new(),
             now: 0.0,
@@ -301,8 +305,9 @@ impl Player {
         self.now
     }
 
-    /// The input text layer being typed into, if any. While one is, plain keys
-    /// are text, and Escape leaves it.
+    /// The input holding focus, if any: a text being typed into, while plain
+    /// keys are text, or an input instance, which Space and Enter flip. Escape
+    /// leaves either; Tab and Shift+Tab move between the inputs.
     pub fn focused(&self) -> Option<NodeId> {
         self.focus
     }

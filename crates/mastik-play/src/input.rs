@@ -276,11 +276,12 @@ impl Player {
                 .copied()
                 .find(|c| self.is_text_input(*c))
         });
-        self.focus = chain
+        let focus = chain
             .iter()
             .copied()
             .find(|id| self.is_text_input(*id))
             .or(held);
+        self.set_focus(focus);
         self.press = Some(Press {
             last: p,
             start: p,
@@ -311,9 +312,8 @@ impl Player {
             self.undo(w.undo);
         }
         for id in press.chain.clone() {
-            if self.auto.contains_key(&id)
-                && !(self.hovered.contains(&id) && self.show_state(id, Interaction::Hover))
-            {
+            let hover = self.focus_shown != Some(id) && self.hovered.contains(&id);
+            if self.auto.contains_key(&id) && !(hover && self.show_state(id, Interaction::Hover)) {
                 self.rest(id);
             }
         }
@@ -412,7 +412,8 @@ impl Player {
                 }
             }
             let pressed = self.press.as_ref().is_some_and(|p| p.chain.contains(&id));
-            if !authored && !pressed && self.has_state(id, Interaction::Hover) {
+            let focused = self.focus_shown == Some(id);
+            if !authored && !pressed && !focused && self.has_state(id, Interaction::Hover) {
                 self.show_state(id, Interaction::Hover);
             }
         }
@@ -421,15 +422,28 @@ impl Player {
     // ── Keys and text ────────────────────────────────────────────────────────
 
     fn key(&mut self, key: &str, shift: bool) -> bool {
-        if let Some(field) = self.focus {
+        if key == "Tab" {
+            return self.tab(shift);
+        }
+        if let Some(field) = self.focus.filter(|f| self.is_text_input(*f)) {
             match key {
-                "Escape" | "Enter" => self.focus = None,
+                "Escape" | "Enter" => self.set_focus(None),
                 "Backspace" => self.edit_text(field, |s| {
                     s.pop();
                 }),
                 _ => {}
             }
             return true;
+        }
+        if let Some(input) = self.focus {
+            match key {
+                "Escape" => {
+                    self.set_focus(None);
+                    return true;
+                }
+                " " | "Space" | "Enter" if !shift => return self.flip(input),
+                _ => {}
+            }
         }
         let frame = self.overlays.last().map_or(self.screen, |o| o.frame);
         let mut fire = Vec::new();
@@ -452,7 +466,7 @@ impl Player {
     }
 
     fn text(&mut self, text: &str) -> bool {
-        let Some(field) = self.focus else {
+        let Some(field) = self.focus.filter(|f| self.is_text_input(*f)) else {
             return false;
         };
         let typed: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -612,10 +626,114 @@ impl Player {
         false
     }
 
-    /// Return `instance` from an interaction state to the main it rests on.
+    /// Return `instance` from an interaction state to the main it rests on, or
+    /// to its *Focus* state while it shows the focused input's.
     fn rest(&mut self, instance: NodeId) {
+        if self.focus_shown == Some(instance)
+            && self.show_state(instance, Interaction::FocusVisible)
+        {
+            return;
+        }
         if let Some(rest) = self.auto.remove(&instance) {
             self.switch_to(instance, rest);
         }
+    }
+
+    // ── Focus ────────────────────────────────────────────────────────────────
+
+    /// Give focus to `to` (none: take it away). The instance holding the
+    /// focused input, or the input itself, shows its *Focus* state; the one
+    /// that showed it before rests.
+    pub(crate) fn set_focus(&mut self, to: Option<NodeId>) {
+        self.focus = to;
+        let holder = to.and_then(|f| self.focus_holder(f));
+        if holder == self.focus_shown {
+            return;
+        }
+        if let Some(old) = self.focus_shown.take() {
+            self.rest(old);
+        }
+        if let Some(h) = holder
+            && self.show_state(h, Interaction::FocusVisible)
+        {
+            self.focus_shown = Some(h);
+        }
+    }
+
+    /// The nearest instance from `input` up whose set has a *Focus* state.
+    fn focus_holder(&self, input: NodeId) -> Option<NodeId> {
+        let mut at = Some(input);
+        while let Some(x) = at {
+            if self.has_state(x, Interaction::FocusVisible) {
+                return Some(x);
+            }
+            at = self.doc.get(x).and_then(|n| n.parent());
+        }
+        None
+    }
+
+    /// Move focus to the next input of the frame that takes input in reading
+    /// order (`back`: the one before), round to the first. Answers whether there
+    /// was one to move to.
+    fn tab(&mut self, back: bool) -> bool {
+        let order = self.tab_order();
+        if order.is_empty() {
+            return false;
+        }
+        let at = self.focus.and_then(|f| order.iter().position(|x| *x == f));
+        let n = order.len();
+        let next = match (at, back) {
+            (None, false) => 0,
+            (None, true) => n - 1,
+            (Some(i), false) => (i + 1) % n,
+            (Some(i), true) => (i + n - 1) % n,
+        };
+        self.set_focus(Some(order[next]));
+        true
+    }
+
+    /// The inputs of the frame that takes input (the top overlay, else the
+    /// screen) that can take focus, in reading order: topmost, then leftmost,
+    /// ties to the earlier layer. Hidden ones and those in a disabled instance
+    /// are left out.
+    fn tab_order(&self) -> Vec<NodeId> {
+        let frame = self.overlays.last().map_or(self.screen, |o| o.frame);
+        let mut out: Vec<(f64, f64, usize, NodeId)> = subtree_nodes(&self.doc, &[frame])
+            .into_iter()
+            .enumerate()
+            .filter(|(_, id)| {
+                self.inputs.iter().any(|(x, _)| x == id)
+                    && self.doc.shown_through(*id)
+                    && !self.disabled(*id)
+            })
+            .filter_map(|(i, id)| {
+                let r = self.rect(id)? + self.drawn_shift(id);
+                Some((r.y0, r.x0, i, id))
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+        });
+        out.into_iter().map(|(.., id)| id).collect()
+    }
+
+    /// Flip the boolean input instance `input` holds focus on, as a click does.
+    fn flip(&mut self, input: NodeId) -> bool {
+        let Some(var) = self
+            .doc
+            .get(input)
+            .and_then(|n| n.play().input.clone())
+            .filter(|i| i.property.is_some())
+            .map(|i| i.var)
+        else {
+            return false;
+        };
+        let Some(Value::Boolean(b)) = self.doc.resolve_var(input, var) else {
+            return false;
+        };
+        self.set_play(var, Value::Boolean(!b));
+        true
     }
 }
