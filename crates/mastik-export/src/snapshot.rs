@@ -62,7 +62,10 @@ use std::collections::BTreeMap;
 /// - **27** `PaintSummary::Gradient` gained `extend` and `smooth`, absent at pad
 ///   and sRGB; `NodeSnapshot::mask_inverted`, on an inverted mask only;
 ///   `StrokeSummary::start`, `end` and `marker_size`, on a marked stroke only.
-pub const SNAPSHOT_VERSION: u32 = 27;
+/// - **28** The prototype: `NodeSnapshot::reactions` and `play`,
+///   `PageSnapshot::flows` and `play`, and `Snapshot::play_export`, each absent
+///   when empty or at its default.
+pub const SNAPSHOT_VERSION: u32 = 28;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -70,6 +73,9 @@ pub struct Snapshot {
     /// The pages in order. Each page's root is also in `nodes`, kind `Root`.
     pub pages: Vec<PageSnapshot>,
     pub nodes: Vec<NodeSnapshot>,
+    /// The prototype's HTML export settings, absent at their defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub play_export: Option<serde_json::Value>,
     /// Problems an agent should know about before reasoning over the document
     /// — currently font families the machine does not have, which are being
     /// rendered with a fallback face (§5.4a, §7.3). Empty when all is well.
@@ -102,6 +108,14 @@ pub struct PageSnapshot {
     /// `set_guides` takes; absent when it has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guides: Vec<serde_json::Value>,
+    /// The prototype's ways into the page, in the shape `set_flows` takes;
+    /// absent when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flows: Option<serde_json::Value>,
+    /// The page's prototype settings in the shape `set_page_play` takes; absent
+    /// at their defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub play: Option<serde_json::Value>,
 }
 
 /// One layer. A field absent from the JSON is at its default: `false`, `true`
@@ -239,6 +253,15 @@ pub struct NodeSnapshot {
     /// each with its id; absent when it has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guides: Vec<serde_json::Value>,
+    /// The layer's prototype reactions in the shape `set_reactions` takes, as
+    /// stored: on an instance, a target inside its main names the main's layer.
+    /// Absent when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reactions: Option<serde_json::Value>,
+    /// The layer's prototype settings in the shape `set_play` takes; absent at
+    /// their defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub play: Option<serde_json::Value>,
 }
 
 impl NodeSnapshot {
@@ -762,12 +785,16 @@ pub fn snapshot(doc: &Document, res: &Resolved) -> Snapshot {
                 .and_then(|n| n.modes().first().copied())
                 .map(|m| m.0.to_wire()),
             guides: mastik_core::verbs::guides_value(doc, p.id),
+            flows: (!p.flows.is_empty()).then(|| mastik_core::verbs::play_value(&p.flows)),
+            play: (!p.play.is_empty()).then(|| mastik_core::verbs::play_value(&p.play)),
         })
         .collect();
     Snapshot {
         snapshot_version: SNAPSHOT_VERSION,
         pages,
         nodes,
+        play_export: (!doc.play_export().is_empty())
+            .then(|| mastik_core::verbs::play_value(doc.play_export())),
         warnings,
     }
 }
@@ -942,6 +969,14 @@ fn node_snapshot(
             true => Vec::new(),
             false => mastik_core::verbs::guides_value(doc, id),
         },
+        reactions: (!node.reactions().is_empty()).then(|| {
+            let base = doc
+                .page(page)
+                .map(|p| p.play.transition)
+                .unwrap_or_default();
+            mastik_core::verbs::reactions_value(node.reactions(), &base)
+        }),
+        play: (!node.play().is_empty()).then(|| mastik_core::verbs::play_value(node.play())),
     }
 }
 

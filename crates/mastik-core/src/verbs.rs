@@ -540,6 +540,41 @@ fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
         "RepeatGrid" => reads!(crate::repeat::Grid),
         "ChartTable" => reads!(crate::chart::Table),
         "[Name]" => reads!(Vec<String>),
+        "LayerPlay" => reads!(crate::prototype::LayerPlay),
+        // A transition in part completed from a new page's, which is what the
+        // verb reads too.
+        "PagePlay" => {
+            let mut p = v.clone();
+            if let Some(t) = p.get_mut("transition") {
+                let base = serde_json::to_value(crate::prototype::Transition::default())
+                    .unwrap_or_default();
+                *t = transition_in(Some(t.take()), &base);
+            }
+            settle::<crate::prototype::PagePlay>(model, p)
+        }
+        // Checked with stand-in ids and a new page's transition where the list
+        // leaves them out; the verb fills in its own (`keyed_arg`).
+        "[Reaction]" | "[Flow]" => {
+            let mut p = v.clone();
+            let mut n = 0;
+            let mut mint = || {
+                n += 1;
+                crate::item::ItemId::positional(n)
+            };
+            let read = match model {
+                "[Flow]" => {
+                    ids_in(&mut p, &mut mint);
+                    settle::<Vec<Keyed<crate::prototype::Flow>>>(model, p)
+                }
+                _ => {
+                    let base = serde_json::to_value(crate::prototype::Transition::default())
+                        .unwrap_or_default();
+                    reactions_in(&mut p, &base, &mut mint)
+                        .and_then(|()| settle::<Vec<Keyed<crate::prototype::Reaction>>>(model, p))
+                }
+            };
+            read.map(|_| v.clone())
+        }
         // Patches, whose nulls reset what they name (`patched`): read without
         // them, kept with them.
         "ChartMapping" => {
@@ -1391,6 +1426,20 @@ pub fn example(model: &str) -> Option<Value> {
             "legend": { "position": "Bottom" },
         }),
         "ChartColours" => serde_json::json!({ "Revenue": "#3b82f6" }),
+        "[Reaction]" => serde_json::json!([
+            { "trigger": "Click", "actions": [{ "Navigate": { "to": "7e5b:40" } }] },
+            { "trigger": "HoverWhile", "actions": [{ "ChangeState": {
+                "instance": "7e5b:12", "to": "7e5b:31", "transition": "SmartAnimate" } }] },
+        ]),
+        "LayerPlay" => serde_json::json!({
+            "scroll": "Vertical",
+            "overlay": { "position": "BottomCentre", "backdrop": "#00000066" },
+        }),
+        "[Flow]" => serde_json::json!([{ "name": "Checkout", "start": "7e5b:40" }]),
+        "PagePlay" => serde_json::json!({
+            "scaling": "Fit",
+            "transition": { "kind": "Push", "direction": "Right" },
+        }),
         _ => return None,
     })
     .map(|mut v| {
@@ -4808,6 +4857,53 @@ pub static VERBS: &[Verb] = &[
         },
     },
     Verb {
+        name: "set_flows",
+        doc: "Replace a page's prototype flows: each a name, a start frame and starting variable values",
+        params: &[
+            req("page", NODE, "the page"),
+            req(
+                "flows",
+                ParamKind::Model("[Flow]"),
+                "every flow; one without an `id` is new",
+            ),
+        ],
+        run: |ctx, a| {
+            let page = a.node("page")?;
+            if !ctx.doc.is_page(page) {
+                return Err(a.invalid("page", "not a page"));
+            }
+            let ids = &mut *ctx.ids;
+            let flows: Vec<Keyed<crate::prototype::Flow>> = keyed_arg(a, "flows", "[Flow]", |v| {
+                ids_in(v, &mut || ids.mint_item());
+                Ok(())
+            })?;
+            if let Some(twice) = crate::item::first_duplicate(&flows) {
+                let why = format!("two flows share the id `{}`", twice.0.to_wire());
+                return Err(a.invalid("flows", why));
+            }
+            Ok(Done::ops(vec![Operation::SetFlows { id: page, flows }]))
+        },
+    },
+    Verb {
+        name: "set_page_play",
+        doc: "Set a page's prototype settings: its device, scaling and the transition a new link takes",
+        params: &[
+            req("page", NODE, "the page"),
+            req("play", ParamKind::Model("PagePlay"), "the settings"),
+        ],
+        run: |ctx, a| {
+            let page = a.node("page")?;
+            if !ctx.doc.is_page(page) {
+                return Err(a.invalid("page", "not a page"));
+            }
+            let play = a.model::<crate::prototype::PagePlay>("play")?;
+            if !play.transition.timing.is_usable() {
+                return Err(a.invalid("play", UNUSABLE_TIMING));
+            }
+            Ok(Done::ops(vec![Operation::SetPagePlay { id: page, play }]))
+        },
+    },
+    Verb {
         name: "set_guides",
         doc: "Replace the ruler guides of a frame or a page: a listed guide with an `id` keeps it, one without is added, and an unlisted one is removed",
         params: &[
@@ -5784,6 +5880,64 @@ pub static VERBS: &[Verb] = &[
                 let exports = rekey_by_position(&own, exports.clone(), &mut fresh, ctx.ids);
                 ops.push(Operation::SetExports { id, exports });
             }
+            Ok(Done::ops(ops))
+        },
+    },
+    Verb {
+        name: "set_reactions",
+        doc: "Replace layers' prototype reactions: a trigger and the actions it runs, in order",
+        params: &[
+            req("nodes", NODES, "the layers"),
+            req(
+                "reactions",
+                ParamKind::Model("[Reaction]"),
+                "every reaction; an item without an `id` is new, and a transition left out is the page's",
+            ),
+        ],
+        run: |ctx, a| {
+            let mut ops = Vec::new();
+            for id in existing_layers(ctx, a)? {
+                let base = page_transition(ctx.doc, id);
+                let ids = &mut *ctx.ids;
+                let reactions: Vec<Keyed<crate::prototype::Reaction>> =
+                    keyed_arg(a, "reactions", "[Reaction]", |v| {
+                        reactions_in(v, &base, &mut || ids.mint_item())
+                    })?;
+                if let Some(twice) = crate::item::first_duplicate(&reactions) {
+                    let why = format!("two reactions share the id `{}`", twice.0.to_wire());
+                    return Err(a.invalid("reactions", why));
+                }
+                for (i, r) in reactions.iter().enumerate() {
+                    crate::prototype::check(std::slice::from_ref(r))
+                        .map_err(|e| a.invalid("reactions", format!("at `reactions[{i}]`: {e}")))?;
+                }
+                ops.push(Operation::SetReactions { id, reactions });
+            }
+            Ok(Done::ops(ops))
+        },
+    },
+    Verb {
+        name: "set_play",
+        doc: "Replace layers' prototype settings: a frame's scroll and overlay, a child's pin, an input",
+        params: &[
+            req("nodes", NODES, "the layers"),
+            req("play", ParamKind::Model("LayerPlay"), "the settings"),
+        ],
+        run: |ctx, a| {
+            let play = a.model::<crate::prototype::LayerPlay>("play")?;
+            if !play.is_usable() {
+                return Err(a.invalid(
+                    "play",
+                    "at `play.overlay`: an overlay's position and backdrop are finite numbers",
+                ));
+            }
+            let ops = existing_layers(ctx, a)?
+                .into_iter()
+                .map(|id| Operation::SetPlay {
+                    id,
+                    play: play.clone(),
+                })
+                .collect();
             Ok(Done::ops(ops))
         },
     },
@@ -7668,6 +7822,220 @@ pub fn guides_value(doc: &Document, owner: NodeId) -> Vec<Value> {
             v
         })
         .collect()
+}
+
+/// A layer's reactions as `set_reactions` takes them, each with its id: a
+/// transition's fields left out where they are `base`'s, the page's default that
+/// `set_reactions` fills back in, and colours as hex.
+pub fn reactions_value(
+    reactions: &[Keyed<crate::prototype::Reaction>],
+    base: &crate::prototype::Transition,
+) -> Value {
+    fn tighten(v: &mut Value, base: &Map<String, Value>) {
+        match v {
+            Value::Object(map) => {
+                if let Some(Value::Object(t)) = map.get_mut("transition") {
+                    t.retain(|k, field| base.get(k) != Some(field));
+                    if t.is_empty() {
+                        map.remove("transition");
+                    }
+                }
+                map.values_mut().for_each(|c| tighten(c, base));
+            }
+            Value::Array(items) => items.iter_mut().for_each(|c| tighten(c, base)),
+            _ => {}
+        }
+    }
+    let mut v = serde_json::to_value(reactions).unwrap_or_default();
+    if let Value::Object(base) = serde_json::to_value(base).unwrap_or_default() {
+        tighten(&mut v, &base);
+    }
+    loose::tighten("", &mut v);
+    v
+}
+
+/// A prototype value with no transitions of its own to leave out (a layer's or a
+/// page's play settings, a page's flows) as its setter takes it, colours as hex.
+pub fn play_value<T: serde::Serialize>(value: &T) -> Value {
+    let mut v = serde_json::to_value(value).unwrap_or_default();
+    loose::tighten("", &mut v);
+    v
+}
+
+/// What `set_page_play` says of a timing the door would refuse.
+const UNUSABLE_TIMING: &str = "at `play.transition.timing`: a timing's numbers are finite, a spring's positive, and a cubic bezier's x within 0 to 1";
+
+/// The transition a new link on `id`'s page takes, as serde writes it: what an
+/// action written without one is given.
+fn page_transition(doc: &Document, id: NodeId) -> Value {
+    let t = doc
+        .page_of(id)
+        .and_then(|p| doc.page(p))
+        .map(|p| p.play.transition)
+        .unwrap_or_default();
+    serde_json::to_value(t).unwrap_or_default()
+}
+
+/// The keyed list parameter `name` of the model `model`, read from its short
+/// forms once `prepare` has filled in what the model's serde shape requires and
+/// a caller may leave out: an item's id, an action's transition.
+fn keyed_arg<T: serde::de::DeserializeOwned>(
+    a: &Args<'_>,
+    name: &'static str,
+    model: &str,
+    prepare: impl FnOnce(&mut Value) -> Result<(), String>,
+) -> Result<T, VerbError> {
+    let mut v = a.get(name).cloned().ok_or(VerbError::Missing {
+        verb: a.verb.name,
+        param: name,
+    })?;
+    // Some clients send a parameter with no schema type as JSON text.
+    if let Value::String(s) = &v
+        && let Ok(parsed) = serde_json::from_str::<Value>(s.trim())
+    {
+        v = parsed;
+    }
+    loosen_model(model, "", &mut v).map_err(|e| a.invalid(name, e))?;
+    prepare(&mut v).map_err(|e| a.invalid(name, e))?;
+    let v = settle::<T>(model, v).map_err(|e| a.invalid(name, e))?;
+    serde_json::from_value(v).map_err(|e| a.invalid(name, e))
+}
+
+/// An `id` given to each item of the list `v` written without one.
+fn ids_in(v: &mut Value, mint: &mut dyn FnMut() -> crate::item::ItemId) {
+    for item in v.as_array_mut().into_iter().flatten() {
+        if let Value::Object(map) = item
+            && !map.contains_key("id")
+        {
+            map.insert(
+                "id".into(),
+                serde_json::to_value(mint()).unwrap_or_default(),
+            );
+        }
+    }
+}
+
+/// Each prototype action by its name, and whether it carries a transition: what
+/// an action written as a bare word, or its kind in another case, is read as.
+/// Kept with [`crate::prototype::Action`]'s variants.
+const ACTIONS: [(&str, bool); 11] = [
+    ("Navigate", true),
+    ("Back", false),
+    ("OpenOverlay", true),
+    ("CloseOverlay", true),
+    ("SwapOverlay", true),
+    ("ScrollTo", true),
+    ("ChangeState", true),
+    ("SetVariable", false),
+    ("Conditional", false),
+    ("OpenUrl", false),
+    ("RunScript", false),
+];
+
+/// The list of reactions `v` in its serde shape: an `id` for each reaction and
+/// action written without one, its trigger's slips put right, and each action as
+/// [`actions_in`] reads it; or the first action that does not read, by its path.
+fn reactions_in(
+    v: &mut Value,
+    base: &Value,
+    mint: &mut dyn FnMut() -> crate::item::ItemId,
+) -> Result<(), String> {
+    ids_in(v, mint);
+    for (i, r) in v.as_array_mut().into_iter().flatten().enumerate() {
+        // Settled alone: inside a keyed item serde loses the path a repair needs.
+        if let Some(t) = r.get_mut("trigger")
+            && let Ok(settled) = settle::<crate::prototype::Trigger>("[Reaction]", t.clone())
+        {
+            *t = settled;
+        }
+        if let Some(actions) = r.get_mut("actions") {
+            actions_in(actions, &format!("[{i}].actions"), base, mint)?;
+        }
+    }
+    Ok(())
+}
+
+/// The list of actions `v`, at `path` in the list of reactions, in its serde
+/// shape: a bare word as its kind (`"Back"`), the kind in any case, an `id`
+/// where none is written, a transition written as its kind alone or in part
+/// completed from `base`, each action's slips put right as [`settle`] puts them,
+/// and the actions a conditional nests likewise.
+fn actions_in(
+    v: &mut Value,
+    path: &str,
+    base: &Value,
+    mint: &mut dyn FnMut() -> crate::item::ItemId,
+) -> Result<(), String> {
+    for (j, item) in v.as_array_mut().into_iter().flatten().enumerate() {
+        let at = format!("{path}[{j}]");
+        if let Value::String(word) = item {
+            *item = Value::Object(Map::from_iter([(word.clone(), Value::Null)]));
+        }
+        let Value::Object(map) = item else { continue };
+        let id = map
+            .remove("id")
+            .unwrap_or_else(|| serde_json::to_value(mint()).unwrap_or_default());
+        let written = map.keys().next().cloned();
+        if let Some(written) = written
+            && let Some((name, moves)) = ACTIONS.iter().find(|(n, _)| plain(n) == plain(&written))
+        {
+            let mut body = map.remove(&written).unwrap_or(Value::Null);
+            if *moves && body.is_null() {
+                body = Value::Object(Map::new());
+            }
+            if let Value::Object(fields) = &mut body {
+                if *moves {
+                    let given = fields.remove("transition");
+                    fields.insert("transition".into(), transition_in(given, base));
+                }
+                for (b, branch) in fields
+                    .get_mut("branches")
+                    .and_then(Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    if let Some(nested) = branch.get_mut("actions") {
+                        let inner = format!("{at}.Conditional.branches[{b}].actions");
+                        actions_in(nested, &inner, base, mint)?;
+                    }
+                }
+                if let Some(nested) = fields.get_mut("otherwise") {
+                    let inner = format!("{at}.Conditional.otherwise");
+                    actions_in(nested, &inner, base, mint)?;
+                }
+            }
+            map.insert((*name).into(), body);
+        }
+        // Settled alone, as a trigger is; a conditional's own keyed lists are
+        // settled above.
+        let settled = settle::<crate::prototype::Action>("[Reaction]", Value::Object(map.clone()))
+            .map_err(|e| format!("in `{at}`: {e}"))?;
+        if let Value::Object(settled) = settled {
+            *map = settled;
+        }
+        map.insert("id".into(), id);
+    }
+    Ok(())
+}
+
+/// A transition as written, completed from `base`: left out it is `base`, a word
+/// is its kind, and an object's missing fields are `base`'s.
+fn transition_in(given: Option<Value>, base: &Value) -> Value {
+    match (given, base) {
+        (None | Some(Value::Null), _) => base.clone(),
+        (Some(Value::String(kind)), Value::Object(b)) => {
+            let mut t = b.clone();
+            t.insert("kind".into(), Value::String(kind));
+            Value::Object(t)
+        }
+        (Some(Value::Object(fields)), Value::Object(b)) => {
+            let mut t = b.clone();
+            t.extend(fields);
+            Value::Object(t)
+        }
+        (Some(other), _) => other,
+    }
 }
 
 /// Fill in a tree's `like`s: a layer with `"like": "<id>"` takes that layer's

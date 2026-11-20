@@ -7434,3 +7434,99 @@ fn a_tree_copy_takes_what_it_leaves_out_from_its_main() {
     )[0];
     assert!(doc.get(back).unwrap().paint().fills.is_empty());
 }
+
+/// `set_reactions` reads the short forms: an item without an id is given one,
+/// an action as a bare word or in another case, and a transition left out or
+/// written as its kind completed from the page's; Run script under a trigger no
+/// person fires is refused naming the reaction.
+///
+/// flip: `actions_in` without its transition fill → fails at "the page's
+/// transition"; `set_reactions` without its per-reaction `check` → fails at
+/// "names the reaction", as the door's refusal.
+#[test]
+fn set_reactions_reads_the_short_forms_and_refuses_an_unasked_script() {
+    use mastik_core::prototype::{Action, Direction, PagePlay, Transition, TransitionKind};
+    let (mut doc, mut ids, page) = blank();
+    let push = Transition {
+        kind: TransitionKind::Push,
+        direction: Direction::Right,
+        ..Transition::default()
+    };
+    doc.apply(&Transaction(vec![Operation::SetPagePlay {
+        id: page,
+        play: PagePlay {
+            transition: push,
+            ..PagePlay::default()
+        },
+    }]))
+    .unwrap();
+    let [a, b] = [0, 1].map(|_| {
+        run(
+            &mut doc,
+            &mut ids,
+            "create_node",
+            json!({ "parent": page.to_wire(), "kind": frame(100.0, 100.0) }),
+        )[0]
+    });
+    let reactions = json!([{ "trigger": "click", "actions": [
+        { "navigate": { "to": b.to_wire() } },
+        { "OpenOverlay": { "overlay": b.to_wire(), "transition": "Dissolve" } },
+        "Back",
+    ] }]);
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": reactions }),
+    );
+    let held = doc.get(a).unwrap().reactions().to_vec();
+    assert_eq!(held.len(), 1);
+    let actions: Vec<&Action> = held[0].actions.iter().map(|k| &k.value).collect();
+    assert_eq!(
+        actions[0],
+        &Action::Navigate {
+            to: b,
+            transition: push
+        },
+        "the page's transition"
+    );
+    assert!(
+        matches!(actions[1], Action::OpenOverlay { transition, .. }
+            if transition.kind == TransitionKind::Dissolve && transition.direction == Direction::Right),
+        "a kind alone keeps the rest of the page's: {:?}",
+        actions[1]
+    );
+    assert_eq!(actions[2], &Action::Back);
+    let read = verbs::reactions_value(&held, &push);
+    assert!(
+        read[0]["actions"][0]["Navigate"]
+            .get("transition")
+            .is_none(),
+        "the page's transition is left out of the read: {read}"
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": read }),
+    );
+    assert_eq!(
+        doc.get(a).unwrap().reactions(),
+        &held[..],
+        "what is read writes back as it was"
+    );
+
+    let script = json!([{ "trigger": "Click", "actions": [] },
+        { "trigger": { "After": { "ms": 500 } }, "actions": [{ "RunScript": { "script": "7e5b:99" } }] }]);
+    let refused = answer(
+        &doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": script }),
+    );
+    let why = format!("{:?}", refused.err());
+    assert!(
+        why.contains("reactions[1]") && why.contains("Run script"),
+        "names the reaction: {why}"
+    );
+}

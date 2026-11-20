@@ -476,7 +476,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "set",
-        doc: "Set properties of layers in one undo step, each as its own setter takes it: name, visible, locked, opacity, blend, clip, fills, strokes, effects, exports, display, item, insets, grids, text, text_style, paragraph, block, transform, geometry, element, link, size {width, height}, at [x, y] (its box's left and top in its parent), rotation (degrees), corner_radius, fill, stroke; x, y, width or height alone keeps the rest. Style part of a text with `style_text`.",
+        doc: "Set properties of layers in one undo step, each as its own setter takes it: name, visible, locked, opacity, blend, clip, fills, strokes, effects, exports, display, item, insets, grids, text, text_style, paragraph, block, transform, geometry, element, link, reactions, play, a page's play and flows, size {width, height}, at [x, y] (its box's left and top in its parent), rotation (degrees), corner_radius, fill, stroke; x, y, width or height alone keeps the rest. Style part of a text with `style_text`.",
         params: &[
             param("nodes", ParamKind::Nodes, true, "The layers."),
             param(
@@ -930,10 +930,10 @@ fn model_type(model: &str) -> Option<&'static str> {
     match model {
         "Steps" | "Region" | "Quad" | "[CharAttr]" | "[Effect]" | "[ExportSpec]" | "[Fill]"
         | "[Guide]" | "[Hex]" | "[LayoutGrid]" | "[Name]" | "[Node]" | "[ParaAttr]"
-        | "[Stroke]" => Some("array"),
+        | "[Stroke]" | "[Reaction]" | "[Flow]" => Some("array"),
         "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "ChartColours"
         | "KitModeMap" | "DtcgFile" | "BlockStyle" | "ParagraphStyle" | "TextStyle"
-        | "LayoutItem" | "RepeatLine" | "RepeatGrid" => Some("object"),
+        | "LayoutItem" | "RepeatLine" | "RepeatGrid" | "LayerPlay" | "PagePlay" => Some("object"),
         _ => None,
     }
 }
@@ -1182,7 +1182,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 113_125;
+        const ALL_BUDGET: usize = 115_750;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,
