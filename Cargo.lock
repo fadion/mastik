@@ -2583,6 +2583,8 @@ dependencies = [
 name = "mastik-export"
 version = "0.17.0"
 dependencies = [
+ "base64 0.22.1",
+ "flate2",
  "hayro-svg",
  "image",
  "krilla",
