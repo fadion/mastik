@@ -1397,6 +1397,10 @@ impl MastikApp {
         rect: egui::Rect,
         ppp: f32,
     ) -> Option<(NodeId, usize)> {
+        // A placed overlay's ghost lies over the page: a dot under it is not taken.
+        if self.ghost_at(screen) {
+            return None;
+        }
         self.knob_layers().into_iter().find_map(|id| {
             knob_dots(self.selection_quad(id, rect, ppp)?)
                 .into_iter()
@@ -1816,6 +1820,31 @@ impl MastikApp {
                 .get()
                 .is_some_and(|r| r.contains(screen))
             && self.overlay_placing().is_some()
+    }
+
+    /// The ghost's offset for a drag from `grab` to `world` that began at `from`,
+    /// snapped as a moved layer's box is (Shift keeps it to one axis), and the
+    /// marks that snap draws. Whole points, as the offset is stored.
+    pub(crate) fn snapped_overlay(
+        &self,
+        from: mastik_core::kurbo::Vec2,
+        grab: mastik_core::kurbo::Point,
+        world: mastik_core::kurbo::Point,
+        shift: bool,
+    ) -> (mastik_core::kurbo::Vec2, crate::snap::Marks) {
+        let raw = world - grab;
+        let axes = crate::snap::move_axes(raw, shift);
+        let delta = crate::snap::constrain(raw, axes);
+        let whole =
+            |v: mastik_core::kurbo::Vec2| mastik_core::kurbo::Vec2::new(v.x.round(), v.y.round());
+        let Some(base) = self
+            .overlay_placing()
+            .and_then(|p| self.placing_rect(&Placing { offset: from, ..p }))
+        else {
+            return (whole(from + delta), crate::snap::Marks::default());
+        };
+        let snapped = crate::snap::snap_rect(base + delta, axes, &self.snapping(&[]));
+        (whole(from + delta + snapped.adjust), snapped.marks)
     }
 
     /// The ghost's drop: the offset it was dragged to, in whole points, written
@@ -5165,6 +5194,67 @@ mod tests {
             settings.position,
             OverlayPosition::Manual { x: 10.0, y: 31.0 }
         );
+    }
+
+    /// A dragged ghost snaps its box to a frame's corner as a moved layer does,
+    /// and covers the layer under it: no hover, no link dot.
+    /// flip: `snapped_overlay` answering `from + delta` unsnapped → fails at "the
+    /// frame's corner"; `pointed_at` without its ghost check → fails at "covered".
+    #[test]
+    fn a_placed_overlay_snaps_and_covers_what_is_under_it() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let overlay = f.cart;
+        let at = one_action(
+            &mut f,
+            Action::OpenOverlay {
+                overlay,
+                settings: OverlaySettings {
+                    position: OverlayPosition::Manual { x: 0.0, y: 0.0 },
+                    ..OverlaySettings::default()
+                },
+                transition: Transition::default(),
+            },
+        );
+        f.app.canvas_px = (1200, 900);
+        f.app.session.camera.zoom = 1.0;
+        f.app.session.camera.center = mastik_core::kurbo::Point::new(600.0, 450.0);
+        f.app.proto.open = Some(at);
+        // From (0, 48) the ghost's box is at (20, 68); dragged 2 and 1 short of
+        // Home's top-left.
+        let grab = mastik_core::kurbo::Point::new(100.0, 100.0);
+        let (to, _) = f.app.snapped_overlay(
+            Vec2::new(0.0, 48.0),
+            grab,
+            grab + Vec2::new(-18.0, -67.0),
+            false,
+        );
+        assert_eq!(to, Vec2::new(-20.0, -20.0), "the frame's corner");
+        // *Add to cart*, under the ghost at its saved (0, 0), answers the pointer
+        // until the ghost is drawn.
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
+        let over = f
+            .app
+            .to_screen(mastik_core::kurbo::Point::new(60.0, 40.0), rect, 1.0);
+        let mut seen = Vec::new();
+        for frame in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(rect),
+                events: vec![egui::Event::PointerMoved(over)],
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                let resp = ui.interact(rect, ui.id().with("canvas"), egui::Sense::hover());
+                let painter = ui.painter().clone();
+                seen.push(f.app.pointed_at(ui, rect, 1.0, &resp));
+                if frame >= 2 {
+                    f.app.draw_placing(ui, &painter, rect, 1.0);
+                }
+            });
+        }
+        assert!(seen[2].is_some(), "fixture: a layer under the pointer");
+        assert_eq!(seen[3], None, "covered");
+        assert!(f.app.link_knob_at(over, rect, 1.0).is_none());
     }
 
     fn draw(app: &mut MastikApp, ctx: &egui::Context) -> egui::FullOutput {

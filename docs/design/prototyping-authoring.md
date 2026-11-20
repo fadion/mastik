@@ -183,9 +183,11 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   `draw_canvas` beside the crop's) built as the frame draws by `mastik_render::ghost_as_drawn`
   (layout's boxes, the cached text and boolean outlines, ids minted under `PLACING_ACTOR` so no
   lookup reaches the frame itself), ringed in `color::SELECT`, heavier under the pointer. A press
-  on it drags it (`Drag::OverlayAt`), ahead of the box handles under it; the release writes the
-  offset in whole points as one *Overlay* step (`drop_overlay`). A click on it does nothing and
-  keeps the popover open. The ghost follows an X or Y field while it is scrubbed or typed
+  on it drags it (`Drag::OverlayAt`), ahead of the box handles under it, its box snapping as a
+  moved layer's does, Shift keeping it to one axis (`snapped_overlay`); the release writes the
+  offset in whole points as one *Overlay* step (`drop_overlay`). It covers what is under it: no
+  layer there is hovered or picked (`pointed_at`), and no link dot there is taken. A click on it
+  does nothing and keeps the popover open. The ghost follows an X or Y field while it is scrubbed or typed
   (`ProtoState::held_at`).
 - **Flow chips** (`flow_chips`), while the Prototype tab is up: each flow's name behind the
   `PLAY` glyph on a `color::BADGE` pill (the canvas badges' blue, `ui::pill_ink(BADGE)` ink) over

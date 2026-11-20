@@ -3423,14 +3423,13 @@ impl MastikApp {
             ui.ctx().request_repaint();
             return;
         }
-        // The ghost follows the pointer in whole points; the chrome ghost is
-        // rebuilt from it next frame.
-        if let Drag::OverlayAt {
-            grab, from, now, ..
-        } = &mut self.drag
-        {
-            let d = world - *grab;
-            *now = *from + Vec2::new(d.x.round(), d.y.round());
+        // The ghost follows the pointer in whole points, snapping as a moved
+        // layer does; the chrome ghost is rebuilt from it next frame.
+        if let Drag::OverlayAt { grab, from, .. } = self.drag {
+            let (to, _) = self.snapped_overlay(from, grab, world, shift);
+            if let Drag::OverlayAt { now, .. } = &mut self.drag {
+                *now = to;
+            }
             ui.ctx().request_repaint();
             return;
         }
@@ -8848,6 +8847,10 @@ impl MastikApp {
         if ui.ctx().layer_id_at(p).is_some_and(|l| l != ui.layer_id()) {
             return None;
         }
+        // A placed overlay's ghost covers what is under it.
+        if self.ghost_at(p) {
+            return None;
+        }
         if let Some(h) = self.selection_handles(rect, ppp)
             && h.armed(p, false).is_some()
         {
@@ -11164,6 +11167,9 @@ impl MastikApp {
                     id, handle, grab, ..
                 } => self.snapped_point_box(*id, *handle, *grab, world).1.into(),
                 Drag::LineEnd { id, which } => self.line_end_marks(*id, *which, world, shift),
+                Drag::OverlayAt { grab, from, .. } => {
+                    self.snapped_overlay(*from, *grab, world, shift).1
+                }
                 _ if pen_hover => self.pen_point(world, shift).1,
                 _ => snap::Marks::default(),
             };
