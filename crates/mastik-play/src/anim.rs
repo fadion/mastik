@@ -128,9 +128,9 @@ struct Track {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Smart {
     tracks: Vec<Track>,
-    /// Layers of the end with no pair: they fade in.
+    /// Layers of the end with no pair: they fade in, or slide in under `slide`.
     fade_in: Vec<NodeId>,
-    /// Layers of the outgoing frame with no pair: they fade out.
+    /// Layers of the outgoing frame with no pair: they fade out, or slide out.
     fade_out: Vec<NodeId>,
     /// Paired layers of the outgoing frame, which the end's layers draw.
     hide: Vec<NodeId>,
@@ -139,6 +139,11 @@ pub(crate) struct Smart {
     carry: Vec<(NodeId, NodeId)>,
     /// The outgoing frame, drawn with its own paint blank.
     blank: Option<NodeId>,
+    /// Between frames, the screen's span toward the transition's side: the
+    /// unpaired layers slide along it, the end's arriving from the far side and
+    /// the outgoing frame's leaving toward it, instead of fading. Each layer's
+    /// parent's look at its end, by layer, turns the shift into its own space.
+    slide: Option<(Vec2, FxHashMap<NodeId, Affine>)>,
 }
 
 /// A layer's pairing key below a smart animate's frame: each step its name, or
@@ -148,8 +153,8 @@ type Path = Vec<(String, usize)>;
 
 impl Smart {
     /// Pair the layers of frames `a` and `b` by name and path, and capture both
-    /// ends.
-    pub(crate) fn between_frames(p: &Player, a: NodeId, b: NodeId) -> Smart {
+    /// ends. The unpaired layers slide toward `direction`'s side.
+    pub(crate) fn between_frames(p: &Player, a: NodeId, b: NodeId, direction: Direction) -> Smart {
         let paths_a = p.paths(a);
         let by_path: FxHashMap<&Path, NodeId> = paths_a.iter().map(|(id, k)| (k, *id)).collect();
         let mut pair: FxHashMap<NodeId, NodeId> = FxHashMap::default();
@@ -221,6 +226,17 @@ impl Smart {
                 false => smart.hide.push(*id),
             }
         }
+        let size = p.size(b);
+        let d = toward(direction);
+        let span = Vec2::new(d.x * size.width, d.y * size.height);
+        let mut parents = FxHashMap::default();
+        for (ids, frame) in [(&smart.fade_in, b), (&smart.fade_out, a)] {
+            for id in ids {
+                let parent = p.doc.get(*id).and_then(|n| n.parent()).unwrap_or(frame);
+                parents.insert(*id, p.look(frame, parent).rel);
+            }
+        }
+        smart.slide = Some((span, parents));
         smart
     }
 
@@ -263,6 +279,15 @@ impl Smart {
             }
         }
         smart
+    }
+
+    /// An unpaired layer's local transform shifted `k` spans along the slide,
+    /// or `None` when this smart animate fades instead.
+    fn slid(&self, p: &Player, id: NodeId, k: f64) -> Option<Affine> {
+        let (span, parents) = self.slide.as_ref()?;
+        let parent = parents.get(&id).copied().unwrap_or(Affine::IDENTITY);
+        let local = p.res.used_local(&p.doc, id).unwrap_or(Affine::IDENTITY);
+        Some(parent.inverse() * Affine::translate(*span * k) * parent * local)
     }
 
     fn tracked(&self, id: NodeId) -> bool {
@@ -311,7 +336,10 @@ impl Smart {
         }
         for id in &self.fade_in {
             if let Some(n) = p.doc.get(*id) {
-                out.get(*id).opacity = Some(n.opacity() * fade);
+                match self.slid(p, *id, t - 1.0) {
+                    Some(at) => out.get(*id).transform = Some(at),
+                    None => out.get(*id).opacity = Some(n.opacity() * fade),
+                }
             }
         }
         // The outgoing frame's carriers move as their pairs do.
@@ -326,7 +354,10 @@ impl Smart {
         }
         for id in &self.fade_out {
             if let Some(n) = p.doc.get(*id) {
-                out.get(*id).opacity = Some(n.opacity() * (1.0 - fade));
+                match self.slid(p, *id, t) {
+                    Some(at) => out.get(*id).transform = Some(at),
+                    None => out.get(*id).opacity = Some(n.opacity() * (1.0 - fade)),
+                }
             }
         }
         if let Some(a) = self.blank {

@@ -680,9 +680,11 @@ fn a_frame_scrolls_its_content_by_pin() {
 // ── Motion ──────────────────────────────────────────────────────────────────
 
 /// Smart animate pairs layers by name: the paired one moves and resizes between
-/// its two places, the new one fades in, the outgoing pair is hidden.
+/// its two places, the outgoing pair is hidden, and the unpaired layers slide
+/// toward the direction's side, the new one arriving and the gone one leaving.
 ///
-/// flip: `Player::paths` keying by id instead of name → fails at "paired by name".
+/// flip: `Player::paths` keying by id instead of name → fails at "paired by name";
+/// `Smart::between_frames` leaving `slide` unset → fails at "enters from the right".
 #[test]
 fn smart_animate_pairs_layers_by_name() {
     let mut fx = Fx::new();
@@ -712,9 +714,23 @@ fn smart_animate_pairs_layers_by_name() {
         "paired by name"
     );
     assert_eq!(moved.size, Some(Size::new(30.0, 20.0)));
-    assert_eq!(patch(new).and_then(|x| x.opacity), Some(0.5), "fades in");
+    // Toward the left: half way, the new one is half a screen right of its place.
+    assert_eq!(
+        patch(new)
+            .and_then(|x| x.transform)
+            .map(|t| t.translation()),
+        Some(Vec2::new(100.0, 60.0)),
+        "enters from the right"
+    );
+    assert_eq!(patch(new).and_then(|x| x.opacity), None, "not faded");
     assert_eq!(patch(box_a).and_then(|x| x.visible), Some(false), "hidden");
-    assert_eq!(patch(gone).and_then(|x| x.opacity), Some(0.5), "fades out");
+    assert_eq!(
+        patch(gone)
+            .and_then(|x| x.transform)
+            .map(|t| t.translation()),
+        Some(Vec2::new(50.0, 0.0)),
+        "leaves to the left"
+    );
     let order: Vec<_> = s.layers.iter().map(|l| l.frame).collect();
     assert_eq!(order, vec![b, a], "the outgoing frame over the end");
     p.tick(50.0);

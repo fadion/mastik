@@ -325,7 +325,7 @@ impl Player {
             transition,
             start: self.now,
             smart: (transition.kind == TransitionKind::SmartAnimate)
-                .then(|| Smart::between_frames(self, from, to)),
+                .then(|| Smart::between_frames(self, from, to, transition.direction)),
         });
         if let Some(page) = self.doc.page_of(to) {
             self.page = page;

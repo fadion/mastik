@@ -181,13 +181,15 @@ whatever else patched it.
   its siblings with that key it is — so a pair's parents are paired too. Both ends are laid out
   when it starts and never again. A paired layer's transform (moved, turned the short way, scaled
   and sheared, each interpolated), box size, opacity and solid fills interpolate; the frame's own
-  paint does too. The end's unpaired layers fade in. The outgoing frame is drawn over the end with
-  its background blank: its paired layers hidden, its unpaired ones fading out, and a paired layer
-  that holds a fading one moving with its pair, its own paint blank. Smart animate has no direction,
-  so nothing enters from a side.
+  paint does too. The unpaired layers move by the transition's direction, a screen's width or
+  height: the end's slide in from the far side to their places, the outgoing frame's slide out
+  toward the side, as *push* moves frames, none of them fading. The outgoing frame is drawn over
+  the end with its background blank: its paired layers hidden, its unpaired ones leaving, and a
+  paired layer that holds a leaving one moving with its pair, its own paint blank. The shift is
+  measured in each layer's parent as it stands at its end.
 - **A change of state** with any transition but *instant* animates as smart animate over the
-  instance, paired by id (the switch keeps them), measured from the instance's parent. Layers the
-  new state lacks are gone at once; its new ones fade in. Siblings moved by the instance's new size
+  instance, paired by id (the switch keeps them), measured from the instance's parent, with no
+  direction. Layers the new state lacks are gone at once; its new ones fade in. Siblings moved by the instance's new size
   jump.
 - A new navigation replaces a screen transition under way.
 
