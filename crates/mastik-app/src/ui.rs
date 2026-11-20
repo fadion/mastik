@@ -2621,6 +2621,41 @@ pub fn text_field(
     })
 }
 
+/// Underline, in the error colour, the byte range `at` of `text` as the
+/// [`text_field`] `field` (its response, a row `row_h` tall) draws it: where a
+/// refusal says the fault is. A range past the text's end marks a short stroke
+/// after it, where something is missing.
+pub fn field_underline(
+    ui: &egui::Ui,
+    field: &egui::Response,
+    row_h: f32,
+    text: &str,
+    at: std::ops::Range<usize>,
+) {
+    let font = egui::FontId::proportional(Scale::of(row_h).text_pt());
+    let boundary = |i: usize| {
+        (0..=i.min(text.len()))
+            .rev()
+            .find(|j| text.is_char_boundary(*j))
+            .unwrap_or(0)
+    };
+    let width = |s: &str| {
+        ui.fonts_mut(|f| {
+            f.layout_no_wrap(s.to_owned(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    let left = field.rect.left() + FIELD_PAD_X;
+    let x0 = left + width(&text[..boundary(at.start)]);
+    let x1 = (left + width(&text[..boundary(at.end)])).max(x0 + 4.0);
+    let y = field.rect.center().y + font.size * 0.62;
+    ui.painter().with_clip_rect(field.rect).line_segment(
+        [egui::pos2(x0, y), egui::pos2(x1, y)],
+        egui::Stroke::new(1.0, color::error()),
+    );
+}
+
 /// A colour typed as text, in one [`text_field`]-like row: the paint's
 /// [`swatch`] chip at the row's start, then the text, retyped rather than
 /// inserted into on focus as the inspector's hex is. For a form that asks for a

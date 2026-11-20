@@ -15,7 +15,7 @@ use mastik_core::prototype::{
     Action, Branch, Direction, Easing, Expr, Flow, Input, LayerPlay, OverlayPosition, PagePlay,
     Pin, Reaction, Scaling, ScrollAxis, Timing, Transition, TransitionKind, Trigger, VarChange,
 };
-use mastik_core::variable::{VarId, VarKind};
+use mastik_core::variable::{Cell, VarId, VarKind};
 use mastik_core::{Document, NodeKind, Operation, Transaction};
 
 /// The Prototype tab's state between frames: its open popover, a typed field's
@@ -31,6 +31,11 @@ pub(crate) struct ProtoState {
     /// A number field being scrubbed or typed: the saved model is never previewed
     /// (its operations draw nothing), so the field shows the value held here.
     pub scrub: Option<(egui::Id, f64)>,
+    /// Where in a refused expression's typed text the fault is, for its field's
+    /// underline.
+    pub expr_fault: Option<(DraftKey, std::ops::Range<usize>)>,
+    /// The action being dragged by its grip.
+    pub dragging: Option<ActionAt>,
 }
 
 /// One action of one layer's reaction, by item ids, nested ones included.
@@ -50,6 +55,10 @@ pub(crate) enum DraftKey {
     Url(ItemId),
     /// A flow's name.
     FlowName(ItemId),
+    /// An overlay's backdrop colour, by the overlay frame.
+    Backdrop(NodeId),
+    /// A flow's starting value, by its place in the flow's list.
+    FlowValue(ItemId, usize),
 }
 
 /// Where in a reaction a new action goes.
@@ -408,6 +417,27 @@ pub(crate) fn shift(list: &mut [Keyed<Action>], id: ItemId, up: bool) -> bool {
     })
 }
 
+/// Move the action `id` to `to` within its own list, `to` counted among the
+/// list without it; whether it moved.
+pub(crate) fn move_to(list: &mut Vec<Keyed<Action>>, id: ItemId, to: usize) -> bool {
+    if let Some(i) = list.iter().position(|k| k.id == id) {
+        let k = list.remove(i);
+        let to = to.min(list.len());
+        list.insert(to, k);
+        return i != to;
+    }
+    list.iter_mut().any(|k| match &mut k.value {
+        Action::Conditional {
+            branches,
+            otherwise,
+        } => {
+            branches.iter_mut().any(|b| move_to(&mut b.actions, id, to))
+                || move_to(otherwise, id, to)
+        }
+        _ => false,
+    })
+}
+
 /// Where the action `id` sits in its list and how long that list is.
 fn position(list: &[Keyed<Action>], id: ItemId) -> Option<(usize, usize)> {
     if let Some(i) = list.iter().position(|k| k.id == id) {
@@ -462,24 +492,30 @@ pub(crate) fn expr_shown(doc: &Document, e: &Expr) -> String {
 /// What was typed into an expression field, as stored: each `{name}` written as
 /// its variable's id. Refused, with the reason, when it does not read, names a
 /// variable no one has, or (for *Set variable*, `want`) comes to another kind.
+/// A refusal carries the byte range of the typed text it is about, when the
+/// expression names one.
 pub(crate) fn expr_stored(
     doc: &Document,
     text: &str,
     want: Option<VarKind>,
-) -> Result<Expr, String> {
+) -> Result<Expr, (String, Option<std::ops::Range<usize>>)> {
     let (e, error) = Expr::from_names(text, &|n| doc.variables().by_name(n).map(|v| v.id));
     if let Some(why) = error {
-        return Err(capitalised(&why.to_string()));
+        return Err((capitalised(&why.to_string()), Some(why.at())));
     }
     if let Some(want) = want {
+        // `kind` reads the stored form, whose ranges are not the typed text's.
         let got = e
             .kind(&|v| doc.variables().get(v).map(|v| v.kind))
-            .map_err(|why| capitalised(&why.to_string()))?;
+            .map_err(|why| (capitalised(&why.to_string()), None))?;
         if got != want {
-            return Err(format!(
-                "This comes to a {}, not a {}",
-                kind_word(got),
-                kind_word(want)
+            return Err((
+                format!(
+                    "This comes to a {}, not a {}",
+                    kind_word(got),
+                    kind_word(want)
+                ),
+                None,
             ));
         }
     }
@@ -882,7 +918,108 @@ fn arrowhead(painter: &egui::Painter, from: egui::Pos2, tip: egui::Pos2, ink: eg
     ));
 }
 
+/// A flow chip's height on the canvas, and the gap it keeps above its frame.
+const FLOW_CHIP_H: f32 = 20.0;
+const FLOW_CHIP_GAP: f32 = 6.0;
+
 impl MastikApp {
+    /// The flow chips on the current page while the Prototype tab is up: each
+    /// flow's name over its start frame's top-right corner, which plays it.
+    /// Each chip's flow, rect and words; a frame starting several flows stacks
+    /// them leftward.
+    pub(crate) fn flow_chips(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        ppp: f32,
+    ) -> Vec<(mastik_core::prototype::FlowRef, egui::Rect, String)> {
+        if !self.prototype_tab {
+            return Vec::new();
+        }
+        let doc = &self.session.doc;
+        let page = self.session.page;
+        let Some(info) = doc.page(page) else {
+            return Vec::new();
+        };
+        let font = egui::FontId::proportional(ui::SMALL_PT);
+        let mut out: Vec<(mastik_core::prototype::FlowRef, egui::Rect, String)> = Vec::new();
+        for f in &info.flows {
+            let Some(frame) = self.selection_quad(f.start, rect, ppp).map(quad_box) else {
+                continue;
+            };
+            let words = crate::private::flow(&f.name, out.len()).into_owned();
+            let text_w = ui.fonts_mut(|fx| {
+                fx.layout_no_wrap(words.clone(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            });
+            let w = text_w + 12.0 + 14.0;
+            // Leftward of any chip this frame already wears.
+            let right = out
+                .iter()
+                .filter(|(r, ..)| {
+                    info.flows
+                        .iter()
+                        .any(|x| x.id == r.flow && x.start == f.start)
+                })
+                .map(|(_, c, _)| c.left() - 4.0)
+                .fold(frame.right(), f32::min);
+            let chip = egui::Rect::from_min_max(
+                egui::pos2(right - w, frame.top() - FLOW_CHIP_GAP - FLOW_CHIP_H),
+                egui::pos2(right, frame.top() - FLOW_CHIP_GAP),
+            );
+            let r = mastik_core::prototype::FlowRef { page, flow: f.id };
+            out.push((r, chip, words));
+        }
+        out
+    }
+
+    /// The flow whose chip is at `screen`.
+    pub(crate) fn flow_chip_at(
+        &self,
+        ui: &egui::Ui,
+        screen: egui::Pos2,
+        rect: egui::Rect,
+        ppp: f32,
+    ) -> Option<mastik_core::prototype::FlowRef> {
+        self.flow_chips(ui, rect, ppp)
+            .into_iter()
+            .find(|(_, c, _)| c.contains(screen))
+            .map(|(r, ..)| r)
+    }
+
+    /// Draw the flow chips: the play glyph and the flow's name on a pill of
+    /// the accent, as the knob wears it.
+    fn draw_flow_chips(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
+        let hover = ui.ctx().pointer_hover_pos();
+        for (_, chip, words) in self.flow_chips(ui, rect, ppp) {
+            let lit = hover.is_some_and(|p| chip.contains(p));
+            painter.rect_filled(
+                chip,
+                FLOW_CHIP_H / 2.0,
+                match lit {
+                    true => color::accent(),
+                    false => color::accent_a(220),
+                },
+            );
+            // text-ink: words on the chip's solid accent.
+            painter.text(
+                egui::pos2(chip.left() + 13.0, chip.center().y),
+                egui::Align2::CENTER_CENTER,
+                icon::PLAY,
+                theme::icon_font(10.0),
+                color::on_accent(),
+            );
+            painter.text(
+                egui::pos2(chip.left() + 22.0, chip.center().y),
+                egui::Align2::LEFT_CENTER,
+                words,
+                egui::FontId::proportional(ui::SMALL_PT),
+                color::on_accent(),
+            );
+        }
+    }
+
     /// The layer whose knob is at `screen`: the one selected layer, while the
     /// Prototype tab is up and a selecting tool is in hand.
     pub(crate) fn link_knob_at(
@@ -917,6 +1054,7 @@ impl MastikApp {
         if !self.prototype_tab {
             return;
         }
+        self.draw_flow_chips(ui, painter, rect, ppp);
         let doc = &self.session.doc;
         let page = self.session.page;
         for link in links_on(doc, page) {
@@ -1464,6 +1602,16 @@ impl MastikApp {
                     .info("Nothing in the document for that action to name"),
             }
         }
+        if let Some((moved, to)) = list_out.reorder {
+            let mut v = r.value.clone();
+            if move_to(&mut v.actions, moved, to) {
+                out.write = Some((
+                    with(&|x: &mut Reaction| *x = v.clone()),
+                    "Move action",
+                    icon::DOTS_SIX_VERTICAL,
+                ));
+            }
+        }
         if let Some(gone) = list_out.remove {
             let mut v = r.value.clone();
             remove(&mut v.actions, gone);
@@ -1650,6 +1798,8 @@ impl MastikApp {
         indent: f32,
         out: &mut ListOut,
     ) {
+        // Each row's rect, for where a dragged one would land among them.
+        let mut rows: Vec<(ItemId, egui::Rect)> = Vec::new();
         for k in list {
             let open = self.proto.open
                 == Some(ActionAt {
@@ -1657,7 +1807,15 @@ impl MastikApp {
                     reaction: r.id,
                     action: k.id,
                 });
-            let (row, resp) = self.action_row(ui, id, k, indent, open);
+            let (row, resp) = self.action_row(ui, id, k, indent, open, list.len() > 1);
+            rows.push((k.id, resp.rect));
+            if row.grabbed {
+                self.proto.dragging = Some(ActionAt {
+                    node: id,
+                    reaction: r.id,
+                    action: k.id,
+                });
+            }
             if row.open {
                 self.proto.open = match open {
                     true => None,
@@ -1701,6 +1859,36 @@ impl MastikApp {
                 }
                 self.action_rows(ui, id, r, otherwise, indent + NEST, out);
             }
+        }
+        // A drag held by one of this list's rows: the line where it would land,
+        // and the move once it is let go.
+        let Some(d) = self.proto.dragging else {
+            return;
+        };
+        if d.node != id || d.reaction != r.id || !rows.iter().any(|(a, _)| *a == d.action) {
+            return;
+        }
+        let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_down()));
+        let Some(p) = pointer else {
+            return;
+        };
+        let others: Vec<&(ItemId, egui::Rect)> =
+            rows.iter().filter(|(a, _)| *a != d.action).collect();
+        let to = others.iter().filter(|(_, rr)| rr.center().y < p.y).count();
+        if down {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            let y = match others.get(to) {
+                Some((_, rr)) => rr.top() - 1.0,
+                None => others.last().map_or(p.y, |(_, rr)| rr.bottom() + 1.0),
+            };
+            let x = rows
+                .first()
+                .map_or(ui.max_rect().x_range(), |(_, rr)| rr.x_range());
+            ui.painter()
+                .hline(x, y, egui::Stroke::new(2.0, color::accent()));
+        } else {
+            self.proto.dragging = None;
+            out.reorder = Some((d.action, to));
         }
     }
 
@@ -1753,6 +1941,7 @@ impl MastikApp {
         k: &Keyed<Action>,
         indent: f32,
         open: bool,
+        reorderable: bool,
     ) -> (RowOut, egui::Response) {
         const CLOSE_W: f32 = 18.0;
         let doc = &self.session.doc;
@@ -1765,6 +1954,7 @@ impl MastikApp {
             _ => kind.label(),
         };
         let mut out = RowOut::default();
+        let mut grip_right = None;
         let resp = ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = COL;
@@ -1781,6 +1971,9 @@ impl MastikApp {
                         );
                     }
                     ui.spacing_mut().item_spacing.x = 7.0;
+                    let g = ui::grip(ui, reorderable, size.y);
+                    out.grabbed = g.drag_started();
+                    grip_right = Some(g.rect.right());
                     let ink = match missing {
                         Some(_) => color::error(),
                         None => theme::text::muted(),
@@ -1823,6 +2016,10 @@ impl MastikApp {
                 });
                 let mut hit = ground;
                 hit.max.x -= CLOSE_W + ui::FIELD_PAD_X;
+                // The grip keeps its own press.
+                if let Some(x) = grip_right {
+                    hit.min.x = hit.min.x.max(x);
+                }
                 let resp = ui.interact(
                     hit,
                     ui.id().with(("action-row", k.id)),
@@ -2633,6 +2830,11 @@ impl MastikApp {
             })
             .inner;
         if let Some(why) = &refused {
+            if let Some((k, at)) = &self.proto.expr_fault
+                && *k == key
+            {
+                ui::field_underline(ui, &resp, ui::CONTROL_H, &text, at.clone());
+            }
             ui::field_refusal(ui, why);
         }
         let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
@@ -2640,8 +2842,12 @@ impl MastikApp {
             return None;
         }
         match expr_stored(&self.session.doc, &typed, want) {
-            Ok(e) => Some(e),
-            Err(why) => {
+            Ok(e) => {
+                self.proto.expr_fault = None;
+                Some(e)
+            }
+            Err((why, at)) => {
+                self.proto.expr_fault = at.map(|at| (key, at));
                 self.proto.draft = Some(ui::Draft::new(&ctx, key, typed).refuse(why));
                 None
             }
@@ -2821,6 +3027,26 @@ impl MastikApp {
                         next = Some((p, "Overlay"));
                     }
                     if let Some(c) = o.backdrop {
+                        // The shade's colour, typed as every colour field takes
+                        // one; the shade below keeps its own strength.
+                        let key = DraftKey::Backdrop(id);
+                        let ctx = ui.ctx().clone();
+                        let [r, g, b, _] = c.to_rgba8().to_u8_array();
+                        let shown = format!("{r:02x}{g:02x}{b:02x}");
+                        let mut text = ui::Draft::live(&mut app.proto.draft, &ctx, key)
+                            .map_or(shown.clone(), |d| d.text.clone());
+                        let ink = crate::colour_text::parse(&text)
+                            .map_or(egui::Color32::TRANSPARENT, |t| ui::color_to_egui(t.color(1.0)));
+                        let resp = ui::colour_text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, ink)
+                            .on_hover_text("The colour of the shade behind the overlay");
+                        if let Some(typed) = ui::Draft::follow(&mut app.proto.draft, &resp, key, &text)
+                            && typed != shown
+                            && let Some(t) = crate::colour_text::parse(&typed)
+                        {
+                            let mut p = play.clone();
+                            p.overlay.backdrop = Some(t.color(c.components[3]));
+                            next = Some((p, "Overlay"));
+                        }
                         let rid = ui.id().with(("backdrop", id));
                         let a0 = f64::from(c.components[3]) * 100.0;
                         let mut v = app.proto.scrub.filter(|(r, _)| *r == rid).map_or(a0, |(_, v)| v);
@@ -3017,6 +3243,86 @@ impl MastikApp {
                         ));
                     }
                 });
+                // The flow's starting values: each a variable and what it holds
+                // when the flow starts, typed as the variable's kind takes it.
+                let with_values = |values: Vec<(VarId, Cell)>| -> Vec<Keyed<Flow>> {
+                    flows
+                        .iter()
+                        .map(|x| match x.id == f.id {
+                            true => x.map(|v| Flow {
+                                values: values.clone(),
+                                ..v.clone()
+                            }),
+                            false => x.clone(),
+                        })
+                        .collect()
+                };
+                for (i, (var, cell)) in f.values.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = COL;
+                        let w = ui.available_width() - 18.0 - COL;
+                        let half = (w - COL) / 2.0;
+                        let picked = ui
+                            .allocate_ui(egui::vec2(half, ui::CONTROL_H), |ui| {
+                                app.variable_combo(ui, ("flow-value", f.id, i), Some(*var), None)
+                            })
+                            .inner;
+                        if let Some(v) = picked {
+                            let mut values = f.values.clone();
+                            let start = app
+                                .session
+                                .doc
+                                .variables()
+                                .get(v)
+                                .and_then(|x| x.cells.values().next().cloned());
+                            if let Some(c) = start {
+                                values[i] = (v, c);
+                                next = Some((with_values(values), "Change starting value"));
+                            }
+                        }
+                        if let Some(c) = app.flow_value_field(ui, f.id, i, *var, cell, half) {
+                            let mut values = f.values.clone();
+                            values[i].1 = c;
+                            next = Some((with_values(values), "Change starting value"));
+                        }
+                        if ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
+                            .on_hover_text("Remove starting value")
+                            .clicked()
+                        {
+                            let mut values = f.values.clone();
+                            values.remove(i);
+                            next = Some((with_values(values), "Remove starting value"));
+                        }
+                    });
+                }
+                // The first variable no starting value names yet, at its first
+                // mode's value.
+                let unused = app
+                    .session
+                    .doc
+                    .variables()
+                    .iter()
+                    .find(|v| !f.values.iter().any(|(x, _)| *x == v.id))
+                    .and_then(|v| Some((v.id, v.cells.values().next()?.clone())));
+                if crate::settings::text_button(
+                    ui,
+                    "Add a starting value",
+                    match unused {
+                        Some(_) => ui::FieldButton::Off,
+                        None => ui::FieldButton::Disabled,
+                    },
+                )
+                .on_hover_text(match unused {
+                    Some(_) => "Set a variable as the flow starts",
+                    None => "Every variable has a starting value",
+                })
+                .clicked()
+                    && let Some(v) = unused
+                {
+                    let mut values = f.values.clone();
+                    values.push(v);
+                    next = Some((with_values(values), "Add starting value"));
+                }
             }
         });
         if add && let Some(start) = frames.first().copied() {
@@ -3039,6 +3345,84 @@ impl MastikApp {
             self.session.name_step(label, icon::PLAY);
             self.commit_edit(Transaction(vec![Operation::SetFlows { id: page, flows }]));
         }
+    }
+
+    /// A flow's starting value for `var`, typed as its kind reads: a number, a
+    /// text, `true` or `false`, a colour, or `{name}` for another variable of the
+    /// same kind. Refused, kept and ringed, when it does not read.
+    fn flow_value_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        flow: ItemId,
+        index: usize,
+        var: VarId,
+        cell: &Cell,
+        w: f32,
+    ) -> Option<Cell> {
+        let doc = &self.session.doc;
+        let kind = doc.variables().get(var).map(|v| v.kind)?;
+        let shown = match cell {
+            Cell::Number(n) => format!("{n}"),
+            Cell::String(s) => s.clone(),
+            Cell::Boolean(b) => b.to_string(),
+            Cell::Color(c) => {
+                let [r, g, b, a] = c.to_rgba8().to_u8_array();
+                match a {
+                    255 => format!("#{r:02x}{g:02x}{b:02x}"),
+                    _ => format!("#{r:02x}{g:02x}{b:02x}{a:02x}"),
+                }
+            }
+            Cell::Alias(v) => format!(
+                "{{{}}}",
+                doc.variables().get(*v).map_or("?", |x| x.name.as_str())
+            ),
+        };
+        let key = DraftKey::FlowValue(flow, index);
+        let ctx = ui.ctx().clone();
+        let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
+        let refused = live.as_ref().and_then(|d| d.refused.clone());
+        let mut text = live.map_or(shown.clone(), |d| d.text.clone());
+        let resp = ui
+            .scope(|ui| {
+                if refused.is_some() {
+                    ui.visuals_mut().widgets.inactive.bg_stroke = ui::refused_stroke();
+                }
+                ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, "Value")
+            })
+            .inner;
+        if let Some(why) = &refused {
+            resp.clone().on_hover_text(why);
+        }
+        let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
+        if typed == shown {
+            return None;
+        }
+        let t = typed.trim();
+        let alias = t
+            .strip_prefix('{')
+            .and_then(|r| r.strip_suffix('}'))
+            .and_then(|n| doc.variables().by_name(n))
+            .filter(|v| v.kind == kind && v.id != var)
+            .map(|v| Cell::Alias(v.id));
+        let read = alias.or(match kind {
+            VarKind::Number => t
+                .parse::<f64>()
+                .ok()
+                .filter(|n| n.is_finite())
+                .map(Cell::Number),
+            VarKind::String => Some(Cell::String(typed.clone())),
+            VarKind::Boolean => match t {
+                "true" => Some(Cell::Boolean(true)),
+                "false" => Some(Cell::Boolean(false)),
+                _ => None,
+            },
+            VarKind::Color => crate::colour_text::parse(t).map(|c| Cell::Color(c.color(1.0))),
+        });
+        if read.is_none() {
+            let why = format!("Not a {}", kind_word(kind));
+            self.proto.draft = Some(ui::Draft::new(&ctx, key, typed).refuse(why));
+        }
+        read
     }
 
     fn flow_name_field(
@@ -3273,12 +3657,16 @@ struct ListOut {
     add: Option<(Place, ActionKind)>,
     remove: Option<ItemId>,
     head: Option<egui::Response>,
+    /// An action dropped at a new place in its own list.
+    reorder: Option<(ItemId, usize)>,
 }
 
 #[derive(Default)]
 struct RowOut {
     open: bool,
     remove: bool,
+    /// Its grip began a drag.
+    grabbed: bool,
 }
 
 #[cfg(test)]
@@ -3424,6 +3812,35 @@ mod tests {
         let at = list_at(&mut list, Place::Otherwise(item(2))).expect("the else");
         assert!(at.is_empty(), "the else is empty once its action goes");
         assert_eq!(position(&list, item(3)), Some((1, 2)));
+    }
+
+    /// A dragged action lands at its drop place inside its own branch, counted
+    /// without it; dropped where it was, nothing moves.
+    /// flip: `move_to` without its descent into branches → fails at "lands inside its branch".
+    #[test]
+    fn a_dragged_action_lands_in_its_own_list() {
+        let mut list = nested();
+        assert!(move_to(&mut list, item(4), 0), "lands inside its branch");
+        let Action::Conditional { branches, .. } = &list[1].value else {
+            panic!("fixture: the conditional");
+        };
+        assert_eq!(branches[0].actions[0].id, item(4));
+        assert!(!move_to(&mut list, item(4), 0), "dropped in place: no move");
+        assert!(move_to(&mut list, item(1), 9), "past the end: last");
+        assert_eq!(list.last().map(|k| k.id), Some(item(1)));
+    }
+
+    /// An expression that does not read is refused with the range of the typed
+    /// text at fault, which the field underlines.
+    #[test]
+    fn a_refused_expression_names_where_it_fails() {
+        let doc = Document::new(mastik_core::IdSource::new(1).mint());
+        let (_, at) = expr_stored(&doc, "1 + )", None).expect_err("does not read");
+        let at = at.expect("a syntax fault has a place");
+        assert!(
+            at.start >= 2 && at.start <= 4,
+            "at the stray bracket: {at:?}"
+        );
     }
 
     /// *Duplicate* mints every id afresh, nested ones too, so the door takes it.

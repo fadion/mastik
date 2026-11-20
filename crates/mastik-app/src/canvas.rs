@@ -2961,6 +2961,21 @@ impl MastikApp {
             return;
         }
 
+        // A flow's chip plays that flow over the canvas.
+        if clicked
+            && let Some(p) = resp.interact_pointer_pos()
+            && let Some(flow) = self.flow_chip_at(ui, p, rect, ppp)
+        {
+            let ctx = ui.ctx().clone();
+            self.play_at(
+                &ctx,
+                mastik_play::Start::Flow(flow),
+                crate::player::Place::Over,
+                false,
+            );
+            return;
+        }
+
         // A click on the Prototype tab's knob links nothing and keeps the selection.
         if self.tool.selects()
             && clicked
