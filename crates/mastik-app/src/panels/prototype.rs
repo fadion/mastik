@@ -2311,7 +2311,7 @@ impl MastikApp {
         if t.kind == TransitionKind::Instant {
             return None;
         }
-        let directional = t.kind.is_directional() || t.kind == TransitionKind::SmartAnimate;
+        let directional = t.kind.is_directional();
         let cur = DIRECTIONS
             .iter()
             .position(|(d, _)| *d == t.direction)

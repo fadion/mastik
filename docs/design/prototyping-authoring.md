@@ -68,8 +68,9 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   another kind than wanted (`Expr::kind`) is kept as typed, ringed, with the reason under the
   field (`ui::field_refusal`), and nothing is written until it reads.
 - **Transitions** (`transition_fields`, also the page's *New links*): the kind; a direction
-  segment, live for *Move in*, *Move out*, *Push*, *Slide* and *Smart animate* (whose unpaired
-  layers enter from that side) and dimmed otherwise; *Curve* | *Spring*. A curve is an easing
+  segment, live for *Move in*, *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`)
+  and dimmed otherwise, *Smart animate* included, since the engine enters no unpaired layer from a
+  side; *Curve* | *Spring*. A curve is an easing
   from the CSS set or *Custom curve* with its four cubic-bezier numbers (both X within 0..1), and a
   duration; a spring is mass, stiffness and damping. *Instant* shows the kind alone.
 
