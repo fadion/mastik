@@ -147,7 +147,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **A frame**: *Scrolling* (*None*, *Vertical*, *Horizontal*, *Both*), the children pinned in it
   listed under it (*Top bar · Fixed*). Once the frame scrolls, *Snap* (*None*, *Children*,
   *Pages*), and under *Children* a second segmented row, *Start* · *Centre* · *End*; each change
-  is a *Scrolling* step. The rest points are not drawn on the canvas. How a frame shows as an overlay is its opening action's,
+  is a *Scrolling* step. The rest edges are drawn on the canvas while the frame is selected (*On
+  the canvas*). How a frame shows as an overlay is its opening action's,
   set in that action's popover.
 - **A child of a frame**: *In a scrolling frame*, *Scrolls* / *Fixed* / *Sticky*, dimmed with
   *The frame does not scroll* while its parent does not. The pin is set here, on the child's own
@@ -254,6 +255,23 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   layer there is hovered or picked (`pointed_at`), and no link dot there is taken. A click on it
   does nothing and keeps the popover open. The ghost follows an X or Y field while it is scrubbed or typed
   (`ProtoState::held_at`).
+- **The selected layer's marks** (`draw_proto_marks`), in prototype mode, under the placed
+  overlay: a scrolling frame that snaps shows its rest edges as dashed `color::SELECT_DIM` lines
+  across it (`snap_edges`: each child's leading edge, centre or trailing edge by *Align*, or each
+  whole page's edge through its content). A layer that follows the drag shows each snap point
+  as a dashed `color::SELECT` outline of its box at the point's offset with the point's name on
+  a `color::BADGE` pill above (`snap_ghosts`); the drawn point (*Open*) is the layer itself. A
+  scroll trigger shows its point as a dashed line across its frame at that offset from the
+  frame's top (from its left, sideways), a `PAST_KNOB_R` knob at its leading end and the number
+  on a pill at the other (`past_lines`); a horizontal frame's runs top to bottom. Each is
+  heavier under the pointer or while dragged, and a press on one (a ghost's box, or within
+  `PAST_REACH` of a line) drags it (`Drag::ProtoMark`), after the placed overlay and ahead of
+  the box handles, the cursor the rest arrow (`moved_proto_mark`): a ghost keeps to its layer's
+  axis (Shift to the drag's under *Both*) and snaps as a moved box does; a line moves along the
+  scroll from 0 and snaps to its frame's children's leading edges, Alt holding that off. Both
+  are whole points; the release writes one *Move snap point* or *Change trigger* step
+  (`drop_proto_mark`), and a cancel writes nothing. The marks are hit as drawn last frame
+  (`ProtoState::marks_drawn`); the card's fields still hold the numbers.
 - **Flow chips** (`flow_chips`), in prototype mode: each flow's name behind the
   `PLAY` glyph on a `color::BADGE` pill (the canvas badges' blue, `ui::pill_ink(BADGE)` ink) over
   its start frame's top-right corner, `FLOW_CHIP_PAD_R` (9) of air after the words, several on one

@@ -2465,11 +2465,14 @@ impl MastikApp {
                             egui::CursorIcon::Move,
                             Some(Bitmap::Arrow(Some(Badge::Pivot))),
                         )
-                    } else if matches!(self.drag, Drag::Link { .. } | Drag::OverlayAt { .. })
-                        || pointer.is_some_and(|p| {
-                            self.link_knob_at(p, rect, ppp).is_some() || self.ghost_at(p)
-                        })
-                    {
+                    } else if matches!(
+                        self.drag,
+                        Drag::Link { .. } | Drag::OverlayAt { .. } | Drag::ProtoMark { .. }
+                    ) || pointer.is_some_and(|p| {
+                        self.link_knob_at(p, rect, ppp).is_some()
+                            || self.ghost_at(p)
+                            || self.proto_mark_at(p).is_some()
+                    }) {
                         // A link dot or a placed overlay's ghost is taken ahead
                         // of the box's handles under it.
                         self.rest_cursor(None)
@@ -3236,6 +3239,7 @@ impl MastikApp {
         self.on_pivot(screen, rect, ppp).is_some()
             || self.link_knob_at(screen, rect, ppp).is_some()
             || self.ghost_at(screen)
+            || self.proto_mark_at(screen).is_some()
             || self.gradient_claims(screen, rect, ppp)
             || self.set_plus_at(screen, rect, ppp).is_some()
             || self.shape_handle_at(screen, rect, ppp).is_some()
@@ -3289,6 +3293,19 @@ impl MastikApp {
                 grab: grab_world,
                 from: p.offset,
                 now: p.offset,
+            };
+            return;
+        }
+
+        // A snap point's ghost or a scroll trigger's line, over the artwork.
+        if let Some(mark) = self.proto_mark_at(grab)
+            && let Some(from) = self.proto_mark_value(mark)
+        {
+            self.drag = Drag::ProtoMark {
+                mark,
+                grab: grab_world,
+                from,
+                now: from,
             };
             return;
         }
@@ -3433,6 +3450,18 @@ impl MastikApp {
             ui.ctx().request_repaint();
             return;
         }
+        if let Drag::ProtoMark {
+            mark, grab, from, ..
+        } = self.drag
+        {
+            let alt = ui.input(|i| i.modifiers.alt);
+            let (to, _) = self.moved_proto_mark(mark, grab, from, world, shift, alt);
+            if let Drag::ProtoMark { now, .. } = &mut self.drag {
+                *now = to;
+            }
+            ui.ctx().request_repaint();
+            return;
+        }
         match &self.drag {
             Drag::Pan => self.pan_by_drag(ui, resp),
             Drag::Move { anchor } => {
@@ -3558,6 +3587,7 @@ impl MastikApp {
             | Drag::Pivot { .. }
             | Drag::Link { .. }
             | Drag::OverlayAt { .. }
+            | Drag::ProtoMark { .. }
             | Drag::Guide(_)
             | Drag::TextSelect
             | Drag::None => {}
@@ -3763,6 +3793,7 @@ impl MastikApp {
             }
             Drag::Link { from, .. } => self.drop_link(from, world),
             Drag::OverlayAt { action, now, .. } => self.drop_overlay(action, now),
+            Drag::ProtoMark { mark, now, .. } => self.drop_proto_mark(mark, now),
             // Guide and crop releases are finished by their own input paths.
             Drag::CropPan { .. }
             | Drag::CropResize { .. }
@@ -11169,6 +11200,13 @@ impl MastikApp {
                 Drag::LineEnd { id, which } => self.line_end_marks(*id, *which, world, shift),
                 Drag::OverlayAt { grab, from, .. } => {
                     self.snapped_overlay(*from, *grab, world, shift).1
+                }
+                Drag::ProtoMark {
+                    mark, grab, from, ..
+                } => {
+                    let alt = ui.input(|i| i.modifiers.alt);
+                    self.moved_proto_mark(*mark, *grab, *from, world, shift, alt)
+                        .1
                 }
                 _ if pen_hover => self.pen_point(world, shift).1,
                 _ => snap::Marks::default(),

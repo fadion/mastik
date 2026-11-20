@@ -57,6 +57,19 @@ pub(crate) struct ProtoState {
     /// before the inspector, so the popover first draws on that click's frame,
     /// where the click would read as one away from it and close it.
     pub opened_on_canvas: bool,
+    /// The marks a drag can take (snap points' ghosts, scroll triggers'
+    /// lines) as the canvas drew them last frame, in screen space, topmost
+    /// last.
+    pub marks_drawn: std::cell::RefCell<Vec<(ProtoMark, egui::Rect)>>,
+}
+
+/// One of prototype mode's marks on the canvas that a drag moves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ProtoMark {
+    /// A snap point of a layer that follows the drag, drawn as a ghost of it.
+    Point { node: NodeId, point: ItemId },
+    /// The point a scroll trigger fires at, drawn as a line across its frame.
+    Past { node: NodeId, reaction: ItemId },
 }
 
 /// One action of one layer's reaction, by item ids, nested ones included.
@@ -1699,8 +1712,10 @@ impl MastikApp {
             self.proto.ghost_rect.set(None);
             self.proto.link_hot.set(None);
             self.proto.links_drawn.borrow_mut().clear();
+            self.proto.marks_drawn.borrow_mut().clear();
             return;
         }
+        self.draw_proto_marks(ui, painter, rect, ppp);
         self.draw_placing(ui, painter, rect, ppp);
         self.draw_flow_chips(ui, painter, rect, ppp);
         let doc = &self.session.doc;
@@ -2094,6 +2109,381 @@ impl MastikApp {
 const PLACING_ACTOR: u64 = 0x0FE4;
 /// How strongly the placed overlay's ghost draws.
 const PLACING_ALPHA: f32 = 0.5;
+
+/// How far either side of a scroll trigger's line a press takes it, in screen
+/// points: the line is a hairline, so it needs a band to be grabbed.
+const PAST_REACH: f32 = 4.0;
+/// The knob on a scroll trigger's line's leading end, its radius in screen
+/// points: the link dots' size, so the two read as one family.
+const PAST_KNOB_R: f32 = 4.0;
+/// The dash of prototype mode's marks: lines that stand for a place, not ink.
+const MARK_DASH: f32 = 4.0;
+const MARK_GAP: f32 = 3.0;
+
+impl MastikApp {
+    /// `id`'s box in world space, bounding its quad.
+    fn world_bounds(&self, id: NodeId) -> Option<mastik_core::kurbo::Rect> {
+        let q = self.world_quad(id)?;
+        let r = mastik_core::kurbo::Rect::from_points(q[0], q[0]);
+        Some(q.iter().fold(r, |r, p| r.union_pt(*p)))
+    }
+
+    /// The layer whose marks show: the one selected, in prototype mode.
+    fn marked_layer(&self) -> Option<NodeId> {
+        self.prototype_mode
+            .then(|| self.session.selection.single())
+            .flatten()
+    }
+
+    /// The value `mark` holds: a snap point's offset, or a scroll trigger's
+    /// point in `x`; a drag's under way, else the saved one.
+    pub(crate) fn proto_mark_value(&self, mark: ProtoMark) -> Option<mastik_core::kurbo::Vec2> {
+        if let Drag::ProtoMark { mark: m, now, .. } = self.drag
+            && m == mark
+        {
+            return Some(now);
+        }
+        let doc = &self.session.doc;
+        match mark {
+            ProtoMark::Point { node, point } => {
+                let f = doc.get(node)?.play().follow.as_ref()?;
+                let p = &f.points.iter().find(|k| k.id == point)?.value;
+                Some(mastik_core::kurbo::Vec2::new(p.x, p.y))
+            }
+            ProtoMark::Past { node, reaction } => {
+                let n = doc.get(node)?;
+                let r = n.reactions().iter().find(|r| r.id == reaction)?;
+                match &r.value.trigger {
+                    Trigger::ScrollPast { at, .. } => Some(mastik_core::kurbo::Vec2::new(*at, 0.0)),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    /// The selected layer's snap points as ghosts: each point's mark, its name,
+    /// and the box the layer has there, in world space.
+    fn snap_ghosts(&self) -> Vec<(ProtoMark, String, mastik_core::kurbo::Rect)> {
+        let Some(id) = self.marked_layer() else {
+            return Vec::new();
+        };
+        let doc = &self.session.doc;
+        let (Some(f), Some(b)) = (
+            doc.get(id).and_then(|n| n.play().follow.clone()),
+            self.world_bounds(id),
+        ) else {
+            return Vec::new();
+        };
+        f.points
+            .iter()
+            .filter_map(|k| {
+                let mark = ProtoMark::Point {
+                    node: id,
+                    point: k.id,
+                };
+                Some((mark, k.value.name.clone(), b + self.proto_mark_value(mark)?))
+            })
+            .collect()
+    }
+
+    /// The selected layer's scroll triggers as lines: each one's mark, its
+    /// frame's box in world space, its point, and whether the frame scrolls
+    /// sideways.
+    fn past_lines(&self) -> Vec<(ProtoMark, mastik_core::kurbo::Rect, f64, bool)> {
+        let Some(id) = self.marked_layer() else {
+            return Vec::new();
+        };
+        let doc = &self.session.doc;
+        let Some(n) = doc.get(id) else {
+            return Vec::new();
+        };
+        n.reactions()
+            .iter()
+            .filter_map(|r| {
+                let Trigger::ScrollPast { frame, .. } = &r.value.trigger else {
+                    return None;
+                };
+                let frame = mastik_core::prototype::resolve_target(doc, id, *frame);
+                let mark = ProtoMark::Past {
+                    node: id,
+                    reaction: r.id,
+                };
+                let at = self.proto_mark_value(mark)?.x;
+                Some((mark, self.world_bounds(frame)?, at, sideways(doc, frame)))
+            })
+            .collect()
+    }
+
+    /// The selected scrolling frame's rest points as lines across it, in world
+    /// space: each child's edge it rests on (by *Align*), or each whole page's
+    /// edge through its content.
+    fn snap_edges(&self) -> Vec<[mastik_core::kurbo::Point; 2]> {
+        use mastik_core::kurbo::Point;
+        let Some(id) = self.marked_layer() else {
+            return Vec::new();
+        };
+        let doc = &self.session.doc;
+        let Some(n) = doc.get(id) else {
+            return Vec::new();
+        };
+        let play = n.play();
+        let Some(fr) = self.world_bounds(id) else {
+            return Vec::new();
+        };
+        if play.snap == Snap::None {
+            return Vec::new();
+        }
+        let kids: Vec<mastik_core::kurbo::Rect> = n
+            .children()
+            .iter()
+            .filter(|c| {
+                doc.get(**c)
+                    .is_some_and(|c| c.visible() && c.play().pin != Pin::Fixed)
+            })
+            .filter_map(|c| self.world_bounds(*c))
+            .collect();
+        let mut out = Vec::new();
+        for across in [true, false] {
+            let on = match across {
+                true => matches!(play.scroll, ScrollAxis::Horizontal | ScrollAxis::Both),
+                false => matches!(play.scroll, ScrollAxis::Vertical | ScrollAxis::Both),
+            };
+            if !on {
+                continue;
+            }
+            let line = |at: f64| match across {
+                true => [Point::new(at, fr.y0), Point::new(at, fr.y1)],
+                false => [Point::new(fr.x0, at), Point::new(fr.x1, at)],
+            };
+            match play.snap {
+                Snap::None => {}
+                Snap::Children => {
+                    for k in &kids {
+                        let (a, b) = match across {
+                            true => (k.x0, k.x1),
+                            false => (k.y0, k.y1),
+                        };
+                        out.push(line(match play.snap_align {
+                            SnapAlign::Start => a,
+                            SnapAlign::Centre => (a + b) / 2.0,
+                            SnapAlign::End => b,
+                        }));
+                    }
+                }
+                Snap::Pages => {
+                    let (start, size) = match across {
+                        true => (fr.x0, fr.width()),
+                        false => (fr.y0, fr.height()),
+                    };
+                    let end = kids
+                        .iter()
+                        .map(|k| if across { k.x1 } else { k.y1 })
+                        .fold(start + size, f64::max);
+                    let mut at = start + size;
+                    while size > 0.0 && at < end && out.len() < 200 {
+                        out.push(line(at));
+                        at += size;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Prototype mode's marks for the selected layer: a scrolling frame's rest
+    /// edges; each snap point as a dashed ghost of the layer's box with its name;
+    /// each scroll trigger's point as a dashed line across its frame, a knob at
+    /// its leading end and the point on a tag at the other. Notes what a press
+    /// can take for the next frame.
+    fn draw_proto_marks(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
+        let hover = ui.ctx().pointer_hover_pos();
+        let dragged = match self.drag {
+            Drag::ProtoMark { mark, .. } => Some(mark),
+            _ => None,
+        };
+        let dashed = |pts: &[egui::Pos2], stroke| {
+            painter.extend(egui::Shape::dashed_line(pts, stroke, MARK_DASH, MARK_GAP));
+        };
+        for [a, b] in self.snap_edges() {
+            let pts = [self.to_screen(a, rect, ppp), self.to_screen(b, rect, ppp)];
+            dashed(&pts, egui::Stroke::new(1.0, color::SELECT_DIM));
+        }
+        let mut drawn = Vec::new();
+        for (mark, name, r) in self.snap_ghosts() {
+            let s = self.world_rect_to_screen(r, rect, ppp);
+            let hot = dragged == Some(mark) || hover.is_some_and(|p| s.contains(p));
+            let stroke = egui::Stroke::new(if hot { 2.0 } else { 1.0 }, color::SELECT);
+            let corners = [
+                s.left_top(),
+                s.right_top(),
+                s.right_bottom(),
+                s.left_bottom(),
+                s.left_top(),
+            ];
+            dashed(&corners, stroke);
+            let at = s.left_top() - egui::vec2(0.0, 2.0);
+            ui::canvas_pill(painter, at, egui::Align2::LEFT_BOTTOM, &name, color::BADGE);
+            drawn.push((mark, s));
+        }
+        for (mark, fr, at, side) in self.past_lines() {
+            use mastik_core::kurbo::Point;
+            let (a, b) = match side {
+                true => (Point::new(fr.x0 + at, fr.y0), Point::new(fr.x0 + at, fr.y1)),
+                false => (Point::new(fr.x0, fr.y0 + at), Point::new(fr.x1, fr.y0 + at)),
+            };
+            let (a, b) = (self.to_screen(a, rect, ppp), self.to_screen(b, rect, ppp));
+            let band = egui::Rect::from_two_pos(a, b).expand(PAST_REACH);
+            let hot = dragged == Some(mark) || hover.is_some_and(|p| band.contains(p));
+            let stroke = egui::Stroke::new(if hot { 2.0 } else { 1.0 }, color::SELECT);
+            dashed(&[a, b], stroke);
+            painter.circle_filled(a, PAST_KNOB_R, color::SELECT);
+            let (tag_at, align) = match side {
+                true => (b + egui::vec2(0.0, 4.0), egui::Align2::CENTER_TOP),
+                false => (b + egui::vec2(4.0, 0.0), egui::Align2::LEFT_CENTER),
+            };
+            let words = ui::number(0)(at, 0..=0);
+            ui::canvas_pill(painter, tag_at, align, &words, color::BADGE);
+            drawn.push((mark, band));
+        }
+        *self.proto.marks_drawn.borrow_mut() = drawn;
+    }
+
+    /// The mark a press at `screen` takes, as the canvas drew them last frame,
+    /// the topmost first.
+    pub(crate) fn proto_mark_at(&self, screen: egui::Pos2) -> Option<ProtoMark> {
+        if !self.prototype_mode {
+            return None;
+        }
+        let drawn = self.proto.marks_drawn.borrow();
+        let hit = drawn.iter().rev().find(|(_, r)| r.contains(screen));
+        hit.map(|(m, _)| *m)
+            .filter(|m| self.proto_mark_value(*m).is_some())
+    }
+
+    /// Where a mark dragged from `grab` to `world` goes from `from`, and the
+    /// marks snapping draws. A ghost keeps to its layer's axis (Shift to the
+    /// drag's, under *Both*) and snaps as a moved box does; a line moves along
+    /// its frame's scroll from 0 and snaps to its frame's children's leading
+    /// edges, Alt holding that off. Whole points, as both are stored.
+    pub(crate) fn moved_proto_mark(
+        &self,
+        mark: ProtoMark,
+        grab: mastik_core::kurbo::Point,
+        from: mastik_core::kurbo::Vec2,
+        world: mastik_core::kurbo::Point,
+        shift: bool,
+        alt: bool,
+    ) -> (mastik_core::kurbo::Vec2, crate::snap::Marks) {
+        use mastik_core::kurbo::Vec2;
+        let raw = world - grab;
+        let doc = &self.session.doc;
+        let whole = |v: Vec2| Vec2::new(v.x.round(), v.y.round());
+        match mark {
+            ProtoMark::Point { node, .. } => {
+                let axis = doc
+                    .get(node)
+                    .and_then(|n| n.play().follow.as_ref().map(|f| f.axis))
+                    .unwrap_or_default();
+                let axes = match axis {
+                    ScrollAxis::Horizontal => (true, false),
+                    ScrollAxis::Vertical => (false, true),
+                    _ => crate::snap::move_axes(raw, shift),
+                };
+                let delta = crate::snap::constrain(raw, axes);
+                let Some(b) = self.world_bounds(node) else {
+                    return (whole(from + delta), crate::snap::Marks::default());
+                };
+                let snapped =
+                    crate::snap::snap_rect(b + from + delta, axes, &self.snapping(&[node]));
+                (
+                    whole(from + delta + crate::snap::constrain(snapped.adjust, axes)),
+                    snapped.marks,
+                )
+            }
+            ProtoMark::Past { node, reaction } => {
+                let frame = doc
+                    .get(node)
+                    .and_then(|n| n.reactions().iter().find(|r| r.id == reaction))
+                    .and_then(|r| match &r.value.trigger {
+                        Trigger::ScrollPast { frame, .. } => {
+                            Some(mastik_core::prototype::resolve_target(doc, node, *frame))
+                        }
+                        _ => None,
+                    });
+                let Some((frame, fr)) = frame.and_then(|f| Some((f, self.world_bounds(f)?))) else {
+                    return (from, crate::snap::Marks::default());
+                };
+                let side = sideways(doc, frame);
+                let along = |p: mastik_core::kurbo::Point| if side { p.x } else { p.y };
+                let start = if side { fr.x0 } else { fr.y0 };
+                let mut at = from.x + if side { raw.x } else { raw.y };
+                // To a child's leading edge, so *past the hero* is one drag.
+                if !alt {
+                    let reach = self.snapping(&[]).tolerance();
+                    let edges = doc
+                        .get(frame)
+                        .map(|n| n.children().to_vec())
+                        .unwrap_or_default();
+                    let near = edges
+                        .iter()
+                        .filter_map(|c| self.world_bounds(*c))
+                        .map(|b| along(b.origin()) - start)
+                        .filter(|e| (e - at).abs() <= reach)
+                        .min_by(|a, b| (a - at).abs().total_cmp(&(b - at).abs()));
+                    if let Some(e) = near {
+                        at = e;
+                    }
+                }
+                (
+                    Vec2::new(at.round().max(0.0), 0.0),
+                    crate::snap::Marks::default(),
+                )
+            }
+        }
+    }
+
+    /// A mark's drop: a snap point's new offset (*Move snap point*) or a scroll
+    /// trigger's new point (*Change trigger*), one step.
+    pub(crate) fn drop_proto_mark(&mut self, mark: ProtoMark, now: mastik_core::kurbo::Vec2) {
+        let doc = &self.session.doc;
+        match mark {
+            ProtoMark::Point { node, point } => {
+                let Some(mut play) = doc.get(node).map(|n| n.play().clone()) else {
+                    return;
+                };
+                let Some(p) = play
+                    .follow
+                    .as_mut()
+                    .and_then(|f| f.points.iter_mut().find(|k| k.id == point))
+                else {
+                    return;
+                };
+                if (p.value.x, p.value.y) == (now.x, now.y) {
+                    return;
+                }
+                (p.value.x, p.value.y) = (now.x, now.y);
+                self.session
+                    .name_step("Move snap point", icon::CROSSHAIR_SIMPLE);
+                self.commit_edit(Transaction(vec![Operation::SetPlay { id: node, play }]));
+            }
+            ProtoMark::Past { node, reaction } => {
+                let Some(n) = doc.get(node) else { return };
+                let mut list = n.reactions().to_vec();
+                let Some(r) = list.iter_mut().find(|r| r.id == reaction) else {
+                    return;
+                };
+                let Trigger::ScrollPast { at, .. } = &mut r.value.trigger else {
+                    return;
+                };
+                if *at == now.x {
+                    return;
+                }
+                *at = now.x;
+                self.write_reactions(node, list, "Change trigger", icon::INTERACTION);
+            }
+        }
+    }
+}
 
 /// A manual overlay being placed on the canvas: the action placing it, the frame
 /// it opens, and its offset from the opening layer's top-left.
@@ -6315,6 +6705,125 @@ mod tests {
         assert!(seen[2].is_some(), "fixture: a layer under the pointer");
         assert_eq!(seen[3], None, "covered");
         assert!(f.app.link_knob_at(over, rect, 1.0).is_none());
+    }
+
+    /// A snap point's ghost sits at its offset from the layer's box, keeps to
+    /// the layer's axis when dragged, and its drop moves the point.
+    ///
+    /// flip: `moved_proto_mark` not holding a ghost to its layer's axis → fails
+    /// at "held to the axis".
+    #[test]
+    fn a_snap_point_is_placed_by_its_ghost() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let point = f.app.session.ids.mint_item();
+        let play = LayerPlay {
+            follow: Some(Follow {
+                axis: ScrollAxis::Vertical,
+                points: vec![Keyed::new(
+                    point,
+                    DragPoint {
+                        name: "Closed".into(),
+                        x: 0.0,
+                        y: 100.0,
+                    },
+                )],
+                ..Follow::default()
+            }),
+            ..LayerPlay::default()
+        };
+        f.app
+            .commit_edit(Transaction(vec![Operation::SetPlay { id: f.add, play }]));
+        f.app.prototype_mode = true;
+        f.app.session.selection.set(vec![f.add]);
+        let ghosts = f.app.snap_ghosts();
+        assert_eq!(ghosts.len(), 1);
+        let r = ghosts[0].2;
+        assert_eq!(
+            (r.x0, r.y0, r.width(), r.height()),
+            (20.0, 120.0, 100.0, 40.0)
+        );
+        let mark = ghosts[0].0;
+        let grab = mastik_core::kurbo::Point::new(50.0, 130.0);
+        let (to, _) = f.app.moved_proto_mark(
+            mark,
+            grab,
+            Vec2::new(0.0, 100.0),
+            grab + Vec2::new(30.0, 57.0),
+            false,
+            false,
+        );
+        assert_eq!(to, Vec2::new(0.0, 157.0), "held to the axis");
+        f.app.drop_proto_mark(mark, to);
+        let n = f.app.session.doc.get(f.add).unwrap();
+        let p = &n.play().follow.as_ref().unwrap().points[0].value;
+        assert_eq!((p.x, p.y), (0.0, 157.0));
+    }
+
+    /// A scroll trigger's line moves along its frame's scroll and snaps to a
+    /// child's top edge unless Alt is held; its drop changes the trigger. A
+    /// snapping frame's rest edges are its children's leading edges.
+    ///
+    /// flip: `moved_proto_mark` skipping the children's edges → fails at
+    /// "snapped to the layer's top".
+    #[test]
+    fn a_scroll_triggers_point_is_dragged_on_the_canvas() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.canvas_px = (1200, 900);
+        f.app.session.camera.zoom = 1.0;
+        let play = LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            snap: Snap::Children,
+            ..LayerPlay::default()
+        };
+        f.app
+            .commit_edit(Transaction(vec![Operation::SetPlay { id: f.home, play }]));
+        let reaction = f.app.session.ids.mint_item();
+        let reactions = vec![Keyed::new(
+            reaction,
+            Reaction {
+                trigger: Trigger::ScrollPast {
+                    frame: f.home,
+                    at: 240.0,
+                    going: Going::Forward,
+                },
+                actions: Vec::new(),
+            },
+        )];
+        f.app
+            .write_reactions(f.add, reactions, "Add interaction", icon::INTERACTION);
+        f.app.prototype_mode = true;
+        f.app.session.selection.set(vec![f.add]);
+        let lines = f.app.past_lines();
+        assert_eq!(lines.len(), 1);
+        let (mark, frame, at, side) = lines[0];
+        assert_eq!((frame.y0, at, side), (0.0, 240.0, false));
+        let grab = mastik_core::kurbo::Point::new(50.0, 240.0);
+        let to = |alt| {
+            let w = grab + Vec2::new(5.0, -218.0);
+            f.app
+                .moved_proto_mark(mark, grab, Vec2::new(240.0, 0.0), w, false, alt)
+                .0
+        };
+        // *Add to cart* sits at y 20 in Home.
+        assert_eq!(
+            to(false),
+            Vec2::new(20.0, 0.0),
+            "snapped to the layer's top"
+        );
+        assert_eq!(to(true), Vec2::new(22.0, 0.0), "Alt holds it off");
+        f.app.drop_proto_mark(mark, Vec2::new(20.0, 0.0));
+        let n = f.app.session.doc.get(f.add).unwrap();
+        assert!(matches!(
+            n.reactions()[0].value.trigger,
+            Trigger::ScrollPast { at, .. } if at == 20.0
+        ));
+        f.app.session.selection.set(vec![f.home]);
+        let inst_top = f.app.world_bounds(f.inst).unwrap().y0;
+        let mut edges: Vec<f64> = f.app.snap_edges().iter().map(|[a, _]| a.y).collect();
+        edges.sort_by(f64::total_cmp);
+        assert_eq!(edges, [20.0, inst_top], "each child's top");
     }
 
     fn draw(app: &mut MastikApp, ctx: &egui::Context) -> egui::FullOutput {

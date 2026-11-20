@@ -185,6 +185,15 @@ pub enum Drag {
         from: Vec2,
         now: Vec2,
     },
+    /// Moving one of prototype mode's marks: a snap point's ghost (its offset)
+    /// or a scroll trigger's line (its point, in `x`). The world point the
+    /// press took, the value then and now; the release writes `now`.
+    ProtoMark {
+        mark: crate::panels::prototype::ProtoMark,
+        grab: Point,
+        from: Vec2,
+        now: Vec2,
+    },
     /// Rubber-band selection from `origin` to the current pointer, of layers or,
     /// in the node tool, of points. Either selects live.
     Marquee {
