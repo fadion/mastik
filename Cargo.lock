@@ -2506,7 +2506,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-ai"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -2516,7 +2516,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-app"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "arboard",
  "dirs",
@@ -2557,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-core"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "base64 0.22.1",
  "flo_curves",
@@ -2581,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-export"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "hayro-svg",
  "image",
@@ -2602,7 +2602,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-mcp"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "base64 0.22.1",
  "mastik-core",
@@ -2611,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-render"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "image",
  "kurbo",
@@ -2630,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-vm"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "mastik-core",
  "mlua",
