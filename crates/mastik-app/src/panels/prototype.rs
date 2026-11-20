@@ -3134,7 +3134,7 @@ impl MastikApp {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = COL;
                             let fw = if branches.len() > 1 {
-                                w - 18.0 - COL
+                                w - ui::CONTROL_H - COL
                             } else {
                                 w
                             };
@@ -3149,7 +3149,7 @@ impl MastikApp {
                                 changed = true;
                             }
                             if branches.len() > 1
-                                && ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
+                                && ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
                                     .on_hover_text("Remove this branch")
                                     .clicked()
                             {
@@ -3964,7 +3964,7 @@ impl MastikApp {
                     let current = play.input.as_ref().map(|i| i.var);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = COL;
-                        let cw = if current.is_some() { w - 18.0 - COL } else { w };
+                        let cw = if current.is_some() { w - ui::CONTROL_H - COL } else { w };
                         ui.scope(|ui| {
                             ui.set_width(cw);
                             if let Some(v) = app.variable_combo(ui, ("input", id), current, Some(kind)) {
@@ -3978,7 +3978,7 @@ impl MastikApp {
                             }
                         });
                         if current.is_some()
-                            && ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
+                            && ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
                                 .on_hover_text("Stop being an input")
                                 .clicked()
                         {
@@ -4056,10 +4056,14 @@ impl MastikApp {
             if flows.is_empty() {
                 ui::empty_note(ui, "No flows");
             }
-            for f in &flows {
+            for (n, f) in flows.iter().enumerate() {
+                // A rule between one flow's starting values and the next flow.
+                if n > 0 {
+                    ui::card_rule(ui);
+                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = COL;
-                    let w = ui.available_width() - 18.0 - COL;
+                    let w = ui.available_width() - ui::CONTROL_H - COL;
                     let half = (w - COL) / 2.0;
                     if let Some(n) = app.flow_name_field(ui, f.id, &f.name, half) {
                         let list = flows
@@ -4090,8 +4094,8 @@ impl MastikApp {
                             .collect();
                         next = Some((list, "Change flow"));
                     }
-                    if ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
-                        .on_hover_text("Remove")
+                    if ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
+                        .on_hover_text("Remove this flow")
                         .clicked()
                     {
                         next = Some((
@@ -4117,7 +4121,7 @@ impl MastikApp {
                 for (i, (var, cell)) in f.values.iter().enumerate() {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = COL;
-                        let w = ui.available_width() - 18.0 - COL;
+                        let w = ui.available_width() - ui::CONTROL_H - COL;
                         let half = (w - COL) / 2.0;
                         let picked = ui
                             .allocate_ui(egui::vec2(half, ui::CONTROL_H), |ui| {
@@ -4142,8 +4146,8 @@ impl MastikApp {
                             values[i].1 = c;
                             next = Some((with_values(values), "Change starting value"));
                         }
-                        if ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
-                            .on_hover_text("Remove starting value")
+                        if ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
+                            .on_hover_text("Remove this starting value")
                             .clicked()
                         {
                             let mut values = f.values.clone();

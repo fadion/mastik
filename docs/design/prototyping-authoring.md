@@ -118,7 +118,8 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   `ui::menu_eyebrow`),
   *Scaling* (*Fit*, *Actual size*, *Fill width*) and *New links*, the transition a new link takes.
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its
-  start among the page's frames, `×` to remove; `+` adds *Flow N* starting at the page's first
+  start among the page's frames, a `ui::field_button` `×` to remove (as every removal in the
+  tab is), each flow after the first under a `ui::card_rule`; `+` adds *Flow N* starting at the page's first
   frame, dimmed with no frame. Under each flow, its starting values: a row per value, the
   variable (a variable dropdown; a new pick starts at its first mode's value), the value typed as
   the variable's kind reads it (a number, text, `true` / `false`, a colour, or `{name}` for
