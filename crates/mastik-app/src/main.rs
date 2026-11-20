@@ -1677,7 +1677,7 @@ fn run_export(e: &OneOff) -> Result<(), String> {
 /// the families the document names are registered first, so the file carries the
 /// fonts the canvas would draw with.
 fn prototype_html(doc: &mastik_core::Document, file: &str) -> Result<String, String> {
-    let (wasm, glue) = player_build()?;
+    let (wasm, glue) = player_build(doc)?;
     mcp::system_fonts::SystemFonts::load().register_for(doc);
     let player = mastik_export::prototype::Player {
         wasm: &wasm,
@@ -1693,9 +1693,14 @@ fn prototype_html(doc: &mastik_core::Document, file: &str) -> Result<String, Str
 /// Linux archive and AppImage) or one folder up (`target/player` for a `cargo
 /// run` build), else where a package puts data: `../share/mastik/player` from
 /// `/usr/bin`, `../Resources/player` from a macOS bundle's `Contents/MacOS`.
-pub(crate) fn player_build() -> Result<(Vec<u8>, String), String> {
+///
+/// When `doc` runs a script, each folder's `-scripts` sibling is tried first: the
+/// player that carries Luau, which only such a file pays for. Without it the
+/// plain player plays, skipping *Run script* with a notice.
+pub(crate) fn player_build(doc: &mastik_core::Document) -> Result<(Vec<u8>, String), String> {
     const WASM: &str = "mastik_web_bg.wasm";
     const GLUE: &str = "mastik_web.js";
+    let scripts = !player::scripts_played(doc).is_empty();
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Some(dir) = std::env::var_os("MASTIK_PLAYER_DIR") {
         dirs.push(dir.into());
@@ -1709,6 +1714,7 @@ pub(crate) fn player_build() -> Result<(Vec<u8>, String), String> {
             dirs.push(up.join("Resources").join("player"));
         }
     }
+    let dirs = prototype_export::player_folders(dirs, scripts);
     for dir in &dirs {
         if let (Ok(wasm), Ok(glue)) = (
             std::fs::read(dir.join(WASM)),

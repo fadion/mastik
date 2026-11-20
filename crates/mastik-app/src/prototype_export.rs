@@ -78,10 +78,30 @@ pub(crate) fn with_flow(
     out
 }
 
+/// The folders to look for a browser player in, in order: `dirs` as they are, or,
+/// for a document that runs a script, each preceded by its `-scripts` sibling,
+/// the player that carries Luau. Only such a file pays for it, and without that
+/// player the plain one plays, skipping *Run script* with a notice.
+pub(crate) fn player_folders(
+    dirs: Vec<std::path::PathBuf>,
+    scripts: bool,
+) -> Vec<std::path::PathBuf> {
+    if !scripts {
+        return dirs;
+    }
+    dirs.into_iter()
+        .flat_map(|dir| {
+            let mut name = dir.file_name().unwrap_or_default().to_os_string();
+            name.push("-scripts");
+            [dir.with_file_name(name), dir]
+        })
+        .collect()
+}
+
 /// The file's size for `doc` under `settings`, packed as the export packs it.
 fn measure(doc: &Document, fonts: &[mastik_core::peniko::FontData]) -> Result<u64, String> {
     mastik_core::text::register_font_data(fonts);
-    let (wasm, glue) = crate::player_build()?;
+    let (wasm, glue) = crate::player_build(doc)?;
     let player = mastik_export::prototype::Player {
         wasm: &wasm,
         glue: &glue,
@@ -314,6 +334,34 @@ impl MastikApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A document that runs a script looks for the scripts player before each
+    /// plain one; any other looks only for the plain ones.
+    /// flip: `player_folders` ignoring `scripts` → fails at "scripts first".
+    #[test]
+    fn a_scripted_export_looks_for_the_scripts_player_first() {
+        let dirs = || {
+            vec![
+                std::path::PathBuf::from("target/player"),
+                std::path::PathBuf::from("share/mastik/player"),
+            ]
+        };
+        assert_eq!(player_folders(dirs(), false), dirs(), "plain only");
+        let both: Vec<String> = player_folders(dirs(), true)
+            .iter()
+            .map(|d| d.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(
+            both,
+            [
+                "target/player-scripts",
+                "target/player",
+                "share/mastik/player-scripts",
+                "share/mastik/player",
+            ],
+            "scripts first"
+        );
+    }
 
     fn flow(n: u64) -> FlowRef {
         let mut ids = mastik_core::IdSource::new(7);
