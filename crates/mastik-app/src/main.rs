@@ -160,6 +160,7 @@ mod prefs;
 mod present;
 mod preview;
 mod private;
+mod prototype_export;
 #[cfg(target_os = "macos")]
 mod quit;
 mod rail;
@@ -1682,7 +1683,7 @@ fn prototype_html(doc: &mastik_core::Document, file: &str) -> Result<String, Str
 /// The browser player `crates/mastik-web/build.sh` writes: from the folder
 /// `MASTIK_PLAYER_DIR` names, else `player` beside the executable or one folder up
 /// (`target/player` for a `cargo run` build).
-fn player_build() -> Result<(Vec<u8>, String), String> {
+pub(crate) fn player_build() -> Result<(Vec<u8>, String), String> {
     const WASM: &str = "mastik_web_bg.wasm";
     const GLUE: &str = "mastik_web.js";
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();

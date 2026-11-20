@@ -184,6 +184,9 @@ pub enum Action {
     /// (`MastikApp::export_editable`). No chord and no menu row: the command
     /// palette is its door.
     ExportEditable(crate::panels::EditableFormat),
+    /// The prototype's export card (`prototype_export.rs`). No chord: the palette
+    /// and the player's bar.
+    ExportPrototype,
     /// `Ctrl+K` and `Ctrl+/` — open the command palette, or close it.
     Palette,
     /// `:` — open the command bar (`crate::command`). Shifted `;` reaches egui as

@@ -800,6 +800,14 @@ impl MastikApp {
         for f in crate::panels::EditableFormat::ALL {
             push(&mut out, Cmd::verb(Item::ExportEditable(f), None));
         }
+        let no_flows = crate::prototype_export::every_flow(&self.session.doc).is_empty();
+        push(
+            &mut out,
+            Cmd::verb(
+                Item::ExportPrototype,
+                no_flows.then_some("Add a flow in the Prototype tab first"),
+            ),
+        );
         for item in [
             Item::Save,
             Item::NewDocument,

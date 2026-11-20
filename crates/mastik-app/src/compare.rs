@@ -573,6 +573,7 @@ pub(crate) fn admits(action: &Action) -> bool {
             | Action::ExportAll
             | Action::ExportCode(_)
             | Action::ExportEditable(_)
+            | Action::ExportPrototype
             | Action::Cheatsheet
             | Action::ShowInLibrary
             | Action::VersionHistory

@@ -653,6 +653,8 @@ pub struct MastikApp {
     pub(crate) playing: Option<Box<crate::player::Playing>>,
     /// Play asked for, held while its scripts are shown first.
     pub(crate) play_disclosure: Option<crate::player::Owed>,
+    /// The prototype's export card, while open (`prototype_export.rs`).
+    pub(crate) proto_export: Option<crate::prototype_export::ExportCard>,
     /// Whether an open popover's own `Escape` handler ran this frame; written by the
     /// handler, read and cleared by the key router next frame. Read instead of the open
     /// flag, because a flag whose panel was skipped would swallow `Escape` with nothing
@@ -2140,6 +2142,7 @@ impl MastikApp {
             presenting: None,
             playing: None,
             play_disclosure: None,
+            proto_export: None,
             popover_heard: false,
         }
     }
@@ -2660,6 +2663,7 @@ impl MastikApp {
         self.blend_ui(&ctx);
         // Unguarded: a prototype plays on over the canvas in focus mode.
         self.player_ui(&ctx);
+        self.prototype_export_ui(&ctx, canvas);
         // After the canvas, whose first visit to a page a step's reveal must follow.
         self.compare_bar(&ctx);
         // Last, and unguarded: `Ctrl+,` and the palette open it in focus mode too.
@@ -2877,6 +2881,7 @@ impl MastikApp {
             Action::SimulateVision => self.toggle_vision(),
             Action::ExportCode(target) => self.export_code(target),
             Action::ExportEditable(format) => self.export_editable(format),
+            Action::ExportPrototype => self.open_prototype_export(),
             Action::PlaceImage => self.place_image_action(),
             Action::InsertPicker => self.toggle_kit_picker(),
             Action::AssetsBrowser => self.toggle_assets(),
@@ -8844,6 +8849,7 @@ impl MastikApp {
     pub(crate) fn modal_is_up(&self) -> bool {
         self.settings.is_some()
             || self.play_disclosure.is_some()
+            || self.proto_export.is_some()
             || self.confirming_close
             || !self.closing_tabs.is_empty()
             || self.session.clash == crate::session::Clash::Ask

@@ -2740,7 +2740,7 @@ impl MastikApp {
 
     /// Where a dialog opens: the last export's folder, else the document's own,
     /// else wherever the OS would have chosen.
-    fn export_start_dir(&self) -> std::path::PathBuf {
+    pub(crate) fn export_start_dir(&self) -> std::path::PathBuf {
         self.prefs
             .export_dir
             .clone()
@@ -2844,6 +2844,65 @@ impl MastikApp {
             asker,
             ..write_editable(&doc, &resolved, format, &stem, &path, cancel)
         });
+    }
+}
+
+impl MastikApp {
+    /// Write the prototype's HTML file to `path` on an export worker, from a
+    /// copy of the committed document whose export settings are `settings`.
+    pub(crate) fn export_prototype_to(
+        &mut self,
+        settings: mastik_core::prototype::PlayExport,
+        path: std::path::PathBuf,
+    ) {
+        let (mut doc, resolved) = (self.session.doc.clone(), self.session.resolved.clone());
+        // The settings the card shows, on the copy only: the card commits them
+        // to the document itself when they changed.
+        let _ = doc.apply(&mastik_core::Transaction(vec![
+            mastik_core::Operation::SetPlayExport { settings },
+        ]));
+        let asker = self.session.path.clone();
+        let label = path
+            .file_name()
+            .map_or_else(|| "prototype".into(), |n| n.to_string_lossy().into_owned());
+        self.spawn_export(label, move |cancel| Delivered {
+            asker,
+            ..write_prototype(&doc, &resolved, &path, cancel)
+        });
+    }
+}
+
+/// The prototype's one HTML file, written to `path`.
+fn write_prototype(
+    doc: &mastik_core::Document,
+    resolved: &mastik_core::Resolved,
+    path: &std::path::Path,
+    cancel: &ExportFlags,
+) -> Delivered {
+    if cancel.cancelled() {
+        return Delivered::cancelled();
+    }
+    // The file carries the faces the canvas draws with, registered on this thread.
+    mastik_core::text::register_font_data(&resolved.text_fonts());
+    let made = crate::player_build().and_then(|(wasm, glue)| {
+        let player = mastik_export::prototype::Player {
+            wasm: &wasm,
+            glue: &glue,
+        };
+        mastik_export::prototype::Parts::of(doc, player)
+            .map(|p| p.html())
+            .map_err(|e| e.to_string())
+    });
+    if !cancel.begin_write() {
+        return Delivered::cancelled();
+    }
+    let written = made.and_then(|html| std::fs::write(path, html).map_err(|e| e.to_string()));
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+    Delivered {
+        written: usize::from(written.is_ok()),
+        failed: written.err(),
+        name,
+        ..Delivered::empty(path.parent().map(Into::into).unwrap_or_default())
     }
 }
 

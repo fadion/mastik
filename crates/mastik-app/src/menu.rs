@@ -465,6 +465,8 @@ pub enum Item {
     Settings,
     ExportCode(mastik_export::code::Target),
     ExportEditable(crate::panels::EditableFormat),
+    /// `Action::ExportPrototype`: the prototype as one HTML file.
+    ExportPrototype,
     /// `Action::Present`: the top-level frames one at a time, fullscreen.
     Present,
     /// `Action::Play`: the prototype played over the canvas.
@@ -1181,6 +1183,7 @@ impl Item {
                 Group::Export,
             ),
             Item::ExportEditable(f) => s(f.label(), icon::EXPORT, None, Group::Export),
+            Item::ExportPrototype => s("Export prototype…", icon::EXPORT, None, Group::Export),
             Item::Tool(tool) => {
                 let (label, glyph) = match tool {
                     Tool::Select => ("Tool: Select", icon::CURSOR),
@@ -1419,6 +1422,7 @@ impl Item {
             Item::ExportFramesPdf => &["artboards", "pdf", "pages", "deck", "export"],
             Item::ExportCode(_) => &["code", "html", "react", "vue", "zip"],
             Item::ExportEditable(f) => f.aliases(),
+            Item::ExportPrototype => &["html", "prototype", "player", "share", "web"],
             Item::ToggleHidden => &["hide", "show", "visibility"],
             Item::ToggleLocked => &["lock", "unlock"],
             Item::Delete => &["remove"],
@@ -1589,6 +1593,7 @@ impl Item {
             Item::Settings => Action::OpenSettings,
             Item::ExportCode(t) => Action::ExportCode(t),
             Item::ExportEditable(f) => Action::ExportEditable(f),
+            Item::ExportPrototype => Action::ExportPrototype,
             Item::Tool(tool) => Action::ChooseTool(tool),
             Item::PlaceImage => Action::PlaceImage,
             Item::ZoomIn => Action::ZoomIn,
@@ -4021,6 +4026,7 @@ impl MastikApp {
             | Item::Settings
             | Item::ExportCode(_)
             | Item::ExportEditable(_)
+            | Item::ExportPrototype
             | Item::Present
             | Item::Play
             | Item::CheckContrast
