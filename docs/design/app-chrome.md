@@ -208,7 +208,7 @@ mastik-app/src/
 ├─ gradient.rs      the edited gradient's canvas handles: marks, press, click, right-click, drag, drawing (§9.4)
 ├─ grid.rs          pixel grid (one-world-unit lattice)
 ├─ input.rs         Mode + Action: mode-aware keyboard routing
-├─ measure.rs       Axis + Measure: Alt-hover measure and spacing-snap gaps; pure Rect geometry
+├─ measure.rs       the measure pill's padding; the geometry (Axis + Measure, Alt-hover measure and spacing-snap gaps) is mastik_core::measure, shared with the exported player's inspect mode
 ├─ menu.rs          command registry (Item, Spec, Group, build): context menus, palette, cheatsheet + app half (see context-menus.md)
 ├─ minimap.rs       the minimap card at the canvas's bottom left (app-canvas-chrome.md)
 ├─ size_preview.rs  the size preview card in the minimap's corner; renders on a worker (app-canvas-chrome.md)
