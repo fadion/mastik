@@ -423,6 +423,53 @@ fn a_sweep_leaves_no_seam_near_its_centre() {
     assert!(thin.is_empty(), "a seam: {} pixels, {thin:?}", thin.len());
 }
 
+/// A translucent sweep is as translucent where its wedges overlap as anywhere,
+/// in `resvg`: the overlap is opaque colour under an opacity mask, never two
+/// translucent wedges over each other.
+/// flip: `sweep_def` writing each wedge's opacity into its own stops → fails at
+/// "painted twice", along every wedge's overlap.
+#[test]
+fn a_translucent_sweep_is_painted_once_where_its_wedges_overlap() {
+    let (mut doc, _, board, page) = single(Affine::translate((60.0, 18.0)), vec![]);
+    let rect = doc
+        .node_ids()
+        .find(|id| matches!(doc.get(*id).unwrap().kind(), NodeKind::Rect { .. }))
+        .expect("the rectangle");
+    let sweep = mastik_core::peniko::Gradient::new_sweep((20.0, 12.0), 0.0, std::f32::consts::TAU)
+        .with_stops([
+            (0.0_f32, Color::from_rgba8(255, 0, 0, 128)),
+            (1.0_f32, Color::from_rgba8(0, 0, 255, 128)),
+        ]);
+    doc.apply(&Transaction(vec![Operation::SetFills {
+        id: rect,
+        fills: keyed_by_position([Fill {
+            brush: Brush::Gradient(sweep.into()).into(),
+            visible: true,
+        }]),
+    }]))
+    .unwrap();
+    let res = Resolved::rebuild(&doc);
+    let svg = mastik_export::svg::svg(&doc, &res, page, Some(board));
+    assert!(svg.contains("<pattern"), "the fixture: a sweep:\n{svg}");
+    let px = reference(&svg);
+    let mut twice = Vec::new();
+    // Inside the rectangle, clear of its anti-aliased border.
+    for y in 19..41 {
+        for x in 61..99 {
+            let a = px[((y * W + x) * 4 + 3) as usize];
+            if a.abs_diff(128) > 4 {
+                twice.push((x, y, a));
+            }
+        }
+    }
+    assert!(
+        twice.is_empty(),
+        "painted twice: {} pixels, {:?}",
+        twice.len(),
+        &twice[..twice.len().min(12)]
+    );
+}
+
 /// An inner shadow on a layer leaned past 45° is whole in the SVG: its offset is
 /// written stretched by the lean, (0, 10) as (20, 10), and the filter region is
 /// padded by that, not by the layer-space offset. Counted as pixels more than 40

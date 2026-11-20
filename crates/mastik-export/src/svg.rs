@@ -1505,20 +1505,33 @@ fn sweep_def(
     let (cx, cy, start) = (p.center.x, p.center.y, f64::from(p.start_angle));
     let towards = |a: f64, d: f64| (cx + d * (start + a).cos(), cy + d * (start + a).sin());
     let at = |a: f64| towards(a, reach);
-    let stop = |offset: &str, c: [f32; 4]| {
-        let c = mastik_core::peniko::color::PremulColor::<mastik_core::peniko::color::Srgb>::new(c)
+    // Wedges overlap, so a translucent one would paint the overlap twice: then
+    // the wedges are drawn opaque and the opacity comes from a luminance mask of
+    // the same wedges in opaque greys, which overlap as harmlessly.
+    let translucent = stops.iter().any(|(_, c)| c[3] < 1.0);
+    let rgba = |c: [f32; 4]| {
+        mastik_core::peniko::color::PremulColor::<mastik_core::peniko::color::Srgb>::new(c)
             .un_premultiply()
-            .to_rgba8();
+            .to_rgba8()
+    };
+    let stop = |offset: &str, c: [f32; 4]| {
+        let c = rgba(c);
+        let alpha = match translucent {
+            true => String::new(),
+            false => alpha_attr("stop-opacity", c.a),
+        };
         format!(
-            "      <stop offset=\"{offset}\" stop-color=\"#{:02x}{:02x}{:02x}\"{}/>\n",
-            c.r,
-            c.g,
-            c.b,
-            alpha_attr("stop-opacity", c.a),
+            "      <stop offset=\"{offset}\" stop-color=\"#{:02x}{:02x}{:02x}\"{alpha}/>\n",
+            c.r, c.g, c.b,
         )
+    };
+    let grey = |offset: &str, c: [f32; 4]| {
+        let a = rgba(c).a;
+        format!("      <stop offset=\"{offset}\" stop-color=\"#{a:02x}{a:02x}{a:02x}\"/>\n")
     };
     let mut out = String::new();
     let mut paths = String::new();
+    let mut greys = String::new();
     // An edge's colour is read just inside the wedge, so a hard stop on it keeps
     // both its sides.
     const INSIDE: f64 = 1e-9;
@@ -1534,6 +1547,18 @@ fn sweep_def(
             stop("0", colour(t_at(a0 + INSIDE))),
             stop("1", colour(t_at(a1 - INSIDE))),
         );
+        if translucent {
+            let _ = write!(
+                out,
+                "    <linearGradient id=\"{name}-a{i}\" gradientUnits=\"userSpaceOnUse\" x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\">\n{}{}    </linearGradient>\n",
+                fmt(x0),
+                fmt(y0),
+                fmt(x1),
+                fmt(y1),
+                grey("0", colour(t_at(a0 + INSIDE))),
+                grey("1", colour(t_at(a1 - INSIDE))),
+            );
+        }
         // Each wedge reaches under the next, but never past the seam, where it
         // would paint its colour over the start's. The first reaches back under
         // the last instead, which is painted over it, so the seam is covered too;
@@ -1565,6 +1590,12 @@ fn sweep_def(
             paths,
             "      <path d=\"M{d}Z\" fill=\"url(#{name}-w{i})\"/>"
         );
+        if translucent {
+            let _ = writeln!(
+                greys,
+                "      <path d=\"M{d}Z\" fill=\"url(#{name}-a{i})\"/>"
+            );
+        }
     }
     let xform = if brush.transform == Affine::IDENTITY {
         String::new()
@@ -1575,6 +1606,13 @@ fn sweep_def(
     // A tile's content counts from the tile's corner; the `viewBox` puts it back in
     // the gradient's own space.
     let (x, y, side) = (fmt(cx - reach), fmt(cy - reach), fmt(reach * 2.0));
+    if translucent {
+        let _ = write!(
+            out,
+            "    <mask id=\"{name}-m\" maskUnits=\"userSpaceOnUse\" x=\"{x}\" y=\"{y}\" width=\"{side}\" height=\"{side}\" color-interpolation=\"sRGB\">\n{greys}    </mask>\n",
+        );
+        paths = format!("      <g mask=\"url(#{name}-m)\">\n{paths}      </g>\n");
+    }
     let _ = write!(
         out,
         "    <pattern id=\"{name}\" patternUnits=\"userSpaceOnUse\"{xform} x=\"{x}\" y=\"{y}\" width=\"{side}\" height=\"{side}\" viewBox=\"{x} {y} {side} {side}\">\n{paths}    </pattern>\n",
