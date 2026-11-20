@@ -12558,6 +12558,10 @@ pub(super) const FRAME_PRESETS: &[PresetGroup] = &[
             ("iPhone 16 Pro Max", 440.0, 956.0),
             ("iPhone SE", 375.0, 667.0),
             ("Android compact", 412.0, 917.0),
+            ("Pixel 9", 412.0, 923.0),
+            ("Pixel 9 Pro XL", 448.0, 998.0),
+            ("Galaxy S24", 360.0, 780.0),
+            ("Galaxy S24 Ultra", 384.0, 824.0),
         ],
     ),
     (
@@ -12565,6 +12569,9 @@ pub(super) const FRAME_PRESETS: &[PresetGroup] = &[
         &[
             ("iPad mini", 744.0, 1133.0),
             ("iPad Pro 11\"", 834.0, 1194.0),
+            ("iPad Pro 13\"", 1032.0, 1376.0),
+            ("Android tablet", 800.0, 1280.0),
+            ("Surface Pro", 912.0, 1368.0),
         ],
     ),
     (
