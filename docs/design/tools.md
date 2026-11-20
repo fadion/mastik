@@ -376,7 +376,7 @@ chrome hides, and the box handles, a lone line's ends and the rail handle do not
   selects it (`gradient_click`, ahead of the set's `+` and the pick). A right-click on a dot removes
   it while more than two remain (`gradient_secondary`, after the point-edit claimant in
   `canvas_context_menu`).
-- **The press** is the rung after the pivot in `begin_select_drag` (`begin_gradient_drag`), and
+- **The press** is the rung after the pivot and the Prototype tab's link dots in `begin_select_drag` (`begin_gradient_drag`), and
   `chrome_claims` asks `gradient_claims`. `Drag::Gradient { id, slot, grab, from }` re-derives from
   the brush at the press each frame, previews through `preview_slot` and commits once through
   `write_slot`: one undo step.

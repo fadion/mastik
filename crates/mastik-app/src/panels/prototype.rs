@@ -1298,8 +1298,9 @@ const POP_W: f32 = crate::app::POPOVER_W;
 const COL: f32 = ui::CARD_COL_GAP;
 /// A nested action's indent under its branch head.
 const NEST: f32 = 16.0;
-/// The add and more menus' floor.
-const MENU_W: f32 = 200.0;
+/// The add and more menus' width: a width, not a floor, since `menu_row` takes
+/// the available width, which in a popup's `Area` runs to the screen's edge.
+const MENU_W: f32 = 180.0;
 
 impl MastikApp {
     /// Show or put away the Prototype tab, and say so.
@@ -1465,6 +1466,10 @@ impl MastikApp {
                     .as_ref()
                     .map(|s| mastik_core::reset::item_states(s, &reactions));
                 for (i, r) in reactions.iter().enumerate() {
+                    // A rule between one interaction's actions and the next one's trigger.
+                    if i > 0 {
+                        ui::card_rule(ui);
+                    }
                     let state = states.as_ref().map(|s| s[i]);
                     let out = app.reaction_block(ui, id, &reactions, r, state);
                     if let Some(o) = out.write {
@@ -1601,7 +1606,7 @@ impl MastikApp {
                 .gap(ui::MENU_GAP)
                 .show(|ui| {
                     ui::popup_rows(ui);
-                    ui.set_min_width(MENU_W);
+                    ui.set_width(MENU_W);
                     dup = ui::menu_item(ui, icon::COPY, "Duplicate", ui::MENU_ROW_H).clicked();
                     ui::menu_sep(ui);
                     delete = ui::menu_row(
@@ -1751,7 +1756,6 @@ impl MastikApp {
                 edit.2,
             ));
         }
-        ui.add_space(2.0);
         out
     }
 
@@ -1778,14 +1782,15 @@ impl MastikApp {
                 .selected_text(ui::glyph_and_text(icon::INTERACTION, &label))
                 .show_ui(ui, |ui| {
                     ui::menu_rows(ui);
-                    ui.label(ui::eyebrow("Pointer"));
+                    ui::menu_eyebrow(ui, "Pointer");
                     for t in POINTER_TRIGGERS {
                         let on = same_trigger_kind(&t, &current);
                         if ui.selectable_label(on, trigger_label(doc, &t)).clicked() && !on {
                             pick = Some(TriggerPick::Set(t));
                         }
                     }
-                    ui.label(ui::eyebrow("Other"));
+                    ui::menu_sep(ui);
+                    ui::menu_eyebrow(ui, "Other");
                     let on = matches!(current, Trigger::Key { .. });
                     if ui.selectable_label(on, "Key…").clicked() {
                         pick = Some(TriggerPick::Key);
@@ -1878,7 +1883,7 @@ impl MastikApp {
             .gap(ui::MENU_GAP)
             .show(|ui| {
                 ui::popup_rows(ui);
-                ui.set_min_width(MENU_W);
+                ui.set_width(MENU_W);
                 for (i, (group, kinds)) in ActionKind::GROUPS.iter().enumerate() {
                     if i > 0 {
                         ui::menu_sep(ui);
@@ -2024,18 +2029,22 @@ impl MastikApp {
             ui.spacing_mut().item_spacing.x = COL;
             ui.add_space(indent);
             let w = ui.available_width() - ui::MENU_ROW_H - COL;
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(w, ui::MENU_ROW_H), egui::Sense::hover());
-            let galley = ui.painter().layout(
-                text.to_string(),
-                egui::FontId::monospace(ui::CAPTION_PT),
-                color::accent_300(),
-                w,
+            ui.allocate_ui_with_layout(
+                egui::vec2(w, ui::MENU_ROW_H),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_width(w);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .family(egui::FontFamily::Monospace)
+                                .size(ui::CAPTION_PT)
+                                .color(color::accent_300()),
+                        )
+                        .truncate(),
+                    );
+                },
             );
-            let at = egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
-            ui.painter()
-                .with_clip_rect(rect)
-                .galley(at, galley, color::accent_300());
             let plus = ui
                 .push_id(salt, |ui| {
                     ui::icon_button(ui, icon::PLUS, ui::MENU_ROW_H, 13.0, false, true)
@@ -2059,7 +2068,6 @@ impl MastikApp {
         open: bool,
         reorderable: bool,
     ) -> (RowOut, egui::Response) {
-        const CLOSE_W: f32 = 18.0;
         let doc = &self.session.doc;
         let kind = ActionKind::of(&k.value);
         let (target, missing) = target_words(doc, id, &k.value);
@@ -2070,77 +2078,67 @@ impl MastikApp {
             _ => kind.label(),
         };
         let mut out = RowOut::default();
-        let mut grip_right = None;
         let resp = ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = COL;
                 ui.add_space(indent);
                 let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
-                let ground = egui::Rect::from_min_size(ui.cursor().min, size);
-                let hot = ui.rect_contains_pointer(ground);
-                ui::field_row_active(ui, size, open, |ui| {
-                    if hot {
-                        ui.painter().rect_filled(
-                            ground.shrink(1.0),
-                            egui::CornerRadius::same(ui::BUTTON_R - 1),
-                            color::hover(),
-                        );
-                    }
-                    ui.spacing_mut().item_spacing.x = 7.0;
-                    let g = ui::grip(ui, reorderable, size.y);
-                    out.grabbed = g.drag_started();
-                    grip_right = Some(g.rect.right());
-                    let ink = match missing {
-                        Some(_) => color::error(),
-                        None => theme::text::muted(),
-                    };
-                    let glyph = if missing.is_some() {
-                        icon::WARNING
-                    } else {
-                        kind.glyph()
-                    };
-                    ui.label(theme::icon_text(glyph, 14.0, ink));
-                    ui.label(
-                        egui::RichText::new(verb)
-                            .size(ui::SMALL_PT)
-                            .color(match missing {
-                                Some(_) => color::error(),
-                                None => theme::text::strong(),
-                            }),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui::icon_button(ui, icon::X, CLOSE_W, 13.0, false, true)
-                            .on_hover_text("Remove")
-                            .clicked()
-                        {
-                            out.remove = true;
-                        }
-                        if let Some(chip) = &chip {
-                            chip_label(ui, chip);
-                        }
+                // The grip and × sit over the row's press and keep their own.
+                let (_, resp) =
+                    ui::field_row_pressable(ui, size, open, true, |ui, _| {
+                        ui.spacing_mut().item_spacing.x = COL;
+                        let g = ui::grip(ui, reorderable, size.y);
+                        out.grabbed = g.drag_started();
                         let ink = match missing {
                             Some(_) => color::error(),
-                            None => color::accent_200(),
+                            None => theme::text::muted(),
                         };
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&target).size(ui::SMALL_PT).color(ink),
+                        let glyph = if missing.is_some() {
+                            icon::WARNING
+                        } else {
+                            kind.glyph()
+                        };
+                        ui.label(theme::icon_text(glyph, 14.0, ink));
+                        ui.label(egui::RichText::new(verb).size(ui::SMALL_PT).color(
+                            match missing {
+                                Some(_) => color::error(),
+                                None => theme::text::strong(),
+                            },
+                        ));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui::icon_button(
+                                ui,
+                                icon::X,
+                                ui::CLOSE_BUTTON_W,
+                                ui::CLOSE_GLYPH_PT,
+                                false,
+                                true,
                             )
-                            .truncate(),
-                        );
+                            .on_hover_text("Remove")
+                            .clicked()
+                            {
+                                out.remove = true;
+                            }
+                            // The timing as a faint note, as a menu row's accelerator.
+                            if let Some(chip) = &chip {
+                                ui.label(
+                                    egui::RichText::new(chip)
+                                        .size(ui::CAPTION_PT)
+                                        .color(theme::text::faint()),
+                                );
+                            }
+                            let ink = match missing {
+                                Some(_) => color::error(),
+                                None => color::accent_200(),
+                            };
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&target).size(ui::SMALL_PT).color(ink),
+                                )
+                                .truncate(),
+                            );
+                        });
                     });
-                });
-                let mut hit = ground;
-                hit.max.x -= CLOSE_W + ui::FIELD_PAD_X;
-                // The grip keeps its own press.
-                if let Some(x) = grip_right {
-                    hit.min.x = hit.min.x.max(x);
-                }
-                let resp = ui.interact(
-                    hit,
-                    ui.id().with(("action-row", k.id)),
-                    egui::Sense::click(),
-                );
                 let tip = match missing {
                     Some(gone) => format!(
                         "{gone}: skipped while playing. Pick another target, or undo the delete"
@@ -2204,13 +2202,27 @@ impl MastikApp {
                             }
                             let (i, n) = place.unwrap_or((0, 1));
                             let down = ui.add_enabled_ui(i + 1 < n, |ui| {
-                                ui::icon_button(ui, icon::ARROW_DOWN, 20.0, 13.0, false, true)
+                                ui::icon_button(
+                                    ui,
+                                    icon::ARROW_DOWN,
+                                    ui::CLOSE_BUTTON_W,
+                                    ui::CLOSE_GLYPH_PT,
+                                    false,
+                                    true,
+                                )
                             });
                             if down.inner.on_hover_text("Move down").clicked() {
                                 moved = Some(false);
                             }
                             let up = ui.add_enabled_ui(i > 0, |ui| {
-                                ui::icon_button(ui, icon::ARROW_UP, 20.0, 13.0, false, true)
+                                ui::icon_button(
+                                    ui,
+                                    icon::ARROW_UP,
+                                    ui::CLOSE_BUTTON_W,
+                                    ui::CLOSE_GLYPH_PT,
+                                    false,
+                                    true,
+                                )
                             });
                             if up.inner.on_hover_text("Move up").clicked() {
                                 moved = Some(true);
@@ -2376,7 +2388,8 @@ impl MastikApp {
                         },
                         (_, c) => c.clone(),
                     };
-                    return Some((
+                    // Answered, with the rows below still drawn this frame.
+                    out = Some((
                         Action::SetVariable { var: v, change },
                         "Change action",
                         icon::BRACKETS_CURLY,
@@ -2414,7 +2427,7 @@ impl MastikApp {
                             to: Expr(String::new()),
                         },
                     };
-                    return Some((
+                    out = Some((
                         Action::SetVariable { var: *var, change },
                         "Change action",
                         icon::BRACKETS_CURLY,
@@ -2452,7 +2465,11 @@ impl MastikApp {
                         // The reaction is rewritten by the caller; here the valve holds the number.
                         let changed = (v - by).abs() > f64::EPSILON;
                         self.proto_hold(resp_id, v, &resp);
-                        if changed && !resp.dragged() && !resp.has_focus() {
+                        if changed
+                            && !resp.dragged()
+                            && !resp.has_focus()
+                            && !self.gesture_cancelled
+                        {
                             out = Some((
                                 Action::SetVariable {
                                     var: *var,
@@ -2474,31 +2491,33 @@ impl MastikApp {
                 let mut changed = false;
                 let mut drop = None;
                 for (i, b) in branches.iter().enumerate() {
-                    ui.label(ui::eyebrow(if i == 0 { "If" } else { "Else if" }));
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = COL;
-                        let fw = if branches.len() > 1 {
-                            w - 18.0 - COL
-                        } else {
-                            w
-                        };
-                        if let Some(e) = self.expr_field(
-                            ui,
-                            DraftKey::Expr(k.id, i),
-                            &b.when,
-                            fw,
-                            Some(VarKind::Boolean),
-                        ) {
-                            next_branches[i].when = e;
-                            changed = true;
-                        }
-                        if branches.len() > 1
-                            && ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
-                                .on_hover_text("Remove this branch")
-                                .clicked()
-                        {
-                            drop = Some(i);
-                        }
+                    let word = if i == 0 { "If" } else { "Else if" };
+                    ui::labelled(ui, word, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = COL;
+                            let fw = if branches.len() > 1 {
+                                w - 18.0 - COL
+                            } else {
+                                w
+                            };
+                            if let Some(e) = self.expr_field(
+                                ui,
+                                DraftKey::Expr(k.id, i),
+                                &b.when,
+                                fw,
+                                Some(VarKind::Boolean),
+                            ) {
+                                next_branches[i].when = e;
+                                changed = true;
+                            }
+                            if branches.len() > 1
+                                && ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
+                                    .on_hover_text("Remove this branch")
+                                    .clicked()
+                            {
+                                drop = Some(i);
+                            }
+                        })
                     });
                 }
                 if let Some(i) = drop {
@@ -2618,6 +2637,8 @@ impl MastikApp {
                 .response
                 .on_hover_text("How the screen moves to the next");
         });
+        // A pick is answered, but every row below still draws from `t` this
+        // frame, so the popover is never one frame short of its rows.
         if let Some(k) = kind_pick {
             // Smart animate starts with no side (its new layers fade); a move
             // always has one.
@@ -2626,50 +2647,48 @@ impl MastikApp {
                 _ if t.direction == Direction::None => Direction::Left,
                 _ => t.direction,
             };
-            return Some(Transition {
+            out = Some(Transition {
                 kind: k,
                 direction,
                 ..t
             });
         }
         if t.kind == TransitionKind::Instant {
-            return None;
+            return out;
         }
         let smart = t.kind == TransitionKind::SmartAnimate;
-        let directional = t.kind.is_directional();
-        // A move reads no side as left, and shows it so.
-        let shown = match (t.direction, smart) {
-            (Direction::None, false) => Direction::Left,
-            (d, _) => d,
-        };
-        let cur = DIRECTIONS
-            .iter()
-            .position(|(d, _)| *d == shown)
-            .unwrap_or(0);
-        let pick = ui::segmented_tipped(
-            ui,
-            w,
-            ui::SEGMENT_CELL_H,
-            DIRECTIONS.len(),
-            cur,
-            |i| match i {
-                0 => smart,
-                _ => directional || smart,
-            },
-            |i| match (i, smart, directional) {
-                (0, true, _) => "New layers fade in, gone ones fade out",
-                (0, false, _) => "A move, push or slide needs a side",
-                (_, true, _) => "The side new layers enter from",
-                (_, _, true) => "The side it moves toward",
-                _ => "Only a move, push, slide or smart animate has a direction",
-            },
-            |p, i, r, on| ui::segment_label(p, r, DIRECTIONS[i].1, on),
-        );
-        if let Some(i) = pick.filter(|i| *i != cur) {
-            return Some(Transition {
-                direction: DIRECTIONS[i].0,
-                ..t
-            });
+        // A dissolve goes no way, so it has no direction row.
+        if t.kind.is_directional() || smart {
+            // A move reads no side as left, and shows it so.
+            let shown = match (t.direction, smart) {
+                (Direction::None, false) => Direction::Left,
+                (d, _) => d,
+            };
+            let cur = DIRECTIONS
+                .iter()
+                .position(|(d, _)| *d == shown)
+                .unwrap_or(0);
+            let pick = ui::segmented_tipped(
+                ui,
+                w,
+                ui::SEGMENT_CELL_H,
+                DIRECTIONS.len(),
+                cur,
+                |i| i != 0 || smart,
+                |i| match (i, smart) {
+                    (0, true) => "New layers fade in, gone ones fade out",
+                    (0, false) => "A move, push or slide needs a side",
+                    (_, true) => "The side new layers enter from",
+                    _ => "The side it moves toward",
+                },
+                |p, i, r, on| ui::segment_label(p, r, DIRECTIONS[i].1, on),
+            );
+            if let Some(i) = pick.filter(|i| *i != cur) {
+                out = Some(Transition {
+                    direction: DIRECTIONS[i].0,
+                    ..t
+                });
+            }
         }
         let spring = matches!(t.timing, Timing::Spring { .. });
         let pick = ui::segmented_tipped(
@@ -2687,7 +2706,7 @@ impl MastikApp {
         );
         match pick {
             Some(1) if !spring => {
-                return Some(Transition {
+                out = Some(Transition {
                     timing: Timing::Spring {
                         mass: 1.0,
                         stiffness: 320.0,
@@ -2697,7 +2716,7 @@ impl MastikApp {
                 });
             }
             Some(0) if spring => {
-                return Some(Transition {
+                out = Some(Transition {
                     timing: Timing::Ease {
                         curve: Easing::EaseOut,
                         ms: 300,
@@ -2740,7 +2759,7 @@ impl MastikApp {
                     let resp = ui::value_field_suffixed(
                         ui,
                         egui::vec2(half, h),
-                        Prefix::Label("duration"),
+                        Prefix::Label("Duration"),
                         Some(ui::Suffix {
                             text: "ms",
                             clickable: false,
@@ -2764,15 +2783,15 @@ impl MastikApp {
                     ));
                 });
                 if let Some(e) = curve_pick {
-                    return Some(Transition {
+                    out = Some(Transition {
                         timing: Timing::Ease { curve: e, ms },
                         ..t
                     });
                 }
                 if let Easing::Cubic(c) = curve {
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        let q = (w - 3.0 * 4.0) / 4.0;
+                        ui.spacing_mut().item_spacing.x = COL;
+                        let q = (w - 3.0 * COL) / 4.0;
                         for (i, label) in ["X1", "Y1", "X2", "Y2"].into_iter().enumerate() {
                             let rid = ui.id().with(("cubic", salt, i));
                             let mut v = self
@@ -2816,8 +2835,8 @@ impl MastikApp {
                 damping,
             } => {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    let q = (w - 2.0 * 4.0) / 3.0;
+                    ui.spacing_mut().item_spacing.x = COL;
+                    let q = (w - 2.0 * COL) / 3.0;
                     let parts = [
                         ("M", mass, "Mass: how heavy what moves is"),
                         ("S", stiffness, "Stiffness: how hard the spring pulls"),
@@ -2861,7 +2880,7 @@ impl MastikApp {
         for (resp, rid, v, next) in numbers {
             self.proto_hold(rid, v, &resp);
             let engaged = resp.dragged() || resp.has_focus();
-            if next != t && !engaged && interacting(&resp) {
+            if next != t && !engaged && interacting(&resp) && !self.gesture_cancelled {
                 out = Some(next);
             }
         }
@@ -2869,9 +2888,12 @@ impl MastikApp {
     }
 
     /// Hold a number field's value while it is scrubbed or typed, and let go once
-    /// it is not.
+    /// it is not. A right-click calls the scrub off (`cancel_gesture`): nothing
+    /// is held until the button is let go.
     fn proto_hold(&mut self, rid: egui::Id, v: f64, resp: &egui::Response) {
-        if resp.dragged() || resp.has_focus() {
+        if self.gesture_cancelled {
+            self.proto.scrub = None;
+        } else if resp.dragged() || resp.has_focus() {
             self.proto.scrub = Some((rid, v));
         } else if self.proto.scrub.is_some_and(|(i, _)| i == rid) {
             self.proto.scrub = None;
@@ -3614,7 +3636,8 @@ impl MastikApp {
                                 .iter()
                                 .filter(|(g, _)| matches!(*g, "PHONE" | "TABLET"))
                             {
-                                ui.label(ui::eyebrow(group));
+                                ui::menu_sep(ui);
+                                ui::menu_eyebrow(ui, group);
                                 for (n, pw, ph) in entries.iter() {
                                     let on = play.device.as_deref() == Some(*n);
                                     let row = ui.selectable_label(on, format!("{n}, {pw} × {ph}"));
@@ -3688,23 +3711,6 @@ impl MastikApp {
     }
 }
 
-/// A chip's words on an action row: the transition's kind and timing.
-fn chip_label(ui: &mut egui::Ui, text: &str) {
-    let galley = ui.painter().layout_no_wrap(
-        text.to_string(),
-        egui::FontId::proportional(ui::CAPTION_PT),
-        theme::text::dim(),
-    );
-    let size = galley.size() + egui::vec2(12.0, 0.0);
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size.x, 20.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 4, color::text_a(20));
-    ui.painter().galley(
-        egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0),
-        galley,
-        theme::text::dim(),
-    );
-}
-
 /// A dropdown of the screens, page by page; answers a new pick.
 fn frame_combo(
     ui: &mut egui::Ui,
@@ -3730,10 +3736,15 @@ fn frame_combo(
             .selected_text(ui::glyph_and_text(icon::FRAME, &shown))
             .show_ui(ui, |ui| {
                 ui::menu_rows(ui);
+                let mut first = true;
                 for (page, frames) in &all {
                     if paged && !frames.is_empty() {
+                        if !first {
+                            ui::menu_sep(ui);
+                        }
+                        first = false;
                         let p = crate::private::page(doc, *page).into_owned();
-                        ui.label(ui::eyebrow(&p));
+                        ui::menu_eyebrow(ui, &p);
                     }
                     for f in frames {
                         let on = *f == current;

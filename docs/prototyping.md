@@ -17,7 +17,7 @@ variables, conditions and Luau; the output is a real player, not a slideshow of 
 | The saved model: reactions, play settings, flows, the export settings, dangling targets, instances and copies | `design/prototyping-model.md` |
 | The engine: the played copy, play values and state, triggers and actions, inputs and focus, scrolling, motion (smart animate's direction, states that loop), live update, takes and video, expressions | `design/play.md` |
 | Drawing a frame of play on either backend | `design/render.md` *Play* |
-| Authoring: the Prototype tab, connectors, the link knob, flow chips, instances, kit publishing, agents | `design/prototyping-authoring.md` |
+| Authoring: the Prototype tab, connectors, the link dots, flow chips, instances, kit publishing, agents | `design/prototyping-authoring.md` |
 | The player in the app: present mode, following the editor, over the canvas, detached, fullscreen, keys, the bar, the export card, video and the flow map | `design/prototyping-player.md` |
 | The exported page: the browser build, the trim, fonts, the file, the page playing, inspect mode, the flow map, the release's player | `design/prototyping-export.md` |
 | Scripts a reaction runs: document scripts; a kit's are copied in when vendored | `design/command-mode.md` §10, `design/kits.md` |

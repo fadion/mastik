@@ -1,9 +1,9 @@
 # Prototyping: authoring
 
-Where a prototype is made: the inspector's Prototype tab, the connectors and the link knob on the
+Where a prototype is made: the inspector's Prototype tab, the connectors and the link dots on the
 canvas, an instance's interactions, kit publishing, and what agents read and write. The saved model
 it edits is `prototyping-model.md`; the player is `play.md`. Code:
-`crates/mastik-app/src/panels/prototype.rs`, the knob's drag in `canvas.rs` (`Drag::Link`).
+`crates/mastik-app/src/panels/prototype.rs`, a link dot's drag in `canvas.rs` (`Drag::Link`).
 
 ## The Prototype tab
 
@@ -25,14 +25,19 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   written and the status line says why.
 - **Numbers are held, not previewed.** The model's operations draw nothing, so a scrubbed or typed
   number (a delay, a duration, a spring, a cubic's handles, an overlay's position or shade) shows
-  the value held in `ProtoState::scrub` and commits once when the field lets go.
+  the value held in `ProtoState::scrub` and commits once when the field lets go. A right-click
+  during the scrub calls it off and the field shows the saved value again (`proto_hold`,
+  `cancel_gesture`).
 
 ## Interactions
 
 - **One block per reaction**: the trigger's dropdown, `+` (add an action) and `⋯` (*Duplicate*,
-  *Delete*), then its actions top to bottom. The card's own `+` adds *On click* with no actions.
-- **Triggers** are offered in two groups, the pointer's (*On click*, *On press*, *While
-  pressing*, *On hover*, *While hovering*, *On drag*) and the rest (*Key…*, *After delay*, *When
+  *Delete*), then its actions top to bottom; a `ui::card_rule` parts one block from the next. The
+  card's own `+` adds *On click* with no actions. The add and `⋯` menus are a fixed `MENU_W`
+  (a width, not a floor: `menu_row` takes the available width, which in a popup runs to the
+  screen's edge).
+- **Triggers** are offered in two groups under `ui::menu_eyebrow`s, *Pointer* (*On click*, *On press*, *While
+  pressing*, *On hover*, *While hovering*, *On drag*) and *Other* (*Key…*, *After delay*, *When
   a variable changes*, *When the frame opens*). *When the frame opens* is offered on a top-level
   frame only (*Only a frame opens*); *When a variable changes* needs a variable. *After delay*
   adds a delay field, *When a variable changes* a variable dropdown. Changing to a trigger no
@@ -49,8 +54,10 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   A new action names the likeliest target (`prototype::new_action`): another screen than the
   layer's own, mains last; the layer's own instance and a variant other than its current one; the
   first variable or script. It opens its popover at once.
-- **An action is one row**: a grip, its glyph, its verb, its target in accent ink, its
-  transition as a chip (kind and duration, or *Spring*), and `×`. A row drags by its grip to
+- **An action is one row**, a `ui::field_row_pressable` that opens its popover: a grip, its
+  glyph, its verb, its target in accent ink, its transition's timing (kind and duration, or
+  *Spring*) as a faint caption note as a menu row's accelerator is, and `×`; the grip and `×` keep
+  their own press. A row drags by its grip to
   another place in its own list (a reaction's, or one branch's), one *Move action* step; the
   grip is inert while the list holds one action. A target that is gone is drawn in the error
   colour behind the warning glyph (*Missing frame*, *Missing layer*, *Missing variable*, …), kept
@@ -58,12 +65,12 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   mono accent (*if …*, *else if …*, *else*), each with its own `+`, their actions indented under
   them. A target is read as the layer holding the reaction reads it
   (`prototype::resolve_target`), so an instance's names its own layers.
-- **The row's popover**, in the popover lane: the verb's head with *Move up* / *Move down* and
-  close, the action's fields, then its transition. A screen action picks a top-level frame, page
-  by page; *Scroll to* a layer of the holder's screen; *Change to* a variant of the instance's
+- **The row's popover**, in the popover lane: the verb's head with *Move up* / *Move down* (each
+  in the close button's box) and close, the action's fields, then its transition. A screen action picks a top-level frame, each
+  page's under its eyebrow; *Scroll to* a layer of the holder's screen; *Change to* a variant of the instance's
   set; *Set variable* a variable, then *Set* / *Increment* / *Toggle* (*Increment* for a number,
-  *Toggle* for a boolean) and its expression or step; *Conditional* one expression per branch,
-  *Add else if* and a branch's `×`; *Open link* an address, refused unless `http` or `https`;
+  *Toggle* for a boolean) and its expression or step; *Conditional* one expression per branch
+  (`ui::labelled` *If* / *Else if*), *Add else if* and a branch's `×`; *Open link* an address, refused unless `http` or `https`;
   *Run script* a document script by name.
 - **Expressions show names.** The field writes a variable `{name}`
   (`Expr::with_names`) and stores its id (`Expr::from_names`), so a rename never breaks it. What
@@ -71,15 +78,17 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   another kind than wanted (`Expr::kind`) is kept as typed, ringed, with the reason under the
   field (`ui::field_refusal`) and the range `ExprError::at` names underlined
   (`ui::field_underline`), and nothing is written until it reads.
-- **Transitions** (`transition_fields`, also the page's *New links*): the kind; a direction
-  segment of *None* and the four sides. The sides are live for *Move in*, *Move out*, *Push*
-  and *Slide* (`TransitionKind::is_directional`) and for *Smart animate*; *None* is live for
-  *Smart animate* alone, whose unpaired layers fade under it and slide in from a side otherwise
-  (`play.md`, *Motion*); every other kind dims the whole segment. Picking *Smart animate* sets
-  *None*; picking a move, push or slide while *None* is set sets the left side. Then *Curve* |
-  *Spring*. A curve is an easing
-  from the CSS set or *Custom curve* with its four cubic-bezier numbers (both X within 0..1), and a
-  duration; a spring is mass, stiffness and damping. *Instant* shows the kind alone.
+- **Transitions** (`transition_fields`, also the page's *New links*): the kind; for *Move in*,
+  *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`) and *Smart animate*, a
+  direction segment of *None* and the four sides. *None* is live for *Smart animate* alone, whose
+  unpaired layers fade under it and slide in from a side otherwise (`play.md`, *Motion*).
+  *Dissolve* goes no way and has no direction row. Picking *Smart animate* sets *None*; picking a
+  move, push or slide while *None* is set sets the left side. Then *Curve* | *Spring*. A curve is
+  an easing from the CSS set or *Custom curve* with its four cubic-bezier numbers (both X within
+  0..1), and a *Duration*; a spring is mass, stiffness and damping. Fields sharing a line stand
+  `ui::CARD_COL_GAP` apart. *Instant* shows the kind alone. A pick is answered without returning
+  early: every row still draws that frame from the old value, so the popover is never one frame
+  short of its rows (an egui popup that shrinks does not grow back).
 
 ## The Prototype card
 
@@ -93,7 +102,8 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   card, rather than in the layers panel's menu.
 - **An input**: a text layer binds a string variable; an instance a boolean one and the set's
   two-valued property that shows it. `×` unbinds.
-- **The page** (nothing selected): *Device* (*None* or a phone or tablet frame template by name),
+- **The page** (nothing selected): *Device* (*None*, then the phone and tablet frame templates by name, each group under its
+  `ui::menu_eyebrow`),
   *Scaling* (*Fit*, *Actual size*, *Fill width*) and *New links*, the transition a new link takes.
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its
   start among the page's frames, `×` to remove; `+` adds *Flow N* starting at the page's first
@@ -106,17 +116,34 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
 ## On the canvas
 
 - **Connectors** (`draw_prototype_links`), only while the Prototype tab is up and the chrome
-  shows: from each layer's box (right edge) to each navigate or overlay target's box on the same
-  page (`prototype::links_on`), a level-tangent curve with an arrowhead, the selection's in full
-  accent and the rest dim. A link in a conditional or opening an overlay is dashed. A target that
-  is gone is a short red stub ending in the warning glyph; one on another page a short stub. They
+  shows: from each layer's box to each navigate or overlay target's box on the same page
+  (`prototype::links_on`). A connector leaves by the side facing its target and enters the
+  opposite one (`connector_ends`: across when the boxes stand apart horizontally, else bottom to
+  top or top to bottom), a curve tangent to both sides, sampled in pieces no longer than
+  `CURVE_STEP` on screen so it stays smooth zoomed in. It is `LINK_W` thick in `color::SELECT`
+  for the selection's links and `color::SELECT_DIM` for the rest, with a filled `HEAD_LEN` ×
+  2·`HEAD_HALF` arrowhead; the line stops at the head's base so its weight never shows past the
+  tip. A link in a conditional or opening an overlay is dashed (6 on, 4 off). A target that is
+  gone is a short red stub ending in the warning glyph; one on another page a short stub. They
   are egui shapes over the rendered page, recomputed from the document, never in the scene.
-- **The knob**: an accent dot `KNOB_GAP` right of the one selected layer's box, with a selecting
-  tool. A drag from it (`Drag::Link`, ahead of the box handles, and in `chrome_claims`) draws the
-  link to the pointer and rings the screen under it; released over a top-level frame other than
-  the layer's own, it commits one *Navigate to* with the page's default transition as *Add
-  interaction*, joining the layer's first click (`prototype::with_link`). A click on it links
-  nothing and says how to use it; a drop elsewhere says where to drop.
+- **Link dots** (`knob_dots`), with a selecting tool: every edge of the one selected layer's
+  screen quad, and of the hovered unselected one, wears a dot at its middle, `color::POINT` with a
+  1.5 `color::SELECT` ring at `KNOB_R`. The dot a press would take, or the one being pulled, grows
+  to `KNOB_HOT_R` and fills `SELECT` with a `POINT` ring, as a shape's dragged corner dot does;
+  `KNOB_R` sits a size above the corner dots so the two handles do not read as one. A press
+  within `KNOB_PICK` of a dot takes it ahead of the box's resize handles (`link_knob_at`, after
+  only the pivot), and the cursor stays the rest arrow over it. Pulling a hovered layer's dot
+  selects that layer first, so the *Interactions* card shows the link. The pulled link leaves its
+  dot along the edge's outward direction to the pointer and rings the screen under it; released
+  over a top-level frame other than the layer's own, it commits one *Navigate to* with the page's
+  default transition as *Add interaction*, joining the layer's first click
+  (`prototype::with_link`). A click on a dot links nothing and says how to use it; a drop
+  elsewhere says where to drop.
+- **Which unselected layer wears dots** is noted each frame in `ProtoState::knob_hover` by
+  `note_link_hover` (from `draw_canvas`): the hover target, or the layer that wore them last
+  frame while the pointer is still on one of its dots, since they sit half outside it. The hover
+  outline keeps ringing that layer meanwhile (`link_hover`). A press aims at the dots drawn last
+  frame.
 - **Flow chips** (`flow_chips`), while the Prototype tab is up: each flow's name behind the
   `PLAY` glyph on an accent pill over its start frame's top-right corner, several on one frame
   stacked leftward. A click plays that flow over the canvas (`prototyping-player.md`). Private
@@ -143,8 +170,10 @@ the tree remapped to the layer the tree makes (`mcp.md`, `export.md`). There is 
 
 ## Traps
 
-- **The knob is a press target the canvas must know.** `link_knob_at` answers in
-  `begin_select_drag`, `chrome_claims` and the click path; left out of any of them, a press on it
-  starts a move, a guide, or a pick that drops the selection.
+- **A link dot is a press target the canvas must know.** `link_knob_at` answers in
+  `begin_select_drag`, `chrome_claims`, the Select tool's cursor and the click path; left out of
+  any of them, a press on a dot starts a resize, a move, a guide, or a pick that drops the
+  selection. `chrome_claims` must walk the same order as `begin_select_drag`
+  (`a_guide_does_not_steal_a_press_the_chrome_claims`).
 - **The Prototype tab must not draw the Design cards' state.** Switching closes the inspector's
   popovers and a key capture, since both are keyed to cards the other tab does not draw.

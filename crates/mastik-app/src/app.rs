@@ -3439,6 +3439,8 @@ impl MastikApp {
         if let Some(copies) = self.in_flight.mirror_copies_scrub.take() {
             self.mirror_mut().copies = copies;
         }
+        // And the Prototype tab's held number: its field shows the saved one again.
+        self.proto.scrub = None;
         // And *Generate scale…*'s step count.
         if let Some(steps) = self.in_flight.scale_scrub.take() {
             self.restore_scale_steps(steps);
