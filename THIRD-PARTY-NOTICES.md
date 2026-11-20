@@ -101,6 +101,12 @@ permissive or permissively-electable:
   copyleft and no obligation beyond the disclaimer.
 - `tiny-skia` and `tiny-skia-path` (`BSD-3-Clause`) are Skia-derived and arrive
   through the CPU raster path.
+- **The browser player that runs scripts** (`player-scripts/`, packed into an exported
+  prototype that runs a script) links Luau (`MIT`), and from wasi-sdk the C library
+  wasi-libc (`Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`, with musl's `MIT`
+  parts) and LLVM's libc++, libc++abi and libunwind (`Apache-2.0 WITH LLVM-exception`).
+  `mlua` 0.11.6 (`MIT`) is vendored for that build with one change
+  (`crates/mastik-web/vendor/README.md`).
 - `openh264` and `openh264-sys2` (`BSD-2-Clause`) build Cisco's OpenH264 encoder
   from source, which is how a prototype's take becomes an MP4. The source licence
   covers the code only: Cisco pays the H.264 patent royalties for its own prebuilt

@@ -2,13 +2,13 @@
 
 How a prototype becomes one HTML file a client opens with a double-click: the browser build of
 the player, the trim to the chosen flows, the fonts, the packing, and the page playing. The app's export
-card is `prototyping-player.md`; *Run script* in the page is open (`prototyping.md`).
+card is `prototyping-player.md`.
 Code: `crates/mastik-web` (the page's player), `mastik-export/src/prototype.rs` (the packer and
 the page's script), `mastik export --prototype` (the CLI).
 
 ## The browser build
 
-The page runs `mastik-core`, `mastik-play` (without `scripts`) and `mastik-render` compiled to
+The page runs `mastik-core`, `mastik-play` and `mastik-render` compiled to
 `wasm32-unknown-unknown`, drawing
 with vello on WebGPU, else with `vello_cpu` into a 2D canvas. Both are the canvas's own
 renderer, so the page draws what the editor draws.
@@ -31,14 +31,37 @@ renderer, so the page draws what the editor draws.
   that are not; 0.2.108 is the oldest wgpu 29 takes. `wasm-bindgen-cli` must be that exact
   version. The futures crate still wants an exported `async fn`'s future unwind safe, so
   `mastik_web::start` awaits the GPU setup before it holds a `Resolved`.
-- **Luau is not in the page.** `mlua` builds Luau's C++ with `cc`, which needs a C++
-  compiler and a C/C++ runtime for the target; `wasm32-unknown-unknown` has neither, and the
-  build fails at `mlua-sys`. Moving the player to `wasm32-unknown-emscripten`, which `mlua`
-  supports, is closed: `wasm-bindgen` and wgpu's WebGPU backend need `wasm32-unknown-unknown`.
-  What remains is Luau's C++ compiled by clang against wasi-sdk's sysroot (libc, libc++) into
-  the same module, or a second module beside the player that runs a script on a copy and hands
-  back its operations; `prototyping.md` holds the question. Until then the page plays
-  without `scripts` and *Run script* is skipped with a notice.
+- **Two players: one without scripts, one with.** `build.sh` writes `player/`, and with
+  `WASI_SDK` naming an unpacked wasi-sdk it also writes `player-scripts/`, built with the
+  crate's `scripts` feature (`mastik-play`'s, so `mastik-vm` and Luau). An export packs the
+  scripts player only when the document has a *Run script* (`prototype_export::player_folders`
+  tries each folder's `-scripts` sibling first); without it, or for any other file, the plain
+  player plays and *Run script* is skipped with a notice. The scripts player costs about
+  2.6 MB more gzipped (6.9 against 4.3 MB). Luau's C++ is 0.35 MB of that; the rest is the
+  verb layer a script reaches the document through (`Host::verb` → `verbs::call` by name, a
+  table of every verb that linking cannot thin).
+- **How Luau builds for the page.** wasi-sdk's clang compiles Luau's C++ against its wasip1
+  sysroot, and the player links that sysroot's exception-handling libc++, libc++abi and
+  libunwind. Each `build.sh` setting answers one wall:
+  - `-include stdlib.h`: Luau's parser reaches `strtod` through a header wasi's libc++ does
+    not pull in.
+  - `CXXSTDLIB=c++` and a `libstdc++.a` link to libc++: `luau0-src` asks for `stdc++`.
+  - `-mllvm -wasm-use-legacy-eh=false`: that clang emits the legacy exception encoding, while
+    Rust's nightly and wasi's libc++abi emit the new one, and a module may not mix them.
+  - `libunwind` and the emulated process clocks: the throw path and Luau's `os.clock`.
+  - `--allow-multiple-definition`: Rust's unwinder and wasi's both define the same
+    `__cpp_exception` tag.
+
+  A Luau error then comes back to Rust as an `Err`, and a Rust panic still unwinds to its
+  `catch_unwind` beside it.
+- **The scripts player imports nothing more.** `src/wasi.rs` defines the eight
+  `__imported_wasi_snapshot_preview1_*` calls wasi-libc makes, so the linker never imports
+  them: no environment, no files, a clock at zero, nothing to exit to. With no clock, a
+  script's step budget alone bounds its run there (`mastik-vm`'s run clock reads no time
+  passing on `wasm32-unknown-unknown`).
+- **`mlua` 0.11.6 is vendored** under `crates/mastik-web/vendor/mlua`, for this workspace
+  only, with its Luau heap dump left out on `wasm32-unknown-unknown`, where `libc` declares no
+  stdio (`vendor/README.md`). 0.12.2 has the same calls.
 - **What the player's code may not use**, because the page has none of it: threads
   (`std::thread::spawn` fails; `available_parallelism` errs, which the CPU effects' banding
   already reads as one), `std::time::Instant`/`SystemTime` (they panic; time comes from
@@ -150,7 +173,8 @@ canvas, the drawing and the page around them.
   `Key::name`: `Left`, `Space`, `Comma`); while an input is focused a printable key is text.
 - **Addresses** play asks to open (`take_requests`) open in a new tab from inside the input
   handler that caused them, while the browser still counts the act the viewer's. Notices go to
-  the console; `ScriptsOff` is shown to the viewer once.
+  the console; `ScriptsOff` (a plain player meeting a *Run script*) is shown to the viewer
+  once.
 - **The player bar**, when the export shows it, runs along the foot: the flow's name (a list
   of the file's flows when it holds several, switching plays that flow from its start),
   *Restart*, *Hints* when the export shows hotspot hints, and *Inspect*.

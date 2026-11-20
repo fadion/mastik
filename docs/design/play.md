@@ -272,6 +272,7 @@ by id, `{<actor-hex>:<seq>}`.
 
 `mastik-play` depends on `mastik-core` and, behind `scripts`, `mastik-vm`; nothing renders or
 draws (`deps_forbidden` holds it to the headless list). The page's player (`crates/mastik-web`)
-runs it on a pinned nightly that unwinds (`prototyping-export.md` *The browser build*), without
-`scripts`: `mlua` does not build for that target, so a *Run script* there is skipped with
-`ScriptsOff`.
+runs it on a pinned nightly that unwinds (`prototyping-export.md` *The browser build*). The plain
+player is built without `scripts` and skips a *Run script* with `ScriptsOff`; the scripts
+player, packed only into a file that runs a script, is built with it, Luau's C++ compiled by
+wasi-sdk.

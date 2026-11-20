@@ -1,8 +1,8 @@
 # Mastik — prototyping
 
-> **Status: built, three questions open.** Each built part's rules live in a file under
-> `design/` (below). Still open: *Run script* in the exported page, lists from data, and whether a
-> minimised main window keeps a detached player drawing.
+> **Status: built, two questions open.** Each built part's rules live in a file under
+> `design/` (below). Still open: lists from data, and whether a minimised main window keeps a
+> detached player drawing.
 
 A prototype is the document played: frames linked by interactions, driven by variables and
 scripts, animated between states, shown beside the editor while it is edited, and exported as one
@@ -28,22 +28,6 @@ frames, the in-between frames, the flow map's connectors, hotspot rectangles, an
 `Resolved`.
 
 ## Still open
-
-### *Run script* in the exported page
-
-The exported file should run its scripts in the same sandbox as the app, against its own copy.
-Today the page plays without `scripts`: a *Run script* is skipped and the viewer told once
-(`design/prototyping-export.md` *The browser build*). The page has no Luau because `mlua` builds
-Luau's C++, and `wasm32-unknown-unknown` has no C/C++ toolchain or runtime to build it with;
-moving the player to Emscripten is closed, since `wasm-bindgen` and wgpu's WebGPU backend need
-`wasm32-unknown-unknown`.
-
-- **Recommended:** Luau's C++ compiled by clang against a wasi-sdk sysroot (libc, libc++) into the
-  same module. An estimated 0.6–0.9 MB more, gzipped, and CI needs a pinned wasi-sdk.
-- **The alternative:** a second module built by Emscripten beside the player, which runs a script
-  on a copy and hands back its operations.
-- **Rejected:** a Lua written in Rust, which is not Luau, so a script would run differently in the
-  page than in the app.
 
 ### Lists from data
 

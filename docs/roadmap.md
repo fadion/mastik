@@ -9,12 +9,13 @@ true.
 ## Now · Prototyping
 
 A release of its own. The prototype is built (`prototyping.md` points to each part); what
-remains is *Run script* in the exported page, lists from data, device and phone mirroring, and
-an annotation in the exported page's inspect mode.
+remains is lists from data, device and phone mirroring, and an annotation in the exported
+page's inspect mode.
 
-- **Run script in the exported page.** The page plays without scripts; the recommended route
-  is Luau's C++ built into the player's module with clang and a pinned wasi-sdk
-  (`prototyping.md`, *Still open*).
+- **A lighter scripts player.** A file that runs a script carries about 2.6 MB more, gzipped,
+  mostly the verb layer a script reaches the document through (`Host::verb` → `verbs::call`
+  by name). Scripts writing typed operations instead would let the page's build drop it
+  (`design/prototyping-export.md` *The browser build*).
 - **Lists from data.** A repeated row filled from a data file, on the chart's data model; its
   saved form is undecided (`prototyping.md`, *Still open*).
 - **Device and phone mirroring.** The app serves the prototype player to the local network and

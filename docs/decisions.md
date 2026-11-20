@@ -210,7 +210,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **A looping state is variants whose *After* changes their instance to the next variant**, with no loop setting saved: the engine restarts an instance's *After* on each change of state, so every instance and a kit publish keep the loop (`play.md`, *Triggers*).
 - **Smart animate slides its unpaired layers only under a named side**; with none (`Direction::None`, its default in the Prototype tab) they fade.
 - **Present mode is the player when the document has a flow** on any page, so present mode and *Play* are one act under the `PLAY` glyph; with none it steps through frames (`prototyping-player.md`).
-- **The exported page plays without scripts until the Luau route is settled**: a *Run script* there is skipped and the viewer told once (`prototyping.md`, *Still open*).
+- **The exported page runs scripts through Luau built by wasi-sdk into the player itself, and only a file that runs a script carries that player**: the scripts player costs about 2.6 MB more gzipped, so a file without *Run script* packs the plain one. A pure-Rust Lua was refused (it is not Luau, so a script would run differently than in the app), and an Emscripten build is closed (`wasm-bindgen` and wgpu's WebGPU backend need `wasm32-unknown-unknown`). `design/prototyping-export.md` *The browser build*.
 - **The exported page's inspect data is made when the file is packed**: the page has no exporter, so each layer's CSS and its export settings' files go into the file (`prototype::inspect_css`, `inspect_files`).
 - **A video from a take encodes H.264 through OpenH264 built from source** (BSD-2-Clause), muxed by the `mp4` crate. Cisco's patent licence covers only its own binaries, so the patent cover is the distributor's. GIF needs no codec.
 
@@ -223,7 +223,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **D956/D976** A `v*` tag builds and publishes every platform. Build steps hold a read-only token; one `publish` job writes. Every action in a job that holds a write token or the package signing key (`release.yml`'s `publish`, `pages.yml`'s steps after the key import) is pinned by commit, since a tag can be moved.
 - **D957** Signed apt and dnf repositories are rebuilt on GitHub Pages. `install.sh` pins the key fingerprint.
 - **D969** The Windows data folder is `MastikData`, because `%LocalAppData%\Mastik` belongs to the installer.
-- **The release ships the exported prototype's player**, built once on the pinned nightly: `player/` beside the executable on Windows and in the Linux archive and AppImage, `Contents/Resources/player` in the macOS bundle, `/usr/share/mastik/player` in the .deb and .rpm, where `mastik export --prototype` looks.
+- **The release ships the exported prototype's player**, built once on the pinned nightly: `player/` beside the executable on Windows and in the Linux archive and AppImage, `Contents/Resources/player` in the macOS bundle, `/usr/share/mastik/player` in the .deb and .rpm, where `mastik export --prototype` looks, each with its `player-scripts` sibling. The release pins wasi-sdk by version and digest.
 - **There is only ever one Mastik window per machine**: a later launch hands its file to the running window, which opens it in a tab and comes forward. Tabs are how one window holds several files; a second window defeats them, and two windows holding one file saved over each other. Command-line runs open no window and are not covered.
 
 ## Interface
