@@ -2919,6 +2919,17 @@ impl MastikApp {
             return;
         }
 
+        // A click on the Prototype tab's knob links nothing and keeps the selection.
+        if self.tool.selects()
+            && clicked
+            && let Some(p) = resp.interact_pointer_pos()
+            && self.link_knob_at(p, rect, ppp).is_some()
+        {
+            self.session
+                .info("Drag the knob onto a frame to link to it");
+            return;
+        }
+
         if self.tool.selects()
             && clicked
             && let Some(p) = resp.interact_pointer_pos()
@@ -3142,6 +3153,7 @@ impl MastikApp {
         handles: &Option<Handles>,
     ) -> bool {
         self.on_pivot(screen, rect, ppp).is_some()
+            || self.link_knob_at(screen, rect, ppp).is_some()
             || self.gradient_claims(screen, rect, ppp)
             || self.set_plus_at(screen, rect, ppp).is_some()
             || self.shape_handle_at(screen, rect, ppp).is_some()
@@ -3173,6 +3185,12 @@ impl MastikApp {
 
         if let Some(target) = self.on_pivot(grab, rect, ppp) {
             self.drag = Drag::Pivot { target };
+            return;
+        }
+
+        // The Prototype tab's knob, over the selection it hangs from.
+        if let Some(from) = self.link_knob_at(grab, rect, ppp) {
+            self.drag = Drag::Link { from };
             return;
         }
 
@@ -3429,6 +3447,7 @@ impl MastikApp {
             | Drag::CropPan { .. }
             | Drag::CropResize { .. }
             | Drag::Pivot { .. }
+            | Drag::Link { .. }
             | Drag::Guide(_)
             | Drag::TextSelect
             | Drag::None => {}
@@ -3632,6 +3651,7 @@ impl MastikApp {
                 let f = self.set_pivot_at(world);
                 self.session.selection.set_pivot(f);
             }
+            Drag::Link { from } => self.drop_link(from, world),
             // Guide and crop releases are finished by their own input paths.
             Drag::CropPan { .. }
             | Drag::CropResize { .. }
@@ -10252,7 +10272,12 @@ impl MastikApp {
 
     /// The selection outline for `id`, from the **preview** layer so it tracks a
     /// gesture.
-    fn selection_quad(&self, id: NodeId, rect: egui::Rect, ppp: f32) -> Option<[egui::Pos2; 4]> {
+    pub(crate) fn selection_quad(
+        &self,
+        id: NodeId,
+        rect: egui::Rect,
+        ppp: f32,
+    ) -> Option<[egui::Pos2; 4]> {
         self.quad_of(id, rect, ppp, true)
     }
 
@@ -10947,6 +10972,11 @@ impl MastikApp {
 
         // The key layer, over the selection boxes.
         self.draw_key_outline(painter, rect, ppp);
+
+        // The prototype's connectors and the knob, while the Prototype tab is up.
+        if chrome && self.mode == Mode::Normal {
+            self.draw_prototype_links(ui, painter, rect, ppp);
+        }
 
         // Not under `chrome`: its hit route (`set_plus_at`) works either way.
         self.draw_set_plus(painter, rect, ppp);

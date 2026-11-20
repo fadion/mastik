@@ -1008,6 +1008,31 @@ pub(super) fn item_slot(
     state: mastik_core::reset::ItemState,
     hot: bool,
 ) -> bool {
+    item_slot_response(ui, state, hot).is_some_and(|r| r.clicked())
+}
+
+/// [`item_slot`] whose overridden item also offers its push on a right-click
+/// (`ui::reset_push_menu`): answers the reset or the push asked for. A push is
+/// requested through `ui::request_push`, for the reset's door to take.
+pub(super) fn item_slot_menu(
+    ui: &mut egui::Ui,
+    state: mastik_core::reset::ItemState,
+    hot: bool,
+) -> Option<ui::ResetOrPush> {
+    let resp = item_slot_response(ui, state, hot)?;
+    let menu = ui::reset_push_menu(&resp, "Reset to main", "Push to main");
+    match resp.clicked() {
+        true => Some(ui::ResetOrPush::Reset),
+        false => menu,
+    }
+}
+
+/// The slot's painting; answers the ↺'s response on an overridden item.
+fn item_slot_response(
+    ui: &mut egui::Ui,
+    state: mastik_core::reset::ItemState,
+    hot: bool,
+) -> Option<egui::Response> {
     use mastik_core::reset::ItemState;
     // Still a stop while it holds the focus, so a reset from the keys leaves the
     // focus where it was rather than dropping it.
@@ -1024,7 +1049,7 @@ pub(super) fn item_slot(
     let hot = hot || resp.has_focus();
     let p = ui.painter();
     match state {
-        ItemState::Follows => false,
+        ItemState::Follows => None,
         ItemState::Local => {
             p.text(
                 rect.center(),
@@ -1034,7 +1059,7 @@ pub(super) fn item_slot(
                 theme::text::muted(),
             );
             resp.on_hover_text("This instance's own — not in the main");
-            false
+            None
         }
         ItemState::Overridden if hot => {
             p.text(
@@ -1044,11 +1069,11 @@ pub(super) fn item_slot(
                 theme::icon_font(12.0),
                 theme::text::strong(),
             );
-            resp.on_hover_text("Reset to main").clicked()
+            Some(resp.on_hover_text("Reset to main"))
         }
         ItemState::Overridden => {
             ui::override_dot(p, rect.center());
-            false
+            Some(resp)
         }
     }
 }
@@ -1294,9 +1319,10 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         | O::RemoveScript { .. }
         | O::SetScriptName { .. }
         | O::SetScriptSource { .. }
-        | O::SetReactions { .. }
-        | O::SetPlay { .. }
         | O::SetPlayExport { .. } => None,
+        // The Prototype tab's cards.
+        O::SetReactions { .. } => Some("Interactions"),
+        O::SetPlay { .. } => Some("Prototype"),
     }
 }
 

@@ -1343,6 +1343,20 @@ pub mod icon {
     pub const GRAIN: &str = "\u{f088}";
     /// *System health*: a pulse line. Not [`GAUGE`], whose dial is JPEG quality.
     pub const PULSE: &str = "\u{f089}";
+    /// A prototype's interactions: a pointer clicking, with the click's rays.
+    /// The Prototype tab's palette row, its trigger rows and the knob's link.
+    pub const INTERACTION: &str = "\u{f08a}";
+    /// *Change to*, an instance switched to another variant: a square turning
+    /// into the filled one. Not [`SWAP`], which replaces text or an instance.
+    pub const CHANGE_STATE: &str = "\u{f08b}";
+    /// *Open overlay*: a screen with a sheet over its foot and an arrow up.
+    pub const OVERLAY_OPEN: &str = "\u{f08c}";
+    /// *Close overlay*: [`OVERLAY_OPEN`] with the arrow down.
+    pub const OVERLAY_CLOSE: &str = "\u{f08d}";
+    /// *Swap overlay*: the same screen with arrows both ways.
+    pub const OVERLAY_SWAP: &str = "\u{f08e}";
+    /// A prototype's *Conditional*: a decision diamond branching two ways.
+    pub const CONDITIONAL: &str = "\u{f08f}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1675,6 +1689,12 @@ pub mod icon {
         ("ridges", RIDGES),
         ("grain", GRAIN),
         ("pulse", PULSE),
+        ("interaction", INTERACTION),
+        ("change-state", CHANGE_STATE),
+        ("overlay-open", OVERLAY_OPEN),
+        ("overlay-close", OVERLAY_CLOSE),
+        ("overlay-swap", OVERLAY_SWAP),
+        ("conditional", CONDITIONAL),
     ];
 }
 

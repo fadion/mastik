@@ -1,0 +1,3750 @@
+//! The inspector's Prototype tab (`docs/design/prototyping-authoring.md`): a
+//! layer's interactions, its play settings, and with nothing selected the page's
+//! flows and prototype settings. Every edit is one transaction on the saved model
+//! (`mastik_core::prototype`); nothing here plays.
+
+use super::inspector::{FRAME_PRESETS, identity_card, identity_glyph, interacting};
+use crate::app::MastikApp;
+use crate::preview::Drag;
+use crate::theme::{self, color, icon};
+use crate::ui::{self, FieldButton, Prefix, Scrub};
+use eframe::egui;
+use mastik_core::id::NodeId;
+use mastik_core::item::{ItemId, Keyed};
+use mastik_core::prototype::{
+    Action, Branch, Direction, Easing, Expr, Flow, Input, LayerPlay, OverlayPosition, PagePlay,
+    Pin, Reaction, Scaling, ScrollAxis, Timing, Transition, TransitionKind, Trigger, VarChange,
+};
+use mastik_core::variable::{VarId, VarKind};
+use mastik_core::{Document, NodeKind, Operation, Transaction};
+
+/// The Prototype tab's state between frames: its open popover, a typed field's
+/// draft, the key a key trigger waits for, and a scrubbed number in flight.
+#[derive(Default)]
+pub(crate) struct ProtoState {
+    /// The action whose popover is open.
+    pub open: Option<ActionAt>,
+    /// A typed expression, address or flow name, until it commits.
+    pub draft: Option<ui::Draft<DraftKey, String>>,
+    /// The reaction whose *Key…* trigger waits for the next key.
+    pub capture: Option<(NodeId, ItemId)>,
+    /// A number field being scrubbed or typed: the saved model is never previewed
+    /// (its operations draw nothing), so the field shows the value held here.
+    pub scrub: Option<(egui::Id, f64)>,
+}
+
+/// One action of one layer's reaction, by item ids, nested ones included.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ActionAt {
+    pub node: NodeId,
+    pub reaction: ItemId,
+    pub action: ItemId,
+}
+
+/// What a typed field of the tab is for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum DraftKey {
+    /// A conditional's branch condition, or *Set variable*'s value (branch 0).
+    Expr(ItemId, usize),
+    /// *Open link*'s address.
+    Url(ItemId),
+    /// A flow's name.
+    FlowName(ItemId),
+}
+
+/// Where in a reaction a new action goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Place {
+    /// The reaction's own list.
+    Top,
+    /// A conditional's branch, by index.
+    Branch(ItemId, usize),
+    /// A conditional's *else*.
+    Otherwise(ItemId),
+}
+
+/// The kinds of action the add menu offers, in its groups' order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ActionKind {
+    Navigate,
+    Back,
+    ScrollTo,
+    OpenUrl,
+    OpenOverlay,
+    SwapOverlay,
+    CloseOverlay,
+    ChangeState,
+    SetVariable,
+    Conditional,
+    RunScript,
+}
+
+impl ActionKind {
+    /// The add menu's groups: where the player is, what floats over it, and the
+    /// state of the copy it plays.
+    const GROUPS: [(&'static str, &'static [ActionKind]); 3] = [
+        (
+            "Go",
+            &[
+                ActionKind::Navigate,
+                ActionKind::Back,
+                ActionKind::ScrollTo,
+                ActionKind::OpenUrl,
+            ],
+        ),
+        (
+            "Overlay",
+            &[
+                ActionKind::OpenOverlay,
+                ActionKind::SwapOverlay,
+                ActionKind::CloseOverlay,
+            ],
+        ),
+        (
+            "State",
+            &[
+                ActionKind::ChangeState,
+                ActionKind::SetVariable,
+                ActionKind::Conditional,
+                ActionKind::RunScript,
+            ],
+        ),
+    ];
+
+    fn of(a: &Action) -> Self {
+        match a {
+            Action::Navigate { .. } => Self::Navigate,
+            Action::Back => Self::Back,
+            Action::OpenOverlay { .. } => Self::OpenOverlay,
+            Action::CloseOverlay { .. } => Self::CloseOverlay,
+            Action::SwapOverlay { .. } => Self::SwapOverlay,
+            Action::ScrollTo { .. } => Self::ScrollTo,
+            Action::ChangeState { .. } => Self::ChangeState,
+            Action::SetVariable { .. } => Self::SetVariable,
+            Action::Conditional { .. } => Self::Conditional,
+            Action::OpenUrl { .. } => Self::OpenUrl,
+            Action::RunScript { .. } => Self::RunScript,
+        }
+    }
+
+    /// The menu's and the popover head's words.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Navigate => "Navigate to",
+            Self::Back => "Back",
+            Self::ScrollTo => "Scroll to",
+            Self::OpenUrl => "Open link",
+            Self::OpenOverlay => "Open overlay",
+            Self::SwapOverlay => "Swap overlay",
+            Self::CloseOverlay => "Close overlay",
+            Self::ChangeState => "Change to",
+            Self::SetVariable => "Set variable",
+            Self::Conditional => "Conditional",
+            Self::RunScript => "Run script",
+        }
+    }
+
+    pub(crate) fn glyph(self) -> &'static str {
+        match self {
+            Self::Navigate => icon::ARROW_RIGHT,
+            Self::Back => icon::ARROW_LEFT,
+            Self::ScrollTo => icon::ARROW_LINE_DOWN,
+            Self::OpenUrl => icon::ARROW_SQUARE_OUT,
+            Self::OpenOverlay => icon::OVERLAY_OPEN,
+            Self::SwapOverlay => icon::OVERLAY_SWAP,
+            Self::CloseOverlay => icon::OVERLAY_CLOSE,
+            Self::ChangeState => icon::CHANGE_STATE,
+            Self::SetVariable => icon::BRACKETS_CURLY,
+            Self::Conditional => icon::CONDITIONAL,
+            Self::RunScript => icon::FILE_CODE,
+        }
+    }
+}
+
+/// A trigger's words, as its block's head says them.
+pub(crate) fn trigger_label(doc: &Document, t: &Trigger) -> String {
+    match t {
+        Trigger::Click => "On click".into(),
+        Trigger::HoverEnter => "On hover".into(),
+        Trigger::HoverWhile => "While hovering".into(),
+        Trigger::Press => "On press".into(),
+        Trigger::PressWhile => "While pressing".into(),
+        Trigger::Drag => "On drag".into(),
+        Trigger::Key { key, shift } if key.is_empty() => match shift {
+            true => "Key Shift+…".into(),
+            false => "Key …".into(),
+        },
+        Trigger::Key { key, shift: true } => format!("Key Shift+{key}"),
+        Trigger::Key { key, .. } => format!("Key {key}"),
+        Trigger::After { ms } => format!("After {}", duration_words(*ms)),
+        Trigger::VariableChanges { var } => match doc.variables().get(*var) {
+            Some(v) => format!("When {} changes", v.name),
+            None => "When a missing variable changes".into(),
+        },
+        Trigger::FrameOpens => "When the frame opens".into(),
+    }
+}
+
+/// `2 s` for whole seconds, `300 ms` otherwise.
+fn duration_words(ms: u32) -> String {
+    match ms {
+        0 => "0 ms".into(),
+        ms if ms % 1000 == 0 => format!("{} s", ms / 1000),
+        ms => format!("{ms} ms"),
+    }
+}
+
+/// The triggers the head's menu offers, grouped: the pointer's, then the rest.
+/// `Key` is offered as *Key…*, which waits for the key.
+const POINTER_TRIGGERS: [Trigger; 6] = [
+    Trigger::Click,
+    Trigger::Press,
+    Trigger::PressWhile,
+    Trigger::HoverEnter,
+    Trigger::HoverWhile,
+    Trigger::Drag,
+];
+
+fn same_trigger_kind(a: &Trigger, b: &Trigger) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+/// The transition's two words on its action row: its kind and its timing.
+pub(crate) fn transition_chip(t: &Transition) -> String {
+    if t.kind == TransitionKind::Instant {
+        return "Instant".into();
+    }
+    let kind = transition_short(t.kind);
+    match t.timing {
+        Timing::Spring { .. } => format!("{kind} · Spring"),
+        Timing::Ease { ms, .. } => format!("{kind} · {ms} ms"),
+    }
+}
+
+fn transition_short(k: TransitionKind) -> &'static str {
+    match k {
+        TransitionKind::Instant => "Instant",
+        TransitionKind::Dissolve => "Dissolve",
+        TransitionKind::MoveIn => "Move in",
+        TransitionKind::MoveOut => "Move out",
+        TransitionKind::Push => "Push",
+        TransitionKind::Slide => "Slide",
+        TransitionKind::SmartAnimate => "Smart",
+    }
+}
+
+fn transition_label(k: TransitionKind) -> &'static str {
+    match k {
+        TransitionKind::SmartAnimate => "Smart animate",
+        other => transition_short(other),
+    }
+}
+
+const TRANSITION_KINDS: [TransitionKind; 7] = [
+    TransitionKind::Instant,
+    TransitionKind::Dissolve,
+    TransitionKind::SmartAnimate,
+    TransitionKind::MoveIn,
+    TransitionKind::MoveOut,
+    TransitionKind::Push,
+    TransitionKind::Slide,
+];
+
+const DIRECTIONS: [(Direction, &str); 4] = [
+    (Direction::Left, "Left"),
+    (Direction::Right, "Right"),
+    (Direction::Up, "Up"),
+    (Direction::Down, "Down"),
+];
+
+/// The CSS set, then the custom curve.
+const EASINGS: [(Easing, &str); 6] = [
+    (Easing::Linear, "Linear"),
+    (Easing::Ease, "Ease"),
+    (Easing::EaseIn, "Ease in"),
+    (Easing::EaseOut, "Ease out"),
+    (Easing::EaseInOut, "Ease in and out"),
+    (Easing::Cubic([0.22, 1.0, 0.36, 1.0]), "Custom curve"),
+];
+
+fn easing_label(e: Easing) -> &'static str {
+    EASINGS
+        .iter()
+        .find(|(x, _)| std::mem::discriminant(x) == std::mem::discriminant(&e))
+        .map_or("Custom curve", |(_, l)| *l)
+}
+
+/// The transition an action takes when it moves the screen.
+fn transition_of(a: &Action) -> Option<Transition> {
+    match a {
+        Action::Navigate { transition, .. }
+        | Action::OpenOverlay { transition, .. }
+        | Action::CloseOverlay { transition }
+        | Action::SwapOverlay { transition, .. }
+        | Action::ScrollTo { transition, .. }
+        | Action::ChangeState { transition, .. } => Some(*transition),
+        _ => None,
+    }
+}
+
+fn with_transition(a: &Action, t: Transition) -> Action {
+    let mut a = a.clone();
+    match &mut a {
+        Action::Navigate { transition, .. }
+        | Action::OpenOverlay { transition, .. }
+        | Action::CloseOverlay { transition }
+        | Action::SwapOverlay { transition, .. }
+        | Action::ScrollTo { transition, .. }
+        | Action::ChangeState { transition, .. } => *transition = t,
+        _ => {}
+    }
+    a
+}
+
+// --- the action list, by id ---------------------------------------------------
+
+/// The action `id` in `list`, nested ones included.
+pub(crate) fn find(list: &[Keyed<Action>], id: ItemId) -> Option<&Keyed<Action>> {
+    list.iter().find_map(|k| {
+        if k.id == id {
+            return Some(k);
+        }
+        match &k.value {
+            Action::Conditional {
+                branches,
+                otherwise,
+            } => branches
+                .iter()
+                .find_map(|b| find(&b.actions, id))
+                .or_else(|| find(otherwise, id)),
+            _ => None,
+        }
+    })
+}
+
+/// [`find`], to change it.
+pub(crate) fn find_mut(list: &mut [Keyed<Action>], id: ItemId) -> Option<&mut Keyed<Action>> {
+    for k in list.iter_mut() {
+        if k.id == id {
+            return Some(k);
+        }
+        if let Action::Conditional {
+            branches,
+            otherwise,
+        } = &mut k.value
+        {
+            for b in branches.iter_mut() {
+                if let Some(hit) = find_mut(&mut b.actions, id) {
+                    return Some(hit);
+                }
+            }
+            if let Some(hit) = find_mut(otherwise, id) {
+                return Some(hit);
+            }
+        }
+    }
+    None
+}
+
+/// The list `place` names in a reaction's `actions`.
+pub(crate) fn list_at(
+    actions: &mut Vec<Keyed<Action>>,
+    place: Place,
+) -> Option<&mut Vec<Keyed<Action>>> {
+    let (cond, branch) = match place {
+        Place::Top => return Some(actions),
+        Place::Branch(c, i) => (c, Some(i)),
+        Place::Otherwise(c) => (c, None),
+    };
+    match &mut find_mut(actions, cond)?.value {
+        Action::Conditional {
+            branches,
+            otherwise,
+        } => match branch {
+            Some(i) => branches.get_mut(i).map(|b| &mut b.actions),
+            None => Some(otherwise),
+        },
+        _ => None,
+    }
+}
+
+/// Take the action `id` out of whichever list holds it; whether it was there.
+pub(crate) fn remove(list: &mut Vec<Keyed<Action>>, id: ItemId) -> bool {
+    if let Some(i) = list.iter().position(|k| k.id == id) {
+        list.remove(i);
+        return true;
+    }
+    list.iter_mut().any(|k| match &mut k.value {
+        Action::Conditional {
+            branches,
+            otherwise,
+        } => branches.iter_mut().any(|b| remove(&mut b.actions, id)) || remove(otherwise, id),
+        _ => false,
+    })
+}
+
+/// Move the action `id` one place up (`up`) or down within its own list; whether
+/// it moved.
+pub(crate) fn shift(list: &mut [Keyed<Action>], id: ItemId, up: bool) -> bool {
+    if let Some(i) = list.iter().position(|k| k.id == id) {
+        let j = match up {
+            true => i.checked_sub(1),
+            false => (i + 1 < list.len()).then_some(i + 1),
+        };
+        return match j {
+            Some(j) => {
+                list.swap(i, j);
+                true
+            }
+            None => false,
+        };
+    }
+    list.iter_mut().any(|k| match &mut k.value {
+        Action::Conditional {
+            branches,
+            otherwise,
+        } => branches.iter_mut().any(|b| shift(&mut b.actions, id, up)) || shift(otherwise, id, up),
+        _ => false,
+    })
+}
+
+/// Where the action `id` sits in its list and how long that list is.
+fn position(list: &[Keyed<Action>], id: ItemId) -> Option<(usize, usize)> {
+    if let Some(i) = list.iter().position(|k| k.id == id) {
+        return Some((i, list.len()));
+    }
+    list.iter().find_map(|k| match &k.value {
+        Action::Conditional {
+            branches,
+            otherwise,
+        } => branches
+            .iter()
+            .find_map(|b| position(&b.actions, id))
+            .or_else(|| position(otherwise, id)),
+        _ => None,
+    })
+}
+
+/// A copy of `list` with every item id (nested ones included) minted afresh, for
+/// *Duplicate*: the door refuses a repeated id.
+fn fresh_ids(list: &[Keyed<Action>], mint: &mut impl FnMut() -> ItemId) -> Vec<Keyed<Action>> {
+    list.iter()
+        .map(|k| {
+            let value = match &k.value {
+                Action::Conditional {
+                    branches,
+                    otherwise,
+                } => Action::Conditional {
+                    branches: branches
+                        .iter()
+                        .map(|b| Branch {
+                            when: b.when.clone(),
+                            actions: fresh_ids(&b.actions, mint),
+                        })
+                        .collect(),
+                    otherwise: fresh_ids(otherwise, mint),
+                },
+                other => other.clone(),
+            };
+            Keyed::new(mint(), value)
+        })
+        .collect()
+}
+
+// --- expressions ----------------------------------------------------------------
+
+/// An expression as its field shows it: each `{<actor-hex>:<seq>}` written as the
+/// variable's name in braces, a variable that is gone left as its id.
+pub(crate) fn expr_shown(doc: &Document, e: &Expr) -> String {
+    e.with_names(&|v| doc.variables().get(v).map(|v| v.name.clone()))
+}
+
+/// What was typed into an expression field, as stored: each `{name}` written as
+/// its variable's id. Refused, with the reason, when it does not read, names a
+/// variable no one has, or (for *Set variable*, `want`) comes to another kind.
+pub(crate) fn expr_stored(
+    doc: &Document,
+    text: &str,
+    want: Option<VarKind>,
+) -> Result<Expr, String> {
+    let (e, error) = Expr::from_names(text, &|n| doc.variables().by_name(n).map(|v| v.id));
+    if let Some(why) = error {
+        return Err(capitalised(&why.to_string()));
+    }
+    if let Some(want) = want {
+        let got = e
+            .kind(&|v| doc.variables().get(v).map(|v| v.kind))
+            .map_err(|why| capitalised(&why.to_string()))?;
+        if got != want {
+            return Err(format!(
+                "This comes to a {}, not a {}",
+                kind_word(got),
+                kind_word(want)
+            ));
+        }
+    }
+    Ok(e)
+}
+
+fn kind_word(k: VarKind) -> &'static str {
+    match k {
+        VarKind::Number => "number",
+        VarKind::String => "string",
+        VarKind::Boolean => "boolean",
+        VarKind::Color => "colour",
+    }
+}
+
+fn capitalised(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// Whether `url` is an address *Open link* takes: `http` or `https`.
+pub(crate) fn is_link(url: &str) -> bool {
+    let u = url.trim().to_ascii_lowercase();
+    (u.starts_with("https://") && u.len() > 8) || (u.starts_with("http://") && u.len() > 7)
+}
+
+// --- the document, as the tab reads it -------------------------------------------
+
+/// The top-level frames of every page, page by page: what *Navigate to* and the
+/// overlay actions go to.
+pub(crate) fn screens(doc: &Document) -> Vec<(NodeId, Vec<NodeId>)> {
+    doc.pages()
+        .iter()
+        .map(|p| {
+            let frames = doc
+                .get(p.id)
+                .map(|root| {
+                    root.children()
+                        .iter()
+                        .copied()
+                        .filter(|c| is_frame(doc, *c))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (p.id, frames)
+        })
+        .collect()
+}
+
+pub(crate) fn is_frame(doc: &Document, id: NodeId) -> bool {
+    doc.get(id)
+        .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }))
+}
+
+/// The top-level frame `id` is in (itself, for one), or `None` on open canvas.
+pub(crate) fn screen_of(doc: &Document, id: NodeId) -> Option<NodeId> {
+    let mut at = id;
+    loop {
+        let parent = doc.get(at)?.parent()?;
+        if doc.page(parent).is_some() {
+            return is_frame(doc, at).then_some(at);
+        }
+        at = parent;
+    }
+}
+
+/// Every layer under `root`, depth first, `root` left out.
+fn descendants(doc: &Document, root: NodeId) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    let mut stack: Vec<NodeId> = doc
+        .get(root)
+        .map(|n| n.children().iter().rev().copied().collect())
+        .unwrap_or_default();
+    while let Some(id) = stack.pop() {
+        out.push(id);
+        if let Some(n) = doc.get(id) {
+            stack.extend(n.children().iter().rev().copied());
+        }
+    }
+    out
+}
+
+/// The instance *Change to* switches from a layer: the instance it is or is in,
+/// when that instance's main is a variant of a set.
+pub(crate) fn state_instance(doc: &Document, id: NodeId) -> Option<NodeId> {
+    let root = mastik_core::component::instance_root(doc, id)?;
+    let main = mastik_core::component::main_of(doc, root)?;
+    mastik_core::variant::set_of(doc, main).map(|_| root)
+}
+
+/// The variants an instance may change to: its main's set's, in order.
+fn states_of(doc: &Document, instance: NodeId) -> Vec<NodeId> {
+    mastik_core::component::main_of(doc, instance)
+        .and_then(|m| mastik_core::variant::set_of(doc, m))
+        .map(|set| mastik_core::variant::variants(doc, set))
+        .unwrap_or_default()
+}
+
+fn name(doc: &Document, id: NodeId) -> String {
+    crate::private::layer(doc, id).into_owned()
+}
+
+/// What an action names, as its row writes it, and the word for it gone when
+/// it does not exist. A target is read as the layer holding the reaction reads it.
+fn target_words(doc: &Document, holder: NodeId, a: &Action) -> (String, Option<&'static str>) {
+    let layer = |t: NodeId, gone: &'static str| {
+        let t = mastik_core::prototype::resolve_target(doc, holder, t);
+        match doc.get(t) {
+            Some(_) => (name(doc, t), None),
+            None => (gone.to_string(), Some(gone)),
+        }
+    };
+    match a {
+        Action::Navigate { to, .. } => layer(*to, "Missing frame"),
+        Action::OpenOverlay { overlay, .. } | Action::SwapOverlay { overlay, .. } => {
+            layer(*overlay, "Missing frame")
+        }
+        Action::ScrollTo { layer: l, .. } => layer(*l, "Missing layer"),
+        Action::ChangeState { instance, to, .. } => {
+            let inst = mastik_core::prototype::resolve_target(doc, holder, *instance);
+            match (doc.get(inst), doc.get(*to)) {
+                (Some(_), Some(_)) => (name(doc, *to), None),
+                (None, _) => ("Missing instance".into(), Some("Missing instance")),
+                (_, None) => ("Missing variant".into(), Some("Missing variant")),
+            }
+        }
+        Action::SetVariable { var, change } => match doc.variables().get(*var) {
+            Some(v) => {
+                let how = match change {
+                    VarChange::Set { to } => format!("= {}", expr_shown(doc, to)),
+                    VarChange::Increment { by } if *by < 0.0 => format!("− {}", -by),
+                    VarChange::Increment { by } => format!("+ {by}"),
+                    VarChange::Toggle => "toggled".into(),
+                };
+                (format!("{} {how}", v.name), None)
+            }
+            None => ("Missing variable".into(), Some("Missing variable")),
+        },
+        Action::Conditional { branches, .. } => (
+            branches
+                .first()
+                .map(|b| expr_shown(doc, &b.when))
+                .unwrap_or_default(),
+            None,
+        ),
+        Action::OpenUrl { url } => (url.clone(), None),
+        Action::RunScript { script } => match doc.script(*script) {
+            Some(s) => (s.name.clone(), None),
+            None => ("Missing script".into(), Some("Missing script")),
+        },
+        Action::Back | Action::CloseOverlay { .. } => (String::new(), None),
+    }
+}
+
+/// The transition a new link on `page` takes: the page's own default.
+pub(crate) fn page_transition(doc: &Document, page: Option<NodeId>) -> Transition {
+    page.and_then(|p| doc.page(p))
+        .map_or_else(Transition::default, |p| p.play.transition)
+}
+
+/// A new action of `kind` for a reaction on `holder`, its target the likeliest
+/// one: another screen, the holder's own instance, the first variable or script.
+/// `None` where the document has nothing it could name.
+pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Option<Action> {
+    let transition = page_transition(doc, doc.page_of(holder));
+    let own = screen_of(doc, holder);
+    let other_screen = || {
+        let all: Vec<NodeId> = screens(doc).into_iter().flat_map(|(_, f)| f).collect();
+        // A main is a component, not a screen, so it is picked last.
+        let main = |f: &NodeId| doc.get(*f).is_some_and(|n| n.component());
+        all.iter()
+            .copied()
+            .find(|f| Some(*f) != own && !main(f))
+            .or_else(|| all.iter().copied().find(|f| Some(*f) != own))
+            .or_else(|| all.first().copied())
+    };
+    Some(match kind {
+        ActionKind::Navigate => Action::Navigate {
+            to: other_screen()?,
+            transition,
+        },
+        ActionKind::Back => Action::Back,
+        ActionKind::ScrollTo => Action::ScrollTo {
+            layer: own.and_then(|s| descendants(doc, s).first().copied())?,
+            transition,
+        },
+        ActionKind::OpenUrl => Action::OpenUrl {
+            url: "https://".into(),
+        },
+        ActionKind::OpenOverlay => Action::OpenOverlay {
+            overlay: other_screen()?,
+            transition,
+        },
+        ActionKind::SwapOverlay => Action::SwapOverlay {
+            overlay: other_screen()?,
+            transition,
+        },
+        ActionKind::CloseOverlay => Action::CloseOverlay { transition },
+        ActionKind::ChangeState => {
+            let instance = state_instance(doc, holder)?;
+            let main = mastik_core::component::main_of(doc, instance)?;
+            let to = states_of(doc, instance)
+                .into_iter()
+                .find(|v| *v != main)
+                .unwrap_or(main);
+            Action::ChangeState {
+                instance,
+                to,
+                transition,
+            }
+        }
+        ActionKind::SetVariable => {
+            let v = doc.variables().iter().next()?;
+            let change = match v.kind {
+                VarKind::Boolean => VarChange::Toggle,
+                VarKind::Number => VarChange::Increment { by: 1.0 },
+                VarKind::String | VarKind::Color => VarChange::Set {
+                    to: Expr(String::new()),
+                },
+            };
+            Action::SetVariable { var: v.id, change }
+        }
+        ActionKind::Conditional => Action::Conditional {
+            branches: vec![Branch {
+                when: Expr("true".into()),
+                actions: Vec::new(),
+            }],
+            otherwise: Vec::new(),
+        },
+        ActionKind::RunScript => Action::RunScript {
+            script: doc.scripts().first()?.id,
+        },
+    })
+}
+
+/// Why the add menu cannot offer `kind` under `trigger` on `holder`, or `None`
+/// when it can.
+pub(crate) fn action_refusal(
+    doc: &Document,
+    holder: NodeId,
+    trigger: &Trigger,
+    kind: ActionKind,
+) -> Option<&'static str> {
+    match kind {
+        ActionKind::RunScript if !trigger.is_a_persons_act() => {
+            Some("A script runs only when someone acts")
+        }
+        ActionKind::RunScript if doc.scripts().is_empty() => Some("This document has no scripts"),
+        ActionKind::ChangeState if state_instance(doc, holder).is_none() => Some("Not a component"),
+        ActionKind::SetVariable if doc.variables().iter().next().is_none() => {
+            Some("This document has no variables")
+        }
+        ActionKind::ScrollTo if new_action(doc, holder, kind).is_none() => {
+            Some("Only a layer in a frame can be scrolled to")
+        }
+        ActionKind::Navigate | ActionKind::OpenOverlay | ActionKind::SwapOverlay
+            if new_action(doc, holder, kind).is_none() =>
+        {
+            Some("No frame to go to")
+        }
+        _ => None,
+    }
+}
+
+/// The connectors of one action list on `holder`, nested lists' dashed.
+fn layer_links(
+    doc: &Document,
+    holder: NodeId,
+    list: &[Keyed<Action>],
+    dashed: bool,
+    out: &mut Vec<Link>,
+) {
+    for k in list {
+        match &k.value {
+            Action::Navigate { to: t, .. }
+            | Action::OpenOverlay { overlay: t, .. }
+            | Action::SwapOverlay { overlay: t, .. } => {
+                let overlay = !matches!(k.value, Action::Navigate { .. });
+                out.push(Link {
+                    from: holder,
+                    to: mastik_core::prototype::resolve_target(doc, holder, *t),
+                    dashed: dashed || overlay,
+                });
+            }
+            Action::Conditional {
+                branches,
+                otherwise,
+            } => {
+                for b in branches {
+                    layer_links(doc, holder, &b.actions, true, out);
+                }
+                layer_links(doc, holder, otherwise, true, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One connector the canvas draws while the Prototype tab is up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Link {
+    pub from: NodeId,
+    /// The target as the holder reads it; it may be gone.
+    pub to: NodeId,
+    /// Inside a conditional, or opening an overlay.
+    pub dashed: bool,
+}
+
+/// Every connector on `page`: each navigate or overlay action of each layer.
+pub(crate) fn links_on(doc: &Document, page: NodeId) -> Vec<Link> {
+    let mut out = Vec::new();
+    for id in descendants(doc, page) {
+        let Some(n) = doc.get(id) else { continue };
+        for r in n.reactions() {
+            layer_links(doc, id, &r.actions, false, &mut out);
+        }
+    }
+    out
+}
+
+/// `reactions` on `id` with a click navigating to `to` added: to the layer's
+/// first click reaction, or as a new one. What the canvas knob's drop commits.
+pub(crate) fn with_link(
+    doc: &Document,
+    id: NodeId,
+    to: NodeId,
+    mint: &mut impl FnMut() -> ItemId,
+) -> Vec<Keyed<Reaction>> {
+    let mut list = doc
+        .get(id)
+        .map(|n| n.reactions().to_vec())
+        .unwrap_or_default();
+    let action = Keyed::new(
+        mint(),
+        Action::Navigate {
+            to,
+            transition: page_transition(doc, doc.page_of(id)),
+        },
+    );
+    match list.iter_mut().find(|r| r.trigger == Trigger::Click) {
+        Some(r) => r.value.actions.push(action),
+        None => list.push(Keyed::new(
+            mint(),
+            Reaction {
+                trigger: Trigger::Click,
+                actions: vec![action],
+            },
+        )),
+    }
+    list
+}
+
+// --- the canvas ---------------------------------------------------------------
+
+/// The knob's radius and how far right of the selection's box it sits.
+const KNOB_R: f32 = 6.0;
+const KNOB_GAP: f32 = 10.0;
+/// How far a missing or off-page target's stub reaches from its layer.
+const STUB: f32 = 28.0;
+
+/// The screen box of a quad.
+fn quad_box(q: [egui::Pos2; 4]) -> egui::Rect {
+    egui::Rect::from_points(&q)
+}
+
+/// The cubic from `a` to `b` with level tangents, as points.
+fn curve(a: egui::Pos2, b: egui::Pos2) -> Vec<egui::Pos2> {
+    let reach = ((b.x - a.x).abs() * 0.5).max(24.0);
+    let out = if b.x >= a.x { reach } else { -reach };
+    let c1 = a + egui::vec2(out.abs(), 0.0);
+    let c2 = b - egui::vec2(out, 0.0);
+    (0..=24)
+        .map(|i| {
+            let t = i as f32 / 24.0;
+            let u = 1.0 - t;
+            let p = a.to_vec2() * (u * u * u)
+                + c1.to_vec2() * (3.0 * u * u * t)
+                + c2.to_vec2() * (3.0 * u * t * t)
+                + b.to_vec2() * (t * t * t);
+            p.to_pos2()
+        })
+        .collect()
+}
+
+/// An arrowhead at `tip`, pointing along `from → tip`.
+fn arrowhead(painter: &egui::Painter, from: egui::Pos2, tip: egui::Pos2, ink: egui::Color32) {
+    let dir = (tip - from).normalized();
+    if !dir.x.is_finite() {
+        return;
+    }
+    let side = egui::vec2(-dir.y, dir.x);
+    let back = tip - dir * 7.0;
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, back + side * 3.5, back - side * 3.5],
+        ink,
+        egui::Stroke::NONE,
+    ));
+}
+
+impl MastikApp {
+    /// The layer whose knob is at `screen`: the one selected layer, while the
+    /// Prototype tab is up and a selecting tool is in hand.
+    pub(crate) fn link_knob_at(
+        &self,
+        screen: egui::Pos2,
+        rect: egui::Rect,
+        ppp: f32,
+    ) -> Option<NodeId> {
+        let (id, at) = self.link_knob(rect, ppp)?;
+        (at.distance(screen) <= KNOB_R + 3.0).then_some(id)
+    }
+
+    fn link_knob(&self, rect: egui::Rect, ppp: f32) -> Option<(NodeId, egui::Pos2)> {
+        if !self.prototype_tab || !self.tool.selects() {
+            return None;
+        }
+        let id = self.session.selection.single()?;
+        let b = quad_box(self.selection_quad(id, rect, ppp)?);
+        Some((id, egui::pos2(b.right() + KNOB_GAP, b.center().y)))
+    }
+
+    /// The connectors from each layer with a navigate or overlay action to its
+    /// target, the selection's lit and the rest dim; a dangling one is a red
+    /// stub with the warning glyph. Then the knob, and the link it pulls.
+    pub(crate) fn draw_prototype_links(
+        &self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        ppp: f32,
+    ) {
+        if !self.prototype_tab {
+            return;
+        }
+        let doc = &self.session.doc;
+        let page = self.session.page;
+        for link in links_on(doc, page) {
+            let Some(from) = self.selection_quad(link.from, rect, ppp).map(quad_box) else {
+                continue;
+            };
+            let lit = self.session.selection.contains(link.from);
+            let here = doc.get(link.to).is_some() && doc.page_of(link.to) == Some(page);
+            let (ink, pts) = match here
+                .then(|| self.selection_quad(link.to, rect, ppp))
+                .flatten()
+            {
+                Some(q) => {
+                    let to = quad_box(q);
+                    let a = egui::pos2(from.right(), from.center().y);
+                    let b = match to.center().x >= from.center().x {
+                        true => egui::pos2(to.left(), to.center().y),
+                        false => egui::pos2(to.right(), to.center().y),
+                    };
+                    let ink = match lit {
+                        true => color::accent(),
+                        false => color::accent_a(90),
+                    };
+                    (ink, curve(a, b))
+                }
+                None => {
+                    let a = egui::pos2(from.right(), from.center().y);
+                    let b = a + egui::vec2(STUB, 0.0);
+                    let ink = match doc.get(link.to) {
+                        None => color::error(),
+                        Some(_) if lit => color::accent(),
+                        Some(_) => color::accent_a(90),
+                    };
+                    if doc.get(link.to).is_none() {
+                        painter.text(
+                            b + egui::vec2(9.0, 0.0),
+                            egui::Align2::CENTER_CENTER,
+                            icon::WARNING,
+                            theme::icon_font(12.0),
+                            ink,
+                        );
+                    }
+                    (ink, vec![a, b])
+                }
+            };
+            let stroke = egui::Stroke::new(if lit { 1.5 } else { 1.0 }, ink);
+            match link.dashed {
+                true => {
+                    painter.extend(egui::Shape::dashed_line(&pts, stroke, 4.0, 3.0));
+                }
+                false => {
+                    painter.add(egui::Shape::line(pts.clone(), stroke));
+                }
+            }
+            if let [.., before, tip] = pts.as_slice() {
+                arrowhead(painter, *before, *tip, ink);
+            }
+        }
+        let Some((id, at)) = self.link_knob(rect, ppp) else {
+            return;
+        };
+        if let Drag::Link { from } = self.drag
+            && from == id
+            && let Some(p) = ui.ctx().pointer_latest_pos()
+        {
+            let world = self.to_world(p, rect, ppp);
+            if let Some(target) = self.link_target(id, world)
+                && let Some(q) = self.selection_quad(target, rect, ppp)
+            {
+                painter.add(egui::Shape::closed_line(
+                    q.to_vec(),
+                    egui::Stroke::new(2.0, color::accent()),
+                ));
+            }
+            let pts = curve(at, p);
+            painter.add(egui::Shape::line(
+                pts.clone(),
+                egui::Stroke::new(1.5, color::accent()),
+            ));
+            if let [.., before, tip] = pts.as_slice() {
+                arrowhead(painter, *before, *tip, color::accent());
+            }
+        }
+        painter.circle_filled(at, KNOB_R, color::accent());
+        // text-ink: a mark on the knob's solid accent.
+        painter.text(
+            at,
+            egui::Align2::CENTER_CENTER,
+            icon::INTERACTION,
+            theme::icon_font(9.0),
+            color::on_accent(),
+        );
+    }
+
+    /// The screen a link from `from` dropped at `world` goes to: the top-level
+    /// frame under it, unless that is the frame `from` is in.
+    fn link_target(&self, from: NodeId, world: mastik_core::kurbo::Point) -> Option<NodeId> {
+        let doc = &self.session.doc;
+        let under = self.frame_at_world(world)?;
+        let screen = screen_of(doc, under)?;
+        (screen_of(doc, from) != Some(screen) && screen != from).then_some(screen)
+    }
+
+    /// The knob's drop: one *Navigate to* the screen under the pointer, with the
+    /// page's default transition, as one step.
+    pub(crate) fn drop_link(&mut self, from: NodeId, world: mastik_core::kurbo::Point) {
+        let Some(to) = self.link_target(from, world) else {
+            self.session
+                .info("Drop the knob on another frame to link to it");
+            return;
+        };
+        let session = &mut self.session;
+        let list = with_link(&session.doc, from, to, &mut || session.ids.mint_item());
+        let target = name(&self.session.doc, to);
+        self.write_reactions(from, list, "Add interaction", icon::INTERACTION);
+        self.session.info(format!("Linked to “{target}”"));
+    }
+}
+
+// --- the tab ------------------------------------------------------------------
+
+/// The popover's width.
+const POP_W: f32 = crate::app::POPOVER_W;
+/// Between two controls on one line.
+const COL: f32 = ui::CARD_COL_GAP;
+/// A nested action's indent under its branch head.
+const NEST: f32 = 16.0;
+/// The add and more menus' floor.
+const MENU_W: f32 = 200.0;
+
+impl MastikApp {
+    /// Show or put away the Prototype tab, and say so.
+    pub(crate) fn set_prototype_tab(&mut self, on: bool) {
+        if self.prototype_tab != on {
+            self.close_inspector_popovers();
+            self.proto.capture = None;
+        }
+        self.prototype_tab = on;
+        self.session.info(match on {
+            true => "Prototype tab",
+            false => "Design tab",
+        });
+    }
+
+    /// The inspector's head: *Design* | *Prototype*, a segmented control on a card
+    /// of its own over every other card.
+    pub(super) fn inspector_tabs(&mut self, ui: &mut egui::Ui) {
+        let mut pick = None;
+        ui.push_id("inspector-tabs", |ui| {
+            ui::card(ui, |ui| {
+                let w = ui.available_width();
+                pick = ui::segmented_tipped(
+                    ui,
+                    w,
+                    ui::SEGMENT_CELL_H,
+                    2,
+                    usize::from(self.prototype_tab),
+                    |_| true,
+                    |i| match i {
+                        0 => "The layer's look and layout",
+                        _ => "How the layer behaves when the prototype plays",
+                    },
+                    |p, i, r, on| ui::segment_label(p, r, ["Design", "Prototype"][i], on),
+                );
+            });
+        });
+        if let Some(i) = pick {
+            let on = i == 1;
+            if on != self.prototype_tab {
+                self.close_inspector_popovers();
+                self.proto.capture = None;
+                self.prototype_tab = on;
+            }
+        }
+    }
+
+    /// The Prototype tab's cards for what is selected.
+    pub(super) fn prototype_inspector(&mut self, ui: &mut egui::Ui) {
+        if self
+            .proto
+            .open
+            .is_some_and(|o| !self.session.selection.contains(o.node))
+        {
+            self.proto.open = None;
+        }
+        if self
+            .proto
+            .capture
+            .is_some_and(|(n, _)| !self.session.selection.contains(n))
+        {
+            self.proto.capture = None;
+        }
+        match self.session.selection.single() {
+            Some(id) if self.session.doc.get(id).is_some() => {
+                self.proto_identity(ui, id);
+                self.interactions_card(ui, id);
+                self.layer_play_card(ui, id);
+            }
+            _ if self.session.selection.is_empty() => {
+                self.page_header(ui);
+                self.flows_card(ui);
+                self.page_play_card(ui);
+            }
+            _ => {
+                identity_card(ui, |ui| {
+                    ui::selection_note(ui, "Prototype one layer at a time");
+                });
+            }
+        }
+    }
+
+    /// The layer's identity in the Prototype tab: its glyph and name, and what it
+    /// is, without the Design tab's rows.
+    fn proto_identity(&mut self, ui: &mut egui::Ui, id: NodeId) {
+        let doc = &self.session.doc;
+        let Some(n) = doc.get(id) else { return };
+        let glyph = super::layers_icon(n).0;
+        let title = name(doc, id);
+        let note = match n.kind() {
+            NodeKind::Artboard { size, .. } if screen_of(doc, id) == Some(id) => {
+                format!("{} × {}", size.width.round(), size.height.round())
+            }
+            _ if n.link().is_some()
+                && mastik_core::component::instance_root(doc, id) == Some(id) =>
+            {
+                "Instance".into()
+            }
+            _ => String::new(),
+        };
+        identity_card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 9.0;
+                identity_glyph(ui, glyph, color::accent_300());
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(ui::HEAD_PT)
+                        .color(theme::text::strong()),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(note)
+                            .size(ui::CAPTION_PT)
+                            .color(theme::text::faint()),
+                    );
+                });
+            });
+        });
+    }
+
+    /// Write a layer's reactions as one step.
+    pub(crate) fn write_reactions(
+        &mut self,
+        id: NodeId,
+        reactions: Vec<Keyed<Reaction>>,
+        label: &'static str,
+        glyph: &'static str,
+    ) {
+        if let Err(why) = mastik_core::prototype::check(&reactions) {
+            self.session.info(format!("Not changed: {why}"));
+            return;
+        }
+        self.session.name_step(label, glyph);
+        self.commit_edit(Transaction(vec![Operation::SetReactions { id, reactions }]));
+    }
+
+    /// The *Interactions* card: one block per reaction, its trigger at its head
+    /// and its actions in order under it.
+    fn interactions_card(&mut self, ui: &mut egui::Ui, id: NodeId) {
+        let reactions = self
+            .session
+            .doc
+            .get(id)
+            .map(|n| n.reactions().to_vec())
+            .unwrap_or_default();
+        let source = self.source_list(id, |n| n.reactions());
+        let mut next: Option<(Vec<Keyed<Reaction>>, &'static str, &'static str)> = None;
+        let mut restore: Option<Vec<Keyed<Reaction>>> = None;
+        let mut reset_one: Option<ItemId> = None;
+        let add = self.panel(
+            ui,
+            "Interactions",
+            Some(ui::HeadAction::new(icon::PLUS, "Add an interaction")),
+            |app, ui| {
+                let ghosts = source
+                    .as_deref()
+                    .map(|s| mastik_core::reset::removed_items(s, &reactions))
+                    .unwrap_or_default();
+                if reactions.is_empty() && ghosts.is_empty() {
+                    ui::empty_note(ui, "No interactions");
+                }
+                let states = source
+                    .as_ref()
+                    .map(|s| mastik_core::reset::item_states(s, &reactions));
+                for (i, r) in reactions.iter().enumerate() {
+                    let state = states.as_ref().map(|s| s[i]);
+                    let out = app.reaction_block(ui, id, &reactions, r, state);
+                    if let Some(o) = out.write {
+                        next = Some(o);
+                    }
+                    if out.reset {
+                        reset_one = Some(r.id);
+                    }
+                }
+                for gone in ghosts {
+                    let label = trigger_label(&app.session.doc, &gone.trigger);
+                    let lead = super::component::GhostLead::Glyph(icon::INTERACTION);
+                    match super::component::ghost_row(ui, lead, &label) {
+                        Some(ui::ResetOrPush::Reset) => {
+                            restore = source.clone();
+                        }
+                        Some(ui::ResetOrPush::Push) => {
+                            let list = Operation::SetReactions {
+                                id,
+                                reactions: Vec::new(),
+                            };
+                            app.push_item_removal(id, &list, gone.id);
+                        }
+                        None => {}
+                    }
+                }
+            },
+        );
+        if add {
+            let mut list = reactions.clone();
+            list.push(Keyed::new(
+                self.session.ids.mint_item(),
+                Reaction {
+                    trigger: Trigger::Click,
+                    actions: Vec::new(),
+                },
+            ));
+            self.write_reactions(id, list, "Add interaction", icon::INTERACTION);
+            return;
+        }
+        if let (Some(item), Some(src)) = (reset_one, source.as_deref()) {
+            let list = mastik_core::reset::reset_item(src, &reactions, item);
+            self.session.name_step("Interactions", icon::INTERACTION);
+            self.commit_reset(Transaction(vec![Operation::SetReactions {
+                id,
+                reactions: list,
+            }]));
+            return;
+        }
+        if let Some(list) = restore {
+            self.session.name_step("Interactions", icon::INTERACTION);
+            self.commit_edit(Transaction(vec![Operation::SetReactions {
+                id,
+                reactions: list,
+            }]));
+            return;
+        }
+        if let Some((list, label, glyph)) = next {
+            self.write_reactions(id, list, label, glyph);
+        }
+    }
+
+    /// One reaction's block: its trigger's row, then its actions.
+    fn reaction_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        all: &[Keyed<Reaction>],
+        r: &Keyed<Reaction>,
+        state: Option<mastik_core::reset::ItemState>,
+    ) -> BlockOut {
+        let mut out = BlockOut::default();
+        let with = |f: &dyn Fn(&mut Reaction)| -> Vec<Keyed<Reaction>> {
+            all.iter()
+                .map(|k| match k.id == r.id {
+                    true => k.map(|v| {
+                        let mut v = v.clone();
+                        f(&mut v);
+                        v
+                    }),
+                    false => k.clone(),
+                })
+                .collect()
+        };
+        let h = ui::CONTROL_H;
+        let capturing = self.proto.capture == Some((id, r.id));
+        let mut add_place: Option<(Place, ActionKind)> = None;
+        // --- the head: trigger, `+`, `⋯` ------------------------------------
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = COL;
+            let slot = if state.is_some() { 14.0 + COL } else { 0.0 };
+            let w = ui.available_width() - 2.0 * (h + COL) - slot;
+            if capturing {
+                if let Some(t) = self.key_capture(ui, w) {
+                    out.write = Some((
+                        with(&|v: &mut Reaction| v.trigger = t.clone()),
+                        "Change trigger",
+                        icon::KEY,
+                    ));
+                }
+            } else if let Some(t) = self.trigger_combo(ui, id, r, w) {
+                match t {
+                    TriggerPick::Set(t) => {
+                        // A script refused under the new trigger goes with it.
+                        let keeps = r.actions.iter().all(|a| {
+                            !matches!(a.value, Action::RunScript { .. }) || t.is_a_persons_act()
+                        });
+                        if keeps {
+                            out.write = Some((
+                                with(&|v: &mut Reaction| v.trigger = t.clone()),
+                                "Change trigger",
+                                icon::INTERACTION,
+                            ));
+                        } else {
+                            self.session.info(
+                                "A script runs only when someone acts: remove Run script first",
+                            );
+                        }
+                    }
+                    TriggerPick::Key => self.proto.capture = Some((id, r.id)),
+                }
+            }
+            let plus = ui::field_button(ui, icon::PLUS, h, FieldButton::Off)
+                .on_hover_text("Add an action");
+            if let Some(k) = self.add_action_menu(&plus, id, &r.trigger) {
+                add_place = Some((Place::Top, k));
+            }
+            let more =
+                ui::field_button(ui, icon::DOTS_THREE, h, FieldButton::Off).on_hover_text("More");
+            let mut dup = false;
+            let mut delete = false;
+            egui::Popup::menu(&more)
+                .align(egui::RectAlign::BOTTOM_END)
+                .gap(ui::MENU_GAP)
+                .show(|ui| {
+                    ui::popup_rows(ui);
+                    ui.set_min_width(MENU_W);
+                    dup = ui::menu_item(ui, icon::COPY, "Duplicate", ui::MENU_ROW_H).clicked();
+                    ui::menu_sep(ui);
+                    delete = ui::menu_row(
+                        ui,
+                        ui::MenuRow::new(icon::TRASH, "Delete").danger(true),
+                        ui::MENU_ROW_H,
+                    )
+                    .clicked();
+                });
+            if dup {
+                let mut mint = || self.session.ids.mint_item();
+                let copy = Reaction {
+                    trigger: r.trigger.clone(),
+                    actions: fresh_ids(&r.actions, &mut mint),
+                };
+                let at = all
+                    .iter()
+                    .position(|k| k.id == r.id)
+                    .map_or(all.len(), |i| i + 1);
+                let mut list = all.to_vec();
+                list.insert(at, Keyed::new(mint(), copy));
+                out.write = Some((list, "Duplicate interaction", icon::COPY));
+            }
+            if delete {
+                let list = all.iter().filter(|k| k.id != r.id).cloned().collect();
+                out.write = Some((list, "Remove interaction", icon::TRASH));
+            }
+            if let Some(state) = state {
+                let hot = ui.rect_contains_pointer(ui.min_rect());
+                match super::component::item_slot_menu(ui, state, hot) {
+                    Some(ui::ResetOrPush::Reset | ui::ResetOrPush::Push) => out.reset = true,
+                    None => {}
+                }
+            }
+        });
+        // --- what the trigger needs: a delay, a variable ----------------------
+        match &r.trigger {
+            Trigger::After { ms } => {
+                let mut v = f64::from(*ms);
+                let resp_id = ui.id().with(("after", r.id));
+                let held = self
+                    .proto
+                    .scrub
+                    .filter(|(i, _)| *i == resp_id)
+                    .map(|(_, v)| v);
+                if let Some(x) = held {
+                    v = x;
+                }
+                let resp = ui::value_field_suffixed(
+                    ui,
+                    egui::vec2(ui.available_width(), h),
+                    Prefix::Text("Delay"),
+                    Some(ui::Suffix {
+                        text: "ms",
+                        clickable: false,
+                        tooltip: "",
+                    }),
+                    &mut v,
+                    Scrub::whole(10.0).range(0.0..=600_000.0),
+                    |d| d.custom_formatter(ui::number(0)),
+                )
+                .0
+                .on_hover_text("How long after the frame opens the actions run");
+                let ms_new = v.round().clamp(0.0, 600_000.0) as u32;
+                let tx = match ms_new != *ms {
+                    true => Transaction(vec![Operation::SetReactions {
+                        id,
+                        reactions: with(&|x: &mut Reaction| {
+                            x.trigger = Trigger::After { ms: ms_new }
+                        }),
+                    }]),
+                    false => Transaction::default(),
+                };
+                self.proto_valve(resp_id, v, &resp, "Change trigger", icon::INTERACTION, tx);
+            }
+            Trigger::VariableChanges { var } => {
+                if let Some(v) = self.variable_combo(ui, ("when-var", r.id), Some(*var), None) {
+                    out.write = Some((
+                        with(&|x: &mut Reaction| x.trigger = Trigger::VariableChanges { var: v }),
+                        "Change trigger",
+                        icon::BRACKETS_CURLY,
+                    ));
+                }
+            }
+            _ => {}
+        }
+        // --- the actions -----------------------------------------------------
+        let mut list_out = ListOut::default();
+        self.action_rows(ui, id, r, &r.actions, 0.0, &mut list_out);
+        if let Some(place) = list_out.add {
+            add_place = Some(place);
+        }
+        if let Some((place, kind)) = add_place {
+            match new_action(&self.session.doc, id, kind) {
+                Some(a) => {
+                    let item = self.session.ids.mint_item();
+                    let mut v = r.value.clone();
+                    if let Some(list) = list_at(&mut v.actions, place) {
+                        list.push(Keyed::new(item, a));
+                        out.write = Some((
+                            with(&|x: &mut Reaction| *x = v.clone()),
+                            "Add action",
+                            kind.glyph(),
+                        ));
+                        self.proto.open = Some(ActionAt {
+                            node: id,
+                            reaction: r.id,
+                            action: item,
+                        });
+                    }
+                }
+                None => self
+                    .session
+                    .info("Nothing in the document for that action to name"),
+            }
+        }
+        if let Some(gone) = list_out.remove {
+            let mut v = r.value.clone();
+            remove(&mut v.actions, gone);
+            out.write = Some((
+                with(&|x: &mut Reaction| *x = v.clone()),
+                "Remove action",
+                icon::TRASH,
+            ));
+            if self.proto.open.is_some_and(|o| o.action == gone) {
+                self.proto.open = None;
+            }
+        }
+        if let (Some(head), Some(open)) = (list_out.head, self.proto.open)
+            && open.node == id
+            && open.reaction == r.id
+            && let Some(edit) = self.action_popover(ui, &head, id, r, open.action)
+        {
+            out.write = Some((
+                with(&|x: &mut Reaction| *x = edit.0.clone()),
+                edit.1,
+                edit.2,
+            ));
+        }
+        ui.add_space(2.0);
+        out
+    }
+
+    /// The trigger's dropdown, the pointer's triggers first. *When the frame
+    /// opens* is offered on a top-level frame only.
+    fn trigger_combo(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        r: &Keyed<Reaction>,
+        w: f32,
+    ) -> Option<TriggerPick> {
+        let doc = &self.session.doc;
+        let label = trigger_label(doc, &r.trigger);
+        let a_screen = screen_of(doc, id) == Some(id);
+        let first_var = doc.variables().iter().next().map(|v| v.id);
+        let mut pick = None;
+        let current = r.trigger.clone();
+        ui.scope(|ui| {
+            ui::combo_height(ui);
+            egui::ComboBox::from_id_salt(("trigger", r.id))
+                .icon(ui::combo_chevron)
+                .width(w)
+                .selected_text(ui::glyph_and_text(icon::INTERACTION, &label))
+                .show_ui(ui, |ui| {
+                    ui::menu_rows(ui);
+                    ui.label(ui::eyebrow("Pointer"));
+                    for t in POINTER_TRIGGERS {
+                        let on = same_trigger_kind(&t, &current);
+                        if ui.selectable_label(on, trigger_label(doc, &t)).clicked() && !on {
+                            pick = Some(TriggerPick::Set(t));
+                        }
+                    }
+                    ui.label(ui::eyebrow("Other"));
+                    let on = matches!(current, Trigger::Key { .. });
+                    if ui.selectable_label(on, "Key…").clicked() {
+                        pick = Some(TriggerPick::Key);
+                    }
+                    let on = matches!(current, Trigger::After { .. });
+                    if ui.selectable_label(on, "After delay").clicked() && !on {
+                        pick = Some(TriggerPick::Set(Trigger::After { ms: 1000 }));
+                    }
+                    let on = matches!(current, Trigger::VariableChanges { .. });
+                    let row = ui.add_enabled_ui(first_var.is_some(), |ui| {
+                        ui.selectable_label(on, "When a variable changes")
+                    });
+                    let row = row
+                        .inner
+                        .on_disabled_hover_text("This document has no variables");
+                    if row.clicked()
+                        && !on
+                        && let Some(var) = first_var
+                    {
+                        pick = Some(TriggerPick::Set(Trigger::VariableChanges { var }));
+                    }
+                    let on = matches!(current, Trigger::FrameOpens);
+                    let row = ui.add_enabled_ui(a_screen, |ui| {
+                        ui.selectable_label(on, "When the frame opens")
+                    });
+                    let row = row.inner.on_disabled_hover_text("Only a frame opens");
+                    if row.clicked() && !on {
+                        pick = Some(TriggerPick::Set(Trigger::FrameOpens));
+                    }
+                });
+        });
+        pick
+    }
+
+    /// The *Key…* field: the next plain or Shift-ed key pressed is the trigger.
+    /// `Escape` gives up; a chord with Ctrl or Alt is refused, those staying the
+    /// editor's while playing.
+    fn key_capture(&mut self, ui: &mut egui::Ui, w: f32) -> Option<Trigger> {
+        let mut empty = String::new();
+        let resp = ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut empty, "Press a key");
+        if !resp.has_focus() && !resp.lost_focus() {
+            resp.request_focus();
+        }
+        if resp.lost_focus() {
+            self.proto.capture = None;
+            return None;
+        }
+        let pressed = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        let (key, mods) = pressed?;
+        if key == egui::Key::Escape {
+            self.proto.capture = None;
+            return None;
+        }
+        if mods.ctrl || mods.alt || mods.command || mods.mac_cmd {
+            self.session.info(
+                "A key trigger takes a plain or Shift-ed key: Ctrl and Alt stay the editor's",
+            );
+            return None;
+        }
+        self.proto.capture = None;
+        ui.memory_mut(|m| m.surrender_focus(resp.id));
+        Some(Trigger::Key {
+            key: key.name().to_string(),
+            shift: mods.shift,
+        })
+    }
+
+    /// The add-action menu under `button`: the kinds in their groups, each one the
+    /// layer cannot take dimmed with its reason.
+    fn add_action_menu(
+        &mut self,
+        button: &egui::Response,
+        id: NodeId,
+        trigger: &Trigger,
+    ) -> Option<ActionKind> {
+        let doc = &self.session.doc;
+        let mut picked = None;
+        egui::Popup::menu(button)
+            .align(egui::RectAlign::BOTTOM_END)
+            .gap(ui::MENU_GAP)
+            .show(|ui| {
+                ui::popup_rows(ui);
+                ui.set_min_width(MENU_W);
+                for (i, (group, kinds)) in ActionKind::GROUPS.iter().enumerate() {
+                    if i > 0 {
+                        ui::menu_sep(ui);
+                    }
+                    ui::menu_eyebrow(ui, group);
+                    for kind in kinds.iter() {
+                        let why = action_refusal(doc, id, trigger, *kind);
+                        let row = ui::menu_row(
+                            ui,
+                            ui::MenuRow::new(kind.glyph(), kind.label()).enabled(why.is_none()),
+                            ui::MENU_ROW_H,
+                        );
+                        match why {
+                            Some(why) => {
+                                row.on_disabled_hover_text(why);
+                            }
+                            None if row.clicked() => picked = Some(*kind),
+                            None => {}
+                        }
+                    }
+                }
+            });
+        picked
+    }
+
+    /// A list of actions, each a row, a conditional's branches nested under it.
+    fn action_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        r: &Keyed<Reaction>,
+        list: &[Keyed<Action>],
+        indent: f32,
+        out: &mut ListOut,
+    ) {
+        for k in list {
+            let open = self.proto.open
+                == Some(ActionAt {
+                    node: id,
+                    reaction: r.id,
+                    action: k.id,
+                });
+            let (row, resp) = self.action_row(ui, id, k, indent, open);
+            if row.open {
+                self.proto.open = match open {
+                    true => None,
+                    false => Some(ActionAt {
+                        node: id,
+                        reaction: r.id,
+                        action: k.id,
+                    }),
+                };
+            }
+            if row.remove {
+                out.remove = Some(k.id);
+            }
+            if open {
+                out.head = Some(resp);
+            }
+            if let Action::Conditional {
+                branches,
+                otherwise,
+            } = &k.value
+            {
+                for (i, b) in branches.iter().enumerate() {
+                    let word = if i == 0 { "if" } else { "else if" };
+                    let text = format!("{word} {}", expr_shown(&self.session.doc, &b.when));
+                    if let Some(kind) =
+                        self.branch_head(ui, id, &r.trigger, (k.id, i), &text, indent + NEST)
+                    {
+                        out.add = Some((Place::Branch(k.id, i), kind));
+                    }
+                    self.action_rows(ui, id, r, &b.actions, indent + NEST, out);
+                }
+                if let Some(kind) = self.branch_head(
+                    ui,
+                    id,
+                    &r.trigger,
+                    (k.id, usize::MAX),
+                    "else",
+                    indent + NEST,
+                ) {
+                    out.add = Some((Place::Otherwise(k.id), kind));
+                }
+                self.action_rows(ui, id, r, otherwise, indent + NEST, out);
+            }
+        }
+    }
+
+    /// A branch's head under its conditional: its words, and a `+` adding an
+    /// action to that branch.
+    fn branch_head(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        trigger: &Trigger,
+        salt: (ItemId, usize),
+        text: &str,
+        indent: f32,
+    ) -> Option<ActionKind> {
+        let mut picked = None;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = COL;
+            ui.add_space(indent);
+            let w = ui.available_width() - ui::MENU_ROW_H - COL;
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(w, ui::MENU_ROW_H), egui::Sense::hover());
+            let galley = ui.painter().layout(
+                text.to_string(),
+                egui::FontId::monospace(ui::CAPTION_PT),
+                color::accent_300(),
+                w,
+            );
+            let at = egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
+            ui.painter()
+                .with_clip_rect(rect)
+                .galley(at, galley, color::accent_300());
+            let plus = ui
+                .push_id(salt, |ui| {
+                    ui::icon_button(ui, icon::PLUS, ui::MENU_ROW_H, 13.0, false, true)
+                })
+                .inner
+                .on_hover_text("Add an action to this branch");
+            picked = self.add_action_menu(&plus, id, trigger);
+        });
+        picked
+    }
+
+    /// One action's row: its glyph, its verb, its target in accent ink (red and
+    /// marked when it is gone), its timing as a chip, and `×`. A click opens its
+    /// popover.
+    fn action_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        k: &Keyed<Action>,
+        indent: f32,
+        open: bool,
+    ) -> (RowOut, egui::Response) {
+        const CLOSE_W: f32 = 18.0;
+        let doc = &self.session.doc;
+        let kind = ActionKind::of(&k.value);
+        let (target, missing) = target_words(doc, id, &k.value);
+        let chip = transition_of(&k.value).map(|t| transition_chip(&t));
+        let verb = match &k.value {
+            Action::SetVariable { .. } => "Set",
+            Action::Conditional { .. } => "If",
+            _ => kind.label(),
+        };
+        let mut out = RowOut::default();
+        let resp = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = COL;
+                ui.add_space(indent);
+                let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
+                let ground = egui::Rect::from_min_size(ui.cursor().min, size);
+                let hot = ui.rect_contains_pointer(ground);
+                ui::field_row_active(ui, size, open, |ui| {
+                    if hot {
+                        ui.painter().rect_filled(
+                            ground.shrink(1.0),
+                            egui::CornerRadius::same(ui::BUTTON_R - 1),
+                            color::hover(),
+                        );
+                    }
+                    ui.spacing_mut().item_spacing.x = 7.0;
+                    let ink = match missing {
+                        Some(_) => color::error(),
+                        None => theme::text::muted(),
+                    };
+                    let glyph = if missing.is_some() {
+                        icon::WARNING
+                    } else {
+                        kind.glyph()
+                    };
+                    ui.label(theme::icon_text(glyph, 14.0, ink));
+                    ui.label(
+                        egui::RichText::new(verb)
+                            .size(ui::SMALL_PT)
+                            .color(match missing {
+                                Some(_) => color::error(),
+                                None => theme::text::strong(),
+                            }),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui::icon_button(ui, icon::X, CLOSE_W, 13.0, false, true)
+                            .on_hover_text("Remove")
+                            .clicked()
+                        {
+                            out.remove = true;
+                        }
+                        if let Some(chip) = &chip {
+                            chip_label(ui, chip);
+                        }
+                        let ink = match missing {
+                            Some(_) => color::error(),
+                            None => color::accent_200(),
+                        };
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&target).size(ui::SMALL_PT).color(ink),
+                            )
+                            .truncate(),
+                        );
+                    });
+                });
+                let mut hit = ground;
+                hit.max.x -= CLOSE_W + ui::FIELD_PAD_X;
+                let resp = ui.interact(
+                    hit,
+                    ui.id().with(("action-row", k.id)),
+                    egui::Sense::click(),
+                );
+                let tip = match missing {
+                    Some(gone) => format!(
+                        "{gone}: skipped while playing. Pick another target, or undo the delete"
+                    ),
+                    None => format!("Edit {}", kind.label().to_lowercase()),
+                };
+                let resp = resp.on_hover_text(tip);
+                if resp.clicked() {
+                    out.open = true;
+                }
+                resp
+            })
+            .inner;
+        (out, resp)
+    }
+
+    /// An action's popover, beside its row in the popover lane: what it names,
+    /// then its transition. Answers the reaction rewritten, with the step's name.
+    fn action_popover(
+        &mut self,
+        ui: &mut egui::Ui,
+        head: &egui::Response,
+        id: NodeId,
+        r: &Keyed<Reaction>,
+        action: ItemId,
+    ) -> Option<(Reaction, &'static str, &'static str)> {
+        let k = find(&r.actions, action)?.clone();
+        let ctx = ui.ctx().clone();
+        let over_overlay = ctx
+            .pointer_interact_pos()
+            .and_then(|p| ctx.layer_id_at(p))
+            .is_some_and(|l| l.order >= egui::Order::Foreground);
+        let anchor = Self::popover_anchor(&ctx, head.rect, POP_W);
+        let mut close = false;
+        let mut edit: Option<(Action, &'static str, &'static str)> = None;
+        let mut moved: Option<bool> = None;
+        let kind = ActionKind::of(&k.value);
+        let place = position(&r.actions, action);
+        let menu = egui::Area::new(egui::Id::new(("proto-action", action)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(anchor)
+            .constrain_to(ctx.input(|i| i.content_rect()).shrink(ui::SCREEN_MARGIN))
+            .show(&ctx, |ui| {
+                ui::hold_tab(ui);
+                ui::menu_frame(ui::POPOVER_PAD).show(ui, |ui| {
+                    let inner = ui::menu_inner_w(POP_W, ui::POPOVER_PAD);
+                    ui.set_width(inner);
+                    ui.spacing_mut().item_spacing.y = ui::POPOVER_SECTION_GAP;
+                    // --- head: the verb, moves, close ---------------------------
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(theme::icon_text(
+                            kind.glyph(),
+                            ui::CONTROL_GLYPH_PT,
+                            theme::text::muted(),
+                        ));
+                        ui.label(ui::eyebrow(kind.label()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui::close_button(ui).clicked() {
+                                close = true;
+                            }
+                            let (i, n) = place.unwrap_or((0, 1));
+                            let down = ui.add_enabled_ui(i + 1 < n, |ui| {
+                                ui::icon_button(ui, icon::ARROW_DOWN, 20.0, 13.0, false, true)
+                            });
+                            if down.inner.on_hover_text("Move down").clicked() {
+                                moved = Some(false);
+                            }
+                            let up = ui.add_enabled_ui(i > 0, |ui| {
+                                ui::icon_button(ui, icon::ARROW_UP, 20.0, 13.0, false, true)
+                            });
+                            if up.inner.on_hover_text("Move up").clicked() {
+                                moved = Some(true);
+                            }
+                        });
+                    });
+                    if let Some(e) = self.action_fields(ui, id, &r.trigger, &k, inner) {
+                        edit = Some(e);
+                    }
+                    if let Some(t) = transition_of(&k.value) {
+                        ui::card_rule(ui);
+                        if let Some(t2) = self.transition_fields(ui, ("tr", action), t, inner) {
+                            edit = Some((
+                                with_transition(&k.value, t2),
+                                "Set transition",
+                                icon::INTERACTION,
+                            ));
+                        }
+                    }
+                });
+            })
+            .response;
+        let press_away = super::press_began_away(&ctx, menu.layer_id.id, menu.rect, head.rect);
+        if close
+            || super::dismissed_by_click(super::ClickAway {
+                clicked: ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)),
+                over_overlay,
+                on_menu: menu.contains_pointer(),
+                on_head: head.contains_pointer(),
+                on_picker: false,
+                in_gesture: ctx.dragged_id().is_some() || self.gesture_cancelled,
+                press_away,
+            })
+        {
+            self.proto.open = None;
+        }
+        self.popover_heard = true;
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.proto.open = None;
+        }
+        let mut v = r.value.clone();
+        if let Some(up) = moved {
+            shift(&mut v.actions, action, up);
+            return Some((
+                v,
+                "Move action",
+                if up { icon::ARROW_UP } else { icon::ARROW_DOWN },
+            ));
+        }
+        let (a, label, glyph) = edit?;
+        find_mut(&mut v.actions, action)?.value = a;
+        Some((v, label, glyph))
+    }
+
+    /// The fields of the action `k`, its transition aside. Answers the action
+    /// rewritten and the step's name.
+    fn action_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        trigger: &Trigger,
+        k: &Keyed<Action>,
+        w: f32,
+    ) -> Option<(Action, &'static str, &'static str)> {
+        let doc = &self.session.doc;
+        let h = ui::CONTROL_H;
+        let mut out = None;
+        match &k.value {
+            Action::Navigate { to, transition } => {
+                if let Some(t) = frame_combo(ui, doc, ("to", k.id), *to, id, w) {
+                    out = Some((
+                        Action::Navigate {
+                            to: t,
+                            transition: *transition,
+                        },
+                        "Change action",
+                        icon::ARROW_RIGHT,
+                    ));
+                }
+            }
+            Action::OpenOverlay {
+                overlay,
+                transition,
+            } => {
+                if let Some(t) = frame_combo(ui, doc, ("to", k.id), *overlay, id, w) {
+                    out = Some((
+                        Action::OpenOverlay {
+                            overlay: t,
+                            transition: *transition,
+                        },
+                        "Change action",
+                        icon::OVERLAY_OPEN,
+                    ));
+                }
+                ui::selection_note(ui, "Placed by the frame's own overlay settings");
+            }
+            Action::SwapOverlay {
+                overlay,
+                transition,
+            } => {
+                if let Some(t) = frame_combo(ui, doc, ("to", k.id), *overlay, id, w) {
+                    out = Some((
+                        Action::SwapOverlay {
+                            overlay: t,
+                            transition: *transition,
+                        },
+                        "Change action",
+                        icon::OVERLAY_SWAP,
+                    ));
+                }
+            }
+            Action::ScrollTo { layer, transition } => {
+                let options: Vec<NodeId> = screen_of(doc, id)
+                    .map(|s| descendants(doc, s))
+                    .unwrap_or_default();
+                if let Some(t) = layer_combo(ui, doc, ("scroll", k.id), *layer, &options, w) {
+                    out = Some((
+                        Action::ScrollTo {
+                            layer: t,
+                            transition: *transition,
+                        },
+                        "Change action",
+                        icon::ARROW_LINE_DOWN,
+                    ));
+                }
+            }
+            Action::ChangeState {
+                instance,
+                to,
+                transition,
+            } => {
+                let inst = mastik_core::prototype::resolve_target(doc, id, *instance);
+                let options = states_of(doc, inst);
+                if let Some(t) = layer_combo(ui, doc, ("state", k.id), *to, &options, w) {
+                    out = Some((
+                        Action::ChangeState {
+                            instance: *instance,
+                            to: t,
+                            transition: *transition,
+                        },
+                        "Change action",
+                        icon::CHANGE_STATE,
+                    ));
+                }
+                if doc.get(inst).is_some() {
+                    ui::selection_note(ui, &format!("Switches “{}”", name(doc, inst)));
+                }
+            }
+            Action::SetVariable { var, change } => {
+                let kind = doc.variables().get(*var).map(|v| v.kind);
+                if let Some(v) = self.variable_combo(ui, ("set-var", k.id), Some(*var), None) {
+                    let new_kind = self.session.doc.variables().get(v).map(|x| x.kind);
+                    let change = match (new_kind, change) {
+                        (Some(VarKind::Boolean), VarChange::Increment { .. }) => VarChange::Toggle,
+                        (Some(VarKind::Number), VarChange::Toggle) => {
+                            VarChange::Increment { by: 1.0 }
+                        }
+                        (
+                            Some(VarKind::String | VarKind::Color),
+                            VarChange::Toggle | VarChange::Increment { .. },
+                        ) => VarChange::Set {
+                            to: Expr(String::new()),
+                        },
+                        (_, c) => c.clone(),
+                    };
+                    return Some((
+                        Action::SetVariable { var: v, change },
+                        "Change action",
+                        icon::BRACKETS_CURLY,
+                    ));
+                }
+                let cur = match change {
+                    VarChange::Set { .. } => 0,
+                    VarChange::Increment { .. } => 1,
+                    VarChange::Toggle => 2,
+                };
+                let enabled = |i: usize| match i {
+                    1 => kind == Some(VarKind::Number),
+                    2 => kind == Some(VarKind::Boolean),
+                    _ => true,
+                };
+                let pick = ui::segmented_tipped(
+                    ui,
+                    w,
+                    ui::SEGMENT_CELL_H,
+                    3,
+                    cur,
+                    enabled,
+                    |i| match i {
+                        1 => "Add to a number variable",
+                        2 => "Flip a boolean variable",
+                        _ => "Set it to what an expression comes to",
+                    },
+                    |p, i, r, on| ui::segment_label(p, r, ["Set", "Increment", "Toggle"][i], on),
+                );
+                if let Some(i) = pick.filter(|i| *i != cur) {
+                    let change = match i {
+                        1 => VarChange::Increment { by: 1.0 },
+                        2 => VarChange::Toggle,
+                        _ => VarChange::Set {
+                            to: Expr(String::new()),
+                        },
+                    };
+                    return Some((
+                        Action::SetVariable { var: *var, change },
+                        "Change action",
+                        icon::BRACKETS_CURLY,
+                    ));
+                }
+                match change {
+                    VarChange::Set { to } => {
+                        if let Some(e) = self.expr_field(ui, DraftKey::Expr(k.id, 0), to, w, kind) {
+                            out = Some((
+                                Action::SetVariable {
+                                    var: *var,
+                                    change: VarChange::Set { to: e },
+                                },
+                                "Change action",
+                                icon::BRACKETS_CURLY,
+                            ));
+                        }
+                    }
+                    VarChange::Increment { by } => {
+                        let resp_id = ui.id().with(("by", k.id));
+                        let mut v = self
+                            .proto
+                            .scrub
+                            .filter(|(i, _)| *i == resp_id)
+                            .map_or(*by, |(_, v)| v);
+                        let resp = ui::value_field(
+                            ui,
+                            egui::vec2(w, h),
+                            Prefix::Text("By"),
+                            &mut v,
+                            Scrub::fine(0.5, 2),
+                            |d| d.custom_formatter(ui::number(2)),
+                        )
+                        .on_hover_text("How much is added; a negative number takes away");
+                        // The reaction is rewritten by the caller; here the valve holds the number.
+                        let changed = (v - by).abs() > f64::EPSILON;
+                        self.proto_hold(resp_id, v, &resp);
+                        if changed && !resp.dragged() && !resp.has_focus() {
+                            out = Some((
+                                Action::SetVariable {
+                                    var: *var,
+                                    change: VarChange::Increment { by: v },
+                                },
+                                "Change action",
+                                icon::BRACKETS_CURLY,
+                            ));
+                        }
+                    }
+                    VarChange::Toggle => {}
+                }
+            }
+            Action::Conditional {
+                branches,
+                otherwise,
+            } => {
+                let mut next_branches = branches.clone();
+                let mut changed = false;
+                let mut drop = None;
+                for (i, b) in branches.iter().enumerate() {
+                    ui.label(ui::eyebrow(if i == 0 { "If" } else { "Else if" }));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = COL;
+                        let fw = if branches.len() > 1 {
+                            w - 18.0 - COL
+                        } else {
+                            w
+                        };
+                        if let Some(e) = self.expr_field(
+                            ui,
+                            DraftKey::Expr(k.id, i),
+                            &b.when,
+                            fw,
+                            Some(VarKind::Boolean),
+                        ) {
+                            next_branches[i].when = e;
+                            changed = true;
+                        }
+                        if branches.len() > 1
+                            && ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
+                                .on_hover_text("Remove this branch")
+                                .clicked()
+                        {
+                            drop = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = drop {
+                    next_branches.remove(i);
+                    changed = true;
+                }
+                if ui::word_link(ui, "Add else if", false).clicked() {
+                    next_branches.push(Branch {
+                        when: Expr("true".into()),
+                        actions: Vec::new(),
+                    });
+                    changed = true;
+                }
+                if changed {
+                    out = Some((
+                        Action::Conditional {
+                            branches: next_branches,
+                            otherwise: otherwise.clone(),
+                        },
+                        "Change action",
+                        icon::CONDITIONAL,
+                    ));
+                }
+                ui::selection_note(
+                    ui,
+                    "Numbers take + − × ÷; text joins with +; and, or, not and comparisons test. Write a variable as {name}",
+                );
+            }
+            Action::OpenUrl { url } => {
+                if let Some(u) = self.url_field(ui, k.id, url, w) {
+                    out = Some((
+                        Action::OpenUrl { url: u },
+                        "Change action",
+                        icon::ARROW_SQUARE_OUT,
+                    ));
+                }
+            }
+            Action::RunScript { script } => {
+                let scripts: Vec<(mastik_core::script::ScriptId, String)> = doc
+                    .scripts()
+                    .iter()
+                    .map(|s| (s.id, s.name.clone()))
+                    .collect();
+                let current = scripts
+                    .iter()
+                    .find(|(s, _)| s == script)
+                    .map_or("Missing script".to_string(), |(_, n)| n.clone());
+                let mut pick = None;
+                ui.scope(|ui| {
+                    ui::combo_height(ui);
+                    egui::ComboBox::from_id_salt(("script", k.id))
+                        .icon(ui::combo_chevron)
+                        .width(w)
+                        .selected_text(ui::glyph_and_text(icon::FILE_CODE, &current))
+                        .show_ui(ui, |ui| {
+                            ui::menu_rows(ui);
+                            for (s, n) in &scripts {
+                                if ui.selectable_label(s == script, n).clicked() && s != script {
+                                    pick = Some(*s);
+                                }
+                            }
+                        });
+                });
+                if let Some(s) = pick {
+                    out = Some((
+                        Action::RunScript { script: s },
+                        "Change action",
+                        icon::FILE_CODE,
+                    ));
+                }
+                if !trigger.is_a_persons_act() {
+                    ui::selection_note(ui, "A script runs only when someone acts");
+                }
+            }
+            Action::Back => {
+                ui::selection_note(ui, "Goes back a screen; with an overlay open, closes it");
+            }
+            Action::CloseOverlay { .. } => {
+                ui::selection_note(ui, "Closes the overlay on top");
+            }
+        }
+        out
+    }
+
+    /// A transition's rows: its kind, its direction (for the kinds that move one
+    /// way), and its timing, a curve over a duration or a spring. Answers the
+    /// transition changed: by a pick at once, by a number field once it lets go
+    /// (held in [`ProtoState::scrub`] meanwhile).
+    pub(crate) fn transition_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug + Copy,
+        t: Transition,
+        w: f32,
+    ) -> Option<Transition> {
+        let h = ui::CONTROL_H;
+        let mut out = None;
+        let mut kind_pick = None;
+        ui.scope(|ui| {
+            ui::combo_height(ui);
+            egui::ComboBox::from_id_salt(("kind", salt))
+                .icon(ui::combo_chevron)
+                .width(w)
+                .selected_text(ui::combo_text(transition_label(t.kind)))
+                .show_ui(ui, |ui| {
+                    ui::menu_rows(ui);
+                    for k in TRANSITION_KINDS {
+                        if ui
+                            .selectable_label(k == t.kind, transition_label(k))
+                            .clicked()
+                            && k != t.kind
+                        {
+                            kind_pick = Some(k);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("How the screen moves to the next");
+        });
+        if let Some(k) = kind_pick {
+            return Some(Transition { kind: k, ..t });
+        }
+        if t.kind == TransitionKind::Instant {
+            return None;
+        }
+        let directional = t.kind.is_directional() || t.kind == TransitionKind::SmartAnimate;
+        let cur = DIRECTIONS
+            .iter()
+            .position(|(d, _)| *d == t.direction)
+            .unwrap_or(0);
+        let pick = ui::segmented_tipped(
+            ui,
+            w,
+            ui::SEGMENT_CELL_H,
+            4,
+            cur,
+            |_| directional,
+            |_| match directional {
+                true => "The side it moves toward",
+                false => "Only a move, push or slide has a direction",
+            },
+            |p, i, r, on| ui::segment_label(p, r, DIRECTIONS[i].1, on),
+        );
+        if let Some(i) = pick.filter(|i| *i != cur) {
+            return Some(Transition {
+                direction: DIRECTIONS[i].0,
+                ..t
+            });
+        }
+        let spring = matches!(t.timing, Timing::Spring { .. });
+        let pick = ui::segmented_tipped(
+            ui,
+            w,
+            ui::SEGMENT_CELL_H,
+            2,
+            usize::from(spring),
+            |_| true,
+            |i| match i {
+                0 => "An easing curve over a duration",
+                _ => "A spring, which takes as long as it takes to settle",
+            },
+            |p, i, r, on| ui::segment_label(p, r, ["Curve", "Spring"][i], on),
+        );
+        match pick {
+            Some(1) if !spring => {
+                return Some(Transition {
+                    timing: Timing::Spring {
+                        mass: 1.0,
+                        stiffness: 320.0,
+                        damping: 22.0,
+                    },
+                    ..t
+                });
+            }
+            Some(0) if spring => {
+                return Some(Transition {
+                    timing: Timing::Ease {
+                        curve: Easing::EaseOut,
+                        ms: 300,
+                    },
+                    ..t
+                });
+            }
+            _ => {}
+        }
+        // A number's write: the transition with `set` applied to its timing.
+        let mut numbers: Vec<(egui::Response, egui::Id, f64, Transition)> = Vec::new();
+        match t.timing {
+            Timing::Ease { curve, ms } => {
+                let mut curve_pick = None;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = COL;
+                    let half = (w - COL) / 2.0;
+                    ui.scope(|ui| {
+                        ui::combo_height(ui);
+                        egui::ComboBox::from_id_salt(("curve", salt))
+                            .icon(ui::combo_chevron)
+                            .width(half)
+                            .selected_text(ui::combo_text(easing_label(curve)))
+                            .show_ui(ui, |ui| {
+                                ui::menu_rows(ui);
+                                for (e, l) in EASINGS {
+                                    let on = easing_label(curve) == l;
+                                    if ui.selectable_label(on, l).clicked() && !on {
+                                        curve_pick = Some(e);
+                                    }
+                                }
+                            });
+                    });
+                    let rid = ui.id().with(("ms", salt));
+                    let mut v = self
+                        .proto
+                        .scrub
+                        .filter(|(i, _)| *i == rid)
+                        .map_or(f64::from(ms), |(_, v)| v);
+                    let resp = ui::value_field_suffixed(
+                        ui,
+                        egui::vec2(half, h),
+                        Prefix::Label("duration"),
+                        Some(ui::Suffix {
+                            text: "ms",
+                            clickable: false,
+                            tooltip: "",
+                        }),
+                        &mut v,
+                        Scrub::whole(5.0).range(0.0..=10_000.0),
+                        |d| d.custom_formatter(ui::number(0)),
+                    )
+                    .0
+                    .on_hover_text("How long it takes");
+                    let ms2 = v.round().clamp(0.0, 10_000.0) as u32;
+                    numbers.push((
+                        resp,
+                        rid,
+                        v,
+                        Transition {
+                            timing: Timing::Ease { curve, ms: ms2 },
+                            ..t
+                        },
+                    ));
+                });
+                if let Some(e) = curve_pick {
+                    return Some(Transition {
+                        timing: Timing::Ease { curve: e, ms },
+                        ..t
+                    });
+                }
+                if let Easing::Cubic(c) = curve {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let q = (w - 3.0 * 4.0) / 4.0;
+                        for (i, label) in ["X1", "Y1", "X2", "Y2"].into_iter().enumerate() {
+                            let rid = ui.id().with(("cubic", salt, i));
+                            let mut v = self
+                                .proto
+                                .scrub
+                                .filter(|(x, _)| *x == rid)
+                                .map_or(c[i], |(_, v)| v);
+                            let range = if i % 2 == 0 { 0.0..=1.0 } else { -2.0..=3.0 };
+                            let resp = ui::value_field(
+                                ui,
+                                egui::vec2(q, h),
+                                Prefix::Text(label),
+                                &mut v,
+                                Scrub::fine(0.01, 2).range(range),
+                                |d| d.custom_formatter(ui::number(2)),
+                            )
+                            .on_hover_text(
+                                "A handle of the cubic-bezier curve; both X stay within 0 to 1",
+                            );
+                            let mut c2 = c;
+                            c2[i] = v;
+                            numbers.push((
+                                resp,
+                                rid,
+                                v,
+                                Transition {
+                                    timing: Timing::Ease {
+                                        curve: Easing::Cubic(c2),
+                                        ms,
+                                    },
+                                    ..t
+                                },
+                            ));
+                        }
+                    });
+                }
+            }
+            Timing::Spring {
+                mass,
+                stiffness,
+                damping,
+            } => {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let q = (w - 2.0 * 4.0) / 3.0;
+                    let parts = [
+                        ("M", mass, "Mass: how heavy what moves is"),
+                        ("S", stiffness, "Stiffness: how hard the spring pulls"),
+                        ("D", damping, "Damping: how fast it stops bouncing"),
+                    ];
+                    for (i, (label, x, tip)) in parts.into_iter().enumerate() {
+                        let rid = ui.id().with(("spring", salt, i));
+                        let mut v = self
+                            .proto
+                            .scrub
+                            .filter(|(y, _)| *y == rid)
+                            .map_or(x, |(_, v)| v);
+                        let resp = ui::value_field(
+                            ui,
+                            egui::vec2(q, h),
+                            Prefix::Text(label),
+                            &mut v,
+                            Scrub::fine(if i == 0 { 0.05 } else { 1.0 }, 2).range(0.01..=10_000.0),
+                            |d| d.custom_formatter(ui::number(2)),
+                        )
+                        .on_hover_text(tip);
+                        let mut s = [mass, stiffness, damping];
+                        s[i] = v.max(0.01);
+                        numbers.push((
+                            resp,
+                            rid,
+                            v,
+                            Transition {
+                                timing: Timing::Spring {
+                                    mass: s[0],
+                                    stiffness: s[1],
+                                    damping: s[2],
+                                },
+                                ..t
+                            },
+                        ));
+                    }
+                });
+            }
+        }
+        for (resp, rid, v, next) in numbers {
+            self.proto_hold(rid, v, &resp);
+            let engaged = resp.dragged() || resp.has_focus();
+            if next != t && !engaged && interacting(&resp) {
+                out = Some(next);
+            }
+        }
+        out
+    }
+
+    /// Hold a number field's value while it is scrubbed or typed, and let go once
+    /// it is not.
+    fn proto_hold(&mut self, rid: egui::Id, v: f64, resp: &egui::Response) {
+        if resp.dragged() || resp.has_focus() {
+            self.proto.scrub = Some((rid, v));
+        } else if self.proto.scrub.is_some_and(|(i, _)| i == rid) {
+            self.proto.scrub = None;
+        }
+    }
+
+    /// A number field over the saved model: held while engaged, then committed
+    /// once through the valve.
+    fn proto_valve(
+        &mut self,
+        rid: egui::Id,
+        v: f64,
+        resp: &egui::Response,
+        label: &'static str,
+        glyph: &'static str,
+        tx: Transaction,
+    ) {
+        self.proto_hold(rid, v, resp);
+        self.named_valve(label, glyph, resp, tx);
+    }
+
+    /// A variable's dropdown, by name, `kind` narrowing it; answers a new pick.
+    fn variable_combo(
+        &mut self,
+        ui: &mut egui::Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug,
+        current: Option<VarId>,
+        kind: Option<VarKind>,
+    ) -> Option<VarId> {
+        let doc = &self.session.doc;
+        let vars: Vec<(VarId, String)> = doc
+            .variables()
+            .iter()
+            .filter(|v| kind.is_none_or(|k| v.kind == k))
+            .map(|v| (v.id, v.name.clone()))
+            .collect();
+        let shown = match current {
+            Some(c) => vars
+                .iter()
+                .find(|(v, _)| *v == c)
+                .map_or("Missing variable".to_string(), |(_, n)| n.clone()),
+            None => "None".into(),
+        };
+        let mut pick = None;
+        let w = ui.available_width();
+        ui.scope(|ui| {
+            ui::combo_height(ui);
+            egui::ComboBox::from_id_salt(salt)
+                .icon(ui::combo_chevron)
+                .width(w)
+                .selected_text(ui::glyph_and_text(icon::BRACKETS_CURLY, &shown))
+                .show_ui(ui, |ui| {
+                    ui::menu_rows(ui);
+                    if vars.is_empty() {
+                        ui::menu_note(ui, "No variables of that kind");
+                    }
+                    for (v, n) in &vars {
+                        let on = current == Some(*v);
+                        if ui.selectable_label(on, n).clicked() && !on {
+                            pick = Some(*v);
+                        }
+                    }
+                });
+        });
+        pick
+    }
+
+    /// An expression's field: the source with variables by name, refused (kept,
+    /// ringed, the reason under it) when it does not read. Answers what to store
+    /// once it commits.
+    fn expr_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: DraftKey,
+        e: &Expr,
+        w: f32,
+        want: Option<VarKind>,
+    ) -> Option<Expr> {
+        let shown = expr_shown(&self.session.doc, e);
+        let ctx = ui.ctx().clone();
+        let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
+        let refused = live.as_ref().and_then(|d| d.refused.clone());
+        let mut text = live.map_or(shown.clone(), |d| d.text.clone());
+        let resp = ui
+            .scope(|ui| {
+                if refused.is_some() {
+                    ui.visuals_mut().widgets.inactive.bg_stroke = ui::refused_stroke();
+                }
+                ui::text_field(
+                    ui,
+                    egui::vec2(w, ui::CONTROL_H),
+                    &mut text,
+                    "An expression, such as {count} + 1",
+                )
+            })
+            .inner;
+        if let Some(why) = &refused {
+            ui::field_refusal(ui, why);
+        }
+        let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
+        if typed == shown {
+            return None;
+        }
+        match expr_stored(&self.session.doc, &typed, want) {
+            Ok(e) => Some(e),
+            Err(why) => {
+                self.proto.draft = Some(ui::Draft::new(&ctx, key, typed).refuse(why));
+                None
+            }
+        }
+    }
+
+    /// *Open link*'s address, refused unless it is `http` or `https`.
+    fn url_field(&mut self, ui: &mut egui::Ui, item: ItemId, url: &str, w: f32) -> Option<String> {
+        let key = DraftKey::Url(item);
+        let ctx = ui.ctx().clone();
+        let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
+        let refused = live.as_ref().and_then(|d| d.refused.clone());
+        let mut text = live.map_or(url.to_string(), |d| d.text.clone());
+        let resp = ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, "https://");
+        if let Some(why) = &refused {
+            ui::field_refusal(ui, why);
+        }
+        let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
+        let typed = typed.trim().to_string();
+        if typed == url {
+            return None;
+        }
+        if !is_link(&typed) {
+            self.proto.draft = Some(
+                ui::Draft::new(&ctx, key, typed).refuse("Not an address a link can take".into()),
+            );
+            return None;
+        }
+        Some(typed)
+    }
+
+    /// The *Prototype* card of a layer: a frame's scroll and overlay defaults, a
+    /// child's pin, and an input binding on a text or an instance.
+    fn layer_play_card(&mut self, ui: &mut egui::Ui, id: NodeId) {
+        let doc = &self.session.doc;
+        let Some(n) = doc.get(id) else { return };
+        let play = n.play().clone();
+        let frame = matches!(n.kind(), NodeKind::Artboard { .. });
+        let text = matches!(n.kind(), NodeKind::Text { .. });
+        let instance =
+            n.link().is_some() && mastik_core::component::instance_root(doc, id) == Some(id);
+        let parent = n.parent().filter(|p| doc.page(*p).is_none());
+        let parent_scrolls = parent
+            .and_then(|p| doc.get(p))
+            .is_some_and(|p| p.play().scroll != ScrollAxis::None);
+        let bool_props: Vec<String> = match instance {
+            true => mastik_core::component::main_of(doc, id)
+                .and_then(|m| mastik_core::variant::set_of(doc, m))
+                .and_then(|s| doc.get(s))
+                .and_then(|s| s.set())
+                .map(|s| {
+                    s.props
+                        .iter()
+                        .filter(|p| p.values.len() == 2)
+                        .map(|p| p.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            false => Vec::new(),
+        };
+        let pinned: Vec<(String, Pin)> = match frame {
+            true => n
+                .children()
+                .iter()
+                .filter_map(|c| doc.get(*c))
+                .filter(|c| c.play().pin != Pin::Scrolls)
+                .map(|c| (name(doc, c.id()), c.play().pin))
+                .collect(),
+            false => Vec::new(),
+        };
+        if !frame && parent.is_none() && !text && !instance {
+            return;
+        }
+        let mut next: Option<(LayerPlay, &'static str)> = None;
+        let mut numbers: Vec<(egui::Response, egui::Id, f64, LayerPlay)> = Vec::new();
+        self.panel(ui, "Prototype", None, |app, ui| {
+            let w = ui.available_width();
+            if frame {
+                ui::labelled(ui, "Scrolling", |ui| {
+                    let cur = [ScrollAxis::None, ScrollAxis::Vertical, ScrollAxis::Horizontal, ScrollAxis::Both]
+                        .iter()
+                        .position(|a| *a == play.scroll)
+                        .unwrap_or(0);
+                    let pick = ui::segmented_tipped(
+                        ui,
+                        w,
+                        ui::SEGMENT_CELL_H,
+                        4,
+                        cur,
+                        |_| true,
+                        |_| "The axis the frame scrolls on when its content overflows",
+                        |p, i, r, on| ui::segment_label(p, r, ["None", "Vertical", "Horizontal", "Both"][i], on),
+                    );
+                    if let Some(i) = pick.filter(|i| *i != cur) {
+                        let mut p = play.clone();
+                        p.scroll = [ScrollAxis::None, ScrollAxis::Vertical, ScrollAxis::Horizontal, ScrollAxis::Both][i];
+                        next = Some((p, "Scrolling"));
+                    }
+                    for (who, pin) in &pinned {
+                        let word = if *pin == Pin::Fixed { "Fixed" } else { "Sticky" };
+                        ui.label(
+                            egui::RichText::new(format!("{who} · {word}"))
+                                .size(ui::SMALL_PT)
+                                .color(theme::text::dim()),
+                        );
+                    }
+                });
+                ui::labelled(ui, "As an overlay", |ui| {
+                    let o = play.overlay;
+                    let positions: [(OverlayPosition, &str); 8] = [
+                        (OverlayPosition::Centre, "Centre"),
+                        (OverlayPosition::TopLeft, "Top left"),
+                        (OverlayPosition::TopCentre, "Top centre"),
+                        (OverlayPosition::TopRight, "Top right"),
+                        (OverlayPosition::BottomLeft, "Bottom left"),
+                        (OverlayPosition::BottomCentre, "Bottom centre"),
+                        (OverlayPosition::BottomRight, "Bottom right"),
+                        (OverlayPosition::Manual { x: 0.0, y: 0.0 }, "Manual"),
+                    ];
+                    let same = |a: &OverlayPosition, b: &OverlayPosition| std::mem::discriminant(a) == std::mem::discriminant(b);
+                    let shown = positions.iter().find(|(p, _)| same(p, &o.position)).map_or("Centre", |(_, l)| *l);
+                    let mut pick = None;
+                    ui.scope(|ui| {
+                        ui::combo_height(ui);
+                        egui::ComboBox::from_id_salt(("overlay-at", id))
+                            .icon(ui::combo_chevron)
+                            .width(w)
+                            .selected_text(ui::combo_text(shown))
+                            .show_ui(ui, |ui| {
+                                ui::menu_rows(ui);
+                                for (p, l) in positions {
+                                    let on = same(&p, &o.position);
+                                    if ui.selectable_label(on, l).clicked() && !on {
+                                        pick = Some(p);
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text("Where the frame shows when it opens as an overlay");
+                    });
+                    if let Some(p) = pick {
+                        let mut x = play.clone();
+                        x.overlay.position = p;
+                        next = Some((x, "Overlay"));
+                    }
+                    if let OverlayPosition::Manual { x, y } = o.position {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = COL;
+                            let half = (w - COL) / 2.0;
+                            for (i, (label, v0)) in [("X", x), ("Y", y)].into_iter().enumerate() {
+                                let rid = ui.id().with(("overlay-xy", id, i));
+                                let mut v = app.proto.scrub.filter(|(r, _)| *r == rid).map_or(v0, |(_, v)| v);
+                                let resp = ui::value_field(ui, egui::vec2(half, ui::CONTROL_H), Prefix::Text(label), &mut v, Scrub::whole(0.5), |d| d.custom_formatter(ui::number(1)));
+                                let mut p = play.clone();
+                                p.overlay.position = match i {
+                                    0 => OverlayPosition::Manual { x: v, y },
+                                    _ => OverlayPosition::Manual { x, y: v },
+                                };
+                                numbers.push((resp, rid, v, p));
+                            }
+                        });
+                    }
+                    if ui::switch_row(ui, "Close on a click outside", o.close_outside, ui::CONTROL_H).clicked() {
+                        let mut p = play.clone();
+                        p.overlay.close_outside = !o.close_outside;
+                        next = Some((p, "Overlay"));
+                    }
+                    if ui::switch_row(ui, "Darken behind it", o.backdrop.is_some(), ui::CONTROL_H)
+                        .on_hover_text("Draw a shade over the screen beneath the overlay")
+                        .clicked()
+                    {
+                        let mut p = play.clone();
+                        p.overlay.backdrop = match o.backdrop {
+                            Some(_) => None,
+                            None => Some(mastik_core::peniko::Color::from_rgba8(0, 0, 0, 102)),
+                        };
+                        next = Some((p, "Overlay"));
+                    }
+                    if let Some(c) = o.backdrop {
+                        let rid = ui.id().with(("backdrop", id));
+                        let a0 = f64::from(c.components[3]) * 100.0;
+                        let mut v = app.proto.scrub.filter(|(r, _)| *r == rid).map_or(a0, |(_, v)| v);
+                        let resp = ui::value_field_suffixed(
+                            ui,
+                            egui::vec2(w, ui::CONTROL_H),
+                            Prefix::Text("Shade"),
+                            Some(ui::Suffix { text: "%", clickable: false, tooltip: "" }),
+                            &mut v,
+                            Scrub::whole(0.5).range(0.0..=100.0),
+                            |d| d.custom_formatter(ui::number(0)),
+                        )
+                        .0
+                        .on_hover_text("How dark the shade behind the overlay is");
+                        let mut p = play.clone();
+                        let mut c2 = c;
+                        c2.components[3] = (v.clamp(0.0, 100.0) / 100.0) as f32;
+                        p.overlay.backdrop = Some(c2);
+                        numbers.push((resp, rid, v, p));
+                    }
+                });
+            }
+            if parent.is_some() {
+                ui::labelled(ui, "In a scrolling frame", |ui| {
+                    let cur = [Pin::Scrolls, Pin::Fixed, Pin::Sticky].iter().position(|p| *p == play.pin).unwrap_or(0);
+                    let pick = ui::segmented_tipped(
+                        ui,
+                        w,
+                        ui::SEGMENT_CELL_H,
+                        3,
+                        cur,
+                        |_| parent_scrolls,
+                        |i| match (parent_scrolls, i) {
+                            (false, _) => "The frame does not scroll",
+                            (true, 0) => "Moves with the content",
+                            (true, 1) => "Stays where it is drawn",
+                            _ => "Scrolls until it reaches its place, then stays",
+                        },
+                        |p, i, r, on| ui::segment_label(p, r, ["Scrolls", "Fixed", "Sticky"][i], on),
+                    );
+                    if let Some(i) = pick.filter(|i| *i != cur) {
+                        let mut p = play.clone();
+                        p.pin = [Pin::Scrolls, Pin::Fixed, Pin::Sticky][i];
+                        next = Some((p, "Pin"));
+                    }
+                });
+            }
+            if text || instance {
+                ui::labelled(ui, "Input", |ui| {
+                    let kind = if text { VarKind::String } else { VarKind::Boolean };
+                    let current = play.input.as_ref().map(|i| i.var);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = COL;
+                        let cw = if current.is_some() { w - 18.0 - COL } else { w };
+                        ui.scope(|ui| {
+                            ui.set_width(cw);
+                            if let Some(v) = app.variable_combo(ui, ("input", id), current, Some(kind)) {
+                                let mut p = play.clone();
+                                let property = match text {
+                                    true => None,
+                                    false => p.input.as_ref().and_then(|i| i.property.clone()).or_else(|| bool_props.first().cloned()),
+                                };
+                                p.input = Some(Input { var: v, property });
+                                next = Some((p, "Input"));
+                            }
+                        });
+                        if current.is_some()
+                            && ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
+                                .on_hover_text("Stop being an input")
+                                .clicked()
+                        {
+                            let mut p = play.clone();
+                            p.input = None;
+                            next = Some((p, "Input"));
+                        }
+                    });
+                    if !text && let Some(input) = &play.input {
+                        let shown = input.property.clone().unwrap_or_else(|| "None".into());
+                        let mut pick = None;
+                        ui.scope(|ui| {
+                            ui::combo_height(ui);
+                            egui::ComboBox::from_id_salt(("input-prop", id))
+                                .icon(ui::combo_chevron)
+                                .width(w)
+                                .selected_text(ui::combo_text(&shown))
+                                .show_ui(ui, |ui| {
+                                    ui::menu_rows(ui);
+                                    if bool_props.is_empty() {
+                                        ui::menu_note(ui, "The set has no two-valued property");
+                                    }
+                                    for p in &bool_props {
+                                        let on = input.property.as_deref() == Some(p);
+                                        if ui.selectable_label(on, p).clicked() && !on {
+                                            pick = Some(p.clone());
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text("The property that shows the variable, such as a checkbox's Checked");
+                        });
+                        if let Some(prop) = pick {
+                            let mut p = play.clone();
+                            p.input = Some(Input { var: input.var, property: Some(prop) });
+                            next = Some((p, "Input"));
+                        }
+                    }
+                    let note = match text {
+                        true => "Typing into it while playing sets the variable",
+                        false => "Ticking it while playing sets the variable",
+                    };
+                    ui::selection_note(ui, note);
+                });
+            }
+        });
+        for (resp, rid, v, p) in numbers {
+            let tx = match p != play {
+                true => Transaction(vec![Operation::SetPlay { id, play: p }]),
+                false => Transaction::default(),
+            };
+            self.proto_valve(rid, v, &resp, "Overlay", icon::OVERLAY_OPEN, tx);
+        }
+        if let Some((p, label)) = next {
+            self.session.name_step(label, icon::INTERACTION);
+            self.commit_edit(Transaction(vec![Operation::SetPlay { id, play: p }]));
+        }
+    }
+
+    /// The page's *Flows*: one row per flow, its name and its start frame; `+`
+    /// adds one starting at the page's first frame.
+    fn flows_card(&mut self, ui: &mut egui::Ui) {
+        let page = self.session.page;
+        let doc = &self.session.doc;
+        let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
+        let frames: Vec<NodeId> = doc
+            .get(page)
+            .map(|r| {
+                r.children()
+                    .iter()
+                    .copied()
+                    .filter(|c| is_frame(doc, *c))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let action = match frames.first() {
+            Some(_) => ui::HeadAction::new(icon::PLUS, "Add a flow"),
+            None => ui::HeadAction::inert(icon::PLUS, "Add a frame to start a flow from"),
+        };
+        let mut next: Option<(Vec<Keyed<Flow>>, &'static str)> = None;
+        let add = self.panel(ui, "Flows", Some(action), |app, ui| {
+            if flows.is_empty() {
+                ui::empty_note(ui, "No flows");
+            }
+            for f in &flows {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = COL;
+                    let w = ui.available_width() - 18.0 - COL;
+                    let half = (w - COL) / 2.0;
+                    if let Some(n) = app.flow_name_field(ui, f.id, &f.name, half) {
+                        let list = flows
+                            .iter()
+                            .map(|x| match x.id == f.id {
+                                true => x.map(|v| Flow {
+                                    name: n.clone(),
+                                    ..v.clone()
+                                }),
+                                false => x.clone(),
+                            })
+                            .collect();
+                        next = Some((list, "Rename flow"));
+                    }
+                    let doc = &app.session.doc;
+                    if let Some(s) =
+                        layer_combo(ui, doc, ("flow-start", f.id), f.start, &frames, half)
+                    {
+                        let list = flows
+                            .iter()
+                            .map(|x| match x.id == f.id {
+                                true => x.map(|v| Flow {
+                                    start: s,
+                                    ..v.clone()
+                                }),
+                                false => x.clone(),
+                            })
+                            .collect();
+                        next = Some((list, "Change flow"));
+                    }
+                    if ui::icon_button(ui, icon::X, 18.0, 13.0, false, true)
+                        .on_hover_text("Remove")
+                        .clicked()
+                    {
+                        next = Some((
+                            flows.iter().filter(|x| x.id != f.id).cloned().collect(),
+                            "Remove flow",
+                        ));
+                    }
+                });
+            }
+        });
+        if add && let Some(start) = frames.first().copied() {
+            let mut list = flows.clone();
+            let mut n = list.len() + 1;
+            while list.iter().any(|f| f.name == format!("Flow {n}")) {
+                n += 1;
+            }
+            list.push(Keyed::new(
+                self.session.ids.mint_item(),
+                Flow {
+                    name: format!("Flow {n}"),
+                    start,
+                    values: Vec::new(),
+                },
+            ));
+            next = Some((list, "Add flow"));
+        }
+        if let Some((flows, label)) = next {
+            self.session.name_step(label, icon::PLAY);
+            self.commit_edit(Transaction(vec![Operation::SetFlows { id: page, flows }]));
+        }
+    }
+
+    fn flow_name_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        item: ItemId,
+        current: &str,
+        w: f32,
+    ) -> Option<String> {
+        let key = DraftKey::FlowName(item);
+        let ctx = ui.ctx().clone();
+        let mut text = ui::Draft::live(&mut self.proto.draft, &ctx, key)
+            .map_or(current.to_string(), |d| d.text.clone());
+        let resp = ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, "Flow name");
+        let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
+        let typed = typed.trim().to_string();
+        (!typed.is_empty() && typed != current).then_some(typed)
+    }
+
+    /// The page's *Prototype* card: the device drawn round the screen, how the
+    /// screen fits the player, and the transition a new link takes.
+    fn page_play_card(&mut self, ui: &mut egui::Ui) {
+        let page = self.session.page;
+        let play = self
+            .session
+            .doc
+            .page(page)
+            .map(|p| p.play.clone())
+            .unwrap_or_default();
+        let mut next: Option<(PagePlay, &'static str)> = None;
+        self.panel(ui, "Prototype", None, |app, ui| {
+            let w = ui.available_width();
+            ui::labelled(ui, "Device", |ui| {
+                let shown = play.device.clone().unwrap_or_else(|| "None".into());
+                let mut pick: Option<Option<String>> = None;
+                ui.scope(|ui| {
+                    ui::combo_height(ui);
+                    egui::ComboBox::from_id_salt(("device", page))
+                        .icon(ui::combo_chevron)
+                        .width(w)
+                        .selected_text(ui::glyph_and_text(icon::DEVICES, &shown))
+                        .show_ui(ui, |ui| {
+                            ui::menu_rows(ui);
+                            if ui.selectable_label(play.device.is_none(), "None").clicked()
+                                && play.device.is_some()
+                            {
+                                pick = Some(None);
+                            }
+                            for (group, entries) in FRAME_PRESETS
+                                .iter()
+                                .filter(|(g, _)| matches!(*g, "PHONE" | "TABLET"))
+                            {
+                                ui.label(ui::eyebrow(group));
+                                for (n, pw, ph) in entries.iter() {
+                                    let on = play.device.as_deref() == Some(*n);
+                                    let row = ui.selectable_label(on, format!("{n}, {pw} × {ph}"));
+                                    if row.clicked() && !on {
+                                        pick = Some(Some((*n).to_string()));
+                                    }
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text("The device drawn round the screen while playing");
+                });
+                if let Some(d) = pick {
+                    next = Some((
+                        PagePlay {
+                            device: d,
+                            ..play.clone()
+                        },
+                        "Device",
+                    ));
+                }
+            });
+            ui::labelled(ui, "Scaling", |ui| {
+                let all = [Scaling::Fit, Scaling::ActualSize, Scaling::FillWidth];
+                let cur = all.iter().position(|s| *s == play.scaling).unwrap_or(0);
+                let pick = ui::segmented_tipped(
+                    ui,
+                    w,
+                    ui::SEGMENT_CELL_H,
+                    3,
+                    cur,
+                    |_| true,
+                    |i| match i {
+                        0 => "The whole screen fits the player",
+                        1 => "One point to one pixel",
+                        _ => "The screen's width fills the player",
+                    },
+                    |p, i, r, on| {
+                        ui::segment_label(p, r, ["Fit", "Actual size", "Fill width"][i], on)
+                    },
+                );
+                if let Some(i) = pick.filter(|i| *i != cur) {
+                    next = Some((
+                        PagePlay {
+                            scaling: all[i],
+                            ..play.clone()
+                        },
+                        "Scaling",
+                    ));
+                }
+            });
+            ui::labelled(ui, "New links", |ui| {
+                if let Some(t) = app.transition_fields(ui, ("page-tr", page), play.transition, w) {
+                    next = Some((
+                        PagePlay {
+                            transition: t,
+                            ..play.clone()
+                        },
+                        "New links",
+                    ));
+                }
+            });
+        });
+        if let Some((p, label)) = next {
+            self.session.name_step(label, icon::INTERACTION);
+            self.commit_edit(Transaction(vec![Operation::SetPagePlay {
+                id: page,
+                play: p,
+            }]));
+        }
+    }
+}
+
+/// A chip's words on an action row: the transition's kind and timing.
+fn chip_label(ui: &mut egui::Ui, text: &str) {
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(ui::CAPTION_PT),
+        theme::text::dim(),
+    );
+    let size = galley.size() + egui::vec2(12.0, 0.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size.x, 20.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 4, color::text_a(20));
+    ui.painter().galley(
+        egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        theme::text::dim(),
+    );
+}
+
+/// A dropdown of the screens, page by page; answers a new pick.
+fn frame_combo(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    current: NodeId,
+    holder: NodeId,
+    w: f32,
+) -> Option<NodeId> {
+    let current = mastik_core::prototype::resolve_target(doc, holder, current);
+    let shown = match doc.get(current) {
+        Some(_) => name(doc, current),
+        None => "Missing frame".into(),
+    };
+    let all = screens(doc);
+    let paged = all.len() > 1;
+    let mut pick = None;
+    ui.scope(|ui| {
+        ui::combo_height(ui);
+        egui::ComboBox::from_id_salt(salt)
+            .icon(ui::combo_chevron)
+            .width(w)
+            .selected_text(ui::glyph_and_text(icon::FRAME, &shown))
+            .show_ui(ui, |ui| {
+                ui::menu_rows(ui);
+                for (page, frames) in &all {
+                    if paged && !frames.is_empty() {
+                        let p = crate::private::page(doc, *page).into_owned();
+                        ui.label(ui::eyebrow(&p));
+                    }
+                    for f in frames {
+                        let on = *f == current;
+                        if ui.selectable_label(on, name(doc, *f)).clicked() && !on {
+                            pick = Some(*f);
+                        }
+                    }
+                }
+            });
+    });
+    pick
+}
+
+/// A dropdown of `options` by name; answers a new pick.
+fn layer_combo(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    current: NodeId,
+    options: &[NodeId],
+    w: f32,
+) -> Option<NodeId> {
+    let shown = match doc.get(current) {
+        Some(_) => name(doc, current),
+        None => "Missing layer".into(),
+    };
+    let mut pick = None;
+    ui.scope(|ui| {
+        ui::combo_height(ui);
+        egui::ComboBox::from_id_salt(salt)
+            .icon(ui::combo_chevron)
+            .width(w)
+            .selected_text(ui::combo_text(&shown))
+            .show_ui(ui, |ui| {
+                ui::menu_rows(ui);
+                for o in options {
+                    let on = *o == current;
+                    if ui.selectable_label(on, name(doc, *o)).clicked() && !on {
+                        pick = Some(*o);
+                    }
+                }
+            });
+    });
+    pick
+}
+
+enum TriggerPick {
+    Set(Trigger),
+    Key,
+}
+
+#[derive(Default)]
+struct BlockOut {
+    write: Option<(Vec<Keyed<Reaction>>, &'static str, &'static str)>,
+    reset: bool,
+}
+
+#[derive(Default)]
+struct ListOut {
+    add: Option<(Place, ActionKind)>,
+    remove: Option<ItemId>,
+    head: Option<egui::Response>,
+}
+
+#[derive(Default)]
+struct RowOut {
+    open: bool,
+    remove: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mastik_core::kurbo::{Affine, Size, Vec2};
+    use mastik_core::{IdSource, Placement};
+
+    /// Two screens, *Home* (holding a rect *Add to cart*) and *Cart* to its right,
+    /// and a main *Button* with an instance on *Home*: adopted into a headless app.
+    struct F {
+        app: MastikApp,
+        home: NodeId,
+        cart: NodeId,
+        add: NodeId,
+        main: NodeId,
+        inst: NodeId,
+    }
+
+    fn fixture(ctx: &egui::Context) -> F {
+        let mut app = MastikApp::headless(ctx);
+        let mut ids = IdSource::new(0xA7);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let [home, cart, add, main] = [(); 4].map(|_| ids.mint());
+        let frame = |w, h| NodeKind::Artboard {
+            size: Size::new(w, h),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        };
+        let create = |id, parent, kind, at: Option<Affine>, name: &str| Operation::CreateNode {
+            id,
+            parent,
+            index: 0,
+            kind,
+            transform: at,
+            name: Some(name.into()),
+        };
+        doc.apply(&Transaction(vec![
+            create(home, root, frame(400.0, 800.0), None, "Home"),
+            create(
+                cart,
+                root,
+                frame(400.0, 800.0),
+                Some(Affine::translate((600.0, 0.0))),
+                "Cart",
+            ),
+            create(
+                add,
+                home,
+                NodeKind::Rect {
+                    size: Size::new(100.0, 40.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                Some(Affine::translate((20.0, 20.0))),
+                "Add to cart",
+            ),
+            create(
+                main,
+                root,
+                frame(80.0, 30.0),
+                Some(Affine::translate((0.0, 1200.0))),
+                "Button",
+            ),
+            Operation::SetComponent {
+                id: main,
+                component: true,
+            },
+        ]))
+        .expect("the screens");
+        let (tx, made) = mastik_core::insert_subtrees(
+            &doc,
+            &mut ids,
+            &[Placement {
+                nodes: doc.capture_subtree(main).unwrap(),
+                parent: home,
+                index: None,
+            }],
+            Vec2::new(20.0, 200.0),
+        );
+        doc.apply(&tx).expect("an instance");
+        app.session.adopt_document(doc, None);
+        F {
+            app,
+            home,
+            cart,
+            add,
+            main,
+            inst: made[0],
+        }
+    }
+
+    /// The `n`th item id of a source of its own, the same on every call.
+    fn item(n: u32) -> ItemId {
+        let mut s = IdSource::new(0xEE);
+        let mut id = s.mint();
+        for _ in 1..n {
+            id = s.mint();
+        }
+        ItemId(id)
+    }
+
+    fn keyed(n: u32, a: Action) -> Keyed<Action> {
+        Keyed::new(item(n), a)
+    }
+
+    /// A conditional holding one action in its branch and one in its *else*.
+    fn nested() -> Vec<Keyed<Action>> {
+        vec![
+            keyed(1, Action::Back),
+            keyed(
+                2,
+                Action::Conditional {
+                    branches: vec![Branch {
+                        when: Expr("true".into()),
+                        actions: vec![keyed(3, Action::Back), keyed(4, Action::Back)],
+                    }],
+                    otherwise: vec![keyed(5, Action::Back)],
+                },
+            ),
+        ]
+    }
+
+    /// An action nested in a branch is found, moved within its own list and
+    /// removed by id. flip: `shift` without its descent into branches → fails at
+    /// "moves inside its branch".
+    #[test]
+    fn nested_actions_are_reached_by_id() {
+        let mut list = nested();
+        assert!(find(&list, item(5)).is_some(), "the else's action");
+        assert!(shift(&mut list, item(4), true), "moves inside its branch");
+        let Action::Conditional { branches, .. } = &list[1].value else {
+            panic!("fixture: the conditional");
+        };
+        assert_eq!(branches[0].actions[0].id, item(4));
+        assert!(
+            !shift(&mut list, item(4), true),
+            "the top of its list stays"
+        );
+        assert!(remove(&mut list, item(5)));
+        assert!(find(&list, item(5)).is_none());
+        let at = list_at(&mut list, Place::Otherwise(item(2))).expect("the else");
+        assert!(at.is_empty(), "the else is empty once its action goes");
+        assert_eq!(position(&list, item(3)), Some((1, 2)));
+    }
+
+    /// *Duplicate* mints every id afresh, nested ones too, so the door takes it.
+    #[test]
+    fn a_duplicate_takes_fresh_ids() {
+        let list = nested();
+        let mut n = 100;
+        let copy = fresh_ids(&list, &mut || {
+            n += 1;
+            item(n)
+        });
+        let mut both = list.clone();
+        both.extend(copy);
+        let r = vec![Keyed::new(
+            item(50),
+            Reaction {
+                trigger: Trigger::Click,
+                actions: both,
+            },
+        )];
+        assert!(mastik_core::prototype::check(&r).is_ok());
+    }
+
+    /// The field shows a variable by name and stores its id; an unknown name, an
+    /// expression that does not read and a value of another kind are refused.
+    /// flip: `expr_stored` without its kind check → fails at "a number is not a
+    /// string".
+    #[test]
+    fn an_expression_reads_names_and_stores_ids() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let s = &mut f.app.session;
+        let col = s.doc.variables().first_collection().id;
+        let (ops, var) = mastik_core::variable::add_variable_ops(
+            s.doc.variables(),
+            &mut s.ids,
+            col,
+            VarKind::Number,
+            Some("cartCount"),
+            None,
+        )
+        .expect("fixture: a number variable");
+        assert!(s.commit(Transaction(ops)), "fixture: committed");
+        let doc = &f.app.session.doc;
+        let stored = expr_stored(doc, "{cartCount} + 1", Some(VarKind::Number)).expect("reads");
+        assert_eq!(stored.0, format!("{{{}}} + 1", var.0.to_wire()));
+        assert_eq!(expr_shown(doc, &stored), "{cartCount} + 1");
+        assert!(
+            expr_stored(doc, "{nope} + 1", None).is_err(),
+            "an unknown name"
+        );
+        assert!(expr_stored(doc, "1 +", None).is_err(), "does not read");
+        assert!(
+            expr_stored(doc, "{cartCount} + 1", Some(VarKind::String)).is_err(),
+            "a number is not a string"
+        );
+    }
+
+    /// The add menu dims *Run script* under a trigger no person fires and *Change
+    /// to* off a component's variant.
+    #[test]
+    fn the_add_menu_refuses_what_the_layer_cannot_take() {
+        let ctx = egui::Context::default();
+        let f = fixture(&ctx);
+        let doc = &f.app.session.doc;
+        let after = Trigger::After { ms: 500 };
+        assert_eq!(
+            action_refusal(doc, f.add, &after, ActionKind::RunScript),
+            Some("A script runs only when someone acts")
+        );
+        assert_eq!(
+            action_refusal(doc, f.add, &Trigger::Click, ActionKind::ChangeState),
+            Some("Not a component")
+        );
+        assert_eq!(
+            action_refusal(doc, f.add, &Trigger::Click, ActionKind::Navigate),
+            None
+        );
+        let Some(Action::Navigate { to, .. }) = new_action(doc, f.add, ActionKind::Navigate) else {
+            panic!("a navigate");
+        };
+        assert_eq!(to, f.cart, "another screen than the layer's own");
+    }
+
+    /// A link the knob makes takes the page's default transition and joins the
+    /// layer's click. flip: `with_link` taking `Transition::default()` → fails at
+    /// "the page's default".
+    #[test]
+    fn a_link_takes_the_pages_transition_and_joins_the_click() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let page = f.app.session.doc.first_page();
+        let smart = Transition {
+            kind: TransitionKind::SmartAnimate,
+            ..Transition::default()
+        };
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetPagePlay {
+                    id: page,
+                    play: PagePlay {
+                        transition: smart,
+                        ..PagePlay::default()
+                    },
+                }]))
+        );
+        let mut n = 0;
+        let mut mint = || {
+            n += 1;
+            item(900 + n)
+        };
+        let once = with_link(&f.app.session.doc, f.add, f.cart, &mut mint);
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetReactions {
+                    id: f.add,
+                    reactions: once,
+                }]))
+        );
+        let twice = with_link(&f.app.session.doc, f.add, f.home, &mut mint);
+        assert_eq!(twice.len(), 1, "one click reaction");
+        assert_eq!(twice[0].actions.len(), 2, "the second link joins it");
+        assert_eq!(
+            transition_of(&twice[0].actions[0].value),
+            Some(smart),
+            "the page's default"
+        );
+    }
+
+    /// Dropping the knob on another screen commits one *Navigate to* as one step;
+    /// on the layer's own screen it links nothing. flip: `link_target` without
+    /// its own-screen test → fails at "nothing on its own frame".
+    #[test]
+    fn dropping_the_knob_on_a_screen_links_to_it() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.prototype_tab = true;
+        f.app.session.selection.set_one(f.add);
+        f.app
+            .drop_link(f.add, mastik_core::kurbo::Point::new(100.0, 100.0));
+        assert!(
+            f.app.session.doc.get(f.add).unwrap().reactions().is_empty(),
+            "nothing on its own frame"
+        );
+        f.app
+            .drop_link(f.add, mastik_core::kurbo::Point::new(700.0, 100.0));
+        let r = f.app.session.doc.get(f.add).unwrap().reactions().to_vec();
+        assert!(matches!(
+            r.as_slice(),
+            [k] if matches!(k.actions.as_slice(), [a] if a.value == Action::Navigate { to: f.cart, transition: Transition::default() })
+        ));
+        assert!(f.app.session.undo());
+        assert!(
+            f.app.session.doc.get(f.add).unwrap().reactions().is_empty(),
+            "one undo step"
+        );
+    }
+
+    /// The canvas's connectors: one per navigate, dashed inside a conditional, a
+    /// dangling one kept with its gone target.
+    #[test]
+    fn connectors_follow_the_actions() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let gone = f.app.session.ids.mint();
+        let t = Transition::default();
+        let actions = vec![
+            keyed(
+                1,
+                Action::Navigate {
+                    to: f.cart,
+                    transition: t,
+                },
+            ),
+            keyed(
+                2,
+                Action::Conditional {
+                    branches: vec![Branch {
+                        when: Expr("true".into()),
+                        actions: vec![keyed(
+                            3,
+                            Action::Navigate {
+                                to: gone,
+                                transition: t,
+                            },
+                        )],
+                    }],
+                    otherwise: Vec::new(),
+                },
+            ),
+        ];
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetReactions {
+                    id: f.add,
+                    reactions: vec![Keyed::new(
+                        item(10),
+                        Reaction {
+                            trigger: Trigger::Click,
+                            actions,
+                        },
+                    )],
+                }]))
+        );
+        let page = f.app.session.doc.first_page();
+        let links = links_on(&f.app.session.doc, page);
+        assert_eq!(
+            links,
+            vec![
+                Link {
+                    from: f.add,
+                    to: f.cart,
+                    dashed: false
+                },
+                Link {
+                    from: f.add,
+                    to: gone,
+                    dashed: true
+                },
+            ]
+        );
+    }
+
+    fn draw(app: &mut MastikApp, ctx: &egui::Context) -> egui::FullOutput {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1400.0, 2400.0),
+            )),
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| {
+            ui.set_max_width(280.0);
+            app.inspector_ui(ui)
+        })
+    }
+
+    /// The tab shows the Prototype cards in place of the Design ones, and the
+    /// page's flows with nothing selected.
+    #[test]
+    fn the_prototype_tab_shows_its_own_cards() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.session.selection.set_one(f.home);
+        draw(&mut f.app, &ctx);
+        assert!(
+            f.app.cards_drawn.contains(&"Fill"),
+            "fixture: the Design tab"
+        );
+        assert!(!f.app.cards_drawn.contains(&"Interactions"));
+        f.app
+            .set_view_switch(crate::input::ViewSwitch::PrototypeTab, true);
+        f.app.cards_drawn.clear();
+        draw(&mut f.app, &ctx);
+        assert!(f.app.cards_drawn.contains(&"Interactions"));
+        assert!(
+            f.app.cards_drawn.contains(&"Prototype"),
+            "a frame's scroll and overlay"
+        );
+        assert!(!f.app.cards_drawn.contains(&"Fill"));
+        f.app.session.selection.clear();
+        f.app.cards_drawn.clear();
+        draw(&mut f.app, &ctx);
+        assert!(f.app.cards_drawn.contains(&"Flows"), "the page's flows");
+    }
+
+    /// An instance whose reaction differs from its main's wears the override dot
+    /// on that reaction's row, and the Interactions card counts it. flip:
+    /// `card_of` answering `None` for `SetReactions` → fails at "the card counts it".
+    #[test]
+    fn an_overridden_reaction_wears_the_dot() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let r = |a: Action| {
+            vec![Keyed::new(
+                item(77),
+                Reaction {
+                    trigger: Trigger::Click,
+                    actions: vec![keyed(78, a)],
+                },
+            )]
+        };
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetReactions {
+                    id: f.main,
+                    reactions: r(Action::Back),
+                }]))
+        );
+        assert_eq!(
+            f.app.session.doc.get(f.inst).unwrap().reactions().len(),
+            1,
+            "fixture: the instance follows its main"
+        );
+        f.app.prototype_tab = true;
+        f.app.session.selection.set_one(f.inst);
+        let clean = draw(&mut f.app, &ctx);
+        let before = crate::ui::painted_override_dots(&clean).len();
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetReactions {
+                    id: f.inst,
+                    reactions: r(Action::OpenUrl {
+                        url: "https://example.com".into(),
+                    }),
+                }]))
+        );
+        let out = draw(&mut f.app, &ctx);
+        assert!(
+            crate::ui::painted_override_dots(&out).len() > before,
+            "the reaction's row wears the dot"
+        );
+        assert_eq!(
+            f.app.card_override("Interactions").map(|(n, _)| n),
+            Some(1),
+            "the card counts it"
+        );
+    }
+}

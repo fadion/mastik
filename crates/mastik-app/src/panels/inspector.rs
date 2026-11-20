@@ -867,7 +867,7 @@ fn masked_name(ui: &mut egui::Ui, text: &str, width: f32) -> egui::Response {
 
 /// The kind glyph on an identity card, centred in its cell. Every icon is drawn
 /// centred in its em box, so the card does not step as the subject changes.
-fn identity_glyph(ui: &mut egui::Ui, glyph: &'static str, colour: egui::Color32) {
+pub(super) fn identity_glyph(ui: &mut egui::Ui, glyph: &'static str, colour: egui::Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(IDENTITY_ICON), egui::Sense::empty());
     ui.painter().text(
         rect.center(),
@@ -900,7 +900,7 @@ fn mask_card_targets(doc: &mastik_core::Document, id: NodeId) -> Vec<NodeId> {
 /// [`MastikApp::guide_header`], [`MastikApp::points_header`],
 /// [`MastikApp::inspector_multi`]) share one id salt so the ids stay stable across
 /// a change of subject.
-fn identity_card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+pub(super) fn identity_card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.push_id("identity", |ui| card(ui, add)).inner
 }
 impl MastikApp {
@@ -908,7 +908,7 @@ impl MastikApp {
     /// layer's identity card (`crate::pages`): its name, renamed here as in the
     /// Pages section, where it sits in the order, its *Mode* and its *Draft*
     /// switch. No eye or lock: a page is not a layer.
-    fn page_header(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn page_header(&mut self, ui: &mut egui::Ui) {
         let id = self.session.page;
         let name0 = self.page_name(id);
         let doc = &self.session.doc;
@@ -961,6 +961,11 @@ impl MastikApp {
         // Before any card is drawn.
         self.gather_card_overrides();
         ui::set_push_refusal(ui.ctx(), self.selection_push_refusal());
+        self.inspector_tabs(ui);
+        if self.prototype_tab {
+            self.prototype_inspector(ui);
+            return;
+        }
         let guides = self.selected_guides();
         if !guides.is_empty() {
             self.inspector_guide(ui, &guides);
@@ -12543,7 +12548,7 @@ type PresetGroup = (&'static str, &'static [Preset]);
 /// One world unit is one pixel; print sizes are points at 72/inch (A4 is 595×842).
 /// Portrait where a device has one. Two entries may not share a box, since
 /// [`preset_named`] answers with the first match (`frame_grid_tests` checks).
-const FRAME_PRESETS: &[PresetGroup] = &[
+pub(super) const FRAME_PRESETS: &[PresetGroup] = &[
     (
         "PHONE",
         &[
