@@ -3885,7 +3885,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "generate_scale",
-        doc: "Make `name/50`…`name/950` from a colour variable's default-mode value, even in OKLCH lightness; a name taken by a colour variable is updated, the source never, so a source named for a step of its scale lands there exact",
+        doc: "Make `name/50`…`name/950` from a colour variable's default-mode value, even in OKLCH lightness; a name taken by a colour variable is updated, the source never",
         params: &[
             req("variable", ParamKind::Id("variable"), "the colour variable"),
             opt(
