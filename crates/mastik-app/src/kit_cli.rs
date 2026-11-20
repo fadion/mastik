@@ -384,6 +384,81 @@ mod tests {
         (root, consumer.as_str().unwrap().to_owned(), v1)
     }
 
+    /// An update that takes one kit while the library lacks another the
+    /// document draws from says both, and fails the gate though it wrote.
+    ///
+    /// flip: `one` answering the update's own code with an unchecked kit →
+    /// fails at "the gate fails"; leaving the clause off a taken update → fails
+    /// at "names Brook".
+    #[test]
+    fn kit_update_takes_one_kit_and_names_the_one_it_could_not_check() {
+        use crate::mcp::Engine;
+        use crate::mcp::serve::Headless;
+        use serde_json::{Value, json};
+        let root = crate::kits::picker::tests::temp_root("cli-two");
+        let mut engine = Engine::default();
+        let mut docs = Headless::new(Some(root.clone()));
+        let mut ok = |tool: &str, args: Value| -> Value {
+            let (reply, _answer) = std::sync::mpsc::sync_channel(1);
+            let call = mastik_mcp::queue::Call::new(1, None, tool, args, reply);
+            let out = engine.handle(&mut docs, call);
+            assert!(!out.is_error, "{tool}: {:?}", out.content);
+            out.structured.unwrap()
+        };
+        let kind = mastik_core::verbs::example("NodeKind").unwrap();
+        let fills = mastik_core::verbs::example("[Fill]").unwrap();
+        // A kit of one component, published at v1; answers its file and main.
+        let mut kit = |name: &str| {
+            let file = ok("create_document", json!({ "name": name }))["path"].clone();
+            let page = ok("use_document", json!({ "document": file }))["pages"][0]["id"].clone();
+            let rect = ok(
+                "create_node",
+                json!({ "parent": page, "kind": kind, "name": "Mark" }),
+            )["created"][0]
+                .clone();
+            ok("set_fills", json!({ "nodes": [rect], "fills": fills }));
+            let main = ok("make_component", json!({ "nodes": [rect] }))["created"][0].clone();
+            ok("make_kit", json!({}));
+            ok("publish_kit", json!({ "note": "First" }));
+            (file, main, rect)
+        };
+        let (atlas, atlas_main, atlas_rect) = kit("Atlas");
+        let (_, brook_main, _) = kit("Brook");
+        let consumer = ok("create_document", json!({ "name": "Consumer" }))["path"].clone();
+        let page = ok("use_document", json!({ "document": consumer }))["pages"][0]["id"].clone();
+        for (kit, main) in [("Atlas", &atlas_main), ("Brook", &brook_main)] {
+            ok(
+                "insert_from_kit",
+                json!({ "kit": kit, "main": main, "parent": page }),
+            );
+        }
+        ok("use_document", json!({ "document": atlas }));
+        ok(
+            "set_fills",
+            json!({ "nodes": [atlas_rect], "fills": ["#ff0000"] }),
+        );
+        ok("publish_kit", json!({ "note": "Red" }));
+        // A library holding Atlas at v2 and no Brook.
+        let only = crate::kits::picker::tests::temp_root("cli-two-atlas");
+        let file = std::path::PathBuf::from(atlas.as_str().unwrap());
+        std::fs::copy(&file, only.join(file.file_name().unwrap())).unwrap();
+        let lib = Library::open(only.clone());
+        let consumer = consumer.as_str().unwrap().to_owned();
+
+        let (line, code) = one(&update(&consumer, &only, false), &lib, &consumer).unwrap();
+        assert!(line.starts_with("took Atlas v1 → v2 ("), "{line}");
+        assert!(
+            line.ends_with(&format!(
+                "; wrote it; not checked: Brook is not in {}",
+                only.display()
+            )),
+            "names Brook: {line}"
+        );
+        assert_eq!(code, 1, "the gate fails");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&only);
+    }
+
     fn update(file: &str, library: &std::path::Path, dry_run: bool) -> Update {
         Update {
             files: vec![file.to_owned()],
