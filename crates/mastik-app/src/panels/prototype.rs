@@ -932,35 +932,77 @@ fn edge_distance(q: [egui::Pos2; 4], edge: usize, p: egui::Pos2) -> f32 {
     p.distance(a + ab * t)
 }
 
-/// Where a link to nothing on this page leaves `from`, and its direction: the
-/// side facing out of the frame it is in, the way off the screen. A screen of
-/// its own, or a layer at its frame's middle, leaves by its right.
-fn stub_side(from: egui::Rect, frame: Option<egui::Rect>) -> (egui::Pos2, egui::Vec2) {
-    let d = frame.map_or(egui::Vec2::ZERO, |f| from.center() - f.center());
-    match () {
-        _ if d.x.abs() >= d.y.abs() && d.x < 0.0 => (from.left_center(), -egui::Vec2::X),
-        _ if d.x.abs() >= d.y.abs() => (from.right_center(), egui::Vec2::X),
-        _ if d.y < 0.0 => (from.center_top(), -egui::Vec2::Y),
-        _ => (from.center_bottom(), egui::Vec2::Y),
-    }
+/// A layer's box in world space, its corners in the screen quad's order, so an
+/// edge's index names the same edge in both. Which edge a connector takes is
+/// decided here, in world space, so zooming never changes the answer.
+type WorldQuad = [mastik_core::kurbo::Point; 4];
+
+fn quad_centre(q: WorldQuad) -> mastik_core::kurbo::Point {
+    q[0].midpoint(q[2])
 }
 
-/// Where a connector leaves `from` and enters `to`, each with its side's
-/// outward direction: the facing sides when they stand apart across, else
-/// bottom to top or top to bottom.
-fn connector_ends(
-    from: egui::Rect,
-    to: egui::Rect,
-) -> (egui::Pos2, egui::Vec2, egui::Pos2, egui::Vec2) {
-    let (x, y) = (egui::Vec2::X, egui::Vec2::Y);
-    if to.left() >= from.right() {
-        (from.right_center(), x, to.left_center(), -x)
-    } else if to.right() <= from.left() {
-        (from.left_center(), -x, to.right_center(), x)
-    } else if to.center().y >= from.center().y {
-        (from.center_bottom(), y, to.center_top(), -y)
-    } else {
-        (from.center_top(), -y, to.center_bottom(), y)
+fn edge_mid(q: WorldQuad, edge: usize) -> mastik_core::kurbo::Point {
+    q[edge].midpoint(q[(edge + 1) % 4])
+}
+
+/// The edge of `q` whose outward direction best matches `want(middle)`, the
+/// way it should face from that edge's middle; none if every edge is collapsed.
+fn facing_edge(
+    q: WorldQuad,
+    want: impl Fn(mastik_core::kurbo::Point) -> mastik_core::kurbo::Vec2,
+) -> Option<usize> {
+    let c = quad_centre(q);
+    (0..4)
+        .filter_map(|i| {
+            let mid = edge_mid(q, i);
+            let out = mid - c;
+            let w = want(mid);
+            (out.hypot() > 1e-9).then(|| {
+                let score = match w.hypot() > 1e-9 {
+                    true => out.normalize().dot(w.normalize()),
+                    false => 0.0,
+                };
+                (i, score)
+            })
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
+}
+
+/// The edges a connector leaves `from` by and enters `to` by: `from`'s edge
+/// facing `to`'s centre, then `to`'s edge facing that edge's middle.
+fn connector_edges(from: WorldQuad, to: WorldQuad) -> Option<(usize, usize)> {
+    let target = quad_centre(to);
+    let a = facing_edge(from, |mid| target - mid)?;
+    let start = edge_mid(from, a);
+    let b = facing_edge(to, |mid| start - mid)?;
+    Some((a, b))
+}
+
+/// The edge a link to nothing on this page leaves `from` by: the one facing out
+/// of its frame (whose centre is `frame`) along the axis it is further off that
+/// centre, the way off the screen. Without a frame, or at its middle, the right.
+fn stub_edge(from: WorldQuad, frame: Option<mastik_core::kurbo::Point>) -> Option<usize> {
+    use mastik_core::kurbo::Vec2;
+    let d = frame.map_or(Vec2::ZERO, |f| quad_centre(from) - f);
+    let dir = match d.x.abs() >= d.y.abs() {
+        true if d.x < 0.0 => Vec2::new(-1.0, 0.0),
+        true => Vec2::new(1.0, 0.0),
+        false if d.y < 0.0 => Vec2::new(0.0, -1.0),
+        false => Vec2::new(0.0, 1.0),
+    };
+    facing_edge(from, |_| dir)
+}
+
+/// Edge `edge` of the screen quad `q`: its middle, and its outward direction
+/// (rightward for a quad collapsed to a point).
+fn screen_edge(q: [egui::Pos2; 4], edge: usize) -> (egui::Pos2, egui::Vec2) {
+    let centre = q[0] + (q[2] - q[0]) * 0.5;
+    let mid = q[edge] + (q[(edge + 1) % 4] - q[edge]) * 0.5;
+    let away = mid - centre;
+    match away.length() > 1e-3 {
+        true => (mid, away.normalized()),
+        false => (mid, egui::Vec2::X),
     }
 }
 
@@ -1210,7 +1252,7 @@ impl MastikApp {
         let doc = &self.session.doc;
         let page = self.session.page;
         for link in links_on(doc, page) {
-            let Some(from) = self.selection_quad(link.from, rect, ppp).map(quad_box) else {
+            let Some(from) = self.selection_quad(link.from, rect, ppp) else {
                 continue;
             };
             let lit = self.session.selection.contains(link.from);
@@ -1220,20 +1262,31 @@ impl MastikApp {
                 false => color::SELECT_DIM,
             };
             let here = doc.get(link.to).is_some() && doc.page_of(link.to) == Some(page);
-            let (ink, pts) = match here
-                .then(|| self.selection_quad(link.to, rect, ppp))
+            let ends = here
+                .then(|| self.world_quad(link.from).zip(self.world_quad(link.to)))
                 .flatten()
-            {
-                Some(q) => {
-                    let (a, out_a, b, out_b) = connector_ends(from, quad_box(q));
+                .and_then(|(a, b)| connector_edges(a, b))
+                .zip(
+                    here.then(|| self.selection_quad(link.to, rect, ppp))
+                        .flatten(),
+                );
+            let (ink, pts) = match ends {
+                Some(((ea, eb), to)) => {
+                    let (a, out_a) = screen_edge(from, ea);
+                    let (b, out_b) = screen_edge(to, eb);
                     (blue, curve(a, out_a, b, out_b))
                 }
                 None => {
                     let frame = screen_of(doc, link.from)
                         .filter(|s| *s != link.from)
-                        .and_then(|s| self.selection_quad(s, rect, ppp))
-                        .map(quad_box);
-                    let (a, out) = stub_side(from, frame);
+                        .and_then(|s| self.world_quad(s))
+                        .map(quad_centre);
+                    let edge = self
+                        .world_quad(link.from)
+                        .and_then(|q| stub_edge(q, frame))
+                        // Edge 1 runs from the top-right corner down: the right.
+                        .unwrap_or(1);
+                    let (a, out) = screen_edge(from, edge);
                     let b = a + out * STUB;
                     let ink = match doc.get(link.to) {
                         None => color::error(),
@@ -1267,9 +1320,9 @@ impl MastikApp {
         if let Some((from, edge)) = pulled
             && let Some(p) = pointer
             && let Some(q) = self.selection_quad(from, rect, ppp)
-            && let Some((_, at, out)) = knob_dots(q).into_iter().find(|(e, ..)| *e == edge)
         {
-            let (b, out_b, target) = self.pulled_end(from, p, rect, ppp);
+            let (at, out) = screen_edge(q, edge);
+            let (b, out_b, target) = self.pulled_end(from, edge, p, rect, ppp);
             if let Some(t) = target {
                 painter.add(egui::Shape::closed_line(
                     t.to_vec(),
@@ -1306,29 +1359,48 @@ impl MastikApp {
         }
     }
 
-    /// Where a link pulled from `from` ends with the pointer at `p`, and the
-    /// direction it arrives against: over a screen it would land on, snapped to
-    /// that screen's facing side for as long as the pointer stays inside it
-    /// (with the screen's quad, to ring); elsewhere, the pointer itself.
+    /// Where a link pulled from `from`'s `edge` ends with the pointer at `p`,
+    /// and the direction it arrives against: over a screen it would land on,
+    /// snapped to that screen's edge facing the pulled dot for as long as the
+    /// pointer stays inside it (with the screen's quad, to ring); elsewhere,
+    /// the pointer itself.
     fn pulled_end(
         &self,
         from: NodeId,
+        edge: usize,
         p: egui::Pos2,
         rect: egui::Rect,
         ppp: f32,
     ) -> (egui::Pos2, egui::Vec2, Option<[egui::Pos2; 4]>) {
         let world = self.to_world(p, rect, ppp);
-        let snapped = self
-            .link_target(from, world)
-            .and_then(|t| self.selection_quad(t, rect, ppp))
-            .zip(self.selection_quad(from, rect, ppp));
+        let snapped = self.link_target(from, world).and_then(|t| {
+            let start = edge_mid(self.world_quad(from)?, edge);
+            let e = facing_edge(self.world_quad(t)?, |mid| start - mid)?;
+            Some((self.selection_quad(t, rect, ppp)?, e))
+        });
         match snapped {
-            Some((t, q)) => {
-                let (_, _, b, out_b) = connector_ends(quad_box(q), quad_box(t));
+            Some((t, e)) => {
+                let (b, out_b) = screen_edge(t, e);
                 (b, out_b, Some(t))
             }
             None => (p, egui::Vec2::ZERO, None),
         }
+    }
+
+    /// `id`'s box in world space, through the preview so it tracks a gesture.
+    fn world_quad(&self, id: NodeId) -> Option<WorldQuad> {
+        let local = self.session.preview_local_box(id)?;
+        let world = self.session.preview_world_transform(id)?;
+        Some(
+            [
+                // `local_quad`'s corners, in its order.
+                (local.min_x(), local.min_y()),
+                (local.max_x(), local.min_y()),
+                (local.max_x(), local.max_y()),
+                (local.min_x(), local.max_y()),
+            ]
+            .map(|(x, y)| world * mastik_core::kurbo::Point::new(x, y)),
+        )
     }
 
     /// The screen a link from `from` dropped at `world` goes to: the top-level
@@ -4275,28 +4347,54 @@ mod tests {
         );
     }
 
-    /// A connector leaves by the side facing its target and is drawn in short
-    /// pieces however long it runs. flip: `curve` at a fixed 24 pieces → fails
-    /// at "a short piece".
+    /// A box in world space, edges 0 to 3 its top, right, bottom and left.
+    fn world_box(x: f64, y: f64, w: f64, h: f64) -> WorldQuad {
+        use mastik_core::kurbo::Point;
+        [
+            Point::new(x, y),
+            Point::new(x + w, y),
+            Point::new(x + w, y + h),
+            Point::new(x, y + h),
+        ]
+    }
+
+    /// A connector leaves by the edge facing its target, a rotated layer's
+    /// own edge included, and is drawn in short pieces however long it runs.
+    /// flip: `curve` at a fixed 24 pieces → fails at "a short piece".
     #[test]
     fn a_connector_faces_its_target_and_stays_smooth() {
-        let from = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 40.0));
-        let right = from.translate(egui::vec2(3000.0, 900.0));
-        let (a, out_a, b, out_b) = connector_ends(from, right);
-        assert_eq!((a, out_a), (from.right_center(), egui::Vec2::X));
-        assert_eq!((b, out_b), (right.left_center(), -egui::Vec2::X));
-        let left = from.translate(egui::vec2(-500.0, 0.0));
-        assert_eq!(connector_ends(from, left).0, from.left_center());
-        let below = from.translate(egui::vec2(20.0, 300.0));
-        let (a, _, b, _) = connector_ends(from, below);
-        assert_eq!((a, b), (from.center_bottom(), below.center_top()));
-        let pts = curve(from.right_center(), egui::Vec2::X, b, -egui::Vec2::Y);
-        let long = curve(
-            from.right_center(),
-            egui::Vec2::X,
-            right.left_center(),
-            -egui::Vec2::X,
+        let from = world_box(0.0, 0.0, 100.0, 40.0);
+        let at = |x, y| world_box(x, y, 100.0, 40.0);
+        assert_eq!(
+            connector_edges(from, at(3000.0, 900.0)),
+            Some((1, 3)),
+            "right to left"
         );
+        assert_eq!(
+            connector_edges(from, at(-500.0, 0.0)),
+            Some((3, 1)),
+            "left to right"
+        );
+        assert_eq!(
+            connector_edges(from, at(20.0, 300.0)),
+            Some((2, 0)),
+            "down to top"
+        );
+        // Turned 30°: the edge it leaves by is one of its own, the one facing right.
+        let turn = mastik_core::kurbo::Affine::rotate_about(
+            30f64.to_radians(),
+            mastik_core::kurbo::Point::new(50.0, 20.0),
+        );
+        let turned = from.map(|p| turn * p);
+        let (e, _) = connector_edges(turned, at(3000.0, 0.0)).expect("an edge");
+        let out = edge_mid(turned, e) - quad_centre(turned);
+        assert!(
+            out.normalize().x > 0.8,
+            "the turned layer's right-facing edge"
+        );
+        let a = egui::pos2(100.0, 20.0);
+        let pts = curve(a, egui::Vec2::X, egui::pos2(70.0, 300.0), -egui::Vec2::Y);
+        let long = curve(a, egui::Vec2::X, egui::pos2(3000.0, 920.0), -egui::Vec2::X);
         for p in [&pts, &long] {
             let worst = p
                 .windows(2)
@@ -4306,35 +4404,28 @@ mod tests {
         }
     }
 
-    /// A stub to nothing on the page leaves by the side facing out of its
-    /// frame. flip: `stub_side` always answering the right → fails at "out the top".
+    /// A stub to nothing on the page leaves by the edge facing out of its
+    /// frame, decided in world space so the same at every zoom. flip:
+    /// `stub_edge` always answering the right → fails at "out the top".
     #[test]
     fn a_stub_leaves_out_of_its_frame() {
-        let frame = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 800.0));
-        let layer =
-            |x: f32, y: f32| egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(60.0, 20.0));
-        let top = layer(200.0, 30.0);
+        let frame = Some(quad_centre(world_box(0.0, 0.0, 400.0, 800.0)));
+        let layer = |x, y| world_box(x - 30.0, y - 10.0, 60.0, 20.0);
+        assert_eq!(stub_edge(layer(200.0, 30.0), frame), Some(0), "out the top");
         assert_eq!(
-            stub_side(top, Some(frame)),
-            (top.center_top(), -egui::Vec2::Y),
-            "out the top"
-        );
-        let left = layer(40.0, 400.0);
-        assert_eq!(
-            stub_side(left, Some(frame)).1,
-            -egui::Vec2::X,
+            stub_edge(layer(40.0, 400.0), frame),
+            Some(3),
             "out the left"
         );
-        let low = layer(220.0, 780.0);
         assert_eq!(
-            stub_side(low, Some(frame)).1,
-            egui::Vec2::Y,
+            stub_edge(layer(220.0, 780.0), frame),
+            Some(2),
             "out the bottom"
         );
         assert_eq!(
-            stub_side(frame, None),
-            (frame.right_center(), egui::Vec2::X),
-            "a screen's right"
+            stub_edge(layer(200.0, 400.0), None),
+            Some(1),
+            "no frame: the right"
         );
     }
 
@@ -4351,17 +4442,18 @@ mod tests {
         let (edge, mid, _) = knob_dots(q)[0];
         assert!(edge_distance(q, edge, mid) < 0.01, "the dot is on its edge");
         assert!(edge_distance(q, edge, quad_box(q).center()) > 0.0);
-        let cart = quad_box(f.app.selection_quad(f.cart, rect, 1.0).expect("the cart"));
-        let from = quad_box(q);
-        let side = connector_ends(from, cart).2;
+        let cq = f.app.selection_quad(f.cart, rect, 1.0).expect("the cart");
+        let cart = quad_box(cq);
+        // From the right edge's dot, to the cart's left edge, which faces it.
+        let side = screen_edge(cq, 3);
         for p in [cart.center(), cart.right_center() - egui::vec2(4.0, 0.0)] {
-            let (b, out_b, ring) = f.app.pulled_end(f.add, p, rect, 1.0);
-            assert_eq!(b, side, "snapped to the screen's facing side");
+            let (b, out_b, ring) = f.app.pulled_end(f.add, 1, p, rect, 1.0);
+            assert_eq!((b, out_b), side, "snapped to the screen's facing side");
             assert_eq!(out_b, -egui::Vec2::X);
             assert!(ring.is_some(), "the screen is ringed");
         }
         let outside = cart.right_center() + egui::vec2(60.0, 0.0);
-        let (b, out_b, ring) = f.app.pulled_end(f.add, outside, rect, 1.0);
+        let (b, out_b, ring) = f.app.pulled_end(f.add, 1, outside, rect, 1.0);
         assert_eq!(
             (b, out_b, ring),
             (outside, egui::Vec2::ZERO, None),

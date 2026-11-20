@@ -116,17 +116,21 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
 
 - **Connectors** (`draw_prototype_links`), only while the Prototype tab is up and the chrome
   shows: from each layer's box to each navigate or overlay target's box on the same page
-  (`prototype::links_on`). A connector leaves by the side facing its target and enters the
-  opposite one (`connector_ends`: across when the boxes stand apart horizontally, else bottom to
-  top or top to bottom), a curve tangent to both sides, sampled in pieces no longer than
+  (`prototype::links_on`). A connector leaves by the middle of its layer's edge that faces the
+  target's centre and enters by the middle of the target's edge facing that start
+  (`connector_edges`), so a rotated layer's connector starts on its own edge, where its link dot
+  is. The edges are picked from the boxes in world space (`world_quad`), so zooming never moves
+  a connector to another side; the screen quad's edge of the same index is drawn
+  (`screen_edge`). It is a curve tangent to both edges, sampled in pieces no longer than
   `CURVE_STEP` on screen so it stays smooth zoomed in. It is `LINK_W` thick in `color::SELECT`
   for the selection's links and `color::SELECT_DIM` for the rest, with a filled `HEAD_LEN` ×
   2·`HEAD_HALF` arrowhead; the line stops at the head's base so its weight never shows past the
   tip. A link in a conditional or opening an overlay is dashed (6 on, 4 off). A target that is
   gone is a short red stub ending in the warning glyph; one on another page a short stub in the
-  connector's ink. A stub leaves by the side facing out of the frame its layer is in
-  (`stub_side`: the dominant axis of the layer's centre less the frame's; a screen of its own
-  leaves by its right), the glyph beyond its end the same way, so it points off the screen.
+  connector's ink. A stub leaves by the edge facing out of the frame its layer is in
+  (`stub_edge`, in world space: along the axis the layer's centre is further off the frame's, so
+  a layer near its frame's middle never flips side as the view zooms; a layer outside any frame,
+  or a screen of its own, leaves by its right), the glyph beyond its end the same way.
   Every connector and stub wears a dot where it leaves, a rest link dot's (`POINT`, 1.5 ring)
   ringed in its own ink, so each has a visible start. They are egui shapes over the rendered
   page, recomputed from the document, never in the scene.
@@ -142,8 +146,8 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   dot that answers a press is one drawn. Pulling a hovered layer's dot selects that layer first,
   so the *Interactions* card shows the link. The pulled link leaves its dot along the edge's
   outward direction. While the pointer is anywhere over a screen it would land on (`link_target`),
-  its end snaps to that screen's facing side as a connector's would enter it (`pulled_end`, by
-  `connector_ends`) and the screen is ringed; elsewhere it ends at the pointer. Released
+  its end snaps to the middle of that screen's edge facing the pulled dot (`pulled_end`, by
+  `facing_edge`) and the screen is ringed; elsewhere it ends at the pointer. Released
   over a top-level frame other than the layer's own, it commits one *Navigate to* with the page's
   default transition as *Add interaction*, joining the layer's first click
   (`prototype::with_link`). A click on a dot links nothing and says how to use it; a drop
