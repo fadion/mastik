@@ -101,6 +101,11 @@ permissive or permissively-electable:
   copyleft and no obligation beyond the disclaimer.
 - `tiny-skia` and `tiny-skia-path` (`BSD-3-Clause`) are Skia-derived and arrive
   through the CPU raster path.
+- `openh264` and `openh264-sys2` (`BSD-2-Clause`) build Cisco's OpenH264 encoder
+  from source, which is how a prototype's take becomes an MP4. The source licence
+  covers the code only: Cisco pays the H.264 patent royalties for its own prebuilt
+  binary, not for an encoder built from source, so patent cover for a
+  distributed build is the distributor's.
 
 No `GPL`, `AGPL`, `LGPL`, `CDDL`, `EPL` or `SSPL` terms apply to any part of a
 distributed Mastik build.

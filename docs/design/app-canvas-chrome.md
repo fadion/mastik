@@ -1486,7 +1486,10 @@ the first segment of a component's. It hides names, not content.
 ## Present mode (`present.rs`)
 
 The document's top-level frames shown one at a time, page by page, fitted to a fullscreen window,
-with nothing of the editor around them and nothing to edit with. `MastikApp::presenting` holds a
+with nothing of the editor around them and nothing to edit with. This is present mode for a
+document with no flow on any page; with one, `Action::Present` starts the prototype player
+fullscreen instead (`prototyping-player.md`), so present mode and *Play* stay one act under the
+`PLAY` glyph. `MastikApp::presenting` holds a
 `Presenting { frames, pages, entered_at, at, was_fullscreen, stepped_at, view, to_top }` while it
 runs (`pages` names each frame's page, index for index).
 

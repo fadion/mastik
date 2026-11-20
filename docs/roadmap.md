@@ -8,38 +8,20 @@ true.
 
 ## Now · Prototyping
 
-A release of its own. The saved model, the play engine, authoring and the HTML file are built;
-what remains is the player shell in the app (over the canvas, detached, fullscreen as present
-mode, the player bar and state card, its keys, private mode, live update from the editor), the
-engine running in the exported page with the export dialog, video from takes, and the flow map
-PDF. The design of each and the open questions are in `prototyping.md`.
+A release of its own. The prototype is built (`prototyping.md` points to each part); what
+remains is *Run script* in the exported page, lists from data, device and phone mirroring, and
+an annotation in the exported page's inspect mode.
 
-- **Release CI ships the browser player.** The release build runs `crates/mastik-web/build.sh`
-  and puts `player/` beside the executable, where `mastik export --prototype` looks; today only
-  a local build (`target/player`) has it.
-- **Run script in the exported page** (`prototyping.md` §10, question 5).
-- **Kit scripts and variables in reactions.** Vendoring and updating a kit leaves a *Set
-  variable*'s variable and a *Run script*'s script naming the kit's ids, which dangle in the
-  consumer; they should re-map to the consumer's copies.
-- **MCP `get_tree` and `insert_subtree` carry reactions**, as `get_node` and `set` do.
-- **Authoring gaps**: drag-reorder of actions (today *Move up* / *Move down*), flow starting
-  values and an overlay's backdrop colour in the UI (today through the MCP), a flow chip on a
-  flow's start frame, and the expression field underlining the range `ExprError::at` names.
-- **A state that loops** (`prototyping.md` §6).
-- **The *Focus* interaction state** in play, with Tab moving between a prototype's inputs.
-
-- **Inspect mode in the exported player.** A switch in the HTML export's player that stops
-  interactions and lets the viewer pick layers: a layer's CSS as *Copy as CSS* writes it, distances
-  to its neighbours as the canvas's `Alt` measure quotes them (`measure.rs`), and its export
-  settings' files to download. It gives a developer a handoff with no server, from the file the
-  designer already sends.
+- **Run script in the exported page.** The page plays without scripts; the recommended route
+  is Luau's C++ built into the player's module with clang and a pinned wasi-sdk
+  (`prototyping.md`, *Still open*).
+- **Lists from data.** A repeated row filled from a data file, on the chart's data model; its
+  saved form is undecided (`prototyping.md`, *Still open*).
 - **Device and phone mirroring.** The app serves the prototype player to the local network and
   shows a QR code; a phone on the same network plays the page and follows edits. Not hosting: it
   ends with the app, needs no account and never leaves the network.
-- **Annotations.** Notes pinned to a layer that say what the drawing cannot ("this list scrolls",
-  "48 px touch target"), shown on the canvas, in inspect mode and atop the layer's code in code
-  export. They are specification, not conversation: no replies, no authors, no resolved state,
-  which keeps them apart from the comment tool `non-goals.md` declines.
+- **Annotations in inspect mode.** The exported player's inspect panel does not show a picked
+  layer's annotation (`Node::note`), which the packed document already carries.
 
 ## Later · Platform and dependencies
 

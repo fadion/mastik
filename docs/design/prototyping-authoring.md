@@ -20,7 +20,8 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   neighbours: *Add interaction*, *Change trigger*, *Add action*, *Change action*, *Set
   transition*, *Move action*, *Remove action*, *Duplicate interaction*, *Remove interaction*,
   *Scrolling*, *Overlay*, *Pin*, *Input*, *Add flow*, *Rename flow*, *Change flow*, *Remove
-  flow*, *Device*, *Scaling*, *New links*. A list the door refuses (`prototype::check`) is not
+  flow*, *Add starting value*, *Change starting value*, *Remove starting value*, *Device*,
+  *Scaling*, *New links*. A list the door refuses (`prototype::check`) is not
   written and the status line says why.
 - **Numbers are held, not previewed.** The model's operations draw nothing, so a scrubbed or typed
   number (a delay, a duration, a spring, a cubic's handles, an overlay's position or shade) shows
@@ -48,8 +49,10 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   A new action names the likeliest target (`prototype::new_action`): another screen than the
   layer's own, mains last; the layer's own instance and a variant other than its current one; the
   first variable or script. It opens its popover at once.
-- **An action is one row**: its glyph, its verb, its target in accent ink, its transition as a
-  chip (kind and duration, or *Spring*), and `×`. A target that is gone is drawn in the error
+- **An action is one row**: a grip, its glyph, its verb, its target in accent ink, its
+  transition as a chip (kind and duration, or *Spring*), and `×`. A row drags by its grip to
+  another place in its own list (a reaction's, or one branch's), one *Move action* step; the
+  grip is inert while the list holds one action. A target that is gone is drawn in the error
   colour behind the warning glyph (*Missing frame*, *Missing layer*, *Missing variable*, …), kept
   so it can be mended, and skipped while playing. A conditional's branches follow it as heads in
   mono accent (*if …*, *else if …*, *else*), each with its own `+`, their actions indented under
@@ -66,11 +69,15 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   (`Expr::with_names`) and stores its id (`Expr::from_names`), so a rename never breaks it. What
   does not read, names no variable, or (for *Set variable*'s value and a condition) comes to
   another kind than wanted (`Expr::kind`) is kept as typed, ringed, with the reason under the
-  field (`ui::field_refusal`), and nothing is written until it reads.
+  field (`ui::field_refusal`) and the range `ExprError::at` names underlined
+  (`ui::field_underline`), and nothing is written until it reads.
 - **Transitions** (`transition_fields`, also the page's *New links*): the kind; a direction
-  segment, live for *Move in*, *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`)
-  and dimmed otherwise, *Smart animate* included, since the engine enters no unpaired layer from a
-  side; *Curve* | *Spring*. A curve is an easing
+  segment of *None* and the four sides. The sides are live for *Move in*, *Move out*, *Push*
+  and *Slide* (`TransitionKind::is_directional`) and for *Smart animate*; *None* is live for
+  *Smart animate* alone, whose unpaired layers fade under it and slide in from a side otherwise
+  (`play.md`, *Motion*); every other kind dims the whole segment. Picking *Smart animate* sets
+  *None*; picking a move, push or slide while *None* is set sets the left side. Then *Curve* |
+  *Spring*. A curve is an easing
   from the CSS set or *Custom curve* with its four cubic-bezier numbers (both X within 0..1), and a
   duration; a spring is mass, stiffness and damping. *Instant* shows the kind alone.
 
@@ -78,8 +85,9 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
 
 - **A frame**: *Scrolling* (*None*, *Vertical*, *Horizontal*, *Both*), the children pinned in it
   listed under it (*Top bar · Fixed*); *As an overlay*: its position (the centre, the top and
-  bottom thirds' left, centre and right, or *Manual* with X and Y), *Close on a click outside*, *Darken behind it* and the shade's opacity. The shade
-  is black at the opacity set; another colour is written through the MCP.
+  bottom thirds' left, centre and right, or *Manual* with X and Y), *Close on a click outside*, *Darken behind it* (black at 40% when turned on), and
+  while it is on the shade's colour (`ui::colour_text_field`, its alpha kept) and *Shade*, its
+  opacity.
 - **A child of a frame**: *In a scrolling frame*, *Scrolls* / *Fixed* / *Sticky*, dimmed with
   *The frame does not scroll* while its parent does not. The pin is set here, on the child's own
   card, rather than in the layers panel's menu.
@@ -89,7 +97,11 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *Scaling* (*Fit*, *Actual size*, *Fill width*) and *New links*, the transition a new link takes.
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its
   start among the page's frames, `×` to remove; `+` adds *Flow N* starting at the page's first
-  frame, dimmed with no frame. A flow's starting values are written through the MCP.
+  frame, dimmed with no frame. Under each flow, its starting values: a row per value, the
+  variable (a variable dropdown; a new pick starts at its first mode's value), the value typed as
+  the variable's kind reads it (a number, text, `true` / `false`, a colour, or `{name}` for
+  another variable of that kind; refused and ringed when it does not read) and `×`; *Add a
+  starting value* adds the first variable not yet named, dimmed when every one is.
 
 ## On the canvas
 
@@ -105,6 +117,10 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
   the layer's own, it commits one *Navigate to* with the page's default transition as *Add
   interaction*, joining the layer's first click (`prototype::with_link`). A click on it links
   nothing and says how to use it; a drop elsewhere says where to drop.
+- **Flow chips** (`flow_chips`), while the Prototype tab is up: each flow's name behind the
+  `PLAY` glyph on an accent pill over its start frame's top-right corner, several on one frame
+  stacked leftward. A click plays that flow over the canvas (`prototyping-player.md`). Private
+  mode masks the names.
 
 ## Components
 
@@ -122,7 +138,8 @@ it edits is `prototyping-model.md`; the player is `play.md`. Code:
 ## Agents
 
 `set` writes a layer's `reactions` and `play` and a page's `flows` and `play`; `get_node` and the
-JSON snapshot read them (`mcp.md`, `export.md`). There is no play tool.
+JSON snapshot read them, and `get_tree` and `insert_subtree` carry a layer's, a target inside
+the tree remapped to the layer the tree makes (`mcp.md`, `export.md`). There is no play tool.
 
 ## Traps
 

@@ -95,6 +95,7 @@ Fields in that form, and the particular rule each adds:
 | `NodeKind::Path::mirror` | Skipped when no rule, and each of `vertical`/`horizontal`/`reflect` skipped when false and `copies` when 0, so an old file loads as plain paths and a mirrored one saves as it did. Checked on load (`normalize_kind`): a rule the points do not bear out is dropped, as a write drops it (§5.3). Part of v14; `copies` and `reflect` part of v18. |
 | `NodeDto::credit` | Skipped when none, and each address and `required`/`inserted` skipped when empty or false. An address not in `web_link`'s form is emptied on load (`Credit::normalized`), never refused, so a hand-edited credit cannot cost the document. Part of v14. |
 | `NodeDto::element`, `NodeDto::href` | The tag (`"nav"`, `"a"`), skipped on Automatic; the address, skipped when empty. A tag this build does not know, or one the layer's kind is not offered, is dropped on load, and an address not in `element::is_href`'s form emptied, never refused. Part of v15. |
+| `NodeDto::note` | A layer's annotation (§5.3), skipped when empty. |
 
 A bump **is** required when a field's meaning changes or its default would silently alter old documents. A bump is also taken for an *older build's* sake: a reader that does not know a version refuses it, where an older one would silently drop the new fields (v5 to v9 below). Fields added while a version was unreleased joined it without a new bump; a released version takes no new key, however additive.
 

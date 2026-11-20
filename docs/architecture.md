@@ -44,7 +44,7 @@ Read the file for the exact wording before relying on one.
 | **Render, export, MCP** | | |
 | `render.md` | 6.1–6.3 | The render boundary, `RenderOverrides`, backends |
 | `export.md` | 7 | SVG, PDF, PNG, ICO and ICNS, code export (HTML/CSS, React, Vue), the Penpot and Sketch files, JSON snapshot, the CLI, export doors |
-| `prototyping-export.md` | — | The prototype as one HTML file: the browser build (`mastik-web`, nightly, unwinding), the trim to the chosen flows, fonts, the packed file and its size estimate, where the CLI finds the player |
+| `prototyping-export.md` | — | The prototype as one HTML file: the browser build (`mastik-web`, nightly, unwinding), the trim to the chosen flows, fonts, the packed file and its size estimate, the page playing and its inspect mode, the flow map PDF, where the CLI finds the player and how the release ships it |
 | `mcp.md` | 8 | MCP topology, headless mode, concurrency, the tool list (a test parses §8.4), the assistant's tool and grants |
 | `assistant.md` | ai.md 1–7 | The assistant: agent harnesses (`mastik-ai`), sealing, access levels, proposals, the panel, attaching layers, the frame scope, its settings and the agent log |
 | `command-mode.md` | vm.md 1–12 | Command Mode: the Luau sandbox (`mastik-vm`), the bar's sugar, name resolution, collections and properties, one undo step per run, budgets, the log, where scripts live (library, document, kit), the disclosure, the header, the script editor and its language help, the command bar, its `/ai` requests and its Pick focus with leap labels |
@@ -64,14 +64,15 @@ Read the file for the exact wording before relying on one.
 | `app-compare.md` | 9.4 | Compare with a version: the read-only mode, its marks, bar, Then/Swipe and changes card |
 | `app-image-editing.md` | 9.4 | Image fills and image editing |
 | `charts.md` | — | Charts: a frame carrying a chart description, its generated parts, the Chart card, the data window, import and the linked data file, flatten, and binding its colours to variables |
-| `inspector.md` | 9.4 | The inspector cards |
-| `prototyping-authoring.md` | — | The inspector's Prototype tab, the interactions and Prototype cards, connectors and the link knob, instances' interactions, kit publishing, agents |
+| `inspector.md` | 9.4 | The inspector cards, an annotation's card and its mark on the canvas |
+| `prototyping-authoring.md` | — | The inspector's Prototype tab, the interactions and Prototype cards, connectors, the link knob and flow chips, instances' interactions, kit publishing, agents |
+| `prototyping-player.md` | — | The player in the app: starting and stopping, present mode as the player, following the editor's commits, over the canvas, detached and fullscreen, its keys, bar and state card, the export card, video from a take and the flow map |
 | `type-panel.md` | 9.4 | The Type panel and typography popup |
 | `font-picker.md` | 9.4 | The font picker |
 | `library.md` | 9.5 | The library: dashboard, projects, search and its content index, versions, trash, *Import files*; document tabs (open, park, close, next launch) |
 
 Also in `docs/`: `shortcuts.md` (the keymap), `context-menus.md` (the menus), `prototyping.md`
-(the parts of prototyping decided and not yet built).
+(prototyping's aims, where each built part is described, and what is still open).
 
 ## Keeping this true
 

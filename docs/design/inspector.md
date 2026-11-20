@@ -194,6 +194,11 @@ comes from the committed document.
 
 - On a single layer carrying a credit (`panels/credit.rs`, `inspector_credit`), read-only: the sentence, the author's and provider's names in it as links where they have an address (hover names the host; a click goes through `open_doc_link`), then a caption, the licence and *inserted 8 Nov 2026*. The head's `⋯` opens *Copy credit* (`Credit::plain`) and *Open photo page*, *Open the set's page* for an icon, disabled without an address.
 
+### Annotation (§5.3)
+
+- On every single layer, after Credit and before Export (`panels/annotation.rs`, `inspector_annotation`): the layer's note (`Node::note`) in a `ui::text_area` that grows with its lines, a `ui::Draft` committed trimmed on leaving the field as one *Annotation* step (`icon::NOTE`). Private mode empties and disables it, as it hides a description.
+- **On the canvas**, while the chrome shows, an annotated visible layer wears a 16-point accent mark with `icon::NOTE` just outside its box's top-right corner (`annotation_marks`); hovering the mark shows the note.
+
 ### Export (§7)
 
 - **Rows.** One per `ExportSpec` on a `74px 1fr 28px 28px` grid: scale dropdown, format dropdown, settings button, ✕. An icon row's first cell is 88 (`ICON_SET_W`), the widest set name's (*Windows*), so it never widens with its value; only icon rows take it, since at 88 the format cell has too little left for *WebP*, while ICO and ICNS are short. `every_export_row_keeps_the_inspector_its_width` lays every format out and holds the column to its width. Scale is dimmed, not hidden, for SVG and PDF; the dimmed combo has an id of its own, since its one-line popup would leave the live list short. The format dropdown lists ICO and ICNS under a rule after PDF (§7, *Icon files*); on their rows the scale cell is the size-set cell (`icon_set_cell`, its id per format): the format's `IconSet`s by name, the size line listing their sizes, then *Custom*. *Custom* is lit when the ticks match no set or when picked; picking it changes no sizes (`export_custom_sizes`, view state keyed on the selection and the row) and the size line reads *Pick your own sizes in settings* behind the settings glyph until a size is ticked. Switching between ICO and ICNS clears the ticks, so each starts on its own set; switching to any other format keeps them, inert.

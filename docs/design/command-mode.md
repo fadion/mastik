@@ -389,7 +389,10 @@ document records what its run committed and never needs it.
   document* copy, and a script of the same name in both is listed twice. **A kit's scripts are the
   one link**: they follow the kit's publishes as its components do, the disclosure covering each
   changed text. A change to them is worth a publish (`kit::Changes::scripts`), and the publish
-  popover says so.
+  popover says so. The exception is a kit script a vendored main's *Run script* names: play runs
+  document scripts only, so vendoring and each update copy it in as a document script
+  (`kit::carry_scripts`, `kits.md`). A library script is never copied in on its own; *Copy into
+  this document* is how a reaction comes to name one.
 
 **The first-run disclosure.** Before a document's or a kit's script first runs on this machine, a
 box says who wrote it and what a script can and cannot do, and shows its source laid out as Luau

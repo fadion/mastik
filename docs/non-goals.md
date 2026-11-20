@@ -126,7 +126,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 
 ## Prototyping
 
-- **A keyframe timeline** — transitions, smart animate, springs and looping states cover an app's motion; a timeline is a motion tool (`prototyping.md`).
+- **A keyframe timeline** — transitions, smart animate, springs and looping states cover an app's motion; a timeline is a motion tool (`design/play.md`, *Motion*).
 - **A node graph of patches** — triggers, actions, conditions and Luau scripts carry the logic without a second language.
 - **Several devices and sensors talking to each other** — one player, one screen.
 - **Gamepad triggers** — neither winit nor egui delivers gamepad input, and a prototype of an app is driven by pointer and keys.

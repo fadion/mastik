@@ -4,7 +4,8 @@ The engine that plays a prototype: a copy of the document, the state that exists
 plays, the triggers and actions, motion, live update and takes. It is one crate, `mastik-play`,
 headless, which both shells drive — the in-app player and the exported page — so the two behave
 the same. The saved model it plays is `prototyping-model.md`; the HTML export is
-`prototyping-export.md`; the shells and where the player shows are `prototyping.md`. Code: `crates/mastik-play`, the play values in
+`prototyping-export.md`; the in-app shell and where the player shows are
+`prototyping-player.md`. Code: `crates/mastik-play`, the play values in
 `mastik-core/src/variable.rs`, expressions in `mastik-core/src/prototype/expr.rs`.
 
 ## The copy and its door
@@ -80,8 +81,9 @@ closing overlay adds one.
 
 **A `Patch`** replaces, for this frame only, one node's local transform, box size, own opacity,
 visibility or paint (with literal brushes) — the granularity of the renderer's per-node
-override, so an adapter turns each into one `NodeOverride` (a transform, a kind with its box size
-set, a paint, an opacity, a visibility) without `mastik-play` depending on the renderer. A
+override, so `RenderOverrides::from_play` turns each into one `NodeOverride` (a transform, a
+kind with its box size set, a paint, an opacity, a visibility) without `mastik-play` depending
+on the renderer; `mastik_render::play` draws the scene on either backend (`render.md`, *Play*). A
 transform patch moves a node but layout is not run on the patch: smart animate has already laid
 out both ends.
 
@@ -198,9 +200,11 @@ whatever else patched it.
   its siblings with that key it is — so a pair's parents are paired too. Both ends are laid out
   when it starts and never again. A paired layer's transform (moved, turned the short way, scaled
   and sheared, each interpolated), box size, opacity and solid fills interpolate; the frame's own
-  paint does too. The unpaired layers move by the transition's direction, a screen's width or
-  height: the end's slide in from the far side to their places, the outgoing frame's slide out
-  toward the side, as *push* moves frames, none of them fading. The outgoing frame is drawn over
+  paint does too. With no side (`Direction::None`) the unpaired layers fade: the end's in, the
+  outgoing frame's out. Under a named side they move by it, a screen's width or height: the
+  end's slide in from the far side to their places, the outgoing frame's slide out toward the
+  side, as *push* moves frames, none of them fading. A move, push or slide has no *None* and
+  reads one as the left side. The outgoing frame is drawn over
   the end with its background blank: its paired layers hidden, its unpaired ones leaving, and a
   paired layer that holds a leaving one moving with its pair, its own paint blank. The shift is
   measured in each layer's parent as it stands at its end.

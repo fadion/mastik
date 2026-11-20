@@ -3,8 +3,8 @@
 What a prototype is made of in the document: a layer's reactions and play settings, a page's
 flows and play settings, and the document's HTML-export settings. Everything here is authored,
 goes through the commit door, is undoable, saved and copied with its layers. The engine that
-plays it and holds play state is `play.md`, the export `prototyping-export.md`; the player's
-shells are designed in `prototyping.md`. Code: `mastik-core/src/prototype.rs` and `prototype/expr.rs`.
+plays it and holds play state is `play.md`, the export `prototyping-export.md`; the in-app
+player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `prototype/expr.rs`.
 
 ## Where it lives
 
@@ -25,8 +25,10 @@ shells are designed in `prototyping.md`. Code: `mastik-core/src/prototype.rs` an
 - **Actions**: `Navigate`, `Back`, `OpenOverlay`, `CloseOverlay`, `SwapOverlay`, `ScrollTo`,
   `ChangeState` (an instance and the variant main it switches to), `SetVariable` (`Set`,
   `Increment`, `Toggle`), `Conditional` (branches, then `otherwise`), `OpenUrl`, `RunScript`. Every
-  action that moves the screen carries a `Transition`: a kind, a direction read only by the
-  directional kinds, and a `Timing` (an easing curve over a duration, or a spring).
+  action that moves the screen carries a `Transition`: a kind, a direction read by the
+  directional kinds and smart animate (a side, or `None`, which is smart animate's alone and
+  which the others read as left; the default is `None`, and a smart animate written without a
+  direction through the MCP takes `None` too), and a `Timing` (an easing curve over a duration, or a spring).
 - **`LayerPlay`'s frame fields are inert on any other kind**, and its pin is read only inside a
   scrolling frame. An `Input` binds a variable; on an instance it names the boolean variant
   property that shows it, on a text layer none (it binds a string).

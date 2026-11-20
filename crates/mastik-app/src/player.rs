@@ -1,5 +1,5 @@
-//! The prototype player in the app: the play engine's shell (`docs/prototyping.md`
-//! §3–4). A [`Playing`] holds a `mastik_play::Player` over a copy of the document
+//! The prototype player in the app: the play engine's shell
+//! (`docs/design/prototyping-player.md`). A [`Playing`] holds a `mastik_play::Player` over a copy of the document
 //! it was started from, follows that document's commits, and shows in one of
 //! three places: a card floating over the canvas, a window of its own, or the
 //! main window filled (present mode). Every place draws the same body: the

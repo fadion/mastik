@@ -1,8 +1,8 @@
 # Prototyping: the HTML export
 
 How a prototype becomes one HTML file a client opens with a double-click: the browser build of
-the player, the trim to the chosen flows, the fonts, the packing, and the page playing. What is
-not built yet (the export dialog, *Run script* in the page) is in `prototyping.md` §8 and §10.
+the player, the trim to the chosen flows, the fonts, the packing, and the page playing. The app's export
+card is `prototyping-player.md`; *Run script* in the page is open (`prototyping.md`).
 Code: `crates/mastik-web` (the page's player), `mastik-export/src/prototype.rs` (the packer and
 the page's script), `mastik export --prototype` (the CLI).
 
@@ -37,7 +37,7 @@ renderer, so the page draws what the editor draws.
   supports, is closed: `wasm-bindgen` and wgpu's WebGPU backend need `wasm32-unknown-unknown`.
   What remains is Luau's C++ compiled by clang against wasi-sdk's sysroot (libc, libc++) into
   the same module, or a second module beside the player that runs a script on a copy and hands
-  back its operations; `prototyping.md` §10 holds the question. Until then the page plays
+  back its operations; `prototyping.md` holds the question. Until then the page plays
   without `scripts` and *Run script* is skipped with a notice.
 - **What the player's code may not use**, because the page has none of it: threads
   (`std::thread::spawn` fails; `available_parallelism` errs, which the CPU effects' banding
@@ -172,6 +172,14 @@ canvas, the drawing and the page around them.
 - The page's arithmetic (`shell.rs`: placing, the pointer's and wheel's mapping, key names)
   builds on the desktop too, and `mastik-export`'s `tests/web_shell.rs` includes and tests it;
   `tests/prototype.rs` checks the page's script calls only what the player exports.
+
+## The flow map
+
+The prototype's other file is the flow map (`mastik_export::flow_map`; the player's *Export flow
+map…*, `mastik export --flow-map`): a PDF giving each flow a page of its frames as they sit on
+the canvas, drawn by the PDF export's path, with an arrow from each layer that moves the screen
+and a numbered badge on each layer with a reaction, then pages writing those reactions out in
+words, for review and sign-off.
 
 ## Where the CLI finds the player
 

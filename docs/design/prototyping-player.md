@@ -1,0 +1,75 @@
+# Prototyping: the player in the app
+
+The play engine's shell inside the editor (`crates/mastik-app/src/player.rs`). The engine and
+its contract are `play.md`; the exported page's shell is `prototyping-export.md`. Every place
+the player shows draws the same body: the screen, the hotspot hints and the notices, over a bar
+of its commands.
+
+## Starting and stopping
+
+- **Play** is the top bar's play button (lit while a prototype plays; a click on it stops), the
+  palette's *Play prototype*, and a flow's chip on the canvas. It starts on the current page's
+  first flow, else the first flow on any page, else the selected top-level frame, else the
+  page's first frame in reading order (`player::start_for`).
+- **Present mode is the player filling the window** when the document has a flow anywhere
+  (`Ctrl+Alt+Enter`); with none, present mode steps through frames (`app-canvas-chrome.md`, *Present mode*). Present mode and
+  *Play* are one act, so the `PLAY` glyph keeps one meaning.
+- **Scripts first.** When any *Run script* names a document script this machine has not shown
+  for its current source, a card lists each script's source before play starts, with *Play* and
+  *Cancel*; *Play* marks them seen, as Command Mode's first-run disclosure does.
+- A player's copy is the document it was started from. It stops when that document's tab
+  closes.
+
+## Following the editor
+
+The session's `History` keeps a journal of every transaction it applies — commits, undos,
+redos, reverts — while a player plays (`History::keep_journal`). Each pass the player takes the
+journal and hands each transaction to `Player::apply_edit`, so only commits reach it, never a
+gesture's preview, and commits arriving faster than it draws land together. A parked tab's
+journal waits, and its player catches up when the tab is in front again. A document read in
+again starts play over from the same start.
+
+## Where it shows
+
+- **Over the canvas**: a card the size of the screen at the page's *Fit*, at most 70% of the
+  canvas, moved by its head. The pointer drives the prototype while over the screen; a press in
+  it gives the player the keyboard, a press on the canvas gives it back.
+- **Detached**: the same body in an immediate viewport wearing the app's title bar
+  (`chrome::Chrome::viewport`), where it last stood (`Prefs::player_window`). Its keys are its
+  own; its *Fullscreen* fills its own screen.
+- **Fullscreen**: present mode's branch of `MastikApp::frame_body`, the editor hidden.
+
+## Keys
+
+While the player holds the keyboard, plain and Shift-ed keys and typed text go to the prototype
+(`Input::Key` by egui's key name, the name a key trigger stores; `Input::Text`); chords with
+Ctrl or Alt go to the editor's keymap, so `Ctrl+S` and `Ctrl+Z` work mid-play. An Escape the
+prototype does not use gives the keyboard back; fullscreen, it leaves (present mode stops,
+otherwise the player returns over the canvas).
+
+## The body
+
+- **Scaling** by the page's *Fit*, *Fill width* or *Actual size*, never wider than the room.
+- **Hints**: each hotspot outlined in the accent while the bar's toggle is on, and flashing by
+  `Scene::hint_flash` after a click on nothing.
+- **Notices** in the screen's top-left corner, each once, for four seconds, in the app's words.
+- **The bar**: *Restart*, *Show hotspots*, *Variables* (the state card), *Record a take* /
+  *Stop recording*, *Export the take as a video* once a take exists, *Open in a window* / *Back
+  over the canvas*, *Fullscreen*, and, fullscreen, *Stop playing*. Its commands are buttons, not
+  chords: the editor has spent the chords they would want.
+- **The state card** lists the variables with their values; a number or text is typed, a
+  boolean switched, a colour shown. A value set there is an input like any other.
+- **Private mode** masks the flow's and page's names in the card's head and the window's title.
+- Its texture is the player's own `CanvasRenderer`, drawn whole through
+  `mastik_render::play` whenever the scene or the copy changed.
+
+## Exports from the player
+
+- **The export card** (*Export prototype…*): the flows in the file (every flow is the empty
+  list; the last one cannot be left out), the flow it opens on, the device frame, player bar and
+  hints, the scaling (*Page's own* by default), and the file's size measured on a worker before
+  anything is written (`Parts::estimate`). Changed settings are committed to the document when
+  the file is written, as one step.
+- **Video**: a recorded take is written as MP4 or GIF by the name given, at 30 frames a second
+  and two pixels a unit, through `mastik_export::video` on an export worker.
+- **The flow map** (*Export flow map…*): `mastik_export::flow_map`, a PDF.

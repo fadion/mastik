@@ -35,6 +35,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **D358** There is one unit, px. Density is the export scale.
 - **D868** Specified and used values are two numbers. Used boxes are derived in `Resolved` and never saved.
 - **An inserted icon or photo carries its credit on its layer** (`Node::credit`): written once by the insert, never edited or drawn, kept by every copy and by an ungroup, dropped when a photo's picture is replaced. Exports write it once per file (SVG metadata, a comment atop code export's page), not per element.
+- **An annotation is specification, not conversation**: one text per layer (`Node::note`), with no authors, replies or resolved state, which keeps it apart from the comment tool `non-goals.md` declines. It is the layer's own: copies keep it and a main's never reaches its instances.
 
 ## Operations and the commit
 
@@ -204,6 +205,15 @@ Decided non-goals are in `docs/non-goals.md`.
 - **A kit's scripts follow its publishes**, the one link among scripts (a document and the library exchange copies): a kit already links its content, and the disclosure covers each changed text.
 - **Scripts never reach outside the document; the shell owns files.** Work over many files, such as one design in many brand variations, is `mastik run` run once per variant with `--param` values and its own `-o`, pictures handed to a batch as base64 bytes. The sandbox stays whole, and a script that travels in a document cannot write anywhere, so nothing host-mediated (a script returning documents, an image folder picked for it) is built.
 
+## Prototyping
+
+- **A looping state is variants whose *After* changes their instance to the next variant**, with no loop setting saved: the engine restarts an instance's *After* on each change of state, so every instance and a kit publish keep the loop (`play.md`, *Triggers*).
+- **Smart animate slides its unpaired layers only under a named side**; with none (`Direction::None`, its default in the Prototype tab) they fade.
+- **Present mode is the player when the document has a flow** on any page, so present mode and *Play* are one act under the `PLAY` glyph; with none it steps through frames (`prototyping-player.md`).
+- **The exported page plays without scripts until the Luau route is settled**: a *Run script* there is skipped and the viewer told once (`prototyping.md`, *Still open*).
+- **The exported page's inspect data is made when the file is packed**: the page has no exporter, so each layer's CSS and its export settings' files go into the file (`prototype::inspect_css`, `inspect_files`).
+- **A video from a take encodes H.264 through OpenH264 built from source** (BSD-2-Clause), muxed by the `mp4` crate. Cisco's patent licence covers only its own binaries, so the patent cover is the distributor's. GIF needs no codec.
+
 ## Distribution
 
 - **D952** The window draws its own title bar on Windows and Linux and keeps the system's on macOS.
@@ -213,6 +223,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **D956/D976** A `v*` tag builds and publishes every platform. Build steps hold a read-only token; one `publish` job writes. Every action in a job that holds a write token or the package signing key (`release.yml`'s `publish`, `pages.yml`'s steps after the key import) is pinned by commit, since a tag can be moved.
 - **D957** Signed apt and dnf repositories are rebuilt on GitHub Pages. `install.sh` pins the key fingerprint.
 - **D969** The Windows data folder is `MastikData`, because `%LocalAppData%\Mastik` belongs to the installer.
+- **The release ships the exported prototype's player**, built once on the pinned nightly: `player/` beside the executable on Windows and in the Linux archive and AppImage, `Contents/Resources/player` in the macOS bundle, `/usr/share/mastik/player` in the .deb and .rpm, where `mastik export --prototype` looks.
 - **There is only ever one Mastik window per machine**: a later launch hands its file to the running window, which opens it in a tab and comes forward. Tabs are how one window holds several files; a second window defeats them, and two windows holding one file saved over each other. Command-line runs open no window and are not covered.
 
 ## Interface

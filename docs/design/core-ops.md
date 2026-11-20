@@ -77,6 +77,7 @@ pub enum Operation {
     SetDescription { of: Described::{Node, Style, Variable}, text },
                                                 // a main's, set's, style's or variable's text; old text inverse; no ink; dirties nothing
     SetDocLink { id, url },                     // a main's or set's link; BadDocLink unless in web_link's form; old url inverse; no ink; dirties nothing
+    SetNote { id, text },                       // a layer's annotation (§5.3); old text inverse; no ink; propagate skips it
     SetCredit { id, credit: Option<Box<Credit>> }, // an inserted asset's credit (§5.3); BadCredit for an address not in web_link's form; no ink
     SetElement { id, element: Option<HtmlElement> }, // the HTML element code export writes (§5.3); ElementForKind unless element::offered; no ink
     SetHref { id, href },                       // a link's address; BadHref unless in element::is_href's form; no ink
@@ -339,6 +340,7 @@ pub struct StepNote { label, glyph, origin: Origin /* User | Mcp { client, tool 
 - **`join_last(n)`** joins the top `n` steps into one that undoes them all, the latest first, keeping the oldest's note: for edits committed one by one, each reading the last, that the person asked for as one (a script run, `command-mode.md` §7). Each inverse was taken against the state after its own step, so the order is load-bearing (`joined_steps_undo_and_redo_as_one`).
 - `next_undo`/`next_redo` show the step about to run, and `Transaction::subjects` the nodes it is about (the layer moved, the page added; not every node it dirties), so the app can tell which page a step belongs to before running it (§9.4).
 - **A run ends on** a plain `commit`, `end_run()` (the caller's half), and **any undo or redo** (an undo that left the shape standing lets the next edit fold into the step before the undone one and discard its own inverse; a redo with nothing to redo still ends the run).
+- **The journal** (`keep_journal(true)`, `take_journal()`) records each transaction the history applies to the document — commits, undos, redos, reverts — oldest first, while it is kept, so a follower (the in-app player, `prototyping-player.md`) sees commits and never a gesture's preview. It is off by default and starts empty each time it is turned on.
 - History lives in core and is shared by app and MCP: one timeline. In the session its depth is unlimited; `DeleteNode` inverses hold full subtrees, so a size cap is a parked future knob.
 - **Kept between sessions** through `SavedHistory { undo: oldest first, redo: nearest first }` of `SavedStep { tx, note }`: `saved(keep)` takes at most `keep` steps, the most recent undo steps first, then the nearest redo steps with the room left; `restore` mints fresh serials (serials are not saved) and trusts the caller that the document stands where the history left it. `Operation` and `Transaction` derive serde for this; `InsertSubtree`'s nodes go through `io::schema`'s `NodeDto` and `AddImage`'s entry through `ImageDto`, so the saved form follows the model's types and only the build that wrote it reads it. Where it is kept is the library's (§9.5).
 

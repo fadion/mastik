@@ -98,6 +98,7 @@ The export crate: SVG, PDF, PNG, JPEG, WebP, ICO and ICNS, code export (HTML/CSS
 
   Every `.tsx` and `.vue` file imports `base.css` (and `tokens.css`), then `text-styles.css` when its tree wears a text style, before its component imports and its module CSS; CSS `url()`s are written `./assets/` or `../assets/` from the file, as a bundler resolves them.
 - **Credits** (§5.3) of the exported layers open the page's file as a comment, one `credit::credits_in` line each (the plain line, then ` — ` and the source address when there is one): `<!-- Credits … -->` under `index.html`'s doctype and at the top of `App.vue`, `/* Credits … */` at the top of `App.tsx` (`Target::write_credits`). A line is escaped for its comment (`--` and `*/` broken apart). Nothing when no layer carries one.
+- **A layer's annotation** (§5.3, `Node::note`) is a comment atop its element, one per line, in the syntax's own form: `<!-- … -->` in HTML and Vue, `{/* … */}` in JSX (`code::dom`), each line escaped for its comment as a credit's is.
 - **A layer's HTML element** (`Node::element`, `core-model.md`) is its tag (`Walk::element_of`, `Walk::write_element`); Automatic is the tier's own, below. Nothing is guessed from names. Each element takes what makes it draw as the `div` it replaces, ahead of the layer's own declarations so they win (`reset_first`):
 
   | Element | Written with |
