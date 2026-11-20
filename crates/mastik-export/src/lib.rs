@@ -50,6 +50,7 @@ pub mod pdf_in;
 pub mod penpot;
 pub mod plan;
 pub mod png;
+pub mod prototype;
 pub mod review;
 pub mod sketch;
 pub mod snapshot;
