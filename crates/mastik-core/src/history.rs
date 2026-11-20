@@ -156,6 +156,9 @@ pub struct History {
     /// The serial the next step takes; never reused, so a serial dropped with the
     /// redo stack cannot come back naming another step.
     next_serial: u64,
+    /// While kept ([`Self::keep_journal`]), every transaction this history applied
+    /// to the document, in order: what a prototype player follows the editor by.
+    journal: Option<Vec<Transaction>>,
 }
 
 impl History {
@@ -170,6 +173,32 @@ impl History {
         Self {
             next_serial: prev.next_serial,
             ..Self::default()
+        }
+    }
+
+    /// Start (`true`) or stop keeping the journal of applied transactions, which
+    /// starts empty either way.
+    pub fn keep_journal(&mut self, on: bool) {
+        self.journal = on.then(Vec::new);
+    }
+
+    /// Whether the journal is kept.
+    pub fn keeps_journal(&self) -> bool {
+        self.journal.is_some()
+    }
+
+    /// The transactions applied since the last take, oldest first; empty while
+    /// the journal is not kept.
+    pub fn take_journal(&mut self) -> Vec<Transaction> {
+        self.journal
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    fn note_applied(&mut self, tx: &Transaction) {
+        if let Some(j) = self.journal.as_mut() {
+            j.push(tx.clone());
         }
     }
 
@@ -193,6 +222,7 @@ impl History {
     ) -> Result<DirtySet, OpError> {
         let shape = shape(&tx);
         let outcome = doc.apply(&tx)?;
+        self.note_applied(&tx);
         self.next_serial += 1;
         self.undo.push(Step {
             tx: outcome.inverse,
@@ -235,6 +265,7 @@ impl History {
         // This edit's inverse is discarded: it would restore where the previous
         // edit left off, not where the run began.
         let outcome = doc.apply(&tx)?;
+        self.note_applied(&tx);
         self.redo.clear();
         Ok(outcome.dirty)
     }
@@ -264,6 +295,7 @@ impl History {
             return self.commit_noted(doc, tx, note);
         }
         let outcome = doc.apply(&tx)?;
+        self.note_applied(&tx);
         self.redo.clear();
         self.run = None;
         Ok(outcome.dirty)
@@ -343,6 +375,7 @@ impl History {
                 return Err(e);
             }
         };
+        self.note_applied(&step.tx);
         self.redo.push(Step {
             tx: outcome.inverse,
             ..step
@@ -368,6 +401,7 @@ impl History {
                 return Err(e);
             }
         };
+        self.note_applied(&step.tx);
         self.undo.push(Step {
             tx: outcome.inverse,
             ..step
@@ -417,6 +451,7 @@ impl History {
         let mut tx = step.clone();
         tx.0.extend(carried_pictures(&[&unwound, doc], &reverted));
         let outcome = doc.apply_restoring(&tx).map_err(RevertError::Op)?;
+        self.note_applied(&tx);
         note.reverts = Some(serial);
         self.next_serial += 1;
         self.undo.push(Step {
