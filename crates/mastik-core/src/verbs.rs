@@ -1431,7 +1431,7 @@ pub fn example(model: &str) -> Option<Value> {
             { "trigger": "HoverWhile", "actions": [{ "ChangeState": {
                 "instance": "7e5b:12", "to": "7e5b:31", "transition": "SmartAnimate" } }] },
             { "trigger": "Click", "actions": [{ "OpenOverlay": { "overlay": "7e5b:52",
-                "settings": { "position": "BottomCentre", "backdrop": "#00000066" } } }] },
+                "settings": { "position": "BottomCentre" } } }] },
         ]),
         "LayerPlay" => serde_json::json!({ "scroll": "Vertical" }),
         "[Flow]" => serde_json::json!([{ "name": "Checkout", "start": "7e5b:40" }]),
