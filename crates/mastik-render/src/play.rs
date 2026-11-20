@@ -1,4 +1,4 @@
-//! Drawing a prototype's play [`Scene`] through the one scene walk, so every shell
+//! Drawing a prototype's play [`mastik_play::Scene`] through the one scene walk, so every shell
 //! (the app's player, the exported page, a video from a take) draws a frame of
 //! play the same way.
 //!
