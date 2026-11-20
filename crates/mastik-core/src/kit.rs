@@ -303,6 +303,105 @@ pub fn carried_from_drafts(doc: &Document) -> Vec<NodeId> {
     draft_tops(doc, &tops)
 }
 
+/// A prototype action a publish leaves out of a kit main, since its target lies
+/// outside the main, in the kit's own document, where no consumer reaches it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LeftOut {
+    /// The main holding the layer.
+    pub main: NodeId,
+    /// The layer whose reaction runs the action.
+    pub layer: NodeId,
+    pub action: crate::prototype::Action,
+}
+
+/// The actions a publish of `doc` leaves out ([`kept_inside`]), what the
+/// publish message names.
+pub fn left_out(doc: &Document) -> Vec<LeftOut> {
+    published_tops(doc)
+        .into_iter()
+        .filter_map(|t| doc.capture_subtree(t))
+        .flat_map(|mut captured| kept_inside(doc, &mut captured))
+        .collect()
+}
+
+/// `captured`, a published top's subtree, with every action whose layer target
+/// lies outside it taken out of its reactions, nested ones included, and a
+/// reaction this leaves with no action dropped; answers what it took out. A
+/// change of state is judged by its instance alone: the variant it switches to
+/// is a main the kit carries. A target is read as its holder reads it
+/// ([`crate::prototype::resolve_target`]), so a nested instance's reaction that
+/// names its own layers is kept.
+fn kept_inside(doc: &Document, captured: &mut [Node]) -> Vec<LeftOut> {
+    use crate::item::Keyed;
+    use crate::prototype::{Action, Branch, Reaction};
+    fn kept(
+        list: &[Keyed<Action>],
+        reaches: &dyn Fn(NodeId) -> bool,
+        out: &mut Vec<Action>,
+    ) -> Vec<Keyed<Action>> {
+        let mut keep = Vec::new();
+        for k in list {
+            let targets = match &k.value {
+                Action::Conditional {
+                    branches,
+                    otherwise,
+                } => {
+                    keep.push(k.map(|_| {
+                        Action::Conditional {
+                            branches: branches
+                                .iter()
+                                .map(|b| Branch {
+                                    when: b.when.clone(),
+                                    actions: kept(&b.actions, reaches, out),
+                                })
+                                .collect(),
+                            otherwise: kept(otherwise, reaches, out),
+                        }
+                    }));
+                    continue;
+                }
+                Action::ChangeState { instance, .. } => vec![*instance],
+                other => other.layer_targets(),
+            };
+            match targets.into_iter().all(reaches) {
+                true => keep.push(k.clone()),
+                false => out.push(k.value.clone()),
+            }
+        }
+        keep
+    }
+    let inside: FxHashSet<NodeId> = captured.iter().map(|n| n.id).collect();
+    let mut out = Vec::new();
+    for n in captured.iter_mut().filter(|n| !n.reactions.is_empty()) {
+        let holder = n.id;
+        let reaches =
+            |t: NodeId| inside.contains(&crate::prototype::resolve_target(doc, holder, t));
+        let mut taken = Vec::new();
+        n.reactions = n
+            .reactions
+            .iter()
+            .filter_map(|r| {
+                let before = taken.len();
+                let actions = kept(&r.actions, &reaches, &mut taken);
+                let emptied = actions.is_empty() && taken.len() > before;
+                (!emptied).then(|| {
+                    r.map(|r| Reaction {
+                        trigger: r.trigger.clone(),
+                        actions,
+                    })
+                })
+            })
+            .collect();
+        let main = main_holding(doc, holder);
+        out.extend(taken.into_iter().map(|action| LeftOut {
+            main,
+            layer: holder,
+            action,
+        }));
+    }
+    out
+}
+
 /// The sets and mains on draft pages that `tops` reach — by a link, a swap or a
 /// bound property, transitively — and so are published with them: a draft keeps
 /// its own components out of a kit, never a piece the kit's components use.
@@ -386,7 +485,9 @@ fn top_of(doc: &Document, id: NodeId) -> Option<NodeId> {
 /// document's one page; every main of `doc`'s own vault one of them reaches —
 /// through a link, a swap, or a nested instance of a nested instance — is
 /// copied whole under the frozen vault with its origin, so a consumer vendors a
-/// transitive main from the kit it came from rather than from this one.
+/// transitive main from the kit it came from rather than from this one. A
+/// published main keeps only the prototype actions whose targets lie inside it
+/// ([`kept_inside`]).
 pub fn freeze(doc: &Document) -> Option<Published> {
     let tops = published_tops(doc);
     if tops.is_empty() {
@@ -410,6 +511,7 @@ pub fn freeze(doc: &Document) -> Option<Published> {
         // where a cell edit counted as a change ([`Changes::tokens`]) with no
         // component changed.
         top_visibility_frozen(doc, &mut captured);
+        kept_inside(doc, &mut captured);
         nodes.extend(captured.into_iter().map(|n| (n.id, n)));
     }
 
@@ -976,6 +1078,15 @@ pub fn vendor(
                     }
                 }
             }
+            // A target may dangle, so one with nowhere to land is kept as it is.
+            if !n.reactions.is_empty() {
+                n.reactions = crate::prototype::map_layers(&n.reactions, &mut |t| match inside
+                    .contains(&t)
+                {
+                    true => t,
+                    false => into_vault(t).unwrap_or(t),
+                });
+            }
         }
     }
     let shown = resolve(main)?;
@@ -1522,6 +1633,7 @@ fn update_in_order(
         published: published0,
         at: 0,
         later: Vec::new(),
+        later_reactions: Vec::new(),
         dropped: Vec::new(),
         // A held top is left as it is: a layer the kit moved out of it into a
         // synced top is copied there fresh, not taken from it.
@@ -1803,6 +1915,20 @@ fn update_in_order(
             changed.push(t);
         }
     }
+    for (d, x, at) in std::mem::take(&mut b.later_reactions) {
+        let (kit, version, published) = kits[at];
+        (b.kit, b.version, b.published, b.at) = (kit, version, published, at);
+        let n = published.document().get(x).ok_or(KitError::Incomplete(x))?;
+        let reactions = crate::prototype::map_layers(&n.reactions, &mut |t| b.here(t).unwrap_or(t));
+        let from = b.ops.len();
+        b.push(Operation::SetReactions { id: d, reactions })?;
+        if b.ops.len() > from
+            && let Some(t) = top_of(&b.scratch, d)
+            && !changed.contains(&t)
+        {
+            changed.push(t);
+        }
+    }
     // What each changed top reaches of another, read off the synced scratch.
     let mut needs: Vec<(NodeId, NodeId)> = Vec::new();
     for &t in &changed {
@@ -2054,6 +2180,11 @@ struct Builder<'a> {
     /// The ops between apply unchecked, so nothing sees the gap; the commit's
     /// checks see the end.
     later: Vec<(NodeId, NodeId, usize)>,
+    /// A node whose reactions name a published layer the scratch did not hold
+    /// yet when it was synced, as `later` keeps one: pointed again once every
+    /// sync is done, a target with still no copy kept as it is, since targets
+    /// may dangle.
+    later_reactions: Vec<(NodeId, NodeId, usize)>,
     /// A child a sync found its published parent no longer holding, though the
     /// publish still has it elsewhere, and the parent it was dropped from: deleted
     /// once the kit's tops are synced unless another sync moved it away (§15
@@ -2318,6 +2449,18 @@ impl Builder<'_> {
         let mut want = pn.clone();
         want.id = d;
         self.tokens.apply(&mut want);
+        // Reactions name the kit's layers: each pointed at the scratch's copy,
+        // and one whose copy a later sync makes pointed again once all are done.
+        let mut owed = false;
+        want.reactions = crate::prototype::map_layers(&pn.reactions, &mut |t| {
+            self.here(t).unwrap_or_else(|| {
+                owed |= src.get(t).is_some();
+                t
+            })
+        });
+        if owed {
+            self.later_reactions.push((d, x, self.at));
+        }
         // 🚨 **Only the fields this kind carries** (§15 D1024): `state_ops`
         // writes every field, and `changes_nothing` never calls paint on a kind
         // that takes none a no-op, so a group's `SetFills` would be applied,

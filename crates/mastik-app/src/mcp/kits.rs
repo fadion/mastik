@@ -41,6 +41,45 @@ pub(super) fn by(client: &str) -> String {
     }
 }
 
+/// Each prototype action a publish leaves out of the kit's mains, named by its
+/// main and the action: *Card's Navigate to Checkout*.
+pub(crate) fn left_out_named(doc: &Document, left: &[mastik_core::kit::LeftOut]) -> Vec<String> {
+    use mastik_core::prototype::Action;
+    let name = |id: NodeId| match crate::private::layer(doc, id) {
+        n if n.is_empty() => "a missing layer".to_owned(),
+        n => n.into_owned(),
+    };
+    left.iter()
+        .map(|l| {
+            let action = match &l.action {
+                Action::Navigate { to, .. } => format!("Navigate to {}", name(*to)),
+                Action::OpenOverlay { overlay, .. } => format!("Open overlay {}", name(*overlay)),
+                Action::SwapOverlay { overlay, .. } => format!("Swap overlay {}", name(*overlay)),
+                Action::ScrollTo { layer, .. } => format!("Scroll to {}", name(*layer)),
+                Action::ChangeState { instance, .. } => {
+                    format!("Change state of {}", name(*instance))
+                }
+                // Only an action naming a layer is left out.
+                _ => "action".to_owned(),
+            };
+            format!("{}'s {action}", name(l.main))
+        })
+        .collect()
+}
+
+/// The publish line's tail for the actions [`left_out_named`] names: empty when
+/// none, since a kit's main carries only what happens inside it.
+pub(crate) fn left_out_said(named: &[String]) -> String {
+    match named {
+        [] => String::new(),
+        [one] => format!(" · left out {one}, whose target is outside the component"),
+        many => format!(
+            " · left out {}, whose targets are outside their components",
+            many.join(", ")
+        ),
+    }
+}
+
 /// Answer a Phase 4 tool that needs no current document.
 pub(super) fn without_document(docs: &mut impl Documents, call: &Call) -> Result<Value, String> {
     match call.tool.as_str() {
@@ -571,17 +610,20 @@ fn mark(docs: &mut impl Documents, path: &Path, call: &Call) -> Result<Answer, S
                 .get("note")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
+            let left = left_out_named(&s.doc, &mastik_core::kit::left_out(&s.doc));
             let done = crate::kits::publish::publish_in(s, note)
                 .ok_or(crate::kits::publish::NOTHING_TO_PUBLISH)?;
-            (
-                crate::kits::publish::published_said(
-                    &name,
-                    done.version,
-                    Some(&changes),
-                    &done.carried,
-                ),
-                json!({ "version": done.version }),
-            )
+            let mut answer = json!({ "version": done.version });
+            if !left.is_empty() {
+                answer["left_out"] = json!(left);
+            }
+            let said = crate::kits::publish::published_said(
+                &name,
+                done.version,
+                Some(&changes),
+                &done.carried,
+            );
+            (format!("{said}{}", left_out_said(&left)), answer)
         }
     };
     // The window keeps the change for the person's next save; `serve` drops its

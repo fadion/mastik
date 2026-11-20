@@ -2981,3 +2981,111 @@ fn a_layer_moved_out_of_a_held_main_stays_in_it() {
         "Card has one of its own"
     );
 }
+
+/// A publish leaves out of a main the prototype actions whose targets lie
+/// outside it and names each, dropping a reaction left with none; a change of
+/// state inside it is kept, and a consumer's vendored copy, inserted and then
+/// updated, names its own layers.
+///
+/// flip: `freeze` without `kept_inside` → fails at "a reaction left with
+/// nothing is dropped"; `vendor` without its reaction pointing → fails at "the
+/// vault's Icon";
+/// `Builder::sync` without its reaction pointing → fails at "after the update".
+/// Every target here has its copy when Card is synced, so the deferred pass
+/// (`later_reactions`) is not reached.
+#[test]
+fn a_publish_leaves_out_actions_whose_targets_are_outside_the_main() {
+    use mastik_core::Keyed;
+    use mastik_core::prototype::{Action, Reaction, Transition, Trigger};
+    let mut k = kit();
+    let mut lids = IdSource::new(0xAD);
+    let checkout = lids.mint();
+    let root = k.doc.first_page();
+    let card_icon = k.doc.get(k.card).unwrap().children()[0];
+    let navigate = Action::Navigate {
+        to: checkout,
+        transition: Transition::default(),
+    };
+    let change = Action::ChangeState {
+        instance: card_icon,
+        to: k.icon,
+        transition: Transition::default(),
+    };
+    let mut on = |trigger: Trigger, actions: Vec<Action>| {
+        Keyed::new(
+            lids.mint_item(),
+            Reaction {
+                trigger,
+                actions: actions
+                    .into_iter()
+                    .map(|a| Keyed::new(lids.mint_item(), a))
+                    .collect(),
+            },
+        )
+    };
+    let reactions = vec![
+        on(Trigger::Click, vec![navigate.clone(), change.clone()]),
+        on(Trigger::HoverEnter, vec![navigate.clone()]),
+    ];
+    k.doc
+        .apply(&Transaction(vec![
+            create(checkout, root, 3, frame(300.0, 600.0), "Checkout"),
+            Operation::SetReactions {
+                id: k.card,
+                reactions: reactions.clone(),
+            },
+        ]))
+        .unwrap();
+    let left = kit::left_out(&k.doc);
+    assert_eq!(left.len(), 2, "each navigate is named: {left:?}");
+    assert!(
+        left.iter()
+            .all(|l| l.main == k.card && l.layer == k.card && l.action == navigate)
+    );
+    assert_eq!(kit::publish(&mut k.doc, None, 1), Some(5));
+    let frozen = published(&k).document().get(k.card).unwrap().reactions();
+    assert_eq!(frozen.len(), 1, "a reaction left with nothing is dropped");
+    let kept: Vec<&Action> = frozen[0].actions.iter().map(|a| &a.value).collect();
+    assert_eq!(kept, [&change], "left out of the frozen Card");
+    assert_eq!(
+        k.doc.get(k.card).unwrap().reactions(),
+        &reactions[..],
+        "the kit's own main keeps them"
+    );
+
+    let (mut d, mut ids) = consumer();
+    let page = d.first_page();
+    let (tx, placed) = kit::insert(&d, &mut ids, L_ID, 5, published(&k), k.card, page).unwrap();
+    d.apply(&tx).unwrap();
+    let card = d.get(placed).unwrap().link().unwrap();
+    let ours = |d: &Document| {
+        let icon = d.get(card).unwrap().children()[0];
+        let main = d.get(icon).unwrap().link().unwrap();
+        (icon, main)
+    };
+    let changed_in = |d: &Document| match d.get(card).unwrap().reactions()[0].actions[0].value {
+        Action::ChangeState { instance, to, .. } => (instance, to),
+        ref other => panic!("not a change of state: {other:?}"),
+    };
+    assert_eq!(changed_in(&d), ours(&d), "the vault's Icon and Card's copy");
+
+    let url = Action::OpenUrl {
+        url: "https://example.com".into(),
+    };
+    let mut more = reactions[0].clone();
+    more.value
+        .actions
+        .push(Keyed::new(lids.mint_item(), url.clone()));
+    k.doc
+        .apply(&Transaction(vec![Operation::SetReactions {
+            id: k.card,
+            reactions: vec![more],
+        }]))
+        .unwrap();
+    assert_eq!(kit::publish(&mut k.doc, None, 2), Some(6));
+    accept(&mut d, &mut ids, &k);
+    let actions = &d.get(card).unwrap().reactions()[0].actions;
+    assert_eq!(actions.len(), 2, "the change of state and the address");
+    assert_eq!(actions[1].value, url);
+    assert_eq!(changed_in(&d), ours(&d), "after the update");
+}
