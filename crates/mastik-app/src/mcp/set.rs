@@ -32,6 +32,7 @@ const SET_PROPS: &[(&str, &str, bool, &str)] = &[
     ("grids", "set_layout_grids", true, "grids"),
     ("element", "set_element", false, "element"),
     ("link", "set_link", false, "href"),
+    ("note", "set_note", false, "text"),
     ("transform", "set_transform", false, "transform"),
     ("reactions", "set_reactions", true, "reactions"),
     // A page's are `set_page_play`'s ([`page_verb`]).

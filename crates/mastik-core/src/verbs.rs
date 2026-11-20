@@ -5311,6 +5311,22 @@ pub static VERBS: &[Verb] = &[
         },
     },
     Verb {
+        name: "set_note",
+        doc: "Set a layer's annotation, what the drawing cannot say (\"this list scrolls\"); empty clears it",
+        params: &[
+            req("node", NODE, "the layer"),
+            req("text", TEXT, "the annotation, lines and all"),
+        ],
+        run: |ctx, a| {
+            let id = a.layer(ctx.doc, "node")?;
+            let text = a.text("text").unwrap_or_default().trim().to_owned();
+            if node(ctx, id)?.note() == text {
+                return Ok(Done::default());
+            }
+            Ok(Done::ops(vec![Operation::SetNote { id, text }]))
+        },
+    },
+    Verb {
         name: "set_description",
         doc: "Set the description of a main component or set, a style or a variable; empty clears it",
         params: &[
@@ -7524,6 +7540,9 @@ fn layer_tree(doc: &Document, id: NodeId, drawn: bool, deep: bool) -> Option<Val
     }
     if !n.doc_link().is_empty() {
         put("doc_link", Value::from(n.doc_link()));
+    }
+    if !n.note().is_empty() {
+        put("note", Value::from(n.note()));
     }
     if !deep {
         return Some(Value::Object(out));

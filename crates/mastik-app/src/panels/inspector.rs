@@ -1598,6 +1598,8 @@ impl MastikApp {
         self.inspector_effects(ui, &[id]);
         // Only on a layer that came with one, as Group shows only on a group.
         self.inspector_credit(ui, id);
+        // What the drawing cannot say, before what comes out of it.
+        self.inspector_annotation(ui, id);
         // Last: it describes what comes out of the layer.
         self.inspector_export(ui);
     }

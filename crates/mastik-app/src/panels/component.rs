@@ -1197,6 +1197,7 @@ fn card_of(op: &Operation) -> Option<&'static str> {
     match op {
         // A width's or a height's binding is the W or H field's.
         O::SetTransform { .. } | O::SetPivot { .. } | O::SetSizeVars { .. } => Some("Transform"),
+        O::SetNote { .. } => Some("Annotation"),
         // A content's or a family's binding is the Type card's Content or family
         // row.
         O::SetTextVars { .. } => Some("Type"),

@@ -304,6 +304,12 @@ pub enum Operation {
         id: NodeId,
         url: String,
     },
+    /// A layer's annotation (`Node::note`), never drawn in the artwork; empty is
+    /// none.
+    SetNote {
+        id: NodeId,
+        text: String,
+    },
     /// A variant layer's lineage key (`Node::lineage`), never drawn; `None` makes
     /// its own id its key. Only a tree inserted whole writes one, as it was read.
     SetLineage {
@@ -813,6 +819,7 @@ impl Operation {
             // follows or an edit merges on; so is a link.
             | Operation::SetDescription { .. }
             | Operation::SetDocLink { .. }
+            | Operation::SetNote { .. }
             // The scripts list is document-level: these name a script.
             | Operation::AddScript { .. }
             | Operation::RemoveScript { .. }
@@ -1019,6 +1026,7 @@ impl Operation {
             | Operation::SetStyleOrigin { .. }
             | Operation::SetDescription { .. }
             | Operation::SetDocLink { .. }
+            | Operation::SetNote { .. }
             | Operation::SetCredit { .. }
             | Operation::SetElement { .. }
             // A chart's description draws nothing itself; its parts do, written
@@ -1203,6 +1211,7 @@ impl Operation {
                     .is_some_and(|v| v.description == *text),
             },
             Operation::SetDocLink { id, url } => node(id).is_some_and(|n| n.doc_link == *url),
+            Operation::SetNote { id, text } => node(id).is_some_and(|n| n.note == *text),
             Operation::SetCredit { id, credit } => node(id).is_some_and(|n| n.credit == *credit),
             Operation::SetElement { id, element } => {
                 node(id).is_some_and(|n| n.element == *element)
@@ -2084,6 +2093,10 @@ mod changes_ink_tests {
                 id,
                 url: "https://d".into(),
             },
+            Operation::SetNote {
+                id,
+                text: "n".into(),
+            },
             Operation::SetCredit { id, credit: None },
             Operation::SetElement { id, element: None },
             Operation::SetHref {
@@ -2110,7 +2123,7 @@ mod changes_ink_tests {
                 source: "print(1)".into(),
             },
         ];
-        assert_eq!(invisible.len(), 54, "the whole false arm");
+        assert_eq!(invisible.len(), 55, "the whole false arm");
         for op in &invisible {
             assert!(
                 !op.changes_ink(),

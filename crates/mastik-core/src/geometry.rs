@@ -2237,6 +2237,7 @@ mod tests {
             props: Vec::new(),
             description: String::new(),
             doc_link: String::new(),
+            note: String::new(),
             credit: None,
             chart: None,
             element: None,

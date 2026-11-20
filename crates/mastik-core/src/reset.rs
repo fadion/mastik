@@ -85,6 +85,7 @@ pub fn state_ops(node: &Node) -> Vec<Operation> {
         props: _,
         description: _,
         doc_link: _,
+        note: _,
         // Follows the picture it credits, so a reset puts back the main's.
         credit,
         // Never in a main or a copy (`chart::check`).

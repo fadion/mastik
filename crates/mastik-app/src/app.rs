@@ -664,6 +664,8 @@ pub struct MastikApp {
     pub(crate) name_edit: Option<crate::ui::Draft<NodeId>>,
     /// In-progress description edit on a component card; commits once, on defocus.
     pub(crate) desc_edit: Option<crate::ui::Draft<NodeId>>,
+    /// In-progress annotation edit on the Annotation card; commits once, on defocus.
+    pub(crate) note_edit: Option<crate::ui::Draft<NodeId>>,
     /// In-progress documentation link edit on a component card, kept past a
     /// refused commit.
     pub(crate) link_edit: Option<crate::ui::Draft<NodeId, mastik_core::LinkRefusal>>,
@@ -1860,6 +1862,7 @@ impl MastikApp {
             clipboard_stamp: None,
             name_edit: None,
             desc_edit: None,
+            note_edit: None,
             link_edit: None,
             href_edit: None,
             fonts,
@@ -10253,7 +10256,8 @@ mod tests {
     /// widening the scan would self-match.
     #[test]
     fn only_the_layers_panel_commits_without_the_committer() {
-        let panels: [(&str, &str); 23] = [
+        let panels: [(&str, &str); 24] = [
+            ("annotation.rs", include_str!("panels/annotation.rs")),
             ("binding.rs", include_str!("panels/binding.rs")),
             ("chart.rs", include_str!("panels/chart.rs")),
             ("chart_picture.rs", include_str!("panels/chart_picture.rs")),

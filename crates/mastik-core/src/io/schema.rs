@@ -375,6 +375,10 @@ pub(crate) struct NodeDto {
     /// in v13. One not in `web_link`'s form is dropped on load, never refused.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub doc_link: String,
+    /// A layer's annotation, absent when it has none. Additive: an older build
+    /// ignores it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
     /// An inserted asset's credit (`crate::credit`), absent on every other
     /// layer. Additive: an older build ignores it. An address not in `web_link`'s
     /// form is emptied on load, never refused, and a credit that will not read
@@ -571,6 +575,7 @@ impl NodeDto {
             props: n.props().to_vec(),
             description: n.description().to_string(),
             doc_link: n.doc_link().to_string(),
+            note: n.note().to_string(),
             credit: n.credit.clone(),
             element: n.element,
             chart: n.chart.clone(),
@@ -728,6 +733,7 @@ impl NodeDto {
                 .ok()
                 .filter(|l| *l == self.doc_link)
                 .unwrap_or_default(),
+            note: self.note,
             credit: self.credit.map(|c| Box::new(c.normalized())),
             element,
             chart,

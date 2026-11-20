@@ -540,6 +540,7 @@ impl Walk<'_> {
         el.shown_by = shown_by;
         el.key = Some(name_step(doc, node));
         el.lineage = Some((node.lineage(), node.lineage_recorded()));
+        el.note = (!node.note().is_empty()).then(|| node.note().to_string());
         Some(el)
     }
 

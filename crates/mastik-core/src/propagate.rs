@@ -176,6 +176,8 @@ fn mode(op: &Operation) -> Mode {
         // link, and so is its documentation address.
         | Operation::SetDescription { .. }
         | Operation::SetDocLink { .. }
+        // An annotation is the layer's own, as a copy's is once made.
+        | Operation::SetNote { .. }
         // A chart never sits in a main or a copy (`chart::check`).
         | Operation::SetChart { .. }
         | Operation::SetChartParts { .. }
@@ -1256,6 +1258,8 @@ pub(crate) fn untouched(
         props: _,
         description: _,
         doc_link: _,
+        // A copy's annotation is its own once made; a main's later one is not pushed.
+        note: _,
         credit,
         chart: _,
         element,

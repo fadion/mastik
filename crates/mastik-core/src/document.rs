@@ -208,6 +208,7 @@ pub(crate) fn root_node(id: NodeId, name: String) -> Node {
         props: Vec::new(),
         description: String::new(),
         doc_link: String::new(),
+        note: String::new(),
         credit: None,
         chart: None,
         element: None,
@@ -2198,6 +2199,12 @@ impl Document {
                 let old = std::mem::replace(&mut node.doc_link, url.clone());
                 Ok(Operation::SetDocLink { id: *id, url: old })
             }
+            // Nor by an annotation, which the artwork never draws.
+            Operation::SetNote { id, text } => {
+                let node = self.nodes.get_mut(id).ok_or(OpError::NoSuchNode(*id))?;
+                let old = std::mem::replace(&mut node.note, text.clone());
+                Ok(Operation::SetNote { id: *id, text: old })
+            }
             // Nor by a credit, which is never drawn.
             Operation::SetCredit { id, credit } => {
                 if credit.as_ref().is_some_and(|c| !c.is_well_formed()) {
@@ -2641,6 +2648,7 @@ impl Document {
             props: Vec::new(),
             description: String::new(),
             doc_link: String::new(),
+            note: String::new(),
             credit: None,
             chart: None,
             element: None,
@@ -4347,6 +4355,7 @@ pub fn remap_subtree(template: &[Node], ids: &mut IdSource) -> Option<(Vec<Node>
                 .collect(),
             description: n.description.clone(),
             doc_link: n.doc_link.clone(),
+            note: n.note.clone(),
             // An asset's credit travels with every copy of it.
             credit: n.credit.clone(),
             // Its parts are the copied children, so their keys follow the new
@@ -4658,6 +4667,7 @@ mod tests {
             props: Vec::new(),
             description: String::new(),
             doc_link: String::new(),
+            note: String::new(),
             credit: None,
             chart: None,
             element: None,

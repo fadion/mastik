@@ -1214,6 +1214,45 @@ fn a_doc_link_is_a_web_address_kept_on_its_main() {
     assert_eq!(f.doc.get(main), before.get(main));
 }
 
+/// A layer's annotation is saved only when set, read back, undone by its
+/// inverse, and kept by a copy of the layer.
+/// flip: `Node`'s copy dropping `note` → fails at "a copy keeps it".
+#[test]
+fn an_annotation_is_saved_undone_and_copied() {
+    let mut f = fixture();
+    let id = f.small;
+    let plain = String::from_utf8(io::save(&f.doc).unwrap()).unwrap();
+    assert!(!plain.contains("\"note\""), "absent when unset");
+    let out = f
+        .doc
+        .apply(&Transaction(vec![Operation::SetNote {
+            id,
+            text: "48 px touch target".into(),
+        }]))
+        .unwrap();
+    let saved = io::save(&f.doc).unwrap();
+    let loaded = io::load(&saved).unwrap();
+    assert_eq!(loaded.get(id).unwrap().note(), "48 px touch target");
+    let (tx, made) = mastik_core::insert_subtrees(
+        &f.doc,
+        &mut f.ids,
+        &[Placement {
+            nodes: f.doc.capture_subtree(id).unwrap(),
+            parent: f.root,
+            index: None,
+        }],
+        Default::default(),
+    );
+    f.doc.apply(&tx).unwrap();
+    assert_eq!(
+        f.doc.get(made[0]).unwrap().note(),
+        "48 px touch target",
+        "a copy keeps it"
+    );
+    f.doc.apply(&out.inverse).unwrap();
+    assert_eq!(f.doc.get(id).unwrap().note(), "", "undone");
+}
+
 /// `web_link` puts `https://` before a bare host, keeps a port as a host's, and
 /// refuses every other scheme; `link_host` is what a card shows of the result.
 #[test]

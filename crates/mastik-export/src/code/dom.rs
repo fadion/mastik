@@ -49,6 +49,8 @@ pub(crate) struct Element {
     /// [`Self::style`] stays whole, so merges and states compare what is drawn;
     /// only the printed rule leaves out what the style's class declares.
     pub text_class: Option<std::rc::Rc<TextClass>>,
+    /// The layer's annotation, written as a comment atop the element.
+    pub note: Option<String>,
 }
 
 /// A text style written as a global class, which every text using it wears.
@@ -432,6 +434,18 @@ impl Element {
 
     fn markup_shown(&self, out: &mut String, depth: usize, syntax: Syntax) {
         let pad = "  ".repeat(depth);
+        // The annotation, a comment in the syntax's own form, one per line. A
+        // comment's closing mark in the text is broken so it cannot end early.
+        if let Some(note) = self.note.as_deref().filter(|n| !n.trim().is_empty()) {
+            for line in note.lines() {
+                let _ = match syntax {
+                    Syntax::Jsx => writeln!(out, "{pad}{{/* {} */}}", line.replace("*/", "* /")),
+                    Syntax::Html | Syntax::Vue => {
+                        writeln!(out, "{pad}<!-- {} -->", line.replace("--", "- -"))
+                    }
+                };
+            }
+        }
         if let Some(m) = &self.markup {
             let mut m = match syntax {
                 Syntax::Html => m.clone(),

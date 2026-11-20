@@ -1748,6 +1748,7 @@ impl RenderOverrides {
             | Operation::SetProperties { .. }
             | Operation::SetDescription { .. }
             | Operation::SetDocLink { .. }
+            | Operation::SetNote { .. }
             | Operation::SetCredit { .. }
             | Operation::SetElement { .. }
             | Operation::SetDetachedFrom { .. }
