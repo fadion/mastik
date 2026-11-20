@@ -189,6 +189,10 @@ since sharing that window is private mode's case.
   about 1.33 times its parts, and the dialog shows that size before writing.
 - **What goes in**: the pages the chosen flows reach, following navigation across pages, with the
   overlays, components, fonts and images they use. The pruned document must still pass the loader.
+- **Fonts go in whole, whatever their licence**: every face the pruned pages draw with, Google or
+  local, is embedded as the file the canvas drew from, as the PDF export embeds them. A font's
+  embedding bits are not read; the licence is the designer's to keep. Whole files, not subsets,
+  because a prototype's text fields take whatever the viewer types.
 - **Rendering in the browser**: `mastik-core` and `mastik-render`'s vello backend on WebGPU, so the
   player draws exactly what the canvas draws, falling back to `vello_cpu` in the page where WebGPU
   is missing.
@@ -213,13 +217,10 @@ prototype by reading what it links, not by running it.
    `wasm32-unknown-emscripten` for everything, which unwinds and hosts Luau, if wgpu's WebGPU works
    there; or geometry pre-flattened at export so the guarded code never runs in the page, with
    Luau built apart.
-2. **Fonts in the export.** Embedding a Google font is allowed; a local font may forbid it (the
-   parked font-embedding question in `roadmap.md`). The export needs a rule for reading a font's
-   embedding permission and the fallback it names.
-3. **Lists from data**: how a repeated row and its data file are saved, and how a row's layers bind
+2. **Lists from data**: how a repeated row and its data file are saved, and how a row's layers bind
    a row's cells.
-4. **The video encoder**: a crate and its licence for MP4; GIF needs none.
-5. **A minimised main window**: whether an immediate viewport keeps the detached player drawing.
-6. **Imported prototypes.** The Figma, Penpot and Sketch importers report prototype links as left
+3. **The video encoder**: a crate and its licence for MP4; GIF needs none.
+4. **A minimised main window**: whether an immediate viewport keeps the detached player drawing.
+5. **Imported prototypes.** The Figma, Penpot and Sketch importers report prototype links as left
    out. Once interactions exist, the ones that map (navigate, overlay, back, the common
    transitions) can be read in, and the rest reported as now.
