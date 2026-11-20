@@ -294,6 +294,142 @@ const EASINGS: [(Easing, &str); 6] = [
     (Easing::Cubic([0.22, 1.0, 0.36, 1.0]), "Custom curve"),
 ];
 
+/// The motion preview's height, its graph's inset from its ground, and the lane
+/// under the graph where a dot moves as the transition would.
+const PREVIEW_H: f32 = 96.0;
+const PREVIEW_PAD: f32 = 8.0;
+const PREVIEW_LANE_H: f32 = 12.0;
+/// How long the playing dot rests at its end before it plays again.
+const PREVIEW_REST_MS: f64 = 600.0;
+/// How many pieces the preview's curve is drawn in.
+const PREVIEW_STEPS: usize = 96;
+
+/// A transition's timing drawn as its value over time, the target dashed so a
+/// spring's overshoot shows, over a lane where a dot moves as the transition
+/// would. Under the pointer both dots play in real time, rest at the end and
+/// play again; a timing changed meanwhile starts them over.
+fn motion_preview(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    timing: Timing,
+    w: f32,
+) -> egui::Response {
+    use mastik_play::motion::{duration, progress};
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, PREVIEW_H), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, egui::CornerRadius::same(ui::BUTTON_R), color::field());
+    let total = duration(&timing).max(1.0);
+    let at = |ms: f64| progress(&timing, ms).0;
+    let samples: Vec<f64> = (0..=PREVIEW_STEPS)
+        .map(|i| at(total * i as f64 / PREVIEW_STEPS as f64))
+        .collect();
+    // Room for an overshoot past the target, or under the start.
+    let (lo, hi) = samples
+        .iter()
+        .fold((0.0_f64, 1.0_f64), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+    let span = (hi - lo).max(1e-6);
+    let graph = egui::Rect::from_min_max(
+        rect.min + egui::Vec2::splat(PREVIEW_PAD),
+        egui::pos2(
+            rect.right() - PREVIEW_PAD,
+            rect.bottom() - 2.0 * PREVIEW_PAD - PREVIEW_LANE_H,
+        ),
+    );
+    let lane = egui::Rect::from_min_max(
+        egui::pos2(graph.left(), graph.bottom() + PREVIEW_PAD),
+        egui::pos2(graph.right(), rect.bottom() - PREVIEW_PAD),
+    );
+    let y_of = |v: f64| graph.bottom() - ((v - lo) / span) as f32 * graph.height();
+    let x_of = |f: f64| graph.left() + f as f32 * graph.width();
+    let lane_x = |v: f64| lane.left() + ((v - lo) / span) as f32 * lane.width();
+    let rule = egui::Stroke::new(1.0, color::divider());
+    let faint = egui::Stroke::new(1.0, theme::text::faint());
+    p.line_segment(
+        [
+            egui::pos2(graph.left(), y_of(0.0)),
+            egui::pos2(graph.right(), y_of(0.0)),
+        ],
+        rule,
+    );
+    p.extend(egui::Shape::dashed_line(
+        &[
+            egui::pos2(graph.left(), y_of(1.0)),
+            egui::pos2(graph.right(), y_of(1.0)),
+        ],
+        faint,
+        3.0,
+        3.0,
+    ));
+    let line: Vec<egui::Pos2> = samples
+        .iter()
+        .enumerate()
+        .map(|(i, v)| egui::pos2(x_of(i as f64 / PREVIEW_STEPS as f64), y_of(*v)))
+        .collect();
+    p.add(egui::Shape::line(
+        line,
+        egui::Stroke::new(1.5, theme::text::strong()),
+    ));
+    // The lane: a track from where it starts to where it lands, each end ticked.
+    let mid = lane.center().y;
+    p.line_segment(
+        [egui::pos2(lane.left(), mid), egui::pos2(lane.right(), mid)],
+        rule,
+    );
+    for v in [0.0, 1.0] {
+        let x = lane_x(v);
+        p.line_segment(
+            [egui::pos2(x, lane.top()), egui::pos2(x, lane.bottom())],
+            faint,
+        );
+    }
+    // Played under the pointer, from the time the pointer came or the timing changed.
+    let key = ui.id().with(("motion-preview", salt));
+    let now = ui.input(|i| i.time);
+    let played = match resp.hovered() {
+        true => {
+            let kept = ui.ctx().data(|d| d.get_temp::<(f64, Timing)>(key));
+            let start = match kept {
+                Some((s, t)) if t == timing => s,
+                _ => {
+                    ui.ctx().data_mut(|d| d.insert_temp(key, (now, timing)));
+                    now
+                }
+            };
+            ui.ctx().request_repaint();
+            Some(((now - start) * 1000.0 % (total + PREVIEW_REST_MS)).min(total))
+        }
+        false => {
+            ui.ctx().data_mut(|d| d.remove::<(f64, Timing)>(key));
+            None
+        }
+    };
+    let ink = color::accent_400();
+    let edge = egui::Stroke::new(1.5, color::field());
+    match played {
+        Some(ms) => {
+            let v = at(ms);
+            p.circle(egui::pos2(x_of(ms / total), y_of(v)), 4.0, ink, edge);
+            p.circle(egui::pos2(lane_x(v), mid), 5.0, ink, edge);
+        }
+        None => {
+            p.circle(egui::pos2(lane_x(0.0), mid), 5.0, ink, edge);
+        }
+    }
+    // How long it runs, a spring's until it settles.
+    let words = match timing {
+        Timing::Ease { .. } => format!("{} ms", total.round()),
+        Timing::Spring { .. } => format!("Settles in {} ms", total.round()),
+    };
+    p.text(
+        egui::pos2(graph.right(), graph.top()),
+        egui::Align2::RIGHT_TOP,
+        words,
+        egui::FontId::proportional(ui::SMALL_PT),
+        theme::text::faint(),
+    );
+    resp
+}
+
 /// An overlay's positions, in the *Position* menu's order.
 const OVERLAY_POSITIONS: [(OverlayPosition, &str); 8] = [
     (OverlayPosition::Centre, "Centre"),
@@ -3352,6 +3488,12 @@ impl MastikApp {
                 });
             }
         }
+        // The timing a field holds while it is scrubbed or typed, so the preview
+        // follows it before it commits.
+        let shown = numbers
+            .iter()
+            .find(|(r, ..)| r.dragged() || r.has_focus())
+            .map_or(t.timing, |(.., next)| next.timing);
         for (resp, rid, v, next) in numbers {
             self.proto_hold(rid, v, &resp);
             let engaged = resp.dragged() || resp.has_focus();
@@ -3359,6 +3501,7 @@ impl MastikApp {
                 out = Some(next);
             }
         }
+        motion_preview(ui, salt, shown, w);
         out
     }
 
