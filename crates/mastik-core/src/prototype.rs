@@ -388,13 +388,13 @@ impl TransitionKind {
 /// The side a directional transition moves toward.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Direction {
-    #[default]
     Left,
     Right,
     Up,
     Down,
-    /// No side: smart animate fades its unpaired layers rather than sliding
-    /// them. A move, push or slide reads it as [`Direction::Left`].
+    /// No side, the default: smart animate fades its unpaired layers rather than
+    /// sliding them. A move, push or slide reads it as [`Direction::Left`].
+    #[default]
     None,
 }
 

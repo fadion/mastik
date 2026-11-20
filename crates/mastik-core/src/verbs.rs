@@ -6943,6 +6943,8 @@ pub struct Tree {
     pub props: Option<Vec<crate::variant::Property>>,
     pub description: Option<String>,
     pub doc_link: Option<String>,
+    /// The layer's annotation.
+    pub note: Option<String>,
     /// The layer's prototype reactions as `set_reactions` takes them, read when
     /// the layer is made: a target the tree holds is remapped to its new layer.
     pub reactions: Option<Value>,
@@ -7237,6 +7239,12 @@ fn tree_ops(
         late.push(Operation::SetDocLink {
             id,
             url: url.clone(),
+        });
+    }
+    if let Some(text) = tree.note.as_ref().filter(|t| !t.trim().is_empty()) {
+        late.push(Operation::SetNote {
+            id,
+            text: text.trim().to_owned(),
         });
     }
     if let Some(play) = &tree.play {
@@ -8165,18 +8173,32 @@ fn actions_in(
 }
 
 /// A transition as written, completed from `base`: left out it is `base`, a word
-/// is its kind, and an object's missing fields are `base`'s.
+/// is its kind, and an object's missing fields are `base`'s — except that a smart
+/// animate named without a direction takes none, so its new layers fade, as the
+/// Prototype tab picks it.
 fn transition_in(given: Option<Value>, base: &Value) -> Value {
+    let smart_without_side = |t: &mut Map<String, Value>, named: bool| {
+        let smart = t
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|k| k.eq_ignore_ascii_case("smartanimate"));
+        if smart && !named {
+            t.insert("direction".into(), Value::String("None".into()));
+        }
+    };
     match (given, base) {
         (None | Some(Value::Null), _) => base.clone(),
         (Some(Value::String(kind)), Value::Object(b)) => {
             let mut t = b.clone();
             t.insert("kind".into(), Value::String(kind));
+            smart_without_side(&mut t, false);
             Value::Object(t)
         }
         (Some(Value::Object(fields)), Value::Object(b)) => {
+            let named = fields.contains_key("direction");
             let mut t = b.clone();
             t.extend(fields);
+            smart_without_side(&mut t, named);
             Value::Object(t)
         }
         (Some(other), _) => other,

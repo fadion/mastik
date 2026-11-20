@@ -2522,9 +2522,14 @@ impl MastikApp {
         }
         let smart = t.kind == TransitionKind::SmartAnimate;
         let directional = t.kind.is_directional();
+        // A move reads no side as left, and shows it so.
+        let shown = match (t.direction, smart) {
+            (Direction::None, false) => Direction::Left,
+            (d, _) => d,
+        };
         let cur = DIRECTIONS
             .iter()
-            .position(|(d, _)| *d == t.direction)
+            .position(|(d, _)| *d == shown)
             .unwrap_or(0);
         let pick = ui::segmented_tipped(
             ui,

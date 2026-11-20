@@ -595,6 +595,30 @@ fn insert_subtree_creates_a_tree_in_one_edit() {
     );
 }
 
+/// A tree carrying a layer's `note`, as `get_tree` reads it, inserts with the
+/// annotation on its layer.
+/// flip: `tree_ops` not writing the note → fails at the note's assertion.
+#[test]
+fn an_inserted_tree_carries_its_note() {
+    let (doc, mut ids, page) = blank();
+    let res = Resolved::rebuild(&doc);
+    let Done { tx, created, .. } = verbs::call(
+        &mut Ctx {
+            doc: &doc,
+            res: &res,
+            ids: &mut ids,
+            images: None,
+            contrast: None,
+        },
+        "insert_subtree",
+        &json!({ "parent": page.to_wire(), "tree": { "kind": rect(10.0, 10.0), "note": "48 px touch target" } }),
+    )
+    .unwrap_or_else(|e| panic!("the tree commits: {e}"));
+    let mut doc = doc;
+    doc.apply(&tx).expect("the tree commits");
+    assert_eq!(doc.get(created[0]).unwrap().note(), "48 px touch target");
+}
+
 /// Why a model argument is refused, panicking when it is not refused so.
 fn refused_why(doc: &Document, ids: &mut IdSource, name: &str, args: Value) -> String {
     match answer(doc, ids, name, args) {
