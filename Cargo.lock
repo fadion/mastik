@@ -2532,6 +2532,7 @@ dependencies = [
  "mastik-core",
  "mastik-export",
  "mastik-mcp",
+ "mastik-play",
  "mastik-render",
  "mastik-vm",
  "objc2 0.6.5",

@@ -322,5 +322,6 @@
  { "name": "overlay-open", "codepoint": "U+F08C", "stroke": "M3.5 1.5H12.5V14.5H3.5ZM8 7V3.5M6.5 5L8 3.5L9.5 5", "fill": "M3.5 9.5H12.5V14.5H3.5Z" },
  { "name": "overlay-close", "codepoint": "U+F08D", "stroke": "M3.5 1.5H12.5V14.5H3.5ZM8 3.5V7M6.5 5.5L8 7L9.5 5.5", "fill": "M3.5 9.5H12.5V14.5H3.5Z" },
  { "name": "overlay-swap", "codepoint": "U+F08E", "stroke": "M3.5 1.5H12.5V14.5H3.5ZM6 4H10M9 3L10 4L9 5M10 6.5H6M7 5.5L6 6.5L7 7.5", "fill": "M3.5 9.5H12.5V14.5H3.5Z" },
- { "name": "conditional", "codepoint": "U+F08F", "stroke": "M8 1.5L11 4.5L8 7.5L5 4.5ZM5 4.5H3.5V14.5M11 4.5H12.5V14.5M2 13L3.5 14.5L5 13M11 13L12.5 14.5L14 13" }
+ { "name": "conditional", "codepoint": "U+F08F", "stroke": "M8 1.5L11 4.5L8 7.5L5 4.5ZM5 4.5H3.5V14.5M11 4.5H12.5V14.5M2 13L3.5 14.5L5 13M11 13L12.5 14.5L14 13" },
+ { "name": "record", "codepoint": "U+F090", "stroke": "M1.5 8a6.5 6.5 0 1 0 13 0a6.5 6.5 0 1 0 -13 0Z", "fill": "M5 8a3 3 0 1 0 6 0a3 3 0 1 0 -6 0Z" }
 ]

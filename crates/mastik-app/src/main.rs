@@ -155,6 +155,7 @@ mod path_bar;
 mod pencil;
 mod pictures;
 mod pixel_fit;
+mod player;
 mod prefs;
 mod present;
 mod preview;

@@ -163,8 +163,12 @@ pub enum Action {
     /// so a stray Shift does not fall through to it.
     ExportAll,
     /// Show the top-level frames one at a time, fullscreen (`present.rs`).
-    /// `Ctrl+Alt+Enter`.
+    /// `Ctrl+Alt+Enter`. With a flow anywhere in the document, the prototype
+    /// played fullscreen instead (`player.rs`).
     Present,
+    /// Play the prototype over the canvas (`player.rs`). No chord: the top bar's
+    /// play button and the palette.
+    Play,
     /// *Tools ▸ Check contrast*: start or end the contrast check (`contrast.rs`). No
     /// chord.
     CheckContrast,

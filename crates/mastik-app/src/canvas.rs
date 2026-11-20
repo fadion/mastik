@@ -574,6 +574,48 @@ impl CanvasRenderer {
         gpu.target.as_ref().map(|t| t.id)
     }
 
+    /// Draw one frame of a prototype's play, `scene` over the played copy, at
+    /// `pixel_size` device pixels over `backdrop`, and return the texture to show.
+    /// Always drawn whole: the caller asks only when the scene or the copy moved.
+    /// `None` headless, or when the draw failed.
+    pub(crate) fn render_play(
+        &mut self,
+        doc: &Document,
+        res: &Resolved,
+        scene: &mastik_play::Scene,
+        pixel_size: (u32, u32),
+        backdrop: Color,
+    ) -> Option<egui::TextureId> {
+        if pixel_size.0 == 0 || pixel_size.1 == 0 {
+            return None;
+        }
+        self.images.prepare(doc);
+        self.frame += 1;
+        let gpu = self.gpu.as_mut()?;
+        gpu.ensure_target(pixel_size);
+        let target = gpu.target.as_ref()?;
+        let vp = mastik_render::Viewport {
+            view: KRect::from_origin_size((0.0, 0.0), scene.size),
+            pixel_size,
+        };
+        let patches = mastik_render::play::overrides(doc, res, scene);
+        gpu.vello
+            .render_play(
+                &gpu.render_state.device,
+                &gpu.render_state.queue,
+                doc,
+                res,
+                &vp,
+                &patches,
+                scene,
+                &target.view,
+                backdrop,
+                &self.images,
+            )
+            .ok()?;
+        Some(target.id)
+    }
+
     /// The texture to show for what [`Self::render`] just drew: itself, or with
     /// `vision` a copy seen through its effect inside its device region, at its
     /// device px to the design px (`MastikApp::vision_region`). Asked every frame

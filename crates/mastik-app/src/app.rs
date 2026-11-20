@@ -649,6 +649,10 @@ pub struct MastikApp {
     /// A presentation in progress (`present.rs`). While it is, `ui` draws nothing
     /// but the frame and reads no key but its own.
     pub(crate) presenting: Option<crate::present::Presenting>,
+    /// A prototype being played (`player.rs`), wherever it shows.
+    pub(crate) playing: Option<Box<crate::player::Playing>>,
+    /// Play asked for, held while its scripts are shown first.
+    pub(crate) play_disclosure: Option<crate::player::Owed>,
     /// Whether an open popover's own `Escape` handler ran this frame; written by the
     /// handler, read and cleared by the key router next frame. Read instead of the open
     /// flag, because a flag whose panel was skipped would swallow `Escape` with nothing
@@ -2134,6 +2138,8 @@ impl MastikApp {
             // Starts focused: the launch scan is already under way.
             window_focused: true,
             presenting: None,
+            playing: None,
+            play_disclosure: None,
             popover_heard: false,
         }
     }
@@ -2381,6 +2387,21 @@ impl MastikApp {
                 .show(ui, |ui| self.present_ui(ui));
             return;
         }
+        // The player filling the window is present mode's other branch.
+        if self
+            .playing
+            .as_ref()
+            .is_some_and(|p| p.place == crate::player::Place::Fullscreen)
+        {
+            self.rail.flyout = None;
+            self.disk_results();
+            self.autosave_tick(&ctx);
+            self.recovery_tick(&ctx);
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| self.player_fullscreen_ui(ui));
+            return;
+        }
 
         // A pointer press ends any run of coalescing edits: a click is a new intent.
         if ctx.input(|i| i.pointer.any_pressed()) {
@@ -2448,6 +2469,10 @@ impl MastikApp {
         } else if self.modal_is_up() {
             // A modal owns every key; `input::resolve` is no second guard, since a modal
             // of buttons does not make egui want the keyboard.
+        } else if self.player_holds_keys() {
+            // The player, pressed on last, takes plain and Shift-ed keys; the
+            // editor's chords pass to the keymap.
+            self.player_keys(&ctx);
         } else if self.scripts.holds_keys() {
             // The Scripts window, pressed on last, keeps the keys from the canvas;
             // its open menu holds them as a context menu does.
@@ -2633,6 +2658,8 @@ impl MastikApp {
         self.assistant_pass(&ctx);
         self.repeat_ui(&ctx);
         self.blend_ui(&ctx);
+        // Unguarded: a prototype plays on over the canvas in focus mode.
+        self.player_ui(&ctx);
         // After the canvas, whose first visit to a page a step's reveal must follow.
         self.compare_bar(&ctx);
         // Last, and unguarded: `Ctrl+,` and the palette open it in focus mode too.
@@ -2839,7 +2866,13 @@ impl MastikApp {
             Action::Cheatsheet => self.open_cheatsheet(crate::cheatsheet::Opened::Editor),
             // No dialog once a destination is known this session.
             Action::ExportAll => self.export_all(crate::panels::ExportAll::Asking),
-            Action::Present => self.start_presenting(ctx),
+            // Present mode and *Play* are one act: with a flow to play, present
+            // mode is the player filling the window.
+            Action::Present => match crate::player::has_flows(&self.session.doc) {
+                true => self.play(ctx, crate::player::Place::Fullscreen, true),
+                false => self.start_presenting(ctx),
+            },
+            Action::Play => self.play(ctx, crate::player::Place::Over, false),
             Action::CheckContrast => self.toggle_contrast(),
             Action::SimulateVision => self.toggle_vision(),
             Action::ExportCode(target) => self.export_code(target),
@@ -8308,6 +8341,21 @@ impl MastikApp {
                         top_rule(ui);
                         self.view_snap_tools_menus(ui);
                         top_rule(ui);
+                        // *Play*: the prototype over the canvas; lit while it plays.
+                        let playing = self.playing.is_some();
+                        if icon_button(ui, icon::PLAY, 26.0, 16.0, playing, true)
+                            .on_hover_text(match playing {
+                                true => "Stop playing",
+                                false => "Play prototype",
+                            })
+                            .clicked()
+                        {
+                            let ctx = ui.ctx().clone();
+                            match playing {
+                                true => self.stop_playing(&ctx),
+                                false => self.dispatch(&ctx, crate::input::Action::Play),
+                            }
+                        }
 
                         // Only the buttons' enabled state; the arms finish the text
                         // session (itself an undo step) before acting.
@@ -8795,6 +8843,7 @@ impl MastikApp {
     /// which is false for a modal with buttons and no text field.
     pub(crate) fn modal_is_up(&self) -> bool {
         self.settings.is_some()
+            || self.play_disclosure.is_some()
             || self.confirming_close
             || !self.closing_tabs.is_empty()
             || self.session.clash == crate::session::Clash::Ask

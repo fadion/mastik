@@ -467,6 +467,8 @@ pub enum Item {
     ExportEditable(crate::panels::EditableFormat),
     /// `Action::Present`: the top-level frames one at a time, fullscreen.
     Present,
+    /// `Action::Play`: the prototype played over the canvas.
+    Play,
     /// `Action::CheckContrast`: the contrast check mode, on or off.
     CheckContrast,
     /// `Action::SimulateVision`: the vision simulation, on or off.
@@ -1382,6 +1384,7 @@ impl Item {
                 Group::File,
             ),
             Item::Present => s("Present mode", icon::PLAY, None, Group::View),
+            Item::Play => s("Play prototype", icon::PLAY, None, Group::View),
             Item::CheckContrast => s("Check contrast", icon::CIRCLE_HALF, None, Group::View),
             Item::SimulateVision => s("Simulate vision", icon::EYE, None, Group::View),
             Item::Navigate => s("Pick layers", icon::LEAP_LABEL, None, Group::Tools),
@@ -1464,6 +1467,7 @@ impl Item {
             Item::Restack(_) => &["order", "arrange", "z"],
             Item::Cheatsheet => &["shortcuts", "keys", "keymap", "help"],
             Item::Present => &["play", "slideshow", "presentation", "fullscreen"],
+            Item::Play => &["prototype", "preview", "run", "interactions", "flow"],
             Item::CheckContrast => &["accessibility", "a11y", "wcag", "apca", "legibility"],
             Item::Navigate => &[
                 "navigate", "keyboard", "tree", "labels", "leap", "hints", "select",
@@ -1624,6 +1628,7 @@ impl Item {
             Item::Palette => Action::Palette,
             Item::Cheatsheet => Action::Cheatsheet,
             Item::Present => Action::Present,
+            Item::Play => Action::Play,
             Item::CheckContrast => Action::CheckContrast,
             Item::SimulateVision => Action::SimulateVision,
             Item::Navigate => Action::Navigate,
@@ -4017,6 +4022,7 @@ impl MastikApp {
             | Item::ExportCode(_)
             | Item::ExportEditable(_)
             | Item::Present
+            | Item::Play
             | Item::CheckContrast
             | Item::SimulateVision
             | Item::Navigate

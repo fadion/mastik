@@ -1357,6 +1357,8 @@ pub mod icon {
     pub const OVERLAY_SWAP: &str = "\u{f08e}";
     /// A prototype's *Conditional*: a decision diamond branching two ways.
     pub const CONDITIONAL: &str = "\u{f08f}";
+    /// The player's *Record a take*: a ring round a filled dot.
+    pub const RECORD: &str = "\u{f090}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1695,6 +1697,7 @@ pub mod icon {
         ("overlay-close", OVERLAY_CLOSE),
         ("overlay-swap", OVERLAY_SWAP),
         ("conditional", CONDITIONAL),
+        ("record", RECORD),
     ];
 }
 

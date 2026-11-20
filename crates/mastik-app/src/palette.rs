@@ -819,6 +819,10 @@ impl MastikApp {
             &mut out,
             Cmd::verb(Item::Present, no_frames.then_some("No frames to present")),
         );
+        push(
+            &mut out,
+            Cmd::verb(Item::Play, no_frames.then_some("No frames to play")),
+        );
         let mut contrast = Cmd::verb(Item::CheckContrast, None);
         if self.contrast.is_some() {
             contrast.label = crate::contrast::STOP_CONTRAST.into();

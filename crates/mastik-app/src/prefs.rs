@@ -569,6 +569,9 @@ pub struct Prefs {
     /// Private mode (`crate::private`): every drawn name masked. A preference, so
     /// a restart in the middle of a shared screen does not come back revealing.
     pub private: bool,
+    /// Where the prototype player's own window last stood, its top-left in
+    /// points; `None` lets the system place it.
+    pub player_window: Option<[f32; 2]>,
     /// How tall the Pages section's list was dragged to, in points; `None` fits
     /// up to six rows.
     pub pages_height: Option<f32>,
@@ -739,6 +742,7 @@ impl Default for Prefs {
             pages_folded: false,
             layers_folded: false,
             private: false,
+            player_window: None,
             pages_height: None,
             history_folded: false,
             history_height: None,
