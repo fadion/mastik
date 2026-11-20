@@ -372,6 +372,11 @@ impl MastikApp {
         // `open_publish` finished it; this is the verb, and any other caller.
         self.finish_text_first();
         let changes = self.kit_changes();
+        // Read before the publish, as the MCP's `publish_kit` reads it.
+        let left = crate::mcp::kits::left_out_named(
+            &self.session.doc,
+            &mastik_core::kit::left_out(&self.session.doc),
+        );
         let Some(done) = publish_in(&mut self.session, Some(note)) else {
             self.session.fail(NOTHING_TO_PUBLISH);
             return;
@@ -380,12 +385,9 @@ impl MastikApp {
             return;
         }
         let name = self.shown_title();
-        self.session.info(published_said(
-            &name,
-            done.version,
-            changes.as_ref(),
-            &done.carried,
-        ));
+        let said = published_said(&name, done.version, changes.as_ref(), &done.carried);
+        self.session
+            .info(format!("{said}{}", crate::mcp::kits::left_out_said(&left)));
     }
 }
 
