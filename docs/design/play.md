@@ -100,6 +100,8 @@ out both ends.
 - A **pointer trigger fires on the deepest layer under the pointer that has one**, then stops;
   a layer inside an instance shown in its *Disabled* state is passed over. Click fires on release
   if the press did not become a drag and no long press spent it, over what was under the press.
+  A pointer reaction firing inside a list's row opens that row before its actions run
+  (`lists.md`, *Play*).
 - **A click goes to the deepest layer with *On click* or *On double click*.** When that layer has
   a double click, the click is held `DOUBLE_MS` (250 ms): a second click on the same layer within
   it fires the double click and no click; otherwise the held click runs as a click on what was

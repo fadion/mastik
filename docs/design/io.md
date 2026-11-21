@@ -6,7 +6,7 @@ The native `.mastik` file format (JSON, versioned DTO), its integrity checks, th
 
 ### Format and the two readers
 
-- Native format is JSON, currently **v20** (`io::CURRENT_SCHEMA_VERSION`). `schema.rs` defines a versioned DTO decoupled from the in-memory types.
+- Native format is JSON, currently **v21** (`io::CURRENT_SCHEMA_VERSION`). `schema.rs` defines a versioned DTO decoupled from the in-memory types.
 - `io::clip` writes a copied subtree for the system clipboard through the same `NodeDto` and `ImageDto` a file uses (`from_node`/`into_node`, `from_entry`/`into_entry` are lifted out of `DocumentDto` for this), so every normalization applies to a pasted layer too. Refuse a second projection beside `NodeDto`: a field added to one and not the other compiles, saves and loads.
 - The clipboard deliberately does **not** share the migration ladder. `io::clip::read` compares `schema_version` for equality and refuses anything else: a file is an archive and must open in a build written years later; a clipboard is a handoff between two processes running now. Do not route `clip` through `migrate.rs`.
 - `io::clip::read` carries envelope checks of its own (§15 D833–D836, D852):
@@ -124,6 +124,7 @@ A bump **is** required when a field's meaning changes or its default would silen
 | v17 to v18 | An inverted mask (§5.3) | `migrate_17_to_18`: number only, published document moving with it; v17 had shipped, and a v17 reader would drop the flag and save the mask back the right way out. `NodeDto::mask_inverted` is skipped when false. A radial path's `PathMirror::copies` and `reflect` (§5.3) and a stroke's markers (`Stroke::start`, `end`, `marker_size`) share v18 unbumped, skipped when unset. |
 | v18 to v19 | A detached layer's record (§5.3d) | `migrate_18_to_19`: number only, published document moving with it; an older build would drop the record on save. `NodeDto::detached_from` is a wire id, skipped when none, and **not checked against the document on load**: the main may since have been deleted, and the layer was still detached from it. |
 | v19 to v20 | The prototype model (`prototyping-model.md`) | `migrate_19_to_20`: number only, published document moving with it; an older build would drop the fields on save. `NodeDto::reactions` and `play`, `PageDto::flows` and `play`, `DocumentDto::play_export`, each skipped when empty or at its default. The loader refuses what the door refuses (a script under a trigger no person fires, an unusable timing or overlay value, a repeated action or flow id) and keeps every dangling target. |
+| v20 to v21 | Lists and their data sets (`lists.md`) | `migrate_20_to_21`: number only, published document moving with it; an older build would drop them on save. `DocumentDto::data` (the data sets in order, each `{id, name, table, source}`, `source` skipped when unlinked) is skipped when empty; a data set id twice, or one `DataSet::validate` refuses (a table past the chart's limits or ragged, a name past 256 characters), refuses the file. `NodeDto::list` is skipped when none, its `fill` and `copies` when empty and `opened` at 0; a list off a frame, or naming a copy twice or its own frame as one, is dropped, not refused. The copies are saved as the instances they are. |
 
 ## 5.11a The library block
 

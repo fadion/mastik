@@ -1955,13 +1955,31 @@ impl EditorSession {
             self.run = None;
         }
         let before = self.history.current();
-        let dirty = match fold {
+        // A list's description and data set, read before the edit moves into the
+        // history: with the layers it changed, they say which lists to make again.
+        let list_ops = Transaction(
+            tx.0.iter()
+                .filter(|op| matches!(op, Operation::SetList { .. } | Operation::SetDataSet { .. }))
+                .cloned()
+                .collect(),
+        );
+        let mut dirty = match fold {
             Fold::Run => self
                 .history
                 .commit_into_run_noted(&mut self.doc, tx, note)?,
             Fold::Last => self.history.fold_into_last_noted(&mut self.doc, tx, note)?,
             Fold::None => self.history.commit_noted(&mut self.doc, tx, note)?,
         };
+        // The lists the edit left out of date, made again inside its undo step.
+        if let Err(e) = mastik_core::list::regenerate_in_history(
+            &mut self.history,
+            &mut self.doc,
+            &mut self.ids,
+            &list_ops,
+            &mut dirty,
+        ) {
+            self.fail(format!("A list could not be filled: {e}"));
+        }
         self.finish_note(before);
         // An edit folded into the saved step changes the document under the same
         // serial, so that step no longer names what is on disk.

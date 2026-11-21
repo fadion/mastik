@@ -1579,6 +1579,8 @@ impl MastikApp {
         // are where its insets put it.
         self.inspector_insets(ui);
         self.inspector_item(ui);
+        // A list's frame keeps its layout cards: they arrange its rows.
+        self.inspector_list(ui, id);
         if is_chart {
             self.inspector_chart(ui, id);
         } else {
@@ -2708,6 +2710,17 @@ impl MastikApp {
             })
         {
             return self.flatten_charts(&ids);
+        }
+        // And a selection of lists detaches each, as the List card's *Detach list*.
+        if !ids.is_empty()
+            && ids.iter().all(|id| {
+                self.session
+                    .doc
+                    .get(*id)
+                    .is_some_and(|n| n.list().is_some())
+            })
+        {
+            return self.detach_lists(&ids);
         }
         let mirrored = matches!(self.session.selection.ids(), [one] if build::is_mirrored_path(&self.session.doc, *one));
         if self.selected_boolean().is_none()

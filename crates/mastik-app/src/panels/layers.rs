@@ -1437,9 +1437,17 @@ impl MastikApp {
         let Some(node) = self.session.doc.get(id) else {
             return;
         };
-        // A chart is one row: its parts are derived and never listed.
+        // A chart is one row: its parts are derived and never listed. A list
+        // lists its template and not its copies, which are made from it.
+        let copies: &[NodeId] = node.list().map_or(&[], |l| l.copies.as_slice());
         let children: Vec<NodeId> = match shown {
             _ if node.chart().is_some() => Vec::new(),
+            _ if !copies.is_empty() => node
+                .children()
+                .iter()
+                .copied()
+                .filter(|c| !copies.contains(c) && shown.is_none_or(|rows| rows.contains(c)))
+                .collect(),
             Some(rows) => node
                 .children()
                 .iter()

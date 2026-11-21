@@ -62,15 +62,33 @@ impl Drop for StopOnDrop {
 }
 
 /// A file as the worker read it, under one header choice.
-struct Parsed {
+pub(crate) struct Parsed {
     text: String,
-    read: table_io::Read,
+    pub(crate) read: table_io::Read,
     /// Its stat as read, for the link.
-    stat: Option<(u64, u64)>,
+    pub(crate) stat: Option<(u64, u64)>,
 }
 
 /// What a read lands as.
-enum Then {
+pub(crate) enum Then {
+    /// A new list around this instance, over a data set read from `path`
+    /// (`list_data`).
+    List {
+        instance: NodeId,
+        path: PathBuf,
+        linkable: bool,
+    },
+    /// List `list` moved onto a new data set read from `path`.
+    ListData {
+        list: NodeId,
+        path: PathBuf,
+        linkable: bool,
+    },
+    /// Data set `set` read again from its linked file, under its header choice.
+    DataSet {
+        set: mastik_core::list::DataSetId,
+        path: String,
+    },
     /// The import box for this chart; `linkable` when the file came with a path.
     Import {
         chart: NodeId,
@@ -93,7 +111,7 @@ enum Then {
 }
 
 /// Where a read's bytes come from: a file, or a browser drop's bytes.
-enum Source {
+pub(crate) enum Source {
     File(PathBuf),
     Bytes(Vec<u8>),
 }
@@ -213,13 +231,45 @@ fn charts(doc: &mastik_core::Document) -> Vec<(NodeId, &Chart)> {
         .collect()
 }
 
+/// The toolbar pill a changed linked file shows — the import glyph and `text` on
+/// the lit button face — answering whether it was clicked.
+pub(crate) fn link_pill(ui: &mut egui::Ui, text: &str, tip: &str) -> bool {
+    let scale = ui::Scale::Toolbar;
+    let glyph_pt = scale.glyph_pt();
+    let font = egui::FontId::proportional(scale.text_pt());
+    let text_w = ui
+        .ctx()
+        .fonts_mut(|f| f.layout_no_wrap(text.to_string(), font.clone(), color::text()))
+        .size()
+        .x;
+    let w = 9.0 + glyph_pt + 6.0 + text_w + 9.0;
+    let (rect, resp, fg) = ui::button_face(ui, egui::vec2(w, ui::TOOLBAR_H), FieldButton::On);
+    let p = ui.painter();
+    let y = rect.center().y;
+    p.text(
+        egui::pos2(rect.left() + 9.0, y),
+        egui::Align2::LEFT_CENTER,
+        icon::IMPORT,
+        theme::icon_font(glyph_pt),
+        fg,
+    );
+    p.text(
+        egui::pos2(rect.left() + 9.0 + glyph_pt + 6.0, y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font,
+        fg,
+    );
+    resp.on_hover_text(tip).clicked()
+}
+
 /// The stat a link stores: modified seconds and size.
 fn stat_of(path: &Path) -> Option<(u64, u64)> {
     crate::tokens_import::on_disk(path)
 }
 
 /// A link's file name, for the pill and the status line.
-fn file_name(path: &str) -> String {
+pub(crate) fn file_name(path: &str) -> String {
     Path::new(path)
         .file_name()
         .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
@@ -322,7 +372,7 @@ impl MastikApp {
     /// Read `source` as `format` on a worker, once per header choice in
     /// `headers`, for `then`; the status line says *Reading sales.csv…* until
     /// it lands. A read already pending is replaced, and stops.
-    fn start_chart_read(
+    pub(crate) fn start_chart_read(
         &mut self,
         name: &str,
         source: Source,
@@ -344,7 +394,7 @@ impl MastikApp {
     }
 
     /// Whether a read is pending whose landing `same` recognises.
-    fn reading(&self, same: impl Fn(&Then) -> bool) -> bool {
+    pub(crate) fn reading(&self, same: impl Fn(&Then) -> bool) -> bool {
         self.chart_read.as_ref().is_some_and(|r| same(&r.then))
     }
 
@@ -406,6 +456,9 @@ impl MastikApp {
         // *Reading sales.csv…* is over; a landing that reports says so itself.
         self.session.info(String::new());
         match then {
+            Then::List { .. } | Then::ListData { .. } | Then::DataSet { .. } => {
+                self.land_list_read(then, answer);
+            }
             Then::Import {
                 chart,
                 path,
@@ -588,6 +641,13 @@ impl MastikApp {
         let mut paths: Vec<String> = charts(&self.session.doc)
             .into_iter()
             .filter_map(|(_, c)| c.source.as_ref().map(|s| s.path.clone()))
+            .chain(
+                self.session
+                    .doc
+                    .data_sets()
+                    .iter()
+                    .filter_map(|d| d.source.as_ref().map(|s| s.path.clone())),
+            )
             .collect();
         paths.sort();
         paths.dedup();
@@ -619,13 +679,25 @@ impl MastikApp {
     /// Chart `id`'s link as the watch last saw it; `None` when it is not linked.
     pub(crate) fn chart_link_state(&self, id: NodeId) -> Option<LinkState> {
         let link = self.session.doc.get(id)?.chart()?.source.as_ref()?;
+        Some(self.link_state(link))
+    }
+
+    /// Data set `set`'s link as the watch last saw it; `None` when it is not
+    /// linked.
+    pub(crate) fn data_link_state(&self, set: mastik_core::list::DataSetId) -> Option<LinkState> {
+        let link = self.session.doc.data_set(set)?.source.as_ref()?;
+        Some(self.link_state(link))
+    }
+
+    /// What the watch last saw of `link`'s file.
+    fn link_state(&self, link: &DataLink) -> LinkState {
         let seen = self.chart_watch.seen.iter().find(|(p, _)| *p == link.path);
-        Some(match seen {
+        match seen {
             None => LinkState::Current,
             Some((_, None)) => LinkState::Missing,
             Some((_, Some((m, s)))) if *m == link.modified && *s == link.size => LinkState::Current,
             Some(_) => LinkState::Changed,
-        })
+        }
     }
 
     /// The linked charts whose file changed, by path, with their count.
@@ -773,38 +845,8 @@ impl MastikApp {
             1 => format!("{name} changed \u{b7} Update chart"),
             n => format!("{name} changed \u{b7} Update {n} charts"),
         };
-        let scale = ui::Scale::Toolbar;
-        let glyph_pt = scale.glyph_pt();
-        let font = egui::FontId::proportional(scale.text_pt());
-        let text_w = ui
-            .ctx()
-            .fonts_mut(|f| f.layout_no_wrap(text.clone(), font.clone(), color::text()))
-            .size()
-            .x;
-        let w = 9.0 + glyph_pt + 6.0 + text_w + 9.0;
-        let (rect, resp, fg) = ui::button_face(ui, egui::vec2(w, ui::TOOLBAR_H), FieldButton::On);
-        let p = ui.painter();
-        let y = rect.center().y;
-        p.text(
-            egui::pos2(rect.left() + 9.0, y),
-            egui::Align2::LEFT_CENTER,
-            icon::IMPORT,
-            theme::icon_font(glyph_pt),
-            fg,
-        );
-        p.text(
-            egui::pos2(rect.left() + 9.0 + glyph_pt + 6.0, y),
-            egui::Align2::LEFT_CENTER,
-            text,
-            font,
-            fg,
-        );
-        if resp
-            .on_hover_text(format!(
-                "{name} changed on disk \u{b7} click to read it into its charts"
-            ))
-            .clicked()
-        {
+        let tip = format!("{name} changed on disk \u{b7} click to read it into its charts");
+        if link_pill(ui, &text, &tip) {
             self.update_linked_charts(&path);
         }
     }

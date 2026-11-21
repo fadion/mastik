@@ -213,6 +213,10 @@ Decided non-goals are in `docs/non-goals.md`.
 - **Present mode is the player when the document has a flow** on any page, so present mode and *Play* are one act under the `PLAY` glyph; with none it steps through frames (`prototyping-player.md`).
 - **The exported page runs scripts through Luau built by wasi-sdk into the player itself, and only a file that runs a script carries that player**: the scripts player costs about 2.6 MB more gzipped, so a file without *Run script* packs the plain one. A pure-Rust Lua was refused (it is not Luau, so a script would run differently than in the app), and an Emscripten build is closed (`wasm-bindgen` and wgpu's WebGPU backend need `wasm32-unknown-unknown`). `design/prototyping-export.md` *The browser build*.
 - **The exported page's inspect data is made when the file is packed**: the page has no exporter, so each layer's CSS and its export settings' files go into the file (`prototype::inspect_css`, `inspect_files`).
+- **A list's columns fill component properties, not any layer's field**: text, boolean and variant properties of the template's component, so a row is bound through the properties the component already offers (`design/lists.md`).
+- **Data sets are the document's, shared by its lists**, each list naming one by id; the clipboard carries none, so a list pasted into another document reads nothing there until given one.
+- **A list's copies are saved instances, regenerated inside the edit's undo step**: other edits write the copies in history (a main's change propagated, a variable detach), so a regeneration outside history would leave steps naming copies a later one replaced.
+- **A tap inside a list row opens that row; there is no *Open row* action**: a pointer reaction firing in a row sets the row on every *Opened row* list over the same data set before its actions run.
 - **A video from a take encodes H.264 through OpenH264 built from source** (BSD-2-Clause), muxed by the `mp4` crate. Cisco's patent licence covers only its own binaries, so the patent cover is the distributor's. GIF needs no codec.
 
 ## Distribution

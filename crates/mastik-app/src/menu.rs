@@ -169,6 +169,10 @@ pub enum Item {
     UnlinkChartData,
     /// The chart's parts kept as layers, its description dropped.
     FlattenChart,
+    /// An instance repeated once per row of a data file (`list_data`).
+    MakeList,
+    /// A list's rows kept as plain instances, its description dropped.
+    DetachList,
     /// §5.3 — the base operand is bottom of the list, so this reorders to index 0.
     MakeBaseOperand,
     /// §5.8 — the layer align aligns to, the base operand of a boolean, and which
@@ -658,6 +662,8 @@ impl Item {
         Item::UpdateChartData,
         Item::UnlinkChartData,
         Item::FlattenChart,
+        Item::MakeList,
+        Item::DetachList,
         Item::MakeBaseOperand,
         Item::MakeKeyLayer,
         Item::ClipContent,
@@ -808,6 +814,13 @@ impl Item {
             Item::UpdateChartData => s("Update chart data", icon::IMPORT, None, Group::Head),
             Item::UnlinkChartData => s("Unlink data file", icon::LINK_SIMPLE, None, Group::Head),
             Item::FlattenChart => s("Flatten chart", icon::STACK_SIMPLE, None, Group::Structure),
+            Item::MakeList => s(
+                "Make a list from data…",
+                icon::TABLE,
+                None,
+                Group::Structure,
+            ),
+            Item::DetachList => s("Detach list", icon::STACK_SIMPLE, None, Group::Structure),
             Item::MakeBaseOperand => s(
                 "Make this the base operand",
                 icon::DIAMOND,
@@ -1920,6 +1933,9 @@ pub struct Context<'a> {
     /// Several layers are selected and every one is a chart: what offers
     /// *Flatten chart* over them, which flattens each.
     pub all_charts: bool,
+    /// Why the one instance under the menu cannot become a list's template
+    /// (`list::why_not`), dimming *Make a list from data*.
+    pub list_refused: Option<&'static str>,
 }
 
 /// A layer's part in a component, for the menu's component rows.
@@ -2001,6 +2017,8 @@ pub struct LayerState {
     /// The layer is a chart: whether it links a file, and whether that file
     /// changed on disk.
     pub chart: Option<ChartLink>,
+    /// The layer is a list's frame (`mastik_core::list`).
+    pub list: bool,
     /// This layer is a mask, or a container holding one — the question
     /// `inspector::mask_action` asks to decide whether the verb makes or releases.
     pub masked: bool,
@@ -2375,6 +2393,11 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
                 rows.push(Row::new(Item::RestoreChildren).dim_if(locked, why));
             }
             rows.push(Row::new(Item::DetachInstance).dim_if(locked, why));
+            rows.push(
+                Row::new(Item::MakeList)
+                    .dim_if(cx.list_refused.is_some(), cx.list_refused.unwrap_or(""))
+                    .dim_if(locked, why),
+            );
             if cx.kit.is_some() {
                 rows.push(Row::new(Item::MakeLocal).dim_if(locked, why));
             }
@@ -2682,6 +2705,9 @@ fn head_rows(cx: &Context<'_>) -> Vec<Row> {
                 rows.push(Row::new(Item::FlattenChart).promote().dim_if(locked, why));
             }
             Some(Kind::Frame) => {
+                if st.list {
+                    rows.push(Row::new(Item::DetachList).promote().dim_if(locked, why));
+                }
                 // No *Background…* row: a frame's fill is its paint list, which the
                 // inspector's Fill row already edits (§15 D800).
                 rows.push(
@@ -2783,6 +2809,8 @@ pub const KIND_VERBS: &[(Item, &str)] = &[
     (Item::EditChartData, "Select a chart"),
     (Item::ImportChartData, "Select a chart"),
     (Item::FlattenChart, "Select a chart"),
+    (Item::MakeList, "Needs an instance"),
+    (Item::DetachList, "Select a list"),
     (Item::MakeBaseOperand, "Needs a layer inside a boolean"),
     (Item::ClipContent, "Needs one frame"),
     (Item::EditText, "Needs a text layer"),
@@ -3589,6 +3617,11 @@ impl MastikApp {
                         .get(*id)
                         .is_some_and(|n| n.chart().is_some())
                 }),
+            list_refused: self
+                .session
+                .selection
+                .single()
+                .and_then(|id| mastik_core::list::why_not(&self.session.doc, id)),
         }
     }
 
@@ -3611,6 +3644,7 @@ impl MastikApp {
                 linked: self.chart_link_state(id).is_some(),
                 changed: self.chart_link_state(id) == Some(crate::chart_import::LinkState::Changed),
             }),
+            list: node.list().is_some(),
             masked: node.mask()
                 || node
                     .children()
@@ -3898,6 +3932,31 @@ impl MastikApp {
             {
                 let ids = self.session.selection.ids().to_vec();
                 self.flatten_charts(&ids);
+            }
+            // The instance under the menu, or the one selected layer from the palette.
+            Item::MakeList => match self.list_instance(hit) {
+                Some(id) => self.make_list_dialog(id),
+                None => self.session.info("Select an instance"),
+            },
+            // The list under the menu, or every selected list from the palette.
+            Item::DetachList => {
+                let doc = &self.session.doc;
+                let is_list = |id: &NodeId| doc.get(*id).is_some_and(|n| n.list().is_some());
+                let ids: Vec<NodeId> = match hit.filter(is_list) {
+                    Some(h) => vec![h],
+                    None => self
+                        .session
+                        .selection
+                        .ids()
+                        .iter()
+                        .copied()
+                        .filter(is_list)
+                        .collect(),
+                };
+                if ids.is_empty() {
+                    return self.session.info("Select a list");
+                }
+                self.detach_lists(&ids);
             }
             // The chart under the menu, or the one selected chart from the palette.
             Item::EditChartData
@@ -4234,6 +4293,7 @@ mod tests {
             other_pages: Vec::new(),
             can_align: true,
             all_charts: false,
+            list_refused: None,
         }
     }
 
@@ -4803,8 +4863,8 @@ mod tests {
             ),
             (
                 "an instance frame: a main's, with *Go to main component*, *Reset \
-                 all* and *Detach instance* for its two",
-                21,
+                 all*, *Detach instance* and *Make a list from data…* for its two",
+                22,
                 count(Kind::Frame, &|cx| cx.role = Role::Instance),
             ),
             (

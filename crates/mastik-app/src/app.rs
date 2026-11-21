@@ -8346,6 +8346,7 @@ impl MastikApp {
                     }
                     self.tokens_pill(ui);
                     self.chart_link_pill(ui);
+                    self.list_link_pill(ui);
                     self.kit_update_pill(ui);
                     // In a kit opened by *Go to main*, the way back.
                     self.kit_back_link(ui);
@@ -10291,7 +10292,7 @@ mod tests {
     /// widening the scan would self-match.
     #[test]
     fn only_the_layers_panel_commits_without_the_committer() {
-        let panels: [(&str, &str); 24] = [
+        let panels: [(&str, &str); 25] = [
             ("annotation.rs", include_str!("panels/annotation.rs")),
             ("binding.rs", include_str!("panels/binding.rs")),
             ("chart.rs", include_str!("panels/chart.rs")),
@@ -10307,6 +10308,7 @@ mod tests {
             ("inspector.rs", include_str!("panels/inspector.rs")),
             ("layers.rs", include_str!("panels/layers.rs")),
             ("layout.rs", include_str!("panels/layout.rs")),
+            ("list.rs", include_str!("panels/list.rs")),
             ("layout/grid.rs", include_str!("panels/layout/grid.rs")),
             ("paint.rs", include_str!("panels/paint.rs")),
             ("picker.rs", include_str!("panels/picker.rs")),

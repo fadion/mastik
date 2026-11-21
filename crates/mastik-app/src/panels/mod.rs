@@ -19,6 +19,7 @@ pub(crate) mod import_files;
 mod inspector;
 pub(crate) mod layers;
 mod layout;
+mod list;
 pub(crate) mod paint;
 mod picker;
 pub(crate) mod prototype;
