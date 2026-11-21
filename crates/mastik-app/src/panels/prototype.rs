@@ -239,7 +239,7 @@ pub(crate) fn trigger_label(doc: &Document, holder: NodeId, t: &Trigger) -> Stri
         Trigger::Swipe { side } => format!("On swipe {}", side_word(*side)),
         Trigger::Drop { at } => match at {
             DropAt::Anywhere => "On drop anywhere".into(),
-            DropAt::Drawn => format!("On drop at {DRAWN_POINT}"),
+            DropAt::Drawn => format!("On drop at {}", drawn_point(doc, holder)),
             DropAt::Point(p) => match drag_point(doc, holder, *p) {
                 Some(name) => format!("On drop at {name}"),
                 None => "On drop at a missing snap point".into(),
@@ -285,6 +285,14 @@ fn drag_point(doc: &Document, holder: NodeId, p: ItemId) -> Option<String> {
     let follow = doc.get(holder)?.play().follow.clone()?;
     let point = follow.points.iter().find(|k| k.id == p)?;
     Some(point.value.name.clone())
+}
+
+/// The name of the point where `holder` is drawn, as its snap points list it.
+fn drawn_point(doc: &Document, holder: NodeId) -> String {
+    doc.get(holder)
+        .and_then(|n| n.play().follow.as_ref())
+        .map_or(DRAWN_POINT, |f| f.drawn_name())
+        .to_owned()
 }
 
 /// A swipe's side in a block head's words.
@@ -3171,7 +3179,7 @@ impl MastikApp {
                 let snaps = follow.as_ref().is_some_and(|f| f.release == Release::Snaps);
                 let mut options = vec![(DropAt::Anywhere, "Anywhere".to_string())];
                 if snaps {
-                    options.push((DropAt::Drawn, DRAWN_POINT.to_string()));
+                    options.push((DropAt::Drawn, drawn_point(&self.session.doc, id)));
                     for p in follow.iter().flat_map(|f| &f.points) {
                         options.push((DropAt::Point(p.id), p.value.name.clone()));
                     }
@@ -3179,7 +3187,7 @@ impl MastikApp {
                 // Named as the head names it, offered or not.
                 let shown = match at {
                     DropAt::Anywhere => "Anywhere".to_string(),
-                    DropAt::Drawn => DRAWN_POINT.to_string(),
+                    DropAt::Drawn => drawn_point(&self.session.doc, id),
                     DropAt::Point(p) => drag_point(&self.session.doc, id, p)
                         .unwrap_or_else(|| "Missing snap point".into()),
                 };
@@ -5388,7 +5396,7 @@ impl MastikApp {
 
     /// The Prototype card's *Dragging*: whether the layer follows the drag, its
     /// axis, range and release, and its snap points as offsets from where it is
-    /// drawn, the drawn place first and fixed.
+    /// drawn, the drawn place first, renamable and never removed.
     fn dragging_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -5504,17 +5512,24 @@ impl MastikApp {
                 }
             });
             ui::labelled(ui, "Snap points", |ui| {
+                // Where it is drawn: renamed like the others, never removed.
                 ui.horizontal(|ui| {
-                    ui.label(theme::icon_text(
-                        icon::CROSSHAIR_SIMPLE,
-                        14.0,
-                        theme::text::muted(),
-                    ));
-                    ui.label(
-                        egui::RichText::new(format!("{DRAWN_POINT} · where drawn"))
-                            .size(ui::SMALL_PT)
-                            .color(theme::text::muted()),
-                    );
+                    ui.spacing_mut().item_spacing.x = COL;
+                    let name_w = w - ui::CONTROL_H - COL;
+                    let mut text = f.drawn_name().to_owned();
+                    let r =
+                        ui::text_field(ui, egui::vec2(name_w, ui::CONTROL_H), &mut text, "Name")
+                            .on_hover_text("The point where the layer is drawn");
+                    if r.lost_focus() && !text.trim().is_empty() && text != f.drawn_name() {
+                        let name = text.trim().to_owned();
+                        let drawn = (name != DRAWN_POINT).then_some(name);
+                        *next = Some((with(&|f| f.drawn = drawn.clone()), "Rename snap point"));
+                    }
+                    ui.add_enabled_ui(false, |ui| {
+                        ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
+                    })
+                    .inner
+                    .on_disabled_hover_text("Where the layer is drawn is always a point");
                 });
                 let mut gone = None;
                 for k in &f.points {
@@ -5556,9 +5571,10 @@ impl MastikApp {
         });
     }
 
-    /// The Prototype card's *With the scroll*: the range of the nearest
-    /// scrolling frame's offset the effect spans, and a row per property with
-    /// its value at each end. Dim on a layer no scrolling frame holds.
+    /// The Prototype card's *With the scroll*: the scrolling frame the effect
+    /// follows (the nearest above the layer unless one is picked), the range of
+    /// its offset the effect spans, and a row per property with its value at
+    /// each end. Dim on a layer whose screen has no scrolling frame.
     fn scroll_effect_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -5568,17 +5584,23 @@ impl MastikApp {
         next: &mut Option<(LayerPlay, &'static str)>,
     ) {
         let doc = &self.session.doc;
-        let mut at = doc.get(id).and_then(|n| n.parent());
-        let mut scrolled = false;
-        while let Some(f) = at {
-            if doc.get(f).is_some_and(|n| {
-                matches!(n.kind(), NodeKind::Artboard { .. }) && n.play().scroll != ScrollAxis::None
-            }) {
-                scrolled = true;
-                break;
+        // The layer's own scroll is not one it can follow.
+        let options: Vec<NodeId> = scrolling_frames(doc, id)
+            .into_iter()
+            .filter(|f| *f != id)
+            .collect();
+        let above = |f: NodeId| {
+            let mut at = doc.get(id).and_then(|n| n.parent());
+            while let Some(x) = at {
+                if x == f {
+                    return true;
+                }
+                at = doc.get(x).and_then(|n| n.parent());
             }
-            at = doc.get(f).and_then(|n| n.parent());
-        }
+            false
+        };
+        // Those above come first, nearest first.
+        let nearest = options.first().copied().filter(|f| above(*f));
         let with = |e: Option<ScrollEffect>| {
             let mut p = play.clone();
             p.scroll_effect = e;
@@ -5586,16 +5608,21 @@ impl MastikApp {
         };
         ui::labelled(ui, "With the scroll", |ui| {
             let Some(e) = play.scroll_effect.clone() else {
-                let add = ui.add_enabled_ui(scrolled, |ui| {
+                let add = ui.add_enabled_ui(!options.is_empty(), |ui| {
                     ui::field_button(ui, icon::PLUS, ui::CONTROL_H, FieldButton::Off)
                 });
                 let add = add
                     .inner
                     .on_hover_text("Add a property that follows the scroll")
-                    .on_disabled_hover_text("The frame does not scroll");
+                    .on_disabled_hover_text("No frame on the screen scrolls");
                 if add.clicked() {
                     *next = Some((
                         with(Some(ScrollEffect {
+                            // The nearest frame above, or else the screen's first.
+                            frame: match nearest {
+                                Some(_) => None,
+                                None => options.first().copied(),
+                            },
                             from: 0.0,
                             to: NEW_EFFECT_SPAN,
                             props: vec![EffectEnds {
@@ -5615,6 +5642,23 @@ impl MastikApp {
                     play: with(Some(e)),
                 }])
             };
+            let shown = match e.frame {
+                Some(f) => Some(mastik_core::prototype::resolve_target(
+                    &self.session.doc,
+                    id,
+                    f,
+                )),
+                None => nearest,
+            };
+            let doc = &self.session.doc;
+            let combo = ui::labelled(ui, "Frame", |ui| {
+                layer_combo(ui, doc, ("effect-frame", id), shown, &options, w)
+            });
+            if let Some(f) = combo {
+                let mut e2 = e.clone();
+                e2.frame = Some(f);
+                *next = Some((with(Some(e2)), "Scroll effect"));
+            }
             // A field over one number of the effect, `k` its shown scale.
             let field = |app: &mut Self,
                          ui: &mut egui::Ui,
@@ -6406,19 +6450,21 @@ fn layer_combo(
     ui: &mut egui::Ui,
     doc: &Document,
     salt: impl std::hash::Hash + std::fmt::Debug,
-    current: NodeId,
+    current: impl Into<Option<NodeId>>,
     options: &[NodeId],
     w: f32,
 ) -> Option<NodeId> {
-    let shown = match doc.get(current) {
-        Some(_) => name(doc, current),
-        None => "Missing layer".into(),
+    let current = current.into();
+    let shown = match current {
+        Some(c) if doc.get(c).is_some() => name(doc, c),
+        Some(_) => "Missing layer".into(),
+        None => "None".into(),
     };
     let mut pick = None;
     ui::fitted_combo(ui, salt, w, ui::combo_text(&shown), &shown, |ui| {
         ui::menu_rows(ui);
         for o in options {
-            let on = *o == current;
+            let on = Some(*o) == current;
             if ui.selectable_label(on, name(doc, *o)).clicked() && !on {
                 pick = Some(*o);
             }

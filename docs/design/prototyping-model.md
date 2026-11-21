@@ -55,16 +55,20 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
   is `FollowRange::Free`, `Parent` or `Points`; `release` is `Release::Stays`, `Returns` or
   `Snaps`; `settle` is a `Timing`, by default a spring of mass 1, stiffness 300, damping 30;
   `points` is a keyed list of `DragPoint`s, each a name and an offset from where the layer is
-  drawn. The drawn place is always the first point, named `DRAWN_POINT` (*Open*), and never
-  listed, so it cannot be renamed or removed. What play does with it is `play.md`.
+  drawn. The drawn place is always the first point and is never listed, so it cannot be removed;
+  its name is `drawn` (`Follow::drawn_name`), `None` reading as `DRAWN_POINT` (*Open*). What
+  play does with it is `play.md`.
 - **A scroll effect is a `LayerPlay` setting, not a reaction**: `scroll_effect:
-  Option<ScrollEffect>`, a range `from..to` on the offset of the nearest scrolling frame above
-  the layer (in units, down, or across for a frame that scrolls sideways only) and `props`, a
+  Option<ScrollEffect>`, a `frame` it follows, a range `from..to` on that frame's offset (in
+  units, down, or across for a frame that scrolls sideways only) and `props`, a
   list of `EffectEnds`: a `ScrollProp` with its `start` and `end` value. The properties are
   `Opacity` (0–1, in place of the layer's own), `MoveX` and `MoveY` (units from where it is
   drawn), `Scale` (a factor about its centre) and `Rotation` (degrees about its centre). The
-  scroll is the timing, so there is no curve and no keyframe past the two ends. What play does
-  with it is `play.md`.
+  scroll is the timing, so there is no curve and no keyframe past the two ends. `frame: None`
+  follows the nearest scrolling frame above the layer; a named frame is a layer target like a
+  scroll trigger's, read through `resolve_target` (an instance follows its own copy), named by
+  `LayerPlay::layer_target` and carried by `LayerPlay::map_layers` through every remap a
+  reaction's target goes through, and it may dangle. What play does with it is `play.md`.
 - A **flow** is a name, a start frame, starting modes (one per collection, of the document's or
   a kit's; one no longer there is passed over) and starting variable cells, which beat the
   modes' values.
@@ -96,7 +100,8 @@ page's flows and play settings, so the inverse of a removal brings them back.
   a layer (`Node::check_item_ids`), a flow id on a page.
 
 **Targets dangle by design.** Neither the door nor the loader checks that an action's target, a
-flow's start, an input's variable, a *Set mode*'s mode or a named script exists. Play skips a missing one, and undo of
+flow's start, a scroll effect's frame, an input's variable, a *Set mode*'s mode or a named
+script exists. Play skips a missing one, and undo of
 the delete mends it. A target has nothing to draw, so keeping it costs nothing. An input's
 variable counts as a target here, not as a binding, which the loader does refuse when dangling
 (§5.3f).
@@ -107,7 +112,8 @@ variable counts as a target here, not as a binding, which the loader does refuse
 - **The enums are externally tagged** (`{"Navigate":{…}}`, a unit variant as a bare string), as the
   file's other enums are: an instance follows its main field by field, and the merge
   (`propagate::variant_changed`) recognises a change of kind only as the object's one key changing.
-- Layer ids inside reactions and flows are saved in wire form, as every other saved id.
+- Layer ids inside reactions, flows and a scroll effect's frame are saved in wire form, as every
+  other saved id.
 
 ## Instances
 
@@ -123,7 +129,8 @@ variable counts as a target here, not as a binding, which the loader does refuse
 
 ## Copies and clean up
 
-- `remap_subtree` maps a target inside the copied template to its copy and keeps one outside it.
+- `remap_subtree` maps a target inside the copied template to its copy and keeps one outside it,
+  a scroll effect's frame as a reaction's target.
 - `build::insert_subtrees_as` then maps targets across templates copied together, so frame A
   linking to frame B, both duplicated, links copy to copy. It skips linked layers, whose targets
   name their main's layers.
@@ -140,6 +147,7 @@ variable counts as a target here, not as a binding, which the loader does refuse
   `insert_subtrees_as` sees across them. `a_copy_remaps_targets_inside_the_template_only` and
   `duplicating_two_frames_links_the_copies_to_each_other` pin one each.
 - **A linked copy undoes the first remap.** Every door that makes an instance node runs
-  `remap_subtree` and then `Node::make_copy_of`, which puts the source's reactions back unmapped;
-  without it a fresh instance's reactions would all be overrides and stop following the main.
-  `an_instance_holds_its_mains_targets_and_reads_its_own_layers` pins it.
+  `remap_subtree` and then `Node::make_copy_of`, which puts the source's reactions and `play` (a
+  scroll effect's frame) back unmapped; without it a fresh instance's would all be overrides and
+  stop following the main. `an_instance_holds_its_mains_targets_and_reads_its_own_layers` and
+  `an_instances_scroll_effect_names_its_mains_frame` pin it.

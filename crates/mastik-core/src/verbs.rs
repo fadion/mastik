@@ -7253,7 +7253,7 @@ fn tree_ops(
     if let Some(play) = &tree.play {
         late.push(Operation::SetPlay {
             id,
-            play: play.clone(),
+            play: play.map_layers(&mut |t| minted.get(&t).copied().unwrap_or(t)),
         });
     }
     if let Some(written) = &tree.reactions {
@@ -7778,6 +7778,10 @@ pub fn tree(doc: &Document, id: NodeId) -> Option<Value> {
         for k in &r.actions {
             referred.extend(k.value.layer_targets().iter().map(|t| t.to_wire()));
         }
+    }
+    for l in &layers {
+        let target = doc.get(*l).and_then(|n| n.play().layer_target());
+        referred.extend(target.map(|t| t.to_wire()));
     }
     keep_referred_ids(&mut v, &referred);
     loose::tighten("tree", &mut v);

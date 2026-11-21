@@ -47,6 +47,23 @@ mod wire {
     }
 }
 
+/// An optional layer id in its wire form; skipped when `None`.
+mod wire_opt {
+    use crate::id::NodeId;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(id: &Option<NodeId>, s: S) -> Result<S::Ok, S::Error> {
+        match id {
+            Some(id) => super::wire::serialize(id, s),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<NodeId>, D::Error> {
+        super::wire::deserialize(d).map(Some)
+    }
+}
+
 /// One trigger on a layer and the actions it runs, in order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Reaction {
@@ -581,8 +598,7 @@ pub struct LayerPlay {
     /// Whether, and how, the layer moves with a drag that starts on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow: Option<Follow>,
-    /// Properties that follow the nearest scrolling frame's offset above the
-    /// layer across a range.
+    /// Properties that follow a scrolling frame's offset across a range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll_effect: Option<ScrollEffect>,
 }
@@ -592,6 +608,10 @@ pub struct LayerPlay {
 /// timing, so there is no curve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ScrollEffect {
+    /// The frame whose offset it follows, read through [`resolve_target`];
+    /// `None` follows the nearest scrolling frame above the layer.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "wire_opt")]
+    pub frame: Option<NodeId>,
     /// Where on the offset the effect starts and ends, in units along the
     /// frame's scroll (down, or across for a frame that scrolls sideways).
     pub from: f64,
@@ -670,6 +690,10 @@ pub struct Follow {
     /// is drawn is a point too, always the first, so it is not listed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub points: Vec<Keyed<DragPoint>>,
+    /// The name of the point where it is drawn, when renamed from
+    /// [`DRAWN_POINT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawn: Option<String>,
 }
 
 impl Default for Follow {
@@ -680,7 +704,15 @@ impl Default for Follow {
             release: Release::default(),
             settle: settle_timing(),
             points: Vec::new(),
+            drawn: None,
         }
+    }
+}
+
+impl Follow {
+    /// The name of the point where it is drawn.
+    pub fn drawn_name(&self) -> &str {
+        self.drawn.as_deref().unwrap_or(DRAWN_POINT)
     }
 }
 
@@ -724,7 +756,8 @@ pub struct DragPoint {
     pub y: f64,
 }
 
-/// The name of the point where a following layer is drawn.
+/// The name of the point where a following layer is drawn, until renamed
+/// ([`Follow::drawn`]).
 pub const DRAWN_POINT: &str = "Open";
 
 /// Where a *Drop* trigger asks the layer to have come to rest.
@@ -732,7 +765,7 @@ pub const DRAWN_POINT: &str = "Open";
 pub enum DropAt {
     #[default]
     Anywhere,
-    /// Where it is drawn: [`DRAWN_POINT`].
+    /// Where it is drawn: [`Follow::drawn_name`].
     Drawn,
     /// One of [`Follow::points`]; a removed one never matches.
     Point(ItemId),
@@ -755,6 +788,20 @@ impl LayerPlay {
         });
         let effect = self.scroll_effect.as_ref().is_none_or(|e| e.is_usable());
         follow && effect
+    }
+
+    /// The layer it names: a scroll effect's frame.
+    pub fn layer_target(&self) -> Option<NodeId> {
+        self.scroll_effect.as_ref().and_then(|e| e.frame)
+    }
+
+    /// These settings with the layer they name passed through `f`.
+    pub fn map_layers(&self, f: &mut impl FnMut(NodeId) -> NodeId) -> LayerPlay {
+        let mut out = self.clone();
+        if let Some(fr) = out.scroll_effect.as_mut().and_then(|e| e.frame.as_mut()) {
+            *fr = f(*fr);
+        }
+        out
     }
 }
 

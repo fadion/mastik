@@ -3467,13 +3467,14 @@ pub fn insert_subtrees_as(
     // and its link is remapped only within its own template.
     for op in &mut ops {
         if let Operation::InsertSubtree { nodes, .. } = op {
-            for n in nodes
-                .iter_mut()
-                .filter(|n| n.link.is_none() && !n.reactions.is_empty())
-            {
-                n.reactions = crate::prototype::map_layers(&n.reactions, &mut |id| {
-                    copied.get(&id).copied().unwrap_or(id)
-                });
+            for n in nodes.iter_mut().filter(|n| n.link.is_none()) {
+                let mut f = |id| copied.get(&id).copied().unwrap_or(id);
+                if !n.reactions.is_empty() {
+                    n.reactions = crate::prototype::map_layers(&n.reactions, &mut f);
+                }
+                if n.play.layer_target().is_some() {
+                    n.play = n.play.map_layers(&mut f);
+                }
             }
         }
     }

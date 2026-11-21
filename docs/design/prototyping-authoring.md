@@ -71,7 +71,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   | *When a variable changes* | a variable dropdown | *When ‹variable› changes* |
   | *On long press* | *Hold* (ms, new at 500, 100 to 10 000) | *On long press* |
   | *On swipe* | a *Left · Right · Up · Down* `ui::segmented` | *On swipe left* |
-  | *On drop* | *At*, a dropdown behind `icon::CROSSHAIR_SIMPLE`: *Anywhere*, and under *Release* *Snaps* also *Open* and each snap point; its face names the trigger's point as the head does, offered or not | *On drop anywhere*, *On drop at Closed*, *On drop at a missing snap point* |
+  | *On drop* | *At*, a dropdown behind `icon::CROSSHAIR_SIMPLE`: *Anywhere*, and under *Release* *Snaps* also the drawn point by its name (`drawn_point`) and each snap point; its face names the trigger's point as the head does, offered or not | *On drop anywhere*, *On drop at Closed*, *On drop at a missing snap point* |
   | *When scrolled past* | a frame dropdown (the scrolling frames at or above the layer, nearest first, then the rest of its screen's); *Past* (px, new at 100); which way, a *Down · Up · Either* `ui::segmented` (*Right · Left · Either* on a sideways frame) | *When Feed scrolls past 240*, *… going up*, *… either way* |
 - ***Key…* captures the next key**: a focused field, *Press a key*, takes the next plain or
   `Shift`-ed key as the trigger (its `egui::Key` name). A `Ctrl` or `Alt` chord is refused, those
@@ -175,8 +175,12 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *The frame does not scroll* while its parent does not. The pin is set here, on the child's own
   card, rather than in the layers panel's menu.
 - ***With the scroll***, on any layer below a page's top level (`scroll_effect_section`): `+`
-  adds an effect from 0 to 160 px, *Opacity* 100% to 0% (*Add scroll effect*), dimmed with *The
-  frame does not scroll* when no scrolling frame is above the layer. Then *From* and *To* (px),
+  adds an effect from 0 to 160 px, *Opacity* 100% to 0% (*Add scroll effect*), following the
+  nearest scrolling frame above the layer (`frame: None`) or, with none above, naming the
+  screen's first; dimmed with *No frame on the screen scrolls* when no frame but the layer itself
+  does. Then *Frame*, a dropdown of the scrolling frames at or above the layer, nearest first,
+  then the rest of its screen's (`scrolling_frames`, the layer itself left out), showing the
+  named frame or else the nearest; a pick names it, a *Scroll effect* step. Then *From* and *To* (px),
   and a row per property (*Opacity*, *Move Y*, *Move X*, *Scale*, *Rotation*: its name and `×`)
   over its start and end fields, opacity and scale in %, rotation in °. Each number is one
   *Scroll effect* step; `×` removes a property, and with the last the effect (*Remove scroll
@@ -187,8 +191,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   `ARROWS_HORIZONTAL`, `ARROWS_VERTICAL`, tipped *Both*, *Horizontal*, *Vertical*), *Range*
   (*Free* · *Within its parent* · *Snap points*) and *Release* (*Stays* · *Returns* · *Snaps*,
   *Snaps* dimmed with *Add a snap point first*), each change a *Dragging* step. Under *Snap
-  points*, the fixed line *Open · where drawn*, then a row per point (`drag_point_row`): its
-  name, `×`, and its X and Y from where the layer is drawn; `+` adds *Point n*, n the first number no point
+  points*, the drawn point's row: its name in a text field as the others' are (*Rename snap
+  point*; *Open* typed back clears `drawn`), its `×` dimmed with *Where the layer is drawn is
+  always a point*; then a row per point (`drag_point_row`): its name, `×`, and its X and Y from
+  where the layer is drawn; `+` adds *Point n*, n the first number no point
   is named by, n × 100 down. *Settle* sits between *Release* and the points: the transition
   popover's timing rows and motion preview (`timing_fields`), without a kind or a side, for how
   the layer moves after a release; a change is a *Dragging* step.
@@ -322,7 +328,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   to main*. The card's header counts and resets them as every card does (`card_of`:
   `SetReactions` is *Interactions*, `SetPlay` *Prototype*).
 - **Kit publishing** leaves out of a kit main every action whose target lies outside it, and
-  every reaction whose scroll trigger watches a frame outside it (`kit::left_out`); the publish line names them (*· left out Card's Navigate to Checkout, whose
+  every reaction whose scroll trigger watches a frame outside it (`kit::left_out`); a scroll
+  effect naming a frame outside follows the nearest one above instead; the publish line names
+  what is left out (*· left out Card's Navigate to Checkout, whose
   target is outside the component*), in the app's popover as in the MCP's `publish_kit`
   (`kits.md`).
 

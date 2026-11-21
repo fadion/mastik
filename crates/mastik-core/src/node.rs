@@ -228,10 +228,11 @@ impl Node {
     /// an instance node.
     pub(crate) fn make_copy_of(&mut self, source: &Node) {
         self.link = Some(source.id);
-        // A copy's reactions name its source's layers, unmapped
+        // A copy's reactions and scroll effect name its source's layers, unmapped
         // (`prototype::resolve_target` maps them when read); `remap_subtree` had
         // pointed them at the new layers, which would make every one an override.
         self.reactions = source.reactions.clone();
+        self.play = source.play.clone();
         self.swap = None;
         self.component = false;
         self.set = None;

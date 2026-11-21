@@ -2085,6 +2085,7 @@ fn a_scroll_effect_follows_the_offset() {
         hero,
         LayerPlay {
             scroll_effect: Some(ScrollEffect {
+                frame: None,
                 from: 0.0,
                 to: 160.0,
                 props: vec![
@@ -2113,6 +2114,55 @@ fn a_scroll_effect_follows_the_offset() {
     assert_eq!(o, Some(0.0));
     // Scrolled up 240, moved down its whole 60.
     assert_eq!(at, Some(Vec2::new(10.0, -170.0)), "held at its end");
+}
+
+/// A scroll effect naming a frame follows that frame's offset, though no
+/// scrolling frame holds the layer: a card beside a scrolling list fades as
+/// the list scrolls.
+///
+/// flip: `Player::effect_now` ignoring `ScrollEffect::frame` → fails at "the
+/// card follows the list" (no frame above the card scrolls, so no patch).
+#[test]
+fn a_scroll_effect_follows_the_frame_it_names() {
+    use mastik_core::prototype::{EffectEnds, ScrollEffect, ScrollProp};
+    let (mut fx, a, card, _) = one_card();
+    let list = fx.node(a, "List", frame_kind(200.0, 50.0), (0.0, 50.0));
+    fx.play_settings(
+        list,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    fx.rect(list, "Long", 0.0, 0.0, 10.0, 500.0);
+    fx.play_settings(
+        card,
+        LayerPlay {
+            scroll_effect: Some(ScrollEffect {
+                frame: Some(list),
+                from: 0.0,
+                to: 100.0,
+                props: vec![EffectEnds {
+                    prop: ScrollProp::Opacity,
+                    start: 1.0,
+                    end: 0.0,
+                }],
+            }),
+            ..LayerPlay::default()
+        },
+    );
+    let mut p = fx.play(a);
+    p.input(Input::Wheel {
+        at: Point::new(100.0, 75.0),
+        delta: Vec2::new(0.0, 50.0),
+    });
+    let s = p.scene();
+    let o = s
+        .patches
+        .iter()
+        .find(|x| x.node == card)
+        .and_then(|x| x.opacity);
+    assert_eq!(o, Some(0.5), "the card follows the list");
 }
 
 /// A play size lays the screen out again through its flex: a child that grows
@@ -2226,6 +2276,7 @@ fn a_click_follows_a_scroll_effect() {
         LayerPlay {
             pin: Pin::Fixed,
             scroll_effect: Some(ScrollEffect {
+                frame: None,
                 from: 0.0,
                 to: 100.0,
                 props: vec![

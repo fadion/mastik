@@ -372,6 +372,16 @@ fn kept_inside(doc: &Document, captured: &mut [Node]) -> Vec<LeftOut> {
         keep
     }
     let inside: FxHashSet<NodeId> = captured.iter().map(|n| n.id).collect();
+    // A scroll effect naming a frame outside follows the nearest one instead.
+    for n in captured.iter_mut() {
+        let holder = n.id;
+        if let Some(e) = n.play.scroll_effect.as_mut()
+            && let Some(f) = e.frame
+            && !inside.contains(&crate::prototype::resolve_target(doc, holder, f))
+        {
+            e.frame = None;
+        }
+    }
     let mut out = Vec::new();
     for n in captured.iter_mut().filter(|n| !n.reactions.is_empty()) {
         let holder = n.id;
@@ -1089,13 +1099,15 @@ pub fn vendor(
                 }
             }
             // A target may dangle, so one with nowhere to land is kept as it is.
+            let mut f = |t| match inside.contains(&t) {
+                true => t,
+                false => into_vault(t).unwrap_or(t),
+            };
             if !n.reactions.is_empty() {
-                n.reactions = crate::prototype::map_layers(&n.reactions, &mut |t| match inside
-                    .contains(&t)
-                {
-                    true => t,
-                    false => into_vault(t).unwrap_or(t),
-                });
+                n.reactions = crate::prototype::map_layers(&n.reactions, &mut f);
+            }
+            if n.play.layer_target().is_some() {
+                n.play = n.play.map_layers(&mut f);
             }
         }
     }
@@ -1982,8 +1994,10 @@ fn update_in_order(
         // document's: only the targets still naming the kit's layers move.
         let n = b.scratch.get(d).ok_or(KitError::Incomplete(d))?;
         let reactions = crate::prototype::map_layers(&n.reactions, &mut |t| b.here(t).unwrap_or(t));
+        let play = n.play.map_layers(&mut |t| b.here(t).unwrap_or(t));
         let from = b.ops.len();
         b.push(Operation::SetReactions { id: d, reactions })?;
+        b.push(Operation::SetPlay { id: d, play })?;
         if b.ops.len() > from
             && let Some(t) = top_of(&b.scratch, d)
             && !changed.contains(&t)
@@ -2514,12 +2528,14 @@ impl Builder<'_> {
         // Reactions name the kit's layers: each pointed at the scratch's copy,
         // and one whose copy a later sync makes pointed again once all are done.
         let mut owed = false;
-        want.reactions = crate::prototype::map_layers(&want.reactions, &mut |t| {
+        let mut f = |t| {
             self.here(t).unwrap_or_else(|| {
                 owed |= src.get(t).is_some();
                 t
             })
-        });
+        };
+        want.reactions = crate::prototype::map_layers(&want.reactions, &mut f);
+        want.play = want.play.map_layers(&mut f);
         if owed {
             self.later_reactions.push((d, x, self.at));
         }

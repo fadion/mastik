@@ -195,6 +195,60 @@ fn a_copy_remaps_targets_inside_the_template_only() {
     );
 }
 
+/// A copied scroll effect naming a frame copied with it follows the copy,
+/// through the file in the id's wire form; a frame outside keeps its id.
+///
+/// flip: `remap_subtree` cloning `play` unmapped → fails at "follows the copy".
+#[test]
+fn a_copied_scroll_effect_follows_the_copied_frame() {
+    use mastik_core::prototype::{LayerPlay, ScrollEffect};
+    let (mut doc, mut ids, a, b) = two_frames();
+    let (hero, list) = (ids.mint(), ids.mint());
+    doc.apply(&Transaction(vec![
+        frame(hero, a, 0, "Hero"),
+        frame(list, a, 1, "List"),
+    ]))
+    .expect("seed");
+    let follows = |frame| LayerPlay {
+        scroll_effect: Some(ScrollEffect {
+            frame: Some(frame),
+            from: 0.0,
+            to: 100.0,
+            props: Vec::new(),
+        }),
+        ..LayerPlay::default()
+    };
+    doc.apply(&Transaction(vec![
+        Operation::SetPlay {
+            id: hero,
+            play: follows(list),
+        },
+        Operation::SetPlay {
+            id: list,
+            play: follows(b),
+        },
+    ]))
+    .expect("taken");
+    let loaded = round_trip(&doc);
+    assert_eq!(
+        loaded.get(hero).unwrap().play().layer_target(),
+        Some(list),
+        "loaded as saved"
+    );
+
+    let template = doc.capture_subtree(a).expect("captured");
+    let (copies, _) = remap_subtree(&template, &mut ids).expect("remapped");
+    let copy = |name: &str| copies.iter().find(|n| n.name() == name).unwrap();
+    let new_list = copy("List").id();
+    assert_ne!(new_list, list, "the list was copied");
+    assert_eq!(
+        copy("Hero").play().layer_target(),
+        Some(new_list),
+        "follows the copy"
+    );
+    assert_eq!(copy("List").play().layer_target(), Some(b), "outside, kept");
+}
+
 /// A target and a flow's start are saved in the id's wire form, as every other id.
 ///
 /// flip: `Action::Navigate`'s `to` without `serde(with = "wire")` → fails at
@@ -295,6 +349,60 @@ fn an_instance_holds_its_mains_targets_and_reads_its_own_layers() {
         mastik_core::prototype::resolve_target(&doc, button, panel),
         panel,
         "the main reads its own"
+    );
+}
+
+/// A fresh instance holds its main's scroll effect as it is, naming the main's
+/// frame, so it is no override; read, it is the instance's own frame.
+///
+/// flip: `Node::make_copy_of` not restoring the source's `play` → fails at
+/// "the main's own frame".
+#[test]
+fn an_instances_scroll_effect_names_its_mains_frame() {
+    use mastik_core::prototype::{LayerPlay, ScrollEffect};
+    let (mut doc, mut ids, a, _) = two_frames();
+    let page = doc.pages()[0].id;
+    let (hero, list) = (ids.mint(), ids.mint());
+    doc.apply(&Transaction(vec![
+        frame(hero, a, 0, "Hero"),
+        frame(list, a, 1, "List"),
+        Operation::SetComponent {
+            id: a,
+            component: true,
+        },
+        Operation::SetPlay {
+            id: hero,
+            play: LayerPlay {
+                scroll_effect: Some(ScrollEffect {
+                    frame: Some(list),
+                    from: 0.0,
+                    to: 100.0,
+                    props: Vec::new(),
+                }),
+                ..LayerPlay::default()
+            },
+        },
+    ]))
+    .expect("a main");
+    let (tx, instance) =
+        mastik_core::build::place_instance(&doc, &mut ids, a, page, None).expect("placed");
+    doc.apply(&tx).expect("instance");
+    let copy = |name: &str| {
+        mastik_core::build::subtree_nodes(&doc, &[instance])
+            .into_iter()
+            .find(|id| doc.get(*id).unwrap().name() == name)
+            .unwrap()
+    };
+    let (copy_hero, copy_list) = (copy("Hero"), copy("List"));
+    assert_eq!(
+        doc.get(copy_hero).unwrap().play().layer_target(),
+        Some(list),
+        "the main's own frame"
+    );
+    assert_eq!(
+        mastik_core::prototype::resolve_target(&doc, copy_hero, list),
+        copy_list,
+        "read as the instance's list"
     );
 }
 

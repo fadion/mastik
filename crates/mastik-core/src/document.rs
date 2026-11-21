@@ -4465,7 +4465,9 @@ pub fn remap_subtree(template: &[Node], ids: &mut IdSource) -> Option<(Vec<Node>
             reactions: crate::prototype::map_layers(&n.reactions, &mut |id| {
                 map.get(&id).copied().unwrap_or(id)
             }),
-            play: n.play.clone(),
+            play: n
+                .play
+                .map_layers(&mut |id| map.get(&id).copied().unwrap_or(id)),
             // A copy of a detached layer was detached from the same main.
             detached_from: n.detached_from,
             // **Never carried** (§15 D1012): a copy of a vendored node does not live

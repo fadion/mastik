@@ -285,8 +285,10 @@ a *Disabled* instance does not. Its places are offsets from where it is drawn.
 
 ## A scroll effect
 
-A layer whose `LayerPlay::scroll_effect` is set changes with the offset of the nearest scrolling
-frame above it: the vertical offset, or the horizontal one for a frame that scrolls sideways only.
+A layer whose `LayerPlay::scroll_effect` is set changes with the offset of its frame: the one it
+names, read through `resolve_target`, or else the nearest scrolling frame above it; the vertical
+offset, or the horizontal one for a frame that scrolls sideways only. A named frame that is gone,
+or no scrolling frame above, means no effect (`effect_now`).
 
 - **Progress** is linear across `from..to` and held at its ends outside it; a range of no length
   steps at `to`. Each listed property goes from its start to its end value; one not listed stays

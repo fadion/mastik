@@ -694,16 +694,25 @@ impl Player {
         }
     }
 
-    /// Where `id`'s scroll effect stands at the offset of the nearest scrolling
-    /// frame above it; `None` without an effect or such a frame.
+    /// Where `id`'s scroll effect stands at the offset of the frame it names,
+    /// or else the nearest scrolling frame above it; `None` without an effect,
+    /// with a named frame gone, or with no scrolling frame above.
     pub(crate) fn effect_now(&self, id: NodeId) -> Option<EffectNow> {
         let n = self.doc.get(id)?;
         let e = n.play().scroll_effect.as_ref()?;
-        let mut at = n.parent();
-        while let Some(f) = at.filter(|f| self.scrolls(*f) == ScrollAxis::None) {
-            at = self.doc.get(f).and_then(|n| n.parent());
-        }
-        let frame = at?;
+        let frame = match e.frame {
+            Some(f) => {
+                let f = mastik_core::prototype::resolve_target(&self.doc, id, f);
+                self.doc.get(f).map(|_| f)?
+            }
+            None => {
+                let mut at = n.parent();
+                while let Some(f) = at.filter(|f| self.scrolls(*f) == ScrollAxis::None) {
+                    at = self.doc.get(f).and_then(|n| n.parent());
+                }
+                at?
+            }
+        };
         let offset = self.scroll_offset(frame);
         let along = match self.scrolls(frame) {
             ScrollAxis::Horizontal => offset.x,
