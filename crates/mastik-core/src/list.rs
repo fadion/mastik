@@ -474,6 +474,51 @@ pub fn fill_by_name(doc: &Document, template: NodeId, table: &Table) -> Vec<Fill
     out
 }
 
+/// *New table*'s table for `template`: one column per text and boolean
+/// property, then per variant property, each named after it, and one row
+/// holding the instance's own values (`true`/`false` for a boolean, the value
+/// a variant shows), so [`fill_by_name`] fills every property from it.
+pub fn seed_table(doc: &Document, template: NodeId) -> Table {
+    let mut table = Table::default();
+    let mut row = Vec::new();
+    let mut push = |table: &mut Table, name: &str, value: String| {
+        let id = table.next_column_id();
+        table.columns.push(crate::chart::Column {
+            id,
+            name: name.chars().take(MAX_CELL_CHARS).collect(),
+        });
+        row.push(value.chars().take(MAX_CELL_CHARS).collect::<String>());
+    };
+    for p in crate::variant::instance_properties(doc, template) {
+        if table.columns.len() >= MAX_COLUMNS {
+            break;
+        }
+        let value = match crate::variant::property_state(doc, template, &p).map(|(v, _)| v) {
+            Some(PropValue::Text(t)) if p.kind == PropKind::Text => t,
+            Some(PropValue::Boolean(b)) if p.kind == PropKind::Boolean => b.to_string(),
+            None if matches!(p.kind, PropKind::Text | PropKind::Boolean) => String::new(),
+            _ => continue,
+        };
+        push(&mut table, &p.name, value);
+    }
+    let shown = crate::component::main_of(doc, template)
+        .and_then(|m| doc.get(m))
+        .map(|m| m.variant().to_vec())
+        .unwrap_or_default();
+    for (i, p) in variant_props(doc, template).into_iter().enumerate() {
+        if table.columns.len() >= MAX_COLUMNS {
+            break;
+        }
+        push(
+            &mut table,
+            &p.name,
+            shown.get(i).cloned().unwrap_or_default(),
+        );
+    }
+    table.rows.push(row);
+    table
+}
+
 /// Where a new list's data comes from.
 pub enum Source {
     /// A data set the document holds.

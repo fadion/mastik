@@ -169,8 +169,16 @@ pub enum Item {
     UnlinkChartData,
     /// The chart's parts kept as layers, its description dropped.
     FlattenChart,
-    /// An instance repeated once per row of a data file (`list_data`).
+    /// *Make a list from data ▸* — the instance menu's row holding the data
+    /// sets, [`Self::MakeListFile`] and [`Self::MakeListNewTable`].
     MakeList,
+    /// An instance repeated once per row of this data set, filled by name
+    /// (`list_data`): a row of *Make a list from data ▸*.
+    MakeListFrom(mastik_core::list::DataSetId),
+    /// An instance repeated once per row of a picked data file.
+    MakeListFile,
+    /// An instance repeated over a new table seeded from its own properties.
+    MakeListNewTable,
     /// A list's rows kept as plain instances, its description dropped.
     DetachList,
     /// §5.3 — the base operand is bottom of the list, so this reorders to index 0.
@@ -663,6 +671,8 @@ impl Item {
         Item::UnlinkChartData,
         Item::FlattenChart,
         Item::MakeList,
+        Item::MakeListFile,
+        Item::MakeListNewTable,
         Item::DetachList,
         Item::MakeBaseOperand,
         Item::MakeKeyLayer,
@@ -814,9 +824,18 @@ impl Item {
             Item::UpdateChartData => s("Update chart data", icon::IMPORT, None, Group::Head),
             Item::UnlinkChartData => s("Unlink data file", icon::LINK_SIMPLE, None, Group::Head),
             Item::FlattenChart => s("Flatten chart", icon::STACK_SIMPLE, None, Group::Structure),
-            Item::MakeList => s(
-                "Make a list from data…",
-                icon::TABLE,
+            Item::MakeList | Item::MakeListFrom(_) => {
+                s("Make a list from data", icon::TABLE, None, Group::Structure)
+            }
+            Item::MakeListFile => s(
+                "Make a list from a file…",
+                icon::IMPORT,
+                None,
+                Group::Structure,
+            ),
+            Item::MakeListNewTable => s(
+                "Make a list from a new table",
+                icon::PLUS,
                 None,
                 Group::Structure,
             ),
@@ -1936,6 +1955,9 @@ pub struct Context<'a> {
     /// Why the one instance under the menu cannot become a list's template
     /// (`list::why_not`), dimming *Make a list from data*.
     pub list_refused: Option<&'static str>,
+    /// The document's data sets with their rows, worded for *Make a list from
+    /// data ▸* (*products.csv · 24 rows*).
+    pub data_sets: Vec<(mastik_core::list::DataSetId, String)>,
 }
 
 /// A layer's part in a component, for the menu's component rows.
@@ -2394,10 +2416,27 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
                 rows.push(Row::new(Item::RestoreChildren).dim_if(locked, why));
             }
             rows.push(Row::new(Item::DetachInstance).dim_if(locked, why));
+            // The document's data sets first, as the List card's dropdown words
+            // them, then a file or a new table.
+            let sets: Vec<Row> = cx
+                .data_sets
+                .iter()
+                .map(|(set, name)| Row::new(Item::MakeListFrom(*set)).label(name.clone()))
+                .collect();
+            let more = vec![
+                Row::new(Item::MakeListFile).label("From a file…"),
+                Row::new(Item::MakeListNewTable).label("New table"),
+            ];
+            let groups = if sets.is_empty() {
+                vec![more]
+            } else {
+                vec![sets, more]
+            };
             rows.push(
                 Row::new(Item::MakeList)
                     .dim_if(cx.list_refused.is_some(), cx.list_refused.unwrap_or(""))
-                    .dim_if(locked, why),
+                    .dim_if(locked, why)
+                    .sub(groups),
             );
             if cx.kit.is_some() {
                 rows.push(Row::new(Item::MakeLocal).dim_if(locked, why));
@@ -2707,6 +2746,7 @@ fn head_rows(cx: &Context<'_>) -> Vec<Row> {
             }
             Some(Kind::Frame) => {
                 if st.list {
+                    rows.push(Row::new(Item::EditChartData));
                     rows.push(Row::new(Item::DetachList).promote().dim_if(locked, why));
                 }
                 // No *Background…* row: a frame's fill is its paint list, which the
@@ -2811,6 +2851,8 @@ pub const KIND_VERBS: &[(Item, &str)] = &[
     (Item::ImportChartData, "Select a chart"),
     (Item::FlattenChart, "Select a chart"),
     (Item::MakeList, "Needs an instance"),
+    (Item::MakeListFile, "Needs an instance"),
+    (Item::MakeListNewTable, "Needs an instance"),
     (Item::DetachList, "Select a list"),
     (Item::MakeBaseOperand, "Needs a layer inside a boolean"),
     (Item::ClipContent, "Needs one frame"),
@@ -3623,6 +3665,16 @@ impl MastikApp {
                 .selection
                 .single()
                 .and_then(|id| mastik_core::list::why_not(&self.session.doc, id)),
+            data_sets: self
+                .session
+                .doc
+                .data_sets()
+                .iter()
+                .map(|d| {
+                    let rows = crate::ui::count_as(d.table.rows.len(), "row", "rows");
+                    (d.id, format!("{} \u{b7} {rows}", d.name))
+                })
+                .collect(),
         }
     }
 
@@ -3935,8 +3987,16 @@ impl MastikApp {
                 self.flatten_charts(&ids);
             }
             // The instance under the menu, or the one selected layer from the palette.
-            Item::MakeList => match self.list_instance(hit) {
+            Item::MakeList | Item::MakeListFile => match self.list_instance(hit) {
                 Some(id) => self.make_list_dialog(id),
+                None => self.session.info("Select an instance"),
+            },
+            Item::MakeListFrom(set) => match self.list_instance(hit) {
+                Some(id) => self.make_list_over(id, set),
+                None => self.session.info("Select an instance"),
+            },
+            Item::MakeListNewTable => match self.list_instance(hit) {
+                Some(id) => self.make_list_new_table(id),
                 None => self.session.info("Select an instance"),
             },
             // The list under the menu, or every selected list from the palette.
@@ -3965,6 +4025,17 @@ impl MastikApp {
             | Item::UpdateChartData
             | Item::UnlinkChartData
             | Item::FlattenChart => {
+                // *Edit data…* on a list opens its data set's table.
+                if matches!(item, Item::EditChartData)
+                    && let Some(l) = hit.or(self.session.selection.single()).filter(|id| {
+                        self.session
+                            .doc
+                            .get(*id)
+                            .is_some_and(|n| n.list().is_some())
+                    })
+                {
+                    return self.open_list_data(l);
+                }
                 let chart = hit.or(self.session.selection.single()).filter(|id| {
                     self.session
                         .doc
@@ -4295,6 +4366,7 @@ mod tests {
             can_align: true,
             all_charts: false,
             list_refused: None,
+            data_sets: Vec::new(),
         }
     }
 
@@ -4490,7 +4562,7 @@ mod tests {
                 // A *Move to page ▸* row names a page, which `ALL` cannot list.
                 for row in deep(&build(&cx))
                     .into_iter()
-                    .filter(|r| !matches!(r.item, Item::MoveTo(_)))
+                    .filter(|r| !matches!(r.item, Item::MoveTo(_) | Item::MakeListFrom(_)))
                 {
                     assert!(
                         Item::ALL.contains(&row.item),

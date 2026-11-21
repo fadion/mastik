@@ -42,8 +42,13 @@ pub(crate) type Cell = (usize, usize);
 /// The window while it is open.
 #[derive(Clone, Debug)]
 pub(crate) struct ChartData {
-    /// The chart it shows, until another chart is selected alone or it is gone.
+    /// The chart it shows, until another chart is selected alone or it is gone;
+    /// for a data set's window, the list it was opened from.
     pub(crate) chart: NodeId,
+    /// The data set it shows in place of a chart's table (*List data*).
+    pub(crate) data: Option<mastik_core::list::DataSetId>,
+    /// The data set's name while it is typed over in the head.
+    naming: Option<String>,
     /// The cursor, and the other corner of the selected range.
     pub(crate) at: Cell,
     pub(crate) anchor: Cell,
@@ -125,6 +130,8 @@ impl ChartData {
     fn new(chart: NodeId, at: Cell) -> Self {
         Self {
             chart,
+            data: None,
+            naming: None,
             at,
             anchor: at,
             edit: None,
@@ -154,6 +161,8 @@ enum Role {
     Series(Option<egui::Color32>),
     /// A Sankey's From, To or Value.
     Named(&'static str),
+    /// The property a list's column fills, in a data set's window.
+    Fill(String),
     Unmapped,
 }
 
@@ -451,13 +460,103 @@ impl MastikApp {
             return;
         }
         // One card over the canvas's top at a time.
+        self.open_chart_data_on(id, None);
+        if let Some(open) = &mut self.chart_data {
+            open.at = at;
+            open.anchor = at;
+        }
+    }
+
+    /// Open the window on the data set list `list` reads (*Edit data…* on the
+    /// List card), its first cell selected.
+    pub(crate) fn open_list_data(&mut self, list: NodeId) {
+        let Some(set) = self
+            .session
+            .doc
+            .get(list)
+            .and_then(|n| n.list())
+            .map(|l| l.data)
+            .filter(|d| self.session.doc.data_set(*d).is_some())
+        else {
+            return;
+        };
+        self.open_chart_data_on(list, Some(set));
+    }
+
+    /// Close the other cards over the canvas's top, then open the window.
+    fn open_chart_data_on(&mut self, id: NodeId, data: Option<mastik_core::list::DataSetId>) {
         self.close_find();
         self.colour_review.open = false;
         self.system_health = None;
         self.batch_rename = None;
         self.clean_up = None;
         self.fill_content = None;
-        self.chart_data = Some(ChartData::new(id, at));
+        let mut open = ChartData::new(id, (0, 0));
+        open.data = data;
+        self.chart_data = Some(open);
+    }
+
+    /// Write `table` as data set `set`'s, one undo step *Edit list data*: every
+    /// list over it is made again, a fill whose column is gone dropped.
+    pub(crate) fn commit_data_table(
+        &mut self,
+        set: mastik_core::list::DataSetId,
+        table: chart::Table,
+    ) {
+        let Some(now) = self.session.doc.data_set(set).cloned() else {
+            return;
+        };
+        if table == now.table {
+            return;
+        }
+        let mut ops = Vec::new();
+        for l in self.lists_over(set) {
+            let Some(x) = self.session.doc.get(l).and_then(|n| n.list()).cloned() else {
+                continue;
+            };
+            let fill: Vec<_> = x
+                .fill
+                .iter()
+                .filter(|f| table.index_of(f.column).is_some())
+                .cloned()
+                .collect();
+            if fill != x.fill {
+                ops.push(Operation::SetList {
+                    id: l,
+                    list: Some(Box::new(mastik_core::list::List { fill, ..x })),
+                });
+            }
+        }
+        ops.insert(
+            0,
+            Operation::SetDataSet {
+                id: set,
+                set: Some(Box::new(mastik_core::list::DataSet { table, ..now })),
+            },
+        );
+        self.session.name_step("Edit list data", icon::TABLE);
+        self.commit_edit(Transaction(ops));
+    }
+
+    /// Data set `set` renamed, undo step *Rename data*; a name another data set
+    /// has is numbered past it.
+    pub(crate) fn rename_data_set(&mut self, set: mastik_core::list::DataSetId, name: &str) {
+        let Some(now) = self.session.doc.data_set(set).cloned() else {
+            return;
+        };
+        let name: String = name
+            .chars()
+            .take(mastik_core::list::MAX_NAME_CHARS)
+            .collect();
+        if name == now.name {
+            return;
+        }
+        let name = mastik_core::list::free_name(&self.session.doc, &name);
+        self.session.name_step("Rename data", icon::PENCIL_SIMPLE);
+        self.commit_edit(Transaction(vec![Operation::SetDataSet {
+            id: set,
+            set: Some(Box::new(mastik_core::list::DataSet { name, ..now })),
+        }]));
     }
 
     /// Close the window, dropping a cell being typed into.
@@ -513,6 +612,9 @@ impl MastikApp {
             return;
         }
         let id = open.chart;
+        if let Some(set) = open.data {
+            return self.list_data_ui(ctx, canvas, id, set);
+        }
         // Selecting another chart moves the window there.
         if let [other] = self.session.selection.ids()
             && *other != id
@@ -565,7 +667,7 @@ impl MastikApp {
                 })
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
-                    grid(ui, &chart, &swatches, &mut state, linked, &mut act);
+                    grid(ui, &chart, &swatches, None, &mut state, linked, &mut act);
                 });
         });
         self.chart_data = Some(state);
@@ -575,6 +677,118 @@ impl MastikApp {
                 Act::Import => self.import_chart_data_dialog(id),
                 Act::Table(t) => self.commit_table(id, &chart, t),
                 Act::Chart(c) => self.commit_chart(id, *c),
+                Act::Copy(text) => ctx.copy_text(text),
+                Act::Note(text) => self.session.info(text),
+            }
+        }
+    }
+}
+
+impl MastikApp {
+    /// The window over data set `set`, opened from list `list` (*List data*):
+    /// the chart's grid with each column's fill on that list in place of its
+    /// role, the data set's name renamed in the head. Moved to another list's
+    /// data set when that list alone is selected, closed when the set is gone.
+    fn list_data_ui(
+        &mut self,
+        ctx: &egui::Context,
+        canvas: egui::Rect,
+        list: NodeId,
+        set: mastik_core::list::DataSetId,
+    ) {
+        let doc = &self.session.doc;
+        if let [other] = self.session.selection.ids()
+            && *other != list
+            && let Some(d) = doc.get(*other).and_then(|n| n.list()).map(|l| l.data)
+            && doc.data_set(d).is_some()
+        {
+            let mut next = ChartData::new(*other, (0, 0));
+            next.data = Some(d);
+            self.chart_data = Some(next);
+            return;
+        }
+        let Some(data) = doc.data_set(set).cloned() else {
+            self.chart_data = None;
+            return;
+        };
+        // The property each column fills on the list it was opened from.
+        let fills: Vec<Option<String>> = {
+            let x = doc.get(list).and_then(|n| n.list());
+            let tpl = mastik_core::list::template(doc, list);
+            let props = tpl
+                .map(|t| mastik_core::variant::instance_properties(doc, t))
+                .unwrap_or_default();
+            data.table
+                .columns
+                .iter()
+                .map(|c| {
+                    let f = x?.fill.iter().find(|f| f.column == c.id)?;
+                    Some(match &f.target {
+                        mastik_core::list::Target::Prop(p) => {
+                            props.iter().find(|q| q.id == *p)?.name.clone()
+                        }
+                        mastik_core::list::Target::Variant(v) => v.clone(),
+                    })
+                })
+                .collect()
+        };
+        let lists = self.lists_over(set).len();
+        let rest = match lists {
+            0 | 1 => String::new(),
+            n => format!(" \u{b7} {n} lists"),
+        };
+        // The chart's grid reads a chart; a data set's table stands in one that
+        // maps nothing.
+        let chart = Chart {
+            table: data.table.clone(),
+            source: data.source.clone(),
+            mapping: Default::default(),
+            series: Vec::new(),
+            ..Chart::sample(ChartKind::Column)
+        };
+        let linked = chart.source.is_some();
+        let w = W.min(canvas.width() - 32.0).max(320.0);
+        let mut act: Vec<Act> = Vec::new();
+        let mut renamed = None;
+        let Some(mut state) = self.chart_data.take() else {
+            return;
+        };
+        let hold = crate::settings::CardHold::Open;
+        crate::settings::movable_canvas_card(ctx, "chart-data", canvas, w, hold, |ui| {
+            let (closed, kept) = crate::settings::card_head_renamable(
+                ui,
+                w,
+                "List data",
+                &data.name,
+                &rest,
+                &mut state.naming,
+            );
+            if closed {
+                act.push(Act::Close);
+            }
+            renamed = kept;
+            egui::Frame::NONE
+                .inner_margin(egui::Margin {
+                    left: PAD as i8,
+                    right: PAD as i8,
+                    top: 0,
+                    bottom: PAD as i8,
+                })
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
+                    grid(ui, &chart, &[], Some(&fills), &mut state, linked, &mut act);
+                });
+        });
+        self.chart_data = Some(state);
+        if let Some(name) = renamed {
+            self.rename_data_set(set, &name);
+        }
+        for a in act {
+            match a {
+                Act::Close => self.close_chart_data(),
+                Act::Import => self.relink_data_set(set),
+                Act::Table(t) => self.commit_data_table(set, t),
+                Act::Chart(c) => self.commit_data_table(set, c.table),
                 Act::Copy(text) => ctx.copy_text(text),
                 Act::Note(text) => self.session.info(text),
             }
@@ -617,11 +831,14 @@ fn linked_line(chart: &Chart) -> String {
 /// The grid under its toolbar (*Add row*, *Add column*, and *Import…* at the
 /// right): the header row and the row gutter held at the viewport's edges over
 /// the scrolled cells, and past the table's last row and column a dim grid
-/// filling the view, which neither scrolls nor takes a click.
+/// filling the view, which neither scrolls nor takes a click. `fills` is a data
+/// set's window: the property each column fills on the list it was opened
+/// from, in place of the chart's role marks and menu rows.
 fn grid(
     ui: &mut egui::Ui,
     chart: &Chart,
     swatches: &[Option<egui::Color32>],
+    fills: Option<&[Option<String>]>,
     s: &mut ChartData,
     linked: bool,
     act: &mut Vec<Act>,
@@ -948,7 +1165,13 @@ fn grid(
                 theme::text::faint(),
             );
             x += tag_g.size().x + 5.0;
-            let role = role_of(chart, column.id, swatches.get(c).copied().flatten());
+            let role = match fills {
+                Some(f) => match f.get(c).cloned().flatten() {
+                    Some(p) => Role::Fill(p),
+                    None => Role::Unmapped,
+                },
+                None => role_of(chart, column.id, swatches.get(c).copied().flatten()),
+            };
             if let Role::Series(Some(colour)) = role {
                 let sw = egui::Rect::from_center_size(
                     egui::pos2(x + 4.0, hr.center().y),
@@ -961,20 +1184,31 @@ fn grid(
                 Role::Unmapped => theme::text::dim(),
                 _ => color::text(),
             };
-            // The role mark against the right edge: the category's key, or a
-            // Sankey column's word.
-            let mark = match role {
+            // The role mark against the right edge: the category's key, a
+            // Sankey column's word, or the property a list's column fills.
+            let mark = match &role {
+                Role::Fill(p) => Some((
+                    clip.layout_no_wrap(
+                        p.clone(),
+                        egui::FontId::proportional(ui::SMALL_PT - 1.5),
+                        color::accent_300(),
+                    ),
+                    Some(format!("Fills {p} on this list")),
+                )),
                 Role::Category => Some((
                     clip.layout_no_wrap(
                         icon::KEY.into(),
                         theme::icon_font(KEY_PT),
                         theme::text::faint(),
                     ),
-                    Some(if chart.kind == ChartKind::Scatter {
-                        "The chart's X values"
-                    } else {
-                        "The chart's categories"
-                    }),
+                    Some(
+                        if chart.kind == ChartKind::Scatter {
+                            "The chart's X values"
+                        } else {
+                            "The chart's categories"
+                        }
+                        .to_string(),
+                    ),
                 )),
                 Role::Named(n) => Some((
                     clip.layout_no_wrap(
@@ -992,7 +1226,7 @@ fn grid(
                 let mark_rect = egui::Rect::from_min_size(at, g.size());
                 clip.galley(at, g, theme::text::faint());
                 if let Some(tip) = tip {
-                    tips.push((mark_rect.expand(2.0), tip.to_string()));
+                    tips.push((mark_rect.expand(2.0), tip));
                 }
                 name_right = mark_rect.left() - 4.0;
             }
@@ -1073,7 +1307,7 @@ fn grid(
     });
 
     if let Some(menu) = s.menu.clone() {
-        menus(ui, chart, s, menu, linked, act);
+        menus(ui, chart, fills.is_none(), s, menu, linked, act);
     }
 }
 
@@ -1318,6 +1552,7 @@ fn commit_rename(t: &chart::Table, s: &mut ChartData, act: &mut Vec<Act>) {
 fn menus(
     ui: &mut egui::Ui,
     chart: &Chart,
+    for_chart: bool,
     s: &mut ChartData,
     menu: Menu,
     linked: bool,
@@ -1382,7 +1617,7 @@ fn menus(
                             s.focus = true;
                             s.menu = None;
                         }
-                        if chart.kind != ChartKind::Sankey {
+                        if for_chart && chart.kind != ChartKind::Sankey {
                             let is_category = chart.mapping.category == Some(id);
                             let resp = ui::menu_row(
                                 ui,

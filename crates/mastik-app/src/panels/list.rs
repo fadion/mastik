@@ -129,6 +129,13 @@ impl MastikApp {
             .size(ui::SMALL_PT)
             .color(theme::text::muted()),
         );
+        let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
+        if ui::action_button(ui, icon::TABLE, "Edit data…", ui::FieldButton::Off, size)
+            .on_hover_text("Open the list's table over the canvas")
+            .clicked()
+        {
+            self.open_list_data(id);
+        }
         if let Some(link) = &set.source {
             let state = self.data_link_state(set.id).unwrap_or(LinkState::Current);
             let name = file_name(&link.path);
@@ -657,5 +664,111 @@ mod tests {
         let at = app.session.resolved.world_bounds(copy).unwrap().center();
         app.double_click_pick(Some(l), at);
         assert_eq!(app.session.selection.single(), Some(inst), "the template");
+    }
+
+    /// *New table* makes a list over a one-row table seeded from the instance's
+    /// own values, each column filling the property of its name, and opens the
+    /// data window on it.
+    #[test]
+    fn new_table_seeds_a_row_from_the_instance() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        app.make_list_new_table(inst);
+        let doc = &app.session.doc;
+        let set = &doc.data_sets()[0];
+        assert_eq!(set.name, "Table 1");
+        assert_eq!(set.table.columns[0].name, "Title");
+        assert_eq!(
+            set.table.rows,
+            [vec!["Name".to_string()]],
+            "the instance's text"
+        );
+        let l = mastik_core::list::lists(doc)[0];
+        assert_eq!(
+            doc.get(l).unwrap().list().unwrap().fill.len(),
+            1,
+            "filled by name"
+        );
+        let open = app.chart_data.as_ref().expect("the data window opened");
+        assert_eq!(open.data, Some(set.id));
+        for _ in 0..3 {
+            pass(&ctx, &mut app);
+        }
+        assert!(app.chart_data.is_some(), "drawn and still open");
+    }
+
+    /// An edit in the data window writes the data set in one step, every list
+    /// over it made again, a fill on a deleted column dropped; the data set is
+    /// renamed past a name another has.
+    /// flip: `commit_data_table` keeping every fill → fails at "dropped".
+    #[test]
+    fn the_data_window_edits_the_data_set() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, set) = listed(&mut app, inst, &["A", "B"]);
+        let mut grown = app.session.doc.data_set(set).unwrap().table.clone();
+        grown.rows.push(vec!["C".into()]);
+        let depth = app.session.history.undo_depth();
+        app.commit_data_table(set, grown.clone());
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+        let copies = |app: &MastikApp| app.session.doc.get(l).unwrap().list().unwrap().copies.len();
+        assert_eq!(copies(&app), 2, "three rows");
+
+        let mut cut = grown;
+        cut.columns.clear();
+        cut.rows.iter_mut().for_each(|r| r.clear());
+        app.commit_data_table(set, cut);
+        let x = app.session.doc.get(l).unwrap().list().unwrap();
+        assert!(x.fill.is_empty(), "dropped");
+
+        app.rename_data_set(set, "Products");
+        assert_eq!(app.session.doc.data_set(set).unwrap().name, "Products");
+    }
+
+    /// The instance menu's *Make a list from data ▸* lists the document's data
+    /// sets, then *From a file…* and *New table*.
+    #[test]
+    fn the_make_list_flyout_lists_the_data_sets() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let page = app.session.doc.first_page();
+        let main = mastik_core::component::main_of(&app.session.doc, inst).unwrap();
+        let other = verb(
+            &mut app,
+            "create_instance",
+            json!({ "main": main.to_wire(), "parent": page.to_wire(), "x": -3000, "y": 0 }),
+        )[0];
+        let (_, set) = listed(&mut app, inst, &["A", "B"]);
+        app.session.selection.set_one(other);
+        let target = crate::menu::Target::Layer {
+            id: other,
+            door: crate::menu::Door::Canvas,
+        };
+        app.open_context_menu(&ctx, target, None);
+        let rows = app.open_menu_rows();
+        let head = rows
+            .iter()
+            .flatten()
+            .find(|r| r.item == crate::menu::Item::MakeList)
+            .expect("the row");
+        let labels: Vec<Vec<String>> = head
+            .sub
+            .iter()
+            .map(|g| g.iter().map(|r| r.label.to_string()).collect())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                vec!["rows.csv \u{b7} 2 rows".to_string()],
+                vec!["From a file…".into(), "New table".into()]
+            ]
+        );
+        app.make_list_over(other, set);
+        assert_eq!(mastik_core::list::lists(&app.session.doc).len(), 2);
+        assert_eq!(
+            app.session.doc.data_sets().len(),
+            1,
+            "one data set, two lists"
+        );
     }
 }

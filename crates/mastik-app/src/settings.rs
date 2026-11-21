@@ -1375,8 +1375,13 @@ fn title_row(ui: &mut egui::Ui, title: &str, note: Option<&str>) -> bool {
 /// `ui::SMALL_PT` [`TITLE_NOTE_GAP`] after the title label `shown`, on the
 /// title's baseline: the smaller type centred by its box sits high beside it.
 /// Called inside the row's right-to-left run after its own controls, so it is
-/// cut to the room they leave, the whole note its tooltip.
-pub(crate) fn title_note(ui: &mut egui::Ui, shown: &egui::Response, title: &str, note: &str) {
+/// cut to the room they leave, the whole note its tooltip. Answers where it drew.
+pub(crate) fn title_note(
+    ui: &mut egui::Ui,
+    shown: &egui::Response,
+    title: &str,
+    note: &str,
+) -> egui::Rect {
     let ink = theme::text::dim();
     let left = shown.rect.right() + TITLE_NOTE_GAP;
     let room = ui.available_rect_before_wrap().right() - left;
@@ -1401,6 +1406,78 @@ pub(crate) fn title_note(ui: &mut egui::Ui, shown: &egui::Response, title: &str,
         ui.interact(rect, ui.id().with("title-note"), egui::Sense::hover())
             .on_hover_text(note);
     }
+    rect
+}
+
+/// [`card_head_noted`] whose note leads with `name`, renamed in place: a
+/// double-click on the note turns the name into a field over it, `Enter` or a
+/// click away keeps what was typed, `Escape` drops it. `edit` holds the text
+/// while typing. Answers whether its ✕ was pressed, and a name kept.
+pub(crate) fn card_head_renamable(
+    ui: &mut egui::Ui,
+    w: f32,
+    title: &str,
+    name: &str,
+    rest: &str,
+    edit: &mut Option<String>,
+) -> (bool, Option<String>) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, CANVAS_CARD_HEAD_H), egui::Sense::hover());
+    ui::card_drag_handle(ui, rect);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(CANVAS_CARD_PAD, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let mut kept = None;
+    let closed = child
+        .horizontal(|ui| {
+            let shown = ui.label(
+                egui::RichText::new(title)
+                    .font(egui::FontId::proportional(ui::TITLE_PT))
+                    .color(theme::text::strong()),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let closed = ui::close_button(ui).clicked();
+                let id = ui.id().with("rename-note");
+                match edit {
+                    Some(text) => {
+                        let left = shown.rect.right() + TITLE_NOTE_GAP - ui::INLINE_EDIT_PAD_X;
+                        let right = ui.available_rect_before_wrap().right();
+                        let field = egui::Rect::from_min_max(
+                            egui::pos2(left, shown.rect.center().y - ui::CONTROL_H / 2.0),
+                            egui::pos2(
+                                right.min(left + 240.0),
+                                shown.rect.center().y + ui::CONTROL_H / 2.0,
+                            ),
+                        );
+                        let resp =
+                            ui::label_edit_set(ui, field, text, id, ui::SMALL_PT, egui::Align::Min);
+                        let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        if resp.lost_focus() {
+                            if !escaped {
+                                kept = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+                            }
+                            *edit = None;
+                        } else if !resp.has_focus() {
+                            resp.request_focus();
+                        }
+                    }
+                    None => {
+                        let at = title_note(ui, &shown, title, &format!("{name}{rest}"));
+                        let resp = ui
+                            .interact(at, id, egui::Sense::click())
+                            .on_hover_text("Double-click to rename");
+                        if ui::double_clicked(ui, &resp) {
+                            *edit = Some(name.to_string());
+                        }
+                    }
+                }
+                closed
+            })
+            .inner
+        })
+        .inner;
+    (closed, kept)
 }
 
 /// A card over the canvas's side inset, tighter than [`PAD`]: its rows run their

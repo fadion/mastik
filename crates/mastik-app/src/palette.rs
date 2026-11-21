@@ -435,7 +435,8 @@ pub(crate) fn highlight_fill() -> egui::Color32 {
 
 /// A menu's rows that run their item, submenus opened in place: a submenu's head
 /// runs nothing, and a dim head dims its rows with its own reason. *Move to page*'s
-/// rows are left to the palette's own, which name the verb.
+/// rows are left to the palette's own, which name the verb, and a data set's
+/// *Make a list from* row, which names only the data, to the menu.
 fn runnable(groups: Vec<Vec<menu::Row>>) -> Vec<menu::Row> {
     let mut out = Vec::new();
     for row in groups.into_iter().flatten() {
@@ -444,7 +445,7 @@ fn runnable(groups: Vec<Vec<menu::Row>>) -> Vec<menu::Row> {
             continue;
         }
         for mut child in runnable(row.sub) {
-            if matches!(child.item, Item::MoveTo(_)) {
+            if matches!(child.item, Item::MoveTo(_) | Item::MakeListFrom(_)) {
                 continue;
             }
             if !row.enabled && child.enabled {

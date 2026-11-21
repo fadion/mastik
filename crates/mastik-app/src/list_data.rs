@@ -89,6 +89,35 @@ impl MastikApp {
         });
     }
 
+    /// *Make a list from data ▸ products.csv*: instance `id` made a list over data
+    /// set `set` at once, filled by name; the card changes the fill.
+    pub(crate) fn make_list_over(&mut self, id: NodeId, set: DataSetId) {
+        let Some(name) = self.session.doc.data_set(set).map(|d| d.name.clone()) else {
+            return;
+        };
+        self.commit_make_list(id, list::Source::Existing(set), Some(name));
+    }
+
+    /// *Make a list from data ▸ New table*: instance `id` made a list over a new
+    /// table holding its own values as row 1 (`list::seed_table`), and the data
+    /// window opened on it.
+    pub(crate) fn make_list_new_table(&mut self, id: NodeId) {
+        if let Some(why) = list::why_not(&self.session.doc, id) {
+            return self.session.info(why);
+        }
+        let table = list::seed_table(&self.session.doc, id);
+        let set = DataSet {
+            id: self.session.ids.mint_data_set(),
+            name: list::free_name(&self.session.doc, "Table 1"),
+            table,
+            source: None,
+        };
+        let name = set.name.clone();
+        if let Some(frame) = self.commit_make_list(id, list::Source::New(set), Some(name)) {
+            self.open_list_data(frame);
+        }
+    }
+
     /// *From a file…* on list `id`'s data dropdown: a new data set read from a
     /// picked file, the list moved onto it.
     pub(crate) fn list_data_dialog(&mut self, id: NodeId) {
@@ -153,7 +182,8 @@ impl MastikApp {
                 linkable,
             } => {
                 let set = self.data_set_from(&path, linkable, &parsed);
-                self.commit_make_list(instance, list::Source::New(set), Some(&path));
+                let name = list::name_for_path(&path);
+                self.commit_make_list(instance, list::Source::New(set), Some(name));
             }
             Then::ListData {
                 list: id,
@@ -183,8 +213,14 @@ impl MastikApp {
     }
 
     /// Commit a list made around `instance` over `source`, undo step *Make
-    /// list*; selects it and says what it made.
-    fn commit_make_list(&mut self, instance: NodeId, source: list::Source, from: Option<&Path>) {
+    /// list*; selects it and says what it made from `from`, a data set's name.
+    /// Answers the list frame once committed.
+    fn commit_make_list(
+        &mut self,
+        instance: NodeId,
+        source: list::Source,
+        from: Option<String>,
+    ) -> Option<NodeId> {
         let made = list::make(
             &self.session.doc,
             &self.session.resolved,
@@ -194,10 +230,16 @@ impl MastikApp {
         );
         let (tx, frame) = match made {
             Ok(m) => m,
-            Err(why) => return self.session.fail(why),
+            Err(why) => {
+                self.session.fail(why);
+                return None;
+            }
         };
         self.session.name_step("Make list", icon::TABLE);
-        if self.commit_edit(tx) {
+        if !self.commit_edit(tx) {
+            return None;
+        }
+        {
             self.session.selection.set_one(frame);
             let rows = self
                 .session
@@ -208,10 +250,11 @@ impl MastikApp {
                 .map_or(0, |d| d.table.rows.len());
             let rows = crate::ui::count_as(rows, "row", "rows");
             self.session.info(match from {
-                Some(p) => format!("Made a list from {} \u{b7} {rows}", list::name_for_path(p)),
+                Some(name) => format!("Made a list from {name} \u{b7} {rows}"),
                 None => format!("Made a list \u{b7} {rows}"),
             });
         }
+        Some(frame)
     }
 
     /// List `id` moved onto the new data set `set`, added in the same step: each
@@ -303,18 +346,14 @@ impl MastikApp {
         self.start_chart_read(&name, source, format, vec![link.header], then);
     }
 
-    /// *Relink…*: pick a file for data set `set`, whose linked file is gone, and
-    /// read it into the same set under its header choice, so every list over it
-    /// follows.
+    /// *Relink…* (and the data window's *Import…*): pick a file for data set
+    /// `set` and read it into the same set, linked to it, under the set's header
+    /// choice, so every list over it follows.
     pub(crate) fn relink_data_set(&mut self, set: DataSetId) {
-        let Some(link) = self
-            .session
-            .doc
-            .data_set(set)
-            .and_then(|d| d.source.clone())
-        else {
+        let Some(data) = self.session.doc.data_set(set) else {
             return;
         };
+        let header = data.source.as_ref().and_then(|l| l.header);
         let Some(path) = rfd::FileDialog::new()
             .add_filter(FILTER.0, FILTER.1)
             .pick_file()
@@ -332,7 +371,7 @@ impl MastikApp {
             path: path.to_string_lossy().into_owned(),
             relink: true,
         };
-        self.start_chart_read(&name, Source::File(path), format, vec![link.header], then);
+        self.start_chart_read(&name, Source::File(path), format, vec![header], then);
     }
 
     /// The lists reading data set `set`, in id order.
