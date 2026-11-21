@@ -147,6 +147,11 @@ arboard = { version = "3.6.1", features = ["image-data"] }
 fontdb = "0.23.0"
 ureq = "3.3.0"
 dirs = "6.0.0"
+# *Play on a phone*'s QR code. Encoding one is Reed–Solomon codes, masks and
+# version tables, which this is with somebody else's tests behind it.
+# `default-features = false` drops its `image` and `svg` renderers: the card
+# paints the modules itself.
+qrcode = { version = "0.14.1", default-features = false }
 # Installer + auto-update (§15 D954). The `vpk` CLI builds the installers and
 # packages in `release.yml`; this crate is the in-process half — the startup
 # hook that services the installer's `--veloapp-*` re-invocations, and the

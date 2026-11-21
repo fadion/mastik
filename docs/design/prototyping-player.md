@@ -63,6 +63,29 @@ otherwise the player returns over the canvas).
   *Responsive*, a turn while one is laid out), the bar shows it in units, `852 × 393`, faint at
   `CAPTION_PT` before the turn button, for a second after the last change, then fading
   (`Playing::readout`). Not over the canvas, whose card never resizes and whose bar has no room.
+- **Play on a phone** (`phone.rs`): the bar's `PHONE` button, after *Record*, tipped *Play on a
+  phone on this network*, starts sharing and opens its card in the side column, in the state
+  card's place (the two never show together); while sharing it is lit and toggles the card.
+  Sharing starts only from the button, is never remembered, and stops when the player closes
+  (*Stopped sharing — the player closed*) or from the card's *Stop sharing* (Danger).
+  - **The server** binds this computer's private-network address (the one its default route
+    leaves from; none on a public one, *Not on a network*) on a free port, and answers only
+    clients in the private, link-local or loopback ranges, under a fresh 128-bit token per
+    share: the page, `doc` (the current version), `events` (a stream of versions, a heartbeat
+    every 10 s) and `status` (a phone's screen). Hand-written on `std::net`: four fixed paths,
+    a bounded head and body, nothing else served.
+  - **The page** is the HTML export's (`Parts::mirror`, `prune_mirror`): the flow playing, or
+    its frame, with no bar, device frame or device, so *Responsive* lays out at the phone's size
+    and follows its turn. An edit is sent once the document has sat still for 0.25 s as a new
+    version the phone plays where it is (`Player::rebase`); one needing fonts the page lacks
+    sends `reload`. The phone toasts *Updated from Mastik*, and when sharing stops dims its last
+    frame under *Mastik stopped sharing*.
+  - **The card**: the QR code (`qrcode`, painted dark on light in either theme), one line of help,
+    the link with *Copy* (*Copied the link*), *Following* — up to four rows of a dot (lit while
+    the phone listens, grey while it sleeps, gone after a minute), its browser at its coarsest
+    (*Android · Chrome*) and its frame, folding into `ui::more_row`, *No phone yet* when empty,
+    the list one height whatever it holds — and *Stop sharing*. A share that cannot start shows
+    its reason as an empty note with *Try again*.
 - **The mode chip**: while the play width picks another mode of the collection picked by width
   than the drawn width does (`Player::width_pick`), a `ui::scope_chip` with `icon::DATABASE`
   names it, *‹Collection› · ‹Mode›*, after the title in the card's or window's head, and

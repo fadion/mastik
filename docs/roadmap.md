@@ -17,11 +17,14 @@ remains is below.
   (`design/prototyping-export.md` *The browser build*).
 - **Lists from data.** A repeated row filled from a data file, on the chart's data model; its
   saved form is undecided (`prototyping.md`, *Still open*).
-- **Device and phone mirroring.** The app serves the prototype player to the local network and
-  shows a QR code; a phone on the same network plays the page and follows edits. Not hosting: it
-  ends with the app, needs no account and never leaves the network.
+- **Play on a phone: what is left.** The bar button's count of phones following; the card's
+  firewall states (a word before Windows' first prompt, and *Blocked by the firewall* when it was
+  declined — today a declined prompt leaves the code showing and the phone unable to connect);
+  Escape closing the card while sharing goes on. Checked on loopback only; a real phone on Wi-Fi
+  has not yet been tried.
 - **On a phone.** The export card's *On a phone* (follow the phone's turn or keep the page's),
-  shown under *Responsive*. It waits on phone mirroring.
+  shown under *Responsive*. A mirrored page always follows the phone today (`prune_mirror` drops
+  the device); an exported file opened on a phone still draws the page's device.
 
 ## Later · Platform and dependencies
 

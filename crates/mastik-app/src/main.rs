@@ -153,6 +153,7 @@ mod palette;
 mod panels;
 mod path_bar;
 mod pencil;
+mod phone;
 mod pictures;
 mod pixel_fit;
 mod player;

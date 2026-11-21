@@ -1360,6 +1360,9 @@ pub mod icon {
     pub const CONDITIONAL: &str = "\u{f08f}";
     /// The player's *Record a take*: a ring round a filled dot.
     pub const RECORD: &str = "\u{f090}";
+    /// The player's *Play on a phone*: a handset with its speaker slot. Not
+    /// [`DEVICES`], which is picking a mode by width.
+    pub const PHONE: &str = "\u{f091}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1699,6 +1702,7 @@ pub mod icon {
         ("overlay-swap", OVERLAY_SWAP),
         ("conditional", CONDITIONAL),
         ("record", RECORD),
+        ("phone", PHONE),
     ];
 }
 

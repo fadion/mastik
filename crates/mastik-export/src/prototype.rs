@@ -414,7 +414,13 @@ impl<'a> Parts<'a> {
 
     /// The page, with `mirror`'s script before the boot when given.
     fn page(&self, mirror: Option<&str>) -> String {
-        let stream = self.stream(flate2::Compression::best());
+        // A mirrored page crosses a local network once, written while the
+        // person waits for the code: the fast level, not the file's best.
+        let level = match mirror {
+            Some(_) => flate2::Compression::fast(),
+            None => flate2::Compression::best(),
+        };
+        let stream = self.stream(level);
         let payload = base64_encode(&stream);
         let mut page = String::with_capacity(self.page_len(stream.len()) as usize);
         let glue = script_safe(self.player.glue);

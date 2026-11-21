@@ -210,6 +210,17 @@ the canvas, drawn by the PDF export's path, with an arrow from each layer that m
 and a numbered badge on each layer with a reaction, then pages writing those reactions out in
 words, for review and sign-off.
 
+## The mirrored page
+
+The page a phone loads under *Play on a phone* (`prototyping-player.md`) is this page in mirror
+mode: `Parts::mirror` packs `prune_mirror`'s trim (the flow the app plays, or its frame through
+`start`'s frame argument, with no bar, device frame or device, and no inspect data), and
+`Parts::mirror_html` sets `window.MASTIK_MIRROR` (`frame`, `version`) before the boot script, at
+gzip's fast level. A file never carries it. In mirror mode the page listens on `events`,
+fetches each newer version from `doc` and plays it where it is (`Player::rebase`), loads again
+on `reload`, reports `screen_name` to `status` as it changes, and on `stop` or a stream lost for
+3 s dims the stage under *Mastik stopped sharing*. All three paths are relative to the page.
+
 ## Where the CLI finds the player
 
 `mastik export doc.mastik --prototype -o out.html` reads `mastik_web_bg.wasm` and

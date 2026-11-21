@@ -57,6 +57,7 @@ ring = "0.17.14"
 fontdb.workspace = true
 ureq.workspace = true
 dirs.workspace = true
+qrcode.workspace = true
 velopack.workspace = true
 log.workspace = true
 woff2.workspace = true

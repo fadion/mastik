@@ -32,12 +32,15 @@ const NOTICE_HOLD: f64 = 4.0;
 /// The most room a screen takes over the canvas, as a share of the canvas.
 const OVER_SHARE: f32 = 0.7;
 /// The narrowest the card over the canvas gets, so its bar fits.
-const OVER_MIN_W: f32 = 260.0;
+const OVER_MIN_W: f32 = 290.0;
 /// How long the size readout stays after the play size last changed, in seconds,
 /// before it fades.
 const READOUT_HOLD: f64 = 1.0;
 /// How long the size readout takes to fade, in seconds.
 const READOUT_FADE: f64 = 0.3;
+/// The side column's width: the state card's, and the sharing card's in its
+/// place.
+const SIDE_W: f32 = 220.0;
 /// The detached window's id.
 const WINDOW_ID: &str = "prototype-player-window";
 /// The card's id over the canvas.
@@ -97,6 +100,8 @@ pub(crate) struct Playing {
     /// egui's clock when the play size last changed under a resize or a turn,
     /// for the bar's size readout.
     resized_at: Option<f64>,
+    /// *Play on a phone*, while asked for: it stops with the player.
+    sharing: Option<crate::phone::Sharing>,
 }
 
 /// Where play starts on `page` of `doc`: the page's first flow, else the first
@@ -243,6 +248,22 @@ impl Playing {
             drafts: Vec::new(),
             turned: None,
             resized_at: None,
+            sharing: None,
+        }
+    }
+
+    /// Whether the side column is open: the state card or the sharing card,
+    /// never both.
+    fn side_open(&self) -> bool {
+        self.card || self.sharing.as_ref().is_some_and(|s| s.open)
+    }
+
+    /// Where a phone's mirror starts: where this play started.
+    fn opening(&self) -> mastik_export::prototype::Opening {
+        use mastik_export::prototype::Opening;
+        match self.start {
+            Start::Flow(r) => Opening::Flow(r),
+            Start::Frame(f) => Opening::Frame(f),
         }
     }
 
@@ -478,6 +499,13 @@ enum BarAct {
     Close,
     /// Write the last take as a video.
     ExportTake,
+    /// *Play on a phone*: start sharing and open its card, or, while sharing,
+    /// open or close the card.
+    Phone,
+    /// The sharing card's *Try again*, *Stop sharing* and *Copy*.
+    ShareRetry,
+    ShareStop,
+    ShareCopied,
 }
 
 /// The player's bar: its commands as icon buttons, `hint`-ed as the rest of
@@ -539,6 +567,14 @@ fn bar(
                 BarAct::ExportTake,
             );
         }
+        let sharing = p.sharing.as_ref().is_some_and(|s| s.is_sharing());
+        button(
+            ui,
+            icon::PHONE,
+            sharing,
+            "Play on a phone on this network",
+            BarAct::Phone,
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             if p.place != Place::Fullscreen {
@@ -835,6 +871,10 @@ impl crate::app::MastikApp {
         if p.place == Place::Detached {
             self.prefs.save();
         }
+        if p.sharing.as_ref().is_some_and(|s| s.is_sharing()) {
+            self.session
+                .info("Stopped sharing — the player closed".to_string());
+        }
         self.session.history.keep_journal(false);
     }
 
@@ -903,17 +943,31 @@ impl crate::app::MastikApp {
         if p.tab != self.tabs.active {
             return;
         }
+        let now = ctx.input(|i| i.time);
         if !self.session.history.keeps_journal() {
             // The session read another document in: play it again from the start.
             self.session.history.keep_journal(true);
             match Player::new(&self.session.doc, p.start, crate::session::random_actor()) {
                 Ok(fresh) => p.player = fresh,
-                Err(_) => self.stop_playing(ctx),
+                Err(_) => {
+                    self.stop_playing(ctx);
+                    return;
+                }
+            }
+            if let Some(s) = p.sharing.as_mut() {
+                s.changed(now);
             }
             return;
         }
-        for tx in self.session.history.take_journal() {
-            let _ = p.player.apply_edit(&tx);
+        let journal = self.session.history.take_journal();
+        for tx in &journal {
+            let _ = p.player.apply_edit(tx);
+        }
+        if let Some(s) = p.sharing.as_mut() {
+            if !journal.is_empty() {
+                s.changed(now);
+            }
+            s.send(ctx, &self.session.doc, now);
         }
     }
 
@@ -976,7 +1030,7 @@ impl crate::app::MastikApp {
         let play = p.page_play();
         let scaling = play.scaling;
         let bar_h = ui::CONTROL_H + 8.0;
-        let card_w = if p.card { 220.0 } else { 0.0 };
+        let card_w = if p.side_open() { SIDE_W } else { 0.0 };
         let room = egui::vec2(rect.width() - card_w, rect.height() - bar_h);
         // The screen laid out at the room, or the device's size, turned or not.
         // Over the canvas the card is sized from the screen, so there the room
@@ -1013,7 +1067,8 @@ impl crate::app::MastikApp {
             p.drive_pointer(ui, screen.intersect(screen_area), scale);
             p.paint_screen(ui, screen, scale, ground);
         });
-        if p.card {
+        let mut card_act = None;
+        if p.side_open() {
             let card = egui::Rect::from_min_size(
                 egui::pos2(screen_area.right(), rect.top()),
                 egui::vec2(card_w, room.y),
@@ -1023,7 +1078,16 @@ impl crate::app::MastikApp {
                 egui::UiBuilder::new()
                     .max_rect(card.shrink(crate::settings::CANVAS_CARD_PAD / 2.0))
                     .layout(egui::Layout::top_down(egui::Align::Min)),
-                |ui| state_rows(ui, p),
+                |ui| match p.sharing.as_ref().filter(|s| s.open) {
+                    Some(s) => {
+                        card_act = s.card(ui).map(|a| match a {
+                            crate::phone::CardAct::Retry => BarAct::ShareRetry,
+                            crate::phone::CardAct::Stop => BarAct::ShareStop,
+                            crate::phone::CardAct::Copied => BarAct::ShareCopied,
+                        });
+                    }
+                    None => state_rows(ui, p),
+                },
             );
         }
         let bar_rect = egui::Rect::from_min_size(
@@ -1042,7 +1106,7 @@ impl crate::app::MastikApp {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
             |ui| act = bar(ui, p, readout, chip.as_deref()),
         );
-        act
+        act.or(card_act)
     }
 
     /// The card over the canvas. Answers the bar's act, or `Close` for its ✕.
@@ -1051,7 +1115,7 @@ impl crate::app::MastikApp {
         let scene = p.player.scene();
         let room = egui::vec2(canvas.width(), canvas.height() - 120.0) * OVER_SHARE;
         let scale = fit_scale(scene.size, room, Scaling::Fit);
-        let card_w = if p.card { 220.0 } else { 0.0 };
+        let card_w = if p.side_open() { SIDE_W } else { 0.0 };
         let w = (scene.size.width as f32 * scale + card_w).max(OVER_MIN_W);
         let body_h = scene.size.height as f32 * scale + ui::CONTROL_H + 8.0;
         let id = egui::Id::new(CARD_ID);
@@ -1205,6 +1269,29 @@ impl crate::app::MastikApp {
                     self.export_take(take);
                 }
             }
+            BarAct::Phone | BarAct::ShareRetry => {
+                let doc = &self.session.doc;
+                let Some(p) = self.playing.as_mut() else {
+                    return;
+                };
+                match (act, p.sharing.as_mut()) {
+                    (BarAct::ShareRetry, Some(s)) => s.retry(ctx, doc),
+                    (_, Some(s)) => s.open = !s.open,
+                    (_, None) => {
+                        p.sharing = Some(crate::phone::Sharing::start(ctx, doc, p.opening()));
+                    }
+                }
+                if p.sharing.as_ref().is_some_and(|s| s.open) {
+                    p.card = false;
+                }
+            }
+            BarAct::ShareStop => {
+                if let Some(p) = self.playing.as_mut() {
+                    p.sharing = None;
+                }
+                self.session.info("Stopped sharing".to_string());
+            }
+            BarAct::ShareCopied => self.session.info("Copied the link".to_string()),
             BarAct::Restart | BarAct::Hints | BarAct::Card | BarAct::Record | BarAct::Turn => {
                 let Some(p) = self.playing.as_mut() else {
                     return;
@@ -1216,7 +1303,12 @@ impl crate::app::MastikApp {
                     }
                     BarAct::Turn => p.turned = Some(!p.is_turned()),
                     BarAct::Hints => p.hints = !p.hints,
-                    BarAct::Card => p.card = !p.card,
+                    BarAct::Card => {
+                        p.card = !p.card;
+                        if let Some(s) = p.sharing.as_mut() {
+                            s.open &= !p.card;
+                        }
+                    }
                     _ => match p.player.is_recording() {
                         true => {
                             p.take = p.player.stop_recording();
