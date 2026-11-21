@@ -8088,9 +8088,9 @@ pub fn colour_chip_radius(rect: egui::Rect) -> f32 {
     (rect.width().min(rect.height()) * 0.25).round()
 }
 
-/// The ring round the colour chip in use among a row of them (a swatch row's
-/// current colour, a scale's source step): 1.5pt of `accent_200` outside the
-/// chip's `rect`, following its corner `radius`.
+/// The ring round the one picked among several (a swatch row's current
+/// colour, a scale's source step, the Interactions card's picked block): 1.5pt
+/// of `accent_200` outside `rect`, following its corner `radius`.
 pub fn paint_chip_ring(p: &egui::Painter, rect: egui::Rect, radius: impl Into<egui::CornerRadius>) {
     p.rect_stroke(
         rect,

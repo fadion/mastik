@@ -49,6 +49,13 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   wear, then *Delete*), then its actions top to bottom; a `ui::card_rule` parts one block from
   the next. The card's own `+` adds *On click* with no actions. The add and `⋯` menus are as wide
   as their longest row (`ui::menu_width`).
+- **A picked block** (`ProtoState::block`). A press anywhere on a block, its controls included
+  but not a popup over it, picks it (`pick_block`), as a click on one of its connectors does
+  (`open_link`); it wears `ui::paint_chip_ring` `BLOCK_RING_GAP` (3) outside its rows. Picked in
+  the card when it was not already, the block brings the layer it names (its scroll trigger's
+  frame, else its first action's first layer target) into view by the least pan
+  (`MastikApp::reveal`), only when that layer is on the current page. The canvas then lights
+  that block's marks alone (*On the canvas*).
 - **Copy and paste.** *Copy interaction* keeps the reaction in `ProtoState::copied`, never saved
   and apart from the clipboard, with the tab it was copied in, and says *Copied the interaction
   ‹trigger›*. While one is kept, the card shows a *Paste interaction* text button under its
@@ -238,7 +245,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   arches over both frames, cresting `BACK_RISE` (32) above the higher top, down onto the target's
   top edge (`arch`). A top-level frame's own *After delay* leaves from its name tag
   (`leaves_from_tag`), forward or back. It is `LINK_W` thick in `color::SELECT`
-  for the selection's links and `color::SELECT_DIM` for the rest, with a filled `HEAD_LEN` ×
+  for the selection's links (only the picked block's, while one of the layer's is picked) and
+  `color::SELECT_DIM` for the rest, with a filled `HEAD_LEN` ×
   2·`HEAD_HALF` arrowhead; the line stops at the head's base so its weight never shows past the
   tip. The line says when it is followed (`LinkLine`): a navigate's solid, an overlay's dashed (6
   on, 4 off), and any in a conditional dotted, round dots the line's width a dash's length apart. A target that is
@@ -277,9 +285,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   its half-width) of a connector's line, stub or head takes it, the nearest when several are
   near. Under the pointer it is drawn last, in `color::SELECT` (a dangling one keeps the error
   colour) and `LINK_HOT_W` thick, and the hover outline rings the layer holding it
-  (`link_hover`), the layer a click selects. A click selects that layer and opens the
-  connector's action's popover in its *Interactions* card (`open_link`), so the link is edited
-  where it lives. Link dots and a placed overlay's ghost come first; a press-drag on a connector
+  (`link_hover`), the layer a click selects. A click selects that layer, picks the action's block
+  and opens the action's popover in its *Interactions* card (`open_link`), so the link is edited
+  where it lives; it does not pan the canvas. Link dots and a placed overlay's ghost come first; a press-drag on a connector
   starts what it would start elsewhere. The connectors are hit as drawn last frame
   (`ProtoState::links_drawn`).
 - **Placing an overlay** (`overlay_placing`): while an *Open overlay* or *Swap overlay* popover
@@ -299,8 +307,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   across it (`snap_edges`: each child's leading edge, centre or trailing edge by *Align*, or each
   whole page's edge through its content). A layer that follows the drag shows each snap point
   as a dashed `color::SELECT` outline of its box at the point's offset with the point's name on
-  a `color::BADGE` pill above (`snap_ghosts`); the drawn point (*Open*) is the layer itself. A
-  scroll trigger shows its point as a dashed line across its frame at that offset from the
+  a `color::BADGE` pill above (`snap_ghosts`); the drawn point is the layer itself. A
+  scroll trigger (only the picked block's, while one is picked) shows its point as a dashed line across its frame at that offset from the
   frame's top (from its left, sideways), a `PAST_KNOB_R` knob at its leading end and the number
   on a pill at the other (`past_lines`); a horizontal frame's runs top to bottom. Each is
   heavier under the pointer or while dragged, and a press on one (a ghost's box, or within
