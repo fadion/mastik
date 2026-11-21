@@ -32,7 +32,8 @@ again starts play over from the same start.
 ## Where it shows
 
 - **Over the canvas**: a card the size of the screen at the page's *Fit*, at most 70% of the
-  canvas, moved by its head. The pointer drives the prototype while over the screen; a press in
+  canvas, never narrower than `OVER_MIN_W` (380, the detached window's least width too) so the bar
+  fits with the flow menu's head at its longest (`FLOW_HEAD_CHARS`, 14), moved by its head. The pointer drives the prototype while over the screen; a press in
   it gives the player the keyboard, a press on the canvas gives it back.
 - **Detached**: the same body in an immediate viewport wearing the app's title bar
   (`chrome::Chrome::viewport`), where it last stood (`Prefs::player_window`). Its keys are its
@@ -101,11 +102,27 @@ otherwise the player returns over the canvas).
 - **Hints**: each hotspot outlined in the accent while the bar's toggle is on, and flashing by
   `Scene::hint_flash` after a click on nothing.
 - **Notices** in the screen's top-left corner, each once, for four seconds, in the app's words.
-- **The bar**: *Restart*, *Show hotspots*, *Variables* (the state card), *Record a take* /
-  *Stop recording*, *Export the take as a video* once a take exists, *Open in a window* / *Back
-  over the canvas*, *Fullscreen*, and, fullscreen, *Stop playing*. Its commands are buttons, not
-  chords: the editor has spent the chords they would want.
-- **The state card** heads with *Opened rows* when a list shows *Opened row*: one row per data
+- **The bar**: the flow menu, *Restart*, *Show hotspots*, *State* (the state card), *Record a
+  take* / *Stop recording* (while recording, the time so far beside it, `0:24` at `CAPTION_PT` in
+  the danger ink), *Export a take as a video* once a take exists and none is recording (the
+  export card on *Video*), *Play on a phone*, and from the right *Fullscreen*, *Open in a window*
+  / *Back over the canvas* and, fullscreen, *Stop playing*. Its commands are buttons, not chords:
+  the editor has spent the chords they would want.
+- **The flow menu** leads the bar: a `ui::menu_head` naming what plays (the flow, else the page;
+  cut at `FLOW_HEAD_CHARS`), tipped *Play another flow*. It lists the flows of the page playing
+  under *Flows on ‹page›*, each with its start frame as the note and the one playing ticked, then
+  *From this frame* on the top-level frame selected on the canvas's page, disabled with *Select a
+  frame on the canvas* when there is none. A pick restarts the copy there (`replay_from`): a new
+  copy, play state dropped as *Restart* drops it, a recording under way ended unkept.
+- **Filling a screen** (fullscreen, or the detached window at its *Fullscreen*), the bar floats
+  over the screen's foot and fades over `BAR_FADE` (0.3 s) once the pointer has been still for
+  `BAR_HOLD` (2 s) (`bar_shown`). Moving or pressing wakes it; it stays while the pointer is
+  within `BAR_WAKE_EDGE` (80) of the bottom, or a menu or the side column is open.
+- **A live edit landing** pulses the screen's edge once: a 2pt accent ring fading over
+  `PULSE_LEN` (0.6 s).
+- **The state card** opens with the frame shown (`screen_row`) and how far *Back* reaches, each
+  open overlay then each step of history (*2 back*, or *No way back*). Then *Opened rows* when a
+  list shows *Opened row*: one row per data
   set such a list reads, a dropdown of its rows (`lists.md`, *Play*). Then *Modes* when the
   document has a collection of two modes or more:
   one row per such collection, the document's then each kit's under the kit's eyebrow
@@ -119,15 +136,45 @@ otherwise the player returns over the canvas).
 
 ## Exports from the player
 
-- **The export card** (*Export prototype…*): the flows in the file (every flow is the empty
-  list; the last one cannot be left out), the flow it opens on, the device frame, player bar and
-  hints, the scaling (the page card's dropdown with *Page's own · ‹its scaling›* first, the
-  default), *On a phone* (`PlayExport::on_phone`: *Follow its turn*, the default, or *Keep the
-  page's*, captioned as the scaling's rows are; always shown, so the card keeps its size, and
-  disabled with *Only a Responsive page turns with the phone* unless the scaling resolves to
-  *Responsive*), and the file's size measured on a worker before
-  anything is written (`Parts::estimate`). Changed settings are committed to the document when
-  the file is written, as one step.
-- **Video**: a recorded take is written as MP4 or GIF by the name given, at 30 frames a second
-  and two pixels a unit, through `mastik_export::video` on an export worker.
-- **The flow map** (*Export flow map…*): `mastik_export::flow_map`, a PDF.
+One card, *Export prototype* (`prototype_export::ExportCard`), a modal `settings::canvas_card`
+with a `ui::segmented` row at its head switching its `Output`: *HTML file*, *Video*, *Flow map*.
+The body keeps the tallest height it has shown (`body_h`), so switching to a shorter output
+never shrinks the card. Its doors (`open_export`): the palette's *Export prototype…* opens it on
+*HTML file* and *Export flow map…* on *Flow map*; the bar's *Export a take as a video* on
+*Video*, the newest take picked; a flow chip's menu on *HTML file* opening on that flow, or on
+*Flow map* holding it alone (`act_on_flow`). The HTML file and the flow map need a flow, so
+without one the card does not open and the status line says to add one. Each output asks where
+to write, offering a name led by the document's: `‹document› — ‹flow›.html` (the flow it opens
+on), `‹document› — ‹take›.mp4` or `.gif`, `‹document› — Flow map.pdf`.
+
+- **HTML file**: the flows in the file (every flow is the empty list; the last one cannot be
+  left out), the flow it opens on, the device frame, player bar and hints, the scaling (the page
+  card's dropdown with *Page's own · ‹its scaling›* first, the default), and *On a phone*
+  (`PlayExport::on_phone`: *Follow its turn*, the default, or *Keep the page's*, captioned as the
+  scaling's rows are; always shown, so the card keeps its size, and disabled with *Only a
+  Responsive page turns with the phone* unless the scaling resolves to *Responsive*). Changed
+  settings are committed to the document when the file is written, as one step.
+  - **The size meter**, measured on a worker before anything is written, once per change of
+    settings, document or downscaled pictures: *On disk, about ‹size›*, a `ui::level_bar_parts`
+    split into Player, Fonts, Images and Document (`Parts::breakdown`, `prototyping-export.md`
+    *The file*), and a legend of each part's size.
+  - **A heavy picture**: one the file carries that is drawn below `pictures::HEAVY_BELOW` (a
+    quarter) of its pixels across is named by the first layer showing it, with *Downscale to 2×*:
+    twice its drawn size, made in the export's copy only (`prototype_export::downscale`, a JPEG at
+    85, or a PNG when it has see-through pixels). A note then says the document keeps the
+    original, with *Keep the original* to take the downscale back.
+  - **What holds the export** (`mastik_export::prototype::holds`): on the pages the file carries,
+    a layer with an action naming a layer that is gone, or an expression that does not read
+    (`Expr::check`), each named by its layer behind a warning glyph in the danger ink. While any is listed, *Export…* is
+    disabled with *Fix the interactions named above first*; until the measure lands, with
+    *Measuring the file and checking its interactions*, since the measure is what finds them.
+- **Video**: the takes recorded this run (`Playing::takes`, each a `TakeRec` with what played and
+  when), in a *Take* dropdown newest first, each noted with its length and clicks; *Format* (MP4,
+  *H.264, small*, or GIF, *loops, plays anywhere*); *Size* at 1×, 2× (the default) or 3× the
+  screen, each with its pixel size, the device frame's bezel counted; *Show clicks* (on by
+  default) and *Device frame*; and a still preview at the first click (`video::still`), or the
+  start when there is none. The foot says the length at 30 frames a second. Written through
+  `mastik_export::video` on an export worker (`play.md`, *Takes*). Without a take the body says
+  to record one, and *Export…* is disabled.
+- **Flow map**: which flows go in (empty is every flow; the last cannot be left out), written by
+  `mastik_export::flow_map::flow_map_of` (`export_flow_map_to`).

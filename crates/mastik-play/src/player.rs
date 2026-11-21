@@ -53,6 +53,9 @@ pub enum Notice {
     Fallback(Fallback),
     /// Reactions set each other off past the depth the player follows.
     Loop,
+    /// A scroll trigger watches a frame that is gone, so it never fires. Said
+    /// once per reaction, the first time its screen scrolls.
+    ScrollFrameGone { layer: NodeId },
 }
 
 /// What an edit took away from under play.
@@ -214,6 +217,8 @@ pub struct Player {
     pub(crate) pointer: Option<Point>,
     /// The layers under the pointer, deepest first.
     pub(crate) hovered: Vec<NodeId>,
+    /// The pointer is a finger (`Input::Touch`), which hovers nothing.
+    pub(crate) touch: bool,
     pub(crate) press: Option<Press>,
     /// A click waiting to see whether it becomes a double click.
     pub(crate) tap: Option<Tap>,
@@ -270,6 +275,7 @@ impl Player {
             effects: Vec::new(),
             pointer: None,
             hovered: Vec::new(),
+            touch: false,
             press: None,
             tap: None,
             focus: None,
@@ -316,10 +322,12 @@ impl Player {
     /// A recording in progress stops.
     pub fn restart(&mut self) {
         let actor = self.ids.actor();
-        let size = self.play_size;
+        let (size, touch) = (self.play_size, self.touch);
         if let Ok(fresh) = Player::new(&self.base, self.start, actor) {
             *self = fresh;
             self.set_play_size(size);
+            // The pointer is the same hand after a restart.
+            self.touch = touch;
         }
     }
 

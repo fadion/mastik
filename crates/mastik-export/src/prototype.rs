@@ -122,6 +122,86 @@ fn reached_from(doc: &Document, seeds: &[NodeId]) -> Vec<NodeId> {
     doc.page_ids().filter(|p| reached.contains(p)).collect()
 }
 
+/// A layer the file would carry whose interaction cannot play as authored: the
+/// export is held until it is fixed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hold {
+    pub layer: NodeId,
+    pub why: HoldWhy,
+}
+
+/// What a [`Hold`] is about.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HoldWhy {
+    /// An action names a layer that is gone.
+    Missing,
+    /// An expression does not read, with the reason.
+    Expression(String),
+}
+
+/// Every [`Hold`] on the pages the export of `doc`'s chosen flows carries, in
+/// document order, each layer once per kind.
+pub fn holds(doc: &Document) -> Vec<Hold> {
+    use mastik_core::prototype::{Action, VarChange};
+    fn exprs(action: &Action, out: &mut Vec<String>) {
+        match action {
+            Action::SetVariable {
+                change: VarChange::Set { to },
+                ..
+            } => out.extend(to.check().err().map(|e| e.to_string())),
+            Action::Conditional { branches, .. } => out.extend(
+                branches
+                    .iter()
+                    .filter_map(|b| b.when.check().err())
+                    .map(|e| e.to_string()),
+            ),
+            _ => {}
+        }
+        for k in action.nested() {
+            exprs(&k.value, out);
+        }
+    }
+    let mut out: Vec<Hold> = Vec::new();
+    let mut push = |hold: Hold| {
+        if !out.iter().any(|h| {
+            h.layer == hold.layer
+                && std::mem::discriminant(&h.why) == std::mem::discriminant(&hold.why)
+        }) {
+            out.push(hold);
+        }
+    };
+    for page in reached_pages(doc, &chosen_flows(doc)) {
+        let mut stack = vec![page];
+        while let Some(id) = stack.pop() {
+            let Some(node) = doc.get(id) else { continue };
+            stack.extend(node.children().iter().rev().copied());
+            for reaction in node.reactions() {
+                for action in &reaction.value.actions {
+                    let missing = action.value.layer_targets().into_iter().any(|t| {
+                        let t = mastik_core::prototype::resolve_target(doc, id, t);
+                        doc.get(t).is_none()
+                    });
+                    if missing {
+                        push(Hold {
+                            layer: id,
+                            why: HoldWhy::Missing,
+                        });
+                    }
+                    let mut errors = Vec::new();
+                    exprs(&action.value, &mut errors);
+                    if let Some(e) = errors.into_iter().next() {
+                        push(Hold {
+                            layer: id,
+                            why: HoldWhy::Expression(e),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// `doc` trimmed to what a prototype of its chosen flows shows: the
 /// [`reached_pages`] whole, with every style, variable, script and vendored main
 /// (document-wide, so kept whole), and only the pictures those pages show. Each
@@ -344,6 +424,35 @@ pub struct Parts<'a> {
     /// exporter: [`inspect_css`] and [`inspect_files`].
     pub css: Vec<(NodeId, String)>,
     pub files: Vec<InspectFile>,
+    /// The pictures the pruned document carries, each with its stored bytes.
+    pub pictures: Vec<(mastik_core::ImageId, u64)>,
+}
+
+/// What the file's size is made of, in bytes on disk: the four shares sum to
+/// [`Parts::estimate`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Breakdown {
+    /// The wasm player and its loader, with the page around them.
+    pub player: u64,
+    pub fonts: u64,
+    pub images: u64,
+    /// The document without its pictures.
+    pub document: u64,
+}
+
+impl Breakdown {
+    pub fn total(&self) -> u64 {
+        self.player + self.fonts + self.images + self.document
+    }
+}
+
+/// The length of `chunks` gzipped at the fastest level.
+fn gz_len(chunks: &[&[u8]]) -> u64 {
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    for c in chunks {
+        gz.write_all(c).expect("writing to a Vec cannot fail");
+    }
+    gz.finish().map_or(0, |v| v.len() as u64)
 }
 
 impl<'a> Parts<'a> {
@@ -380,6 +489,11 @@ impl<'a> Parts<'a> {
             .unwrap_or_default();
         let document =
             mastik_core::io::save(&pruned).map_err(|e| PackError::Save(e.to_string()))?;
+        let mut pictures: Vec<(mastik_core::ImageId, u64)> = pruned
+            .images()
+            .map(|(id, e)| (id.clone(), e.bytes().map_or(0, |b| b.len() as u64)))
+            .collect();
+        pictures.sort();
         Ok(Self {
             player,
             document,
@@ -387,7 +501,32 @@ impl<'a> Parts<'a> {
             title,
             css,
             files,
+            pictures,
         })
+    }
+
+    /// [`Parts::estimate`] split by what makes it. Each part is weighed by its
+    /// own gzipped size (a picture by its stored bytes, which gzip does not
+    /// shrink), and the total shared out by those weights.
+    pub fn breakdown(&self) -> Breakdown {
+        let total = self.estimate();
+        let images: u64 = self.pictures.iter().map(|(_, n)| n).sum();
+        let fonts: Vec<&[u8]> = self.fonts.iter().map(|f| f.bytes.as_slice()).collect();
+        let weights = [
+            gz_len(&[self.player.wasm, self.player.glue.as_bytes()]),
+            gz_len(&fonts),
+            images,
+            gz_len(&[&self.document]).saturating_sub(images),
+        ];
+        let sum: u64 = weights.iter().sum::<u64>().max(1);
+        let share = |w: u64| (u128::from(total) * u128::from(w) / u128::from(sum)) as u64;
+        let (fonts, images, document) = (share(weights[1]), share(weights[2]), share(weights[3]));
+        Breakdown {
+            player: total - fonts - images - document,
+            fonts,
+            images,
+            document,
+        }
     }
 
     /// The file's size in bytes before it is written, for the export dialog.
@@ -589,9 +728,18 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   background: #333336; color: #e6e6e6; font: inherit; cursor: pointer; }
 #bar button:hover, #bar select:hover { background: #3d3d41; }
 #bar button[aria-pressed=\"true\"] { background: #2b5f8f; }
-#status, #toast { position: fixed; inset: auto 0 56px 0; text-align: center; pointer-events: none; }
+#toast { position: fixed; inset: auto 0 56px 0; text-align: center; pointer-events: none; }
+#status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 12px; text-align: center; pointer-events: none; }
+#title { font-size: 15px; font-weight: 600; }
+#load { width: 200px; height: 4px; border-radius: 2px; background: #333336; overflow: hidden; }
+#load div { width: 0; height: 100%; background: #6d8cd9; transition: width 0.15s; }
 #toast span { padding: 6px 12px; border-radius: 6px; background: #333336; }
 #toast[hidden] { display: none; }
+#note { position: fixed; top: 12px; right: 12px; padding: 6px 10px; border-radius: 6px;
+  background: #333336; font-size: 12px; pointer-events: none; transition: opacity 0.6s; }
+#note[hidden] { display: none; }
+#note.gone { opacity: 0; }
 body.ended #room { opacity: 0.4; }
 </style>
 ";
@@ -605,8 +753,11 @@ const BODY: &str = "<div id=\"main\"><main id=\"stage\"><div id=\"room\">\
 aria-label=\"Flow\"></select><button id=\"restart\" type=\"button\">Restart</button>\
 <button id=\"hint-switch\" type=\"button\" aria-pressed=\"false\" hidden>Hints</button>\
 <button id=\"turn\" type=\"button\" aria-pressed=\"false\" hidden>Turn</button>\
-<button id=\"inspect-switch\" type=\"button\" aria-pressed=\"false\">Inspect</button></nav>\n\
-<div id=\"status\">Opening the prototype…</div>\n<div id=\"toast\" hidden><span></span></div>\n";
+<button id=\"inspect-switch\" type=\"button\" aria-pressed=\"false\">Inspect</button>\
+<button id=\"full\" type=\"button\" aria-pressed=\"false\" hidden>Fullscreen</button></nav>\n\
+<div id=\"status\"><div id=\"title\"></div><div id=\"load\"><div></div></div>\
+<p id=\"said\">Opening the prototype…</p></div>\n<div id=\"toast\" hidden><span></span></div>\n\
+<div id=\"note\" hidden>Drawn without the GPU; motion may be slower</div>\n";
 
 /// Unpacks the payload, loads the player from its bytes, registers the fonts and
 /// plays: each animation frame ticks the engine by the time since the last and
@@ -622,6 +773,9 @@ const BOOT: &str = r##"(async () => {
   const mirrored = window.MASTIK_MIRROR || null;
   const status = $("status");
   const canvas = $("screen");
+  // The loading bar: unpacking is most of the wait, then the player and fonts.
+  $("title").textContent = document.title;
+  const loaded = share => { $("load").firstChild.style.width = Math.round(share * 100) + "%"; };
   try {
     if (typeof DecompressionStream === "undefined") {
       throw new Error("This browser cannot open the prototype: it lacks DecompressionStream.");
@@ -635,18 +789,37 @@ const BOOT: &str = r##"(async () => {
       packed = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i++) packed[i] = raw.charCodeAt(i);
     }
-    const stream = new Blob([packed]).stream().pipeThrough(new DecompressionStream("gzip"));
+    let read = 0;
+    const counted = new TransformStream({
+      transform(chunk, out) {
+        read += chunk.length;
+        loaded(0.8 * read / packed.length);
+        out.enqueue(chunk);
+      },
+    });
+    const stream = new Blob([packed]).stream().pipeThrough(counted)
+      .pipeThrough(new DecompressionStream("gzip"));
     const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
     const parts = unpack(bytes);
     await wasm_bindgen({ module_or_path: parts.wasm });
+    loaded(0.9);
     for (const font of parts.fonts) wasm_bindgen.add_font(font.bytes, font.alias || undefined);
+    loaded(0.95);
     const cpu = new URLSearchParams(location.search).has("cpu");
     const player = await wasm_bindgen.start(canvas, parts.document, cpu, mirrored ? mirrored.frame : "");
+    loaded(1);
     // A phone: a coarse pointer on a small screen.
     player.set_on_phone(matchMedia("(pointer: coarse)").matches && Math.min(screen.width, screen.height) < 600);
     play(player, parts);
     status.remove();
     document.body.dataset.backend = player.backend();
+    // Fallen back to the CPU, unasked: say so in a corner, then fade.
+    if (player.backend() === "cpu" && !cpu && !mirrored) {
+      const note = $("note");
+      note.hidden = false;
+      setTimeout(() => note.classList.add("gone"), 4000);
+      setTimeout(() => { note.hidden = true; }, 4700);
+    }
   } catch (e) {
     status.textContent = String(e && e.message || e);
     document.body.dataset.error = String(e && e.message || e);
@@ -831,9 +1004,16 @@ const BOOT: &str = r##"(async () => {
       return [e.clientX - r.left, e.clientY - r.top];
     };
 
+    // A finger hovers nothing: the player is told which hand each event is.
+    let touching = false;
+    const hand = e => {
+      const t = e.pointerType === "touch";
+      if (t !== touching) { touching = t; player.set_touch(t); }
+    };
     canvas.addEventListener("pointerdown", e => {
       if (e.button !== 0) return;
       e.preventDefault();
+      hand(e);
       if (inspecting) {
         picked = player.layer_at(...local(e));
         showPanel();
@@ -844,6 +1024,7 @@ const BOOT: &str = r##"(async () => {
       after();
     });
     canvas.addEventListener("pointermove", e => {
+      hand(e);
       const [x, y] = local(e);
       if (inspecting) {
         over = player.layer_at(x, y);
@@ -918,6 +1099,17 @@ const BOOT: &str = r##"(async () => {
       inspectSwitch.addEventListener("click", () => {
         setInspecting(!inspecting);
         inspectSwitch.blur();
+      });
+      const full = $("full");
+      full.hidden = !document.fullscreenEnabled;
+      full.addEventListener("click", () => {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen().catch(() => {});
+        full.blur();
+      });
+      addEventListener("fullscreenchange", () => {
+        full.setAttribute("aria-pressed", String(!!document.fullscreenElement));
+        wake();
       });
     }
     if (mirrored) mirror();

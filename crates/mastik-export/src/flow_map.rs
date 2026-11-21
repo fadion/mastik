@@ -14,7 +14,8 @@ use krilla_svg::SurfaceExt;
 use mastik_core::kurbo::{Point, Rect};
 use mastik_core::peniko::{Blob, FontData};
 use mastik_core::prototype::{
-    Action, Direction, Easing, Reaction, Timing, Transition, TransitionKind, Trigger, VarChange,
+    Action, Direction, Easing, FlowRef, Reaction, Timing, Transition, TransitionKind, Trigger,
+    VarChange,
 };
 use mastik_core::{Document, ExportText, Keyed, NodeId, NodeKind, Resolved, subtree_nodes};
 
@@ -54,9 +55,22 @@ pub struct FlowPlan {
 /// Every flow of `doc`, page by page, each with the frames it reaches and its
 /// reactions written out.
 pub fn plans(doc: &Document) -> Vec<FlowPlan> {
+    plans_of(doc, &[])
+}
+
+/// [`plans`] for the flows `only` names, in the document's order; every flow
+/// when it names none.
+pub fn plans_of(doc: &Document, only: &[FlowRef]) -> Vec<FlowPlan> {
     let mut out = Vec::new();
     for page in doc.pages() {
         for flow in &page.flows {
+            let r = FlowRef {
+                page: page.id,
+                flow: flow.id,
+            };
+            if !only.is_empty() && !only.contains(&r) {
+                continue;
+            }
             let frames = reached(doc, flow.value.start);
             let mut written = Vec::new();
             for &frame in &frames {
@@ -86,7 +100,12 @@ pub fn plans(doc: &Document) -> Vec<FlowPlan> {
 /// The flow map of `doc` as one PDF, or `None` when it has no flow or the
 /// converter refuses a page.
 pub fn flow_map(doc: &Document, res: &Resolved) -> Option<Vec<u8>> {
-    let plans = plans(doc);
+    flow_map_of(doc, res, &[])
+}
+
+/// [`flow_map`] of the flows `only` names; every flow when it names none.
+pub fn flow_map_of(doc: &Document, res: &Resolved, only: &[FlowRef]) -> Option<Vec<u8>> {
+    let plans = plans_of(doc, only);
     if plans.is_empty() {
         return None;
     }

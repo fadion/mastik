@@ -2257,6 +2257,11 @@ impl MastikApp {
         if self.gradient_secondary(screen, rect, ppp) {
             return;
         }
+        // A flow's chip sits over its frame and takes its own menu.
+        if let Some(flow) = self.flow_chip_at(ui, screen, rect, ppp) {
+            self.open_context_menu(&ctx, crate::menu::Target::Flow(flow), Some(world));
+            return;
+        }
         // C7: guides out-rank layers while unlocked (`guide_at` answers `None`
         // once locked, which is why the canvas menu carries *Lock guides*).
         if let Some(g) = self.guide_at(screen, rect, ppp) {

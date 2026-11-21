@@ -1120,6 +1120,15 @@ impl MastikApp {
             Target::Points => "Points on the path".into(),
             Target::Guide(_) => "A guide".into(),
             Target::Page(p) => self.shown_page_name(p),
+            Target::Flow(f) => self
+                .session
+                .doc
+                .page(f.page)
+                .and_then(|p| {
+                    let at = p.flows.iter().position(|x| x.id == f.flow)?;
+                    Some(crate::private::flow(&p.flows[at].name, at).into_owned())
+                })
+                .unwrap_or_default(),
             Target::Canvas | Target::PanelBackground => "Nothing selected".into(),
             Target::Layer { id, .. } => {
                 let name = crate::private::layer(&self.session.doc, id).into_owned();

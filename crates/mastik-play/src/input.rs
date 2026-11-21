@@ -2,7 +2,7 @@
 //! against the shown frames, and the triggers they fire.
 
 use crate::actions::Undo;
-use crate::player::Player;
+use crate::player::{Notice, Player};
 use crate::scene::Hotspot;
 use mastik_core::kurbo::{Point, Vec2};
 use mastik_core::prototype::{self, Going, Pin, ScrollAxis, Side, Trigger};
@@ -59,6 +59,10 @@ pub enum Input {
         data: mastik_core::list::DataSetId,
         row: usize,
     },
+    /// The pointer is a finger (`true`) or a mouse from here on. A finger
+    /// hovers nothing: the hover triggers and hover states keep still, as on a
+    /// phone, where a tap would otherwise fire *On hover* first.
+    Touch(bool),
 }
 
 /// A press in progress.
@@ -144,6 +148,13 @@ impl Player {
             Input::OpenRow { data, row } => {
                 self.open_data_row(data, row);
                 true
+            }
+            Input::Touch(on) => {
+                let was = std::mem::replace(&mut self.touch, on);
+                if was != on {
+                    self.rehover();
+                }
+                false
             }
         };
         self.check_scrolls();
@@ -498,8 +509,8 @@ impl Player {
     /// their hover, layers it entered start theirs.
     pub(crate) fn rehover(&mut self) {
         let now = match self.pointer {
-            Some(p) => self.hit(p).chain,
-            None => Vec::new(),
+            Some(p) if !self.touch => self.hit(p).chain,
+            _ => Vec::new(),
         };
         let left: Vec<NodeId> = self
             .hovered
@@ -772,6 +783,7 @@ impl Player {
             return;
         }
         let mut fire = Vec::new();
+        let mut gone = Vec::new();
         for frame in self.shown() {
             for id in subtree_nodes(&self.doc, &[frame]) {
                 let Some(n) = self.doc.get(id) else { continue };
@@ -785,6 +797,10 @@ impl Player {
                         continue;
                     };
                     let f = prototype::resolve_target(&self.doc, id, f);
+                    if self.doc.get(f).is_none() {
+                        gone.push((id, r.id));
+                        continue;
+                    }
                     let along = |v: Vec2| match self.scrolls(f) {
                         ScrollAxis::Horizontal => v.x,
                         _ => v.y,
@@ -805,6 +821,9 @@ impl Player {
             }
         }
         self.scroll_seen = self.scroll.clone();
+        for (id, r) in gone {
+            self.notice_once(id, r, Notice::ScrollFrameGone { layer: id });
+        }
         for (id, r) in fire {
             self.run_reaction(id, r, None);
         }

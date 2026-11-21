@@ -58,6 +58,8 @@ pub enum Target {
     Points,
     /// A row of the layers pane's Pages section (`crate::pages`): the page menu.
     Page(NodeId),
+    /// A flow's chip on the canvas in prototype mode: play it or export it.
+    Flow(mastik_core::prototype::FlowRef),
 }
 
 /// §3's canonical order, which is the order a menu is built in.
@@ -2111,6 +2113,7 @@ pub fn build(cx: &Context<'_>) -> Vec<Vec<Row>> {
         Target::Points => points_menu(cx),
         Target::Layer { .. } => layer_menu(cx),
         Target::Page(_) => page_menu(cx),
+        Target::Flow(_) => flow_menu(),
     };
     let mut out: Vec<Vec<Row>> = Vec::new();
     for group in Group::ORDER {
@@ -2172,6 +2175,15 @@ fn guide_menu(cx: &Context<'_>) -> Vec<Row> {
         Row::new(Item::ViewSwitch(ViewSwitch::GuideLock))
             .checked(cx.view.get(ViewSwitch::GuideLock)),
         Row::new(Item::ViewSwitch(ViewSwitch::Guides)).checked(cx.view.get(ViewSwitch::Guides)),
+    ]
+}
+
+/// A flow chip's menu: play the flow, or open the export card on it.
+fn flow_menu() -> Vec<Row> {
+    vec![
+        Row::new(Item::Play),
+        Row::new(Item::ExportPrototype),
+        Row::new(Item::ExportFlowMap),
     ]
 }
 
@@ -3779,6 +3791,16 @@ impl MastikApp {
             Item::SelectAll if in_text => self.select_all_text(),
             // Answered by `context_menu_ui`, which holds the misspelled word.
             Item::Suggestion(_) | Item::AddToDictionary => {}
+
+            // --- a flow chip's menu: its flow, not the page's first -----------
+            Item::Play | Item::ExportPrototype | Item::ExportFlowMap
+                if matches!(target, Target::Flow(_)) =>
+            {
+                let Target::Flow(flow) = target else {
+                    return;
+                };
+                self.act_on_flow(ctx, item, flow);
+            }
 
             // --- pages (`crate::pages`) -------------------------------------
             // The page menu's rows act on its page; the rest are the palette's.

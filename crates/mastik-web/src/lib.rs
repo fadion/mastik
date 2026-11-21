@@ -324,6 +324,12 @@ impl Player {
         ])
     }
 
+    /// The pointer is a finger (`true`) or a mouse from here on: the page tells
+    /// from each event's `pointerType`, so a finger fires no hover trigger.
+    pub fn set_touch(&mut self, on: bool) {
+        self.play.input(Input::Touch(on));
+    }
+
     /// The pointer moved to (`x`, `y`) CSS pixels from the canvas's top-left.
     pub fn pointer_move(&mut self, x: f64, y: f64) -> bool {
         let at = self.at(x, y);
@@ -415,6 +421,9 @@ impl Player {
                 Notice::Missing { .. } => "An action's target is not there; it was skipped".into(),
                 Notice::Expression { error, .. } => format!("An expression failed: {error}"),
                 Notice::Fallback(f) => format!("Play fell back: {f:?}"),
+                Notice::ScrollFrameGone { .. } => {
+                    "A scroll trigger watches a frame that is gone; it never fires".into()
+                }
             })
             .collect()
     }

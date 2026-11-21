@@ -144,7 +144,14 @@ as `serve` does.
   `data-error`, and shows the error in place of the prototype.
 - **The size before writing** is `Parts::estimate`: the parts packed at gzip's fastest level,
   base64'd, plus the page; the file is packed at the best level, so the estimate is a little
-  over, never under.
+  over, never under. `Parts::breakdown` splits it into `Breakdown`'s player (with the page round
+  it), fonts, images and document: each part weighed by its own size gzipped at the fast level (a
+  picture by its stored bytes, which gzip does not shrink; the document less its pictures), and
+  the estimate shared out by those weights, so the four sum to it.
+- **What holds the export** (`holds`): on the pages the chosen flows reach, each layer with an
+  action naming a layer that is gone, or with an expression that does not read (`Expr::check`),
+  once per layer and kind. The app's card refuses to write while any is listed; the CLI does not
+  ask.
 
 ## The player in the page
 
@@ -186,7 +193,12 @@ canvas, the drawing and the page around them.
   once.
 - **The player bar**, when the export shows it, runs along the foot: the flow's name (a list
   of the file's flows when it holds several, switching plays that flow from its start),
-  *Restart*, *Hints* when the export shows hotspot hints, and *Inspect*.
+  *Restart*, *Hints* when the export shows hotspot hints, *Inspect*, and *Fullscreen* when the
+  browser allows it (`document.fullscreenEnabled`), pressed while the page fills the screen.
+- **While it opens**, the page shows its title over a loading bar: unpacking fills most of it,
+  counted over the compressed stream as it is read, then the player, the fonts and the start.
+- **Fallen back to the CPU** unasked (no `?cpu`, not a mirrored page), the page says *Drawn
+  without the GPU; motion may be slower* in a corner, fading after 4 s.
 - **Hotspot hints** are drawn on a 2D canvas over the screen: `hotspots()` as rectangles in the
   selection blue, held while *Hints* is on, else at `Scene::hint_flash`'s strength after a click
   on nothing. The pointer is a hand over a hotspot.
@@ -209,8 +221,9 @@ canvas, the drawing and the page around them.
 
 ## The flow map
 
-The prototype's other file is the flow map (`mastik_export::flow_map`; the player's *Export flow
-map…*, `mastik export --flow-map`): a PDF giving each flow a page of its frames as they sit on
+The prototype's other file is the flow map (`mastik_export::flow_map`; the export card's *Flow
+map*, `mastik export --flow-map`): a PDF giving each flow (`flow_map_of` and `plans_of` take the
+flows picked, every flow when none is) a page of its frames as they sit on
 the canvas, drawn by the PDF export's path, with an arrow from each layer that moves the screen
 and a numbered badge on each layer with a reaction, then pages writing those reactions out in
 words, for review and sign-off.

@@ -67,7 +67,7 @@ Read the file for the exact wording before relying on one.
 | `lists.md` | — | Lists from data: a frame repeating an instance per row of a data set, the document's data sets, regeneration inside the edit's undo step, where a list may stand, picture columns, the List card, the linked file, the data window over a data set, a row opened in play |
 | `inspector.md` | 9.4 | The inspector cards, an annotation's card and its mark on the canvas |
 | `prototyping-authoring.md` | — | Prototype mode, the interactions and Prototype cards, connectors, the link dots and flow chips, instances' interactions, kit publishing, agents |
-| `prototyping-player.md` | — | The player in the app: starting and stopping, present mode as the player, following the editor's commits, over the canvas, detached and fullscreen, its keys, bar and state card, the export card, video from a take and the flow map |
+| `prototyping-player.md` | — | The player in the app: starting and stopping, present mode as the player, following the editor's commits, over the canvas, detached and fullscreen, its keys, bar, flow menu and state card, and the one export card (HTML file, video from a take, flow map) |
 | `type-panel.md` | 9.4 | The Type panel and typography popup |
 | `font-picker.md` | 9.4 | The font picker |
 | `library.md` | 9.5 | The library: dashboard, projects, search and its content index, versions, trash, *Import files*; document tabs (open, park, close, next launch) |

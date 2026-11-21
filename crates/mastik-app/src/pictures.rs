@@ -561,7 +561,7 @@ pub(crate) fn encode(px: &image::RgbaImage, out: Out) -> Option<Encoded> {
 }
 
 /// Whether any pixel is less than opaque, which JPEG cannot keep.
-fn has_alpha(px: &image::RgbaImage) -> bool {
+pub(crate) fn has_alpha(px: &image::RgbaImage) -> bool {
     px.pixels().any(|p| p.0[3] < 255)
 }
 

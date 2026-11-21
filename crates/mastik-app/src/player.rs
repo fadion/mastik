@@ -31,13 +31,26 @@ pub(crate) enum Place {
 const NOTICE_HOLD: f64 = 4.0;
 /// The most room a screen takes over the canvas, as a share of the canvas.
 const OVER_SHARE: f32 = 0.7;
-/// The narrowest the card over the canvas gets, so its bar fits.
-const OVER_MIN_W: f32 = 290.0;
+/// The narrowest the card over the canvas gets, so its bar fits with the flow
+/// menu's head at its longest ([`FLOW_HEAD_CHARS`]).
+const OVER_MIN_W: f32 = 380.0;
+/// The most characters of a flow's name the bar's flow menu head shows before
+/// it elides: the bar is the card's width, and the card is the screen's.
+const FLOW_HEAD_CHARS: usize = 14;
 /// How long the size readout stays after the play size last changed, in seconds,
 /// before it fades.
 const READOUT_HOLD: f64 = 1.0;
 /// How long the size readout takes to fade, in seconds.
 const READOUT_FADE: f64 = 0.3;
+/// How long the bar stays after the pointer last moved while the player fills
+/// a screen, in seconds, before it fades.
+const BAR_HOLD: f64 = 2.0;
+/// How long the bar takes to fade, in seconds.
+const BAR_FADE: f64 = 0.3;
+/// How near the bottom edge the pointer brings the hidden bar back, in points.
+const BAR_WAKE_EDGE: f32 = 80.0;
+/// How long the screen's edge pulses when a live edit lands, in seconds.
+const PULSE_LEN: f64 = 0.6;
 /// The side column's width: the state card's, and the sharing card's in its
 /// place.
 const SIDE_W: f32 = 220.0;
@@ -45,6 +58,27 @@ const SIDE_W: f32 = 220.0;
 const WINDOW_ID: &str = "prototype-player-window";
 /// The card's id over the canvas.
 const CARD_ID: &str = "prototype-player";
+
+/// A finished take with what the export card lists it by.
+#[derive(Clone)]
+pub(crate) struct TakeRec {
+    pub(crate) take: Take,
+    /// What played: the flow's name, else the page's.
+    pub(crate) name: String,
+    /// When it was recorded, in seconds since the epoch.
+    pub(crate) at: u64,
+}
+
+impl TakeRec {
+    /// How many clicks the take holds.
+    pub(crate) fn clicks(&self) -> usize {
+        self.take
+            .inputs
+            .iter()
+            .filter(|(_, i)| matches!(i, Input::PointerDown(_)))
+            .count()
+    }
+}
 
 /// Play asked for and held while its scripts are shown first.
 #[derive(Clone)]
@@ -90,8 +124,8 @@ pub(crate) struct Playing {
     pointer: Option<Point>,
     /// Notices to show, each with when it came.
     notices: Vec<(String, f64)>,
-    /// The take the record button last finished.
-    pub(crate) take: Option<Take>,
+    /// The takes the record button finished this run, oldest first.
+    pub(crate) takes: Vec<TakeRec>,
     /// The state card's fields being typed in, by variable.
     drafts: Vec<(mastik_core::VarId, String)>,
     /// The device turned from the bar for this run, `Some(true)` on its side;
@@ -102,6 +136,13 @@ pub(crate) struct Playing {
     resized_at: Option<f64>,
     /// *Play on a phone*, while asked for: it stops with the player.
     sharing: Option<crate::phone::Sharing>,
+    /// egui's clock when the pointer last moved over a player filling a screen,
+    /// for its floating bar.
+    stirred_at: f64,
+    /// egui's clock when a live edit last landed, for the screen's edge pulse.
+    pulse_at: Option<f64>,
+    /// The player was last told the pointer is a finger.
+    touch: bool,
 }
 
 /// Where play starts on `page` of `doc`: the page's first flow, else the first
@@ -215,6 +256,9 @@ pub(crate) fn notice_text(n: &Notice) -> String {
         Notice::Fallback(Fallback::Overlay) => "The overlay showing was deleted".into(),
         Notice::Fallback(Fallback::Variable) => "A variable playing was deleted".into(),
         Notice::Loop => "Reactions set each other off too deep; stopped there".into(),
+        Notice::ScrollFrameGone { .. } => {
+            "A scroll trigger watches a frame that is gone; it never fires".into()
+        }
     }
 }
 
@@ -244,12 +288,39 @@ impl Playing {
             pressing: false,
             pointer: None,
             notices: Vec::new(),
-            take: None,
+            takes: Vec::new(),
             drafts: Vec::new(),
             turned: None,
             resized_at: None,
             sharing: None,
+            stirred_at: f64::NEG_INFINITY,
+            pulse_at: None,
+            touch: false,
         }
+    }
+
+    /// How much of the floating bar shows, 0 to 1: whole while the pointer moved
+    /// in the last [`BAR_HOLD`] seconds, rests near the bottom edge, or a menu
+    /// or the side column is open; then fading over [`BAR_FADE`].
+    fn bar_shown(&mut self, ui: &egui::Ui, bar: egui::Rect, now: f64) -> f32 {
+        let (moved, near) = ui.input(|i| {
+            let moved = i.pointer.delta() != egui::Vec2::ZERO || i.pointer.any_pressed();
+            let near = i
+                .pointer
+                .hover_pos()
+                .is_some_and(|p| p.y >= bar.bottom() - BAR_WAKE_EDGE);
+            (moved, near)
+        });
+        let held = near || self.side_open() || egui::Popup::is_any_open(ui.ctx());
+        if moved || held {
+            self.stirred_at = now;
+        }
+        let age = now - self.stirred_at;
+        let shown = ((BAR_HOLD + BAR_FADE - age) / BAR_FADE).clamp(0.0, 1.0) as f32;
+        if shown > 0.0 {
+            ui.ctx().request_repaint();
+        }
+        shown
     }
 
     /// Whether the side column is open: the state card or the sharing card,
@@ -342,6 +413,29 @@ impl Playing {
             )
         });
         let at = pos.map(|p| to_screen(p, rect, scale));
+        // A finger hovers nothing: tell the player which hand moves it. A touch
+        // this pass is a finger; a move with none, nothing touching, a mouse.
+        let hand = ui.input(|i| {
+            let touched = i
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Touch { .. }));
+            let moved = i
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::PointerMoved(_)));
+            match (touched, moved && !i.any_touches()) {
+                (true, _) => Some(true),
+                (false, true) => Some(false),
+                _ => None,
+            }
+        });
+        if let Some(finger) = hand
+            && finger != self.touch
+        {
+            self.touch = finger;
+            self.player.input(Input::Touch(finger));
+        }
         if hovered && let Some(at) = at {
             if self.pointer != Some(at) {
                 self.player.input(Input::PointerMove(at));
@@ -491,9 +585,88 @@ impl Playing {
     }
 }
 
+/// What the bar's flow menu lists: the flows of the page playing, each with
+/// its starting frame's name, and the frame selected on the canvas for *From
+/// this frame*.
+struct FlowMenu {
+    /// What the menu's head shows: the flow playing, else the page.
+    shown: String,
+    page: String,
+    flows: Vec<(FlowRef, String, String)>,
+    frame: Option<(NodeId, String)>,
+    /// The flow playing, ticked.
+    current: Option<FlowRef>,
+}
+
+/// `ms` as a clock reads it, minutes and seconds: `0:24`.
+pub(crate) fn clock(ms: f64) -> String {
+    let s = (ms.max(0.0) / 1000.0).floor() as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// `name` cut to `max` characters, an ellipsis standing for the rest.
+fn elide(name: &str, max: usize) -> String {
+    match name.chars().count() > max {
+        true => format!("{}…", name.chars().take(max - 1).collect::<String>()),
+        false => name.to_string(),
+    }
+}
+
+/// The bar's flow menu: a head naming what plays, and under it the page's
+/// flows and *From this frame*. Answers the pick.
+fn flow_menu(ui: &mut egui::Ui, menu: &FlowMenu) -> Option<BarAct> {
+    let lead = egui::RichText::new(elide(&menu.shown, FLOW_HEAD_CHARS)).size(ui::SMALL_PT);
+    let id = ui.id().with("player-flow-menu");
+    let open = egui::Popup::is_id_open(ui.ctx(), id);
+    let head = ui::menu_head(ui, lead, 4.0, open).on_hover_text("Play another flow");
+    let mut act = None;
+    egui::Popup::menu(&head)
+        .id(id)
+        .gap(ui::MENU_GAP)
+        .show(|ui| {
+            ui::popup_rows(ui);
+            let labels = menu
+                .flows
+                .iter()
+                .map(|(_, n, _)| n.as_str())
+                .chain(["From this frame"]);
+            ui.set_width(ui::menu_width(ui.ctx(), labels, true) + 48.0);
+            ui::menu_eyebrow(ui, &format!("Flows on {}", menu.page));
+            if menu.flows.is_empty() {
+                ui::menu_note(ui, "No flows on this page");
+            }
+            for (r, name, start) in &menu.flows {
+                let on = menu.current == Some(*r);
+                let row = ui::MenuRow::new("", name).note(start).checked(on);
+                if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                    act = Some(BarAct::Flow(*r));
+                }
+            }
+            ui::menu_sep(ui);
+            let note = menu.frame.as_ref().map_or("", |(_, n)| n.as_str());
+            let row = ui::MenuRow::new("", "From this frame")
+                .note(note)
+                .checked(false)
+                .enabled(menu.frame.is_some());
+            let row = ui::menu_row(ui, row, ui::MENU_ROW_H);
+            match menu.frame {
+                Some((f, _)) if row.clicked() => act = Some(BarAct::Frame(f)),
+                Some(_) => {}
+                None => {
+                    row.on_disabled_hover_text("Select a frame on the canvas");
+                }
+            }
+        });
+    act
+}
+
 /// What a click on the player's bar asked for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarAct {
+    /// Restart on this flow.
+    Flow(FlowRef),
+    /// Restart on this frame, *From this frame*.
+    Frame(NodeId),
     Restart,
     Hints,
     Card,
@@ -517,10 +690,12 @@ enum BarAct {
 
 /// The player's bar: its commands as icon buttons, `hint`-ed as the rest of
 /// the app's are, then the size `readout` and, fullscreen where there is no
-/// head, the `chip` naming the mode picked by width. Returns the one clicked.
+/// head, the `chip` naming the mode picked by width; the flow menu leads.
+/// Returns the one clicked.
 fn bar(
     ui: &mut egui::Ui,
     p: &Playing,
+    flows: &FlowMenu,
     readout: Option<(String, f32)>,
     chip: Option<&str>,
 ) -> Option<BarAct> {
@@ -536,8 +711,11 @@ fn bar(
             act = Some(a);
         }
     };
+    let mut picked = None;
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
+        picked = flow_menu(ui, flows);
+        ui.add_space(4.0);
         button(
             ui,
             icon::ARROW_COUNTER_CLOCKWISE,
@@ -552,25 +730,28 @@ fn bar(
             "Show hotspots",
             BarAct::Hints,
         );
-        button(
-            ui,
-            icon::SLIDERS_HORIZONTAL,
-            p.card,
-            "Variables",
-            BarAct::Card,
-        );
+        button(ui, icon::SLIDERS_HORIZONTAL, p.card, "State", BarAct::Card);
         let recording = p.player.is_recording();
         let (g, tip) = match recording {
             true => (icon::STOP, "Stop recording"),
             false => (icon::RECORD, "Record a take"),
         };
         button(ui, g, recording, tip, BarAct::Record);
-        if p.take.is_some() && !recording {
+        if recording {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(clock(p.player.now()))
+                    .size(ui::CAPTION_PT)
+                    .color(color::danger()),
+            );
+            ui.add_space(4.0);
+        }
+        if !p.takes.is_empty() && !recording {
             button(
                 ui,
                 icon::EXPORT,
                 false,
-                "Export the take as a video",
+                "Export a take as a video",
                 BarAct::ExportTake,
             );
         }
@@ -643,12 +824,13 @@ fn bar(
     if turn {
         act = Some(BarAct::Turn);
     }
-    act
+    act.or(picked)
 }
 
 /// The state card's rows: each variable with its value, set by typing (a
 /// number or text) or a switch (a boolean). A colour is shown, not set.
 fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
+    screen_row(ui, p);
     let opened = p.player.opened_rows();
     if !opened.is_empty() {
         ui.label(ui::eyebrow("Opened rows"));
@@ -739,6 +921,49 @@ fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
             },
         );
     }
+}
+
+/// How many steps *Back* goes from here: each open overlay closes first, then
+/// the navigation history pops.
+fn back_steps(player: &Player) -> usize {
+    player.overlays().len() + player.history().len()
+}
+
+/// The state card's first row: the frame shown, and how far *Back* reaches.
+fn screen_row(ui: &mut egui::Ui, p: &Playing) {
+    let w = ui.available_width();
+    let doc = p.player.document();
+    let name = crate::private::layer(doc, p.player.screen()).into_owned();
+    let back = match back_steps(&p.player) {
+        0 => "No way back".to_string(),
+        n => format!("{n} back"),
+    };
+    ui.allocate_ui_with_layout(
+        egui::vec2(w, ui::CONTROL_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label(theme::icon_text(
+                icon::FRAME,
+                ui::CONTROL_GLYPH_PT,
+                theme::text::dim(),
+            ));
+            ui.add_space(4.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(back)
+                        .size(ui::CAPTION_PT)
+                        .color(theme::text::faint()),
+                );
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let text = egui::RichText::new(name)
+                        .size(ui::SMALL_PT)
+                        .color(theme::text::strong());
+                    ui.add(egui::Label::new(text).truncate());
+                });
+            });
+        },
+    );
 }
 
 /// One collection's row in the state card: its name and a dropdown of its modes.
@@ -852,18 +1077,57 @@ impl crate::app::MastikApp {
     pub(crate) fn play(&mut self, ctx: &egui::Context, place: Place, from_present: bool) {
         let doc = &self.session.doc;
         let page = self.session.page;
-        let selected = self.session.selection.ids().iter().copied().find(|id| {
-            doc.get(*id).is_some_and(|n| {
-                n.parent() == Some(page)
-                    && matches!(n.kind(), mastik_core::NodeKind::Artboard { .. })
-            })
-        });
+        let selected = self.selected_frame();
         let Some(start) = start_for(doc, page, selected) else {
             self.session
                 .info("Nothing to play: the page has no frames".to_string());
             return;
         };
         self.play_at(ctx, start, place, from_present);
+    }
+
+    /// The top-level frame selected on the canvas's page, if any.
+    fn selected_frame(&self) -> Option<NodeId> {
+        let doc = &self.session.doc;
+        let page = self.session.page;
+        self.session.selection.ids().iter().copied().find(|id| {
+            doc.get(*id).is_some_and(|n| {
+                n.parent() == Some(page)
+                    && matches!(n.kind(), mastik_core::NodeKind::Artboard { .. })
+            })
+        })
+    }
+
+    /// The bar's flow menu for `p`: the flows of the page it plays, and the
+    /// frame selected on the canvas.
+    fn flow_menu_for(&self, p: &Playing) -> FlowMenu {
+        let doc = p.player.document();
+        let page = p.player.page();
+        let flows = doc.page(page).map_or_else(Vec::new, |info| {
+            info.flows
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let name = crate::private::flow(&f.name, i).into_owned();
+                    let start = crate::private::layer(doc, f.value.start).into_owned();
+                    (FlowRef { page, flow: f.id }, name, start)
+                })
+                .collect()
+        });
+        let frame = self.selected_frame().map(|f| {
+            let name = crate::private::layer(&self.session.doc, f).into_owned();
+            (f, name)
+        });
+        FlowMenu {
+            shown: self.play_title(p),
+            page: crate::private::page(doc, page).into_owned(),
+            flows,
+            frame,
+            current: match p.start {
+                Start::Flow(r) => Some(r),
+                Start::Frame(_) => None,
+            },
+        }
     }
 
     /// Play from `start` in `place`, the scripts the person has not seen run
@@ -1012,7 +1276,10 @@ impl crate::app::MastikApp {
             // The session read another document in: play it again from the start.
             self.session.history.keep_journal(true);
             match Player::new(&self.session.doc, p.start, crate::session::random_actor()) {
-                Ok(fresh) => p.player = fresh,
+                Ok(fresh) => {
+                    p.player = fresh;
+                    p.touch = false;
+                }
                 Err(_) => {
                     self.stop_playing(ctx);
                     return;
@@ -1026,6 +1293,10 @@ impl crate::app::MastikApp {
         let journal = self.session.history.take_journal();
         for tx in &journal {
             let _ = p.player.apply_edit(tx);
+        }
+        if !journal.is_empty() {
+            p.pulse_at = Some(now);
+            ctx.request_repaint();
         }
         if let Some(s) = p.sharing.as_mut() {
             if !journal.is_empty() {
@@ -1095,7 +1366,12 @@ impl crate::app::MastikApp {
         let scaling = play.scaling;
         let bar_h = ui::CONTROL_H + 8.0;
         let card_w = if p.side_open() { SIDE_W } else { 0.0 };
-        let room = egui::vec2(rect.width() - card_w, rect.height() - bar_h);
+        // Filling a screen, the bar floats over the bottom edge and hides.
+        let floating = p.place == Place::Fullscreen || p.detached_full;
+        let room = match floating {
+            true => egui::vec2(rect.width() - card_w, rect.height()),
+            false => egui::vec2(rect.width() - card_w, rect.height() - bar_h),
+        };
         // The screen laid out at the room, or the device's size, turned or not.
         // Over the canvas the card is sized from the screen, so there the room
         // cannot lay it out: a screen with no device plays as drawn.
@@ -1131,6 +1407,23 @@ impl crate::app::MastikApp {
             p.drive_pointer(ui, screen.intersect(screen_area), scale);
             p.paint_screen(ui, screen, scale, ground);
         });
+        // One pulse round the screen when a live edit lands.
+        if let Some(at) = p.pulse_at {
+            let age = now - at;
+            match age < PULSE_LEN {
+                true => {
+                    let a = ((1.0 - age / PULSE_LEN) * 200.0) as u8;
+                    ui.painter().rect_stroke(
+                        screen.intersect(screen_area),
+                        0.0,
+                        egui::Stroke::new(2.0, color::accent_a(a)),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.ctx().request_repaint();
+                }
+                false => p.pulse_at = None,
+            }
+        }
         let mut card_act = None;
         if p.side_open() {
             let card = egui::Rect::from_min_size(
@@ -1158,18 +1451,28 @@ impl crate::app::MastikApp {
             egui::pos2(rect.left(), rect.bottom() - bar_h),
             egui::vec2(rect.width(), bar_h),
         );
-        ui.painter().rect_filled(bar_rect, 0.0, color::card());
+        let shown = match floating {
+            true => p.bar_shown(ui, bar_rect, now),
+            false => 1.0,
+        };
         let mut act = None;
-        let readout = p.readout(ui.ctx(), now);
-        let chip = (p.place == Place::Fullscreen)
-            .then(|| p.width_chip())
-            .flatten();
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(bar_rect.shrink2(egui::vec2(8.0, 4.0)))
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| act = bar(ui, p, readout, chip.as_deref()),
-        );
+        if shown > 0.0 {
+            let readout = p.readout(ui.ctx(), now);
+            let chip = (p.place == Place::Fullscreen)
+                .then(|| p.width_chip())
+                .flatten();
+            let flows = self.flow_menu_for(p);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+                ui.multiply_opacity(shown);
+                ui.painter().rect_filled(bar_rect, 0.0, color::card());
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(bar_rect.shrink2(egui::vec2(8.0, 4.0)))
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| act = bar(ui, p, &flows, readout, chip.as_deref()),
+                );
+            });
+        }
         act.or(card_act)
     }
 
@@ -1324,14 +1627,14 @@ impl crate::app::MastikApp {
 
     fn player_act(&mut self, ctx: &egui::Context, act: BarAct) {
         match act {
+            BarAct::Flow(r) => self.replay_from(Start::Flow(r)),
+            BarAct::Frame(f) => self.replay_from(Start::Frame(f)),
             BarAct::Close => self.stop_playing(ctx),
             BarAct::Detach => self.place_player(ctx, Place::Detached),
             BarAct::Attach => self.place_player(ctx, Place::Over),
             BarAct::Fullscreen => self.place_player(ctx, Place::Fullscreen),
             BarAct::ExportTake => {
-                if let Some(take) = self.playing.as_ref().and_then(|p| p.take.clone()) {
-                    self.export_take(take);
-                }
+                self.open_export(crate::prototype_export::Output::Video);
             }
             BarAct::Phone | BarAct::ShareRetry => {
                 let doc = &self.session.doc;
@@ -1357,6 +1660,10 @@ impl crate::app::MastikApp {
             }
             BarAct::ShareCopied => self.session.info("Copied the link".to_string()),
             BarAct::Restart | BarAct::Hints | BarAct::Card | BarAct::Record | BarAct::Turn => {
+                let title = match self.playing.as_deref() {
+                    Some(p) => self.play_title(p),
+                    None => return,
+                };
                 let Some(p) = self.playing.as_mut() else {
                     return;
                 };
@@ -1375,9 +1682,13 @@ impl crate::app::MastikApp {
                     }
                     _ => match p.player.is_recording() {
                         true => {
-                            p.take = p.player.stop_recording();
-                            if let Some(t) = &p.take {
-                                let secs = t.length / 1000.0;
+                            if let Some(take) = p.player.stop_recording() {
+                                let secs = take.length / 1000.0;
+                                p.takes.push(TakeRec {
+                                    take,
+                                    name: title,
+                                    at: crate::library::clock::now(),
+                                });
                                 self.session.info(format!("Take recorded: {secs:.1} s"));
                             }
                         }
@@ -1385,6 +1696,24 @@ impl crate::app::MastikApp {
                     },
                 }
             }
+        }
+    }
+
+    /// Restart the player on `start`, where it shows: a new copy, play state
+    /// dropped as *Restart* drops it, a recording under way ended unkept.
+    fn replay_from(&mut self, start: Start) {
+        let Some(p) = self.playing.as_mut() else {
+            return;
+        };
+        match Player::new(&self.session.doc, start, crate::session::random_actor()) {
+            Ok(fresh) => {
+                p.player = fresh;
+                p.start = start;
+                p.drawn = None;
+                p.drafts.clear();
+                p.touch = false;
+            }
+            Err(e) => self.session.fail(format!("Can't play: {e}")),
         }
     }
 
@@ -1602,6 +1931,48 @@ mod tests {
             matches!(start_for(&app.session.doc, page, None), Some(Start::Flow(r)) if r.page == page),
             "the flow's start"
         );
+    }
+
+    /// The bar's flow menu lists the page's flows with their starting frames and
+    /// offers the selected frame; *From this frame* restarts there, and the state
+    /// card's Back count follows the navigation.
+    /// flip: `flow_menu_for` not reading the selection → fails at "the selected frame";
+    /// `back_steps` counting only overlays → fails at "one step back".
+    #[test]
+    fn the_flow_menu_restarts_on_a_frame_and_back_counts() {
+        let ctx = egui::Context::default();
+        let (mut app, [a, b, _]) = fixture(&ctx, true);
+        app.play(&ctx, Place::Over, false);
+        app.session.selection.set_one(a);
+        let menu = {
+            let p = app.playing.as_ref().expect("playing");
+            app.flow_menu_for(p)
+        };
+        assert_eq!(menu.flows.len(), 1);
+        assert_eq!(
+            (menu.flows[0].1.as_str(), menu.flows[0].2.as_str()),
+            ("Checkout", "B")
+        );
+        assert_eq!(
+            menu.current,
+            Some(menu.flows[0].0),
+            "the flow playing is ticked"
+        );
+        assert_eq!(
+            menu.frame.as_ref().map(|f| f.0),
+            Some(a),
+            "the selected frame"
+        );
+        app.player_act(&ctx, BarAct::Frame(a));
+        let p = app.playing.as_mut().expect("still playing");
+        assert_eq!(p.player.screen(), a, "restarted on the frame");
+        assert_eq!(back_steps(&p.player), 0);
+        p.player.input(Input::Key {
+            key: "N".into(),
+            shift: false,
+        });
+        assert_eq!(p.player.screen(), b, "navigated");
+        assert_eq!(back_steps(&p.player), 1, "one step back");
     }
 
     /// An edit committed in the editor reaches the played copy on the next pass;

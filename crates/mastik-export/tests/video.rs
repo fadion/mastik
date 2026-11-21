@@ -84,6 +84,8 @@ fn options(format: Format) -> Options {
         format,
         fps: 10,
         scale: 1.0,
+        clicks: false,
+        device: false,
     }
 }
 

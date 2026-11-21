@@ -28,6 +28,130 @@ pub struct Options {
     /// Pixels per screen unit, more than 0; the frame's side is capped at
     /// [`MAX_SIDE`].
     pub scale: f64,
+    /// A soft ring drawn where each click landed, widening and fading over
+    /// [`CLICK_MS`].
+    pub clicks: bool,
+    /// The screen inside a device's bezel, its corners rounded, on white.
+    pub device: bool,
+}
+
+/// How long a click's ring shows, in milliseconds.
+pub const CLICK_MS: f64 = 500.0;
+/// The device frame's bezel round the screen, in screen units: the exported
+/// page's.
+pub const BEZEL: f64 = 14.0;
+/// The bezel's ink.
+const BEZEL_INK: [u8; 3] = [12, 12, 13];
+/// A click ring's ink: the accent.
+const RING_INK: [u8; 3] = [109, 140, 217];
+
+/// A device screen's corner radius in screen units: a phone's (shorter side
+/// under 600) rounder than a tablet's, as the exported page draws them.
+pub fn screen_radius(size: (f64, f64)) -> f64 {
+    match size.0.min(size.1) < 600.0 {
+        true => 40.0,
+        false => 18.0,
+    }
+}
+
+/// A frame's size in pixels for a screen of `screen` pixels at `scale`, with or
+/// without the device frame.
+pub fn framed_size(screen: (u32, u32), scale: f64, device: bool) -> (u32, u32) {
+    let b = bezel_px(scale, device);
+    (screen.0 + 2 * b, screen.1 + 2 * b)
+}
+
+fn bezel_px(scale: f64, device: bool) -> u32 {
+    match device {
+        true => (BEZEL * scale).round() as u32,
+        false => 0,
+    }
+}
+
+/// How much of the pixel centred at (`x`, `y`) lies inside a rectangle from the
+/// origin to `size` with corners of `radius`: 0 to 1, a pixel's width of
+/// anti-aliasing at the edge.
+fn rounded_cover(x: f64, y: f64, size: (f64, f64), radius: f64) -> f64 {
+    let r = radius.min(size.0 / 2.0).min(size.1 / 2.0).max(0.0);
+    let qx = (x - size.0 / 2.0).abs() - (size.0 / 2.0 - r);
+    let qy = (y - size.1 / 2.0).abs() - (size.1 / 2.0 - r);
+    let outside = qx.max(0.0).hypot(qy.max(0.0));
+    let d = outside + qx.max(qy).min(0.0) - r;
+    (0.5 - d).clamp(0.0, 1.0)
+}
+
+/// `a` over `b` by `t`, per channel.
+fn mix(a: [u8; 3], b: &mut [u8], t: f64) {
+    for c in 0..3 {
+        let v = f64::from(a[c]) * t + f64::from(b[c]) * (1.0 - t);
+        b[c] = v.round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+/// Draw on the opaque `frame` (`size` pixels) a ring for each click of `take`
+/// still showing at `now`, at `scale` pixels a unit.
+fn draw_clicks(frame: &mut [u8], size: (u32, u32), take: &Take, now: f64, scale: f64) {
+    for (at, input) in &take.inputs {
+        let mastik_play::Input::PointerDown(p) = input else {
+            continue;
+        };
+        let age = now - at;
+        if !(0.0..CLICK_MS).contains(&age) {
+            continue;
+        }
+        let k = age / CLICK_MS;
+        let (cx, cy) = (p.x * scale, p.y * scale);
+        let radius = (10.0 + 14.0 * k) * scale;
+        let half = 1.5 * scale;
+        let alpha = 0.7 * (1.0 - k);
+        let reach = radius + half + 1.0;
+        let x0 = (cx - reach).floor().max(0.0) as u32;
+        let y0 = (cy - reach).floor().max(0.0) as u32;
+        let x1 = ((cx + reach).ceil().max(0.0) as u32).min(size.0);
+        let y1 = ((cy + reach).ceil().max(0.0) as u32).min(size.1);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let d = (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy);
+                let cover = (half + 0.5 - (d - radius).abs()).clamp(0.0, 1.0);
+                if cover > 0.0 {
+                    let i = ((y * size.0 + x) * 4) as usize;
+                    mix(RING_INK, &mut frame[i..i + 3], cover * alpha);
+                }
+            }
+        }
+    }
+}
+
+/// The opaque `screen` (`size` pixels) inside a device frame at `scale`: the
+/// bezel round it, both rounded, on white.
+fn in_device(screen: &[u8], size: (u32, u32), scale: f64) -> Vec<u8> {
+    let b = bezel_px(scale, true);
+    let (w, h) = (size.0 + 2 * b, size.1 + 2 * b);
+    let r = screen_radius((f64::from(size.0) / scale, f64::from(size.1) / scale)) * scale;
+    let outer = (f64::from(w), f64::from(h));
+    let inner = (f64::from(size.0), f64::from(size.1));
+    let mut out = vec![255u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let i = ((y * w + x) * 4) as usize;
+            let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let body = rounded_cover(px, py, outer, r + f64::from(b));
+            if body <= 0.0 {
+                continue;
+            }
+            mix(BEZEL_INK, &mut out[i..i + 3], body);
+            let (sx, sy) = (x.wrapping_sub(b), y.wrapping_sub(b));
+            if sx < size.0 && sy < size.1 {
+                let glass = rounded_cover(px - f64::from(b), py - f64::from(b), inner, r);
+                if glass > 0.0 {
+                    let s = ((sy * size.0 + sx) * 4) as usize;
+                    let ink = [screen[s], screen[s + 1], screen[s + 2]];
+                    mix(ink, &mut out[i..i + 3], glass);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The most frames a second a video takes.
@@ -90,24 +214,80 @@ pub fn video(
             let at = i as f64 * step;
             replay.advance(at - replay.player().now());
         }
-        let p = replay.player();
-        let scene = p.scene();
-        let scale = scale_for(options.scale, scene.size);
-        let (rgba, w, h) =
-            renderer.render_play_to_rgba(p.document(), p.resolved(), &images, &scene, scale);
-        if w == 0 || h == 0 {
-            return Err(VideoError::Empty);
-        }
-        // Every frame takes the first one's size: a screen of another size is
-        // drawn into its top-left corner and cut off or padded white.
-        let (fw, fh) = *size.get_or_insert((w, h));
-        let frame = fit(&rgba, (w, h), (fw, fh));
-        sink.push(frame, (fw, fh), i, options.fps)?;
+        let (frame, out, screen) = draw(&replay, &mut renderer, &images, take, options, size)?;
+        size.get_or_insert(screen);
+        sink.push(frame, out, i, options.fps)?;
         if !progress(i + 1, total) {
             return Err(VideoError::Cancelled);
         }
     }
     sink.finish(options.fps)
+}
+
+/// One frame of the video of `take` under `options`, `at` milliseconds in, and
+/// its size: what the export dialog previews.
+pub fn still(
+    doc: &Document,
+    take: &Take,
+    actor: u64,
+    options: &Options,
+    at: f64,
+) -> Result<(Vec<u8>, (u32, u32)), VideoError> {
+    if !(options.scale.is_finite() && options.scale > 0.0) {
+        return Err(VideoError::Options);
+    }
+    let mut replay = Replay::new(doc, take.clone(), actor)?;
+    replay.advance(at.clamp(0.0, take.length.max(0.0)));
+    let mut images = ImageStore::new();
+    images.prepare(doc);
+    let mut renderer = VelloCpuRenderer::new();
+    let (frame, out, _) = draw(&replay, &mut renderer, &images, take, options, None)?;
+    Ok((frame, out))
+}
+
+/// The size of the screen `take` starts on, in screen units: what a video of it
+/// is drawn at, before its scale.
+pub fn screen_size(doc: &Document, take: &Take, actor: u64) -> Option<mastik_core::kurbo::Size> {
+    let replay = Replay::new(doc, take.clone(), actor).ok()?;
+    Some(replay.player().scene().size)
+}
+
+/// A drawn frame: opaque RGBA, its size, and the screen's size within it.
+type Drawn = (Vec<u8>, (u32, u32), (u32, u32));
+
+/// The frame `replay` shows now, drawn and dressed as `options` asks. Given
+/// `fixed`, the screen is drawn into a frame of that size, as every frame after
+/// the first is: a screen of another size goes in its top-left corner, cut off
+/// or padded white.
+fn draw(
+    replay: &Replay,
+    renderer: &mut VelloCpuRenderer,
+    images: &ImageStore,
+    take: &Take,
+    options: &Options,
+    fixed: Option<(u32, u32)>,
+) -> Result<Drawn, VideoError> {
+    let p = replay.player();
+    let scene = p.scene();
+    let scale = scale_for(options.scale, scene.size);
+    let (rgba, w, h) =
+        renderer.render_play_to_rgba(p.document(), p.resolved(), images, &scene, scale);
+    if w == 0 || h == 0 {
+        return Err(VideoError::Empty);
+    }
+    let screen = fixed.unwrap_or((w, h));
+    let mut frame = fit(&rgba, (w, h), screen);
+    if options.clicks {
+        draw_clicks(&mut frame, screen, take, p.now(), scale);
+    }
+    Ok(match options.device {
+        true => (
+            in_device(&frame, screen, scale),
+            framed_size(screen, scale, true),
+            screen,
+        ),
+        false => (frame, screen, screen),
+    })
 }
 
 /// `asked` lowered so a screen of `size` is at most [`MAX_SIDE`] pixels a side.
@@ -322,5 +502,52 @@ mod tests {
     fn gif_delays_add_up() {
         let sum: u32 = (0..3).map(|i| u32::from(gif_delay(i, 30))).sum();
         assert_eq!(sum, 10);
+    }
+
+    /// The device frame puts the screen inside a dark bezel: white outside the
+    /// rounded body, bezel at its edge, the screen's own pixels in its middle,
+    /// and the screen's corner cut by its radius.
+    /// flip: `in_device` skipping the glass mask → fails at "the corner is bezel".
+    #[test]
+    fn a_device_frame_rounds_the_screen_inside_a_bezel() {
+        let (w, h) = (200u32, 400u32);
+        let red = [255u8, 0, 0, 255].repeat((w * h) as usize);
+        let out = in_device(&red, (w, h), 1.0);
+        let (ow, oh) = framed_size((w, h), 1.0, true);
+        assert_eq!((ow, oh), (228, 428));
+        let px = |x: u32, y: u32| {
+            let i = ((y * ow + x) * 4) as usize;
+            [out[i], out[i + 1], out[i + 2]]
+        };
+        assert_eq!(px(0, 0), [255, 255, 255], "outside the body is white");
+        assert_eq!(px(1, oh / 2), BEZEL_INK, "the bezel");
+        assert_eq!(px(ow / 2, oh / 2), [255, 0, 0], "the screen");
+        // 47 units from the corners' common centre (54, 54): inside the body's
+        // 54, outside the screen's 40.
+        assert_eq!(px(21, 21), BEZEL_INK, "the corner is bezel");
+    }
+
+    /// A click's ring shows round where it landed while it is young and is gone
+    /// after [`CLICK_MS`].
+    #[test]
+    fn a_click_ring_shows_then_goes() {
+        let size = (100u32, 100u32);
+        let take = Take {
+            start: mastik_play::Start::Frame(mastik_core::IdSource::new(1).mint()),
+            inputs: vec![(
+                0.0,
+                mastik_play::Input::PointerDown(mastik_core::kurbo::Point::new(50.0, 50.0)),
+            )],
+            length: 1000.0,
+        };
+        let white = || vec![255u8; (size.0 * size.1 * 4) as usize];
+        let mut young = white();
+        draw_clicks(&mut young, size, &take, 0.0, 1.0);
+        let i = ((50 * size.0 + 60) * 4) as usize;
+        assert!(young[i] < 255, "the ring at its radius");
+        assert_eq!(young[((50 * size.0 + 50) * 4) as usize], 255, "hollow");
+        let mut old = white();
+        draw_clicks(&mut old, size, &take, CLICK_MS, 1.0);
+        assert_eq!(old, white(), "gone");
     }
 }

@@ -5096,6 +5096,51 @@ pub fn level_bar(ui: &mut egui::Ui, id: egui::Id, width: f32, share: f32) -> egu
     ui.interact(band, id, egui::Sense::hover())
 }
 
+/// A [`level_bar`] split into `parts`, each a share of the whole (`0..=1`) in
+/// its own ink, laid end to end from the left with the round ends kept on the
+/// track: what a total is made of, as the prototype export's size is.
+pub fn level_bar_parts(
+    ui: &mut egui::Ui,
+    width: f32,
+    parts: &[(f32, egui::Color32)],
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, LEVEL_BAR_H), egui::Sense::hover());
+    let ppp = ui.ctx().pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(snap(rect.min.x), snap(rect.min.y)),
+        egui::pos2(snap(rect.max.x), snap(rect.min.y) + LEVEL_BAR_H),
+    );
+    let round = egui::CornerRadius::same((LEVEL_BAR_H / 2.0).round() as u8);
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, round, color::field_border());
+    // Each part a square slice, the whole clipped to the track's round ends.
+    let mut x = rect.left();
+    let mut ends = Vec::new();
+    for (share, ink) in parts {
+        let w = rect.width() * share.clamp(0.0, 1.0);
+        if w <= 0.0 {
+            continue;
+        }
+        let r =
+            egui::Rect::from_min_size(egui::pos2(snap(x), rect.top()), egui::vec2(w, LEVEL_BAR_H));
+        ends.push((r, *ink));
+        x += w;
+    }
+    let (first, last) = (0, ends.len().saturating_sub(1));
+    for (i, (r, ink)) in ends.iter().enumerate() {
+        let mut corners = egui::CornerRadius::ZERO;
+        if i == first {
+            (corners.nw, corners.sw) = (round.nw, round.sw);
+        }
+        if i == last && (r.right() - rect.right()).abs() < 0.5 {
+            (corners.ne, corners.se) = (round.ne, round.se);
+        }
+        p.rect_filled(*r, corners, *ink);
+    }
+    resp
+}
+
 /// The arrow at the closed end of a `ComboBox` — a caret glyph at one fixed
 /// colour, in place of egui's triangle, which goes white when open.
 ///

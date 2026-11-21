@@ -62,7 +62,7 @@ pointer events back into it.
 | Call | What it does |
 | --- | --- |
 | `Player::new(doc, Start::Flow(r) \| Start::Frame(f), actor)` | Start; `StartError` when the flow or frame is not there |
-| `input(Input) -> bool` | Pointer move, down, up, leave; wheel; a key; text; a state-card value or mode. Answers whether the prototype used it, so an unused Escape goes back to the editor |
+| `input(Input) -> bool` | Pointer move, down, up, leave; wheel; a key; text; a state-card value or mode; `Touch(bool)`, whether the pointer is a finger. Answers whether the prototype used it, so an unused Escape goes back to the editor |
 | `tick(ms)` | Advance time: timers, held clicks and long presses fire at their own times, motions move on |
 | `scene() -> Scene` | What to draw now |
 | `hotspots()` | The rectangles of the layers that take a person's act in the frame that takes input, for the hints |
@@ -126,6 +126,12 @@ out both ends.
   an instance's previous main, overlays opened, a navigation (one *Back*). *On leave* fires only
   for a layer still in a shown frame — one that went with its frame is gone, not left — and not
   in a *Disabled* instance.
+- **A finger hovers nothing.** While the shell says the pointer is a finger (`Input::Touch(true)`),
+  hovering reads as if the pointer were gone (`rehover`), so no hover trigger or *Hover* state
+  fires before a tap, as on a phone; switching hands hovers again from where the pointer is. The
+  shell tells it from each event: the app's player from egui's touch events against plain pointer
+  moves, the exported page from `pointerType` (`set_touch` in `mastik-web`). `Touch` is recorded
+  in a take like any input, and kept across `restart`.
 - A **drag** is a press that moves more than four units. A swipe reaction anywhere in the pressed
   chain toward the side the move is going (its longer axis) takes it whole. Otherwise the deepest
   layer in the chain that follows the drag moves with it (*A layer that follows the drag*) and a
@@ -356,8 +362,11 @@ by frame for a video reaches exactly the state the run had at each time.
 **Video** (`mastik_export::video::video(doc, take, actor, options, progress)`) replays a take on
 a fresh copy at a fixed rate (1 to 60 frames a second), a frame at every frame time from the start
 to the take's length, each drawn by `VelloCpuRenderer::render_play_to_rgba` at the options' scale
-(capped at 4096 pixels a side) over white, every frame cut or padded to the first one's size. A
-GIF loops, each frame on its own palette, its delays carrying their rounding so they add up to
+(capped at 4096 pixels a side) over white, every frame cut or padded to the first one's size.
+With `clicks`, a ring in the accent widens and fades over `CLICK_MS` (500 ms) where each press
+landed; with `device`, the screen sits in the exported page's device frame (`in_device`: a
+`BEZEL` of 14 units, screen corners 40 under 600 units on the short side, else 18) on white.
+`still` draws one such frame, for the export card's preview. A GIF loops, each frame on its own palette, its delays carrying their rounding so they add up to
 the take. An MP4 is H.264 from OpenH264 built from source (BSD-2-Clause; the C++ toolchain `mlua`
 already needs builds it, and its patent licence covers only Cisco's own binaries), at even sizes,
 muxed by the `mp4` crate with one sample a frame. `progress` hears each frame and stops the job by
@@ -367,7 +376,10 @@ answering false.
 
 `Missing` and `Expression` are said once per action; `Script` and `ScriptNeedsInput` per run;
 `ScriptsOff` and `Loop` once; `Fallback` (screen, overlay, variable) once per live edit that caused
-it.
+it; `ScrollFrameGone { layer }`, a scroll trigger whose frame is gone and so never fires, once per
+reaction, the first time its screen scrolls. The app and the page word it *A scroll trigger
+watches a frame that is gone; it never fires*; the page, as with every notice but `ScriptsOff`,
+says it to the console.
 
 ## Expressions
 

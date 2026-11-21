@@ -70,7 +70,7 @@ variable*).
 - **C8** — A live text session opens §6.4; the node tool with a path under edit opens §6.5
   (anywhere on the canvas, checked before guides and layers).
 
-Precedence on canvas: text session → point edit → guide → layer → empty canvas.
+Precedence on canvas: text session → point edit → flow chip → guide → layer → empty canvas.
 
 ---
 
@@ -478,13 +478,25 @@ menu and §8's keys walk and run its rows (`read_nav` into `Scripts::menu_nav`).
 ### 6.11 An interaction (prototype mode)
 
 An interaction's head carries `⋯` (`egui::Popup::menu`, `ui::popup_rows`): *Duplicate* (every item
-id minted afresh, nested actions' too), a rule, *Delete* in danger styling. On an instance, the
+id minted afresh, nested actions' too), *Copy interaction* (kept for the card's *Paste
+interaction*, `prototyping-authoring.md`), a rule, *Delete* in danger styling. On an instance, the
 head's override slot takes a right-click as every reset does (`ui::reset_push_menu`): *Reset to
 main* and *Push to main*, the push disabled with the inspector's push refusal. A ghost row (an
 interaction the instance removed) offers *Restore* and *Push removal to main*. Its head's `+` and a
 conditional branch's `+` open the add-action menu: the actions in three groups (*Go*, *Overlay*,
 *State*), each the layer cannot take shown dimmed with its reason as the tooltip
 (`prototype::action_refusal`).
+
+### 6.12 A flow chip (prototype mode)
+
+`Target::Flow`, ahead of guides and layers, since the chip sits over its frame (`flow_menu`;
+`MastikApp::act_on_flow` runs it):
+
+| Row | Does |
+| --- | --- |
+| Play prototype | plays that flow over the canvas |
+| Export prototype… | the export card on *HTML file*, opening on that flow, which joins the file's flows if it was left out |
+| Export flow map… | the export card on *Flow map*, holding that flow alone |
 
 ---
 

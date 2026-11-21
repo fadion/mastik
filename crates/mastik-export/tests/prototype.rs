@@ -8,7 +8,7 @@ use mastik_core::{
     NodeKind, Operation, Transaction, image_brush, io, keyed_by_position,
 };
 use mastik_export::prototype::{
-    Opening, Parts, Player, chosen_flows, prune, prune_mirror, reached_pages,
+    HoldWhy, Opening, Parts, Player, chosen_flows, holds, prune, prune_mirror, reached_pages,
 };
 
 fn frame(id: NodeId, parent: NodeId, name: &str) -> Operation {
@@ -725,4 +725,88 @@ fn the_fonts_go_in_whole_with_their_alias() {
         "under its alias"
     );
     assert_eq!(fonts[0].bytes, emoji, "the whole file");
+}
+
+/// The breakdown's four shares add up to the estimate, and a large player
+/// outweighs a small document.
+///
+/// flip: `breakdown` giving the player the document's weight → fails at "the player leads".
+#[test]
+fn the_breakdown_adds_up_to_the_estimate() {
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let mut seed = 0x1234_5678_u32;
+    let wasm: Vec<u8> = (0..200_000)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        })
+        .collect();
+    let parts = Parts::of(
+        &f.doc,
+        Player {
+            wasm: &wasm,
+            glue: GLUE,
+        },
+    )
+    .expect("parts");
+    let b = parts.breakdown();
+    assert_eq!(b.total(), parts.estimate(), "adds up");
+    assert!(b.player > b.document * 4, "the player leads: {b:?}");
+    assert!(
+        parts.pictures.is_empty(),
+        "the picture's page is not carried"
+    );
+}
+
+/// A layer the file carries whose action names a layer that is gone, or whose
+/// condition does not read, holds the export, named once per kind.
+///
+/// flip: `holds` not checking targets → fails at "the missing target".
+#[test]
+fn a_missing_target_or_a_broken_expression_holds_the_export() {
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    assert!(holds(&f.doc).is_empty(), "the fixture plays as authored");
+    let home = f.doc.page(f.flows_page).expect("page").flows[0].value.start;
+    let mut ids = IdSource::new(0x77);
+    let gone = ids.mint();
+    let mut reactions = click(
+        &mut ids,
+        Action::Navigate {
+            to: gone,
+            transition: Transition::default(),
+            keep_scroll: false,
+        },
+    );
+    reactions.extend(click(
+        &mut ids,
+        Action::Conditional {
+            branches: vec![mastik_core::prototype::Branch {
+                when: mastik_core::prototype::Expr("1 +".into()),
+                actions: Vec::new(),
+            }],
+            otherwise: Vec::new(),
+        },
+    ));
+    f.doc
+        .apply(&Transaction(vec![Operation::SetReactions {
+            id: home,
+            reactions,
+        }]))
+        .expect("reactions");
+    let held = holds(&f.doc);
+    assert!(
+        held.iter()
+            .any(|h| h.layer == home && h.why == HoldWhy::Missing),
+        "the missing target: {held:?}"
+    );
+    assert!(
+        held.iter()
+            .any(|h| h.layer == home && matches!(h.why, HoldWhy::Expression(_))),
+        "the broken expression: {held:?}"
+    );
+    assert_eq!(held.len(), 2, "each once");
 }

@@ -1430,6 +1430,28 @@ fn add(var: VarId, by: f64) -> Action {
     }
 }
 
+/// A finger hovers nothing: *On hover* waits for a mouse, and a tap still
+/// clicks.
+///
+/// flip: `rehover` hit-testing a finger as it does a mouse → fails at "a finger
+/// does not hover".
+#[test]
+fn a_finger_fires_no_hover() {
+    let (mut fx, a, card, n) = one_card();
+    fx.on(card, Trigger::HoverEnter, vec![add(n, 1.0)]);
+    fx.on(card, Trigger::Click, vec![add(n, 10.0)]);
+    let mut p = fx.play(a);
+    p.input(Input::Touch(true));
+    let at = Point::new(20.0, 20.0);
+    p.input(Input::PointerMove(at));
+    p.input(Input::PointerDown(at));
+    p.input(Input::PointerUp(at));
+    p.tick(500.0);
+    assert_eq!(number(&p, n), 10.0, "a finger does not hover, and taps");
+    p.input(Input::Touch(false));
+    assert_eq!(number(&p, n), 11.0, "the mouse over it hovers");
+}
+
 /// *On leave* runs once as the pointer leaves the layer, and again when it
 /// leaves the player from over it.
 ///
@@ -1591,6 +1613,47 @@ fn a_scroll_trigger_fires_on_the_crossing() {
     assert_eq!(number(&p, n), 1.0, "not again while past");
     wheel(&mut p, -500.0);
     assert_eq!(number(&p, n), 11.0, "a jump back across fires once");
+}
+
+/// A scroll trigger watching a frame that is gone says so once, the first time
+/// its screen scrolls, and fires nothing.
+///
+/// flip: `check_scrolls` skipping the gone frame silently → fails at "said once".
+#[test]
+fn a_scroll_trigger_on_a_gone_frame_says_so() {
+    let (mut fx, a, card, n) = one_card();
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    fx.rect(a, "Long", 0.0, 50.0, 10.0, 400.0);
+    let gone = IdSource::new(0xDEAD).mint();
+    fx.on(
+        card,
+        Trigger::ScrollPast {
+            frame: gone,
+            at: 10.0,
+            going: Going::Forward,
+        },
+        vec![add(n, 1.0)],
+    );
+    let mut p = fx.play(a);
+    for _ in 0..2 {
+        p.input(Input::Wheel {
+            at: Point::new(100.0, 50.0),
+            delta: Vec2::new(0.0, 60.0),
+        });
+    }
+    let said = p
+        .take_notices()
+        .into_iter()
+        .filter(|x| matches!(x, Notice::ScrollFrameGone { layer } if *layer == card))
+        .count();
+    assert_eq!(said, 1, "said once");
+    assert_eq!(number(&p, n), 0.0, "fires nothing");
 }
 
 // ── Scroll kept, modes, snapping ────────────────────────────────────────────
