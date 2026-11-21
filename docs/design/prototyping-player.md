@@ -65,7 +65,9 @@ otherwise the player returns over the canvas).
   (`Playing::readout`). Not over the canvas, whose card never resizes and whose bar has no room.
 - **Play on a phone** (`phone.rs`): the bar's `PHONE` button, after *Record*, tipped *Play on a
   phone on this network*, starts sharing and opens its card in the side column, in the state
-  card's place (the two never show together); while sharing it is lit and toggles the card.
+  card's place (the two never show together); while sharing it is lit and toggles the card, and
+  the phones listening are counted after it in `ui::head_badge`. An Escape the prototype does
+  not use closes the card and keeps sharing; the next gives the keyboard back.
   Sharing starts only from the button, is never remembered, and stops when the player closes
   (*Stopped sharing — the player closed*) or from the card's *Stop sharing* (Danger).
   - **The server** binds this computer's private-network address (the one its default route
@@ -80,6 +82,11 @@ otherwise the player returns over the canvas).
     version the phone plays where it is (`Player::rebase`); one needing fonts the page lacks
     sends `reload`. The phone toasts *Updated from Mastik*, and when sharing stops dims its last
     frame under *Mastik stopped sharing*.
+  - **The firewall.** The first share on Windows raises the system's prompt for the app, which
+    the card's help line names on Windows (*allow it so the phone can reach this computer*),
+    every share, so the card keeps one size. A declined prompt cannot be seen from the app: a
+    phone that never arrives is the sign, so after 20 s with none the empty list says to allow
+    Mastik on private networks in Windows Security (elsewhere, to check both are on one network).
   - **The card**: the QR code (`qrcode`, painted dark on light in either theme), one line of help,
     the link with *Copy* (*Copied the link*), *Following* — up to four rows of a dot (lit while
     the phone listens, grey while it sleeps, gone after a minute), its browser at its coarsest

@@ -2383,8 +2383,9 @@ pub(crate) fn painted_override_dots(out: &egui::FullOutput) -> Vec<egui::Pos2> {
 }
 
 /// A [`section_head_badged`] badge: an 18-pt accent chip, accent 18% under 10-pt
-/// accent-100 text, 6 pt either side, a 4-pt corner.
-fn head_badge(ui: &mut egui::Ui, word: &str) {
+/// accent-100 text, 6 pt either side, a 4-pt corner. The player bar's count of
+/// phones following wears it too, after its button.
+pub fn head_badge(ui: &mut egui::Ui, word: &str) {
     let galley = ui.painter().layout_no_wrap(
         word.to_owned(),
         egui::FontId::proportional(CAPTION_PT),

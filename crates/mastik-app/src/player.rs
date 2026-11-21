@@ -369,7 +369,8 @@ impl Playing {
 
     /// Take this pass's plain and Shift-ed keys and text for the player, leaving
     /// chords with Ctrl or Alt for the editor. An Escape the prototype does not
-    /// use hands the keyboard back; answers whether one did.
+    /// use closes the sharing card when it is open, else hands the keyboard
+    /// back; answers whether one did.
     fn take_keys(&mut self, ctx: &egui::Context) -> bool {
         let mut gave_back = false;
         let player = &mut self.player;
@@ -402,6 +403,12 @@ impl Playing {
                 _ => true,
             });
         });
+        // The sharing card closes first, sharing going on; the next Escape
+        // gives the keyboard back.
+        if gave_back && let Some(s) = self.sharing.as_mut().filter(|s| s.open) {
+            s.open = false;
+            return false;
+        }
         if gave_back {
             self.focused = false;
         }
@@ -575,6 +582,11 @@ fn bar(
             "Play on a phone on this network",
             BarAct::Phone,
         );
+        let following = p.sharing.as_ref().map_or(0, |s| s.following());
+        if following > 0 {
+            ui.add_space(2.0);
+            ui::head_badge(ui, &following.to_string());
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             if p.place != Place::Fullscreen {
@@ -1667,6 +1679,48 @@ mod tests {
         whole_frame(&ctx, &mut app, vec![key(true), key(false)]);
         let p = app.playing.as_ref().expect("still playing");
         assert_eq!(p.player.screen(), b, "the key reaction fired");
+    }
+
+    /// An Escape the prototype does not use closes the sharing card and keeps
+    /// sharing; the next gives the keyboard back.
+    /// flip: `Playing::take_keys` not closing the card first → fails at "the
+    /// card closed".
+    #[test]
+    fn escape_closes_the_sharing_card_and_keeps_sharing() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = fixture(&ctx, false);
+        app.play(&ctx, Place::Over, false);
+        whole_frame(&ctx, &mut app, Vec::new());
+        let p = app.playing.as_mut().expect("playing");
+        let opening = p.opening();
+        p.sharing = Some(crate::phone::Sharing::start_with(
+            &ctx,
+            &app.session.doc,
+            opening,
+            (b"\0asm".to_vec(), "let wasm_bindgen;".into()),
+            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+        ));
+        assert!(
+            p.sharing.as_ref().is_some_and(|s| s.is_sharing() && s.open),
+            "fixture: sharing, the card open"
+        );
+        let escape = |pressed| egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        whole_frame(&ctx, &mut app, vec![escape(true), escape(false)]);
+        let p = app.playing.as_ref().expect("still playing");
+        let s = p.sharing.as_ref().expect("still sharing");
+        assert!(!s.open, "the card closed");
+        assert!(s.is_sharing() && p.focused, "sharing, the keys kept");
+        whole_frame(&ctx, &mut app, vec![escape(true), escape(false)]);
+        assert!(
+            !app.playing.as_ref().expect("still playing").focused,
+            "the next Escape gives the keys back"
+        );
     }
 
     /// Present mode plays the prototype fullscreen when the document has a flow,

@@ -495,6 +495,9 @@ use mastik_export::prototype::{Opening, Parts, Player};
 /// How long the document must sit still after an edit before the phones are
 /// sent it: a drag's commits land as one version, not dozens.
 const SETTLE: f64 = 0.25;
+/// How long a share waits for its first phone before the card's empty list
+/// says where to look.
+const UNREACHED: Duration = Duration::from_secs(20);
 /// The most phones the card lists; the rest fold into a *+N* row.
 const LISTED: usize = 4;
 /// The QR code's modules and ground: dark on light whatever the theme, since a
@@ -522,6 +525,9 @@ pub(crate) struct Sharing {
     qr: Option<(usize, Vec<bool>)>,
     /// The card is open in the player's side column.
     pub(crate) open: bool,
+    /// When the share began serving, for the note a phone that never arrives
+    /// gets.
+    started: Option<Instant>,
 }
 
 /// What the sharing card asked for.
@@ -577,7 +583,7 @@ impl Sharing {
 
     /// [`Sharing::start`] with the player's `files`, on `ip`.
     #[cfg(test)]
-    fn start_with(
+    pub(crate) fn start_with(
         ctx: &egui::Context,
         doc: &Document,
         opening: Opening,
@@ -601,6 +607,7 @@ impl Sharing {
             owed: None,
             qr: None,
             open: true,
+            started: None,
         }
     }
 
@@ -652,6 +659,7 @@ impl Sharing {
             (w, dark)
         });
         (self.wasm, self.glue, self.fonts) = (wasm, glue, fonts);
+        self.started = Some(Instant::now());
         Ok(share)
     }
 
@@ -663,6 +671,13 @@ impl Sharing {
     /// Whether the phones are being served.
     pub(crate) fn is_sharing(&self) -> bool {
         self.share.is_ok()
+    }
+
+    /// How many phones are listening now, for the bar's count.
+    pub(crate) fn following(&self) -> usize {
+        self.share
+            .as_ref()
+            .map_or(0, |s| s.phones().iter().filter(|p| p.live).count())
     }
 
     /// The document changed at `now` (egui's clock).
@@ -745,13 +760,21 @@ impl Sharing {
                 }
             }
         }
+        let help = match cfg!(windows) {
+            // The first share raises the system's firewall prompt; said before it
+            // appears, and on every share, so the card keeps one size.
+            true => {
+                "Scan with the phone's camera. It must be on the same Wi-Fi as this computer. \
+                 Windows may ask to let Mastik on private networks: allow it so the phone can \
+                 reach this computer."
+            }
+            false => "Scan with the phone's camera. It must be on the same Wi-Fi as this computer.",
+        };
         ui.add(
             egui::Label::new(
-                egui::RichText::new(
-                    "Scan with the phone's camera. It must be on the same Wi-Fi as this computer.",
-                )
-                .size(ui::SMALL_PT)
-                .color(theme::text::dim()),
+                egui::RichText::new(help)
+                    .size(ui::SMALL_PT)
+                    .color(theme::text::dim()),
             )
             .wrap(),
         );
@@ -791,7 +814,26 @@ impl Sharing {
         );
         rows.spacing_mut().item_spacing.y = 0.0;
         if phones.is_empty() {
-            ui::empty_note(&mut rows, "No phone yet");
+            // A declined firewall prompt cannot be seen from here: a phone that
+            // never arrives is the sign, so the note says where to look.
+            let waited = self.started.is_some_and(|t| t.elapsed() >= UNREACHED);
+            let note = match (cfg!(windows) && waited, waited) {
+                (true, _) => {
+                    "No phone yet. If the page won't open on the phone, allow Mastik on private \
+                     networks in Windows Security, then try again"
+                }
+                (false, true) => {
+                    "No phone yet. If the page won't open on the phone, check that both are on \
+                     the same network"
+                }
+                _ => "No phone yet",
+            };
+            ui::empty_note(&mut rows, note);
+            if waited {
+                ui.ctx().request_repaint_after(Duration::from_secs(1));
+            } else {
+                ui.ctx().request_repaint_after(UNREACHED);
+            }
         }
         let shown = if phones.len() > LISTED {
             LISTED - 1
