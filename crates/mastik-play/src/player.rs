@@ -660,6 +660,38 @@ impl Player {
             // A binding the door refuses leaves the layer showing its own text.
             let _ = self.commit(Transaction(binds));
         }
+        self.hide_empty_templates();
+    }
+
+    /// A list over an empty table draws no row in play: its template, kept on
+    /// the canvas to be edited, is hidden on the copy, and shown again as the
+    /// document has it once the table has rows (a live edit). A list whose data
+    /// set is missing keeps the rows it has.
+    fn hide_empty_templates(&mut self) {
+        use mastik_core::list;
+        let mut shows = Vec::new();
+        for l in list::lists(&self.doc) {
+            let Some(x) = self.doc.get(l).and_then(|n| n.list()) else {
+                continue;
+            };
+            let Some(t) = list::template(&self.doc, l) else {
+                continue;
+            };
+            let Some(set) = self.doc.data_set(x.data) else {
+                continue;
+            };
+            let want = !set.table.rows.is_empty() && self.base.get(t).is_none_or(|n| n.visible());
+            if self.doc.get(t).is_some_and(|n| n.visible() != want) {
+                shows.push(mastik_core::Operation::SetVisible {
+                    id: t,
+                    visible: want,
+                });
+            }
+        }
+        if !shows.is_empty() {
+            // A refusal leaves the template drawn, as the canvas draws it.
+            let _ = self.commit(Transaction(shows));
+        }
     }
 
     /// Say `notice` about `action` on `layer` once.

@@ -2283,3 +2283,48 @@ fn a_tapped_row_is_opened_on_the_detail_screen() {
         "the file untouched"
     );
 }
+
+/// A list over an empty table hides its template in play while the document
+/// keeps it, and a live edit giving the table rows shows it again.
+/// flip: `prepare` not calling `hide_empty_templates` → fails at "hidden in play".
+#[test]
+fn an_empty_list_draws_no_row_in_play() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{DataSet, Source};
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 200.0);
+    let main = fx.frame("Row", 600.0, 180.0, 30.0);
+    fx.apply(vec![Operation::SetComponent {
+        id: main,
+        component: true,
+    }]);
+    let item = row_instance(&mut fx, main, a);
+    let mut set = DataSet {
+        id: fx.ids.mint_data_set(),
+        name: "cart".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "title".into(),
+            }],
+            rows: Vec::new(),
+        },
+        source: None,
+    };
+    listed(&mut fx, item, Source::New(set.clone()));
+    assert!(fx.doc.get(item).unwrap().visible(), "kept on the canvas");
+
+    let mut p = fx.play(a);
+    assert!(!p.document().get(item).unwrap().visible(), "hidden in play");
+
+    set.table.rows.push(vec!["A".into()]);
+    p.apply_edit(&Transaction(vec![Operation::SetDataSet {
+        id: set.id,
+        set: Some(Box::new(set)),
+    }]))
+    .unwrap();
+    assert!(
+        p.document().get(item).unwrap().visible(),
+        "shown once the table has rows"
+    );
+}
