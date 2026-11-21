@@ -19,9 +19,6 @@ remains is below.
   saved form is undecided (`prototyping.md`, *Still open*).
 - **Play on a phone: a real phone.** Built and checked on loopback; not yet tried with a phone
   on Wi-Fi or against Windows' firewall prompt.
-- **On a phone.** The export card's *On a phone* (follow the phone's turn or keep the page's),
-  shown under *Responsive*. A mirrored page always follows the phone today (`prune_mirror` drops
-  the device); an exported file opened on a phone still draws the page's device.
 
 ## Later · Platform and dependencies
 

@@ -170,6 +170,11 @@ canvas, the drawing and the page around them.
   scrolls. The device frame, when the export shows it and the page names a device, is a dark
   bezel 14 units wide round the screen, 24 CSS pixels from the window's edges under *Fit*;
   a screen under 600 units on its short side wears a phone's corners (40), else a tablet's (18).
+- **On a phone** (a coarse pointer on a screen under 600 CSS pixels on its short side, told to
+  the player by `set_on_phone`): the device frame is never drawn, since the phone is the device.
+  Under *Responsive* with `PlayExport::on_phone` at *Follow its turn* the page plays with no
+  device, so it lays out at the phone's size and again when it turns, and the *Turn* button
+  hides; at *Keep the page's* it keeps the page's device and orientation, fitted.
 - **Input** goes to the engine in screen space, mapped back by the placement's scale: the
   canvas's pointer down, move, up, leave and cancel (captured during a press), the wheel
   (deltas in lines or pages made pixels; the page scrolls when no frame used it), and the
@@ -214,7 +219,8 @@ words, for review and sign-off.
 
 The page a phone loads under *Play on a phone* (`prototyping-player.md`) is this page in mirror
 mode: `Parts::mirror` packs `prune_mirror`'s trim (the flow the app plays, or its frame through
-`start`'s frame argument, with no bar, device frame or device, and no inspect data), and
+`start`'s frame argument, with no bar or device frame, no device unless *On a phone* keeps the
+page's, and no inspect data), and
 `Parts::mirror_html` sets `window.MASTIK_MIRROR` (`frame`, `version`) before the boot script, at
 gzip's fast level. A file never carries it. In mirror mode the page listens on `events`,
 fetches each newer version from `doc` and plays it where it is (`Player::rebase`), loads again

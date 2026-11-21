@@ -77,8 +77,8 @@ otherwise the player returns over the canvas).
     every 10 s) and `status` (a phone's screen). Hand-written on `std::net`: four fixed paths,
     a bounded head and body, nothing else served.
   - **The page** is the HTML export's (`Parts::mirror`, `prune_mirror`): the flow playing, or
-    its frame, with no bar, device frame or device, so *Responsive* lays out at the phone's size
-    and follows its turn. An edit is sent once the document has sat still for 0.25 s as a new
+    its frame, with no bar or device frame, and no device unless the export's *On a phone* keeps
+    the page's, so *Responsive* lays out at the phone's size and follows its turn. An edit is sent once the document has sat still for 0.25 s as a new
     version the phone plays where it is (`Player::rebase`); one needing fonts the page lacks
     sends `reload`. The phone toasts *Updated from Mastik*, and when sharing stops dims its last
     frame under *Mastik stopped sharing*.
@@ -120,7 +120,10 @@ otherwise the player returns over the canvas).
 - **The export card** (*Export prototype…*): the flows in the file (every flow is the empty
   list; the last one cannot be left out), the flow it opens on, the device frame, player bar and
   hints, the scaling (the page card's dropdown with *Page's own · ‹its scaling›* first, the
-  default), and the file's size measured on a worker before
+  default), *On a phone* (`PlayExport::on_phone`: *Follow its turn*, the default, or *Keep the
+  page's*, captioned as the scaling's rows are; always shown, so the card keeps its size, and
+  disabled with *Only a Responsive page turns with the phone* unless the scaling resolves to
+  *Responsive*), and the file's size measured on a worker before
   anything is written (`Parts::estimate`). Changed settings are committed to the document when
   the file is written, as one step.
 - **Video**: a recorded take is written as MP4 or GIF by the name given, at 30 frames a second

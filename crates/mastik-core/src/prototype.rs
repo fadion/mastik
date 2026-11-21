@@ -994,6 +994,28 @@ pub struct PlayExport {
     /// `None` takes each page's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scaling: Option<Scaling>,
+    /// What a *Responsive* page does on a phone, which never draws the device
+    /// frame: lay out at the phone and follow its turn, or keep the page's
+    /// device and orientation, fitted.
+    #[serde(default, skip_serializing_if = "OnPhone::is_follow")]
+    pub on_phone: OnPhone,
+}
+
+/// [`PlayExport::on_phone`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OnPhone {
+    /// The screen laid out at the phone's size and orientation, again when it
+    /// turns.
+    #[default]
+    Follow,
+    /// The page's device and orientation, scaled to fit.
+    Keep,
+}
+
+impl OnPhone {
+    fn is_follow(&self) -> bool {
+        *self == OnPhone::Follow
+    }
 }
 
 impl Default for PlayExport {
@@ -1005,6 +1027,7 @@ impl Default for PlayExport {
             player_bar: true,
             hotspot_hints: true,
             scaling: None,
+            on_phone: OnPhone::Follow,
         }
     }
 }

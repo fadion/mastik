@@ -110,6 +110,7 @@ pub async fn start(
         placed: None,
         drawn: None,
         turned: None,
+        on_phone: false,
     })
 }
 
@@ -163,6 +164,9 @@ pub struct Player {
     /// The device turned from the bar, `Some(true)` on its side; `None`
     /// follows the page's own setting.
     turned: Option<bool>,
+    /// The page is open on a phone (`set_on_phone`), which the page tells
+    /// from a coarse pointer on a small screen.
+    on_phone: bool,
 }
 
 enum Backend {
@@ -227,6 +231,13 @@ impl Player {
         Ok(())
     }
 
+    /// Whether the page is open on a phone: no device frame, and under
+    /// *Responsive* the export's *On a phone* decides the device.
+    pub fn set_on_phone(&mut self, on: bool) {
+        self.on_phone = on;
+        self.drawn = None;
+    }
+
     /// The name of the frame on screen, which a mirrored page reports.
     pub fn screen_name(&self) -> String {
         self.play
@@ -274,7 +285,8 @@ impl Player {
         self.play.tick(ms);
         let play = self.page_play();
         let scaling = self.settings.scaling.unwrap_or(play.scaling);
-        let device = self.settings.device_frame && play.device.is_some();
+        // A phone is the device: its frame is never drawn there.
+        let device = self.settings.device_frame && !self.on_phone && play.device.is_some();
         // Laid out at the window, or the device's size, turned or not; a resize
         // lays it out again.
         let room = Size::new(room_w, room_h);
@@ -498,11 +510,25 @@ impl Player {
     }
 
     /// The prototype settings of the page shown.
+    /// On a phone under *Responsive* with the export's *Follow its turn*, the
+    /// page plays with no device, so it lays out at the phone's size and turns
+    /// with it; otherwise as the page says.
     fn page_play(&self) -> mastik_core::prototype::PagePlay {
+        use mastik_core::prototype::{OnPhone, Scaling};
         let doc = self.play.document();
-        doc.page(self.play.page())
+        let mut play = doc
+            .page(self.play.page())
             .map(|p| p.play.clone())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let scaling = self.settings.scaling.unwrap_or(play.scaling);
+        if self.on_phone
+            && scaling == Scaling::Responsive
+            && self.settings.on_phone == OnPhone::Follow
+        {
+            play.device = None;
+            play.landscape = false;
+        }
+        play
     }
 
     /// `id`'s box in screen space where the last scene drew it: its own box, or

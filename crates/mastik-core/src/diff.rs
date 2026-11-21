@@ -1121,7 +1121,7 @@ fn hex(v: &Value) -> String {
 /// zero, with that default as JSON. `skipped_keys_are_listed` holds every key
 /// skipped beside a `default = "…"` function, or by an `is_one`, to this list; a
 /// key a wire form defaults that skips by another test must be added by hand.
-const SKIPPED_AT: [(&str, &str); 25] = [
+const SKIPPED_AT: [(&str, &str); 26] = [
     ("alpha", "1"),
     // A shadow's; a node's `blend` is an `Option`, absent at its kind's default.
     ("blend", r#""Normal""#),
@@ -1141,6 +1141,7 @@ const SKIPPED_AT: [(&str, &str); 25] = [
     ),
     ("hotspot_hints", "true"),
     ("marker_size", "1.0"),
+    ("on_phone", r#""Follow""#),
     ("opacity", "1"),
     // The prototype's settings, skipped at their `Default` (`prototype::is_default`).
     ("overlay", r#"{"position":"Centre"}"#),

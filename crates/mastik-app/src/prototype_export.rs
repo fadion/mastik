@@ -7,7 +7,7 @@ use crate::app::MastikApp;
 use crate::settings::{self, CardHold};
 use crate::ui;
 use eframe::egui;
-use mastik_core::prototype::{FlowRef, PlayExport};
+use mastik_core::prototype::{FlowRef, OnPhone, PlayExport};
 use mastik_core::{Document, Operation, Transaction};
 use std::sync::mpsc::{Receiver, channel};
 
@@ -16,6 +16,48 @@ const W: f32 = 380.0;
 
 /// The file's size in bytes, or why it cannot be written.
 type Size = Result<u64, String>;
+
+/// *On a phone*'s choices: the setting, its words and its caption.
+const ON_PHONE: [(OnPhone, &str, &str); 2] = [
+    (
+        OnPhone::Follow,
+        "Follow its turn",
+        "laid out at the phone's size",
+    ),
+    (
+        OnPhone::Keep,
+        "Keep the page's",
+        "the page's device, fitted",
+    ),
+];
+
+/// *On a phone* as a dropdown, each row's caption in the accelerator's place,
+/// as the scaling dropdown above it shows its own.
+fn on_phone_combo(ui: &mut egui::Ui, w: f32, s: &mut PlayExport) {
+    let shown = ON_PHONE
+        .iter()
+        .find(|(o, ..)| *o == s.on_phone)
+        .map_or("Follow its turn", |(_, label, _)| label);
+    ui::fitted_combo(
+        ui,
+        "export-on-phone",
+        w,
+        ui::combo_text(shown),
+        shown,
+        |ui| {
+            ui::menu_rows(ui);
+            for (o, label, caption) in ON_PHONE {
+                let on = s.on_phone == o;
+                let row = ui::MenuRow::new("", label).note(caption).selected(on);
+                if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() && !on {
+                    s.on_phone = o;
+                }
+            }
+        },
+    )
+    .response
+    .on_hover_text("What a Responsive page does on a phone, which never draws the device frame");
+}
 
 /// The card's state while it is open.
 pub(crate) struct ExportCard {
@@ -225,6 +267,17 @@ impl MastikApp {
                                 ui, salt, w, page, s.scaling,
                             ) {
                                 s.scaling = v;
+                            }
+                        });
+                        let responsive = s.scaling.unwrap_or(page_scaling)
+                            == mastik_core::prototype::Scaling::Responsive;
+                        ui::labelled(ui, "On a phone", |ui| {
+                            let w = ui.available_width();
+                            let r = ui.add_enabled_ui(responsive, |ui| on_phone_combo(ui, w, s));
+                            if !responsive {
+                                r.response.on_disabled_hover_text(
+                                    "Only a Responsive page turns with the phone",
+                                );
                             }
                         });
                     });

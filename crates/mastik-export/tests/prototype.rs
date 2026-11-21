@@ -478,10 +478,12 @@ fn inspect_carries_each_layers_css_and_export_files() {
 }
 
 /// A mirror of one flow keeps that flow alone and the pages it reaches, and
-/// plays the page as the phone shows it: no bar, no device frame, no device.
+/// plays the page as the phone shows it: no bar, no device frame, and no device
+/// unless the export keeps the page's, a setting the file saves.
 ///
 /// flip: `prune_mirror` keeping the page's device → fails at "the phone is the
-/// device".
+/// device"; dropping it under *Keep the page's* → fails at "the page's device
+/// kept".
 #[test]
 fn a_mirror_keeps_its_flow_and_drops_the_device() {
     let mut f = fixture();
@@ -512,6 +514,28 @@ fn a_mirror_keeps_its_flow_and_drops_the_device() {
         (play.device.as_deref(), play.landscape),
         (None, false),
         "the phone is the device"
+    );
+    let keep = PlayExport {
+        on_phone: mastik_core::prototype::OnPhone::Keep,
+        ..f.doc.play_export().clone()
+    };
+    f.doc
+        .apply(&Transaction(vec![Operation::SetPlayExport {
+            settings: keep,
+        }]))
+        .expect("keep the page's");
+    let saved = io::load(&io::save(&f.doc).expect("saves")).expect("loads");
+    assert_eq!(
+        saved.play_export().on_phone,
+        mastik_core::prototype::OnPhone::Keep,
+        "the setting is saved"
+    );
+    let out = prune_mirror(&f.doc, Opening::Flow(f.other)).expect("the mirror");
+    let play = &out.page(f.other.page).expect("kept").play;
+    assert_eq!(
+        (play.device.as_deref(), play.landscape),
+        (Some("iPhone 16"), true),
+        "the page's device kept"
     );
 }
 

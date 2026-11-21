@@ -157,9 +157,9 @@ pub enum Opening {
 
 /// `doc` trimmed for a phone mirroring the app's player from `opening`: the
 /// pages it reaches, that flow alone (none for a frame), and the page itself as
-/// the phone shows it — no bar, no device frame and no device, since the
-/// phone is the device, so *Responsive* lays out at the phone's own size and
-/// follows its turn. Pages keep their scaling.
+/// the phone shows it — no bar, no device frame, and under the export's
+/// *Follow its turn* no device, so *Responsive* lays out at the phone's own
+/// size and follows its turn. Pages keep their scaling.
 pub fn prune_mirror(doc: &Document, opening: Opening) -> Result<Document, PackError> {
     let (flows, pages) = match opening {
         Opening::Flow(r) => {
@@ -187,8 +187,10 @@ pub fn prune_mirror(doc: &Document, opening: Opening) -> Result<Document, PackEr
         player_bar: false,
         ..doc.play_export().clone()
     };
+    let follow = doc.play_export().on_phone == mastik_core::prototype::OnPhone::Follow;
     let unturned: Vec<Operation> = pages
         .iter()
+        .filter(|_| follow)
         .filter_map(|p| {
             let play = &doc.page(*p)?.play;
             (play.device.is_some() || play.landscape).then(|| Operation::SetPagePlay {
@@ -640,6 +642,8 @@ const BOOT: &str = r##"(async () => {
     for (const font of parts.fonts) wasm_bindgen.add_font(font.bytes, font.alias || undefined);
     const cpu = new URLSearchParams(location.search).has("cpu");
     const player = await wasm_bindgen.start(canvas, parts.document, cpu, mirrored ? mirrored.frame : "");
+    // A phone: a coarse pointer on a small screen.
+    player.set_on_phone(matchMedia("(pointer: coarse)").matches && Math.min(screen.width, screen.height) < 600);
     play(player, parts);
     status.remove();
     document.body.dataset.backend = player.backend();
