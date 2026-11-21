@@ -181,6 +181,11 @@ fn mode(op: &Operation) -> Mode {
         // A chart never sits in a main or a copy (`chart::check`).
         | Operation::SetChart { .. }
         | Operation::SetChartParts { .. }
+        // A list's description is its frame's own and never followed by a copy
+        // (*Make a list* refuses an instance inside a main), and a data set is
+        // the document's.
+        | Operation::SetList { .. }
+        | Operation::SetDataSet { .. }
         // A script is the document's, never a node's.
         | Operation::AddScript { .. }
         | Operation::RemoveScript { .. }
@@ -1262,6 +1267,7 @@ pub(crate) fn untouched(
         note: _,
         credit,
         chart: _,
+        list: _,
         element,
         href,
         reactions,

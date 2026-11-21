@@ -78,6 +78,8 @@ pub struct Document {
     /// The scripts stored in this document, in list order (`crate::script`).
     /// Never run by the document, so nothing that draws or checks reads them.
     scripts: Vec<crate::script::Script>,
+    /// The data sets the document's lists read (`crate::list`), in order.
+    data: Vec<crate::list::DataSet>,
     /// The HTML export's settings for this document's prototype
     /// (`crate::prototype::PlayExport`). Never drawn.
     play_export: crate::prototype::PlayExport,
@@ -148,6 +150,7 @@ impl Document {
             variables: Default::default(),
             styles: Default::default(),
             scripts: Vec::new(),
+            data: Vec::new(),
             play_export: Default::default(),
             // Empty, not minted: a document that has never been through the
             // library has no id, and `Document::new` is also what every test
@@ -211,6 +214,7 @@ pub(crate) fn root_node(id: NodeId, name: String) -> Node {
         note: String::new(),
         credit: None,
         chart: None,
+        list: None,
         element: None,
         href: String::new(),
         reactions: Vec::new(),
@@ -467,6 +471,16 @@ impl Document {
     /// One stored script, or `None` for an id this document does not hold.
     pub fn script(&self, id: crate::script::ScriptId) -> Option<&crate::script::Script> {
         self.scripts.iter().find(|s| s.id == id)
+    }
+
+    /// The data sets the document's lists read (`crate::list`), in order.
+    pub fn data_sets(&self) -> &[crate::list::DataSet] {
+        &self.data
+    }
+
+    /// One data set, or `None` for an id this document does not hold.
+    pub fn data_set(&self, id: crate::list::DataSetId) -> Option<&crate::list::DataSet> {
+        self.data.iter().find(|d| d.id == id)
     }
 
     /// The HTML export's settings for this document's prototype.
@@ -1451,6 +1465,7 @@ impl Document {
         variables: crate::variable::Variables,
         styles: crate::style::Styles,
         scripts: Vec<crate::script::Script>,
+        data: Vec<crate::list::DataSet>,
         play_export: crate::prototype::PlayExport,
         meta: DocumentMeta,
         published: Option<crate::kit::Published>,
@@ -1467,6 +1482,7 @@ impl Document {
             variables,
             styles,
             scripts,
+            data,
             play_export,
             meta,
             published: published.map(std::sync::Arc::new),
@@ -1655,6 +1671,7 @@ impl Document {
             variables: Default::default(),
             styles: Default::default(),
             scripts: Vec::new(),
+            data: Vec::new(),
             play_export: Default::default(),
             meta: DocumentMeta::default(),
             published: None,
@@ -2291,6 +2308,43 @@ impl Document {
                     at: old_at,
                 })
             }
+            // A list keeps nothing of the description it replaces: its copies
+            // are written by the regeneration in the same step.
+            Operation::SetList { id, list } => {
+                let node = self.nodes.get_mut(id).ok_or(OpError::NoSuchNode(*id))?;
+                if let Some(l) = list {
+                    if !matches!(node.kind, NodeKind::Artboard { .. }) {
+                        return Err(OpError::BadList(crate::list::ListRule::NotAFrame));
+                    }
+                    l.validate(*id).map_err(OpError::BadList)?;
+                }
+                let old = std::mem::replace(&mut node.list, list.clone());
+                Ok(Operation::SetList { id: *id, list: old })
+            }
+            // ── The data sets (`crate::list`) ── never drawn, so these dirty
+            // nothing; the lists reading one regenerate beside them.
+            Operation::SetDataSet { id, set } => {
+                if let Some(s) = set {
+                    if s.id != *id {
+                        return Err(OpError::BadList(crate::list::ListRule::BadTable));
+                    }
+                    s.validate().map_err(OpError::BadList)?;
+                }
+                let at = self.data.iter().position(|d| d.id == *id);
+                let old = match (at, set) {
+                    (Some(i), Some(s)) => Some(std::mem::replace(&mut self.data[i], (**s).clone())),
+                    (Some(i), None) => Some(self.data.remove(i)),
+                    (None, Some(s)) => {
+                        self.data.push((**s).clone());
+                        None
+                    }
+                    (None, None) => None,
+                };
+                Ok(Operation::SetDataSet {
+                    id: *id,
+                    set: old.map(Box::new),
+                })
+            }
             Operation::SetHref { id, href } => {
                 if !crate::element::is_href(href) {
                     return Err(OpError::BadHref);
@@ -2666,6 +2720,7 @@ impl Document {
             note: String::new(),
             credit: None,
             chart: None,
+            list: None,
             element: None,
             href: String::new(),
             reactions: Vec::new(),
@@ -4127,6 +4182,7 @@ struct Tables {
     variables: crate::variable::Variables,
     styles: crate::style::Styles,
     scripts: Vec<crate::script::Script>,
+    data: Vec<crate::list::DataSet>,
     play_export: crate::prototype::PlayExport,
 }
 
@@ -4140,6 +4196,7 @@ impl<'a> InPlace<'a> {
             variables: doc.variables.clone(),
             styles: doc.styles.clone(),
             scripts: doc.scripts.clone(),
+            data: doc.data.clone(),
             play_export: doc.play_export.clone(),
         };
         #[cfg(debug_assertions)]
@@ -4173,6 +4230,7 @@ impl Drop for InPlace<'_> {
         doc.variables = tables.variables;
         doc.styles = tables.styles;
         doc.scripts = tables.scripts;
+        doc.data = tables.data;
         doc.play_export = tables.play_export;
         // Not while unwinding: a second panic would abort.
         #[cfg(debug_assertions)]
@@ -4245,6 +4303,7 @@ pub fn minted_ids(doc: &Document) -> impl Iterator<Item = NodeId> + '_ {
         .chain(doc.variables.ids())
         .chain(doc.styles.ids())
         .chain(doc.scripts.iter().map(|s| s.id.0))
+        .chain(doc.data.iter().map(|d| d.id.0))
 }
 
 /// Clone a captured subtree with fresh ids minted from `ids`, rewriting every
@@ -4383,6 +4442,17 @@ pub fn remap_subtree(template: &[Node], ids: &mut IdSource) -> Option<(Vec<Node>
                     .filter_map(|(k, id)| map.get(id).map(|to| (*k, *to)))
                     .collect();
                 c
+            }),
+            // Its copies are copied children too; one not copied is dropped, and
+            // the next regeneration makes it again.
+            list: n.list.as_ref().map(|l| {
+                let mut l = l.clone();
+                l.copies = l
+                    .copies
+                    .iter()
+                    .filter_map(|id| map.get(id).copied())
+                    .collect();
+                l
             }),
             // What the layer is in code travels with it, as its name does.
             element: n.element,
@@ -4685,6 +4755,7 @@ mod tests {
             note: String::new(),
             credit: None,
             chart: None,
+            list: None,
             element: None,
             href: String::new(),
             reactions: Vec::new(),

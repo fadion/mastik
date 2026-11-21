@@ -2240,6 +2240,7 @@ mod tests {
             note: String::new(),
             credit: None,
             chart: None,
+            list: None,
             element: None,
             href: String::new(),
             reactions: Vec::new(),

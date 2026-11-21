@@ -151,6 +151,9 @@ pub struct Node {
     /// The chart this frame draws (`crate::chart`): its children are the parts
     /// generated from it. Only on an `Artboard` (`crate::chart::check`).
     pub(crate) chart: Option<Box<crate::chart::Chart>>,
+    /// The list this frame repeats (`crate::list`): its first child that is not
+    /// a copy is the template, the copies are made from it. Only on an `Artboard`.
+    pub(crate) list: Option<Box<crate::list::List>>,
     /// The HTML element a code export writes this layer as (`crate::element`);
     /// `None` is Automatic. An instance's follow its main's and never differ.
     pub(crate) element: Option<crate::element::HtmlElement>,
@@ -268,6 +271,10 @@ impl Node {
     /// The chart this frame draws, `None` for every other layer.
     pub fn chart(&self) -> Option<&crate::chart::Chart> {
         self.chart.as_deref()
+    }
+    /// The list this frame repeats, `None` for every other layer.
+    pub fn list(&self) -> Option<&crate::list::List> {
+        self.list.as_deref()
     }
     /// The HTML element a code export writes this layer as; `None` is Automatic.
     pub fn element(&self) -> Option<crate::element::HtmlElement> {

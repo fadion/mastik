@@ -339,6 +339,18 @@ pub enum Operation {
         /// The size they were generated at (`Chart::generated`).
         at: Option<[f64; 2]>,
     },
+    /// A frame's list description (`crate::list`); `None` detaches it, leaving
+    /// its copies as plain instances. Refused on anything but a frame.
+    SetList {
+        id: NodeId,
+        list: Option<Box<crate::list::List>>,
+    },
+    /// One of the document's data sets (`crate::list`): `Some` adds it at the
+    /// end or replaces the one of its id, `None` removes it.
+    SetDataSet {
+        id: crate::list::DataSetId,
+        set: Option<Box<crate::list::DataSet>>,
+    },
     /// The HTML element a code export writes a layer as (`crate::element`),
     /// never drawn; `None` is Automatic. Refused for an element the layer's
     /// kind is not offered.
@@ -741,6 +753,7 @@ impl Operation {
             | Operation::SetElement { id, .. }
             | Operation::SetChart { id, .. }
             | Operation::SetChartParts { id, .. }
+            | Operation::SetList { id, .. }
             | Operation::SetHref { id, .. }
             | Operation::SetLayoutGrids { id, .. }
             | Operation::SetInsets { id, .. }
@@ -825,6 +838,8 @@ impl Operation {
             | Operation::RemoveScript { .. }
             | Operation::SetScriptName { .. }
             | Operation::SetScriptSource { .. }
+            // The data sets are document-level too: these name a data set.
+            | Operation::SetDataSet { .. }
             | Operation::SetPlayExport { .. } => None,
         }
     }
@@ -1033,6 +1048,10 @@ impl Operation {
             // beside it by the regeneration.
             | Operation::SetChart { .. }
             | Operation::SetChartParts { .. }
+            // A list's description and its data draw nothing themselves; the
+            // copies do, written beside them by the regeneration.
+            | Operation::SetList { .. }
+            | Operation::SetDataSet { .. }
             | Operation::SetHref { .. }
             | Operation::SetFillStyle { .. }
             | Operation::SetStrokeStyle { .. }
@@ -1228,6 +1247,8 @@ impl Operation {
                     .as_ref()
                     .is_some_and(|c| c.parts == *parts && c.generated == *at)
             }),
+            Operation::SetList { id, list } => node(id).is_some_and(|n| n.list == *list),
+            Operation::SetDataSet { id, set } => doc.data_set(*id) == set.as_deref(),
             Operation::SetHref { id, href } => node(id).is_some_and(|n| n.href == *href),
             Operation::SetFillStyle { id, style } => {
                 node(id).is_some_and(|n| n.styles().fills == *style)
@@ -1904,6 +1925,8 @@ pub enum OpError {
     ChartPlacement(NodeId, crate::chart::PlacementRule),
     #[error("{0}")]
     BadChart(crate::chart::ChartRule),
+    #[error("{0}")]
+    BadList(crate::list::ListRule),
     /// A vault rule broken (§15 D1012, `crate::kit::check`) — an origin outside
     /// the vault or a vault node without one, a vault child that is not a main or
     /// a set — or a vault opened twice or closed while it held something.

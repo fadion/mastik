@@ -48,6 +48,7 @@ pub(crate) fn migrate(mut value: Value) -> Result<Value, IoError> {
             17 => migrate_17_to_18(&mut value),
             18 => migrate_18_to_19(&mut value),
             19 => migrate_19_to_20(&mut value),
+            20 => migrate_20_to_21(&mut value),
             other => return Err(IoError::UnsupportedVersion(other)),
         }
     }
@@ -500,6 +501,20 @@ fn migrate_19_to_20(value: &mut Value) {
         .filter(|d| d.is_object())
     {
         inner["schema_version"] = Value::from(20u32);
+    }
+}
+
+/// v20 → v21: lists and their data sets (`NodeDto::list`, `DocumentDto::data`).
+/// A number and nothing else: a v20 file holds none, and the older build would
+/// drop them on save.
+fn migrate_20_to_21(value: &mut Value) {
+    value["schema_version"] = Value::from(21u32);
+    if let Some(inner) = value
+        .get_mut("published")
+        .and_then(|p| p.get_mut("document"))
+        .filter(|d| d.is_object())
+    {
+        inner["schema_version"] = Value::from(21u32);
     }
 }
 

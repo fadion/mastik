@@ -570,6 +570,7 @@ pub fn freeze(doc: &Document) -> Option<Published> {
         // The kit's scripts, which a consumer lists from the published state so
         // they follow the kit's updates.
         doc.scripts().to_vec(),
+        Vec::new(),
         Default::default(),
         Default::default(),
         None,
@@ -886,6 +887,7 @@ fn empty_published(doc: &Document) -> Published {
             FxHashMap::default(),
             Default::default(),
             Default::default(),
+            Vec::new(),
             Vec::new(),
             Default::default(),
             Default::default(),

@@ -1767,6 +1767,8 @@ impl RenderOverrides {
             | Operation::SetDetachedFrom { .. }
             | Operation::SetChart { .. }
             | Operation::SetChartParts { .. }
+            | Operation::SetList { .. }
+            | Operation::SetDataSet { .. }
             | Operation::SetHref { .. }
             | Operation::AddGuide { .. }
             | Operation::RemoveGuide { .. }

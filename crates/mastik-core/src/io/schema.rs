@@ -65,6 +65,10 @@ pub(crate) struct DocumentDto {
     /// would drop the scripts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scripts: Vec<crate::script::Script>,
+    /// The data sets the lists read (`crate::list`) in order, absent in a
+    /// document with none. New in v21.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<crate::list::DataSet>,
     /// The prototype's HTML-export settings (`crate::prototype::PlayExport`),
     /// absent at their defaults. New in v20.
     #[serde(
@@ -403,6 +407,10 @@ pub(crate) struct NodeDto {
     /// leave its parts as plain shapes that no regeneration owns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chart: Option<Box<crate::chart::Chart>>,
+    /// The frame's list (`crate::list`), absent on every other layer. New in v21.
+    /// Dropped on a layer that is not a frame, its copies kept as plain instances.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<Box<crate::list::List>>,
     /// The address a link goes to, absent when empty. New in v15. One not in
     /// `element::is_href`'s form is emptied on load, never refused.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -579,6 +587,7 @@ impl NodeDto {
             credit: n.credit.clone(),
             element: n.element,
             chart: n.chart.clone(),
+            list: n.list.clone(),
             href: n.href.clone(),
             reactions: n.reactions.clone(),
             play: n.play.clone(),
@@ -642,6 +651,9 @@ impl NodeDto {
             c.validate()
                 .map_err(|e| IoError::Integrity(format!("node {id:?}: {e}")))?;
         }
+        let list = self
+            .list
+            .filter(|l| matches!(self.kind, NodeKind::Artboard { .. }) && l.validate(id).is_ok());
         crate::prototype::check(&self.reactions)
             .map_err(|e| IoError::Integrity(format!("node {id:?}: {e}")))?;
         // Dropped, like `clip`, on a kind it does not apply to.
@@ -732,6 +744,7 @@ impl NodeDto {
             credit: self.credit.map(|c| Box::new(c.normalized())),
             element,
             chart,
+            list,
             href: match crate::element::is_href(&self.href) {
                 true => self.href,
                 false => String::new(),
@@ -929,6 +942,7 @@ impl DocumentDto {
             variables: VariablesDto::from_table(doc.variables()),
             styles: doc.styles().iter().cloned().collect(),
             scripts: doc.scripts().to_vec(),
+            data: doc.data_sets().to_vec(),
             play_export: doc.play_export().clone(),
             images,
             meta: doc.meta().clone(),
@@ -1093,6 +1107,21 @@ impl DocumentDto {
             }
         }
 
+        // A data set id twice would make `SetDataSet` write the first and leave
+        // the second unreachable; a table past its limits is refused as an
+        // operation would refuse it.
+        let mut seen_data = FxHashSet::default();
+        for d in &self.data {
+            if !seen_data.insert(d.id) {
+                return Err(IoError::Integrity(format!(
+                    "duplicate data set id {:?}",
+                    d.id
+                )));
+            }
+            d.validate()
+                .map_err(|e| IoError::Integrity(format!("{:?}: {e}", d.id)))?;
+        }
+
         // The published state is a document of its own, held to the same rules,
         // one level deep only: refusing a nested one bounds the recursion.
         let published = match self.published {
@@ -1121,6 +1150,7 @@ impl DocumentDto {
             variables,
             styles,
             self.scripts,
+            self.data,
             self.play_export,
             // Taken as written, with nothing minted: a loader that filled in a
             // missing id would make `load` non-deterministic, so the library mints

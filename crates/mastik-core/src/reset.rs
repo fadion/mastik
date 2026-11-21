@@ -90,6 +90,8 @@ pub fn state_ops(node: &Node) -> Vec<Operation> {
         credit,
         // Never in a main or a copy (`chart::check`).
         chart: _,
+        // Never in a main or a copy: its doors refuse one there.
+        list: _,
         // Never an override by hand, but a reset puts back the main's all the same.
         element,
         href,

@@ -19,7 +19,9 @@ pub fn nodes_in_view(res: &Resolved, page: NodeId, view: Rect) -> Vec<NodeId> {
 
 /// Topmost-first nodes on `page` whose painted area contains `p` (world space),
 /// skipping nodes that are hidden or locked (directly or via an ancestor). A
-/// chart's part answers as its chart frame, once: a chart is picked whole.
+/// chart's part answers as its chart frame, once: a chart is picked whole. A
+/// list's copy answers as its list (`list::copy_owner`); its template is a layer
+/// like any other.
 ///
 /// `slop` is a picking allowance in **world** units, and only the kinds with nothing but
 /// a stroke to aim at spend it (see [`geometry::contains_local`]). It is the caller's
@@ -38,6 +40,7 @@ pub fn hit_test(res: &Resolved, doc: &Document, page: NodeId, p: Point, slop: f6
         .filter(|id| !masked_away(doc, res, *id, p))
         .filter(|id| hits_own_shape(res, doc, *id, p, slop))
         .map(|id| crate::chart::owner(doc, id).unwrap_or(id))
+        .map(|id| crate::list::copy_owner(doc, id).unwrap_or(id))
         .collect();
 
     // Topmost first: later paint order = larger child-index path.
