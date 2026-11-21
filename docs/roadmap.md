@@ -11,11 +11,6 @@ true.
 A release of its own. The prototype is built (`prototyping.md` points to each part); what
 remains is below.
 
-- **Polish.** Smaller gaps between the prototyping design and what is built:
-  - The interactions card: a selected interaction block, ringed, whose off-screen target the
-    canvas scrolls to; *Copy from library…* under *Run script*.
-  - Triggers and drag: a scroll effect naming the frame it follows (`ScrollEffect` always takes
-    the nearest); the drawn snap point (`DRAWN_POINT`) renamable.
 - **Charts reading a data set.** A chart could read one of the document's data sets
   (`design/lists.md`) instead of its own table, so a chart and a list over one file update
   together.

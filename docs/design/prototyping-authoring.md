@@ -87,12 +87,13 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   to*, *Open link*), *Overlay* (*Open*, *Swap*, *Close overlay*), *State* (*Change to*, *Set
   variable*, *Set mode*, *Conditional*, *Run script*). What the layer cannot take is dimmed with its reason
   (`prototype::action_refusal`): *Run script* under a trigger no person fires (*A script runs only
-  when someone acts*) or with no document script; *Change to* off an instance of a set's variant
+  when someone acts*) or with no script in the document or the script library; *Change to* off an instance of a set's variant
   (*Not a component*); *Set variable* with no variable; *Set mode* with no collection of two
   modes or more (*No collection has a second mode*); a screen action with no frame to go to.
   A new action names the likeliest target (`prototype::new_action`): another screen than the
   layer's own, mains last; the layer's own instance and a variant other than its current one; the
-  first variable or script; the first collection with two modes, at a mode the holder's screen
+  first variable or script, or on a document with no script a fresh script id, *Missing script*
+  until one is copied in from the library; the first collection with two modes, at a mode the holder's screen
   does not read now, *Everywhere*. It opens its popover at once, except *Back*, which has nothing to set.
 - **An action is one row**, a `ui::field_row_pressable` that opens its popover (*Back*'s opens
   none, having nothing to set, and says what it does under the pointer): a grip, its
@@ -123,7 +124,13 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   set; *Set variable* a variable, then *Set* / *Increment* / *Toggle* (*Increment* for a number,
   *Toggle* for a boolean) and its expression or step; *Conditional* one expression per branch
   (`ui::labelled` *If* / *Else if*), *Add else if* and a branch's `×`; *Open link* an address, refused unless `http` or `https`;
-  *Run script* a document script by name.
+  *Run script* a document script by name, then (under a separator when there are any) *Copy from
+  library*, a `ui::submenu_row` in `FOLDER_SIMPLE`, the script editor's *Save to library* glyph,
+  dimmed with *The script library is empty*; its flyout lists the library's scripts by name.
+  Picking one points the action at the document's copy (`MastikApp::copy_library_script`): a
+  document script with that name and text, else the library's added under a free name as one
+  *Copy script into document* step and marked as the person's own, so its run shows no
+  disclosure. Kit scripts are not offered: they arrive with a kit's components.
 - ***Set mode*'s popover**: *Collection* (`collection_combo`: the document's collections with two
   modes or more, then each kit's under the kit's `ui::menu_eyebrow`, `Variables::switchable`;
   a new pick starts at a mode the holder's screen does not read now), *Mode*, and *Where*

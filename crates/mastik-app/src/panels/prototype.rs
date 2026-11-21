@@ -3419,7 +3419,14 @@ impl MastikApp {
             add_place = Some(place);
         }
         if let Some((place, kind)) = add_place {
-            match new_action(&self.session.doc, id, kind) {
+            // A document with no script yet names one still to be picked from
+            // the library in the popover that opens.
+            let made = new_action(&self.session.doc, id, kind).or_else(|| {
+                (kind == ActionKind::RunScript).then(|| Action::RunScript {
+                    script: self.session.ids.mint_script(),
+                })
+            });
+            match made {
                 Some(a) => {
                     let item = self.session.ids.mint_item();
                     let mut v = r.value.clone();
@@ -3635,13 +3642,25 @@ impl MastikApp {
                     .iter()
                     .flat_map(|(_, kinds)| kinds.iter().map(|k| k.label()));
                 ui.set_width(ui::menu_width(ui.ctx(), labels, true));
+                // With no script of its own, the document can still copy one in
+                // from the library in the action's popover.
+                let library = doc.scripts().is_empty() && !self.library_script_names().is_empty();
                 for (i, (group, kinds)) in ActionKind::GROUPS.iter().enumerate() {
                     if i > 0 {
                         ui::menu_sep(ui);
                     }
                     ui::menu_eyebrow(ui, group);
                     for kind in kinds.iter() {
-                        let why = action_refusal(doc, id, trigger, *kind);
+                        let why = match action_refusal(doc, id, trigger, *kind) {
+                            Some(_)
+                                if library
+                                    && *kind == ActionKind::RunScript
+                                    && trigger.is_a_persons_act() =>
+                            {
+                                None
+                            }
+                            why => why,
+                        };
                         let row = ui::menu_row(
                             ui,
                             ui::MenuRow::new(kind.glyph(), kind.label()).enabled(why.is_none()),
@@ -4463,15 +4482,79 @@ impl MastikApp {
                     .find(|(s, _)| s == script)
                     .map_or("Missing script".to_string(), |(_, n)| n.clone());
                 let mut pick = None;
+                let mut copy: Option<String> = None;
                 let face = ui::glyph_and_text(icon::FILE_CODE, &current);
-                ui::fitted_combo(ui, ("script", k.id), w, face, &current, |ui| {
+                let fly_at = ui.id().with(("script-library", k.id));
+                let shown = ui::fitted_combo(ui, ("script", k.id), w, face, &current, |ui| {
                     ui::menu_rows(ui);
+                    let mut elsewhere = false;
                     for (s, n) in &scripts {
-                        if ui.selectable_label(s == script, n).clicked() && s != script {
+                        let row = ui.selectable_label(s == script, n);
+                        elsewhere |= row.hovered();
+                        if row.clicked() && s != script {
                             pick = Some(*s);
                         }
                     }
+                    // Then a library script, copied in first so the export
+                    // carries it.
+                    if !scripts.is_empty() {
+                        ui::menu_sep(ui);
+                    }
+                    let names = self.library_script_names();
+                    let mut open = ui.ctx().data(|d| d.get_temp::<egui::Rect>(fly_at));
+                    let row = ui::submenu_row(
+                        ui,
+                        ui::MenuRow::new(icon::FOLDER_SIMPLE, "Copy from library")
+                            .enabled(!names.is_empty()),
+                        open.is_some(),
+                    );
+                    match names.is_empty() {
+                        true => {
+                            row.on_disabled_hover_text("The script library is empty");
+                            open = None;
+                        }
+                        false if row.hovered() || row.clicked() => open = Some(row.rect),
+                        false => {}
+                    }
+                    if elsewhere {
+                        open = None;
+                    }
+                    if let Some(at) = open {
+                        let ctx = ui.ctx().clone();
+                        let fw = ui.min_rect().width() + 2.0 * (ui::FLYOUT_PAD + ui::MENU_BORDER);
+                        ui::flyout(fly_at.with("area"), at, fw).show(
+                            &ctx,
+                            (names.len(), 0),
+                            |ui| {
+                                ui::menu_rows(ui);
+                                for n in &names {
+                                    if ui.selectable_label(false, n).clicked() {
+                                        copy = Some(n.clone());
+                                    }
+                                }
+                            },
+                        );
+                        if copy.is_some() {
+                            open = None;
+                            ui.close();
+                        }
+                    }
+                    ui.ctx().data_mut(|d| match open {
+                        Some(at) => {
+                            d.insert_temp(fly_at, at);
+                        }
+                        None => d.remove::<egui::Rect>(fly_at),
+                    });
                 });
+                if shown.inner.is_none() {
+                    ui.ctx().data_mut(|d| d.remove::<egui::Rect>(fly_at));
+                }
+                if let Some(name) = copy
+                    && let Some(s) = self.copy_library_script(&name)
+                    && s != *script
+                {
+                    pick = Some(s);
+                }
                 if let Some(s) = pick {
                     out = Some((
                         Action::RunScript { script: s },

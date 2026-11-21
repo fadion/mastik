@@ -1743,6 +1743,33 @@ impl MastikApp {
         Some(added)
     }
 
+    /// The library's scripts by name, read from the folder now.
+    pub(crate) fn library_script_names(&self) -> Vec<String> {
+        library::list().into_iter().map(|s| s.name).collect()
+    }
+
+    /// The document script holding library script `name`: one already here
+    /// with its name and text, or else a copy put in, as one undo step.
+    pub(crate) fn copy_library_script(&mut self, name: &str) -> Option<ScriptId> {
+        let source = match library::read(name) {
+            Ok(s) => s,
+            Err(e) => {
+                self.session.fail(format!("Couldn't read {name}: {e}"));
+                return None;
+            }
+        };
+        let held = self
+            .session
+            .doc
+            .scripts()
+            .iter()
+            .find(|s| s.name == name && s.source == source);
+        match held {
+            Some(s) => Some(s.id),
+            None => self.add_document_script(name, source),
+        }
+    }
+
     /// Record a document script's source as the person's own once they write in
     /// it, so its run shows no disclosure. Saved with the next prefs save.
     fn authored(&mut self, which: &Which) {
@@ -4216,6 +4243,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         library::TEST_DIR.with(|d| *d.borrow_mut() = Some(dir.clone()));
         dir
+    }
+
+    /// A library script copied for a *Run script* lands in the document once:
+    /// asked again, the copy already there answers.
+    /// flip: `copy_library_script` not looking for a held copy → fails at
+    /// "the copy already there".
+    #[test]
+    fn a_library_script_is_copied_in_once() {
+        let dir = scratch_library("copy-in");
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        library::write("Shake", "print(1)").expect("fixture: written");
+        assert_eq!(app.library_script_names(), ["Shake"]);
+        let id = app.copy_library_script("Shake").expect("copied");
+        let held = app.session.doc.script(id).expect("in the document");
+        assert_eq!(
+            (held.name.as_str(), held.source.as_str()),
+            ("Shake", "print(1)")
+        );
+        assert_eq!(
+            app.copy_library_script("Shake"),
+            Some(id),
+            "the copy already there"
+        );
+        assert_eq!(app.session.doc.scripts().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// *Save to library* on an unsaved script moves it: the library holds it,
