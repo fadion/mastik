@@ -33,6 +33,11 @@ const NOTICE_HOLD: f64 = 4.0;
 const OVER_SHARE: f32 = 0.7;
 /// The narrowest the card over the canvas gets, so its bar fits.
 const OVER_MIN_W: f32 = 260.0;
+/// How long the size readout stays after the play size last changed, in seconds,
+/// before it fades.
+const READOUT_HOLD: f64 = 1.0;
+/// How long the size readout takes to fade, in seconds.
+const READOUT_FADE: f64 = 0.3;
 /// The detached window's id.
 const WINDOW_ID: &str = "prototype-player-window";
 /// The card's id over the canvas.
@@ -89,6 +94,9 @@ pub(crate) struct Playing {
     /// The device turned from the bar for this run, `Some(true)` on its side;
     /// `None` follows the page's own setting. Play state: never the document's.
     turned: Option<bool>,
+    /// egui's clock when the play size last changed under a resize or a turn,
+    /// for the bar's size readout.
+    resized_at: Option<f64>,
 }
 
 /// Where play starts on `page` of `doc`: the page's first flow, else the first
@@ -234,7 +242,29 @@ impl Playing {
             take: None,
             drafts: Vec::new(),
             turned: None,
+            resized_at: None,
         }
+    }
+
+    /// The bar's size readout: the play size in units and its ink's strength,
+    /// held [`READOUT_HOLD`] after the size last changed, then fading.
+    fn readout(&self, ctx: &egui::Context, now: f64) -> Option<(String, f32)> {
+        let age = now - self.resized_at?;
+        let strength = ((READOUT_HOLD + READOUT_FADE - age) / READOUT_FADE).clamp(0.0, 1.0);
+        let size = self.player.play_size()?;
+        if strength <= 0.0 {
+            return None;
+        }
+        ctx.request_repaint();
+        let text = format!("{:.0} × {:.0}", size.width, size.height);
+        Some((text, strength as f32))
+    }
+
+    /// The chip naming the mode the play width picks, `‹Collection› · ‹Mode›`,
+    /// while it differs from the mode the screen was drawn in.
+    fn width_chip(&self) -> Option<String> {
+        let (collection, mode) = self.player.width_pick()?;
+        Some(format!("{collection} · {mode}"))
     }
 
     /// The page play's settings for the screen shown, from the copy.
@@ -451,8 +481,14 @@ enum BarAct {
 }
 
 /// The player's bar: its commands as icon buttons, `hint`-ed as the rest of
-/// the app's are. Returns the one clicked.
-fn bar(ui: &mut egui::Ui, p: &Playing) -> Option<BarAct> {
+/// the app's are, then the size `readout` and, fullscreen where there is no
+/// head, the `chip` naming the mode picked by width. Returns the one clicked.
+fn bar(
+    ui: &mut egui::Ui,
+    p: &Playing,
+    readout: Option<(String, f32)>,
+    chip: Option<&str>,
+) -> Option<BarAct> {
     let mut act = None;
     let mut turn = false;
     let size = ui::CONTROL_H;
@@ -542,6 +578,18 @@ fn bar(ui: &mut egui::Ui, p: &Playing) -> Option<BarAct> {
                 false => r.on_disabled_hover_text(tip),
             };
             turn = r.clicked();
+            if let Some((text, strength)) = readout {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(text)
+                        .size(ui::CAPTION_PT)
+                        .color(theme::text::faint().gamma_multiply(strength)),
+                );
+            }
+            if let Some(chip) = chip {
+                ui.add_space(8.0);
+                ui::scope_chip(ui, icon::DATABASE, chip, None);
+            }
         });
     });
     if turn {
@@ -938,8 +986,15 @@ impl crate::app::MastikApp {
             true => None,
             false => play.play_size(scaling, p.is_turned(), units),
         };
+        let was = p.player.play_size();
+        let now = ui.input(|i| i.time);
         if p.player.set_play_size(want) {
             p.drawn = None;
+            // A resize or a turn, not play's first size; over the canvas the
+            // card never resizes and its bar has no room for the readout.
+            if was.is_some() && want.is_some() && p.place != Place::Over {
+                p.resized_at = Some(now);
+            }
         }
         let scene = p.player.scene();
         let scale = fit_scale(scene.size, room, scaling);
@@ -977,11 +1032,15 @@ impl crate::app::MastikApp {
         );
         ui.painter().rect_filled(bar_rect, 0.0, color::card());
         let mut act = None;
+        let readout = p.readout(ui.ctx(), now);
+        let chip = (p.place == Place::Fullscreen)
+            .then(|| p.width_chip())
+            .flatten();
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(bar_rect.shrink2(egui::vec2(8.0, 4.0)))
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| act = bar(ui, p),
+            |ui| act = bar(ui, p, readout, chip.as_deref()),
         );
         act
     }
@@ -1015,7 +1074,13 @@ impl crate::app::MastikApp {
             .frame(crate::settings::card_frame().inner_margin(egui::Margin::ZERO))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                if crate::settings::card_head(ui, w, &title) {
+                let chip = p.width_chip();
+                let closed = crate::settings::card_head_with(ui, w, &title, |ui| {
+                    if let Some(chip) = &chip {
+                        ui::scope_chip(ui, icon::DATABASE, chip, None);
+                    }
+                });
+                if closed {
                     act = Some(BarAct::Close);
                 }
                 ui::card_rule(ui);
@@ -1082,6 +1147,10 @@ impl crate::app::MastikApp {
                                     .size(ui::SMALL_PT)
                                     .color(theme::text::muted()),
                             );
+                            if let Some(chip) = p.width_chip() {
+                                ui.add_space(8.0);
+                                ui::scope_chip(ui, icon::DATABASE, &chip, None);
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| crate::chrome::caption_buttons(ui, chrome, true),
@@ -1442,6 +1511,49 @@ mod tests {
         assert_eq!(size(&app), None, "turned back, as drawn");
         let saved = app.session.doc.page(page).map(|p| p.play.landscape);
         assert_eq!(saved, Some(true), "the document keeps its own");
+    }
+
+    /// The bar's size readout shows the new play size after a turn, not as play
+    /// starts, and is gone once it has faded.
+    /// flip: `player_body` stamping `resized_at` on play's first size too →
+    /// fails at "nothing as play starts".
+    #[test]
+    fn the_size_readout_follows_a_change_and_fades() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = fixture(&ctx, false);
+        let page = app.session.page;
+        let play = mastik_core::prototype::PagePlay {
+            device: Some("iPhone 16".into()),
+            scaling: Scaling::Responsive,
+            ..Default::default()
+        };
+        assert!(
+            app.session
+                .commit(Transaction(vec![Operation::SetPagePlay { id: page, play }]))
+        );
+        app.play(&ctx, Place::Fullscreen, false);
+        whole_frame(&ctx, &mut app, Vec::new());
+        let p = app.playing.as_ref().expect("playing");
+        assert_eq!(p.place, Place::Fullscreen, "fixture: fullscreen");
+        assert_eq!(
+            p.player.play_size(),
+            Some(Size::new(393.0, 852.0)),
+            "fixture: the device's size"
+        );
+        assert!(p.resized_at.is_none(), "nothing as play starts");
+        app.player_act(&ctx, BarAct::Turn);
+        whole_frame(&ctx, &mut app, Vec::new());
+        let p = app.playing.as_ref().expect("playing");
+        let at = p.resized_at.expect("the turn is stamped");
+        assert_eq!(
+            p.readout(&ctx, at).map(|(t, _)| t),
+            Some("852 × 393".to_string()),
+            "the turned size"
+        );
+        assert!(
+            p.readout(&ctx, at + READOUT_HOLD + READOUT_FADE).is_none(),
+            "gone once faded"
+        );
     }
 
     /// While the player holds the keyboard a plain key is the prototype's: `N`

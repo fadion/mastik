@@ -20,9 +20,8 @@ remains is below.
 - **Device and phone mirroring.** The app serves the prototype player to the local network and
   shows a QR code; a phone on the same network plays the page and follows edits. Not hosting: it
   ends with the app, needs no account and never leaves the network.
-- **Responsive and landscape: what is left.** The player's size readout while a window is
-  resized and the chip naming the mode a width picked; the export card's *On a phone* (follow
-  the phone's turn or keep the page's), which waits on phone mirroring.
+- **On a phone.** The export card's *On a phone* (follow the phone's turn or keep the page's),
+  shown under *Responsive*. It waits on phone mirroring.
 
 ## Later · Platform and dependencies
 

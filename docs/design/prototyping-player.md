@@ -59,6 +59,15 @@ otherwise the player returns over the canvas).
   document's); the screen is laid out at the turned size, never a rotated picture. The button
   sits before *Open in a window*, lit while turned, tipped *Turn to landscape* / *Turn to
   portrait*, dimmed with *Pick a device to turn* on a page with none.
+- **The size readout**: when the play size changes after play's first (a window resized under
+  *Responsive*, a turn while one is laid out), the bar shows it in units, `852 × 393`, faint at
+  `CAPTION_PT` before the turn button, for a second after the last change, then fading
+  (`Playing::readout`). Not over the canvas, whose card never resizes and whose bar has no room.
+- **The mode chip**: while the play width picks another mode of the collection picked by width
+  than the drawn width does (`Player::width_pick`), a `ui::scope_chip` with `icon::DATABASE`
+  names it, *‹Collection› · ‹Mode›*, after the title in the card's or window's head, and
+  fullscreen, which has no head, in the bar after the readout: why the layout jumped is on screen.
+  A pinned mode beats the width, so then there is none.
 - **Hints**: each hotspot outlined in the accent while the bar's toggle is on, and flashing by
   `Scene::hint_flash` after a click on nothing.
 - **Notices** in the screen's top-left corner, each once, for four seconds, in the app's words.

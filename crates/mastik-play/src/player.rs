@@ -536,6 +536,20 @@ impl Player {
             .collect()
     }
 
+    /// The collection picked by width and the mode the screen's play width
+    /// picks in it, by name, while that differs from the mode its drawn width
+    /// picks: why a resized or turned screen changed. `None` when the screen
+    /// does not pick by width (a pin, a component, no such collection).
+    pub fn width_pick(&self) -> Option<(String, String)> {
+        let picked = self.doc.width_pick(self.screen)?;
+        if self.base.width_mode(self.screen) == Some(picked) {
+            return None;
+        }
+        let c = self.doc.variables().by_width()?;
+        let mode = c.modes.iter().find(|m| m.id == picked)?;
+        Some((c.name.clone(), mode.name.clone()))
+    }
+
     /// Set a variable's play value from the state card. Reactions to the change
     /// fire, and a take being recorded records it.
     pub fn set_value(&mut self, var: VarId, value: Value) -> Result<(), ValueError> {

@@ -1508,6 +1508,36 @@ pub(crate) fn card_head_noted(ui: &mut egui::Ui, w: f32, title: &str, note: Opti
     title_row(&mut child, title, note)
 }
 
+/// [`card_head`] with `after` drawn in the row [`TITLE_NOTE_GAP`] after the
+/// title: a chip naming what the card shows now (the player's mode picked by
+/// width). Returns whether its ✕ was pressed.
+pub(crate) fn card_head_with(
+    ui: &mut egui::Ui,
+    w: f32,
+    title: &str,
+    after: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, CANVAS_CARD_HEAD_H), egui::Sense::hover());
+    ui::card_drag_handle(ui, rect);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(CANVAS_CARD_PAD, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.label(
+        egui::RichText::new(title)
+            .font(egui::FontId::proportional(ui::TITLE_PT))
+            .color(theme::text::strong()),
+    );
+    child.add_space(TITLE_NOTE_GAP);
+    after(&mut child);
+    child
+        .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui::close_button(ui).clicked()
+        })
+        .inner
+}
+
 /// A canvas card's section head, `w` wide: the eyebrow `label` inside
 /// [`CANVAS_CARD_PAD`] and a dim caption `note` at the right, both on the line
 /// 10 above the head's foot. Answers its rect and that line's y, for a control

@@ -3895,7 +3895,8 @@ pub fn search_box_scoped(
 
 /// The chip that names a search's scope inside its field: the accent-washed
 /// glyph and word of the command palette's *Layers* and *Documents*, and a
-/// project in the library's search. `close` adds a ✕ with that tooltip, whose
+/// project in the library's search. The player's mode picked by width wears it
+/// too. `close` adds a ✕ with that tooltip, whose
 /// response is returned; without one the answer is `None`.
 pub fn scope_chip(
     ui: &mut egui::Ui,

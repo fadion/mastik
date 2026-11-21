@@ -2076,6 +2076,40 @@ fn a_play_size_lays_the_screen_out_again() {
     assert_eq!(doc_w, 200.0, "the document is untouched");
 }
 
+/// A play size that reaches another mode of the collection picked by width
+/// names it; the drawn width's own mode names nothing.
+///
+/// flip: `Player::width_pick` dropping its comparison with the drawn width's
+/// mode → fails at "as drawn, nothing to say".
+#[test]
+fn a_play_width_names_the_mode_it_picks() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let wide = fx.ids.mint_mode();
+    fx.apply(vec![Operation::AddMode {
+        collection: CollectionId::FIRST,
+        mode: Mode {
+            id: wide,
+            name: "Wide".into(),
+        },
+        index: 1,
+        cells: vec![],
+    }]);
+    let by_width =
+        mastik_core::variable::by_width_ops(&fx.doc, CollectionId::FIRST, true).expect("by width");
+    fx.apply(by_width);
+    let mut p = fx.play(a);
+    assert_eq!(p.width_pick(), None, "as drawn, nothing to say");
+    p.set_play_size(Some(Size::new(800.0, 100.0)));
+    assert_eq!(
+        p.width_pick(),
+        Some(("Variables".to_string(), "Wide".to_string())),
+        "800 reaches Wide at 768"
+    );
+    p.set_play_size(Some(Size::new(300.0, 100.0)));
+    assert_eq!(p.width_pick(), None, "the drawn width's mode again");
+}
+
 /// A click finds a layer where its scroll effect has moved and shrunk it, not
 /// where it is drawn.
 ///
