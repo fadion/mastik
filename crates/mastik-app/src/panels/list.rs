@@ -158,8 +158,18 @@ impl MastikApp {
                 if state == LinkState::Changed && ui::word_link(ui, "Update", false).clicked() {
                     self.update_data_set(set.id);
                 }
-                if state == LinkState::Missing && ui::word_link(ui, "Relink…", false).clicked() {
-                    self.list_data_dialog(id);
+                if state == LinkState::Missing {
+                    let n = self.lists_over(set.id).len();
+                    let tip = match n {
+                        1 => format!("Pick the file again for {}", set.name),
+                        n => format!("Pick the file again for the {n} lists reading {}", set.name),
+                    };
+                    if ui::word_link(ui, "Relink…", false)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.relink_data_set(set.id);
+                    }
                 }
                 if ui::word_link(ui, "Unlink", true).clicked() {
                     self.unlink_data_set(set.id);
@@ -167,6 +177,13 @@ impl MastikApp {
             });
         }
         let drawn = now.shown_rows(rows).len();
+        if rows == 0 {
+            ui.label(
+                egui::RichText::new("No rows: the template is hidden in play")
+                    .size(ui::SMALL_PT)
+                    .color(color::warn()),
+            );
+        }
         if now.rows != Rows::Opened && drawn < rows && drawn == list::MAX_DRAWN {
             ui.label(
                 egui::RichText::new(format!("Showing {drawn} of {rows} rows"))
@@ -505,5 +522,140 @@ mod tests {
 
         app.undo();
         assert!(app.session.doc.get(l).is_none(), "one undo takes it all");
+    }
+
+    /// A list over a data set of `rows` titles around `inst`, committed as the
+    /// app does; answers the list and the data set.
+    fn listed(app: &mut MastikApp, inst: NodeId, rows: &[&str]) -> (NodeId, list::DataSetId) {
+        let set = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "rows.csv".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "title".into(),
+                }],
+                rows: rows.iter().map(|r| vec![(*r).to_string()]).collect(),
+            },
+            source: Some(mastik_core::chart::DataLink {
+                path: std::env::temp_dir()
+                    .join("mastik-nowhere")
+                    .join("rows.csv")
+                    .to_string_lossy()
+                    .into_owned(),
+                size: 0,
+                modified: 0,
+                header: Some(true),
+            }),
+        };
+        let id = set.id;
+        let (tx, l) = list::make(
+            &app.session.doc,
+            &app.session.resolved,
+            &mut app.session.ids,
+            inst,
+            Source::New(set),
+        )
+        .unwrap();
+        assert!(app.commit_edit(tx));
+        (l, id)
+    }
+
+    /// *Relink…* reads the picked file into the same data set, so every list
+    /// over it follows in one step, each fill kept on the column of its name.
+    /// flip: `replace_data_set_table` skipping the fills' remap → fails at "kept
+    /// by name", the new file's `title` column having another id.
+    #[test]
+    fn relink_reads_into_the_data_set_for_every_list() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, set) = listed(&mut app, inst, &["A", "B"]);
+        let page = app.session.doc.first_page();
+        let main = mastik_core::component::main_of(&app.session.doc, inst).unwrap();
+        let other = verb(
+            &mut app,
+            "create_instance",
+            json!({ "main": main.to_wire(), "parent": page.to_wire(), "x": -3000, "y": 0 }),
+        )[0];
+        let (tx, l2) = list::make(
+            &app.session.doc,
+            &app.session.resolved,
+            &mut app.session.ids,
+            other,
+            Source::Existing(set),
+        )
+        .unwrap();
+        assert!(app.commit_edit(tx));
+
+        let dir = std::env::temp_dir().join(format!("mastik-relink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("moved.csv");
+        std::fs::write(&path, "note,title\nx,C\ny,D\nz,E\n").unwrap();
+        let depth = app.session.history.undo_depth();
+        app.start_chart_read(
+            "moved.csv",
+            crate::chart_import::Source::File(path.clone()),
+            mastik_core::chart::table_io::Format::Csv,
+            vec![Some(true)],
+            crate::chart_import::Then::DataSet {
+                set,
+                path: path.to_string_lossy().into_owned(),
+                relink: true,
+            },
+        );
+        app.settle_chart_read();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let doc = &app.session.doc;
+        let d = doc.data_set(set).expect("the same data set");
+        assert_eq!(d.table.rows.len(), 3);
+        assert!(d.source.as_ref().unwrap().path.ends_with("moved.csv"));
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+        let title = d
+            .table
+            .columns
+            .iter()
+            .find(|c| c.name == "title")
+            .unwrap()
+            .id;
+        for list_id in [l, l2] {
+            let x = doc.get(list_id).unwrap().list().unwrap();
+            assert_eq!(x.copies.len(), 2, "every list over it follows");
+            assert_eq!(x.fill[0].column, title, "kept by name");
+        }
+    }
+
+    /// A list's tab and badge say how many rows it draws, *No rows* over an
+    /// empty table, and *Missing data* without its data set.
+    #[test]
+    fn a_list_counts_its_rows() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, set) = listed(&mut app, inst, &["A", "B", "C"]);
+        let count = |app: &MastikApp| crate::list_data::list_count(&app.session.doc, l).0;
+        assert_eq!(count(&app), "3 rows");
+        let mut empty = app.session.doc.data_set(set).unwrap().clone();
+        empty.table.rows.clear();
+        assert!(app.commit_edit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetDataSet {
+                id: set,
+                set: Some(Box::new(empty)),
+            }
+        ])));
+        assert_eq!(count(&app), "No rows");
+        assert!(crate::list_data::list_is_empty(&app.session.doc, l));
+    }
+
+    /// A double-click on a copy selects the template, wherever it lands.
+    /// flip: `double_click_pick` skipping `copy_template_at` → fails at "the template".
+    #[test]
+    fn a_double_click_on_a_copy_selects_the_template() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, _) = listed(&mut app, inst, &["A", "B", "C"]);
+        let copy = app.session.doc.get(l).unwrap().list().unwrap().copies[1];
+        let at = app.session.resolved.world_bounds(copy).unwrap().center();
+        app.double_click_pick(Some(l), at);
+        assert_eq!(app.session.selection.single(), Some(inst), "the template");
     }
 }

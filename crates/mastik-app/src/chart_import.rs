@@ -84,10 +84,12 @@ pub(crate) enum Then {
         path: PathBuf,
         linkable: bool,
     },
-    /// Data set `set` read again from its linked file, under its header choice.
+    /// Data set `set` read again from its linked file, under its header choice;
+    /// `relink` when `path` is a file picked to replace a missing one.
     DataSet {
         set: mastik_core::list::DataSetId,
         path: String,
+        relink: bool,
     },
     /// The import box for this chart; `linkable` when the file came with a path.
     Import {

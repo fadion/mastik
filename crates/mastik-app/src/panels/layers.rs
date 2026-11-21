@@ -1840,7 +1840,7 @@ impl MastikApp {
         // take over on hover) for several remarks, in priority order — mask (a mask
         // draws nothing, so its row is the only sign the layer exists), a folded
         // set's variant count, `{}` for a component-property binding, the HTML
-        // element's tag, then a frame's size, a subtract's base or a mirrored
+        // element's tag, a list's rows, then a frame's size, a subtract's base or a mirrored
         // path's mirror.
         let doc = &self.session.doc;
         let set_count = (node.set().is_some() && self.collapsed.contains(&id))
@@ -1860,6 +1860,9 @@ impl MastikApp {
         } else if let Some(tag) = element_tag(doc, node) {
             // What the layer is in code, where that is not a plain element.
             Some(RowBadge::Text(tag.to_string()))
+        } else if node.list().is_some() {
+            // A list's rows in its canvas tab's words, in place of its size.
+            Some(RowBadge::Text(crate::list_data::list_count(doc, id).0))
         } else {
             // The frame's used size (§15 D868): where container layout put it.
             match self.session.resolved.used_kind_of(node) {

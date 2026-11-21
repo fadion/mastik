@@ -3114,17 +3114,36 @@ impl MastikApp {
         pick_from_chain(ctrl, alt, &chain, leaf)
     }
 
+    /// The template of list `leaf` when `world` lands on one of its copies.
+    fn copy_template_at(&self, leaf: NodeId, world: Point) -> Option<NodeId> {
+        let doc = &self.session.doc;
+        let list = doc.get(leaf)?.list()?;
+        let res = &self.session.resolved;
+        list.copies
+            .iter()
+            .any(|c| res.world_bounds(*c).is_some_and(|b| b.contains(world)))
+            .then(|| mastik_core::list::template(doc, leaf))
+            .flatten()
+    }
+
     /// A double-click goes one level in: steps into a group, opens a text node,
     /// crops a picture, or opens a path for point editing.
     ///
     /// One level means one: descend while there is a group to enter
     /// (`entered_group` remembers how far), then open the content.
-    fn double_click_pick(&mut self, leaf: Option<NodeId>, world: Point) {
+    pub(crate) fn double_click_pick(&mut self, leaf: Option<NodeId>, world: Point) {
         let Some(leaf) = leaf else {
             self.entered_group = None;
             self.session.selection.clear();
             return;
         };
+        // A list's copy picks as its list; double-clicked, it selects the template,
+        // the one row that is edited, wherever the click landed.
+        if let Some(tpl) = self.copy_template_at(leaf, world) {
+            self.entered_group = Some(leaf);
+            self.session.selection.set_one(tpl);
+            return;
+        }
         let chain = mastik_core::group_chain(&self.session.doc, leaf, self.entered_group);
         // A chart reached opens its data at the cell behind the clicked mark.
         if chain.is_empty()
@@ -9650,6 +9669,17 @@ impl MastikApp {
     /// it sits and paints last.
     fn canvas_tags(&self) -> Vec<NodeId> {
         let mut ids = self.tagged();
+        // A list frame wears its tab while selected, and always while its table
+        // is empty, wherever it sits on the page.
+        let doc = &self.session.doc;
+        for l in mastik_core::list::lists(doc) {
+            if !ids.contains(&l)
+                && doc.page_of(l) == Some(self.session.page)
+                && (self.session.selection.contains(l) || crate::list_data::list_is_empty(doc, l))
+            {
+                ids.push(l);
+            }
+        }
         if let Some(entered) = self.entered_instance() {
             ids.retain(|id| *id != entered);
             ids.push(entered);
@@ -9673,8 +9703,10 @@ impl MastikApp {
         let node = self.session.doc.get(id)?;
         let is_main = node.component();
         let entered = self.entered_instance() == Some(id);
+        let is_list = node.list().is_some();
         // An entered instance is tagged wherever it sits: the tag says how to leave.
-        if !crate::app::wears_tag(&self.session.doc, id) && !entered {
+        // A list is tagged where `canvas_tags` puts it.
+        if !crate::app::wears_tag(&self.session.doc, id) && !entered && !is_list {
             return None;
         }
         if !self.shown_visible(id) {
@@ -9732,7 +9764,15 @@ impl MastikApp {
                 glyph(job, icon::SCOPE_FRAME, egui::Color32::PLACEHOLDER);
             }
         };
-        if is_set {
+        if is_list {
+            // A list's tag is a set's tab: the data glyph, its name and the rows
+            // it draws, or *No rows* in the warning ink, or *Missing data*.
+            scope_mark(&mut job);
+            glyph(&mut job, icon::TABLE, egui::Color32::PLACEHOLDER);
+            words(&mut job, &shown, 4.0, egui::Color32::PLACEHOLDER);
+            let (count, ink) = crate::list_data::list_count(doc, id);
+            words(&mut job, &format!("\u{b7} {count}"), 4.0, ink);
+        } else if is_set {
             scope_mark(&mut job);
             glyph(&mut job, icon::VARIANT_SET, egui::Color32::PLACEHOLDER);
             words(&mut job, &shown, 4.0, egui::Color32::PLACEHOLDER);
@@ -9818,7 +9858,7 @@ impl MastikApp {
         }
         let galley = ui.painter().layout_job(job);
         let size = galley.size();
-        if is_set {
+        if is_set || is_list {
             // Fused to the frame's top edge.
             let min = egui::pos2(corner.x, corner.y - size.y - SET_TAB_PAD.y * 2.0);
             let tab = egui::Rect::from_min_size(min, size + SET_TAB_PAD * 2.0);
@@ -9987,11 +10027,13 @@ impl MastikApp {
                 continue;
             }
             let is_set = self.session.doc.get(id).is_some_and(|n| n.set().is_some());
-            if is_set {
+            let is_list = self.session.doc.get(id).is_some_and(|n| n.list().is_some());
+            if is_set || is_list {
                 // A set's tab and resting hairline, neutral selected or not, its
                 // text the selection's ink while scoped. The hairline lies on the
-                // page, so the page picks its ink.
-                if let Some(q) = self.selection_quad(id, rect, ppp) {
+                // page, so the page picks its ink. A list's tab has no hairline:
+                // the selection draws its box.
+                if is_set && let Some(q) = self.selection_quad(id, rect, ppp) {
                     let ink = set_outline(self.session.preview_ground());
                     let stroke = egui::Stroke::new(1.0, ink);
                     for i in 0..4 {
