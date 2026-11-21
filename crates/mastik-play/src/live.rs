@@ -33,6 +33,19 @@ impl Player {
         Ok(())
     }
 
+    /// Play `doc` in place of the document the player started from, keeping
+    /// the run's place as a refused live edit does: the copy is cloned again
+    /// and play state carried across by id, what `doc` lacks falling back.
+    /// For a shell that is sent the document whole rather than each commit (a
+    /// phone mirroring the app, whose trimmed copy cannot take the editor's
+    /// transactions).
+    pub fn rebase(&mut self, doc: &mastik_core::Document) {
+        self.base = doc.clone();
+        self.reclone();
+        self.prepare();
+        self.fall_back();
+    }
+
     /// The copy cloned again from the document, with each instance play
     /// switched put back in its state and the play values set.
     fn reclone(&mut self) {

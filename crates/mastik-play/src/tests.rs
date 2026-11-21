@@ -1336,6 +1336,36 @@ fn live_update_keeps_play_state() {
     );
 }
 
+/// A document sent whole is played in place of the old one, keeping the
+/// screen and the play values; a later one without the screen falls back.
+///
+/// flip: `Player::rebase` not cloning the copy again from the new document →
+/// fails at "the new document is played".
+#[test]
+fn a_rebase_plays_the_new_document_where_play_was() {
+    let (mut fx, a, b, _) = two_screens(Transition::INSTANT);
+    let n = fx.var("n", VarKind::Number, Cell::Number(0.0));
+    let mut p = fx.play(a);
+    click(&mut p, 20.0, 20.0);
+    p.set_value(n, Value::Number(7.0)).unwrap();
+    assert_eq!(p.screen(), b, "fixture: on B");
+    let extra = fx.ids.mint();
+    fx.apply(vec![Operation::CreateNode {
+        id: extra,
+        parent: b,
+        index: 0,
+        kind: frame_kind(5.0, 5.0),
+        transform: None,
+        name: Some("Extra".into()),
+    }]);
+    p.rebase(&fx.doc);
+    assert!(p.doc.get(extra).is_some(), "the new document is played");
+    assert_eq!((p.screen(), number(&p, n)), (b, 7.0), "play kept");
+    fx.apply(vec![Operation::DeleteNode { id: b }]);
+    p.rebase(&fx.doc);
+    assert_eq!(p.screen(), a, "fell back to the start");
+}
+
 // ── Takes ───────────────────────────────────────────────────────────────────
 
 /// A take recorded at an uneven frame rate replays at sixty frames a second to

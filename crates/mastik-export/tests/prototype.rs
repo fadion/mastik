@@ -7,7 +7,9 @@ use mastik_core::{
     Document, Fill, IdSource, ImageEntry, ImageFormat, ImageId, ImageSource, Keyed, NodeId,
     NodeKind, Operation, Transaction, image_brush, io, keyed_by_position,
 };
-use mastik_export::prototype::{Parts, Player, chosen_flows, prune, reached_pages};
+use mastik_export::prototype::{
+    Opening, Parts, Player, chosen_flows, prune, prune_mirror, reached_pages,
+};
 
 fn frame(id: NodeId, parent: NodeId, name: &str) -> Operation {
     Operation::CreateNode {
@@ -411,6 +413,8 @@ fn the_page_calls_only_what_the_player_exports() {
         "layer_box",
         "layer_note",
         "measures",
+        "rebase",
+        "screen_name",
     ] {
         assert!(called.contains(&owed), "the page calls {owed}");
     }
@@ -471,6 +475,97 @@ fn inspect_carries_each_layers_css_and_export_files() {
         .expect("the button's PNG");
     assert_eq!(file.path, "Button.png");
     assert_eq!(&file.bytes[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+/// A mirror of one flow keeps that flow alone and the pages it reaches, and
+/// plays the page as the phone shows it: no bar, no device frame, no device.
+///
+/// flip: `prune_mirror` keeping the page's device → fails at "the phone is the
+/// device".
+#[test]
+fn a_mirror_keeps_its_flow_and_drops_the_device() {
+    let mut f = fixture();
+    let play = mastik_core::prototype::PagePlay {
+        device: Some("iPhone 16".into()),
+        landscape: true,
+        ..Default::default()
+    };
+    f.doc
+        .apply(&Transaction(vec![Operation::SetPagePlay {
+            id: f.other.page,
+            play,
+        }]))
+        .expect("a device");
+    let out = prune_mirror(&f.doc, Opening::Flow(f.other)).expect("the mirror");
+    let pages: Vec<_> = out.page_ids().collect();
+    assert_eq!(
+        pages,
+        vec![f.other.page, f.overlay_page],
+        "the flow's pages alone"
+    );
+    let export = out.play_export();
+    assert_eq!(export.flows, vec![f.other], "that flow alone");
+    assert_eq!(export.opens, Some(f.other));
+    assert!(!export.player_bar && !export.device_frame, "no chrome");
+    let play = &out.page(f.other.page).expect("kept").play;
+    assert_eq!(
+        (play.device.as_deref(), play.landscape),
+        (None, false),
+        "the phone is the device"
+    );
+}
+
+/// A mirror of a frame on a page with no flow keeps no flow and the pages the
+/// frame's page reaches; a frame that is gone is refused.
+///
+/// flip: `prune_mirror` seeding the walk with no page for a frame → fails at
+/// "the mirror" (the trim refuses to keep no page).
+#[test]
+fn a_mirror_of_a_frame_keeps_its_page_and_no_flow() {
+    let f = fixture();
+    let settings = f.doc.get(f.settings_page).expect("page").children()[0];
+    let out = prune_mirror(&f.doc, Opening::Frame(settings)).expect("the mirror");
+    assert_eq!(
+        out.page_ids().collect::<Vec<_>>(),
+        vec![f.settings_page],
+        "the frame's page"
+    );
+    assert!(
+        out.pages().iter().all(|p| p.flows.is_empty()),
+        "no flow plays"
+    );
+    let gone = IdSource::new(0x77).mint();
+    assert_eq!(
+        prune_mirror(&f.doc, Opening::Frame(gone)).err(),
+        Some(mastik_export::prototype::PackError::NoFrame)
+    );
+}
+
+/// The mirrored page carries its start and version for the boot script; the
+/// exported file never carries mirror mode.
+#[test]
+fn only_the_mirrored_page_is_in_mirror_mode() {
+    let f = fixture();
+    let settings = f.doc.get(f.settings_page).expect("page").children()[0];
+    let player = Player {
+        wasm: WASM,
+        glue: GLUE,
+    };
+    let parts = Parts::mirror(&f.doc, player, Opening::Frame(settings)).expect("parts");
+    let page = parts.mirror_html(Some(settings), 3);
+    let line = format!(
+        "window.MASTIK_MIRROR = {{ frame: \"{}\", version: 3 }};",
+        settings.to_wire()
+    );
+    assert!(page.contains(&line), "the start and version");
+    assert!(parts.css.is_empty(), "no inspect mode");
+    let mut g = fixture();
+    choose(&mut g.doc, vec![g.main]);
+    let file = Parts::of(&g.doc, player).expect("parts").html();
+    assert!(
+        !file.contains("window.MASTIK_MIRROR ="),
+        "a file is never mirrored"
+    );
 }
 
 /// A layer's annotation reaches the page in the packed document, where inspect

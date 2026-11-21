@@ -50,11 +50,14 @@ pub fn add_font(bytes: Vec<u8>, alias: Option<String>) -> bool {
 
 /// Load `document` (a saved `.mastik`), start playing it, and set up drawing into
 /// `canvas`: WebGPU when the browser has it and `cpu` is false, else `vello_cpu`.
+/// `frame`, a frame's id, starts there when the document holds it (a mirrored
+/// page whose player plays no flow); empty starts as the export opens.
 #[wasm_bindgen]
 pub async fn start(
     canvas: HtmlCanvasElement,
     document: Vec<u8>,
     cpu: bool,
+    frame: String,
 ) -> Result<Player, JsValue> {
     // Under `panic=unwind` wasm-bindgen wants this future unwind safe. The GPU
     // setup is awaited first, so no `Resolved` is held across an await, and is
@@ -70,10 +73,18 @@ pub async fn start(
         .iter()
         .position(|(r, _)| Some(*r) == opens)
         .or((!flows.is_empty()).then_some(0));
-    let start = match flow {
-        Some(i) => Start::Flow(flows[i].0),
-        None => Start::Frame(first_frame(&doc).ok_or_else(|| err(&"the export has no frame"))?),
+    let asked = NodeId::from_wire(&frame).filter(|id| {
+        doc.get(*id)
+            .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }))
+    });
+    let start = match (asked, flow) {
+        (Some(f), _) => Start::Frame(f),
+        (None, Some(i)) => Start::Flow(flows[i].0),
+        (None, None) => {
+            Start::Frame(first_frame(&doc).ok_or_else(|| err(&"the export has no frame"))?)
+        }
     };
+    let flow = flow.filter(|_| asked.is_none());
     let play = mastik_play::Player::new(&doc, start, ACTOR).map_err(|e| err(&e))?;
     let mut images = ImageStore::new();
     images.prepare(&doc);
@@ -199,6 +210,30 @@ impl Player {
         self.flow = Some(index);
         self.drawn = None;
         Ok(())
+    }
+
+    /// Play `document` (a whole saved `.mastik`) in place of the one playing,
+    /// keeping the run's place (`mastik_play::Player::rebase`): a mirrored
+    /// page's edit from the app.
+    pub fn rebase(&mut self, document: Vec<u8>) -> Result<(), JsValue> {
+        let doc = mastik_core::io::load(&document).map_err(|e| err(&e))?;
+        self.images.prepare(&doc);
+        self.play.rebase(&doc);
+        self.settings = doc.play_export().clone();
+        self.flows = flows(&doc);
+        self.flow = self.flow.filter(|i| *i < self.flows.len());
+        self.doc = doc;
+        self.drawn = None;
+        Ok(())
+    }
+
+    /// The name of the frame on screen, which a mirrored page reports.
+    pub fn screen_name(&self) -> String {
+        self.play
+            .document()
+            .get(self.play.screen())
+            .map(|n| n.name().to_string())
+            .unwrap_or_default()
     }
 
     /// Play again from the start.

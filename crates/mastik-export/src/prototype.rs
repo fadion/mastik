@@ -30,6 +30,8 @@ pub enum PackError {
     /// No chosen flow exists: the document has none, or every one the export
     /// settings name is gone.
     NoFlows,
+    /// The frame a mirror starts from is gone, or is not a page's frame.
+    NoFrame,
     /// The trim was refused; the document's own rules, named.
     Prune(String),
     /// The pruned document did not save.
@@ -40,6 +42,7 @@ impl std::fmt::Display for PackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PackError::NoFlows => f.write_str("the document has no flow to export"),
+            PackError::NoFrame => f.write_str("the frame playing is gone"),
             PackError::Prune(e) => write!(f, "cannot trim the document to its flows: {e}"),
             PackError::Save(e) => write!(f, "cannot save the trimmed document: {e}"),
         }
@@ -70,6 +73,22 @@ pub fn chosen_flows(doc: &Document) -> Vec<FlowRef> {
 /// page holding the main of an instance on a reached page. A target that dangles
 /// reaches nothing.
 pub fn reached_pages(doc: &Document, flows: &[FlowRef]) -> Vec<NodeId> {
+    let mut seeds = Vec::new();
+    for r in flows {
+        let Some(page) = doc.page(r.page) else {
+            continue;
+        };
+        seeds.push(r.page);
+        if let Some(flow) = page.flows.iter().find(|f| f.id == r.flow) {
+            seeds.extend(doc.page_of(flow.value.start));
+        }
+    }
+    reached_from(doc, &seeds)
+}
+
+/// The pages `seeds` reach, themselves included, in document order:
+/// [`reached_pages`]' walk from pages rather than flows.
+fn reached_from(doc: &Document, seeds: &[NodeId]) -> Vec<NodeId> {
     let mut reached: HashSet<NodeId> = HashSet::new();
     let mut queue: Vec<NodeId> = Vec::new();
     let mut reach = |page: Option<NodeId>, queue: &mut Vec<NodeId>| {
@@ -79,14 +98,8 @@ pub fn reached_pages(doc: &Document, flows: &[FlowRef]) -> Vec<NodeId> {
             queue.push(page);
         }
     };
-    for r in flows {
-        let Some(page) = doc.page(r.page) else {
-            continue;
-        };
-        reach(Some(r.page), &mut queue);
-        if let Some(flow) = page.flows.iter().find(|f| f.id == r.flow) {
-            reach(doc.page_of(flow.value.start), &mut queue);
-        }
+    for page in seeds {
+        reach(Some(*page), &mut queue);
     }
     while let Some(page) = queue.pop() {
         let mut stack = vec![page];
@@ -126,6 +139,80 @@ pub fn prune(doc: &Document) -> Result<Document, PackError> {
         .or_else(|| flows.first().copied())
         .ok_or(PackError::NoFlows)?;
     let pages = reached_pages(doc, &flows);
+    let settings = PlayExport {
+        flows: flows.clone(),
+        opens: Some(opens),
+        ..doc.play_export().clone()
+    };
+    trim(doc, &flows, pages, settings, Vec::new())
+}
+
+/// Where a mirrored prototype starts: the flow the app's player plays, or the
+/// frame when it plays none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opening {
+    Flow(FlowRef),
+    Frame(NodeId),
+}
+
+/// `doc` trimmed for a phone mirroring the app's player from `opening`: the
+/// pages it reaches, that flow alone (none for a frame), and the page itself as
+/// the phone shows it — no bar, no device frame and no device, since the
+/// phone is the device, so *Responsive* lays out at the phone's own size and
+/// follows its turn. Pages keep their scaling.
+pub fn prune_mirror(doc: &Document, opening: Opening) -> Result<Document, PackError> {
+    let (flows, pages) = match opening {
+        Opening::Flow(r) => {
+            if doc
+                .page(r.page)
+                .is_none_or(|p| !p.flows.iter().any(|f| f.id == r.flow))
+            {
+                return Err(PackError::NoFlows);
+            }
+            (vec![r], reached_pages(doc, &[r]))
+        }
+        Opening::Frame(f) => {
+            let page = doc
+                .get(f)
+                .and_then(|n| n.parent())
+                .filter(|p| doc.is_page(*p))
+                .ok_or(PackError::NoFrame)?;
+            (Vec::new(), reached_from(doc, &[page]))
+        }
+    };
+    let settings = PlayExport {
+        opens: flows.first().copied(),
+        flows: flows.clone(),
+        device_frame: false,
+        player_bar: false,
+        ..doc.play_export().clone()
+    };
+    let unturned: Vec<Operation> = pages
+        .iter()
+        .filter_map(|p| {
+            let play = &doc.page(*p)?.play;
+            (play.device.is_some() || play.landscape).then(|| Operation::SetPagePlay {
+                id: *p,
+                play: mastik_core::prototype::PagePlay {
+                    device: None,
+                    landscape: false,
+                    ..play.clone()
+                },
+            })
+        })
+        .collect();
+    trim(doc, &flows, pages, settings, unturned)
+}
+
+/// `doc` with `pages` kept whole and the rest taken, each kept page keeping only
+/// the `flows` named, the export settings set to `settings`, after `more`.
+fn trim(
+    doc: &Document,
+    flows: &[FlowRef],
+    pages: Vec<NodeId>,
+    settings: PlayExport,
+    more: Vec<Operation>,
+) -> Result<Document, PackError> {
     let mut out = doc.clone();
     let mut ops: Vec<Operation> = pages
         .iter()
@@ -148,13 +235,8 @@ pub fn prune(doc: &Document) -> Result<Document, PackError> {
             })
         })
         .collect();
-    ops.push(Operation::SetPlayExport {
-        settings: PlayExport {
-            flows,
-            opens: Some(opens),
-            ..doc.play_export().clone()
-        },
-    });
+    ops.extend(more);
+    ops.push(Operation::SetPlayExport { settings });
     out.apply(&Transaction(ops))
         .map_err(|e| PackError::Prune(e.to_string()))?;
     let keep = Keep {
@@ -267,11 +349,24 @@ impl<'a> Parts<'a> {
     /// mode shows. Fonts are those registered with this thread's shaping engine,
     /// so the caller registers the document's families first, as the canvas has.
     pub fn of(doc: &Document, player: Player<'a>) -> Result<Self, PackError> {
-        let mut pruned = prune(doc)?;
+        Self::pack(prune(doc)?, player, true)
+    }
+
+    /// The parts of the page a phone mirroring the app loads: `doc` trimmed by
+    /// [`prune_mirror`] from `opening`, its fonts, and no inspect mode, which
+    /// the page has no bar to switch on. [`Parts::mirror_html`] writes it.
+    pub fn mirror(doc: &Document, player: Player<'a>, opening: Opening) -> Result<Self, PackError> {
+        Self::pack(prune_mirror(doc, opening)?, player, false)
+    }
+
+    /// The parts of `pruned`, inspect mode's with `inspect`.
+    fn pack(mut pruned: Document, player: Player<'a>, inspect: bool) -> Result<Self, PackError> {
         let res = Resolved::settled(&mut pruned);
         let fonts = fonts_used(&pruned, &res);
-        let css = inspect_css(&pruned, &res);
-        let files = inspect_files(&pruned, &res);
+        let (css, files) = match inspect {
+            true => (inspect_css(&pruned, &res), inspect_files(&pruned, &res)),
+            false => (Vec::new(), Vec::new()),
+        };
         let title = pruned
             .play_export()
             .opens
@@ -302,6 +397,23 @@ impl<'a> Parts<'a> {
 
     /// The HTML file.
     pub fn html(&self) -> String {
+        self.page(None)
+    }
+
+    /// The page a mirroring phone loads: [`Parts::html`] with the page's mirror
+    /// mode on, starting at `frame` (a frame's id) when the app's player plays no
+    /// flow, its document being the app's `version`. The page then listens on `events` beside it for new versions of
+    /// the document, fetches each from `doc`, and reports its screen to
+    /// `status`, all relative to the page's own address.
+    pub fn mirror_html(&self, frame: Option<NodeId>, version: u64) -> String {
+        let frame = frame.map(NodeId::to_wire).unwrap_or_default();
+        self.page(Some(&format!(
+            "window.MASTIK_MIRROR = {{ frame: \"{frame}\", version: {version} }};\n"
+        )))
+    }
+
+    /// The page, with `mirror`'s script before the boot when given.
+    fn page(&self, mirror: Option<&str>) -> String {
         let stream = self.stream(flate2::Compression::best());
         let payload = base64_encode(&stream);
         let mut page = String::with_capacity(self.page_len(stream.len()) as usize);
@@ -318,6 +430,9 @@ impl<'a> Parts<'a> {
         page.push_str("</script>\n<script>\n");
         page.push_str(&glue);
         page.push_str("\n</script>\n<script>\n");
+        if let Some(mirror) = mirror {
+            page.push_str(mirror);
+        }
         page.push_str(BOOT);
         page.push_str("</script>\n</body>\n</html>\n");
         page
@@ -469,6 +584,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 #status, #toast { position: fixed; inset: auto 0 56px 0; text-align: center; pointer-events: none; }
 #toast span { padding: 6px 12px; border-radius: 6px; background: #333336; }
 #toast[hidden] { display: none; }
+body.ended #room { opacity: 0.4; }
 </style>
 ";
 
@@ -494,6 +610,8 @@ aria-label=\"Flow\"></select><button id=\"restart\" type=\"button\">Restart</but
 /// `data-backend` or `data-error`, for whoever checks the page.
 const BOOT: &str = r##"(async () => {
   const $ = id => document.getElementById(id);
+  // Set by the page a mirroring phone loads (`Parts::mirror_html`), never by a file.
+  const mirrored = window.MASTIK_MIRROR || null;
   const status = $("status");
   const canvas = $("screen");
   try {
@@ -515,7 +633,7 @@ const BOOT: &str = r##"(async () => {
     await wasm_bindgen({ module_or_path: parts.wasm });
     for (const font of parts.fonts) wasm_bindgen.add_font(font.bytes, font.alias || undefined);
     const cpu = new URLSearchParams(location.search).has("cpu");
-    const player = await wasm_bindgen.start(canvas, parts.document, cpu);
+    const player = await wasm_bindgen.start(canvas, parts.document, cpu, mirrored ? mirrored.frame : "");
     play(player, parts);
     status.remove();
     document.body.dataset.backend = player.backend();
@@ -691,12 +809,12 @@ const BOOT: &str = r##"(async () => {
       turn.setAttribute("aria-pressed", String(player.turned()));
     }
     let toastTimer = 0;
-    function toast(text) {
+    function toast(text, ms = 4000) {
       const t = $("toast");
       t.firstChild.textContent = text;
       t.hidden = false;
       clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+      if (ms !== Infinity) toastTimer = setTimeout(() => { t.hidden = true; }, ms);
     }
     const local = e => {
       const r = canvas.getBoundingClientRect();
@@ -792,7 +910,57 @@ const BOOT: &str = r##"(async () => {
         inspectSwitch.blur();
       });
     }
+    if (mirrored) mirror();
     wake();
+
+    // A phone mirroring the app: each newer version of the document is played
+    // in place of the old where play is, the screen shown is reported, and once
+    // the app stops sharing the last frame stays, dimmed, under a line saying so.
+    function mirror() {
+      const id = Array.from(crypto.getRandomValues(new Uint32Array(2))).join("-");
+      let version = mirrored.version, screen = null, ended = false;
+      const report = () => {
+        const now = player.screen_name();
+        if (ended || now === screen) return;
+        screen = now;
+        fetch("status", { method: "POST", body: JSON.stringify({ id, screen }) }).catch(() => {});
+      };
+      report();
+      const reporting = setInterval(report, 500);
+      const events = new EventSource("events?id=" + encodeURIComponent(id));
+      let lost = 0;
+      const end = () => {
+        if (ended) return;
+        ended = true;
+        events.close();
+        clearInterval(reporting);
+        document.body.classList.add("ended");
+        toast("Mastik stopped sharing", Infinity);
+      };
+      events.onopen = () => clearTimeout(lost);
+      events.onerror = () => {
+        clearTimeout(lost);
+        if (events.readyState === EventSource.CLOSED) return end();
+        lost = setTimeout(() => { if (events.readyState !== EventSource.OPEN) end(); }, 3000);
+      };
+      events.onmessage = async e => {
+        if (e.data === "stop") return end();
+        if (e.data === "reload") return location.reload();
+        const v = Number(e.data);
+        if (!(v > version)) return;
+        version = v;
+        try {
+          const r = await fetch("doc?v=" + v);
+          if (!r.ok || v !== version) return;
+          player.rebase(new Uint8Array(await r.arrayBuffer()));
+          toast("Updated from Mastik", 1500);
+          report();
+          wake();
+        } catch (err) {
+          console.error(err);
+        }
+      };
+    }
   }
 
   function unpack(bytes) {
