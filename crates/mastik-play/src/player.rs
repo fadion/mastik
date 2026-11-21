@@ -189,6 +189,9 @@ pub struct Player {
     pub(crate) states: FxHashMap<NodeId, NodeId>,
     /// The modes *Set mode* gave each page or frame, carried across a re-clone.
     pub(crate) modes: FxHashMap<NodeId, Vec<mastik_core::variable::ModeId>>,
+    /// The size each screen is laid out at in place of its own (*Responsive*,
+    /// a turned device); `None` as drawn.
+    pub(crate) play_size: Option<Size>,
     /// Instances showing an interaction state (hover, pressed) by themselves,
     /// with the main to return to.
     pub(crate) auto: FxHashMap<NodeId, NodeId>,
@@ -250,6 +253,7 @@ impl Player {
             drops: Vec::new(),
             states: FxHashMap::default(),
             modes: FxHashMap::default(),
+            play_size: None,
             auto: FxHashMap::default(),
             inputs: Vec::new(),
             effects: Vec::new(),
@@ -301,9 +305,50 @@ impl Player {
     /// A recording in progress stops.
     pub fn restart(&mut self) {
         let actor = self.ids.actor();
+        let size = self.play_size;
         if let Ok(fresh) = Player::new(&self.base, self.start, actor) {
             *self = fresh;
+            self.set_play_size(size);
         }
+    }
+
+    /// Lay each screen out at `size` from now on, in place of its own, through
+    /// its frame's layout and width queries (*Responsive*, a turned device);
+    /// `None` puts it back as drawn. The copy alone changes, never the
+    /// document. Answers whether anything changed.
+    pub fn set_play_size(&mut self, size: Option<Size>) -> bool {
+        let size = size.filter(|s| {
+            s.width.is_finite() && s.height.is_finite() && s.width >= 1.0 && s.height >= 1.0
+        });
+        if size == self.play_size {
+            return false;
+        }
+        self.play_size = size;
+        self.fit_screen(self.screen);
+        self.rehover();
+        true
+    }
+
+    /// The size each screen is laid out at, `None` as drawn.
+    pub fn play_size(&self) -> Option<Size> {
+        self.play_size
+    }
+
+    /// Give frame `id` of the copy the play size, or its own size back.
+    pub(crate) fn fit_screen(&mut self, id: NodeId) {
+        let own = self.base.get(id).and_then(|n| n.kind().box_size());
+        let Some(want) = self.play_size.or(own) else {
+            return;
+        };
+        let now = self.doc.get(id).and_then(|n| n.kind().box_size());
+        if now.is_none() || now == Some(want) {
+            return;
+        }
+        let tx = Transaction(vec![mastik_core::Operation::SetGeometry {
+            id,
+            geometry: mastik_core::op::GeometryPatch::Size(want),
+        }]);
+        let _ = self.commit(tx);
     }
 
     /// What play has made of the document — the copy to draw.

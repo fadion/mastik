@@ -12556,69 +12556,11 @@ fn join_label(j: Join) -> &'static str {
     }
 }
 
-/// One named size: the label the dropdown shows, and the box it writes.
-type Preset = (&'static str, f64, f64);
-/// A heading and the sizes under it.
-type PresetGroup = (&'static str, &'static [Preset]);
-
 /// The frame sizes the Frame templates panel offers, by group, two cells across
-/// ([`MastikApp::inspector_frame_templates`]).
-///
-/// One world unit is one pixel; print sizes are points at 72/inch (A4 is 595×842).
-/// Portrait where a device has one. Two entries may not share a box, since
-/// [`preset_named`] answers with the first match (`frame_grid_tests` checks).
-pub(super) const FRAME_PRESETS: &[PresetGroup] = &[
-    (
-        "PHONE",
-        &[
-            ("iPhone 16", 393.0, 852.0),
-            ("iPhone 16 Pro Max", 440.0, 956.0),
-            ("iPhone SE", 375.0, 667.0),
-            ("Android compact", 412.0, 917.0),
-            ("Pixel 9", 412.0, 923.0),
-            ("Pixel 9 Pro XL", 448.0, 998.0),
-            ("Galaxy S24", 360.0, 780.0),
-            ("Galaxy S24 Ultra", 384.0, 824.0),
-        ],
-    ),
-    (
-        "TABLET",
-        &[
-            ("iPad mini", 744.0, 1133.0),
-            ("iPad Pro 11\"", 834.0, 1194.0),
-            ("iPad Pro 13\"", 1032.0, 1376.0),
-            ("Android tablet", 800.0, 1280.0),
-            ("Surface Pro", 912.0, 1368.0),
-        ],
-    ),
-    (
-        "DESKTOP",
-        &[
-            ("Desktop", 1440.0, 1024.0),
-            ("MacBook Air", 1280.0, 832.0),
-            ("Laptop 13\"", 1280.0, 800.0),
-            ("Full HD", 1920.0, 1080.0),
-        ],
-    ),
-    (
-        "PRINT",
-        &[
-            ("A3", 842.0, 1191.0),
-            ("A4", 595.0, 842.0),
-            ("A5", 420.0, 595.0),
-            ("US Letter", 612.0, 792.0),
-        ],
-    ),
-    (
-        "SOCIAL",
-        &[
-            ("Square post", 1080.0, 1080.0),
-            ("Story", 1080.0, 1920.0),
-            ("Link preview", 1200.0, 630.0),
-            ("Banner", 1500.0, 500.0),
-        ],
-    ),
-];
+/// ([`MastikApp::inspector_frame_templates`]); kept in core, where the player
+/// looks a page's device up. [`preset_named`] answers with the first match
+/// (`frame_grid_tests` checks no two share a box).
+pub(super) use mastik_core::presets::FRAME_PRESETS;
 
 /// How tall the Frame templates panel's scroll box may grow.
 ///

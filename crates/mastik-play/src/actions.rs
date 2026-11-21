@@ -436,6 +436,8 @@ impl Player {
             // Not a scroll back past a point: the frame opens at its top.
             self.scroll_seen.retain(|k, _| !inside.contains(k));
         }
+        // Laid out at the play size before smart animate measures it.
+        self.fit_screen(to);
         self.anims.screen = (transition.kind != TransitionKind::Instant).then(|| ScreenAnim {
             from,
             to,

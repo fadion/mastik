@@ -2022,6 +2022,60 @@ fn a_scroll_effect_follows_the_offset() {
     assert_eq!(at, Some(Vec2::new(10.0, -170.0)), "held at its end");
 }
 
+/// A play size lays the screen out again through its flex: a child that grows
+/// fills the new width, kept across a restart and given back with `None`; the
+/// document is untouched.
+///
+/// flip: `Player::fit_screen` returning before it commits → fails at "the
+/// child fills the new width".
+#[test]
+fn a_play_size_lays_the_screen_out_again() {
+    use mastik_core::container::{Display, LayoutItem};
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let bar = fx.rect(a, "Bar", 0.0, 0.0, 50.0, 20.0);
+    fx.apply(vec![
+        Operation::SetDisplay {
+            id: a,
+            display: Some(Display::Flex(Default::default())),
+        },
+        Operation::SetLayoutItem {
+            id: bar,
+            item: LayoutItem {
+                grow: 1.0,
+                ..Default::default()
+            },
+        },
+    ]);
+    let width = |p: &Player| {
+        p.resolved()
+            .used_kind(p.document(), bar)
+            .and_then(|k| k.box_size())
+            .unwrap()
+            .width
+    };
+    let mut p = fx.play(a);
+    assert_eq!(width(&p), 200.0, "fixture: the child fills the frame");
+    assert!(p.set_play_size(Some(Size::new(400.0, 100.0))));
+    assert_eq!(width(&p), 400.0, "the child fills the new width");
+    assert_eq!(
+        p.scene().size,
+        Size::new(400.0, 100.0),
+        "the screen is that size"
+    );
+    p.restart();
+    assert_eq!(width(&p), 400.0, "kept across a restart");
+    p.set_play_size(None);
+    assert_eq!(width(&p), 200.0, "given back as drawn");
+    let doc_w = fx
+        .doc
+        .get(a)
+        .and_then(|n| n.kind().box_size())
+        .unwrap()
+        .width;
+    assert_eq!(doc_w, 200.0, "the document is untouched");
+}
+
 /// A click finds a layer where its scroll effect has moved and shrunk it, not
 /// where it is drawn.
 ///

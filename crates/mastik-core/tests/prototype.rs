@@ -357,3 +357,44 @@ fn a_duplicated_pages_flow_starts_on_its_copy() {
         "on the new page"
     );
 }
+
+/// The size a page's screen plays at: a device's size, turned, when turned or
+/// under *Responsive*; the room under *Responsive* with no device; else as
+/// drawn.
+///
+/// flip: `PagePlay::play_size` not swapping a turned device's sides → fails at
+/// "the phone on its side".
+#[test]
+fn a_page_plays_at_its_device_turned_or_its_room() {
+    use mastik_core::prototype::{PagePlay, Scaling};
+    let room = Size::new(1000.4, 700.0);
+    let phone = PagePlay {
+        device: Some("iPhone 16".into()),
+        ..PagePlay::default()
+    };
+    assert!(phone.can_turn());
+    assert_eq!(phone.play_size(Scaling::Fit, false, room), None, "as drawn");
+    assert_eq!(
+        phone.play_size(Scaling::Fit, true, room),
+        Some(Size::new(852.0, 393.0)),
+        "the phone on its side"
+    );
+    assert_eq!(
+        phone.play_size(Scaling::Responsive, false, room),
+        Some(Size::new(393.0, 852.0)),
+        "the phone's size"
+    );
+    let bare = PagePlay::default();
+    assert!(!bare.can_turn());
+    assert_eq!(
+        bare.play_size(Scaling::Responsive, true, room),
+        Some(Size::new(1000.0, 700.0)),
+        "the room, in whole units; nothing to turn"
+    );
+    assert_eq!(bare.play_size(Scaling::FillWidth, false, room), None);
+    let unknown = PagePlay {
+        device: Some("Phone from the future".into()),
+        ..PagePlay::default()
+    };
+    assert!(!unknown.can_turn(), "a device no preset names");
+}

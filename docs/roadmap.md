@@ -22,11 +22,9 @@ remains is below.
   ends with the app, needs no account and never leaves the network.
 - **Annotations in inspect mode.** The exported player's inspect panel does not show a picked
   layer's annotation (`Node::note`), which the packed document already carries.
-- **Responsive playback.** *Fit*, *Fill width* and *Actual size* all scale the screen as drawn. A
-  fourth scaling lays the frame out again at the player's width through its flex, grid and width
-  queries, so a resized window or a phone of another size shows the real layout.
-- **Landscape.** A page's device preset has one orientation; a setting to turn it, and a button
-  in the player's bar to turn it mid-play.
+- **Responsive and landscape: what is left.** The player's size readout while a window is
+  resized and the chip naming the mode a width picked; the export card's *On a phone* (follow
+  the phone's turn or keep the page's), which waits on phone mirroring.
 
 ## Later · Platform and dependencies
 

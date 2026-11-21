@@ -49,7 +49,9 @@ pub fn place(scaling: Scaling, screen: Size, room: Size, device: bool) -> Placem
     let w = outer.width.max(1.0);
     let h = outer.height.max(1.0);
     let scale = match scaling {
-        Scaling::Fit => (avail.width / w).min(avail.height / h),
+        // Laid out at the room, a screen with no device fits it one to one;
+        // a device's size is fitted.
+        Scaling::Fit | Scaling::Responsive => (avail.width / w).min(avail.height / h),
         Scaling::ActualSize => 1.0,
         Scaling::FillWidth => avail.width / w,
     };

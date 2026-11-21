@@ -86,6 +86,9 @@ pub(crate) struct Playing {
     pub(crate) take: Option<Take>,
     /// The state card's fields being typed in, by variable.
     drafts: Vec<(mastik_core::VarId, String)>,
+    /// The device turned from the bar for this run, `Some(true)` on its side;
+    /// `None` follows the page's own setting. Play state: never the document's.
+    turned: Option<bool>,
 }
 
 /// Where play starts on `page` of `doc`: the page's first flow, else the first
@@ -167,7 +170,9 @@ pub(crate) fn fit_scale(screen: Size, room: egui::Vec2, scaling: Scaling) -> f32
     let (w, h) = (screen.width.max(1.0) as f32, screen.height.max(1.0) as f32);
     let fit = (room.x / w).min(room.y / h);
     match scaling {
-        Scaling::Fit => fit,
+        // Laid out at the room, the screen fits it one to one; a device's
+        // size is fitted.
+        Scaling::Fit | Scaling::Responsive => fit,
         Scaling::FillWidth => room.x / w,
         Scaling::ActualSize => 1.0f32.min(room.x / w),
     }
@@ -228,7 +233,21 @@ impl Playing {
             notices: Vec::new(),
             take: None,
             drafts: Vec::new(),
+            turned: None,
         }
+    }
+
+    /// The page play's settings for the screen shown, from the copy.
+    fn page_play(&self) -> mastik_core::prototype::PagePlay {
+        let doc = self.player.document();
+        doc.page(self.player.page())
+            .map(|p| p.play.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether the device plays on its side: the bar's turn, else the page's.
+    fn is_turned(&self) -> bool {
+        self.turned.unwrap_or_else(|| self.page_play().landscape)
     }
 
     /// Advance the engine to `now` (egui's clock) and gather what it says.
@@ -420,6 +439,8 @@ enum BarAct {
     Restart,
     Hints,
     Card,
+    /// Turn the device on its side, or back, for this run.
+    Turn,
     Record,
     Detach,
     Attach,
@@ -433,6 +454,7 @@ enum BarAct {
 /// the app's are. Returns the one clicked.
 fn bar(ui: &mut egui::Ui, p: &Playing) -> Option<BarAct> {
     let mut act = None;
+    let mut turn = false;
     let size = ui::CONTROL_H;
     let glyph = ui::CONTROL_GLYPH_PT;
     let mut button = |ui: &mut egui::Ui, g: &str, lit: bool, tip: &str, a: BarAct| {
@@ -505,8 +527,26 @@ fn bar(ui: &mut egui::Ui, p: &Playing) -> Option<BarAct> {
             if p.place == Place::Fullscreen {
                 button(ui, icon::X, false, "Stop playing", BarAct::Close);
             }
+            // Before *Open in a window*: turning is play state, so trying
+            // landscape never changes the file.
+            let can = p.page_play().can_turn();
+            let turned = p.is_turned();
+            let tip = match (can, turned) {
+                (false, _) => "Pick a device to turn",
+                (true, true) => "Turn to portrait",
+                (true, false) => "Turn to landscape",
+            };
+            let r = ui::icon_button(ui, icon::ROTATE_RIGHT, size, glyph, turned && can, can);
+            let r = match can {
+                true => r.on_hover_text(tip),
+                false => r.on_disabled_hover_text(tip),
+            };
+            turn = r.clicked();
         });
     });
+    if turn {
+        act = Some(BarAct::Turn);
+    }
     act
 }
 
@@ -885,16 +925,23 @@ impl crate::app::MastikApp {
         p: &mut Playing,
         rect: egui::Rect,
     ) -> Option<BarAct> {
-        let scene = p.player.scene();
-        let scaling = self
-            .session
-            .doc
-            .page(scene.page)
-            .map(|i| i.play.scaling)
-            .unwrap_or_default();
+        let play = p.page_play();
+        let scaling = play.scaling;
         let bar_h = ui::CONTROL_H + 8.0;
         let card_w = if p.card { 220.0 } else { 0.0 };
         let room = egui::vec2(rect.width() - card_w, rect.height() - bar_h);
+        // The screen laid out at the room, or the device's size, turned or not.
+        // Over the canvas the card is sized from the screen, so there the room
+        // cannot lay it out: a screen with no device plays as drawn.
+        let units = Size::new(f64::from(room.x), f64::from(room.y));
+        let want = match p.place == Place::Over && !play.can_turn() {
+            true => None,
+            false => play.play_size(scaling, p.is_turned(), units),
+        };
+        if p.player.set_play_size(want) {
+            p.drawn = None;
+        }
+        let scene = p.player.scene();
         let scale = fit_scale(scene.size, room, scaling);
         let size = egui::vec2(scene.size.width as f32, scene.size.height as f32) * scale;
         let screen_area = egui::Rect::from_min_size(rect.min, room);
@@ -1089,7 +1136,7 @@ impl crate::app::MastikApp {
                     self.export_take(take);
                 }
             }
-            BarAct::Restart | BarAct::Hints | BarAct::Card | BarAct::Record => {
+            BarAct::Restart | BarAct::Hints | BarAct::Card | BarAct::Record | BarAct::Turn => {
                 let Some(p) = self.playing.as_mut() else {
                     return;
                 };
@@ -1098,6 +1145,7 @@ impl crate::app::MastikApp {
                         p.player.restart();
                         p.drawn = None;
                     }
+                    BarAct::Turn => p.turned = Some(!p.is_turned()),
                     BarAct::Hints => p.hints = !p.hints,
                     BarAct::Card => p.card = !p.card,
                     _ => match p.player.is_recording() {
@@ -1361,6 +1409,39 @@ mod tests {
             Some(Affine::translate((5.0, 5.0))),
             "the undo reached the copy"
         );
+    }
+
+    /// A page whose phone is turned plays the screen laid out on its side; the
+    /// bar's turn puts it back for the run without touching the document.
+    /// flip: `player_body` not passing the turn to `play_size` → fails at "laid
+    /// out on its side".
+    #[test]
+    fn a_turned_device_lays_the_screen_out_on_its_side() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = fixture(&ctx, false);
+        let page = app.session.page;
+        let play = mastik_core::prototype::PagePlay {
+            device: Some("iPhone 16".into()),
+            landscape: true,
+            ..Default::default()
+        };
+        assert!(
+            app.session
+                .commit(Transaction(vec![Operation::SetPagePlay { id: page, play }]))
+        );
+        app.play(&ctx, Place::Over, false);
+        whole_frame(&ctx, &mut app, Vec::new());
+        let size = |app: &MastikApp| app.playing.as_ref().expect("playing").player.play_size();
+        assert_eq!(
+            size(&app),
+            Some(Size::new(852.0, 393.0)),
+            "laid out on its side"
+        );
+        app.player_act(&ctx, BarAct::Turn);
+        whole_frame(&ctx, &mut app, Vec::new());
+        assert_eq!(size(&app), None, "turned back, as drawn");
+        let saved = app.session.doc.page(page).map(|p| p.play.landscape);
+        assert_eq!(saved, Some(true), "the document keeps its own");
     }
 
     /// While the player holds the keyboard a plain key is the prototype's: `N`

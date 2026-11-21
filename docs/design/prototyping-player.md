@@ -50,6 +50,15 @@ otherwise the player returns over the canvas).
 ## The body
 
 - **Scaling** by the page's *Fit*, *Fill width* or *Actual size*, never wider than the room.
+  *Responsive* lays the screen out again at the room's size (one unit a point, so a resized
+  window or fullscreen shows the real layout) or, with a device, at the device's size fitted as
+  *Fit* (`PagePlay::play_size`, `Player::set_play_size`). Over the canvas the card is sized
+  from the screen, so there a screen with no device plays as drawn.
+- **Turning**: a page's device plays on its side when the page is turned or the bar's
+  `ROTATE_RIGHT` button turned it for this run (`Playing::turned`, play state, never the
+  document's); the screen is laid out at the turned size, never a rotated picture. The button
+  sits before *Open in a window*, lit while turned, tipped *Turn to landscape* / *Turn to
+  portrait*, dimmed with *Pick a device to turn* on a page with none.
 - **Hints**: each hotspot outlined in the accent while the bar's toggle is on, and flashing by
   `Scene::hint_flash` after a click on nothing.
 - **Notices** in the screen's top-left corner, each once, for four seconds, in the app's words.
@@ -71,7 +80,8 @@ otherwise the player returns over the canvas).
 
 - **The export card** (*Export prototype…*): the flows in the file (every flow is the empty
   list; the last one cannot be left out), the flow it opens on, the device frame, player bar and
-  hints, the scaling (*Page's own* by default), and the file's size measured on a worker before
+  hints, the scaling (the page card's dropdown with *Page's own · ‹its scaling›* first, the
+  default), and the file's size measured on a worker before
   anything is written (`Parts::estimate`). Changed settings are committed to the document when
   the file is written, as one step.
 - **Video**: a recorded take is written as MP4 or GIF by the name given, at 30 frames a second

@@ -162,7 +162,11 @@ canvas, the drawing and the page around them.
   asks for one, the first ticking by 0.
 - **Placing** (`shell::place`): the scaling is `PlayExport::scaling`, else the screen's page's
   own. *Fit* scales the whole device to the room, up or down; *Actual size* is one CSS pixel
-  a unit; *Fill width* fits the width. A screen larger than the room grows the stage, which
+  a unit; *Fill width* fits the width; *Responsive* places as *Fit*, the screen having been laid
+  out each frame at the window's size, or the device's (`PagePlay::play_size` into
+  `set_play_size`), so a resize lays it out again. A turned device (the page's, or the bar's
+  *Turn* button for the run, shown while the page shown has a device) lays out on its side. A
+  screen larger than the room grows the stage, which
   scrolls. The device frame, when the export shows it and the page names a device, is a dark
   bezel 14 units wide round the screen, 24 CSS pixels from the window's edges under *Fit*;
   a screen under 600 units on its short side wears a phone's corners (40), else a tablet's (18).

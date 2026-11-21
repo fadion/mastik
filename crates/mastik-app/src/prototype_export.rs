@@ -7,7 +7,7 @@ use crate::app::MastikApp;
 use crate::settings::{self, CardHold};
 use crate::ui;
 use eframe::egui;
-use mastik_core::prototype::{FlowRef, PlayExport, Scaling};
+use mastik_core::prototype::{FlowRef, PlayExport};
 use mastik_core::{Document, Operation, Transaction};
 use std::sync::mpsc::{Receiver, channel};
 
@@ -135,6 +135,12 @@ impl MastikApp {
         self.measure_export(ctx, &mut card, revision);
         let all = every_flow(&self.session.doc);
         let refs: Vec<FlowRef> = all.iter().map(|(r, _)| *r).collect();
+        // The page the file opens on, whose own scaling *Page's own* names.
+        let opens = card.settings.opens.or(refs.first().copied());
+        let page_scaling = opens
+            .and_then(|r| self.session.doc.page(r.page))
+            .map(|p| p.play.scaling)
+            .unwrap_or_default();
         let mut close = false;
         let mut export = false;
         let outside =
@@ -212,20 +218,13 @@ impl MastikApp {
                             }
                         });
                         ui::labelled(ui, "Scaling", |ui| {
-                            const CELLS: [(Option<Scaling>, &str); 4] = [
-                                (None, "Page's own"),
-                                (Some(Scaling::Fit), "Fit"),
-                                (Some(Scaling::FillWidth), "Fill width"),
-                                (Some(Scaling::ActualSize), "Actual size"),
-                            ];
-                            let at = CELLS.iter().position(|(v, _)| *v == s.scaling).unwrap_or(0);
                             let w = ui.available_width();
-                            if let Some(i) =
-                                ui::segmented(ui, w, ui::SEGMENT_CELL_H, 4, at, |p, i, r, on| {
-                                    ui::segment_label(p, r, CELLS[i].1, on);
-                                })
-                            {
-                                s.scaling = CELLS[i].0;
+                            let salt = "export-scaling";
+                            let page = Some(page_scaling);
+                            if let Some(v) = crate::panels::prototype::scaling_combo(
+                                ui, salt, w, page, s.scaling,
+                            ) {
+                                s.scaling = v;
                             }
                         });
                     });

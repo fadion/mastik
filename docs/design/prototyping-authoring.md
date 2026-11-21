@@ -26,7 +26,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *Scrolling*, *Overlay*, *Pin*, *Input*, *Add scroll effect*, *Scroll effect*, *Remove scroll
   effect*, *Dragging*, *Add snap point*, *Rename snap point*,
   *Move snap point*, *Remove snap point*, *Add flow*, *Rename flow*, *Change flow*, *Remove
-  flow*, *Add starting value*, *Change starting value*, *Remove starting value*, *Device*,
+  flow*, *Add starting mode*, *Change starting mode*, *Remove starting mode*, *Add starting
+  value*, *Change starting value*, *Remove starting value*, *Device*, *Turn device*,
   *Scaling*, *New links*. A list the door refuses (`prototype::check`) is not
   written and the status line says why.
 - **Numbers are held, not previewed.** The model's operations draw nothing, so a scrubbed or typed
@@ -174,8 +175,14 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **An input**: a text layer binds a string variable; an instance a boolean one and the set's
   two-valued property that shows it. `×` unbinds.
 - **The page** (nothing selected): *Device* (*None*, then the phone and tablet frame templates by name, each group under its
-  `ui::menu_eyebrow`),
-  *Scaling* (*Fit*, *Actual size*, *Fill width*) and *New links*, the transition a new link takes.
+  `ui::menu_eyebrow`) with a `ROTATE_RIGHT` field button beside it, on while the device is
+  turned (*Turn to landscape* / *Turn to portrait*, a *Turn device* step; dimmed with *Pick a
+  device to turn*), then *Scaling* (`scaling_combo`, a dropdown whose rows carry their meaning
+  in the accelerator's place: *Fit*, *Fill width*, *Actual size*, *Responsive*), and *New links*,
+  the transition a new link takes. Under them a note says what is laid out other than as drawn
+  (*iPhone 16, turned: 852 × 393.*) and, under *Responsive* or a turn, names a flow whose start
+  frame has no layout (*Checkout's start frame has no layout; it keeps its children where
+  drawn.*); it is quiet when nothing differs.
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its
   start among the page's frames, a `ui::field_button` `×` to remove (as every removal in the
   tab is), each flow after the first under a `ui::card_rule`; `+` adds *Flow N* starting at the page's first

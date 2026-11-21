@@ -71,6 +71,7 @@ pub mod paint_box;
 pub mod penpot_in;
 pub mod penpot_v1;
 pub mod pixel_fit;
+pub mod presets;
 pub mod propagate;
 pub mod prototype;
 mod prototype_in;

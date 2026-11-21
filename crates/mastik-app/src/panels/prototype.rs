@@ -1008,6 +1008,71 @@ fn collection_combo<'a>(
     pick
 }
 
+/// The scalings in menu order, each with the caption that tells them apart:
+/// the scaled ones first, the one laid out again last.
+const SCALINGS: [(Scaling, &str, &str); 4] = [
+    (Scaling::Fit, "Fit", "the screen scaled to the room"),
+    (
+        Scaling::FillWidth,
+        "Fill width",
+        "scaled to the room's width",
+    ),
+    (Scaling::ActualSize, "Actual size", "one unit a pixel"),
+    (
+        Scaling::Responsive,
+        "Responsive",
+        "laid out at the room's size",
+    ),
+];
+
+/// A scaling's name.
+pub(crate) fn scaling_label(s: Scaling) -> &'static str {
+    SCALINGS
+        .iter()
+        .find(|(x, ..)| *x == s)
+        .map_or("Fit", |(_, l, _)| l)
+}
+
+/// A scaling dropdown, each row's caption in the accelerator's place. With
+/// `page`, a first row *Page's own · ‹its scaling›* stands for `None` (the
+/// export card's). Answers a pick that differs from `current`.
+pub(crate) fn scaling_combo(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    w: f32,
+    page: Option<Scaling>,
+    current: Option<Scaling>,
+) -> Option<Option<Scaling>> {
+    let own = page.map(|p| format!("Page's own · {}", scaling_label(p)));
+    let shown = match (current, &own) {
+        (Some(s), _) => scaling_label(s).to_owned(),
+        (None, Some(o)) => o.clone(),
+        (None, None) => "Fit".to_owned(),
+    };
+    let mut pick = None;
+    ui::fitted_combo(ui, salt, w, ui::combo_text(&shown), &shown, |ui| {
+        ui::menu_rows(ui);
+        if let Some(o) = &own {
+            let on = current.is_none();
+            if ui::menu_row(ui, ui::MenuRow::new("", o).selected(on), ui::MENU_ROW_H).clicked()
+                && !on
+            {
+                pick = Some(None);
+            }
+        }
+        for (s, label, caption) in SCALINGS {
+            let on = current == Some(s);
+            let row = ui::MenuRow::new("", label).note(caption).selected(on);
+            if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() && !on {
+                pick = Some(Some(s));
+            }
+        }
+    })
+    .response
+    .on_hover_text("How the screen fits the player");
+    pick
+}
+
 /// The transition a new link on `page` takes: the page's own default.
 pub(crate) fn page_transition(doc: &Document, page: Option<NodeId>) -> Transition {
     page.and_then(|p| doc.page(p))
@@ -5795,30 +5860,61 @@ impl MastikApp {
                 let shown = play.device.clone().unwrap_or_else(|| "None".into());
                 let mut pick: Option<Option<String>> = None;
                 let face = ui::glyph_and_text(icon::DEVICES, &shown);
-                ui::fitted_combo(ui, ("device", page), w, face, &shown, |ui| {
-                    ui::menu_rows(ui);
-                    if ui.selectable_label(play.device.is_none(), "None").clicked()
-                        && play.device.is_some()
-                    {
-                        pick = Some(None);
-                    }
-                    for (group, entries) in FRAME_PRESETS
-                        .iter()
-                        .filter(|(g, _)| matches!(*g, "PHONE" | "TABLET"))
-                    {
-                        ui::menu_sep(ui);
-                        ui::menu_eyebrow(ui, group);
-                        for (n, pw, ph) in entries.iter() {
-                            let on = play.device.as_deref() == Some(*n);
-                            let row = ui.selectable_label(on, format!("{n}, {pw} × {ph}"));
-                            if row.clicked() && !on {
-                                pick = Some(Some((*n).to_string()));
+                let combo_w = w - ui::CONTROL_H - COL;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = COL;
+                    ui::fitted_combo(ui, ("device", page), combo_w, face, &shown, |ui| {
+                        ui::menu_rows(ui);
+                        if ui.selectable_label(play.device.is_none(), "None").clicked()
+                            && play.device.is_some()
+                        {
+                            pick = Some(None);
+                        }
+                        for (group, entries) in FRAME_PRESETS
+                            .iter()
+                            .filter(|(g, _)| matches!(*g, "PHONE" | "TABLET"))
+                        {
+                            ui::menu_sep(ui);
+                            ui::menu_eyebrow(ui, group);
+                            for (n, pw, ph) in entries.iter() {
+                                let on = play.device.as_deref() == Some(*n);
+                                let row = ui.selectable_label(on, format!("{n}, {pw} × {ph}"));
+                                if row.clicked() && !on {
+                                    pick = Some(Some((*n).to_string()));
+                                }
                             }
                         }
+                    })
+                    .response
+                    .on_hover_text("The device drawn round the screen while playing");
+                    // Beside the device, lit while turned: a screen with no device
+                    // has no orientation.
+                    let can = play.can_turn();
+                    let state = match (can, play.landscape) {
+                        (false, _) => FieldButton::Disabled,
+                        (true, true) => FieldButton::On,
+                        (true, false) => FieldButton::Off,
+                    };
+                    let tip = match (can, play.landscape) {
+                        (false, _) => "Pick a device to turn",
+                        (true, true) => "Turn to portrait",
+                        (true, false) => "Turn to landscape",
+                    };
+                    let turn = ui::field_button(ui, icon::ROTATE_RIGHT, ui::CONTROL_H, state);
+                    let turn = match can {
+                        true => turn.on_hover_text(tip),
+                        false => turn.on_disabled_hover_text(tip),
+                    };
+                    if can && turn.clicked() {
+                        next = Some((
+                            PagePlay {
+                                landscape: !play.landscape,
+                                ..play.clone()
+                            },
+                            "Turn device",
+                        ));
                     }
-                })
-                .response
-                .on_hover_text("The device drawn round the screen while playing");
+                });
                 if let Some(d) = pick {
                     next = Some((
                         PagePlay {
@@ -5830,34 +5926,43 @@ impl MastikApp {
                 }
             });
             ui::labelled(ui, "Scaling", |ui| {
-                let all = [Scaling::Fit, Scaling::ActualSize, Scaling::FillWidth];
-                let cur = all.iter().position(|s| *s == play.scaling).unwrap_or(0);
-                let pick = ui::segmented_tipped(
-                    ui,
-                    w,
-                    ui::SEGMENT_CELL_H,
-                    3,
-                    cur,
-                    |_| true,
-                    |i| match i {
-                        0 => "The whole screen fits the player",
-                        1 => "One point to one pixel",
-                        _ => "The screen's width fills the player",
-                    },
-                    |p, i, r, on| {
-                        ui::segment_label(p, r, ["Fit", "Actual size", "Fill width"][i], on)
-                    },
-                );
-                if let Some(i) = pick.filter(|i| *i != cur) {
+                if let Some(s) = scaling_combo(ui, ("scaling", page), w, None, Some(play.scaling)) {
                     next = Some((
                         PagePlay {
-                            scaling: all[i],
+                            scaling: s.unwrap_or_default(),
                             ..play.clone()
                         },
                         "Scaling",
                     ));
                 }
             });
+            // What is laid out other than as drawn, and a start frame that has
+            // no layout to do it with; quiet when nothing differs.
+            let doc = &app.session.doc;
+            let turned = play
+                .device
+                .as_deref()
+                .and_then(mastik_core::presets::device_size)
+                .filter(|_| play.landscape);
+            if let (Some(d), Some(name)) = (turned, play.device.as_deref()) {
+                ui::selection_note(ui, &format!("{name}, turned: {} × {}.", d.height, d.width));
+            }
+            if turned.is_some() || play.scaling == Scaling::Responsive {
+                let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
+                let flat = flows.iter().find(|f| {
+                    doc.get(f.value.start)
+                        .is_some_and(|n| n.display().is_none())
+                });
+                if let Some(f) = flat {
+                    ui::selection_note(
+                        ui,
+                        &format!(
+                            "{}'s start frame has no layout; it keeps its children where drawn.",
+                            f.value.name
+                        ),
+                    );
+                }
+            }
             ui::labelled(ui, "New links", |ui| {
                 if let Some(t) = app.transition_fields(ui, ("page-tr", page), play.transition, w) {
                     next = Some((

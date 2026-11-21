@@ -479,6 +479,7 @@ const BODY: &str = "<div id=\"main\"><main id=\"stage\"><div id=\"room\">\
 <nav id=\"bar\" hidden><span id=\"name\"></span><select id=\"flows\" hidden \
 aria-label=\"Flow\"></select><button id=\"restart\" type=\"button\">Restart</button>\
 <button id=\"hint-switch\" type=\"button\" aria-pressed=\"false\" hidden>Hints</button>\
+<button id=\"turn\" type=\"button\" aria-pressed=\"false\" hidden>Turn</button>\
 <button id=\"inspect-switch\" type=\"button\" aria-pressed=\"false\">Inspect</button></nav>\n\
 <div id=\"status\">Opening the prototype…</div>\n<div id=\"toast\" hidden><span></span></div>\n";
 
@@ -672,7 +673,16 @@ const BOOT: &str = r##"(async () => {
       for (const n of player.take_notices()) {
         if (n.startsWith("!")) toast(n.slice(1)); else console.warn(n);
       }
+      showTurn();
       wake();
+    }
+
+    // The turn button shows while the page shown has a device, pressed while
+    // it plays on its side.
+    function showTurn() {
+      const turn = $("turn");
+      turn.hidden = !player.player_bar() || !player.can_turn();
+      turn.setAttribute("aria-pressed", String(player.turned()));
     }
     let toastTimer = 0;
     function toast(text) {
@@ -758,6 +768,12 @@ const BOOT: &str = r##"(async () => {
         e.currentTarget.blur();
         after();
       });
+      $("turn").addEventListener("click", e => {
+        player.turn();
+        e.currentTarget.blur();
+        after();
+      });
+      showTurn();
       hintSwitch.hidden = !player.hotspot_hints();
       hintSwitch.addEventListener("click", () => {
         hintsOn = !hintsOn;

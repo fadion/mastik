@@ -13,7 +13,7 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
 | `Node::reactions` | `Vec<Keyed<Reaction>>` | The layer's triggers and the actions each runs, in order |
 | `Node::play` | `LayerPlay` | A frame's scroll axis and snap (`Snap`, `SnapAlign`); a child's pin; an input binding; how the layer follows a drag (`Follow`); properties that follow a scroll (`ScrollEffect`) |
 | `Page::flows` | `Vec<Keyed<Flow>>` | Named ways into the page's prototype |
-| `Page::play` | `PagePlay` | Device preset name, scaling, the default transition for a new link |
+| `Page::play` | `PagePlay` | Device preset name (sized by `presets::device_size`), whether it is turned, scaling (*Responsive* lays the screen out again), the default transition for a new link |
 | `Document::play_export` | `PlayExport` | Which flows the HTML export takes, which it opens on, device frame, player bar, hotspot hints, a scaling override |
 
 - **The type is a *reaction*, not an *interaction*.** `variant::Interaction` already names a

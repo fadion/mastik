@@ -60,6 +60,7 @@ impl Player {
                 self.put_modes(id, set);
             }
         }
+        self.fit_screen(self.screen);
         // A settle the re-clone cuts short ends where it was going, and drops.
         for a in std::mem::take(&mut self.anims.moves) {
             self.moved.insert(a.layer, a.to);
@@ -136,6 +137,7 @@ impl Player {
                 if let Some(page) = self.doc.page_of(to) {
                     self.page = page;
                 }
+                self.fit_screen(to);
                 self.on_open(to);
             }
             self.notices.push(Notice::Fallback(Fallback::Screen));

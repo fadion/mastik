@@ -98,6 +98,7 @@ pub async fn start(
         flow,
         placed: None,
         drawn: None,
+        turned: None,
     })
 }
 
@@ -148,6 +149,9 @@ pub struct Player {
     /// The last scene drawn and its pixel size, to skip a frame that changes
     /// nothing.
     drawn: Option<(Scene, (u32, u32))>,
+    /// The device turned from the bar, `Some(true)` on its side; `None`
+    /// follows the page's own setting.
+    turned: Option<bool>,
 }
 
 enum Backend {
@@ -203,6 +207,22 @@ impl Player {
         self.drawn = None;
     }
 
+    /// Whether the page shown has a device to turn.
+    pub fn can_turn(&self) -> bool {
+        self.page_play().can_turn()
+    }
+
+    /// Whether the device plays on its side: the bar's turn, else the page's.
+    pub fn turned(&self) -> bool {
+        self.turned.unwrap_or_else(|| self.page_play().landscape)
+    }
+
+    /// Turn the device on its side, or back, for this run.
+    pub fn turn(&mut self) {
+        self.turned = Some(!self.turned());
+        self.drawn = None;
+    }
+
     /// Advance play by `ms`, place the screen in a room of `room_w` × `room_h` CSS
     /// pixels and draw it at `dpr` device pixels per CSS pixel, skipping the draw
     /// when nothing changed. Answers `[scale, stage_w, stage_h, x, y, w, h, bezel,
@@ -217,13 +237,17 @@ impl Player {
         dpr: f64,
     ) -> Result<Vec<f64>, JsValue> {
         self.play.tick(ms);
+        let play = self.page_play();
+        let scaling = self.settings.scaling.unwrap_or(play.scaling);
+        let device = self.settings.device_frame && play.device.is_some();
+        // Laid out at the window, or the device's size, turned or not; a resize
+        // lays it out again.
+        let room = Size::new(room_w, room_h);
+        let want = play.play_size(scaling, self.turned(), room);
+        if self.play.set_play_size(want) {
+            self.drawn = None;
+        }
         let scene = self.play.scene();
-        let page = self.play.document().page(scene.page);
-        let scaling = self
-            .settings
-            .scaling
-            .unwrap_or_else(|| page.map(|p| p.play.scaling).unwrap_or_default());
-        let device = self.settings.device_frame && page.is_some_and(|p| p.play.device.is_some());
         let p = shell::place(scaling, scene.size, Size::new(room_w, room_h), device);
         self.placed = Some(p);
         let changed = !self.play.take_dirty().is_empty();
@@ -428,6 +452,14 @@ impl Player {
 impl Player {
     fn scale(&self) -> f64 {
         self.placed.map_or(1.0, |p| p.scale)
+    }
+
+    /// The prototype settings of the page shown.
+    fn page_play(&self) -> mastik_core::prototype::PagePlay {
+        let doc = self.play.document();
+        doc.page(self.play.page())
+            .map(|p| p.play.clone())
+            .unwrap_or_default()
     }
 
     /// `id`'s box in screen space where the last scene drew it: its own box, or

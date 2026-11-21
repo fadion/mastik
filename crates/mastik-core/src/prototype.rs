@@ -907,6 +907,10 @@ pub struct PagePlay {
     pub device: Option<String>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub scaling: Scaling,
+    /// Whether the device is turned, the screen laid out at its size on its
+    /// side. Inert with no device.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub landscape: bool,
     /// The transition a new link on this page takes.
     #[serde(default, skip_serializing_if = "is_default")]
     pub transition: Transition,
@@ -925,6 +929,42 @@ pub enum Scaling {
     Fit,
     ActualSize,
     FillWidth,
+    /// Laid out again at the player's size, through the frame's flex, grid and
+    /// width queries; with a device, at the device's size, fitted as *Fit*.
+    Responsive,
+}
+
+impl PagePlay {
+    /// The size the screen is laid out at, in a player whose room is `room`
+    /// screen units, `turned` when it plays landscape; `None` as drawn. A
+    /// device gives its size, turned, when turned or under *Responsive*; with
+    /// none, *Responsive* gives the room. Never larger than a sane screen.
+    pub fn play_size(
+        &self,
+        scaling: Scaling,
+        turned: bool,
+        room: kurbo::Size,
+    ) -> Option<kurbo::Size> {
+        let device = self.device.as_deref().and_then(crate::presets::device_size);
+        let size = match device {
+            Some(d) if turned => Some(kurbo::Size::new(d.height, d.width)),
+            Some(d) if scaling == Scaling::Responsive => Some(d),
+            Some(_) => None,
+            None if scaling == Scaling::Responsive => Some(room),
+            None => None,
+        }?;
+        let side = |x: f64| x.round().clamp(1.0, 100_000.0);
+        (size.width.is_finite() && size.height.is_finite())
+            .then(|| kurbo::Size::new(side(size.width), side(size.height)))
+    }
+
+    /// Whether the page's device can turn: it has one.
+    pub fn can_turn(&self) -> bool {
+        self.device
+            .as_deref()
+            .and_then(crate::presets::device_size)
+            .is_some()
+    }
 }
 
 /// A flow named across pages.

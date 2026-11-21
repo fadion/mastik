@@ -67,7 +67,8 @@ pointer events back into it.
 | `scene() -> Scene` | What to draw now |
 | `hotspots()` | The rectangles of the layers that take a person's act in the frame that takes input, for the hints |
 | `values()`, `set_value(var, value)` | The state card's rows, and setting one (recorded in a take; reactions to the change fire) |
-| `modes()` | The state card's modes (`ModeRow`): each of the document's collections with two modes or more, the mode the screen reads, and whether the screen sets one itself. A pick is `Input::SetMode`, set on every page and recorded in a take |
+| `modes()` | The state card's modes (`ModeRow`): each collection with two modes or more, the document's then each kit's, the mode the screen reads, and whether the screen sets one itself. A pick is `Input::SetMode`, set everywhere and recorded in a take |
+| `set_play_size(size)`, `play_size()` | Lay every screen out at `size` in place of its own (*Responsive*, a turned device), `None` as drawn: the copy's frame is given that size (`fit_screen`, a `SetGeometry` on the copy) as play starts, before a navigation's smart animate measures it, after a live edit and across a restart, so its flex, grid and width queries answer as on a real screen of that size. A frame with no layout keeps its children where drawn. Overlays keep their own size |
 | `apply_edit(&tx)` | Live update: an editor commit |
 | `take_notices()`, `take_requests()`, `log()` | What to say once; what to do (open a URL); scripts' prints and failures |
 | `take_dirty()` | Nodes of the copy whose drawing changed, for the renderer |
