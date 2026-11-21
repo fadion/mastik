@@ -507,6 +507,42 @@ pub fn why_not(doc: &Document, id: NodeId) -> Option<&'static str> {
     None
 }
 
+/// The list frames standing where a list may not: a list frame that is a main,
+/// a set or an instance, or sits inside one, a chart, another list or the vault.
+/// [`why_not`]'s rule over the whole document, so a list frame moved or wrapped
+/// into a main is caught as *Make a list* catches an instance there.
+pub fn misplaced(
+    nodes: &rustc_hash::FxHashMap<NodeId, crate::node::Node>,
+    vault: Option<NodeId>,
+) -> Vec<NodeId> {
+    let mut out: Vec<NodeId> = nodes
+        .values()
+        .filter(|n| n.list.is_some())
+        .filter(|n| {
+            if n.component || n.set.is_some() || n.link.is_some() {
+                return true;
+            }
+            let mut at = n.parent.and_then(|p| nodes.get(&p));
+            while let Some(p) = at {
+                if p.component
+                    || p.set.is_some()
+                    || p.link.is_some()
+                    || p.list.is_some()
+                    || p.chart.is_some()
+                    || Some(p.id) == vault
+                {
+                    return true;
+                }
+                at = p.parent.and_then(|q| nodes.get(&q));
+            }
+            false
+        })
+        .map(|n| n.id)
+        .collect();
+    out.sort();
+    out
+}
+
 /// *Make a list from data*: instance `id` wrapped in a new frame flowing top to
 /// bottom with an 8 px gap and hugging its rows, named after its component, the
 /// frame given a list over `source` whose columns fill the properties of the

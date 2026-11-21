@@ -1927,6 +1927,12 @@ pub enum OpError {
     BadChart(crate::chart::ChartRule),
     #[error("{0}")]
     BadList(crate::list::ListRule),
+    /// A list frame where a list may not stand (`crate::list::misplaced`). The
+    /// sentence is the one the UI and an agent read.
+    #[error(
+        "A list can't be part of a component, an instance, a chart or another list — detach it first"
+    )]
+    ListPlacement(NodeId),
     /// A vault rule broken (§15 D1012, `crate::kit::check`) — an origin outside
     /// the vault or a vault node without one, a vault child that is not a main or
     /// a set — or a vault opened twice or closed while it held something.

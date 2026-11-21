@@ -1590,6 +1590,10 @@ impl Document {
         // Where a chart may sit, over the whole document for the same reason.
         crate::chart::check(&self.nodes, self.vault, self.guides.iter().map(|g| g.owner))
             .map_err(|(id, rule)| OpError::ChartPlacement(id, rule))?;
+        // And where a list may stand, the same way.
+        if let Some(id) = crate::list::misplaced(&self.nodes, self.vault).first() {
+            return Err(OpError::ListPlacement(*id));
+        }
 
         // The vault's rules (§15 D1012): an origin on every vault node and on
         // nothing else, a main or a set at each of its children. After the last op

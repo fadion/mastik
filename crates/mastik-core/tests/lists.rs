@@ -389,6 +389,86 @@ fn only_an_instance_outside_mains_becomes_a_list() {
     assert!(list::why_not(&doc, inner).is_some());
 }
 
+/// A list frame moved into a main is refused after the move, *Create component*
+/// on a frame holding a list says why, and a file holding a list inside a main
+/// loads with that list dropped.
+/// flip: `Document::apply` skipping `list::misplaced` → fails at "refused".
+#[test]
+fn a_list_frame_stays_out_of_mains() {
+    let (mut doc, mut ids, page) = blank();
+    let (_, inst) = row_component(&mut doc, &mut ids, page);
+    let set = data(&mut ids, &[("A", "1"), ("B", "0")]);
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+    // Another main, so the move breaks only the list's rule, not a main holding
+    // an instance of itself.
+    let frame = serde_json::to_value(NodeKind::Artboard {
+        size: Size::new(300.0, 300.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    })
+    .unwrap();
+    let main = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame, "name": "Card" }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "make_component",
+        json!({ "nodes": [main.to_wire()] }),
+    );
+
+    let into_main = Transaction(vec![Operation::Reparent {
+        id: l,
+        new_parent: main,
+        index: 0,
+    }]);
+    let err = doc.clone().apply(&into_main).expect_err("refused");
+    assert!(matches!(err, mastik_core::OpError::ListPlacement(id) if id == l));
+
+    assert_eq!(
+        mastik_core::component::why_not_main(&doc, l),
+        Some(mastik_core::component::NotMain::List)
+    );
+
+    // A file an earlier build saved with the list inside the main.
+    let from = doc.get(l).unwrap().parent().unwrap().to_wire();
+    let (l_w, main_w) = (l.to_wire(), main.to_wire());
+    let bytes = mastik_core::io::save(&doc).expect("saves");
+    let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+    let mut moved = 0;
+    for node in value["nodes"].as_array_mut().unwrap() {
+        let id = node["id"].as_str().unwrap().to_string();
+        if id == from {
+            node["children"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|c| c.as_str() != Some(l_w.as_str()));
+            moved += 1;
+        }
+        if id == main_w {
+            node["children"]
+                .as_array_mut()
+                .unwrap()
+                .insert(0, json!(l_w));
+            moved += 1;
+        }
+        if id == l_w {
+            node["parent"] = json!(main_w);
+            moved += 1;
+        }
+    }
+    assert_eq!(moved, 3, "the fixture's file was rewritten");
+    let back = mastik_core::io::load(&serde_json::to_vec(&value).unwrap()).expect("loads");
+    assert_eq!(back.get(l).unwrap().parent(), Some(main));
+    assert!(back.get(l).unwrap().list().is_none(), "the list is dropped");
+}
+
 /// Detaching a list removes the data set no list reads any more in the same
 /// step, and undo brings both back.
 /// flip: `regenerate_in_history` not removing `unread_data_sets` → fails at "removed".

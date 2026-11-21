@@ -1969,6 +1969,7 @@ pub(crate) fn create_refusal(why: mastik_core::component::NotMain) -> &'static s
         NotMain::SetKind => {
             "A component set holds one kind of layer — its variants are another kind"
         }
+        NotMain::List => "A list can't be part of a component — detach it first",
     }
 }
 

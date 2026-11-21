@@ -1055,6 +1055,15 @@ impl DocumentDto {
         }
 
         verify_integrity(&nodes, &page_ids, vault)?;
+        // A list standing where a list may not is dropped, not the file: earlier
+        // builds checked only at *Make a list*, so a list frame moved into a main
+        // was saved. Its copies stay as plain instances, as *Detach list* leaves
+        // them.
+        for id in crate::list::misplaced(&nodes, vault) {
+            if let Some(n) = nodes.get_mut(&id) {
+                n.list = None;
+            }
+        }
 
         // The variables rules (§5.3f, §15 D1039), `apply`'s post-condition. Refused,
         // not repaired: dropping a dangling binding would hand the layer a literal

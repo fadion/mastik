@@ -336,6 +336,8 @@ pub enum NotMain {
     /// It would be a variant of a set whose variants are another kind (one kind
     /// per set).
     SetKind,
+    /// It is or holds a list (`crate::list::misplaced`).
+    List,
 }
 
 /// Whether *Create component* on the one layer `id` makes it the main where it
@@ -380,6 +382,9 @@ pub fn why_not_main(doc: &Document, id: NodeId) -> Option<NotMain> {
     if holds_main_or_set(doc, id) {
         return Some(NotMain::Holds);
     }
+    if holds_list(doc, id) {
+        return Some(NotMain::List);
+    }
     if let Some(p) = n.parent
         && crate::variant::is_set(doc, p)
         && !crate::variant::fits_set(doc, p, &n.kind, Some(id))
@@ -415,6 +420,9 @@ pub fn why_not_wrap(doc: &Document, members: &[NodeId]) -> Option<NotMain> {
     if members.iter().any(|m| holds_main_or_set(doc, *m)) {
         return Some(NotMain::Holds);
     }
+    if members.iter().any(|m| holds_list(doc, *m)) {
+        return Some(NotMain::List);
+    }
     let frame = NodeKind::Artboard {
         size: kurbo::Size::ZERO,
         corner_radii: kurbo::RoundedRectRadii::default(),
@@ -444,6 +452,14 @@ fn holds_main_or_set(doc: &Document, id: NodeId) -> bool {
         .iter()
         .filter_map(|s| doc.get(*s))
         .any(|s| s.component || s.set.is_some())
+}
+
+/// Whether `id` is or holds a list frame.
+fn holds_list(doc: &Document, id: NodeId) -> bool {
+    crate::build::subtree_nodes(doc, &[id])
+        .iter()
+        .filter_map(|s| doc.get(*s))
+        .any(|s| s.list.is_some())
 }
 
 /// Whether `parent` can take `moved` as a child under the component and variant

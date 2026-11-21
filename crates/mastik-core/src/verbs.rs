@@ -2151,6 +2151,7 @@ fn not_main(why: crate::component::NotMain) -> &'static str {
         NotMain::SetKind => {
             "a component set holds one kind of layer; its variants are another kind"
         }
+        NotMain::List => "a list can't be part of a component; detach it first",
     }
 }
 
