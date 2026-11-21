@@ -2188,3 +2188,98 @@ fn a_click_follows_a_scroll_effect() {
     click(&mut p, 135.0, 25.0);
     assert_eq!(number(&p, n), 1.0, "hit where it moved to");
 }
+
+// ── Lists ───────────────────────────────────────────────────────────────────
+
+/// An instance of a main `Row` (180×30) placed in `parent` at (10, 10).
+fn row_instance(fx: &mut Fx, main: NodeId, parent: NodeId) -> NodeId {
+    let (tx, made) = mastik_core::insert_subtrees(
+        &fx.doc,
+        &mut fx.ids,
+        &[Placement {
+            nodes: fx.doc.capture_subtree(main).unwrap(),
+            parent,
+            index: None,
+        }],
+        Default::default(),
+    );
+    fx.apply(tx.0);
+    fx.apply(vec![Operation::SetTransform {
+        id: made[0],
+        transform: Affine::translate((10.0, 10.0)),
+    }]);
+    made[0]
+}
+
+/// A list made around `instance` over `source`, its rows made.
+fn listed(fx: &mut Fx, instance: NodeId, source: mastik_core::list::Source) -> NodeId {
+    let res = mastik_core::Resolved::rebuild(&fx.doc);
+    let (tx, l) = mastik_core::list::make(&fx.doc, &res, &mut fx.ids, instance, source).unwrap();
+    fx.apply(tx.0);
+    mastik_core::list::regenerate_outside_history(&mut fx.doc, &[l]);
+    l
+}
+
+/// A tap on a list's second row opens it before the row's navigation runs, so
+/// the detail screen's *Opened row* list shows row 2.
+/// flip: `fire` not calling `open_row` → fails at "row 2 opened".
+#[test]
+fn a_tapped_row_is_opened_on_the_detail_screen() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{DataSet, List, Rows, Source};
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 200.0);
+    let b = fx.frame("B", 300.0, 200.0, 200.0);
+    let main = fx.frame("Row", 600.0, 180.0, 30.0);
+    fx.apply(vec![Operation::SetComponent {
+        id: main,
+        component: true,
+    }]);
+    let item = row_instance(&mut fx, main, a);
+    fx.on(
+        item,
+        Trigger::Click,
+        vec![Action::Navigate {
+            to: b,
+            transition: Transition::default(),
+            keep_scroll: false,
+        }],
+    );
+    let set = DataSet {
+        id: fx.ids.mint_data_set(),
+        name: "rows".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "title".into(),
+            }],
+            rows: vec![vec!["A".into()], vec!["B".into()], vec!["C".into()]],
+        },
+        source: None,
+    };
+    let data = set.id;
+    listed(&mut fx, item, Source::New(set));
+    let detail = row_instance(&mut fx, main, b);
+    let shown = listed(&mut fx, detail, Source::Existing(data));
+    let opened = List {
+        rows: Rows::Opened,
+        ..fx.doc.get(shown).unwrap().list().unwrap().clone()
+    };
+    fx.apply(vec![Operation::SetList {
+        id: shown,
+        list: Some(Box::new(opened)),
+    }]);
+    mastik_core::list::regenerate_outside_history(&mut fx.doc, &[shown]);
+
+    let mut p = fx.play(a);
+    // Rows at y 10, 48 and 86, 30 high, in a list frame at (10, 10).
+    click(&mut p, 30.0, 60.0);
+    assert_eq!(p.screen(), b, "the row navigates");
+    let l = p.document().get(shown).unwrap().list().unwrap();
+    assert_eq!(l.opened, 1, "row 2 opened");
+    assert_eq!(
+        fx.doc.get(shown).unwrap().list().unwrap().opened,
+        0,
+        "the file untouched"
+    );
+}

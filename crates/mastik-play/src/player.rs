@@ -577,6 +577,47 @@ impl Player {
         Ok(())
     }
 
+    /// A tap inside a list's row opens that row of its data set: every list
+    /// over the same data set showing *Opened row* is made again on the copy to
+    /// show it (`mastik_core::list`). Nothing for a layer in no list row.
+    pub(crate) fn open_row(&mut self, id: NodeId) {
+        use mastik_core::list::{self, Rows};
+        let Some((at, _, row)) = list::row_at(&self.doc, id) else {
+            return;
+        };
+        let Some(data) = self.doc.get(at).and_then(|n| n.list()).map(|l| l.data) else {
+            return;
+        };
+        let targets: Vec<(NodeId, list::List)> = list::lists(&self.doc)
+            .into_iter()
+            .filter_map(|l| {
+                let x = self.doc.get(l)?.list()?;
+                (x.data == data && x.rows == Rows::Opened && x.opened != row)
+                    .then(|| (l, x.clone()))
+            })
+            .collect();
+        for (l, x) in targets {
+            let tx = Transaction(vec![mastik_core::Operation::SetList {
+                id: l,
+                list: Some(Box::new(list::List { opened: row, ..x })),
+            }]);
+            if self.commit(tx).is_err() {
+                continue;
+            }
+            let (doc, res, ids, dirty) =
+                (&mut self.doc, &mut self.res, &mut self.ids, &mut self.dirty);
+            // A regeneration the rules refuse leaves the list showing its last row.
+            let _ = list::regenerate(doc, l, ids, |doc, tx| {
+                let out = doc.apply(&tx)?;
+                res.update(doc, &out.dirty);
+                dirty.extend(out.dirty.0);
+                Ok::<(), OpError>(())
+            });
+            let settled = self.res.settle(&mut self.doc);
+            self.dirty.extend(settled.0);
+        }
+    }
+
     /// Put the play values into the copy's table and lay out what reads them.
     pub(crate) fn apply_values(&mut self) {
         let dirty = self.doc.set_play_values(self.values.clone());

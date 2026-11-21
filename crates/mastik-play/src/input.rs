@@ -645,6 +645,11 @@ impl Player {
     pub(crate) fn fire(&mut self, chain: &[NodeId], want: &dyn Fn(&Trigger) -> bool) -> bool {
         let picked = self.picked(chain, want);
         let used = !picked.is_empty();
+        // A row of a list is opened before its actions run, so a navigation it
+        // makes lands on a detail screen already showing the row.
+        if let Some((id, _)) = picked.first() {
+            self.open_row(*id);
+        }
         for (id, r) in picked {
             self.run_reaction(id, r, None);
         }
