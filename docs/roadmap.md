@@ -11,36 +11,11 @@ true.
 A release of its own. The prototype is built (`prototyping.md` points to each part); what
 remains is below.
 
-- **One export dialog.** *Export prototype…* and *Export flow map…* are reached only from the
-  palette, and a take only from the player bar's *Export the take as a video*. One card with an
-  *HTML file* / *Video* / *Flow map* switch at its head, reached from the palette, the player
-  bar and a flow chip's menu:
-  - HTML: the size meter split into Player, Fonts, Images and Document (today one total from
-    `Parts::estimate`); warnings before writing (an image far larger than it is drawn, with
-    *Downscale to 2×*); the export held on a missing target or an expression that does not
-    parse; the file named *document — flow*.
-  - Video: the takes of this run listed (only the last is kept, `Player::take`), *Format*,
-    *Size*, *Show clicks* and *Device frame* (`video.rs` `Options` has format, fps and scale),
-    and a preview.
-  - Flow map: which flows go in (`flow_map::plans` takes every flow).
-- **The player's flow menu.** Changing flow while playing means stopping and clicking a flow
-  chip, and the selected frame is played only when the document has no flow at all
-  (`MastikApp::play`). A menu on the bar listing the page's flows and *From this frame*; the
-  state card showing the frame shown and how many steps *Back* goes.
 - **Polish.** Smaller gaps between the prototyping design and what is built:
-  - The player bar: elapsed time while recording; the bar hiding in fullscreen after 2 s still
-    and showing near the bottom edge; one edge pulse when a live edit lands.
-  - The exported page: a fullscreen button on its bar, a loading bar, and a corner note that
-    fades, *Drawn without the GPU; motion may be slower*, under the CPU fallback.
-  - Connectors: *Back* links drawn above the frames; a frame's *After delay* leaving from its
-    name strip; the first flow's chip and Flows row in the accent.
-  - The interactions card: *Copy interaction* in the `⋯` menu; a selected interaction block,
-    ringed, whose off-screen target the canvas scrolls to; a variable in an action row as a
-    `binding::capsule`; `@` in an expression opening the variable list; *Copy from library…*
-    under *Run script*; a main's interaction states saying Hover and Pressed play live.
-  - Triggers and drag: a notice when a scroll trigger's frame is gone (`Notice` has none); hover
-    triggers kept from firing on a touch screen; a scroll effect naming the frame it follows
-    (`ScrollEffect` always takes the nearest); the drawn snap point (`DRAWN_POINT`) renamable.
+  - The interactions card: a selected interaction block, ringed, whose off-screen target the
+    canvas scrolls to; *Copy from library…* under *Run script*.
+  - Triggers and drag: a scroll effect naming the frame it follows (`ScrollEffect` always takes
+    the nearest); the drawn snap point (`DRAWN_POINT`) renamable.
 - **Charts reading a data set.** A chart could read one of the document's data sets
   (`design/lists.md`) instead of its own table, so a chart and a list over one file update
   together.

@@ -18,11 +18,12 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   unchanged, so a frame can be nudged without leaving the mode. The mode is the window's
   (`MastikApp::prototype_mode`), never saved.
 - **What it shows.** One layer: its identity (glyph, name, a screen's size or *Instance*), the
-  *Interactions* card and the *Prototype* card. Nothing selected: the page card, *Flows* and the
+  *Interaction states* card when it applies, the *Interactions* card and the *Prototype* card. Nothing selected: the page card, *Flows* and the
   page's *Prototype* card. Several layers: *Prototype one layer at a time*.
 - **Every edit is one transaction** on the saved model through `commit_edit`, named as its
   neighbours: *Add interaction*, *Change trigger*, *Add action*, *Change action*, *Set
-  transition*, *Move action*, *Remove action*, *Duplicate interaction*, *Remove interaction*,
+  transition*, *Move action*, *Remove action*, *Duplicate interaction*, *Paste interaction*,
+  *Remove interaction*,
   *Scrolling*, *Overlay*, *Pin*, *Input*, *Add scroll effect*, *Scroll effect*, *Remove scroll
   effect*, *Dragging*, *Add snap point*, *Rename snap point*,
   *Move snap point*, *Remove snap point*, *Add flow*, *Rename flow*, *Change flow*, *Remove
@@ -38,10 +39,22 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 
 ## Interactions
 
-- **One block per reaction**: the trigger's dropdown, `+` (add an action) and `⋯` (*Duplicate*,
-  *Delete*), then its actions top to bottom; a `ui::card_rule` parts one block from the next. The
-  card's own `+` adds *On click* with no actions. The add and `⋯` menus are as wide as their
-  longest row (`ui::menu_width`).
+- **The *Interaction states* card** (`live_states_card`) stands before *Interactions* on a main
+  in a set, or an instance of one, whose interaction-state property ties *Hover* and/or
+  *Pressed*: a row each, *plays live*, its tooltip naming the value shown. The player switches
+  those states with nothing authored (`play.md`), and the card says so, so no one writes *While
+  hovering → Change to* for it.
+- **One block per reaction**: the trigger's dropdown, `+` (add an action) and `⋯` (*Duplicate*
+  in `COPY_SIMPLE` and *Copy interaction* in `COPY`, the glyphs the app's own Duplicate and Copy
+  wear, then *Delete*), then its actions top to bottom; a `ui::card_rule` parts one block from
+  the next. The card's own `+` adds *On click* with no actions. The add and `⋯` menus are as wide
+  as their longest row (`ui::menu_width`).
+- **Copy and paste.** *Copy interaction* keeps the reaction in `ProtoState::copied`, never saved
+  and apart from the clipboard, with the tab it was copied in, and says *Copied the interaction
+  ‹trigger›*. While one is kept, the card shows a *Paste interaction* text button under its
+  blocks, on any layer of that tab's document only (its targets are that document's layers),
+  tipped with the copied trigger; it appends the copy with fresh item ids, nested actions' too,
+  as one *Paste interaction* step.
 - **Triggers** are offered in two groups under `ui::menu_eyebrow`s, *Pointer* (*On click*, *On
   double click*, *On press*, *While pressing*, *On long press*, *On hover*, *While hovering*, *On
   leave*, *On drag*, *On swipe*, *On drop*) and *Other* (*Key…*, *After delay*, *When a variable
@@ -79,7 +92,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   glyph, its verb, its target in accent ink, its transition's timing (kind and duration, or
   *Spring*; *Keeps scroll · …* on a navigation that keeps scroll) as a faint caption note as a menu row's accelerator is, and `×`; the grip and `×` keep
   their own press. The verb and the target share what the timing and `×` leave, the verb first,
-  each cut rather than run under the timing. The rows stand `NEST` in from their trigger. A row
+  each cut rather than run under the timing. *Set variable*'s row names its variable as a
+  `binding::capsule`, as a bound field does, then the change in the target's ink. The rows stand
+  `NEST` in from their trigger. A row
   drags by its grip to
   another place in its own list (a reaction's, or one branch's), carried under the pointer with
   its branches from where it was held (`inspector::carried_unit`) while the others make room, as
@@ -121,7 +136,12 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   another kind than wanted (`Expr::kind`) is kept as typed, ringed, with the reason on the
   warning glyph inside the field's right end (`ui::refusable_field`, as an address and a flow's
   starting value are refused) and the range `ExprError::at` names underlined
-  (`ui::field_underline`), and nothing is written until it reads.
+  (`ui::field_underline`), and nothing is written until it reads. Its hint ends *or @ for a
+  variable*: while the focused field ends in `@` and a name being typed (`at_names`: closed by
+  whitespace, a brace or an operator), a list of the document's variables whose names hold that
+  text opens under it, at most `AT_LIST_MAX` (12). The arrows move its light; Enter or Tab, or a
+  click, replaces the `@` and what follows with `{name}`, the caret after it. A press on the list
+  keeps the field's focus and its draft.
 - **Transitions** (`transition_fields`, also the page's *New links*): the kind; for *Move in*,
   *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`) and *Smart animate*, a
   direction segment of *None* and the four sides. *None* is live for *Smart animate* alone, whose
@@ -185,7 +205,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   drawn.*); it is quiet when nothing differs.
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its
   start among the page's frames, a `ui::field_button` `×` to remove (as every removal in the
-  tab is), each flow after the first under a `ui::card_rule`; `+` adds *Flow N* starting at the page's first
+  tab is), each flow after the first under a `ui::card_rule`. The first row, the flow Play opens,
+  wears a `FIRST_FLOW_BAR` (2) `accent_400` bar on its leading edge, tipped *Play opens this flow
+  first*. `+` adds *Flow N* starting at the page's first
   frame, dimmed with no frame. Under each flow, its starting modes (`flow_modes`): a row per
   mode, its collection (as *Set mode*'s, less those another row names) and its mode, and `×`;
   *Add a starting mode* adds the first collection not yet named, at a mode the start frame does
@@ -205,7 +227,11 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   is. The edges are picked from the boxes in world space (`world_quad`), so zooming never moves
   a connector to another side; the screen quad's edge of the same index is drawn
   (`screen_edge`). It is a curve tangent to both edges, sampled in pieces no longer than
-  `CURVE_STEP` on screen so it stays smooth zoomed in. It is `LINK_W` thick in `color::SELECT`
+  `CURVE_STEP` on screen so it stays smooth zoomed in. A link going back, its target frame's
+  centre left of its own frame's left edge (`goes_back`), instead leaves its layer's top edge and
+  arches over both frames, cresting `BACK_RISE` (32) above the higher top, down onto the target's
+  top edge (`arch`). A top-level frame's own *After delay* leaves from its name tag
+  (`leaves_from_tag`), forward or back. It is `LINK_W` thick in `color::SELECT`
   for the selection's links and `color::SELECT_DIM` for the rest, with a filled `HEAD_LEN` ×
   2·`HEAD_HALF` arrowhead; the line stops at the head's base so its weight never shows past the
   tip. The line says when it is followed (`LinkLine`): a navigate's solid, an overlay's dashed (6
@@ -280,11 +306,12 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   (`drop_proto_mark`), and a cancel writes nothing. The marks are hit as drawn last frame
   (`ProtoState::marks_drawn`); the card's fields still hold the numbers.
 - **Flow chips** (`flow_chips`), in prototype mode: each flow's name behind the
-  `PLAY` glyph on a `color::BADGE` pill (the canvas badges' blue, `ui::pill_ink(BADGE)` ink) over
-  its start frame's top-right corner, `FLOW_CHIP_PAD_R` (9) of air after the words, several on one
-  frame stacked leftward. Under the pointer it lifts by a white wash at alpha 26, as the crop's
-  *Done* pill does. A click plays that flow over the canvas (`prototyping-player.md`). Private
-  mode masks the names.
+  `PLAY` glyph on a pill (`ui::pill_ink(BADGE)` ink) over its start frame's top-right corner,
+  `FLOW_CHIP_PAD_R` (9) of air after the words, several on one frame stacked leftward. The page's
+  first flow, the one Play opens, wears `color::BADGE` (the canvas badges' blue); the others
+  `FLOW_CHIP_QUIET` (0.55) of it. Under the pointer it lifts by a white wash at alpha 26, as the
+  crop's *Done* pill does. A click plays that flow over the canvas (`prototyping-player.md`); a
+  right-click opens its menu (`context-menus.md` §6.12). Private mode masks the names.
 
 ## Components
 

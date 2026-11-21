@@ -61,6 +61,10 @@ pub(crate) struct ProtoState {
     /// lines) as the canvas drew them last frame, in screen space, topmost
     /// last.
     pub marks_drawn: std::cell::RefCell<Vec<(ProtoMark, egui::Rect)>>,
+    /// The interaction *Copy interaction* took, with the tab it was copied in:
+    /// the Interactions card offers to paste it onto any layer of that tab's
+    /// document only, since its targets are that document's layers.
+    pub copied: Option<(Option<crate::tabs::TabId>, Reaction)>,
 }
 
 /// One of prototype mode's marks on the canvas that a drag moves.
@@ -92,7 +96,7 @@ pub(crate) struct ActionDrag {
 }
 
 /// What a typed field of prototype mode is for.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum DraftKey {
     /// A conditional's branch condition, or *Set variable*'s value (branch 0).
     Expr(ItemId, usize),
@@ -893,6 +897,33 @@ fn name(doc: &Document, id: NodeId) -> String {
     crate::private::layer(doc, id).into_owned()
 }
 
+/// The states the player switches `id` into with nothing authored: Hover and
+/// Pressed, where `id` is a main in a set (or an instance of one) whose
+/// interaction-state property ties them, each with the value tied.
+fn live_states(doc: &Document, id: NodeId) -> Vec<(&'static str, String)> {
+    use mastik_core::variant::{self, Interaction};
+    let Some(n) = doc.get(id) else {
+        return Vec::new();
+    };
+    let main = match n.link() {
+        Some(m) if mastik_core::component::instance_root(doc, id) == Some(id) => m,
+        _ => id,
+    };
+    let Some(vs) = variant::set_of(doc, main).and_then(|s| doc.get(s)?.set()) else {
+        return Vec::new();
+    };
+    let Some(p) = vs.interaction().map(|i| &vs.props[i]) else {
+        return Vec::new();
+    };
+    [Interaction::Hover, Interaction::Active]
+        .into_iter()
+        .filter_map(|s| {
+            let value = p.values.iter().find(|v| p.state_of(v) == Some(s))?;
+            Some((s.label(), value.clone()))
+        })
+        .collect()
+}
+
 /// What an action names, as its row writes it, and the word for it gone when
 /// it does not exist. A target is read as the layer holding the reaction reads it.
 fn target_words(doc: &Document, holder: NodeId, a: &Action) -> (String, Option<&'static str>) {
@@ -1475,8 +1506,24 @@ fn screen_edge(q: [egui::Pos2; 4], edge: usize) -> (egui::Pos2, egui::Vec2) {
 /// pieces no longer than [`CURVE_STEP`].
 fn curve(a: egui::Pos2, out_a: egui::Vec2, b: egui::Pos2, out_b: egui::Vec2) -> Vec<egui::Pos2> {
     let reach = ((b - a).length() * 0.4).max(24.0);
-    let c1 = a + out_a * reach;
-    let c2 = b + out_b * reach;
+    cubic(a, a + out_a * reach, b + out_b * reach, b)
+}
+
+/// How far above the higher of the two frames a link going back crests.
+const BACK_RISE: f32 = 32.0;
+
+/// A link going back, from `a` to the top edge's middle `b`, arched so its crest
+/// is at `crest` (screen y, above both frames): up, across, and down into `b`.
+fn arch(a: egui::Pos2, b: egui::Pos2, crest: f32) -> Vec<egui::Pos2> {
+    // A cubic's middle is (a + 3·c1 + 3·c2 + b) / 8: both controls at `y` put
+    // its middle at the crest.
+    let y = (8.0 * crest - a.y - b.y) / 6.0;
+    cubic(a, egui::pos2(a.x, y), egui::pos2(b.x, y), b)
+}
+
+/// The cubic through `a` and `b` with controls `c1` and `c2`, in pieces no
+/// longer than [`CURVE_STEP`].
+fn cubic(a: egui::Pos2, c1: egui::Pos2, c2: egui::Pos2, b: egui::Pos2) -> Vec<egui::Pos2> {
     let rough = (c1 - a).length() + (c2 - c1).length() + (b - c2).length();
     let n = ((rough / CURVE_STEP).ceil() as usize).clamp(8, 1024);
     (0..=n)
@@ -1538,6 +1585,13 @@ const FLOW_CHIP_H: f32 = 20.0;
 const FLOW_CHIP_GAP: f32 = 6.0;
 /// The air after a flow chip's words, to the pill's round end.
 const FLOW_CHIP_PAD_R: f32 = 9.0;
+/// The most variables the list `@` opens in an expression shows.
+const AT_LIST_MAX: usize = 12;
+/// The width of the accent bar on the page's first flow's row in the Flows card.
+const FIRST_FLOW_BAR: f32 = 2.0;
+/// How much of the badges' blue a chip other than the page's first flow's
+/// keeps, so the flow Play opens stands out.
+const FLOW_CHIP_QUIET: f32 = 0.55;
 
 impl MastikApp {
     /// The flow chips on the current page while prototype mode is on: each
@@ -1606,19 +1660,30 @@ impl MastikApp {
             .map(|(r, ..)| r)
     }
 
-    /// Draw the flow chips: the play glyph and the flow's name on a pill of
-    /// the canvas badges' blue, lifted under the pointer as the crop's *Done* is.
+    /// Draw the flow chips: the play glyph and the flow's name on a pill, lifted
+    /// under the pointer as the crop's *Done* is. The page's first flow, which
+    /// Play opens, wears the canvas badges' blue; the others a quieter
+    /// [`FLOW_CHIP_QUIET`] of it.
     fn draw_flow_chips(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
         let hover = ui.ctx().pointer_hover_pos();
         let ink = ui::pill_ink(color::BADGE);
-        for (_, chip, words) in self.flow_chips(ui, rect, ppp) {
+        let first = self
+            .session
+            .doc
+            .page(self.session.page)
+            .and_then(|p| p.flows.first().map(|f| f.id));
+        for (r, chip, words) in self.flow_chips(ui, rect, ppp) {
             let lit = hover.is_some_and(|p| chip.contains(p));
+            let ground = match Some(r.flow) == first {
+                true => color::BADGE,
+                false => color::BADGE.gamma_multiply(FLOW_CHIP_QUIET),
+            };
             painter.rect_filled(
                 chip,
                 FLOW_CHIP_H / 2.0,
                 match lit {
-                    true => color::BADGE.blend(egui::Color32::from_white_alpha(26)),
-                    false => color::BADGE,
+                    true => ground.blend(egui::Color32::from_white_alpha(26)),
+                    false => ground,
                 },
             );
             // text-ink: words on the chip's badge blue, in the badges' own ink.
@@ -1807,12 +1872,29 @@ impl MastikApp {
                     here.then(|| self.selection_quad(link.to, rect, ppp))
                         .flatten(),
                 );
+            // A frame's own *After delay* leaves from its name tag.
+            let strip = self
+                .leaves_from_tag(&link)
+                .then(|| self.frame_label(ui, link.from, rect, ppp))
+                .flatten()
+                .map(|(r, _)| egui::pos2(r.right() + 4.0, r.center().y));
             let (ink, pts, warning) = match ends {
-                Some(((ea, eb), to)) => {
-                    let (a, out_a) = screen_edge(from, ea);
-                    let (b, out_b) = screen_edge(to, eb);
-                    (blue, curve(a, out_a, b, out_b), None)
-                }
+                Some(((ea, eb), to)) => match self.goes_back(&link, rect, ppp) {
+                    // Back across the page: up from the layer's top edge, over
+                    // the frames, down onto the target's.
+                    Some(crest) => {
+                        let a = strip.unwrap_or_else(|| screen_edge(from, 0).0);
+                        (blue, arch(a, screen_edge(to, 0).0, crest), None)
+                    }
+                    None => {
+                        let (a, out_a) = match strip {
+                            Some(a) => (a, egui::Vec2::X),
+                            None => screen_edge(from, ea),
+                        };
+                        let (b, out_b) = screen_edge(to, eb);
+                        (blue, curve(a, out_a, b, out_b), None)
+                    }
+                },
                 None => {
                     let frame = screen_of(doc, link.from)
                         .filter(|s| *s != link.from)
@@ -1927,6 +2009,47 @@ impl MastikApp {
                 }
             }
         }
+    }
+
+    /// Whether `link` is a top-level frame's own *After delay*, which leaves
+    /// from the frame's name tag rather than an edge.
+    fn leaves_from_tag(&self, link: &Link) -> bool {
+        let doc = &self.session.doc;
+        let Some(n) = doc.get(link.from) else {
+            return false;
+        };
+        n.parent() == Some(self.session.page)
+            && is_frame(doc, link.from)
+            && n.reactions()
+                .iter()
+                .any(|r| r.id == link.at.reaction && matches!(r.trigger, Trigger::After { .. }))
+    }
+
+    /// When `link` goes back across the page, to a frame whose middle lies left
+    /// of the frame it leaves, the screen y its arch crests at: [`BACK_RISE`]
+    /// above the higher of the two frames' tops.
+    fn goes_back(&self, link: &Link, rect: egui::Rect, ppp: f32) -> Option<f32> {
+        let doc = &self.session.doc;
+        let frame = screen_of(doc, link.from)?;
+        let target = screen_of(doc, link.to).unwrap_or(link.to);
+        if frame == target {
+            return None;
+        }
+        let (fq, tq) = (self.world_quad(frame)?, self.world_quad(target)?);
+        let left = fq.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+        if quad_centre(tq).x >= left {
+            return None;
+        }
+        let (fs, ts) = (
+            self.selection_quad(frame, rect, ppp)?,
+            self.selection_quad(link.to, rect, ppp)?,
+        );
+        let top = fs
+            .iter()
+            .chain(ts.iter())
+            .map(|p| p.y)
+            .fold(f32::INFINITY, f32::min);
+        Some(top - BACK_RISE)
     }
 
     /// Where a link pulled from `from`'s `edge` ends with the pointer at `p`,
@@ -2607,6 +2730,7 @@ impl MastikApp {
         match self.session.selection.single() {
             Some(id) if self.session.doc.get(id).is_some() => {
                 self.proto_identity(ui, id);
+                self.live_states_card(ui, id);
                 self.interactions_card(ui, id);
                 self.layer_play_card(ui, id);
             }
@@ -2658,6 +2782,48 @@ impl MastikApp {
                     );
                 });
             });
+        });
+    }
+
+    /// The *Interaction states* card of a main in a set, or an instance of one,
+    /// whose set ties Hover or Pressed to a value: each plays live in the
+    /// player with nothing authored, which the card says so no one writes
+    /// *While hovering → Change to* for it.
+    fn live_states_card(&mut self, ui: &mut egui::Ui, id: NodeId) {
+        let rows = live_states(&self.session.doc, id);
+        if rows.is_empty() {
+            return;
+        }
+        self.panel(ui, "Interaction states", None, |_, ui| {
+            for (state, value) in &rows {
+                let w = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(w, ui::CONTROL_H),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(*state)
+                                .size(ui::SMALL_PT)
+                                .color(theme::text::strong()),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new("plays live")
+                                    .size(ui::CAPTION_PT)
+                                    .color(theme::text::faint()),
+                            );
+                        });
+                    },
+                )
+                .response
+                .on_hover_text(format!(
+                    "The player shows {value} while it is {}, with no interaction",
+                    match *state {
+                        "Hover" => "hovered",
+                        _ => "pressed",
+                    }
+                ));
+            }
         });
     }
 
@@ -2717,6 +2883,27 @@ impl MastikApp {
                     }
                     if out.reset {
                         reset_one = Some(r.id);
+                    }
+                }
+                if let Some((_, r)) = app
+                    .proto
+                    .copied
+                    .clone()
+                    .filter(|(tab, _)| *tab == app.tabs.active)
+                {
+                    let label = trigger_label(&app.session.doc, id, &r.trigger);
+                    if crate::settings::text_button(ui, "Paste interaction", FieldButton::Off)
+                        .on_hover_text(format!("Add the copied interaction: {label}"))
+                        .clicked()
+                    {
+                        let mut mint = || app.session.ids.mint_item();
+                        let copy = Reaction {
+                            trigger: r.trigger.clone(),
+                            actions: fresh_ids(&r.actions, &mut mint),
+                        };
+                        let mut list = reactions.clone();
+                        list.push(Keyed::new(mint(), copy));
+                        next = Some((list, "Paste interaction", icon::CLIPBOARD));
                     }
                 }
                 for gone in ghosts {
@@ -2845,15 +3032,22 @@ impl MastikApp {
             let more =
                 ui::field_button(ui, icon::DOTS_THREE, h, FieldButton::Off).on_hover_text("More");
             let mut dup = false;
+            let mut copy = false;
             let mut delete = false;
             egui::Popup::menu(&more)
                 .align(egui::RectAlign::BOTTOM_END)
                 .gap(ui::MENU_GAP)
                 .show(|ui| {
                     ui::popup_rows(ui);
-                    let w = ui::menu_width(ui.ctx(), ["Duplicate", "Delete"], true);
+                    let w =
+                        ui::menu_width(ui.ctx(), ["Duplicate", "Copy interaction", "Delete"], true);
                     ui.set_width(w);
-                    dup = ui::menu_item(ui, icon::COPY, "Duplicate", ui::MENU_ROW_H).clicked();
+                    // The glyphs the app's own Duplicate and Copy wear.
+                    dup =
+                        ui::menu_item(ui, icon::COPY_SIMPLE, "Duplicate", ui::MENU_ROW_H).clicked();
+                    if ui::menu_item(ui, icon::COPY, "Copy interaction", ui::MENU_ROW_H).clicked() {
+                        copy = true;
+                    }
                     ui::menu_sep(ui);
                     delete = ui::menu_row(
                         ui,
@@ -2874,7 +3068,12 @@ impl MastikApp {
                     .map_or(all.len(), |i| i + 1);
                 let mut list = all.to_vec();
                 list.insert(at, Keyed::new(mint(), copy));
-                out.write = Some((list, "Duplicate interaction", icon::COPY));
+                out.write = Some((list, "Duplicate interaction", icon::COPY_SIMPLE));
+            }
+            if copy {
+                self.proto.copied = Some((self.tabs.active, r.value.clone()));
+                let label = trigger_label(&self.session.doc, id, &r.trigger);
+                self.session.info(format!("Copied the interaction {label}"));
             }
             if delete {
                 let list = all.iter().filter(|k| k.id != r.id).cloned().collect();
@@ -3570,6 +3769,24 @@ impl MastikApp {
             Action::Conditional { .. } => "If",
             _ => kind.label(),
         };
+        // A variable set wears its name as a capsule, as a bound field does,
+        // and the change after it in the target's ink.
+        let (capsule, target) = match &k.value {
+            Action::SetVariable { var, .. } if missing.is_none() => {
+                match doc.variables().get(*var) {
+                    Some(v) => (
+                        Some(v.name.clone()),
+                        target
+                            .strip_prefix(v.name.as_str())
+                            .unwrap_or(&target)
+                            .trim_start()
+                            .to_string(),
+                    ),
+                    None => (None, target),
+                }
+            }
+            _ => (None, target),
+        };
         let mut out = RowOut::default();
         let resp = ui
             .horizontal(|ui| {
@@ -3644,6 +3861,15 @@ impl MastikApp {
                                 layout,
                                 |ui| ui.add(egui::Label::new(verb).truncate()),
                             );
+                            if let Some(name) = &capsule {
+                                let max = (ui.available_width() * 0.6).max(24.0);
+                                let w = super::binding::capsule_width(ui, name, max);
+                                let (r, _) = ui.allocate_exact_size(
+                                    egui::vec2(w, ui.available_height()),
+                                    egui::Sense::hover(),
+                                );
+                                super::binding::capsule(ui, r.left_center(), name, max);
+                            }
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(&target).size(ui::SMALL_PT).color(ink),
@@ -4703,11 +4929,15 @@ impl MastikApp {
         let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
         let refused = live.as_ref().and_then(|d| d.refused.clone());
         let mut text = live.map_or(shown.clone(), |d| d.text.clone());
+        // `@` asks for a variable: while the field holds one being named, its
+        // keys move through the list under it rather than commit.
+        let at_id = ui.id().with(("expr-at", key));
+        let (pick_key, pressed_in) = self.at_list_keys(ui, at_id, &text);
         let resp = ui::refusable_field(
             ui,
             egui::vec2(w, ui::CONTROL_H),
             &mut text,
-            "An expression, such as {count} + 1",
+            "An expression, such as {count} + 1, or @ for a variable",
             refused.as_deref(),
         );
         if refused.is_some()
@@ -4715,6 +4945,25 @@ impl MastikApp {
             && *k == key
         {
             ui::field_underline(ui, &resp, ui::CONTROL_H, &text, at.clone());
+        }
+        // A press on the list keeps the field's focus and its draft.
+        if pressed_in && resp.lost_focus() {
+            resp.request_focus();
+            return None;
+        }
+        if let Some(named) = self.at_list(ui, at_id, &resp, &text, pick_key) {
+            let at = text.rfind('@').unwrap_or(text.len());
+            let next = format!("{}{{{named}}}", &text[..at]);
+            let mut state = egui::TextEdit::load_state(&ctx, resp.id).unwrap_or_default();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(next.chars().count()),
+                )));
+            state.store(&ctx, resp.id);
+            resp.request_focus();
+            self.proto.draft = Some(ui::Draft::new(&ctx, key, next));
+            return None;
         }
         let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
         if typed == shown {
@@ -4731,6 +4980,108 @@ impl MastikApp {
                 None
             }
         }
+    }
+
+    /// Before an expression field draws: while its `text` names a variable after
+    /// `@` and the field held focus last pass, take the arrows, Enter and Tab
+    /// for the list. Answers the variable Enter or Tab picked, and whether the
+    /// pointer pressed on the list this pass.
+    fn at_list_keys(&self, ui: &egui::Ui, at_id: egui::Id, text: &str) -> (Option<String>, bool) {
+        let shown: Option<(Vec<String>, egui::Rect, egui::Id)> = ui
+            .ctx()
+            .data(|d| d.get_temp::<(egui::Rect, egui::Id)>(at_id))
+            .map(|(r, f)| (self.at_names(text), r, f));
+        let Some((names, list, field)) = shown else {
+            return (None, false);
+        };
+        if names.is_empty() || !ui.ctx().memory(|m| m.has_focus(field)) {
+            return (None, false);
+        }
+        let pressed_in = ui.input(|i| {
+            i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| list.contains(p))
+        });
+        let hi_id = at_id.with("hi");
+        let mut hi: usize = ui.ctx().data(|d| d.get_temp(hi_id)).unwrap_or(0);
+        let (down, up, enter) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Tab),
+            )
+        });
+        if down {
+            hi = (hi + 1) % names.len();
+        }
+        if up {
+            hi = (hi + names.len() - 1) % names.len();
+        }
+        hi = hi.min(names.len() - 1);
+        ui.ctx().data_mut(|d| d.insert_temp(hi_id, hi));
+        (enter.then(|| names[hi].clone()), pressed_in)
+    }
+
+    /// The variables an expression's `text` may be naming after its last `@`,
+    /// those whose names hold what follows it; none when no `@` is open.
+    fn at_names(&self, text: &str) -> Vec<String> {
+        let Some(at) = text.rfind('@') else {
+            return Vec::new();
+        };
+        let query = text[at + 1..].to_lowercase();
+        if query.contains(|c: char| c.is_whitespace() || "{}()+-*/<>=!&|,\"".contains(c)) {
+            return Vec::new();
+        }
+        self.session
+            .doc
+            .variables()
+            .iter()
+            .map(|v| v.name.clone())
+            .filter(|n| n.to_lowercase().contains(&query))
+            .take(AT_LIST_MAX)
+            .collect()
+    }
+
+    /// The list `@` opens under the expression field `resp`, its highlighted
+    /// row lit; answers the variable clicked, or `picked` by Enter or Tab.
+    fn at_list(
+        &self,
+        ui: &egui::Ui,
+        at_id: egui::Id,
+        resp: &egui::Response,
+        text: &str,
+        picked: Option<String>,
+    ) -> Option<String> {
+        let names = self.at_names(text);
+        if names.is_empty() || !resp.has_focus() {
+            ui.ctx()
+                .data_mut(|d| d.remove::<(egui::Rect, egui::Id)>(at_id));
+            return picked;
+        }
+        let hi: usize = ui.ctx().data(|d| d.get_temp(at_id.with("hi"))).unwrap_or(0);
+        let mut clicked = None;
+        let shown = egui::Popup::new(at_id, ui.ctx().clone(), resp.rect, ui.layer_id())
+            .kind(egui::PopupKind::Menu)
+            .layout(egui::Layout::top_down_justified(egui::Align::Min))
+            .style(egui::containers::menu::menu_style)
+            .open(true)
+            .align(egui::RectAlign::BOTTOM_START)
+            .gap(ui::MENU_GAP)
+            .show(|ui| {
+                ui::popup_rows(ui);
+                ui.set_width(resp.rect.width());
+                ui::menu_eyebrow(ui, "Variables");
+                for (i, n) in names.iter().enumerate() {
+                    let row = ui::MenuRow::new("", n).highlight(i == hi);
+                    if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                        clicked = Some(n.clone());
+                    }
+                }
+            });
+        if let Some(s) = shown {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(at_id, (s.response.rect, resp.id)));
+        }
+        picked.or(clicked)
     }
 
     /// *Open link*'s address, refused unless it is `http` or `https`.
@@ -5494,7 +5845,7 @@ impl MastikApp {
                 if n > 0 {
                     ui::card_rule(ui);
                 }
-                ui.horizontal(|ui| {
+                let row = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = COL;
                     let w = ui.available_width() - ui::CONTROL_H - COL;
                     let half = (w - COL) / 2.0;
@@ -5537,6 +5888,30 @@ impl MastikApp {
                         ));
                     }
                 });
+                // The flow Play opens first wears the accent's bar on its name
+                // field's leading edge, as its chip on the canvas wears the blue.
+                if n == 0 {
+                    let r = row.response.rect;
+                    let bar = egui::Rect::from_min_size(
+                        r.left_top(),
+                        egui::vec2(FIRST_FLOW_BAR, ui::CONTROL_H),
+                    );
+                    ui.painter().rect_filled(
+                        bar,
+                        egui::CornerRadius {
+                            nw: 4,
+                            sw: 4,
+                            ..Default::default()
+                        },
+                        color::accent_400(),
+                    );
+                    ui.interact(
+                        r.with_max_x(r.left() + 6.0),
+                        ui.id().with("first-flow"),
+                        egui::Sense::hover(),
+                    )
+                    .on_hover_text("Play opens this flow first");
+                }
                 if let Some(modes) = app.flow_modes(ui, f) {
                     let list = flows
                         .iter()
@@ -6701,6 +7076,186 @@ mod tests {
         f.app.open_link(at);
         assert_eq!(f.app.session.selection.single(), Some(f.add));
         assert_eq!(f.app.proto.open, Some(at));
+    }
+
+    /// A main in a set whose state property ties Hover lists Hover as playing
+    /// live; untied, nothing; a plain layer, nothing.
+    /// flip: `live_states` taking Pressed alone → fails at "tied".
+    #[test]
+    fn a_tied_hover_plays_live() {
+        use mastik_core::variant::{Interaction, VariantProp, VariantSet};
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let root = f.app.session.doc.first_page();
+        let [set, rest, hover] = [(); 3].map(|_| f.app.session.ids.mint());
+        let frame = |id, parent, index, name: &str| Operation::CreateNode {
+            id,
+            parent,
+            index,
+            kind: NodeKind::Artboard {
+                size: Size::new(80.0, 30.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: Some(name.into()),
+        };
+        let mut prop = VariantProp::new("State", vec!["Default".into(), "Hovered".into()]);
+        let mut ops = vec![
+            frame(set, root, 0, "Button"),
+            frame(rest, set, 0, "Default"),
+            frame(hover, set, 1, "Hovered"),
+        ];
+        for v in [rest, hover] {
+            ops.push(Operation::SetComponent {
+                id: v,
+                component: true,
+            });
+        }
+        ops.push(Operation::SetVariantSet {
+            id: set,
+            set: Some(VariantSet {
+                props: vec![prop.clone()],
+            }),
+        });
+        for (v, value) in [(rest, "Default"), (hover, "Hovered")] {
+            ops.push(Operation::SetVariant {
+                id: v,
+                values: vec![value.into()],
+            });
+        }
+        assert!(f.app.session.commit(Transaction(ops)));
+        assert!(live_states(&f.app.session.doc, rest).is_empty(), "untied");
+        prop.states.insert("Hovered".into(), Interaction::Hover);
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetVariantSet {
+                    id: set,
+                    set: Some(VariantSet { props: vec![prop] }),
+                }]))
+        );
+        assert_eq!(
+            live_states(&f.app.session.doc, rest),
+            vec![("Hover", "Hovered".to_string())],
+            "tied"
+        );
+        assert!(
+            live_states(&f.app.session.doc, f.add).is_empty(),
+            "a plain layer"
+        );
+    }
+
+    /// `@` in an expression lists the variables whose names hold what follows
+    /// it, and nothing once the name is closed or no `@` is open.
+    /// flip: `at_names` ignoring the query → fails at "filtered".
+    #[test]
+    fn an_at_lists_the_variables_it_may_name() {
+        use mastik_core::variable::{Cell, CollectionId, Mode, Variable};
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let mode = f.app.session.ids.mint_mode();
+        let [a, b] = [(); 2].map(|_| f.app.session.ids.mint_var());
+        let number = |id, name: &str| Operation::AddVariable {
+            var: Variable {
+                id,
+                name: name.into(),
+                kind: VarKind::Number,
+                cells: [(mode, Cell::Number(0.0))].into(),
+                scope: None,
+                origin: None,
+                forked: None,
+                description: String::new(),
+            },
+        };
+        assert!(f.app.session.commit(Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: Mode {
+                    id: mode,
+                    name: "Default".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            number(a, "cartCount"),
+            number(b, "signedIn"),
+        ])));
+        assert_eq!(f.app.at_names("1 + @"), vec!["cartCount", "signedIn"]);
+        assert_eq!(f.app.at_names("1 + @cart"), vec!["cartCount"], "filtered");
+        assert!(f.app.at_names("@cart + 1").is_empty(), "closed by a space");
+        assert!(f.app.at_names("{cartCount} + 1").is_empty(), "no @");
+    }
+
+    /// A frame's own *After delay* going back to a frame on its left leaves from
+    /// its name tag and arches over both frames; a link going forward does not.
+    /// flip: `goes_back` answering `None` → fails at "crests above the frames";
+    /// `leaves_from_tag` false → fails at "from the name tag".
+    #[test]
+    fn a_link_going_back_arches_over_the_frames() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let (home, cart) = (f.home, f.cart);
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetReactions {
+                    id: cart,
+                    reactions: vec![Keyed::new(
+                        item(20),
+                        Reaction {
+                            trigger: Trigger::After { ms: 1000 },
+                            actions: vec![keyed(
+                                21,
+                                Action::Navigate {
+                                    to: home,
+                                    transition: Transition::default(),
+                                    keep_scroll: false,
+                                },
+                            )],
+                        },
+                    )],
+                }]))
+        );
+        f.app.prototype_mode = true;
+        // Panned down, so the frames' tops and the cart's name tag are on screen.
+        f.app
+            .session
+            .camera
+            .pan_pixels(mastik_core::kurbo::Vec2::new(0.0, 600.0));
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1600.0));
+        let mut tag = None;
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let painter = ui.painter().clone();
+            f.app.draw_prototype_links(ui, &painter, rect, 1.0);
+            tag = f.app.frame_label(ui, cart, rect, 1.0).map(|(r, _)| r);
+        });
+        let drawn = f.app.proto.links_drawn.borrow();
+        let pts = &drawn
+            .iter()
+            .find(|(at, _)| at.reaction == item(20))
+            .expect("drawn")
+            .1;
+        let top = f
+            .app
+            .selection_quad(home, rect, 1.0)
+            .expect("home on screen")[0]
+            .y;
+        let crest = pts.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        assert!(
+            crest <= top - BACK_RISE + 1.0,
+            "crests above the frames: {crest} vs {top}"
+        );
+        let tag = tag.unwrap_or_else(|| {
+            panic!(
+                "the cart's name tag: {:?}",
+                f.app.selection_quad(cart, rect, 1.0)
+            )
+        });
+        assert!(
+            pts[0].distance(egui::pos2(tag.right() + 4.0, tag.center().y)) < 1.0,
+            "from the name tag"
+        );
     }
 
     /// A manual overlay's ghost sits at its offset from the opening layer's
