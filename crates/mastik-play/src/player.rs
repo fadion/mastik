@@ -102,6 +102,17 @@ pub struct ModeRow {
     pub screen_sets: bool,
 }
 
+/// One data set in the state card's *Opened rows*.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpenedRow {
+    pub data: mastik_core::list::DataSetId,
+    pub name: String,
+    /// Each row by its first cell.
+    pub rows: Vec<String>,
+    /// The row open now: 0 until a tap or a pick opens another.
+    pub current: usize,
+}
+
 /// Why a value from the state card was not taken.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ValueError {
@@ -550,6 +561,37 @@ impl Player {
         Some((c.name.clone(), mode.name.clone()))
     }
 
+    /// The state card's *Opened rows*: one per data set an *Opened row* list
+    /// reads, in the document's order.
+    pub fn opened_rows(&self) -> Vec<OpenedRow> {
+        use mastik_core::list::{self, Rows};
+        let lists: Vec<list::List> = list::lists(&self.doc)
+            .into_iter()
+            .filter_map(|l| self.doc.get(l)?.list().cloned())
+            .filter(|l| l.rows == Rows::Opened)
+            .collect();
+        self.doc
+            .data_sets()
+            .iter()
+            .filter_map(|d| {
+                let l = lists.iter().find(|l| l.data == d.id)?;
+                // The row by its first column, the cell a person reads it by.
+                let rows = d
+                    .table
+                    .rows
+                    .iter()
+                    .map(|r| r.first().map(|c| c.trim().to_string()).unwrap_or_default())
+                    .collect();
+                Some(OpenedRow {
+                    data: d.id,
+                    name: d.name.clone(),
+                    rows,
+                    current: l.opened.min(d.table.rows.len().saturating_sub(1)),
+                })
+            })
+            .collect()
+    }
+
     /// Set a variable's play value from the state card. Reactions to the change
     /// fire, and a take being recorded records it.
     pub fn set_value(&mut self, var: VarId, value: Value) -> Result<(), ValueError> {
@@ -581,13 +623,20 @@ impl Player {
     /// over the same data set showing *Opened row* is made again on the copy to
     /// show it (`mastik_core::list`). Nothing for a layer in no list row.
     pub(crate) fn open_row(&mut self, id: NodeId) {
-        use mastik_core::list::{self, Rows};
+        use mastik_core::list;
         let Some((at, _, row)) = list::row_at(&self.doc, id) else {
             return;
         };
         let Some(data) = self.doc.get(at).and_then(|n| n.list()).map(|l| l.data) else {
             return;
         };
+        self.open_data_row(data, row);
+    }
+
+    /// Row `row` of data set `data` opened: every list over it showing *Opened
+    /// row* made again on the copy to show it.
+    pub(crate) fn open_data_row(&mut self, data: mastik_core::list::DataSetId, row: usize) {
+        use mastik_core::list::{self, Rows};
         let targets: Vec<(NodeId, list::List)> = list::lists(&self.doc)
             .into_iter()
             .filter_map(|l| {

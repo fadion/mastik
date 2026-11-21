@@ -2284,6 +2284,53 @@ fn a_tapped_row_is_opened_on_the_detail_screen() {
     );
 }
 
+/// The state card lists the data set an *Opened row* list reads, and a row
+/// picked there opens it as a tap would.
+/// flip: `Input::OpenRow` not calling `open_data_row` → fails at "picked".
+#[test]
+fn a_row_picked_in_the_state_card_opens() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{DataSet, List, Rows, Source};
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 200.0);
+    let main = fx.frame("Row", 600.0, 180.0, 30.0);
+    fx.apply(vec![Operation::SetComponent {
+        id: main,
+        component: true,
+    }]);
+    let item = row_instance(&mut fx, main, a);
+    let set = DataSet {
+        id: fx.ids.mint_data_set(),
+        name: "rows".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "title".into(),
+            }],
+            rows: vec![vec!["A".into()], vec!["B".into()], vec!["C".into()]],
+        },
+        source: None,
+    };
+    let data = set.id;
+    let l = listed(&mut fx, item, Source::New(set));
+    let opened = List {
+        rows: Rows::Opened,
+        ..fx.doc.get(l).unwrap().list().unwrap().clone()
+    };
+    fx.apply(vec![Operation::SetList {
+        id: l,
+        list: Some(Box::new(opened)),
+    }]);
+
+    let mut p = fx.play(a);
+    let rows = p.opened_rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].rows, ["A", "B", "C"]);
+    assert_eq!(rows[0].current, 0);
+    p.input(Input::OpenRow { data, row: 2 });
+    assert_eq!(p.opened_rows()[0].current, 2, "picked");
+}
+
 /// A list over an empty table hides its template in play while the document
 /// keeps it, and a live edit giving the table rows shows it again.
 /// flip: `prepare` not calling `hide_empty_templates` → fails at "hidden in play".

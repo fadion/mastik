@@ -649,6 +649,13 @@ fn bar(
 /// The state card's rows: each variable with its value, set by typing (a
 /// number or text) or a switch (a boolean). A colour is shown, not set.
 fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
+    let opened = p.player.opened_rows();
+    if !opened.is_empty() {
+        ui.label(ui::eyebrow("Opened rows"));
+        for (i, row) in opened.iter().enumerate() {
+            opened_row(ui, p, i, row);
+        }
+    }
     let modes = p.player.modes();
     if !modes.is_empty() {
         ui.label(ui::eyebrow("Modes"));
@@ -774,6 +781,51 @@ fn mode_row(ui: &mut egui::Ui, p: &mut Playing, i: usize, row: &mastik_play::Mod
     );
     if let Some(m) = pick {
         p.player.input(mastik_play::Input::SetMode(m));
+    }
+}
+
+/// The rows *Opened rows* offers a data set, as many as a list draws.
+const OPENED_ROWS_LISTED: usize = mastik_core::list::MAX_DRAWN;
+
+/// One data set's row in *Opened rows*: its name, and a dropdown of its rows
+/// by number and first cell, the open one ticked. A pick opens the row as a tap
+/// on it would.
+fn opened_row(ui: &mut egui::Ui, p: &mut Playing, i: usize, row: &mastik_play::OpenedRow) {
+    let w = ui.available_width();
+    let mut pick = None;
+    let label = |n: usize| match row.rows.get(n).filter(|c| !c.is_empty()) {
+        Some(cell) => format!("{} \u{b7} {cell}", n + 1),
+        None => format!("Row {}", n + 1),
+    };
+    ui.allocate_ui_with_layout(
+        egui::vec2(w, ui::CONTROL_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let name = egui::RichText::new(&row.name)
+                .size(ui::SMALL_PT)
+                .color(theme::text::muted());
+            ui.add_sized(
+                egui::vec2(w * 0.45, ui::CONTROL_H),
+                egui::Label::new(name).truncate(),
+            );
+            let shown = label(row.current);
+            let field = ui.available_width();
+            ui::fitted_combo(ui, ("play-opened", i), field, &shown, &shown, |ui| {
+                ui::menu_rows(ui);
+                for n in 0..row.rows.len().min(OPENED_ROWS_LISTED) {
+                    let on = n == row.current;
+                    if ui.selectable_label(on, label(n)).clicked() && !on {
+                        pick = Some(n);
+                    }
+                }
+            });
+        },
+    );
+    if let Some(n) = pick {
+        p.player.input(mastik_play::Input::OpenRow {
+            data: row.data,
+            row: n,
+        });
     }
 }
 

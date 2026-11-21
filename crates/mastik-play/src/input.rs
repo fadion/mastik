@@ -53,6 +53,12 @@ pub enum Input {
     /// A mode picked from the state card: set everywhere, as *Set mode* sets
     /// it by default.
     SetMode(ModeId),
+    /// A data set's row picked from the state card's *Opened rows*: opened as a
+    /// tap on that row would open it.
+    OpenRow {
+        data: mastik_core::list::DataSetId,
+        row: usize,
+    },
 }
 
 /// A press in progress.
@@ -134,6 +140,10 @@ impl Player {
                     used |= self.set_mode_on(id, mode).is_some();
                 }
                 used
+            }
+            Input::OpenRow { data, row } => {
+                self.open_data_row(data, row);
+                true
             }
         };
         self.check_scrolls();

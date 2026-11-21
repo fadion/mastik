@@ -30,7 +30,7 @@ mod tests;
 
 pub use input::Input;
 pub use player::{
-    Fallback, ModeRow, Notice, Player, Request, Start, StartError, ValueError, ValueRow,
+    Fallback, ModeRow, Notice, OpenedRow, Player, Request, Start, StartError, ValueError, ValueRow,
 };
 pub use scene::{Hotspot, Layer, Patch, Scene};
 pub use take::{Replay, Take};
