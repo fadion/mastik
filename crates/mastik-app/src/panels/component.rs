@@ -146,6 +146,7 @@ pub(crate) fn prop_drift(doc: &mastik_core::Document, root: NodeId) -> PropDrift
                         _ => false,
                     },
                     PropKind::Swap => matches!(o.reset, Operation::SetSwap { .. }),
+                    PropKind::Image => matches!(o.reset, Operation::SetFills { .. }),
                     PropKind::Nested => false,
                 })
         })

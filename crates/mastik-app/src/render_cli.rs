@@ -612,6 +612,17 @@ fn row_edits(
                         };
                         PropValue::Swap(main)
                     }
+                    // A picture by its id in the document.
+                    PropKind::Image => {
+                        let id = mastik_core::ImageId(cell.trim().to_string());
+                        if doc.image(&id).is_none() {
+                            return Err(format!(
+                                "{}: {cell:?} is no picture in the document",
+                                at(c)
+                            ));
+                        }
+                        PropValue::Image(id)
+                    }
                     PropKind::Nested => continue,
                 };
                 edits.props.push((c, p.clone(), value));

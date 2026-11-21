@@ -1747,6 +1747,8 @@ impl MastikApp {
             swap_list(doc, &kits, &shelves, copy, filter, preferred, search)
         };
         let mut kit_swap: Option<KitSwap> = None;
+        // An image property's *Replace…*: the copy and the fill to give a file.
+        let mut replace_picture: Option<(NodeId, usize)> = None;
         let mut swap_open = false;
         // **Swap**, on a nested copy inside an outer instance (§15 D983) — every
         // main of its kind, the session's: a swap property narrows this list for
@@ -2255,6 +2257,69 @@ impl MastikApp {
                         }
                     });
                 }
+                // A picture: the document's pictures to pick from, or *Replace…*
+                // with a file, which the first copy's fill takes.
+                PropKind::Image => {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        if row_label(ui, &p.name, mark.as_ref()) {
+                            out.extend(reset());
+                        }
+                        let current = match (&value, mixed) {
+                            (PropValue::Image(id), false) => Some(id.clone()),
+                            _ => None,
+                        };
+                        let shown = match &current {
+                            Some(id) => crate::panels::picture_words(doc, id),
+                            None => "Mixed".to_string(),
+                        };
+                        let mut pictures: Vec<mastik_core::ImageId> =
+                            doc.images().map(|(id, _)| id.clone()).collect();
+                        pictures.sort_by(|a, b| a.0.cmp(&b.0));
+                        let w = ui.available_width();
+                        let mut pick = None;
+                        let mut replace = false;
+                        ui::combo_height(ui);
+                        egui::ComboBox::from_id_salt(("prop-image", first, p.id))
+                            .icon(ui::combo_chevron)
+                            .width(w)
+                            .selected_text(ui::glyph_and_text(icon::IMAGE, &shown))
+                            .show_ui(ui, |ui| {
+                                ui::menu_rows(ui);
+                                for id in &pictures {
+                                    let on = current.as_ref() == Some(id);
+                                    let words = crate::panels::picture_words(doc, id);
+                                    if ui.selectable_label(on, words).clicked() && !on {
+                                        pick = Some(id.clone());
+                                    }
+                                }
+                                ui::menu_sep(ui);
+                                if ui
+                                    .selectable_label(
+                                        false,
+                                        ui::glyph_and_text(icon::IMPORT, "Replace…"),
+                                    )
+                                    .clicked()
+                                {
+                                    replace = true;
+                                }
+                            });
+                        if let Some(id) = pick {
+                            out.push(Transaction(variant::set_property(
+                                doc,
+                                roots,
+                                p,
+                                &PropValue::Image(id),
+                            )));
+                        }
+                        if replace
+                            && let Some(c) = variant::counterparts(doc, first, p).first().copied()
+                            && let Some((i, _)) = doc.get(c).and_then(variant::image_of)
+                        {
+                            replace_picture = Some((c, i));
+                        }
+                    });
+                }
             }
         }
         // A label's *Push ‹property› to main* reaches here as that row's reset.
@@ -2276,6 +2341,9 @@ impl MastikApp {
         }
         if let Some(s) = kit_swap {
             self.swap_to_kit(s);
+        }
+        if let Some((copy, fill)) = replace_picture {
+            self.replace_image_action(copy, crate::panels::PaintSlot::Fill(fill), true);
         }
     }
 
@@ -2565,6 +2633,10 @@ impl MastikApp {
                     add = Some(Add::Kind(PropKind::Text, "Text"));
                     ui.close();
                 }
+                if row(ui, icon::IMAGE, "Image", "picture", true).clicked() {
+                    add = Some(Add::Kind(PropKind::Image, "Image"));
+                    ui.close();
+                }
                 // One row per nested instance it can bind, named in the
                 // accelerator column; one dimmed row saying why when there is none.
                 for (slot, name) in &dormant {
@@ -2659,16 +2731,22 @@ impl MastikApp {
             .map(|o| o.props().to_vec())
             .unwrap_or_default();
         let mut out: Option<Transaction> = None;
-        let kinds: &[(PropKind, &str)] = match (is_text, shows.is_some()) {
-            (true, _) => &[
+        // A layer showing a picture can bind it to an image property.
+        let pictured = variant::image_of(n).is_some();
+        let kinds: &[(PropKind, &str)] = match (is_text, shows.is_some(), pictured) {
+            (true, _, _) => &[
                 (PropKind::Boolean, "Visibility"),
                 (PropKind::Text, "Content"),
             ],
-            (false, true) => &[
+            (false, true, _) => &[
                 (PropKind::Boolean, "Visibility"),
                 (PropKind::Swap, "Instance"),
             ],
-            (false, false) => &[(PropKind::Boolean, "Visibility")],
+            (false, false, true) => &[
+                (PropKind::Boolean, "Visibility"),
+                (PropKind::Image, "Picture"),
+            ],
+            (false, false, false) => &[(PropKind::Boolean, "Visibility")],
         };
         // **Rows of the identity card, not a card of their own** (§15 D995): the
         // heading has no curly-brace glyph, and the rows sit under the layer's name
@@ -2772,6 +2850,7 @@ fn property_row(
             PropKind::Boolean => icon::EYE,
             PropKind::Text => icon::TEXT_T,
             PropKind::Swap => icon::SWAP,
+            PropKind::Image => icon::IMAGE,
             // Never drawn as a row: `inspector_properties` lists it apart.
             PropKind::Nested => icon::STACK,
         };
@@ -2823,6 +2902,7 @@ fn property_row(
                     PropKind::Text => "content",
                     // *main*, the field a swap sets (§15 D1005): *Icon · main*.
                     PropKind::Swap => "main",
+                    PropKind::Image => "picture",
                     PropKind::Nested => "shown",
                 }
             )
@@ -3045,6 +3125,7 @@ fn say(doc: &mastik_core::Document, v: &Option<PropValue>) -> String {
         Some(PropValue::Boolean(false)) => "Off".into(),
         Some(PropValue::Text(t)) => t.clone(),
         Some(PropValue::Swap(m)) => crate::private::layer(doc, *m).into_owned(),
+        Some(PropValue::Image(id)) => crate::panels::picture_words(doc, id),
         None => String::new(),
     }
 }

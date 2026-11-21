@@ -16,6 +16,11 @@ use std::path::{Path, PathBuf};
 /// The file picker's filter for a data file.
 const FILTER: (&str, &[&str]) = ("Data", &["csv", "tsv", "json"]);
 
+/// What a list's card and import box say when its template offers nothing a
+/// column can fill.
+pub(crate) const NO_FILL_TARGETS: &str =
+    "Its component has no text, boolean, image or variant property";
+
 /// Whether list `id` reads a data set with no rows.
 pub(crate) fn list_is_empty(doc: &mastik_core::Document, id: NodeId) -> bool {
     doc.get(id)
@@ -25,7 +30,7 @@ pub(crate) fn list_is_empty(doc: &mastik_core::Document, id: NodeId) -> bool {
 }
 
 /// What list `id` draws, in the words its canvas tab and layers badge show,
-/// with the ink: *24 rows*, *200 of 1,240 rows*, *Opened row*, or *No rows* and
+/// with the ink: *24 rows*, *200 of 1240 rows*, *Opened row*, or *No rows* and
 /// *Missing data* in the warning ink.
 pub(crate) fn list_count(doc: &mastik_core::Document, id: NodeId) -> (String, egui::Color32) {
     use crate::theme::{color, text};
@@ -49,6 +54,98 @@ pub(crate) fn list_count(doc: &mastik_core::Document, id: NodeId) -> (String, eg
         crate::ui::count_as(drawn, "row", "rows")
     };
     (said, text::dim())
+}
+
+/// The columns of list `id`'s data set that fill an image property of its
+/// template under `fill`.
+pub(crate) fn picture_columns(
+    doc: &mastik_core::Document,
+    id: NodeId,
+    fill: &[list::Fill],
+) -> Vec<mastik_core::chart::ColumnId> {
+    let Some(tpl) = list::template(doc, id) else {
+        return Vec::new();
+    };
+    picture_columns_of(doc, tpl, fill)
+}
+
+/// [`picture_columns`] for a template not yet in a list.
+fn picture_columns_of(
+    doc: &mastik_core::Document,
+    template: NodeId,
+    fill: &[list::Fill],
+) -> Vec<mastik_core::chart::ColumnId> {
+    let props = mastik_core::variant::instance_properties(doc, template);
+    fill.iter()
+        .filter(|f| {
+            matches!(&f.target, list::Target::Prop(p)
+                if props.iter().any(|q| q.id == *p && q.kind == mastik_core::variant::PropKind::Image))
+        })
+        .map(|f| f.column)
+        .collect()
+}
+
+/// The pictures the cells of `table`'s `columns` name as paths beside the data
+/// file in `dir`, in the rows a list can draw: read and decoded now, each new
+/// picture's `AddImage` and every (cell, picture) pair. A cell already naming a
+/// picture's id, one that is no plain relative path (absolute, or climbing out
+/// with `..`), or one that does not read as a picture is left out.
+pub(crate) fn read_pictures(
+    doc: &mastik_core::Document,
+    dir: Option<&Path>,
+    table: &mastik_core::chart::Table,
+    columns: &[mastik_core::chart::ColumnId],
+) -> (Vec<Operation>, Vec<(String, mastik_core::ImageId)>) {
+    let (mut ops, mut pairs) = (Vec::new(), Vec::<(String, mastik_core::ImageId)>::new());
+    let Some(dir) = dir else {
+        return (ops, pairs);
+    };
+    for col in columns {
+        let Some(c) = table.index_of(*col) else {
+            continue;
+        };
+        for row in table.rows.iter().take(list::MAX_DRAWN) {
+            let cell = row[c].trim();
+            if cell.is_empty()
+                || pairs.iter().any(|(p, _)| p == cell)
+                || doc.image(&mastik_core::ImageId(cell.to_string())).is_some()
+            {
+                continue;
+            }
+            let rel = Path::new(cell);
+            let plain = rel.components().all(|k| {
+                matches!(
+                    k,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            });
+            if !plain {
+                continue;
+            }
+            let path = dir.join(rel);
+            let fits = std::fs::metadata(&path)
+                .is_ok_and(|m| m.is_file() && m.len() <= crate::tokens_import::MAX_READ);
+            let Some(bytes) = fits.then(|| std::fs::read(&path).ok()).flatten() else {
+                continue;
+            };
+            let ext = crate::app::file_extension(&path);
+            let name = Some(crate::app::image_name(&path));
+            let Ok((image, _)) = crate::app::read_picture(bytes, ext, name) else {
+                continue;
+            };
+            let added = ops
+                .iter()
+                .any(|op| matches!(op, Operation::AddImage { id, .. } if *id == image.id));
+            if !doc.has_image(&image.id) && !added {
+                ops.push(Operation::AddImage {
+                    id: image.id.clone(),
+                    entry: image.entry.clone(),
+                });
+            }
+            pairs.push((cell.to_string(), image.id));
+        }
+    }
+    (ops, pairs)
 }
 
 /// The link a data set read from `path` keeps, from the read's stat.
@@ -111,6 +208,7 @@ impl MastikApp {
             name: list::free_name(&self.session.doc, "Table 1"),
             table,
             source: None,
+            pictures: Vec::new(),
         };
         let name = set.name.clone();
         if let Some(frame) = self.commit_make_list(id, list::Source::New(set), Some(name)) {
@@ -210,6 +308,7 @@ impl MastikApp {
             name,
             table: parsed.read.table.clone(),
             source: linkable.then(|| link_for(path, parsed, Some(parsed.read.header))),
+            pictures: Vec::new(),
         }
     }
 
@@ -222,6 +321,7 @@ impl MastikApp {
         path: &Path,
         table: mastik_core::chart::Table,
         link: Option<DataLink>,
+        dir: Option<&Path>,
         fill: &[(list::Target, Option<String>)],
     ) {
         let fill: Vec<list::Fill> = fill
@@ -236,13 +336,22 @@ impl MastikApp {
             })
             .collect();
         let name = list::name_for_path(path);
+        let columns = picture_columns_of(&self.session.doc, instance, &fill);
+        let (images, pictures) = read_pictures(&self.session.doc, dir, &table, &columns);
         let set = DataSet {
             id: self.session.ids.mint_data_set(),
             name: list::free_name(&self.session.doc, &name),
             table,
             source: link,
+            pictures,
         };
-        self.commit_make_list_filled(instance, list::Source::New(set), Some(name), Some(fill));
+        self.commit_make_list_filled(
+            instance,
+            list::Source::New(set),
+            Some(name),
+            Some(fill),
+            images,
+        );
     }
 
     /// Commit a list made around `instance` over `source`, undo step *Make
@@ -254,16 +363,18 @@ impl MastikApp {
         source: list::Source,
         from: Option<String>,
     ) -> Option<NodeId> {
-        self.commit_make_list_filled(instance, source, from, None)
+        self.commit_make_list_filled(instance, source, from, None, Vec::new())
     }
 
-    /// [`Self::commit_make_list`] with `fill` in place of the fill by name.
+    /// [`Self::commit_make_list`] with `fill` in place of the fill by name, and
+    /// `images`, the pictures its cells name, added in the same step.
     fn commit_make_list_filled(
         &mut self,
         instance: NodeId,
         source: list::Source,
         from: Option<String>,
         fill: Option<Vec<list::Fill>>,
+        images: Vec<Operation>,
     ) -> Option<NodeId> {
         let made = list::make(
             &self.session.doc,
@@ -273,6 +384,7 @@ impl MastikApp {
             source,
         );
         let made = made.map(|(mut tx, frame)| {
+            tx.0.splice(0..0, images);
             if let Some(fill) = fill {
                 for op in &mut tx.0 {
                     if let Operation::SetList { list: Some(l), .. } = op {
@@ -456,9 +568,12 @@ impl MastikApp {
             return;
         };
         let header = now.source.as_ref().and_then(|s| s.header);
+        // A set never linked (*New table*) is linked by the window's *Import…*.
+        let first_link = relink && now.source.is_none();
         let table = parsed.read.table.clone();
         let mut ops = Vec::new();
         let mut lost = 0;
+        let mut columns = Vec::new();
         let over = self.lists_over(set);
         for l in &over {
             let Some(was) = self.session.doc.get(*l).and_then(|n| n.list()).cloned() else {
@@ -477,6 +592,7 @@ impl MastikApp {
                 })
                 .collect();
             lost += was.fill.len() - fill.len();
+            columns.extend(picture_columns(&self.session.doc, *l, &fill));
             if fill != was.fill {
                 ops.push(Operation::SetList {
                     id: *l,
@@ -484,9 +600,13 @@ impl MastikApp {
                 });
             }
         }
+        // The pictures the image columns name, read beside the file again.
+        let dir = Path::new(path).parent();
+        let (images, pictures) = read_pictures(&self.session.doc, dir, &table, &columns);
         let next = DataSet {
             table,
             source: Some(link_for(Path::new(path), parsed, header)),
+            pictures,
             ..now
         };
         ops.insert(
@@ -496,20 +616,21 @@ impl MastikApp {
                 set: Some(Box::new(next)),
             },
         );
-        let (label, glyph) = match relink {
-            true => ("Relink list data", icon::LINK_SIMPLE),
-            false => ("Update list data", icon::IMPORT),
+        ops.splice(0..0, images);
+        let (label, glyph) = match (relink, first_link) {
+            (true, true) => ("Link list data", icon::LINK_SIMPLE),
+            (true, false) => ("Relink list data", icon::LINK_SIMPLE),
+            (false, _) => ("Update list data", icon::IMPORT),
         };
         self.session.name_step(label, glyph);
         if self.commit_edit(Transaction(ops)) {
             let rows = crate::ui::count_as(parsed.read.table.rows.len(), "row", "rows");
             let name = file_name(path);
-            let mut said = match relink {
-                true => format!(
-                    "Relinked {name} for {} \u{b7} {rows}",
-                    crate::ui::count_as(over.len(), "list", "lists")
-                ),
-                false => format!("Updated {name} \u{b7} {rows}"),
+            let lists = crate::ui::count_as(over.len(), "list", "lists");
+            let mut said = match (relink, first_link) {
+                (true, true) => format!("Linked {name} for {lists} \u{b7} {rows}"),
+                (true, false) => format!("Relinked {name} for {lists} \u{b7} {rows}"),
+                (false, _) => format!("Updated {name} \u{b7} {rows}"),
             };
             if lost > 0 {
                 said.push_str(&format!(

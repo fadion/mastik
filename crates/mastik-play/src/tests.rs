@@ -2256,6 +2256,7 @@ fn a_tapped_row_is_opened_on_the_detail_screen() {
             rows: vec![vec!["A".into()], vec!["B".into()], vec!["C".into()]],
         },
         source: None,
+        pictures: Vec::new(),
     };
     let data = set.id;
     listed(&mut fx, item, Source::New(set));
@@ -2310,6 +2311,7 @@ fn a_row_picked_in_the_state_card_opens() {
             rows: vec![vec!["A".into()], vec!["B".into()], vec!["C".into()]],
         },
         source: None,
+        pictures: Vec::new(),
     };
     let data = set.id;
     let l = listed(&mut fx, item, Source::New(set));
@@ -2357,6 +2359,7 @@ fn an_empty_list_draws_no_row_in_play() {
             rows: Vec::new(),
         },
         source: None,
+        pictures: Vec::new(),
     };
     listed(&mut fx, item, Source::New(set.clone()));
     assert!(fx.doc.get(item).unwrap().visible(), "kept on the canvas");

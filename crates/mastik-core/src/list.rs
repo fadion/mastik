@@ -66,6 +66,25 @@ pub struct DataSet {
     /// The file the table was read from, while linked. Never carried by a copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DataLink>,
+    /// The pictures the table's cells name: a cell's text (a path beside the
+    /// data file) and the picture read from it into the document, filled where
+    /// the file is read, since core reads no files. An image property's column
+    /// fills from it, or from a cell naming a picture's id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<(String, crate::ImageId)>,
+}
+
+impl DataSet {
+    /// The picture `cell` names: one read for that cell's text, else the
+    /// document's picture of that id.
+    pub fn picture(&self, doc: &Document, cell: &str) -> Option<crate::ImageId> {
+        let cell = cell.trim();
+        if let Some((_, id)) = self.pictures.iter().find(|(c, _)| c == cell) {
+            return Some(id.clone());
+        }
+        let id = crate::ImageId(cell.to_string());
+        doc.image(&id).is_some().then_some(id)
+    }
 }
 
 /// Why a data set or a list may not be stored.
@@ -434,6 +453,48 @@ pub fn unmatched_variants(doc: &Document, list_id: NodeId) -> Vec<(String, Vec<S
     out
 }
 
+/// The cells of `list`'s drawn rows that fill an image property but name no
+/// picture: (property name, the cells), for the card's warning.
+pub fn unmatched_pictures(doc: &Document, list_id: NodeId) -> Vec<(String, Vec<String>)> {
+    let Some(list) = doc.get(list_id).and_then(|n| n.list()) else {
+        return Vec::new();
+    };
+    let (Some(set), Some(t)) = (doc.data_set(list.data), template(doc, list_id)) else {
+        return Vec::new();
+    };
+    let props = crate::variant::instance_properties(doc, t);
+    let rows = list.shown_rows(set.table.rows.len());
+    let mut out = Vec::new();
+    for f in &list.fill {
+        let Target::Prop(item) = &f.target else {
+            continue;
+        };
+        let Some(p) = props
+            .iter()
+            .find(|p| p.id == *item && p.kind == PropKind::Image)
+        else {
+            continue;
+        };
+        let Some(col) = set.table.index_of(f.column) else {
+            continue;
+        };
+        let mut missing: Vec<String> = Vec::new();
+        for r in &rows {
+            let cell = set.table.rows[*r][col].trim();
+            if !cell.is_empty()
+                && set.picture(doc, cell).is_none()
+                && !missing.iter().any(|m| m == cell)
+            {
+                missing.push(cell.to_string());
+            }
+        }
+        if !missing.is_empty() {
+            out.push((p.name.clone(), missing));
+        }
+    }
+    out
+}
+
 /// Each property of the template a column fills by default: one whose name
 /// matches the column's, ignoring case, spaces, dashes and underscores. Text and
 /// boolean component properties, then the set's variant properties.
@@ -454,7 +515,7 @@ pub fn fill_by_name(doc: &Document, template: NodeId, table: &Table) -> Vec<Fill
     };
     let mut out = Vec::new();
     for p in crate::variant::instance_properties(doc, template) {
-        if matches!(p.kind, PropKind::Text | PropKind::Boolean)
+        if matches!(p.kind, PropKind::Text | PropKind::Boolean | PropKind::Image)
             && let Some(c) = column(&p.name)
         {
             out.push(Fill {
@@ -474,10 +535,11 @@ pub fn fill_by_name(doc: &Document, template: NodeId, table: &Table) -> Vec<Fill
     out
 }
 
-/// *New table*'s table for `template`: one column per text and boolean
+/// *New table*'s table for `template`: one column per text, boolean and image
 /// property, then per variant property, each named after it, and one row
-/// holding the instance's own values (`true`/`false` for a boolean, the value
-/// a variant shows), so [`fill_by_name`] fills every property from it.
+/// holding the instance's own values (`true`/`false` for a boolean, a
+/// picture's id, the value a variant shows), so [`fill_by_name`] fills every
+/// property from it.
 pub fn seed_table(doc: &Document, template: NodeId) -> Table {
     let mut table = Table::default();
     let mut row = Vec::new();
@@ -496,7 +558,11 @@ pub fn seed_table(doc: &Document, template: NodeId) -> Table {
         let value = match crate::variant::property_state(doc, template, &p).map(|(v, _)| v) {
             Some(PropValue::Text(t)) if p.kind == PropKind::Text => t,
             Some(PropValue::Boolean(b)) if p.kind == PropKind::Boolean => b.to_string(),
-            None if matches!(p.kind, PropKind::Text | PropKind::Boolean) => String::new(),
+            // A picture by its id, which a cell may name.
+            Some(PropValue::Image(id)) if p.kind == PropKind::Image => id.0,
+            None if matches!(p.kind, PropKind::Text | PropKind::Boolean | PropKind::Image) => {
+                String::new()
+            }
             _ => continue,
         };
         push(&mut table, &p.name, value);
@@ -815,6 +881,11 @@ pub fn regenerate<E>(
                 PropKind::Text => PropValue::Text(c.to_string()),
                 PropKind::Boolean => match cell_bool(c) {
                     Some(b) => PropValue::Boolean(b),
+                    None => continue,
+                },
+                // A cell naming no picture leaves the row the template's.
+                PropKind::Image => match set.picture(doc, c) {
+                    Some(id) => PropValue::Image(id),
                     None => continue,
                 },
                 PropKind::Swap | PropKind::Nested => continue,

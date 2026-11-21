@@ -1623,7 +1623,7 @@ const VAR_KINDS: &[&str] = &["color", "number", "boolean", "string"];
 const RESETS: &[&str] = &["all", "fields", "children", "order"];
 const PUSHES: &[&str] = &["all", "properties", "fields", "layers", "order", "removals"];
 const LEVELS: &[&str] = &["aa", "aaa", "apca"];
-const PROP_KINDS: &[&str] = &["boolean", "text", "swap"];
+const PROP_KINDS: &[&str] = &["boolean", "text", "swap", "image"];
 /// The mask modes by the word a verb takes, in [`crate::node::MaskMode::ALL`]'s order.
 const MASK_MODES: &[&str] = &["shape", "alpha", "luminance"];
 /// The HTML elements by the tag a verb takes them as.
@@ -3238,7 +3238,7 @@ pub static VERBS: &[Verb] = &[
             req(
                 "kind",
                 ParamKind::Choice(PROP_KINDS),
-                "what the property drives: the layer's visibility, its text, or the main a nested instance shows",
+                "what it drives: the layer's visibility, text or picture, or a nested instance's main",
             ),
             opt(
                 "property",
@@ -3263,11 +3263,12 @@ pub static VERBS: &[Verb] = &[
             let kind = match a.choice("kind") {
                 Some("text") if matches!(n.kind(), NodeKind::Text { .. }) => PropKind::Text,
                 Some("swap") if shows.is_some() => PropKind::Swap,
+                Some("image") if crate::variant::image_of(n).is_some() => PropKind::Image,
                 Some("boolean") => PropKind::Boolean,
                 _ => {
                     return Err(a.invalid(
                         "kind",
-                        "a text property needs a text layer, a swap one a nested instance",
+                        "a text property needs a text layer, a swap one a nested instance, an image one a layer with an image fill",
                     ));
                 }
             };
@@ -3387,6 +3388,14 @@ pub static VERBS: &[Verb] = &[
                         ));
                     }
                     PropValue::Swap(main)
+                }
+                // A picture by its id in the document.
+                (PropKind::Image, Value::String(s)) => {
+                    let id = crate::ImageId(s.clone());
+                    if ctx.doc.image(&id).is_none() {
+                        return Err(a.invalid("value", "no picture of that id in the document"));
+                    }
+                    PropValue::Image(id)
                 }
                 _ => return Err(a.invalid("value", "not a value of the property's kind")),
             };

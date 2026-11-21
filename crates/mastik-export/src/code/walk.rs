@@ -857,7 +857,9 @@ impl Walk<'_> {
                 PropKind::Boolean => (Ty::Bool, self.prop_default(p, default)),
                 PropKind::Text => (Ty::Text, self.prop_default(p, default)),
                 PropKind::Swap => (Ty::Component, self.swap_default(p).map(PropValue::Swap)),
-                PropKind::Nested => continue,
+                // No parameter: a use showing another picture is an override,
+                // and inlined (`why_inline`).
+                PropKind::Nested | PropKind::Image => continue,
             };
             let Some(value) = value else { continue };
             out.push(Param {
@@ -1044,6 +1046,8 @@ impl Walk<'_> {
             PropValue::Boolean(b) => Arg::Bool(b),
             PropValue::Text(t) => Arg::Text(t),
             PropValue::Swap(m) => Arg::Component(self.component(m).name),
+            // Never a parameter's value (`params`); its id, should one arrive.
+            PropValue::Image(id) => Arg::Text(id.0),
         }
     }
 

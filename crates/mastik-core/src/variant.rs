@@ -205,6 +205,9 @@ pub enum PropKind {
     /// **nameless** — the card lists it as *Shown from nested*, never by a name,
     /// so the naming rules pass it by.
     Nested,
+    /// The picture of their first visible image fill (layers with one only);
+    /// its fit and crop stay each layer's own.
+    Image,
 }
 
 /// A component property: a name, a kind, and the layers inside the owner it is
@@ -510,6 +513,16 @@ fn kind_fits(nodes: &FxHashMap<NodeId, Node>, kind: PropKind, bound: &Node) -> b
             .link
             .and_then(|l| nodes.get(&l))
             .is_some_and(|l| l.component),
+        PropKind::Image => bound.paint.image_fill().is_some(),
+    }
+}
+
+/// The picture `n`'s first visible image fill shows, and that fill's place.
+pub fn image_of(n: &Node) -> Option<(usize, &crate::ImageRef)> {
+    let i = n.paint.image_fill()?;
+    match n.paint.fills[i].brush.literal()? {
+        crate::Brush::Image(b) => Some((i, &b.image)),
+        _ => None,
     }
 }
 
@@ -2270,6 +2283,8 @@ pub enum PropValue {
     Text(String),
     /// The main a swap property's copy shows (§15 D983).
     Swap(NodeId),
+    /// The picture an image property's layers show.
+    Image(crate::ImageId),
 }
 
 /// The properties an instance rooted at `root` offers — its main's owner's (the
@@ -2325,6 +2340,7 @@ pub fn field_value(doc: &Document, id: NodeId, kind: PropKind) -> Option<PropVal
         PropKind::Swap => crate::component::main_of(doc, id).map(PropValue::Swap),
         // A showing drives no field.
         PropKind::Nested => None,
+        PropKind::Image => image_of(n).map(|(_, r)| PropValue::Image(r.id.clone())),
     }
 }
 
@@ -2416,6 +2432,22 @@ pub fn set_property(
                     };
                     ops.push(op);
                 }
+                // The picture alone: the fill's fit, crop and the rest of the
+                // list stay the copy's.
+                PropValue::Image(picture) => {
+                    let Some(n) = doc.get(c) else { continue };
+                    let Some((i, r)) = image_of(n) else { continue };
+                    if r.id == *picture {
+                        continue;
+                    }
+                    let mut fills = n.paint.fills.clone();
+                    if let crate::variable::BrushSource::Literal(crate::Brush::Image(b)) =
+                        &mut fills[i].brush
+                    {
+                        b.image.id = picture.clone();
+                    }
+                    ops.push(Operation::SetFills { id: c, fills });
+                }
             }
         }
     }
@@ -2452,6 +2484,9 @@ fn property_reset_ops(doc: &Document, c: NodeId, kind: PropKind) -> Vec<Operatio
             },
             PropKind::Swap => matches!(op, Operation::SetSwap { .. }).then_some(op),
             PropKind::Nested => None,
+            // The picture rides in the fill list, reset whole as the Fill row's
+            // own reset does.
+            PropKind::Image => matches!(op, Operation::SetFills { .. }).then_some(op),
         })
         .collect()
 }
@@ -3035,6 +3070,7 @@ pub fn rebind(
                 &match kind {
                     PropKind::Boolean => format!("Show {layer}"),
                     PropKind::Text => format!("{layer} text"),
+                    PropKind::Image => format!("{layer} picture"),
                     PropKind::Swap | PropKind::Nested => layer.to_string(),
                 },
             );
@@ -3046,7 +3082,9 @@ pub fn rebind(
                     bound: vec![node],
                     filter: match kind {
                         PropKind::Swap => filter.to_string(),
-                        PropKind::Boolean | PropKind::Text | PropKind::Nested => String::new(),
+                        PropKind::Boolean | PropKind::Text | PropKind::Nested | PropKind::Image => {
+                            String::new()
+                        }
                     },
                     preferred: Vec::new(),
                 },
@@ -3101,7 +3139,8 @@ pub fn set_property_detaching(
                 crate::build::detach_text_ops(doc, c, which)
             })
             .collect(),
-        PropValue::Swap(_) => Vec::new(),
+        // Neither a swap nor a picture has a binding to cut.
+        PropValue::Swap(_) | PropValue::Image(_) => Vec::new(),
     };
     ops.extend(set_property(doc, roots, p, value));
     ops
@@ -3134,7 +3173,7 @@ pub fn define(
             .and_then(|m| doc.get(m))
             .map(|m| crate::swap::suggested_filter(&m.name))
             .unwrap_or_default(),
-        PropKind::Boolean | PropKind::Text | PropKind::Nested => String::new(),
+        PropKind::Boolean | PropKind::Text | PropKind::Nested | PropKind::Image => String::new(),
     };
     let item = ids.mint_item();
     let mut props = o.props.clone();

@@ -20,7 +20,7 @@ mod inspector;
 pub(crate) mod layers;
 mod layout;
 mod list;
-pub(crate) use list::list_targets;
+pub(crate) use list::{list_targets, picture_words};
 pub(crate) mod paint;
 mod picker;
 pub(crate) mod prototype;

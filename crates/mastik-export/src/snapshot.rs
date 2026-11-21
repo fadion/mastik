@@ -1108,6 +1108,7 @@ fn properties(doc: &Document, root: NodeId) -> Vec<PropertySummary> {
                 PropKind::Boolean => "boolean",
                 PropKind::Text => "text",
                 PropKind::Swap => "swap",
+                PropKind::Image => "image",
                 PropKind::Nested => return None,
             };
             let (value, overridden) = mastik_core::variant::property_state(doc, root, p)?;
@@ -1118,6 +1119,7 @@ fn properties(doc: &Document, root: NodeId) -> Vec<PropertySummary> {
                     PropValue::Boolean(b) => serde_json::Value::Bool(b),
                     PropValue::Text(t) => serde_json::Value::String(t),
                     PropValue::Swap(main) => serde_json::Value::String(main.to_wire()),
+                    PropValue::Image(id) => serde_json::Value::String(id.0),
                 },
                 overridden,
             })

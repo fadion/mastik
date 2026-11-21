@@ -635,7 +635,9 @@ impl MastikApp {
             .iter()
             .map(|(target, _, _, col)| (target.clone(), col.clone()))
             .collect();
-        self.make_list_from_import(t.chart, &t.path, t.read.table.clone(), link, &fill);
+        // A browser drop's path is only its name: nothing beside it to read.
+        let dir = t.linkable.then(|| t.path.parent()).flatten();
+        self.make_list_from_import(t.chart, &t.path, t.read.table.clone(), link, dir, &fill);
     }
 
     /// Draw the open box and answer its keys and clicks: a modal with a clear
@@ -1257,7 +1259,8 @@ fn note_row(ui: &mut egui::Ui, note: &str) {
         });
 }
 
-/// The fill rows the box shows before they scroll, so the box keeps one height.
+/// The fill rows the box shows before they scroll: the box's height is set by
+/// its template and stays while it is open.
 const FILL_ROWS_SHOWN: usize = 6;
 
 /// *Make a list*'s Fill section: one labelled dropdown of `table`'s columns and
@@ -1275,7 +1278,7 @@ fn fill_section(ui: &mut egui::Ui, l: &mut ListImport, table: &chart::Table) {
             ui.label(ui::eyebrow(&head));
             ui.add_space(6.0);
             if l.rows.is_empty() {
-                ui::selection_note(ui, "Its component has no text, boolean or variant property");
+                ui::selection_note(ui, crate::list_data::NO_FILL_TARGETS);
                 return;
             }
             // A column the table no longer has (the header switched) fills nothing.

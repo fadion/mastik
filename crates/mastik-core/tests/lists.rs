@@ -123,6 +123,7 @@ fn data(ids: &mut IdSource, rows: &[(&str, &str)]) -> DataSet {
                 .collect(),
         },
         source: None,
+        pictures: Vec::new(),
     }
 }
 
@@ -353,6 +354,7 @@ fn a_variant_column_switches_each_row() {
             rows: vec![vec![due.clone()], vec![paid.clone()], vec!["Nope".into()]],
         },
         source: None,
+        pictures: Vec::new(),
     };
     let res = Resolved::rebuild(&doc);
     let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(data)).unwrap();
@@ -488,4 +490,142 @@ fn a_data_set_no_list_reads_is_removed() {
     history.undo(&mut doc).unwrap();
     assert_eq!(doc.data_sets().len(), 1, "undo brings it back");
     assert!(doc.get(l).unwrap().list().is_some());
+}
+
+/// A picture `n` (its bytes `[n]`) added to the document; answers its id.
+fn picture(doc: &mut Document, n: u8) -> mastik_core::ImageId {
+    let id = mastik_core::ImageId(format!("sha256:{n:064x}"));
+    doc.apply(&Transaction(vec![Operation::AddImage {
+        id: id.clone(),
+        entry: mastik_core::ImageEntry {
+            source: mastik_core::ImageSource::Embedded(vec![n].into()),
+            format: mastik_core::ImageFormat::Png,
+            width: 4,
+            height: 4,
+        },
+    }]))
+    .unwrap();
+    id
+}
+
+/// The picture each row of list `l` shows, the template first.
+fn pictures(doc: &Document, l: NodeId) -> Vec<mastik_core::ImageId> {
+    let copies = doc.get(l).unwrap().list().unwrap().copies.clone();
+    std::iter::once(list::template(doc, l).unwrap())
+        .chain(copies)
+        .map(|r| {
+            mastik_core::build::subtree_nodes(doc, &[r])
+                .into_iter()
+                .find_map(|id| {
+                    let (_, i) = mastik_core::variant::image_of(doc.get(id)?)?;
+                    Some(i.id.clone())
+                })
+                .unwrap()
+        })
+        .collect()
+}
+
+/// An image property drives the picture of its layer's image fill, keeping the
+/// fill's framing; a list's column fills it from a cell naming a picture's id
+/// or a cell the data set read a picture for, and a cell naming none leaves the
+/// template's picture and is reported.
+/// flip: `regenerate` skipping the `PropKind::Image` arm → fails at "by id".
+#[test]
+fn a_column_of_pictures_fills_an_image_property() {
+    let (mut doc, mut ids, page) = blank();
+    let (a, b, c) = (
+        picture(&mut doc, 1),
+        picture(&mut doc, 2),
+        picture(&mut doc, 3),
+    );
+    let frame = serde_json::to_value(NodeKind::Artboard {
+        size: Size::new(200.0, 40.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    })
+    .unwrap();
+    let rect = serde_json::to_value(NodeKind::Rect {
+        size: Size::new(20.0, 20.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    })
+    .unwrap();
+    let main = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame, "name": "Card" }),
+    )[0];
+    let thumb = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": main.to_wire(), "kind": rect }),
+    )[0];
+    let mut fill = mastik_core::Fill {
+        brush: mastik_core::BrushSource::Literal(mastik_core::image_brush(a.clone())),
+        visible: true,
+    };
+    if let mastik_core::BrushSource::Literal(mastik_core::Brush::Image(img)) = &mut fill.brush {
+        img.image.fit = mastik_core::ImageFit::Fit;
+    }
+    doc.apply(&Transaction(vec![Operation::SetFills {
+        id: thumb,
+        fills: vec![mastik_core::Keyed::new(ids.mint_item(), fill)],
+    }]))
+    .unwrap();
+    run(
+        &mut doc,
+        &mut ids,
+        "make_component",
+        json!({ "nodes": [main.to_wire()] }),
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "define_property",
+        json!({ "node": thumb.to_wire(), "kind": "image", "name": "Photo" }),
+    );
+    let inst = run(
+        &mut doc,
+        &mut ids,
+        "create_instance",
+        json!({ "main": main.to_wire(), "parent": page.to_wire(), "x": 400, "y": 0 }),
+    )[0];
+    let set = DataSet {
+        id: ids.mint_data_set(),
+        name: "cards.csv".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "photo".into(),
+            }],
+            rows: vec![
+                vec![b.0.clone()],
+                vec!["img/c.png".into()],
+                vec!["missing.png".into()],
+            ],
+        },
+        source: None,
+        pictures: vec![("img/c.png".into(), c.clone())],
+    };
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+
+    let shown = pictures(&doc, l);
+    assert_eq!(shown[0], b, "by id");
+    assert_eq!(shown[1], c, "by the data set's read");
+    assert_eq!(shown[2], a, "the template's own");
+    assert_eq!(
+        list::unmatched_pictures(&doc, l),
+        [("Photo".to_string(), vec!["missing.png".to_string()])]
+    );
+    let copy = doc.get(l).unwrap().list().unwrap().copies[0];
+    let framed = mastik_core::build::subtree_nodes(&doc, &[copy])
+        .into_iter()
+        .find_map(|id| mastik_core::variant::image_of(doc.get(id)?).map(|(_, r)| r.fit))
+        .unwrap();
+    assert_eq!(framed, mastik_core::ImageFit::Fit, "the framing kept");
 }

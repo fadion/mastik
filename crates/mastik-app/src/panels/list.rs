@@ -22,8 +22,27 @@ const ROWS: [(&str, &str); 3] = [
     ),
 ];
 
+/// A picture as a row names it: the name of the first layer showing it (a
+/// placed picture is named after its file), with its size; a picture no layer
+/// shows by its size alone.
+pub(crate) fn picture_words(doc: &mastik_core::Document, id: &mastik_core::ImageId) -> String {
+    let Some(entry) = doc.image(id) else {
+        return "Missing picture".into();
+    };
+    let size = format!("{} × {}", entry.width, entry.height);
+    let shown_by = doc.node_ids().find_map(|n| {
+        let node = doc.get(n)?;
+        let (_, r) = mastik_core::variant::image_of(node)?;
+        (r.id == *id && !node.name().is_empty()).then(|| node.name().to_string())
+    });
+    match shown_by {
+        Some(name) => format!("{name} \u{b7} {size}"),
+        None => size,
+    }
+}
+
 /// The properties of `template` a column can fill, in the order the List card
-/// and the import box show them: text and boolean, then the set's variant
+/// and the import box show them: text, boolean and image, then the set's variant
 /// properties, each with its name and the Properties card's glyph.
 pub(crate) fn list_targets(
     doc: &mastik_core::Document,
@@ -36,7 +55,8 @@ pub(crate) fn list_targets(
                 let glyph = match p.kind {
                     PropKind::Text => icon::TEXT_T,
                     PropKind::Boolean => icon::EYE,
-                    _ => return None,
+                    PropKind::Image => icon::IMAGE,
+                    PropKind::Swap | PropKind::Nested => return None,
                 };
                 Some((Target::Prop(p.id), p.name.clone(), glyph))
             })
@@ -88,6 +108,46 @@ impl MastikApp {
             id,
             list: Some(Box::new(next)),
         }]));
+    }
+
+    /// *List fill*: `next` written over list `id`, and, while its data set is
+    /// linked, the pictures its image columns name read beside the file in the
+    /// same step.
+    fn commit_list_fill(&mut self, id: NodeId, next: List) {
+        let doc = &self.session.doc;
+        let set = doc.data_set(next.data).cloned();
+        let columns = crate::list_data::picture_columns(doc, id, &next.fill);
+        let dir = set
+            .as_ref()
+            .and_then(|s| s.source.as_ref())
+            .map(|l| std::path::PathBuf::from(&l.path));
+        let read =
+            match (&set, &dir) {
+                (Some(s), Some(file)) if !columns.is_empty() => Some(
+                    crate::list_data::read_pictures(doc, file.parent(), &s.table, &columns),
+                ),
+                _ => None,
+            };
+        let Some((images, pairs)) = read.filter(|(_, p)| !p.is_empty()) else {
+            return self.list_commit(id, "List fill", next);
+        };
+        let Some(mut set) = set else { return };
+        for (cell, picture) in pairs {
+            if !set.pictures.iter().any(|(c, _)| *c == cell) {
+                set.pictures.push((cell, picture));
+            }
+        }
+        let mut ops = images;
+        ops.push(Operation::SetDataSet {
+            id: set.id,
+            set: Some(Box::new(set)),
+        });
+        ops.push(Operation::SetList {
+            id,
+            list: Some(Box::new(next)),
+        });
+        self.session.name_step("List fill", icon::TABLE);
+        self.commit_edit(Transaction(ops));
     }
 
     /// The data set's dropdown, its summary, its file and its limits.
@@ -321,6 +381,11 @@ impl MastikApp {
             })
             .unwrap_or_default();
         let unmatched = list::unmatched_variants(doc, id);
+        let no_picture = list::unmatched_pictures(doc, id);
+        let data_file = doc
+            .data_set(now.data)
+            .and_then(|d| d.source.as_ref())
+            .map(|l| file_name(&l.path));
         let title = if owner.is_empty() {
             "Fill".to_string()
         } else {
@@ -330,7 +395,7 @@ impl MastikApp {
             return;
         }
         if targets.is_empty() {
-            ui::selection_note(ui, "Its component has no text, boolean or variant property");
+            ui::selection_note(ui, crate::list_data::NO_FILL_TARGETS);
             return;
         }
         for (target, name) in targets {
@@ -371,6 +436,23 @@ impl MastikApp {
                 )
                 .on_hover_text(cells.join(", "));
             }
+            if matches!(target, Target::Prop(_))
+                && let Some((_, cells)) = no_picture.iter().find(|(p, _)| *p == name)
+            {
+                let tip = match &data_file {
+                    Some(f) => format!("{}: looked for next to {f}", cells.join(", ")),
+                    None => cells.join(", "),
+                };
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} not found",
+                        ui::count_as(cells.len(), "picture", "pictures")
+                    ))
+                    .size(ui::SMALL_PT)
+                    .color(color::warn()),
+                )
+                .on_hover_text(tip);
+            }
             if let Some(col) = pick.filter(|c| *c != now_col) {
                 let mut fill: Vec<list::Fill> = now
                     .fill
@@ -381,9 +463,8 @@ impl MastikApp {
                 if let Some(column) = col {
                     fill.push(list::Fill { target, column });
                 }
-                self.list_commit(
+                self.commit_list_fill(
                     id,
-                    "List fill",
                     List {
                         fill,
                         ..now.clone()
@@ -511,6 +592,7 @@ mod tests {
                 rows: vec![vec!["A".into()], vec!["B".into()], vec!["C".into()]],
             },
             source: None,
+            pictures: Vec::new(),
         };
         let (tx, l) = list::make(
             &app.session.doc,
@@ -574,6 +656,7 @@ mod tests {
                 modified: 0,
                 header: Some(true),
             }),
+            pictures: Vec::new(),
         };
         let id = set.id;
         let (tx, l) = list::make(
@@ -853,5 +936,36 @@ mod tests {
         assert_eq!(app.list_drop_target(on), Some(inst));
         let off = mastik_core::kurbo::Point::new(-9000.0, -9000.0);
         assert_eq!(app.list_drop_target(off), None);
+    }
+
+    /// A picture column's cells are read as paths beside the data file: a
+    /// relative path that reads as a picture is added once and paired with its
+    /// cell; an absolute path, one climbing out with `..`, and a missing file are
+    /// left out.
+    /// flip: `read_pictures` dropping its plain-path check → fails at "not climbed out".
+    #[test]
+    fn picture_cells_are_read_beside_the_data_file() {
+        let ctx = egui::Context::default();
+        let (app, _) = with_row(&ctx);
+        let root = std::env::temp_dir().join(format!("mastik-pictures-{}", std::process::id()));
+        let dir = root.join("data");
+        std::fs::create_dir_all(dir.join("img")).unwrap();
+        let png = crate::app::rgba_to_png(&[200; 16], (2, 2)).unwrap();
+        std::fs::write(dir.join("img").join("a.png"), &png).unwrap();
+        std::fs::write(root.join("out.png"), &png).unwrap();
+        let cells = ["img/a.png", "img/a.png", "../out.png", "nothing.png"];
+        let table = Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "photo".into(),
+            }],
+            rows: cells.iter().map(|c| vec![(*c).to_string()]).collect(),
+        };
+        let (ops, pairs) =
+            crate::list_data::read_pictures(&app.session.doc, Some(&dir), &table, &[ColumnId(0)]);
+        let _ = std::fs::remove_dir_all(&root);
+        let cells: Vec<&str> = pairs.iter().map(|(c, _)| c.as_str()).collect();
+        assert_eq!(cells, ["img/a.png"], "not climbed out");
+        assert_eq!(ops.len(), 1, "added once");
     }
 }
