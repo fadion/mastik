@@ -11,24 +11,6 @@ true.
 A release of its own. The prototype is built (`prototyping.md` points to each part); what
 remains is below.
 
-- **Lists: what the design board has that is not built** (`design/lists.md`):
-  - The import box's *Fill* section: a picked file makes the list at once, filled by name, and
-    the card changes the fill (no box today).
-  - The menu's flyout offering the document's data sets and *New table* (a one-row table
-    named after the template's properties), and editing a data set's table in the data window,
-    which today is a chart's only.
-  - Dropping a data file on an instance.
-  - A double-click on a copy selecting the template.
-  - The list's tag on the canvas (*Product list · 24 rows*) and a badge on its layers row.
-  - The player state card's *Opened rows* picker.
-  - An image property kind, so a column of pictures can fill a row.
-  - An empty table hiding the template in play, with a *No rows* tag on the canvas; today the
-    template shows its own values on both.
-  - *Relink…* relinking the data set itself: today it reads a new data set for this list only,
-    and the other lists over the old one keep its missing file.
-  - The placement rule held after every transaction, as `chart::check` holds a chart's: only
-    *Make a list* refuses an instance inside a main, so a list frame moved into a main or made
-    a component is not refused.
 - **One export dialog.** *Export prototype…* and *Export flow map…* are reached only from the
   palette, and a take only from the player bar's *Export the take as a video*. One card with an
   *HTML file* / *Video* / *Flow map* switch at its head, reached from the palette, the player

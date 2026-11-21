@@ -10,8 +10,8 @@ template, the list's description or its data set changes. Core: `mastik_core::li
 
 ### Data sets
 
-- **`DataSet { id, name, table, source }`**, in `Document::data_sets()` in order, looked up by
-  `DataSetId` (a node-id wire form, minted by `IdSource::mint_data_set`). The `table` is the
+- **`DataSet { id, name, table, source, pictures }`**, in `Document::data_sets()` in order,
+  looked up by `DataSetId` (a node-id wire form, minted by `IdSource::mint_data_set`). The `table` is the
   chart's `Table` (`charts.md`, *The description*) under the chart's limits
   (`list::validate_table`), and the name is at most 256 characters (`list::MAX_NAME_CHARS`).
 - **A data set is the document's, not a list's**: several lists may read one, and an edit to it
@@ -21,6 +21,8 @@ template, the list's description or its data set changes. Core: `mastik_core::li
   (`list::unread_data_sets`), so the dropdown never offers data nothing could pick again.
 - **`source: Option<DataLink>`** is the linked file, the chart's `DataLink` (path, the stat of the
   read, the header choice). The table is always the document's own copy.
+- **`pictures: Vec<(String, ImageId)>`** maps a cell's text to the picture the app read from it
+  (*Picture columns*, below); core reads no files, so the map is filled where the file is read.
 - **`SetDataSet { id, set }`** adds, replaces or (with `None`) removes one whole data set, refused
   when the set's id is not `id` or `DataSet::validate` refuses it (`OpError::BadList`).
 
@@ -34,7 +36,7 @@ template, the list's description or its data set changes. Core: `mastik_core::li
 - **`rows`** — `Rows::All` (every row, up to `MAX_DRAWN`), `Rows::First(n)`, or `Rows::Opened`:
   the one row opened in play (*Play*, below), row 1 in the document.
 - **`fill: Vec<Fill { target, column }>`** — which column fills which property.
-  `Target::Prop(ItemId)` names a text or boolean component property of the template's main;
+  `Target::Prop(ItemId)` names a text, boolean or image component property of the template's main;
   `Target::Variant(name)` a variant property of its set. Columns are named by `ColumnId`.
 - **`copies`** — the copies the last regeneration made, in row order; written only by
   `list::regenerate`.
@@ -43,19 +45,48 @@ template, the list's description or its data set changes. Core: `mastik_core::li
   its place are found by `list::row_of`; the list, place and data row a layer sits in by
   `list::row_at`, walking up.
 
+### Where a list may stand
+
+A list frame is never a main, a set or an instance, and never sits inside a main, a set, an
+instance, a chart, another list or the vault. `list::misplaced(nodes, vault)` lists the frames
+that break this, and `Document::apply` refuses a transaction leaving one with
+`OpError::ListPlacement(id)` (*A list can't be part of a component, an instance, a chart or
+another list — detach it first*), over the whole document as `chart::check` holds a chart's place
+(`charts.md`). The doors ask first: *Make a list* by `list::why_not` (*Doors*),
+and *Create component* dims on a layer that is or holds a list (`NotMain::List`, *A list can't be
+part of a component — detach it first*). The loader drops a misplaced list's description, keeping
+its copies as plain instances, rather than refusing the file, since earlier builds saved such files.
+
 ### What a column fills
 
 - **Columns fill component properties, not any layer's field**: a text property takes the cell,
   trimmed; a boolean takes `list::cell_bool` (true, yes, on, 1, y shown; false, no, off, 0, n or
-  empty hidden; anything else leaves the property as the template has it); a variant column
-  switches the copy to the variant whose value the cell names. Swap and nested properties are
-  not filled.
+  empty hidden; anything else leaves the property as the template has it); an image property
+  takes the picture the cell names (*Picture columns*); a variant column switches the copy to the
+  variant whose value the cell names. Swap and nested properties are not filled.
 - **A variant cell naming no value** of its property leaves that property where the template
   has it, as does a combination of values no variant of the set has. The card warns of such
   cells (`list::unmatched_variants`).
 - **By name** (`list::fill_by_name`): a column fills the property whose name matches its own,
-  ignoring case, spaces, dashes and underscores; text and boolean properties first, then the
-  set's variant properties.
+  ignoring case, spaces, dashes and underscores; text, boolean and image properties first, then
+  the set's variant properties.
+
+### Picture columns
+
+- **A cell names a picture by a path or by its id.** `DataSet::picture(doc, cell)` answers the
+  picture `pictures` maps the trimmed cell to, else the document's picture of that id. A document
+  picture has no name of its own, so there is nothing else to name it by; a web address is not
+  read.
+- **A cell naming nothing leaves the template's picture.** The List card warns under that fill
+  row (`list::unmatched_pictures`, *Fill*, below).
+- **The app reads the files** (`list_data::read_pictures`): only a plain relative path beside the
+  data file (no absolute path, no `..`), only in the rows a list can draw (`MAX_DRAWN`), each file
+  up to `tokens_import::MAX_READ`, decoded by `app::read_picture`. A cell already naming a
+  document picture's id is not read. Each new picture's `AddImage` lands in the same step as the
+  map. Reads happen on the import box's *Make list*, on *Update* and *Relink…* (which replace the
+  map), and when the card's *Fill* points an image property at a column while the set is linked.
+  A browser drop's file has no folder, so nothing is read for it.
+- **The reads run on the UI thread** at those moments, not on the chart import's worker.
 
 ## Regeneration and undo
 
@@ -65,7 +96,7 @@ template, the list's description or its data set changes. Core: `mastik_core::li
   1. the old copies deleted, and one capture of the template inserted after it per shown row
      past the first, the `SetList` naming them in the same step;
   2. each row (the template is row 1) switched to the variant its cells name;
-  3. each row's text and boolean properties set through `variant::set_property`.
+  3. each row's text, boolean and image properties set through `variant::set_property`.
 
   Each copy is the template's subtree copied whole, its overrides included; the cells then
   overwrite what they fill. It does nothing (`false`) when the frame is not a list or its data
@@ -101,23 +132,43 @@ template, the list's description or its data set changes. Core: `mastik_core::li
 
 ## Doors
 
-- **Make a list from data…** — on an instance's context menu (after *Detach instance*) and the
-  palette (*Needs an instance* without one), dimmed with `list::why_not`'s reason: the layer must
-  be an instance's root, not inside a main, set, instance, list or chart, and not in the vault.
-  It opens the file picker (CSV, TSV, JSON), reads the file on the chart import's worker
-  (`chart_import`'s `Then::List`), and `list::make` wraps the instance in a new frame at its place:
-  a flex column, 8 px row gap, aligned to the start, hugging its rows both ways, named *‹component
-  or set› list*. A new data set named for the file (`list::free_name` numbering a taken name),
-  linked to it, and the list over it with its fill by name land in one step, *Make list*; the
-  rows are made at the commit. The list is selected and the status line says *Made a list from
-  products.csv · 24 rows*.
+- **Make a list from data ▸** — a flyout on an instance's context menu (after *Detach instance*),
+  dimmed with `list::why_not`'s reason: the layer must be an instance's root, not inside a main,
+  set, instance, list or chart, and not in the vault. Its rows: one per data set
+  (`Item::MakeListFrom`, *products.csv · 24 rows*), then *From a file…* and *New table*. The
+  palette offers *Make a list from a file…* and *Make a list from a new table* (*Needs an
+  instance* without one), not the per-data-set rows.
+- **Every door ends in `list::make`**, which wraps the instance in a new frame at its place: a flex
+  column, 8 px row gap, aligned to the start, hugging its rows both ways, named *‹component or set›
+  list*. The list lands in one step, *Make list*; the rows are made at the commit. The list is
+  selected and the status line says *Made a list from products.csv · 24 rows*.
+  - **A data set** makes the list at once over that set, filled by name, with no box.
+  - **From a file…** opens the file picker (CSV, TSV, JSON), reads the file on the chart import's
+    worker (`Then::List`) and opens the import box (below).
+  - **New table** makes a data set of `list::seed_table(doc, template)`: one column per text,
+    boolean or image property, then per variant property, each named after it, and one row holding
+    the instance's own values (`true`/`false`, a picture's id, the variant value shown), so the
+    fill by name fills every property. It is named *Table 1* (`list::free_name`), unlinked; the
+    list is made over it and the data window opens on it.
+- **The import box** is the chart's (`chart_import.rs`; `charts.md`, *Import and the linked
+  file*), headed *Make a list*, with a *Fill · ‹component›* section after the preview: one
+  labelled dropdown per property the List card fills (three to a row, scrolling past six),
+  each starting on the column of its name (`fill_by_name`), *None* offered. The fill is held by
+  column name, so the header switch's re-read keeps it where the name survives. *Make list*
+  commits a new data set named for the file (`list::free_name` numbering a taken name), linked to
+  it, and the list with that fill, one step.
+- **Dropping a data file on an instance**: a single CSV, TSV or JSON file dragged over an instance
+  `list::why_not` takes rings it and labels *Make a list from products.csv*
+  (`draw_drop_indicator`); the drop opens the import box (`drop_chart_data` →
+  `list_drop_target`). Onto a chart it is still the chart's import box; elsewhere a CSV or TSV
+  makes a chart.
 - **Detach list** — the List card's foot, `Ctrl+E` over a selection of lists only
   (`flatten_selection`, after charts), a list frame's context menu (promoted from Structure) and
   the palette (*Select a list*). It drops the description and keeps the copies as plain
   instances, one step for every list, *Detach list*.
 - **The readers and the worker are the chart's** (`charts.md`, *Import and the linked file*): the
   same formats, limits, encoding guesses and refusals, a read landing through `Then::List`,
-  `Then::ListData` or `Then::DataSet`.
+  `Then::ListData` or `Then::DataSet { relink }`.
 
 ## The List card
 
@@ -129,38 +180,75 @@ step.
   and, after a separator, *From a file…*; picking a data set moves the list onto it, undo step
   *List data*: each fill keeps its column where the new table has a column of the same name, and
   a property left unfilled takes the column of its own name (`MastikApp::list_on`). *From a
-  file…* reads a new data set from a picked file and moves the list onto it in one step. Under
-  it, *N rows · N columns*; while linked, the source line (*Linked to products.csv*, *Changed on
-  disk* in the accent, *File not found* in the warning ink, the path its tooltip) with *Update*
-  while changed, *Relink…* while missing, and *Unlink*. *Showing 200 of N rows* in the warning
-  ink when `All` or `First` is cut at `MAX_DRAWN`. A data set the document lacks reads *Missing
-  data* with *Its data set is not in this document: pick one*.
+  file…* reads a new data set from a picked file and moves this list alone onto it in one step.
+  Under it, *N rows · N columns* and *Edit data…* (`ui::action_button`, the data window, as on
+  the Chart card); while linked, the source line (*Linked to products.csv*, *Changed on disk* in
+  the accent, *File not found* in the warning ink, the path its tooltip) with *Update* while
+  changed, *Relink…* while missing (tooltip *Pick the file again for the 3 lists reading ‹set›*),
+  and *Unlink*. *No rows: the template is hidden in play* in the warning ink over an empty table;
+  *Showing 200 of N rows* in the warning ink when `All` or `First` is cut at `MAX_DRAWN`. A data
+  set the document lacks reads *Missing data* with *Its data set is not in this document: pick
+  one*.
 - **Rows** (a `ui::fold_rule` section) — `ui::segmented` *All* / *First* / *Opened row*. *First*
   starts at 3 and shows a *Rows* count field (1 to 200); *Opened row* says *Shows the row opened
   in play. Row 1 here.* Undo step *List rows*.
-- **Fill · ‹component›** (a fold) — one labelled dropdown per text and boolean property, then per
-  variant property: *None* and the data set's columns. Under a variant row, *N values name no ‹X›
-  variant* in the warning ink, the cells its tooltip. With no such property, *Its component has
-  no text, boolean or variant property*. Undo step *List fill*.
+- **Fill · ‹component›** (a fold) — one labelled dropdown per text, boolean and image property,
+  then per variant property: *None* and the data set's columns. Under a variant row, *N values
+  name no ‹X› variant* in the warning ink, the cells its tooltip; under an image row, *3 pictures
+  not found*, the cells and *looked for next to products.csv* its tooltip. With no such property,
+  *Its component has no text, boolean or variant property*. Undo step *List fill*, which reads the
+  image column's pictures in the same step while the set is linked.
 - **Detach list** at the foot (`ui::action_button`), `Ctrl+E` in its tooltip.
 
 ### The linked file
 
 - **Update** reads the file again under the set's stored header choice and replaces the table,
-  undo step *Update list data*; every list over the set follows in the step. *Unlink* drops the
-  link, undo step *Unlink data file*. *Relink…* reads a picked file into a new data set and moves
-  this list onto it, as *From a file…* does.
+  undo step *Update list data*. **Relink…** (and the data window's *Import…*) reads a picked
+  file into the same data set (`Then::DataSet { relink: true }`): table and link replaced, name
+  kept, undo step *Relink list data*, status *Relinked products.csv for 3 lists · 26 rows*; on a
+  set never linked (*New table*) the step is *Link list data* and the status *Linked …*. To
+  point one list at another file, the Data dropdown's *From a file…* stays.
+- **Both regenerate every list over the set in the step**, each list's fills remapped onto the new
+  table by column name and a fill whose column name is gone dropped; the status line adds
+  *· 1 fill lost its column*. Both read the image columns' pictures again (*Picture columns*).
+  *Unlink* drops the link, undo step *Unlink data file*.
 - **Watching** is the chart's (`chart_import`'s watch takes the data sets' linked paths too): the
   toolbar pill *products.csv changed · Update list* (*Update 3 lists* when several read it, shared
   `chart_import::link_pill`) for the first changed set a list reads; a click updates it. A file's
   contents enter the document only on that click.
 
+### The data window over a data set
+
+The chart's data window (`chart_data.rs`; `charts.md`, *The data window*) opened over a data set,
+`ChartData.data` naming it. Opened by *Edit data…* on the List card, on a list frame's context
+menu and after *New table*.
+
+- **Head**: *List data*, its note the data set's name, then *· N lists* when several read it. A
+  double-click on the name renames the data set in place (`settings::card_head_renamable`), undo
+  step *Rename data*, a taken name numbered past (`list::free_name`).
+- **The grid is the chart's.** Each header shows in the accent the property its column fills on
+  the list the window was opened from (tooltip *Fills Title on this list*); the chart-only header
+  rows (*Use as category* / *Use as X*, *Show as series*) are not offered. *Import…* relinks the
+  data set (*The linked file*). A linked set's grid is read-only with *Edited in products.csv —
+  unlink to edit here*, as a chart's.
+- **Each edit is one step, *Edit list data***: a `SetDataSet`, a fill whose column is gone
+  dropped, and every list over the set regenerated.
+- **It follows the selection**: selecting another list alone moves it to that list's data set; it
+  closes when the data set is gone.
+
 ## On the canvas and in the layers tree
 
 - **A copy picks as its list.** `query::hit_test` answers a copy, or anything inside one, with the
   list frame (`list::copy_owner`); the template is a layer like any other, so editing it edits
-  every row.
-- **The layers tree lists the template and not the copies.**
+  every row. A double-click on a copy selects the template and enters the list frame
+  (`copy_template_at`, asked first in `double_click_pick`).
+- **The list's tag is a component set's tab** (`canvas_tags`, `frame_label`): card ground,
+  rounded top corners, without the set's resting outline, the `TABLE` glyph, the frame's name and
+  the rows it draws from `list_data::list_count` (*· 24 rows*, *200 of 1240 rows*, *Opened row*,
+  or *No rows* and *Missing data* in the warning ink). It shows while the list is selected, and
+  always while its table is empty, wherever the frame sits on the page.
+- **The layers tree lists the template and not the copies.** A list frame's row shows
+  `list_count`'s words as its badge, in place of the frame size.
 
 ## Play
 
@@ -170,17 +258,29 @@ step.
   makes lands on a detail screen already showing it. Nothing is written to the document. There is
   no *Open row* action; the tap is the act
   (`a_tapped_row_is_opened_on_the_detail_screen`).
+- **The player's state card starts with *Opened rows*** (`state_rows`): one row per data set an
+  *Opened row* list reads (`Player::opened_rows` → `mastik_play::OpenedRow`), its name and a
+  dropdown of its rows as *N · first cell* (up to 200 listed), the open one ticked. A pick is
+  `Input::OpenRow { data, row }`, which a take records, and opens the row as a tap does
+  (`Player::open_data_row`, which `open_row` calls).
+- **A list over an empty table draws no row in play.** `Player::hide_empty_templates`, run from
+  `prepare`, hides its template on the played copy and shows it again as the document has it
+  once a live edit gives the table rows. The canvas keeps the template, the one row to edit. The
+  exported page plays through `mastik-play` and does the same. A list whose data set is missing
+  keeps its rows.
 
 ## Save format
 
-`DocumentDto::data` (the data sets in order, skipped when none) and `NodeDto::list` (skipped when
-none; `fill` and `copies` skipped when empty, `opened` at 0), in v21 (`io.md`, the ladder). The
-loader refuses a data set id twice or a data set `DataSet::validate` refuses, and drops a list off
-a frame or with bad copies. A duplicated list's copies follow their new ids
+`DocumentDto::data` (the data sets in order, skipped when none; a set's `pictures` skipped when
+empty) and `NodeDto::list` (skipped when none; `fill` and `copies` skipped when empty, `opened` at
+0), in v21 (`io.md`, the ladder). `DataSet.pictures` and `PropKind::Image` are additive in v21,
+with no version bump. The loader refuses a data set id twice or a data set `DataSet::validate`
+refuses, and drops a list off a frame, with bad copies or standing where a list may not
+(*Where a list may stand*). A duplicated list's copies follow their new ids
 (`document::remap_subtree`); a copy not copied is dropped from `copies`.
 
 ## Limits
 
 A list draws at most 200 rows, the template included (`list::MAX_DRAWN`). A data set holds the
-chart table's limits: 10,000 rows, 64 columns, 256 characters a cell. An empty table deletes the copies and leaves the template showing its own values, on the canvas and
-in play.
+chart table's limits: 10,000 rows, 64 columns, 256 characters a cell. An empty table deletes the
+copies and leaves the template showing its own values on the canvas; play hides it (*Play*).

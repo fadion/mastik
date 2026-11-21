@@ -286,8 +286,8 @@ on — an instance still equal to the main's old value takes the new one, one wi
   push, so a selected swapped nested copy pushes its Swap or variant choice into its slot. A target
   outside it is skipped, so a swapped copy's content overrides inside an instance are not pushed (its
   swap is).
-- **Five families** (`push::Kind`), counted by `push::pushable`: properties (a field a boolean, text
-  or swap property drives, `variant::property_fields`), fields (every other override), local layers,
+- **Five families** (`push::Kind`), counted by `push::pushable`: properties (a field a boolean, text,
+  image or swap property drives, `variant::property_fields`), fields (every other override), local layers,
   order, removals. *Push all* is the first four in one transaction: the layers first, the order read
   on the document they leave so a pushed layer is ordered with its siblings, then the fields. A
   removal deletes the main's layer and is only ever pushed on its own.
@@ -411,7 +411,9 @@ state). Refused as `OpError::BadLink(NodeId, LinkRule)`:
 
 **The doors ask ahead, so nothing offers what the commit refuses**:
 
-- `component::why_not_main` → `NotMain::{Kind, Already, Inside, Instance, Holds, SetKind}`;
+- `component::why_not_main` → `NotMain::{Kind, Already, Inside, Instance, Holds, SetKind, List}`
+  (`List`: the layer is or holds a list frame, *A list can't be part of a component — detach it
+  first*);
   `can_be_main` is it with no reason. `why_not_wrap` answers for *Create component*'s wrap, where the
   members' parent must not be or sit in a main or instance.
 - `component::can_hold(doc, parent, moved)` — the half `build::can_parent` cannot see: false for a main
@@ -672,7 +674,10 @@ variant* is the verb that takes the next free combination; an instance's name is
   a pointer to the source, because a pointer breaks on a chain of copies and when the source is
   deleted. Never shown, never an override (`reset::state_ops` ignores it).
 - `Node::props: Vec<Keyed<Property>>` — component properties of a main or set:
-  `Property { name, kind: PropKind::{Boolean, Text, Swap, Nested}, bound: Vec<NodeId>, filter: String, preferred: Vec<NodeId> }`.
+  `Property { name, kind: PropKind::{Boolean, Text, Swap, Nested, Image}, bound: Vec<NodeId>, filter: String, preferred: Vec<NodeId> }`.
+  `PropKind::Image` drives the picture of each bound layer's first visible image fill
+  (`variant::image_of`), each layer keeping its fit, crop and other fills; its value is
+  `PropValue::Image(ImageId)`, and its reset is the fill list's (`SetFills`).
 - `Node::description: String` (`description()`) — what a main or set is for, in the user's words; empty
   is none. Written by `SetDescription { of: Described::Node(id), text }`, the one op a style's and a
   variable's description share (§5.3f). An instance reads its main's through the link, so a copy never
@@ -702,7 +707,7 @@ variant* is the verb that takes the next free combination; an instance's name is
 | `Values` | a main in a set fits it; values on anything else refused |
 | `PropertyOwner` | properties only on a main not in a set, or a set |
 | `PropertyName` | unique, non-empty, not a variant property's name (the nameless showing exempt; a second showing refused) |
-| `Binding` | a bound layer exists strictly inside the owner's main (for a set, inside a variant, never a variant's root); text for a text property; a nested instance for a swap or showing; bound once per field |
+| `Binding` | a bound layer exists strictly inside the owner's main (for a set, inside a variant, never a variant's root); text for a text property; a layer with an image fill for an image property; a nested instance for a swap or showing; bound once per field |
 | `States` | at most one property of a set holds ties; it ties only its own values, each state once |
 
 **`variant::settle`** — after `settle_links` and **before `propagate`** (load-bearing: a renamed value
@@ -758,7 +763,7 @@ copy's own copies survive:
 inside an outer instance (swaps via `swap::swap`); both rewrite through `variant::rewrite`.
 
 **A component property is a view over fields**: a boolean is its bound layers' visibility, a text
-property their content. Nothing stores its value on an instance; the default is the main's bound field;
+property their content, an image property their picture. Nothing stores its value on an instance; the default is the main's bound field;
 an overridden property is a bound field differing from its source; resetting it resets that field. So
 a switch carries properties with other overrides, and undo, preview and propagation need nothing new.
 
@@ -882,7 +887,10 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
 - **An instance's card** gains a dropdown per variant property (no dot for a root linked to a main; a
   dot on a nested copy, whose choice is a swap), switching via `variant::switch` — *Mixed* across a
   disagreeing selection, a missing combination greyed, disabled where any root fails `can_switch` —
-  then each component property (boolean as switch row, text as field) with its mark. The interaction
+  then each component property (boolean as switch row, text as field, image as a dropdown of the
+  document's pictures, each named by the first layer showing it with its size,
+  `panels::picture_words`, and *Replace…*, the file picker through `replace_image_action` on the
+  first copy's fill, keeping its framing) with its mark. The interaction
   state's label hovers *In code the browser sets <property>. Pick one here to draw it, and to force it
   in the export; <rest> leaves it to the browser.* Several
   instances get the rows when they share one owner. Label cut with `…` and a tooltip only when cut
@@ -893,13 +901,14 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
 - **A lone main or a set** gets a *Properties* card under the Component card: each property's kind
   glyph, name, ×, default and binding. A `+` in the header (`ui::HeadClicks::action_rect`,
   `MastikApp::panel_head`) opens a menu hung `ui::MENU_GAP` under the `+`'s painted box: *Boolean ·
-  visibility*, *Text · text content*, an *Instance swap* row per unbound nested instance (one dimmed
-  row saying why if none), and on a lone main *Variant · makes a set*. The card rests collapsed while
-  empty (`sync_paint_collapse`). Three groups split by hairlines: boolean and text; swaps (each with
-  its filter row); *Shown from nested* only when something is shown.
+  visibility*, *Text · text content*, *Image · picture* (`icon::IMAGE`), an *Instance swap* row per
+  unbound nested instance (one dimmed row saying why if none), and on a lone main *Variant · makes a
+  set*. The card rests collapsed while empty (`sync_paint_collapse`). Three groups split by
+  hairlines: boolean, text and image; swaps (each with its filter row); *Shown from nested* only
+  when something is shown. An image property's bound line reads *‹layer› · picture*.
 - **A layer inside a main** gets *Bind to a component property* rows in the identity card: a
-  *Visibility* dropdown and, for text, *Content* — *None*, each property of that kind, *New
-  property…*. A nested instance in a main gets the line under its instance card.
+  *Visibility* dropdown and, for text, *Content*, for a layer with an image fill, *Picture* —
+  *None*, each property of that kind, *New property…* (an image one named *‹layer› picture*). A nested instance in a main gets the line under its instance card.
 - **Menu**: `menu::Role::Set`; no *Create component* on a set or any selection holding a main or set
   (`menu::Context::holds_main`), dimmed with the commit's reason wherever it would refuse
   (`menu::create_refusal`); *Combine as variants* on two or more mains outside any set under one
@@ -913,8 +922,8 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
   `chrome_claims` keeps guides off it; `begin_select_drag` starts nothing on it), drawn after
   `draw_key_outline` (`draw_set_plus`).
 - **Layers**: the badge slot shows *N variants* on a collapsed set, `icon::PROPERTY_BOUND` on a layer bound
-  to a property of the owner above; priority mask → set count → bound → element tag → frame size /
-  subtract base. A variant row is
+  to a property of the owner above; priority mask → set count → bound → element tag → a list's rows
+  (`lists.md`) → frame size / subtract base. A variant row is
   named by its values and wears the filled hexagon.
 - Values are renamed, moved and deleted from a chip's popup, never edited in place or dragged;
   binding is from one line, not `{}` buttons on layers/Appearance/Type; defining is through the

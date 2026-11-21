@@ -105,7 +105,9 @@ otherwise the player returns over the canvas).
   *Stop recording*, *Export the take as a video* once a take exists, *Open in a window* / *Back
   over the canvas*, *Fullscreen*, and, fullscreen, *Stop playing*. Its commands are buttons, not
   chords: the editor has spent the chords they would want.
-- **The state card** heads with *Modes* when the document has a collection of two modes or more:
+- **The state card** heads with *Opened rows* when a list shows *Opened row*: one row per data
+  set such a list reads, a dropdown of its rows (`lists.md`, *Play*). Then *Modes* when the
+  document has a collection of two modes or more:
   one row per such collection, the document's then each kit's under the kit's eyebrow
   (`Player::modes`), a dropdown of its modes
   set on every page, dim with *This screen sets its own ‹Collection› mode* while the screen sets

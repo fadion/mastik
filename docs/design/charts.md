@@ -599,7 +599,9 @@ open, and selecting another chart alone moves it there, at its first cell
 `Escape` and when its chart is deleted. It is one card over the canvas's top among Find, Colour
 review, System health, batch rename, Clean up and Fill with content: opening it closes them, and opening any of
 them closes it. Leaving the document (a tab switch) closes it, the import box and a pending chart
-read, since they name this document's node ids.
+read, since they name this document's node ids. The same window opens over a list's data set
+(`lists.md`, *The data window over a data set*), as does the import box for *Make a list*
+(`lists.md`, *Doors*).
 
 - **Head**: `settings::card_head_noted` — *Chart data*, the chart's layer name as the note, the
   shared ✕. Under it the toolbar of `ui::action_button`s at `CONTROL_H`, each as wide as
