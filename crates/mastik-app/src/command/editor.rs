@@ -1749,8 +1749,13 @@ impl MastikApp {
     }
 
     /// The document script holding library script `name`: one already here
-    /// with its name and text, or else a copy put in, as one undo step.
-    pub(crate) fn copy_library_script(&mut self, name: &str) -> Option<ScriptId> {
+    /// with its name and text, or else a copy's id with the `AddScript` that
+    /// puts it in, uncommitted, so the caller makes it one step with its own
+    /// edit. The copy is marked as the person's own either way.
+    pub(crate) fn copy_library_script(
+        &mut self,
+        name: &str,
+    ) -> Option<(ScriptId, Option<Operation>)> {
         let source = match library::read(name) {
             Ok(s) => s,
             Err(e) => {
@@ -1758,16 +1763,25 @@ impl MastikApp {
                 return None;
             }
         };
-        let held = self
-            .session
-            .doc
-            .scripts()
+        let scripts = self.session.doc.scripts();
+        if let Some(s) = scripts
             .iter()
-            .find(|s| s.name == name && s.source == source);
-        match held {
-            Some(s) => Some(s.id),
-            None => self.add_document_script(name, source),
+            .find(|s| s.name == name && s.source == source)
+        {
+            return Some((s.id, None));
         }
+        let id = self.session.ids.mint_script();
+        let script = Script {
+            id,
+            name: mastik_core::script::free_name(scripts, name),
+            source,
+        };
+        let index = scripts.len();
+        // The person put this text here, so it needs no disclosure.
+        if let Some(key) = self.disclosure_key(&Which::Document(id)) {
+            self.prefs.mark_disclosed(&key, &script.source);
+        }
+        Some((id, Some(Operation::AddScript { script, index })))
     }
 
     /// Record a document script's source as the person's own once they write in
@@ -4245,10 +4259,11 @@ mod tests {
         dir
     }
 
-    /// A library script copied for a *Run script* lands in the document once:
-    /// asked again, the copy already there answers.
-    /// flip: `copy_library_script` not looking for a held copy → fails at
-    /// "the copy already there".
+    /// A library script copied for a *Run script* lands in the document with
+    /// the action naming it, one undo step for both; asked again, the copy
+    /// already there answers.
+    /// flip: `write_reactions` committing the held copy as a step of its own →
+    /// fails at "one undo takes back the copy and the action together".
     #[test]
     fn a_library_script_is_copied_in_once() {
         let dir = scratch_library("copy-in");
@@ -4257,18 +4272,40 @@ mod tests {
         let mut app = MastikApp::headless(&ctx);
         library::write("Shake", "print(1)").expect("fixture: written");
         assert_eq!(app.library_script_names(), ["Shake"]);
-        let id = app.copy_library_script("Shake").expect("copied");
+        let card = add_rect(&mut app);
+        let (id, add) = app.copy_library_script("Shake").expect("copied");
+        assert!(add.is_some(), "a copy to put in");
+        assert!(app.session.doc.scripts().is_empty(), "not yet committed");
+        // As the Run script popover hands it over with its edit.
+        app.proto.script_in = add;
+        let reactions = vec![mastik_core::Keyed::new(
+            app.session.ids.mint_item(),
+            mastik_core::prototype::Reaction {
+                trigger: mastik_core::prototype::Trigger::Click,
+                actions: vec![mastik_core::Keyed::new(
+                    app.session.ids.mint_item(),
+                    mastik_core::prototype::Action::RunScript { script: id },
+                )],
+            },
+        )];
+        app.write_reactions(card, reactions, "Change action", icon::FILE_CODE);
         let held = app.session.doc.script(id).expect("in the document");
         assert_eq!(
             (held.name.as_str(), held.source.as_str()),
             ("Shake", "print(1)")
         );
         assert_eq!(
-            app.copy_library_script("Shake"),
-            Some(id),
+            app.copy_library_script("Shake")
+                .map(|(s, a)| (s, a.is_none())),
+            Some((id, true)),
             "the copy already there"
         );
-        assert_eq!(app.session.doc.scripts().len(), 1);
+        assert!(app.session.undo(), "fixture: undone");
+        assert!(
+            app.session.doc.scripts().is_empty()
+                && app.session.doc.get(card).unwrap().reactions().is_empty(),
+            "one undo takes back the copy and the action together"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

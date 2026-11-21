@@ -69,6 +69,9 @@ pub(crate) struct ProtoState {
     /// ringed there, and on the canvas its connectors and scroll line are the
     /// layer's only ones drawn lit.
     pub block: Option<(NodeId, ItemId)>,
+    /// A library script's copy the popover's edit names, committed by the
+    /// next [`MastikApp::write_reactions`] in the same step as that edit.
+    pub script_in: Option<Operation>,
 }
 
 /// One of prototype mode's marks on the canvas that a drag moves.
@@ -2900,12 +2903,20 @@ impl MastikApp {
         label: &'static str,
         glyph: &'static str,
     ) {
+        let script_in = self.proto.script_in.take();
         if let Err(why) = mastik_core::prototype::check(&reactions) {
             self.session.info(format!("Not changed: {why}"));
             return;
         }
-        self.session.name_step(label, glyph);
-        self.commit_edit(Transaction(vec![Operation::SetReactions { id, reactions }]));
+        let mut ops: Vec<Operation> = script_in.into_iter().collect();
+        match ops.is_empty() {
+            true => self.session.name_step(label, glyph),
+            false => self
+                .session
+                .name_step("Copy script into document", icon::FILE_CODE),
+        }
+        ops.push(Operation::SetReactions { id, reactions });
+        self.commit_edit(Transaction(ops));
     }
 
     /// The *Interactions* card: one block per reaction, its trigger at its head
@@ -3050,8 +3061,10 @@ impl MastikApp {
             }]));
             return;
         }
-        if let Some((list, label, glyph)) = next {
-            self.write_reactions(id, list, label, glyph);
+        match next {
+            Some((list, label, glyph)) => self.write_reactions(id, list, label, glyph),
+            // A copy prepared this frame with no edit to carry it is dropped.
+            None => self.proto.script_in = None,
         }
     }
 
@@ -4550,9 +4563,10 @@ impl MastikApp {
                     ui.ctx().data_mut(|d| d.remove::<egui::Rect>(fly_at));
                 }
                 if let Some(name) = copy
-                    && let Some(s) = self.copy_library_script(&name)
+                    && let Some((s, add)) = self.copy_library_script(&name)
                     && s != *script
                 {
+                    self.proto.script_in = add;
                     pick = Some(s);
                 }
                 if let Some(s) = pick {
