@@ -41,6 +41,25 @@ pub(crate) struct ChartImport {
     /// The file's stat when `text` was read, which the link stores, so a change
     /// while the box is open still reads as changed.
     stat: Option<(u64, u64)>,
+    /// *Make a list*: the box makes a list around an instance in place of
+    /// replacing a chart's table, `chart` naming that instance.
+    list: Option<ListImport>,
+}
+
+/// The import box's *Fill* section, while it makes a list: which column fills
+/// each of the template's properties, by the column's name so a header switch
+/// that reads the table again keeps it.
+pub(crate) struct ListImport {
+    /// The component the template shows, for the section's head.
+    owner: String,
+    /// Each property in the List card's order: its target, name, glyph and the
+    /// column filling it.
+    rows: Vec<(
+        mastik_core::list::Target,
+        String,
+        &'static str,
+        Option<String>,
+    )>,
 }
 
 /// A chart data file being read and parsed on a worker, and what its answer
@@ -418,6 +437,54 @@ impl MastikApp {
             read: parsed.read,
             link: linkable,
             stat: parsed.stat,
+            list: None,
+        });
+    }
+
+    /// The import box for *Make a list* around `instance` from the file read as
+    /// `parsed`: each property starts on the column of its name.
+    pub(crate) fn open_list_import_box(
+        &mut self,
+        instance: NodeId,
+        path: PathBuf,
+        linkable: bool,
+        parsed: Parsed,
+    ) {
+        let Some(format) = path
+            .file_name()
+            .and_then(|n| table_io::Format::of_name(&n.to_string_lossy()))
+        else {
+            return;
+        };
+        let doc = &self.session.doc;
+        let owner = mastik_core::component::main_of(doc, instance)
+            .map(|m| mastik_core::variant::set_of(doc, m).unwrap_or(m))
+            .and_then(|m| doc.get(m))
+            .map(|m| m.name().to_string())
+            .unwrap_or_default();
+        let by_name = mastik_core::list::fill_by_name(doc, instance, &parsed.read.table);
+        let column = |target: &mastik_core::list::Target| {
+            let f = by_name.iter().find(|f| f.target == *target)?;
+            Some(parsed.read.table.column(f.column)?.name.clone())
+        };
+        let rows = crate::panels::list_targets(doc, instance)
+            .into_iter()
+            .map(|(target, name, glyph)| {
+                let col = column(&target);
+                (target, name, glyph, col)
+            })
+            .collect();
+        self.chart_import = Some(ChartImport {
+            chart: instance,
+            path,
+            linkable,
+            text: parsed.text,
+            format,
+            header: parsed.read.header,
+            read: parsed.read,
+            link: linkable,
+            stat: parsed.stat,
+            list: Some(ListImport { owner, rows }),
         });
     }
 
@@ -527,6 +594,50 @@ impl MastikApp {
         }]))
     }
 
+    /// The open box's Fill section as (property, column) pairs, for a test.
+    #[cfg(test)]
+    pub(crate) fn import_fill(&self) -> Option<Vec<(String, Option<String>)>> {
+        let l = self.chart_import.as_ref()?.list.as_ref()?;
+        Some(l.rows.iter().map(|r| (r.1.clone(), r.3.clone())).collect())
+    }
+
+    /// Set the open box's fill for `property` to `column`, then press *Make
+    /// list*, for a test.
+    #[cfg(test)]
+    pub(crate) fn press_make_list(&mut self, property: &str, column: Option<&str>) {
+        let Some(mut t) = self.chart_import.take() else {
+            return;
+        };
+        let Some(mut l) = t.list.take() else {
+            return;
+        };
+        for r in &mut l.rows {
+            if r.1 == property {
+                r.3 = column.map(str::to_string);
+            }
+        }
+        self.make_list_from_box(&t, &l);
+    }
+
+    /// The import box's *Make list*, from the box `t` and its Fill section `l`.
+    fn make_list_from_box(&mut self, t: &ChartImport, l: &ListImport) {
+        let link = (t.link && t.linkable).then(|| {
+            let (modified, size) = t.stat.unwrap_or_default();
+            DataLink {
+                path: t.path.to_string_lossy().into_owned(),
+                size,
+                modified,
+                header: Some(t.header),
+            }
+        });
+        let fill: Vec<(mastik_core::list::Target, Option<String>)> = l
+            .rows
+            .iter()
+            .map(|(target, _, _, col)| (target.clone(), col.clone()))
+            .collect();
+        self.make_list_from_import(t.chart, &t.path, t.read.table.clone(), link, &fill);
+    }
+
     /// Draw the open box and answer its keys and clicks: a modal with a clear
     /// backdrop, as the tokens review's.
     pub(crate) fn chart_import_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
@@ -547,7 +658,11 @@ impl MastikApp {
                     true => name,
                     false => format!("{name} \u{b7} {dirs}"),
                 };
-                if crate::settings::card_head_noted(ui, W, "Import chart data", Some(&place)) {
+                let title = match t.list {
+                    Some(_) => "Make a list",
+                    None => "Import chart data",
+                };
+                if crate::settings::card_head_noted(ui, W, title, Some(&place)) {
                     go = Some(false);
                 }
                 egui::Frame::NONE
@@ -573,10 +688,18 @@ impl MastikApp {
                     ui::card_rule(ui);
                     note_row(ui, &t.read.notes.join(" · "));
                 }
+                if let Some(l) = &mut t.list {
+                    ui::card_rule(ui);
+                    fill_section(ui, l, &t.read.table);
+                }
                 ui::card_rule(ui);
+                let primary = match t.list {
+                    Some(_) => "Make list",
+                    None => "Replace data",
+                };
                 let buttons = [
                     ("Cancel", FieldButton::Off),
-                    ("Replace data", FieldButton::Primary),
+                    (primary, FieldButton::Primary),
                 ];
                 let (linkable, link) = (t.linkable, &mut t.link);
                 let lead = |ui: &mut egui::Ui, row: egui::Rect| {
@@ -605,6 +728,9 @@ impl MastikApp {
             // The box's `Enter` is spent here, not read again by the data
             // window drawn after it this frame.
             ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            if let Some(l) = t.list.take() {
+                return self.make_list_from_box(&t, &l);
+            }
             let link = (t.link && t.linkable).then(|| {
                 let (modified, size) = t.stat.unwrap_or_default();
                 DataLink {
@@ -902,9 +1028,23 @@ impl MastikApp {
         });
     }
 
+    /// The instance a data file dropped at `p` would make a list of: the
+    /// topmost layer there, when it is or sits in an instance `list::why_not`
+    /// takes.
+    pub(crate) fn list_drop_target(&self, p: mastik_core::kurbo::Point) -> Option<NodeId> {
+        let doc = &self.session.doc;
+        let top = *mastik_core::hit_test(&self.session.resolved, doc, self.session.page, p, 0.0)
+            .first()?;
+        let root = mastik_core::component::instance_root(doc, top)?;
+        mastik_core::list::why_not(doc, root)
+            .is_none()
+            .then_some(root)
+    }
+
     /// A lone table file dropped on the window: onto a chart it opens the
-    /// import box for that chart; onto bare canvas a `.csv` or `.tsv` makes a
-    /// chart there from the file. Answers whether it took the drop.
+    /// import box for that chart; onto an instance, *Make a list*'s box; onto
+    /// bare canvas a `.csv` or `.tsv` makes a chart there from the file.
+    /// Answers whether it took the drop.
     pub(crate) fn drop_chart_data(
         &mut self,
         file: &egui::DroppedFile,
@@ -931,6 +1071,31 @@ impl MastikApp {
             })
         });
         let path = file.path.clone().unwrap_or_else(|| PathBuf::from(name));
+        // Onto an instance that can be a list's template, *Make a list*'s box.
+        if target.is_none()
+            && let Some(instance) = at.and_then(|p| self.list_drop_target(p))
+        {
+            let bytes = file.bytes.as_ref().map(|b| b.to_vec());
+            if bytes
+                .as_ref()
+                .is_some_and(|b| b.len() as u64 > crate::tokens_import::MAX_READ)
+            {
+                let max = crate::tokens_import::MAX_READ;
+                self.session.fail(format!(
+                    "Cannot import {name}: larger than {} MB",
+                    max / (1024 * 1024)
+                ));
+                return true;
+            }
+            let bytes = if file.path.is_some() { None } else { bytes };
+            self.session.selection.set_one(instance);
+            self.read_list_file(path, bytes, |path, linkable| Then::List {
+                instance,
+                path,
+                linkable,
+            });
+            return true;
+        }
         if target.is_none() && format == table_io::Format::Json {
             return false;
         }
@@ -1089,6 +1254,89 @@ fn note_row(ui: &mut egui::Ui, note: &str) {
                     .wrap(),
                 );
             });
+        });
+}
+
+/// The fill rows the box shows before they scroll, so the box keeps one height.
+const FILL_ROWS_SHOWN: usize = 6;
+
+/// *Make a list*'s Fill section: one labelled dropdown of `table`'s columns and
+/// *None* per property of the template, three to a row, glyphed as the
+/// Properties card glyphs them.
+fn fill_section(ui: &mut egui::Ui, l: &mut ListImport, table: &chart::Table) {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(PAD as i8, 10))
+        .show(ui, |ui| {
+            ui.set_width(W - 2.0 * PAD);
+            let head = match l.owner.is_empty() {
+                true => "Fill".to_string(),
+                false => format!("Fill \u{b7} {}", l.owner),
+            };
+            ui.label(ui::eyebrow(&head));
+            ui.add_space(6.0);
+            if l.rows.is_empty() {
+                ui::selection_note(ui, "Its component has no text, boolean or variant property");
+                return;
+            }
+            // A column the table no longer has (the header switched) fills nothing.
+            for (_, _, _, col) in &mut l.rows {
+                if col
+                    .as_ref()
+                    .is_some_and(|c| !table.columns.iter().any(|x| x.name == *c))
+                {
+                    *col = None;
+                }
+            }
+            let gap = ui::CARD_COL_GAP;
+            let cell = ((W - 2.0 * PAD) - 2.0 * gap) / 3.0;
+            let rows_h = ui::CONTROL_H + 18.0;
+            let shown = l.rows.len().div_ceil(3).min(FILL_ROWS_SHOWN.div_ceil(3));
+            egui::ScrollArea::vertical()
+                .max_height(shown as f32 * (rows_h + 8.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for chunk in l.rows.chunks_mut(3) {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = gap;
+                            for (target, name, glyph, col) in chunk {
+                                ui.allocate_ui(egui::vec2(cell, rows_h), |ui| {
+                                    ui.set_width(cell);
+                                    ui::labelled(ui, name, |ui| {
+                                        let shown = col.clone().unwrap_or_else(|| "None".into());
+                                        ui::combo_height(ui);
+                                        egui::ComboBox::from_id_salt((
+                                            "list-import-fill",
+                                            &*target,
+                                        ))
+                                        .icon(ui::combo_chevron)
+                                        .width(cell)
+                                        .selected_text(ui::glyph_and_text(glyph, &shown))
+                                        .show_ui(
+                                            ui,
+                                            |ui| {
+                                                ui::menu_rows(ui);
+                                                if ui
+                                                    .selectable_label(col.is_none(), "None")
+                                                    .clicked()
+                                                {
+                                                    *col = None;
+                                                }
+                                                for c in &table.columns {
+                                                    let on =
+                                                        col.as_deref() == Some(c.name.as_str());
+                                                    if ui.selectable_label(on, &c.name).clicked() {
+                                                        *col = Some(c.name.clone());
+                                                    }
+                                                }
+                                            },
+                                        );
+                                    });
+                                });
+                            }
+                        });
+                        ui.add_space(8.0);
+                    }
+                });
         });
 }
 

@@ -11936,6 +11936,40 @@ impl MastikApp {
         // One gate for outline and words, `drop_images_at`'s own: a single picture on
         // the shape. An SVG or a PDF makes layers instead.
         let at = self.drop_point(ui.ctx());
+        // One data file over an instance a list can be made of: `drop_chart_data`'s
+        // own question, ringed and worded as the list it makes.
+        let data_file = ui.input(|i| {
+            let f = i.raw.hovered_files.first()?;
+            let name = f.path.as_ref()?.file_name()?.to_string_lossy().into_owned();
+            mastik_core::chart::table_io::Format::of_name(&name).map(|_| name)
+        });
+        if files == 1
+            && let Some(name) = data_file
+            && let Some(instance) = at.and_then(|p| self.list_drop_target(p))
+        {
+            let stroke = egui::Stroke::new(3.0, color::SELECT);
+            self.stroke_outlines(
+                painter,
+                instance,
+                rect,
+                ppp,
+                stroke,
+                self.outline_view(stroke),
+            );
+            if let Some(c) = self
+                .session
+                .preview_world_bounds(instance)
+                .map(|b| b.center())
+            {
+                paint_drop_label(
+                    painter,
+                    self.canvas_inner(rect),
+                    self.to_screen(c, rect, ppp),
+                    &format!("Make a list from {name}"),
+                );
+            }
+            return;
+        }
         let replacing = at
             .filter(|_| files == 1 && svgs + pdfs == 0)
             .and_then(|p| self.image_drop_target(Some(p)));

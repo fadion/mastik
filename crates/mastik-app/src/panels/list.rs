@@ -22,6 +22,33 @@ const ROWS: [(&str, &str); 3] = [
     ),
 ];
 
+/// The properties of `template` a column can fill, in the order the List card
+/// and the import box show them: text and boolean, then the set's variant
+/// properties, each with its name and the Properties card's glyph.
+pub(crate) fn list_targets(
+    doc: &mastik_core::Document,
+    template: NodeId,
+) -> Vec<(Target, String, &'static str)> {
+    let mut out: Vec<(Target, String, &'static str)> =
+        mastik_core::variant::instance_properties(doc, template)
+            .into_iter()
+            .filter_map(|p| {
+                let glyph = match p.kind {
+                    PropKind::Text => icon::TEXT_T,
+                    PropKind::Boolean => icon::EYE,
+                    _ => return None,
+                };
+                Some((Target::Prop(p.id), p.name.clone(), glyph))
+            })
+            .collect();
+    out.extend(
+        list::variant_props(doc, template)
+            .into_iter()
+            .map(|p| (Target::Variant(p.name.clone()), p.name, icon::VARIANT_SET)),
+    );
+    out
+}
+
 impl MastikApp {
     /// The List card over list frame `id`; nothing for any other layer.
     pub(crate) fn inspector_list(&mut self, ui: &mut egui::Ui, id: NodeId) {
@@ -279,17 +306,10 @@ impl MastikApp {
             .and_then(|m| doc.get(m))
             .map(|m| m.name().to_string())
             .unwrap_or_default();
-        let mut targets: Vec<(Target, String)> =
-            mastik_core::variant::instance_properties(doc, tpl)
-                .into_iter()
-                .filter(|p| matches!(p.kind, PropKind::Text | PropKind::Boolean))
-                .map(|p| (Target::Prop(p.id), p.name.clone()))
-                .collect();
-        targets.extend(
-            list::variant_props(doc, tpl)
-                .into_iter()
-                .map(|p| (Target::Variant(p.name.clone()), p.name)),
-        );
+        let targets: Vec<(Target, String)> = list_targets(doc, tpl)
+            .into_iter()
+            .map(|(t, name, _)| (t, name))
+            .collect();
         let columns: Vec<(ColumnId, String)> = doc
             .data_set(now.data)
             .map(|d| {
@@ -770,5 +790,68 @@ mod tests {
             1,
             "one data set, two lists"
         );
+    }
+
+    /// A picked file opens *Make a list*'s box with each property on the column
+    /// of its name; the fill chosen there is the list's, and the file is linked.
+    /// flip: `commit_make_list_filled` ignoring its `fill` → fails at "the box's fill".
+    #[test]
+    fn the_import_box_fills_the_list_as_chosen() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let dir = std::env::temp_dir().join(format!("mastik-list-box-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("products.csv");
+        std::fs::write(&path, "title,label\nA,x\nB,y\n").unwrap();
+        app.read_list_file(path.clone(), None, |path, linkable| {
+            crate::chart_import::Then::List {
+                instance: inst,
+                path,
+                linkable,
+            }
+        });
+        app.settle_chart_read();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            app.import_fill(),
+            Some(vec![("Title".to_string(), Some("title".to_string()))]),
+            "on the column of its name"
+        );
+        assert!(
+            mastik_core::list::lists(&app.session.doc).is_empty(),
+            "nothing yet"
+        );
+        for _ in 0..3 {
+            pass(&ctx, &mut app);
+        }
+        assert!(app.import_fill().is_some(), "the box draws and stays");
+
+        app.press_make_list("Title", Some("label"));
+        let doc = &app.session.doc;
+        let l = mastik_core::list::lists(doc)[0];
+        let x = doc.get(l).unwrap().list().unwrap();
+        let set = doc.data_set(x.data).unwrap();
+        let label = set
+            .table
+            .columns
+            .iter()
+            .find(|c| c.name == "label")
+            .unwrap()
+            .id;
+        assert_eq!(x.fill[0].column, label, "the box's fill");
+        assert!(set.source.is_some(), "linked");
+        assert_eq!(x.copies.len(), 1);
+    }
+
+    /// A data file dropped on an instance asks for *Make a list*'s box, and the
+    /// instance is the drop's target; dropped on bare canvas it is not.
+    #[test]
+    fn a_data_file_dropped_on_an_instance_makes_a_list() {
+        let ctx = egui::Context::default();
+        let (app, inst) = with_row(&ctx);
+        let on = app.session.resolved.world_bounds(inst).unwrap().center();
+        assert_eq!(app.list_drop_target(on), Some(inst));
+        let off = mastik_core::kurbo::Point::new(-9000.0, -9000.0);
+        assert_eq!(app.list_drop_target(off), None);
     }
 }

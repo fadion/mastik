@@ -176,14 +176,15 @@ impl MastikApp {
             }
         };
         match then {
+            // The import box, its Fill section on the columns of their names.
             Then::List {
                 instance,
                 path,
                 linkable,
             } => {
-                let set = self.data_set_from(&path, linkable, &parsed);
-                let name = list::name_for_path(&path);
-                self.commit_make_list(instance, list::Source::New(set), Some(name));
+                if list::why_not(&self.session.doc, instance).is_none() {
+                    self.open_list_import_box(instance, path, linkable, parsed);
+                }
             }
             Then::ListData {
                 list: id,
@@ -212,6 +213,38 @@ impl MastikApp {
         }
     }
 
+    /// The import box's *Make list*: a data set of `table` named after `path`,
+    /// linked by `link`, and the list around `instance` over it, filled as
+    /// `fill` says (target and column name), one step.
+    pub(crate) fn make_list_from_import(
+        &mut self,
+        instance: NodeId,
+        path: &Path,
+        table: mastik_core::chart::Table,
+        link: Option<DataLink>,
+        fill: &[(list::Target, Option<String>)],
+    ) {
+        let fill: Vec<list::Fill> = fill
+            .iter()
+            .filter_map(|(target, col)| {
+                let col = col.as_ref()?;
+                let column = table.columns.iter().find(|c| c.name == *col)?.id;
+                Some(list::Fill {
+                    target: target.clone(),
+                    column,
+                })
+            })
+            .collect();
+        let name = list::name_for_path(path);
+        let set = DataSet {
+            id: self.session.ids.mint_data_set(),
+            name: list::free_name(&self.session.doc, &name),
+            table,
+            source: link,
+        };
+        self.commit_make_list_filled(instance, list::Source::New(set), Some(name), Some(fill));
+    }
+
     /// Commit a list made around `instance` over `source`, undo step *Make
     /// list*; selects it and says what it made from `from`, a data set's name.
     /// Answers the list frame once committed.
@@ -221,6 +254,17 @@ impl MastikApp {
         source: list::Source,
         from: Option<String>,
     ) -> Option<NodeId> {
+        self.commit_make_list_filled(instance, source, from, None)
+    }
+
+    /// [`Self::commit_make_list`] with `fill` in place of the fill by name.
+    fn commit_make_list_filled(
+        &mut self,
+        instance: NodeId,
+        source: list::Source,
+        from: Option<String>,
+        fill: Option<Vec<list::Fill>>,
+    ) -> Option<NodeId> {
         let made = list::make(
             &self.session.doc,
             &self.session.resolved,
@@ -228,6 +272,16 @@ impl MastikApp {
             instance,
             source,
         );
+        let made = made.map(|(mut tx, frame)| {
+            if let Some(fill) = fill {
+                for op in &mut tx.0 {
+                    if let Operation::SetList { list: Some(l), .. } = op {
+                        l.fill = fill.clone();
+                    }
+                }
+            }
+            (tx, frame)
+        });
         let (tx, frame) = match made {
             Ok(m) => m,
             Err(why) => {
