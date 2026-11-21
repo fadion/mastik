@@ -448,6 +448,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 #inspect pre { margin: 0; padding: 8px; border-radius: 5px; background: #1b1b1d;
   font: 12px ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 #inspect p { margin: 0; color: #9a9aa0; }
+#inspect p.note { color: #e6e6e6; white-space: pre-wrap; overflow-wrap: anywhere; }
 #inspect a { display: block; padding: 4px 0; color: #63b3f5; }
 #inspect button { height: 22px; padding: 0 8px; border: 0; border-radius: 5px;
   background: #333336; color: #e6e6e6; font: inherit; font-size: 12px; cursor: pointer; }
@@ -620,8 +621,8 @@ const BOOT: &str = r##"(async () => {
         c.fillText(label, mx, my);
       }
     }
-    // The panel for the picked layer: its name, its CSS as Copy as CSS writes
-    // it, and the files its export settings write.
+    // The panel for the picked layer: its name, its annotation, its CSS as Copy
+    // as CSS writes it, and the files its export settings write.
     function showPanel() {
       panel.replaceChildren();
       const el = (tag, text) => {
@@ -635,6 +636,11 @@ const BOOT: &str = r##"(async () => {
         return;
       }
       el("h2", player.layer_name(picked));
+      const note = player.layer_note(picked);
+      if (note) {
+        el("h3", "Annotation");
+        el("p", note).className = "note";
+      }
       const css = parts.css.get(picked);
       const head = el("h3", "CSS");
       if (css) {

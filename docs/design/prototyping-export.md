@@ -191,7 +191,8 @@ canvas, the drawing and the page around them.
   (`Player::layer_at`); the picked layer is outlined, the hovered one dashed, and the distances
   between them — or to the picked layer's parent while nothing else is hovered — are drawn as
   the canvas's `Alt` measure quotes them (`mastik_core::measure::between`, its labels and
-  colours). The panel shows the layer's name, its CSS as *Copy as CSS* writes it with a *Copy*
+  colours). The panel shows the layer's name, its annotation (`Node::note`, under an
+  *Annotation* head, its line breaks kept; none when it has none), its CSS as *Copy as CSS* writes it with a *Copy*
   button, and the files its export settings write, to download. The page has no exporter, so
   both are made when the file is: `prototype::inspect_css` for every layer (a layer whose CSS
   is over 32 KB is left out, and the panel says to copy it from Mastik) and

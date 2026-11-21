@@ -409,6 +409,7 @@ fn the_page_calls_only_what_the_player_exports() {
         "restart",
         "layer_at",
         "layer_box",
+        "layer_note",
         "measures",
     ] {
         assert!(called.contains(&owed), "the page calls {owed}");
@@ -470,6 +471,41 @@ fn inspect_carries_each_layers_css_and_export_files() {
         .expect("the button's PNG");
     assert_eq!(file.path, "Button.png");
     assert_eq!(&file.bytes[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+/// A layer's annotation reaches the page in the packed document, where inspect
+/// mode reads it (`Player::layer_note`).
+///
+/// flip: `prune` clearing every layer's note → fails at "the button's note".
+#[test]
+fn the_packed_document_carries_a_layers_annotation() {
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let button = f
+        .doc
+        .node_ids()
+        .find(|id| f.doc.get(*id).is_some_and(|n| n.name() == "Button"))
+        .expect("the button");
+    f.doc
+        .apply(&Transaction(vec![Operation::SetNote {
+            id: button,
+            text: "Primary action.\nDisabled until the form is valid.".into(),
+        }]))
+        .expect("the note");
+    let parts = Parts::of(
+        &f.doc,
+        Player {
+            wasm: WASM,
+            glue: GLUE,
+        },
+    )
+    .expect("parts");
+    let packed = mastik_core::io::load(&parts.document).expect("the packed document");
+    assert_eq!(
+        packed.get(button).map(|n| n.note()),
+        Some("Primary action.\nDisabled until the form is valid."),
+        "the button's note"
+    );
 }
 
 /// The size estimate is never under the file written and not far over it: the

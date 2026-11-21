@@ -417,6 +417,14 @@ impl Player {
             .unwrap_or_default()
     }
 
+    /// `id`'s annotation; empty for none.
+    pub fn layer_note(&self, id: &str) -> String {
+        NodeId::from_wire(id)
+            .and_then(|id| self.play.document().get(id))
+            .map(|n| n.note().to_string())
+            .unwrap_or_default()
+    }
+
     /// The distances between `a` and `b` as the canvas's `Alt` measure quotes
     /// them (`mastik_core::measure::between`), with `b` empty meaning `a`'s
     /// parent. Each is `"h"` or `"v"` (the line's direction), where it sits,
