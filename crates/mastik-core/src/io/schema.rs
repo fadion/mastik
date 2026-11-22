@@ -86,6 +86,10 @@ pub(crate) struct DocumentDto {
     /// document linked to none. Additive, so no version bump is owed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_link: Option<crate::meta::TokensLink>,
+    /// The document was last left in prototype mode, absent when it was not.
+    /// Additive, so no version bump is owed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prototype_mode: bool,
     /// What a kit last published (§5.3e, §15 D1012), absent in every document that
     /// has not. Last, for `images`' diff reason: it can hold a copy of every main.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -947,6 +951,7 @@ impl DocumentDto {
             images,
             meta: doc.meta().clone(),
             tokens_link: doc.tokens_link().cloned(),
+            prototype_mode: doc.prototype_mode(),
             published: doc.published().map(|p| PublishedDto {
                 groups: p
                     .groups()
@@ -1171,6 +1176,7 @@ impl DocumentDto {
             published,
         );
         doc.set_tokens_link(self.tokens_link);
+        doc.set_prototype_mode(self.prototype_mode);
         Ok(doc)
     }
 }

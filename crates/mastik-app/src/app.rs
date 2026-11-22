@@ -935,10 +935,6 @@ pub struct MastikApp {
     /// Keyed by node too, so a selection change cannot leave it editing another layer's
     /// effect. At most one.
     pub(crate) effect_menu: Option<(NodeId, usize)>,
-    /// Prototype mode is on (`panels::prototype`): the inspector shows its cards in
-    /// place of the Design cards. Toggled by the top bar's button and the palette.
-    /// Per window, never saved: the mode is how the document is looked at, not part of it.
-    pub(crate) prototype_mode: bool,
     /// Prototype mode's open popover, typed fields and key capture.
     pub(crate) proto: crate::panels::ProtoState,
     /// Which tab of image editing's card is showing; a preference kept across entries.
@@ -2120,7 +2116,6 @@ impl MastikApp {
             synced_selection: Default::default(),
             stroke_menu: None,
             effect_menu: None,
-            prototype_mode: false,
             proto: Default::default(),
             image_tab: ImageCard::default(),
             crop_aspect: Default::default(),
@@ -8407,7 +8402,7 @@ impl MastikApp {
                         }
                         // *Prototype mode*, left of Play: it swaps the inspector's
                         // cards and draws the connectors, so it sits over both.
-                        let proto = self.prototype_mode;
+                        let proto = self.prototype_mode();
                         if icon_button(ui, icon::INTERACTION, 26.0, 16.0, proto, true)
                             .on_hover_text(match proto {
                                 true => "Leave prototype mode",
@@ -8991,7 +8986,7 @@ impl MastikApp {
             ViewSwitch::Lasso => self.lasso,
             ViewSwitch::Private => self.prefs.private,
             ViewSwitch::AlignVisual => self.align_visual,
-            ViewSwitch::PrototypeMode => self.prototype_mode,
+            ViewSwitch::PrototypeMode => self.prototype_mode(),
         }
     }
 

@@ -557,7 +557,8 @@ pub enum ViewSwitch {
     SizeBadge,
     /// Prototype mode (`MastikApp::prototype_mode`): the inspector's Prototype cards
     /// and the canvas's connectors. In the palette beside the top bar's own button.
-    /// Unbound, since prototyping adds no chord, and on no menu. Never saved.
+    /// Unbound, since prototyping adds no chord, and on no menu. Kept with the
+    /// document rather than the prefs.
     PrototypeMode,
 }
 

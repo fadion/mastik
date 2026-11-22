@@ -760,7 +760,7 @@ fn with_an_interaction(ctx: &egui::Context) -> (MastikApp, crate::panels::protot
         }]))
         .expect("an interaction");
     app.session.selection.set_one(child);
-    app.prototype_mode = true;
+    app.session.doc.set_prototype_mode(true);
     let at = crate::panels::prototype::ActionAt {
         node: child,
         reaction: r,
@@ -1293,7 +1293,7 @@ fn sweep_on(theme: Theme) {
             )],
         }]))
         .expect("the frame's reaction");
-    app.prototype_mode = true;
+    app.session.doc.set_prototype_mode(true);
     let found = inspector(&ctx, &mut app);
     check("prototype mode, a frame", app, found);
     let (mut app, _) = with_an_interaction(&ctx);

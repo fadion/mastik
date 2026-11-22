@@ -979,7 +979,7 @@ impl MastikApp {
         // Before any card is drawn.
         self.gather_card_overrides();
         ui::set_push_refusal(ui.ctx(), self.selection_push_refusal());
-        if self.prototype_mode {
+        if self.prototype_mode() {
             self.prototype_inspector(ui);
             return;
         }

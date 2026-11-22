@@ -7,10 +7,11 @@ The non-negotiable rules of the Mastik architecture (original §4, numbering pre
 1. **Core is headless.** `mastik-core` has no GPU/windowing/UI dependency and is fully testable without a device (§3).
 
 2. **Single mutation path.** The only way to change a `Document` is `Document::apply(Transaction)`. Node fields are private; there is no public `&mut` access. UI, MCP, importers and paste all go through operations.
-   - Carve-outs: three setters outside `apply` and outside undo, each reporting no `DirtySet`, and none reaching a node, edge or geometry (§5.11a, §15 D735).
+   - Carve-outs: setters outside `apply` and outside undo, each reporting no `DirtySet`, and none reaching a node, edge or geometry (§5.11a, §15 D735).
      - `Document::set_meta` replaces the `meta` block whole. A rename is a library action taken from the dashboard, often while the document is not open; routing it through `apply` would put an entry in the wrong document's history and make `Ctrl+Z` in the editor undo what the file browser did.
      - `Document::set_published` replaces the published state, for the same reason: a publish is a library act, not an edit.
      - `Document::set_tokens_link` links or unlinks a `tokens.json` (`styles-variables.md`, *Design tokens*): an undo of the apply does not make "this is what was last applied" untrue.
+     - `Document::set_prototype_mode` records whether the document is in prototype mode (`prototyping-authoring.md`): how it is looked at, not what it holds, so switching is no edit to undo.
      - Because they skip `EditorSession::commit_inner`, its read-only refusal never sees them: a door that calls one on the open document while a compare is open refuses it itself (`app-compare.md`, *Read-only*).
 
 3. **Identity is stable, never reused, and caller-minted.** `NodeId = (actor, seq)`: `actor` is a random per-session 64-bit id, `seq` a session-local monotonic counter. Ids are minted by the caller (`IdSource`) and carried inside operations; `apply` never allocates ids. Deleting a node never invalidates other ids; undo of a delete restores identical ids. This makes replay deterministic (§12).

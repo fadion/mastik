@@ -1898,7 +1898,7 @@ impl MastikApp {
         rect: egui::Rect,
         ppp: f32,
     ) -> Vec<(mastik_core::prototype::FlowRef, egui::Rect, String)> {
-        if !self.prototype_mode {
+        if !self.prototype_mode() {
             return Vec::new();
         }
         let doc = &self.session.doc;
@@ -1975,7 +1975,7 @@ impl MastikApp {
     /// The layers wearing link dots, while prototype mode is on and a
     /// selecting tool is in hand: the one selected layer, then the hovered one.
     fn knob_layers(&self) -> Vec<NodeId> {
-        if !self.prototype_mode || !self.tool.selects() {
+        if !self.prototype_mode() || !self.tool.selects() {
             return Vec::new();
         }
         let mut out: Vec<NodeId> = self.session.selection.single().into_iter().collect();
@@ -2021,7 +2021,7 @@ impl MastikApp {
         ppp: f32,
         resp: &egui::Response,
     ) {
-        let live = self.prototype_mode && self.tool.selects() && self.hover_chrome_live();
+        let live = self.prototype_mode() && self.tool.selects() && self.hover_chrome_live();
         let next = live
             .then(|| {
                 let p = resp.hover_pos()?;
@@ -2043,7 +2043,7 @@ impl MastikApp {
     /// connector is under the pointer, which a click selects; else the one
     /// wearing link dots, while the pointer is on one of them outside it.
     pub(crate) fn link_hover(&self) -> Option<NodeId> {
-        if !self.prototype_mode {
+        if !self.prototype_mode() {
             return None;
         }
         self.proto
@@ -2072,7 +2072,7 @@ impl MastikApp {
         rect: egui::Rect,
         ppp: f32,
     ) -> Option<ActionAt> {
-        if !self.prototype_mode || !self.connector_live(screen, rect, ppp) {
+        if !self.prototype_mode() || !self.connector_live(screen, rect, ppp) {
             return None;
         }
         self.proto
@@ -2100,7 +2100,7 @@ impl MastikApp {
     /// as one *Remove action* step, rather than the layer holding it, which is
     /// what a click on its connector selected. Answers whether it took the key.
     pub(crate) fn remove_open_action(&mut self) -> bool {
-        let Some(at) = self.proto.open.filter(|_| self.prototype_mode) else {
+        let Some(at) = self.proto.open.filter(|_| self.prototype_mode()) else {
             return false;
         };
         let Some(mut reactions) = self
@@ -2144,7 +2144,7 @@ impl MastikApp {
         rect: egui::Rect,
         ppp: f32,
     ) {
-        if !self.prototype_mode {
+        if !self.prototype_mode() {
             self.proto.ghost_rect.set(None);
             self.proto.link_hot.set(None);
             self.proto.links_drawn.borrow_mut().clear();
@@ -2447,7 +2447,7 @@ impl MastikApp {
     /// open popover is an *Open overlay* or *Swap overlay* at *Manual* on a layer
     /// of this page. Its offset is the one being dragged or typed, else the saved.
     pub(crate) fn overlay_placing(&self) -> Option<Placing> {
-        if !self.prototype_mode {
+        if !self.prototype_mode() {
             return None;
         }
         let at = self.proto.open?;
@@ -2529,7 +2529,7 @@ impl MastikApp {
     /// Whether a press at `screen` takes the placed overlay's ghost, as it was
     /// drawn last frame.
     pub(crate) fn ghost_at(&self, screen: egui::Pos2) -> bool {
-        self.prototype_mode
+        self.prototype_mode()
             && self
                 .proto
                 .ghost_rect
@@ -2638,7 +2638,7 @@ impl MastikApp {
 
     /// The layer whose marks show: the one selected, in prototype mode.
     fn marked_layer(&self) -> Option<NodeId> {
-        self.prototype_mode
+        self.prototype_mode()
             .then(|| self.session.selection.single())
             .flatten()
     }
@@ -2881,7 +2881,7 @@ impl MastikApp {
     /// The mark a press at `screen` takes, as the canvas drew them last frame,
     /// the topmost first.
     pub(crate) fn proto_mark_at(&self, screen: egui::Pos2) -> Option<ProtoMark> {
-        if !self.prototype_mode {
+        if !self.prototype_mode() {
             return None;
         }
         let drawn = self.proto.marks_drawn.borrow();
@@ -3043,13 +3043,26 @@ const BRANCH_TUCK: f32 = 4.0;
 const BLOCK_RING_GAP: f32 = 4.0;
 
 impl MastikApp {
-    /// Turn prototype mode on or off, and say so.
+    /// Prototype mode is on for the document in front: the inspector shows its
+    /// cards in place of the Design cards. Saved with the document, so each tab
+    /// keeps its own and a reopened file comes back in it.
+    pub(crate) fn prototype_mode(&self) -> bool {
+        self.session.doc.prototype_mode()
+    }
+
+    /// Turn prototype mode on or off for the document in front, and say so. A
+    /// change leaves the document unsaved, since the file carries the mode.
     pub(crate) fn set_prototype_mode(&mut self, on: bool) {
-        if self.prototype_mode != on {
+        // The mode is written to the document, which a compare holds read-only.
+        if self.prototype_mode() != on && self.refused_by_compare() {
+            return;
+        }
+        if self.prototype_mode() != on {
             self.close_inspector_popovers();
             self.proto.capture = None;
+            self.session.doc.set_prototype_mode(on);
+            self.session.mark_unsaved();
         }
-        self.prototype_mode = on;
         self.session.info(match on {
             true => "Prototype mode on",
             false => "Prototype mode off",
@@ -7367,7 +7380,7 @@ mod tests {
                 keep_scroll: false,
             },
         );
-        f.app.prototype_mode = true;
+        f.app.session.doc.set_prototype_mode(true);
         f.app.open_link(at);
         f.app.dispatch(&ctx, crate::input::Action::Delete);
         let n = f.app.session.doc.get(f.add).expect("the layer stays");
@@ -7447,7 +7460,7 @@ mod tests {
     fn dropping_a_link_on_a_screen_links_to_it() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
-        f.app.prototype_mode = true;
+        f.app.session.doc.set_prototype_mode(true);
         f.app.session.selection.set_one(f.add);
         f.app
             .drop_link(f.add, mastik_core::kurbo::Point::new(100.0, 100.0));
@@ -7482,7 +7495,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
-        f.app.prototype_mode = true;
+        f.app.session.doc.set_prototype_mode(true);
         f.app.session.selection.set_one(f.add);
         let q = f.app.selection_quad(f.add, rect, 1.0).expect("on screen");
         let dots = knob_dots(q);
@@ -7509,7 +7522,7 @@ mod tests {
             Some((f.add, dots[0].0)),
             "the hovered layer's"
         );
-        f.app.prototype_mode = false;
+        f.app.session.doc.set_prototype_mode(false);
         assert_eq!(
             f.app.link_knob_at(dots[0].1, rect, 1.0),
             None,
@@ -7726,7 +7739,7 @@ mod tests {
                     )],
                 }]))
         );
-        f.app.prototype_mode = true;
+        f.app.session.doc.set_prototype_mode(true);
         ActionAt {
             node: f.add,
             reaction: item(10),
@@ -7979,7 +7992,7 @@ mod tests {
                     )],
                 }]))
         );
-        f.app.prototype_mode = true;
+        f.app.session.doc.set_prototype_mode(true);
         // Panned down, so the frames' tops and the cart's name tag are on screen.
         f.app
             .session
@@ -8206,7 +8219,7 @@ mod tests {
         };
         f.app
             .commit_edit(Transaction(vec![Operation::SetPlay { id: f.add, play }]));
-        f.app.prototype_mode = true;
+        f.app.session.doc.set_prototype_mode(true);
         f.app.session.selection.set(vec![f.add]);
         let ghosts = f.app.snap_ghosts();
         assert_eq!(ghosts.len(), 1);
@@ -8290,7 +8303,7 @@ mod tests {
         };
         f.app
             .commit_edit(Transaction(vec![Operation::SetPlay { id: f.add, play }]));
-        f.app.prototype_mode = true;
+        f.app.session.doc.set_prototype_mode(true);
         f.app.session.selection.set_one(f.add);
         let key = |key, modifiers| egui::Event::Key {
             key,
@@ -8416,7 +8429,7 @@ mod tests {
         )];
         f.app
             .write_reactions(f.add, reactions, "Add interaction", icon::INTERACTION);
-        f.app.prototype_mode = true;
+        f.app.session.doc.set_prototype_mode(true);
         f.app.session.selection.set(vec![f.add]);
         let lines = f.app.past_lines();
         assert_eq!(lines.len(), 1);
@@ -8728,7 +8741,7 @@ mod tests {
             1,
             "fixture: the instance follows its main"
         );
-        f.app.prototype_mode = true;
+        f.app.session.doc.set_prototype_mode(true);
         f.app.session.selection.set_one(f.inst);
         let clean = draw(&mut f.app, &ctx);
         let before = crate::ui::painted_override_dots(&clean).len();
