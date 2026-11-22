@@ -1791,40 +1791,64 @@ pub fn fold_head(ui: &mut egui::Ui, label: &str, open: bool) -> (egui::Response,
 }
 
 /// A section's fold head inside a card, which also divides it from the section
-/// above: [`section_head`]'s caret and eyebrow, each centred on the row by its
-/// box as that header's are, then a hairline out to the card's edge as Settings'
-/// section rule. The whole row is one press target, and the caret and eyebrow
-/// brighten while it is hovered.
+/// above: a hairline across the card's column, then the section's title in
+/// sentence case at [`SMALL_PT`] in `text::strong`, with its caret at the row's
+/// right end. A title, not an eyebrow, so a section ranks between its card's
+/// eyebrow head and the eyebrow labels of the fields inside it. The whole row
+/// is one press target; title and caret brighten while it is hovered.
 ///
-/// A `count` above zero is drawn after the eyebrow as a card header's overrides
+/// A `count` above zero is drawn after the title as a card header's overrides
 /// are ([`override_count`]): how many things the fold holds that are not at rest,
 /// so a folded section is never silently changed.
 pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool, count: usize) -> egui::Response {
-    let (glyph, word) = fold_galleys(ui, label, open);
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), FOLD_HEAD_H),
+        egui::vec2(ui.available_width(), FOLD_RULE_AIR + FOLD_HEAD_H),
         egui::Sense::click(),
     );
-    let ink = fold_ink(&resp);
+    let hovered = resp.hovered();
+    let (title_ink, caret_ink) = match hovered {
+        true => (theme::color::text(), theme::text::muted()),
+        false => (theme::text::strong(), theme::text::faint()),
+    };
     let ppp = ui.ctx().pixels_per_point();
-    let top = |h: f32| ((rect.center().y - h / 2.0) * ppp).round() / ppp;
-    let word_x = rect.left() + glyph.size().x + FOLD_WORD_GAP;
-    let mut rule_x = word_x + word.size().x + CARD_COL_GAP;
     let p = ui.painter();
-    p.galley(egui::pos2(rect.left(), top(glyph.size().y)), glyph, ink);
-    p.galley(egui::pos2(word_x, top(word.size().y)), word, ink);
+    let rule_y = hairline_in_column(rect.top() + 0.5, ppp, 1.0);
+    p.line_segment(
+        [
+            egui::pos2(rect.left(), rule_y),
+            egui::pos2(rect.right(), rule_y),
+        ],
+        egui::Stroke::new(1.0, theme::color::divider()),
+    );
+    let row = rect.with_min_y(rect.top() + FOLD_RULE_AIR);
+    let word = p.layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(SMALL_PT),
+        title_ink,
+    );
+    let word_top = ((row.center().y - word.size().y / 2.0) * ppp).round() / ppp;
+    let word_end = row.left() + word.size().x;
+    p.galley(egui::pos2(row.left(), word_top), word, title_ink);
     if count > 0 {
-        rule_x = override_count(p, rule_x, rect.center().y, count) + CARD_COL_GAP;
+        override_count(p, word_end + CARD_COL_GAP, row.center().y, count);
     }
-    if rule_x < rect.right() {
-        let y = hairline_in_column(rect.center().y, ppp, 1.0);
-        p.line_segment(
-            [egui::pos2(rule_x, y), egui::pos2(rect.right(), y)],
-            egui::Stroke::new(1.0, theme::color::divider()),
-        );
-    }
+    let caret = if open {
+        icon::CARET_DOWN
+    } else {
+        icon::CARET_RIGHT
+    };
+    p.text(
+        egui::pos2(row.right(), row.center().y),
+        egui::Align2::RIGHT_CENTER,
+        caret,
+        theme::icon_font(FOLD_CARET_PT),
+        caret_ink,
+    );
     resp
 }
+
+/// The air under a [`fold_rule`]'s hairline, above its title row.
+const FOLD_RULE_AIR: f32 = 4.0;
 
 /// A fold's caret beside a name rather than an eyebrow — a group, a kit — its
 /// left edge at `at`'s x and centred on its y. Answers the glyph's rect.

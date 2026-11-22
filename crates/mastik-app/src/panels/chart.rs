@@ -3503,7 +3503,7 @@ mod tests {
         for _ in 0..3 {
             out = shapes(&ctx, &mut app);
         }
-        assert!(drawn(&out, "SLICES"), "the section's name");
+        assert!(drawn(&out, "Slices"), "the section's name");
         assert!(drawn(&out, &first), "the slice's row");
         let red = mastik_core::peniko::Color::from_rgb8(255, 0, 0);
         let tx = app.slot_transaction(
