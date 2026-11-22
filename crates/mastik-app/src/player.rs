@@ -1484,7 +1484,12 @@ impl crate::app::MastikApp {
             let flows = self.flow_menu_for(p);
             ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
                 ui.multiply_opacity(shown);
-                ui.painter().rect_filled(bar_rect, 0.0, color::card());
+                // Its own ground only where it floats over the screen: over the
+                // canvas and in the window it sits on the card's, and a square
+                // fill there would cover the card's rounded corners.
+                if floating {
+                    ui.painter().rect_filled(bar_rect, 0.0, color::card());
+                }
                 ui.scope_builder(
                     egui::UiBuilder::new()
                         .max_rect(bar_rect.shrink2(egui::vec2(8.0, 4.0)))
@@ -1860,6 +1865,43 @@ mod tests {
             ..Default::default()
         };
         let _ = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+    }
+
+    /// Over the canvas the bar paints no ground of its own, which as a square
+    /// would cover the card's rounded bottom corners.
+    ///
+    /// flip: the bar painting its ground whatever `floating` says → fails at
+    /// "none over the canvas".
+    #[test]
+    fn the_bar_paints_its_own_ground_only_when_floating() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = fixture(&ctx, false);
+        let bar_grounds = |ctx: &egui::Context, app: &mut MastikApp| {
+            let mut p = app.playing.take().expect("playing");
+            let body = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 600.0));
+            let out = ctx.run_ui(Default::default(), |ui| {
+                app.player_body(ui, &mut p, body);
+            });
+            app.playing = Some(p);
+            let bar_h = ui::CONTROL_H + 8.0;
+            out.shapes
+                .iter()
+                .filter(|c| match &c.shape {
+                    egui::Shape::Rect(r) => {
+                        r.fill == color::card()
+                            && r.corner_radius == egui::CornerRadius::ZERO
+                            && (r.rect.height() - bar_h).abs() < 0.5
+                    }
+                    _ => false,
+                })
+                .count()
+        };
+        app.play(&ctx, Place::Over, false);
+        for _ in 0..3 {
+            whole_frame(&ctx, &mut app, Vec::new());
+        }
+        assert!(app.playing.is_some(), "fixture: playing over the canvas");
+        assert_eq!(bar_grounds(&ctx, &mut app), 0, "none over the canvas");
     }
 
     /// A page with frames A (holding a rectangle) and B to its right; A's key
