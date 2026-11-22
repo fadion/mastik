@@ -988,7 +988,74 @@ impl MastikApp {
         );
     }
 
+    /// The table the chart reads: its own, or one of the document's data sets
+    /// (`lists.md`), with *From a file…* reading a new one. The List card's
+    /// Data dropdown, with *Own table* first.
+    fn chart_table_dropdown(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        enum Pick {
+            Own,
+            Set(mastik_core::list::DataSetId),
+            File,
+        }
+        let doc = &self.session.doc;
+        let sets: Vec<(mastik_core::list::DataSetId, String, usize)> = doc
+            .data_sets()
+            .iter()
+            .map(|d| (d.id, d.name.clone(), d.table.rows.len()))
+            .collect();
+        let shown = match chart.data {
+            None => "Own table".to_string(),
+            Some(d) => doc
+                .data_set(d)
+                .map_or_else(|| "Missing data".to_string(), |s| s.name.clone()),
+        };
+        let mut pick = None;
+        ui.scope(|ui| {
+            ui::combo_height(ui);
+            egui::ComboBox::from_id_salt(("chart-table", id))
+                .icon(ui::combo_chevron)
+                .width(ui.available_width())
+                .selected_text(ui::glyph_and_text(icon::TABLE, &shown))
+                .show_ui(ui, |ui| {
+                    ui::menu_rows(ui);
+                    if ui
+                        .selectable_label(chart.data.is_none(), "Own table")
+                        .on_hover_text("A table of the chart's own, which nothing else reads")
+                        .clicked()
+                    {
+                        pick = Some(Pick::Own);
+                    }
+                    ui::menu_sep(ui);
+                    for (d, name, rows) in &sets {
+                        let row = format!("{name} \u{b7} {}", ui::count_as(*rows, "row", "rows"));
+                        if ui.selectable_label(chart.data == Some(*d), row).clicked() {
+                            pick = Some(Pick::Set(*d));
+                        }
+                    }
+                    if !sets.is_empty() {
+                        ui::menu_sep(ui);
+                    }
+                    if ui
+                        .selectable_label(false, ui::glyph_and_text(icon::IMPORT, "From a file…"))
+                        .clicked()
+                    {
+                        pick = Some(Pick::File);
+                    }
+                });
+        });
+        match pick {
+            Some(Pick::Own) => self.chart_own_table(id),
+            Some(Pick::Set(d)) if chart.data != Some(d) => self.move_chart_to_set(id, d, None),
+            Some(Pick::File) => self.chart_data_dialog(id),
+            _ => {}
+        }
+        if chart.data.is_some() && self.chart_set(id).is_none() {
+            ui::selection_note(ui, "Its data set is not in this document: pick one");
+        }
+    }
+
     fn chart_data_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        self.chart_table_dropdown(ui, id, chart);
         let rows = chart.table.rows.len();
         let summary = match chart.kind {
             ChartKind::Sankey => ui::count_as(rows, "flow", "flows"),
@@ -1010,7 +1077,13 @@ impl MastikApp {
         {
             self.open_chart_data(id, (0, 0));
         }
-        self.chart_source_line(ui, id);
+        match self
+            .chart_set(id)
+            .and_then(|s| self.session.doc.data_set(s).cloned())
+        {
+            Some(set) => self.data_set_link_rows(ui, &set),
+            None => self.chart_source_line(ui, id),
+        }
         if let Some(cache) = self.chart_card.as_ref().filter(|c| c.id == id) {
             if let Some(why) = &cache.refusal {
                 ui.label(

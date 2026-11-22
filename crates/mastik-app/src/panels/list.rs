@@ -223,6 +223,28 @@ impl MastikApp {
         {
             self.open_list_data(id);
         }
+        self.data_set_link_rows(ui, &set);
+        let drawn = now.shown_rows(rows).len();
+        if rows == 0 {
+            ui.label(
+                egui::RichText::new("No rows: the template is hidden in play")
+                    .size(ui::SMALL_PT)
+                    .color(color::warn()),
+            );
+        }
+        if now.rows != Rows::Opened && drawn < rows && drawn == list::MAX_DRAWN {
+            ui.label(
+                egui::RichText::new(format!("Showing {drawn} of {rows} rows"))
+                    .size(ui::SMALL_PT)
+                    .color(color::warn()),
+            );
+        }
+    }
+
+    /// A linked data set's source line (*Linked to products.csv*, *Changed on
+    /// disk*, *File not found*) and its *Update*, *Relink…* and *Unlink*, on the
+    /// List and Chart cards; nothing while unlinked.
+    pub(crate) fn data_set_link_rows(&mut self, ui: &mut egui::Ui, set: &list::DataSet) {
         if let Some(link) = &set.source {
             let state = self.data_link_state(set.id).unwrap_or(LinkState::Current);
             let name = file_name(&link.path);
@@ -253,10 +275,13 @@ impl MastikApp {
                     self.update_data_set(set.id);
                 }
                 if state == LinkState::Missing {
-                    let n = self.lists_over(set.id).len();
-                    let tip = match n {
-                        1 => format!("Pick the file again for {}", set.name),
-                        n => format!("Pick the file again for the {n} lists reading {}", set.name),
+                    let tip = match self.readers_of(set.id) {
+                        (0..=1, 0) | (0, 1) => format!("Pick the file again for {}", set.name),
+                        _ => format!(
+                            "Pick the file again for the {} reading {}",
+                            self.readers_words(set.id),
+                            set.name
+                        ),
                     };
                     if ui::word_link(ui, "Relink…", false)
                         .on_hover_text(tip)
@@ -269,21 +294,6 @@ impl MastikApp {
                     self.unlink_data_set(set.id);
                 }
             });
-        }
-        let drawn = now.shown_rows(rows).len();
-        if rows == 0 {
-            ui.label(
-                egui::RichText::new("No rows: the template is hidden in play")
-                    .size(ui::SMALL_PT)
-                    .color(color::warn()),
-            );
-        }
-        if now.rows != Rows::Opened && drawn < rows && drawn == list::MAX_DRAWN {
-            ui.label(
-                egui::RichText::new(format!("Showing {drawn} of {rows} rows"))
-                    .size(ui::SMALL_PT)
-                    .color(color::warn()),
-            );
         }
     }
 

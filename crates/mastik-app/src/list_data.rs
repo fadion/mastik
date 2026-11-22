@@ -262,9 +262,9 @@ impl MastikApp {
             Ok(None) => return,
             Err(why) => {
                 let path = match &then {
-                    Then::List { path, .. } | Then::ListData { path, .. } => {
-                        path.to_string_lossy().into_owned()
-                    }
+                    Then::List { path, .. }
+                    | Then::ListData { path, .. }
+                    | Then::ChartData { path, .. } => path.to_string_lossy().into_owned(),
                     Then::DataSet { path, .. } => path.clone(),
                     _ => String::new(),
                 };
@@ -291,6 +291,14 @@ impl MastikApp {
             } => {
                 let set = self.data_set_from(&path, linkable, &parsed);
                 self.move_list_to_new_set(id, set);
+            }
+            Then::ChartData {
+                chart,
+                path,
+                linkable,
+            } => {
+                let set = self.data_set_from(&path, linkable, &parsed);
+                self.move_chart_to_set(chart, set.id, Some(set));
             }
             Then::DataSet { set, path, relink } => {
                 self.replace_data_set_table(set, &path, &parsed, relink);
@@ -447,6 +455,71 @@ impl MastikApp {
         }
     }
 
+    /// Chart `id` moved onto data set `set`, undo step *Chart data*: the set's
+    /// table in place of its own, the mapping kept on the columns of its names
+    /// (`Chart::reading`). `new` is a set made for it, added in the same step.
+    pub(crate) fn move_chart_to_set(&mut self, id: NodeId, set: DataSetId, new: Option<DataSet>) {
+        let Some(chart) = self.session.doc.get(id).and_then(|n| n.chart()).cloned() else {
+            return;
+        };
+        let Some(data) = new
+            .clone()
+            .or_else(|| self.session.doc.data_set(set).cloned())
+        else {
+            return;
+        };
+        let mut ops: Vec<Operation> = new
+            .map(|d| Operation::SetDataSet {
+                id: set,
+                set: Some(Box::new(d)),
+            })
+            .into_iter()
+            .collect();
+        ops.push(Operation::SetChart {
+            id,
+            chart: Some(Box::new(chart.reading(set, &data.table))),
+        });
+        self.session.name_step("Chart data", icon::TABLE);
+        if self.commit_edit(Transaction(ops)) {
+            self.session.info(format!("The chart reads {}", data.name));
+        }
+    }
+
+    /// Chart `id` back on a table of its own, undo step *Chart data*: it keeps
+    /// the data set's rows as they are now.
+    pub(crate) fn chart_own_table(&mut self, id: NodeId) {
+        let Some(chart) = self.session.doc.get(id).and_then(|n| n.chart()).cloned() else {
+            return;
+        };
+        if chart.data.is_none() {
+            return;
+        }
+        self.session.name_step("Chart data", icon::TABLE);
+        self.commit_edit(Transaction(vec![Operation::SetChart {
+            id,
+            chart: Some(Box::new(mastik_core::chart::Chart {
+                data: None,
+                ..chart
+            })),
+        }]));
+    }
+
+    /// *From a file…* on chart `id`'s data dropdown: a new data set read from a
+    /// picked file, the chart moved onto it.
+    pub(crate) fn chart_data_dialog(&mut self, id: NodeId) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(FILTER.0, FILTER.1)
+            .pick_file()
+        else {
+            return;
+        };
+        self.read_list_file(path, None, |path, linkable| Then::ChartData {
+            chart: id,
+            path,
+            linkable,
+        });
+    }
+
     /// `now` moved onto data set `data` of `table`: a fill keeps its column where
     /// the table has one of the same name; a property left unfilled takes the
     /// column matching its own name.
@@ -553,6 +626,28 @@ impl MastikApp {
             .collect()
     }
 
+    /// How many lists and charts read data set `set`.
+    pub(crate) fn readers_of(&self, set: DataSetId) -> (usize, usize) {
+        (
+            self.lists_over(set).len(),
+            list::charts_over(&self.session.doc, set).len(),
+        )
+    }
+
+    /// Data set `set`'s readers in words: *2 lists, 1 chart*, *1 list*; empty
+    /// when nothing reads it.
+    pub(crate) fn readers_words(&self, set: DataSetId) -> String {
+        let (lists, charts) = self.readers_of(set);
+        let mut out = Vec::new();
+        if lists > 0 {
+            out.push(crate::ui::count_as(lists, "list", "lists"));
+        }
+        if charts > 0 {
+            out.push(crate::ui::count_as(charts, "chart", "charts"));
+        }
+        out.join(", ")
+    }
+
     /// Data set `set`'s table replaced with `parsed`'s and its link restamped to
     /// `path`, undo step *Update list data* (*Relink list data* when `relink`);
     /// every list reading it follows in the step, each fill kept on the column
@@ -626,11 +721,13 @@ impl MastikApp {
         if self.commit_edit(Transaction(ops)) {
             let rows = crate::ui::count_as(parsed.read.table.rows.len(), "row", "rows");
             let name = file_name(path);
-            let lists = crate::ui::count_as(over.len(), "list", "lists");
-            let mut said = match (relink, first_link) {
-                (true, true) => format!("Linked {name} for {lists} \u{b7} {rows}"),
-                (true, false) => format!("Relinked {name} for {lists} \u{b7} {rows}"),
-                (false, _) => format!("Updated {name} \u{b7} {rows}"),
+            let readers = self.readers_words(set);
+            let mut said = match (relink, first_link, readers.is_empty()) {
+                (true, true, true) => format!("Linked {name} \u{b7} {rows}"),
+                (true, true, false) => format!("Linked {name} for {readers} \u{b7} {rows}"),
+                (true, false, true) => format!("Relinked {name} \u{b7} {rows}"),
+                (true, false, false) => format!("Relinked {name} for {readers} \u{b7} {rows}"),
+                (false, ..) => format!("Updated {name} \u{b7} {rows}"),
             };
             if lost > 0 {
                 said.push_str(&format!(
@@ -673,29 +770,32 @@ impl MastikApp {
         self.commit_edit(tx);
     }
 
-    /// The first data set read by a list whose linked file changed on disk.
-    fn changed_data_set(&self) -> Option<(DataSetId, String, usize)> {
+    /// The first data set read by a list or chart whose linked file changed on
+    /// disk, with how many lists and charts read it.
+    fn changed_data_set(&self) -> Option<(DataSetId, String, (usize, usize))> {
         let doc = &self.session.doc;
         doc.data_sets().iter().find_map(|d| {
             let path = d.source.as_ref()?.path.clone();
             (self.data_link_state(d.id) == Some(LinkState::Changed)).then_some(())?;
-            let n = self.lists_over(d.id).len();
-            (n > 0).then_some((d.id, path, n))
+            let n = self.readers_of(d.id);
+            (n != (0, 0)).then_some((d.id, path, n))
         })
     }
 
     /// The pill beside the charts' one: *products.csv changed · Update list*,
-    /// the count when several lists read it. A click updates the data set.
+    /// its readers counted when several read it (*Update 2 lists, 1 chart*). A
+    /// click updates the data set.
     pub(crate) fn list_link_pill(&mut self, ui: &mut egui::Ui) {
         let Some((set, path, n)) = self.changed_data_set() else {
             return;
         };
         let name = file_name(&path);
         let text = match n {
-            1 => format!("{name} changed \u{b7} Update list"),
-            n => format!("{name} changed \u{b7} Update {n} lists"),
+            (1, 0) => format!("{name} changed \u{b7} Update list"),
+            (0, 1) => format!("{name} changed \u{b7} Update chart"),
+            _ => format!("{name} changed \u{b7} Update {}", self.readers_words(set)),
         };
-        let tip = format!("{name} changed on disk \u{b7} click to read it into its lists");
+        let tip = format!("{name} changed on disk \u{b7} click to read it into its table");
         if crate::chart_import::link_pill(ui, &text, &tip) {
             self.update_data_set(set);
         }

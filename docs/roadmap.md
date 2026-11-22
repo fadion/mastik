@@ -12,11 +12,8 @@ true.
 A release of its own. The prototype is built (`prototyping.md` points to each part); what
 remains is below.
 
-- **Charts reading a data set.** A chart could read one of the document's data sets
-  (`design/lists.md`) instead of its own table, so a chart and a list over one file update
-  together.
-- **Data tables.** After *Charts reading a data set*, which it needs so that it covers every
-  table. It is the data window (`chart_data.rs`), not a second grid: the same window and the
+- **Data tables.** A manager over the document's data sets, which lists and charts read. It is
+  the data window (`chart_data.rs`), not a second grid: the same window and the
   same doors, plus one door, *Data tables…*, in the Tools menu after *Scripts…*
   (`ToolsRow::ALL`) and the palette, opened without a list or chart behind it. Not named
   *Content manager*: *Fill with content…* is a different tool in the same menu.
@@ -27,12 +24,12 @@ remains is below.
     fills, and the chart-only header rows (*Use as category*, *Show as series*) are hidden: they
     belong to a chart, not the table.
   - **Opened from a list or chart:** the window works as it does today.
-  - **The data-set lifetime rule changes first.** A data set now lives only while a list reads
-    it (`list::unread_data_sets` removes it in the commit's step), so a table the manager makes
+  - **The data-set lifetime rule changes first.** A data set now lives only while a list or chart
+    reads it (`list::unread_data_sets` removes it in the commit's step), so a table the manager makes
     would vanish at once. Data sets instead stay until deleted. The manager adds *Delete table*,
     dimmed while anything reads the table (its tooltip counts the readers), and the List and
     Chart cards' Data dropdowns list unread tables too. Rewrite *A data set lives while a list
-    reads it* in `design/lists.md` with it.
+    or a chart reads it* in `design/lists.md` with it.
 - **Lists: leftovers.** Four pieces of the list design that were never built:
   - **A filled property on the template shows its column and is read-only.** Row 1 is filled
     from the table like every row, so an edit to a filled property on the template is lost at

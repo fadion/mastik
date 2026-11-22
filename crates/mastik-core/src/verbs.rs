@@ -6585,7 +6585,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "set_chart_data",
-        doc: "Replace a chart's table, keeping the mapping and series colours of each column whose name survives; unlinks its file",
+        doc: "Replace a chart's table, keeping the mapping and series colours of each column whose name survives; unlinks file and data table",
         params: &[
             req("node", NODE, "the chart"),
             req(
@@ -6598,6 +6598,7 @@ pub static VERBS: &[Verb] = &[
             let (id, chart) = chart_of(ctx, a)?;
             let mut chart = chart.with_table(a.model("table")?);
             chart.source = None;
+            chart.data = None;
             chart_valid(a, &chart)?;
             Ok(Done::ops(vec![Operation::SetChart {
                 id,

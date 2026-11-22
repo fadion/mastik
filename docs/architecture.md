@@ -63,7 +63,7 @@ Read the file for the exact wording before relying on one.
 | `app-canvas-chrome.md` | 9.4 | Canvas chrome, the minimap, the size preview, the contrast check mode, the vision simulation, top-bar menus, the command palette, batch rename, clean up, fill with content, the assets browser and credits, find and replace in text, colour review, system health, the shortcut cheatsheet, focus mode, the peek (`\` held), private mode, present mode |
 | `app-compare.md` | 9.4 | Compare with a version: the read-only mode, its marks, bar, Then/Swipe and changes card |
 | `app-image-editing.md` | 9.4 | Image fills and image editing |
-| `charts.md` | — | Charts: a frame carrying a chart description, its generated parts, the Chart card, the data window, import and the linked data file, flatten, and binding its colours to variables |
+| `charts.md` | — | Charts: a frame carrying a chart description, its generated parts, reading a data set, the Chart card, the data window, import and the linked data file, flatten, and binding its colours to variables |
 | `lists.md` | — | Lists from data: a frame repeating an instance per row of a data set, the document's data sets, regeneration inside the edit's undo step, where a list may stand, picture columns, the List card, the linked file, the data window over a data set, a row opened in play |
 | `inspector.md` | 9.4 | The inspector cards, an annotation's card and its mark on the canvas |
 | `prototyping-authoring.md` | — | Prototype mode, the interactions and Prototype cards, connectors, the link dots and flow chips, instances' interactions, kit publishing, agents |

@@ -127,14 +127,21 @@ fn data(ids: &mut IdSource, rows: &[(&str, &str)]) -> DataSet {
     }
 }
 
-/// Commit `tx` as the app does: one step, then the lists it left out of date
-/// regenerated and joined onto it.
+/// Commit `tx` as the app does: one step, then the lists and charts it left
+/// out of date brought up to it and joined onto it.
 fn commit(history: &mut History, doc: &mut Document, ids: &mut IdSource, tx: Transaction) {
     let mut tx = tx;
     mastik_core::propagate::owed(doc, &mut tx, ids);
     let lists: Transaction = Transaction(
         tx.0.iter()
-            .filter(|op| matches!(op, Operation::SetList { .. } | Operation::SetDataSet { .. }))
+            .filter(|op| {
+                matches!(
+                    op,
+                    Operation::SetList { .. }
+                        | Operation::SetDataSet { .. }
+                        | Operation::SetChart { chart: Some(_), .. }
+                )
+            })
             .cloned()
             .collect(),
     );
@@ -628,4 +635,114 @@ fn a_column_of_pictures_fills_an_image_property() {
         .find_map(|id| mastik_core::variant::image_of(doc.get(id)?).map(|(_, r)| r.fit))
         .unwrap();
     assert_eq!(framed, mastik_core::ImageFit::Fit, "the framing kept");
+}
+
+/// A chart over a data set takes the set's table at the commit that edits the
+/// set, a renamed series kept by its column id beside one that was not, in the
+/// edit's own undo step; a chart back on its own table keeps the rows and is
+/// left alone by later edits of the set.
+/// flip: `regenerate_in_history` skipping `chart_follow_ops` → fails at
+/// "follows the edit"; `Chart::reading` matching by name on its own set →
+/// fails at "kept through the rename".
+#[test]
+fn a_chart_reads_a_data_set_and_follows_its_edits() {
+    let (mut doc, mut ids, page) = blank();
+    let chart = run(
+        &mut doc,
+        &mut ids,
+        "insert_chart",
+        json!({ "parent": page.to_wire(), "kind": "column" }),
+    )[0];
+    let mut set = data(&mut ids, &[("Linen", "4"), ("Wool", "7")]);
+    set.table.columns[0].name = "Category".into();
+    set.table.columns[1].name = "Sales".into();
+    set.table.columns.push(Column {
+        id: ColumnId(2),
+        name: "Returns".into(),
+    });
+    for r in &mut set.table.rows {
+        r.push("1".into());
+    }
+    let mut history = History::default();
+    let was = doc.get(chart).unwrap().chart().unwrap().clone();
+    let onto = was.reading(set.id, &set.table);
+    let sales = set.table.columns[1].id;
+    let costs = set.table.columns[2].id;
+    assert_eq!(
+        onto.mapping.series,
+        [sales, costs],
+        "the number columns are guessed series"
+    );
+    commit(
+        &mut history,
+        &mut doc,
+        &mut ids,
+        Transaction(vec![
+            Operation::SetDataSet {
+                id: set.id,
+                set: Some(Box::new(set.clone())),
+            },
+            Operation::SetChart {
+                id: chart,
+                chart: Some(Box::new(onto)),
+            },
+        ]),
+    );
+    assert_eq!(doc.get(chart).unwrap().chart().unwrap().data, Some(set.id));
+
+    // A cell edited and the series column renamed in the set.
+    let before = doc.clone();
+    let mut edited = set.clone();
+    edited.table.rows[1][1] = "9".into();
+    edited.table.columns[1].name = "Units".into();
+    commit(
+        &mut history,
+        &mut doc,
+        &mut ids,
+        Transaction(vec![Operation::SetDataSet {
+            id: set.id,
+            set: Some(Box::new(edited.clone())),
+        }]),
+    );
+    let c = doc.get(chart).unwrap().chart().unwrap();
+    assert_eq!(c.table, edited.table, "follows the edit");
+    assert_eq!(
+        c.mapping.series,
+        [sales, costs],
+        "the series kept through the rename"
+    );
+    assert!(history.undo(&mut doc).is_ok());
+    assert!(
+        doc == before,
+        "one undo takes the edit and the chart's copy back"
+    );
+    assert!(history.redo(&mut doc).is_ok());
+
+    // Back on its own table: it keeps the rows, and the set's edits pass it by.
+    let own = mastik_core::chart::Chart {
+        data: None,
+        ..doc.get(chart).unwrap().chart().unwrap().clone()
+    };
+    commit(
+        &mut history,
+        &mut doc,
+        &mut ids,
+        Transaction(vec![Operation::SetChart {
+            id: chart,
+            chart: Some(Box::new(own)),
+        }]),
+    );
+    let mut again = edited.clone();
+    again.table.rows[0][1] = "1".into();
+    commit(
+        &mut history,
+        &mut doc,
+        &mut ids,
+        Transaction(vec![Operation::SetDataSet {
+            id: set.id,
+            set: Some(Box::new(again)),
+        }]),
+    );
+    let c = doc.get(chart).unwrap().chart().unwrap();
+    assert_eq!(c.table, edited.table, "its own table, as it was");
 }

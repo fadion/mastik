@@ -631,14 +631,29 @@ impl MastikApp {
             self.chart_data = None;
             return;
         };
-        let name = self
+        let mut name = self
             .session
             .doc
             .get(id)
             .map(|n| n.name().to_string())
             .unwrap_or_default();
+        // A chart reading a data set shows the set's table and link, and its
+        // edits write the set, which every reader then follows.
+        let set = self
+            .chart_set(id)
+            .and_then(|s| self.session.doc.data_set(s).cloned());
+        let shown = match &set {
+            Some(s) => {
+                name = format!("{name} \u{b7} {}", s.name);
+                Chart {
+                    source: s.source.clone(),
+                    ..chart.clone()
+                }
+            }
+            None => chart.clone(),
+        };
         let w = W.min(canvas.width() - 32.0).max(320.0);
-        let linked = chart.source.is_some();
+        let linked = shown.source.is_some();
         // Each column's series swatch, a binding read where the chart is.
         let swatches: Vec<Option<egui::Color32>> = chart
             .table
@@ -667,18 +682,31 @@ impl MastikApp {
                 })
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
-                    grid(ui, &chart, &swatches, None, &mut state, linked, &mut act);
+                    grid(ui, &shown, &swatches, None, &mut state, linked, &mut act);
                 });
         });
         self.chart_data = Some(state);
+        let set = set.map(|s| s.id);
         for a in act {
-            match a {
-                Act::Close => self.close_chart_data(),
-                Act::Import => self.import_chart_data_dialog(id),
-                Act::Table(t) => self.commit_table(id, &chart, t),
-                Act::Chart(c) => self.commit_chart(id, *c),
-                Act::Copy(text) => ctx.copy_text(text),
-                Act::Note(text) => self.session.info(text),
+            match (a, set) {
+                (Act::Close, _) => self.close_chart_data(),
+                (Act::Import, _) => self.import_chart_data_dialog(id),
+                (Act::Table(t), Some(s)) => self.commit_data_table(s, t),
+                (Act::Table(t), None) => self.commit_table(id, &chart, t),
+                // A mapping edit is the chart's; a table edit is the set's, and
+                // the chart's mapping follows it at the commit.
+                (Act::Chart(c), Some(s)) if c.table != chart.table => {
+                    self.commit_data_table(s, c.table);
+                }
+                (Act::Chart(c), _) => self.commit_chart(
+                    id,
+                    Chart {
+                        source: chart.source.clone(),
+                        ..*c
+                    },
+                ),
+                (Act::Copy(text), _) => ctx.copy_text(text),
+                (Act::Note(text), _) => self.session.info(text),
             }
         }
     }
@@ -2072,6 +2100,40 @@ mod tests {
         }
         pass(&ctx, &mut app, vec![key(egui::Key::Escape)]);
         assert!(app.chart_data.is_none(), "Escape with no edit closes it");
+    }
+
+    /// A cell typed into the window of a chart reading a data set writes the
+    /// set, and the chart takes it in the same undo step.
+    /// flip: `chart_data_ui` committing a table edit as the chart's own → fails
+    /// at "the set takes the cell".
+    #[test]
+    fn a_chart_reading_a_data_set_edits_the_set() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = opened(&ctx);
+        let set = mastik_core::list::DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "Sales".into(),
+            table: table_of(&app, id),
+            source: None,
+            pictures: Vec::new(),
+        };
+        let sid = set.id;
+        app.move_chart_to_set(id, sid, Some(set));
+        assert_eq!(app.chart_set(id), Some(sid), "the chart reads the set");
+        for _ in 0..2 {
+            pass(&ctx, &mut app, Vec::new());
+        }
+        pass(&ctx, &mut app, vec![key(egui::Key::ArrowRight)]);
+        pass(&ctx, &mut app, vec![egui::Event::Text("9".into())]);
+        pass(&ctx, &mut app, Vec::new());
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        let set_cell =
+            |app: &MastikApp| app.session.doc.data_set(sid).unwrap().table.rows[0][1].clone();
+        assert_eq!(set_cell(&app), "9", "the set takes the cell");
+        assert_eq!(table_of(&app, id).rows[0][1], "9", "the chart follows");
+        app.session.undo();
+        assert_eq!(set_cell(&app), "42");
+        assert_eq!(table_of(&app, id).rows[0][1], "42", "one undo step");
     }
 
     /// A headless app with a new chart's data window open, a few passes in.

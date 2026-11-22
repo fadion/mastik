@@ -14,11 +14,13 @@ template, the list's description or its data set changes. Core: `mastik_core::li
   looked up by `DataSetId` (a node-id wire form, minted by `IdSource::mint_data_set`). The `table` is the
   chart's `Table` (`charts.md`, *The description*) under the chart's limits
   (`list::validate_table`), and the name is at most 256 characters (`list::MAX_NAME_CHARS`).
-- **A data set is the document's, not a list's**: several lists may read one, and an edit to it
-  regenerates every list reading it. It is never drawn, so `SetDataSet` dirties nothing.
-- **A data set lives while a list reads it.** After every commit, a data set no list reads (its
-  last list moved onto another, detached or deleted) is removed in the same undo step
-  (`list::unread_data_sets`), so the dropdown never offers data nothing could pick again.
+- **A data set is the document's, not a list's**: several lists and charts may read one, and an
+  edit to it regenerates every list reading it and brings every chart reading it onto its table
+  (`charts.md`, *The description*, `data`). It is never drawn, so `SetDataSet` dirties nothing.
+- **A data set lives while a list or a chart reads it.** After every commit, a data set nothing
+  reads (its last reader moved onto another, detached, flattened or deleted) is removed in the
+  same undo step (`list::unread_data_sets`), so the dropdown never offers data nothing could pick
+  again.
 - **`source: Option<DataLink>`** is the linked file, the chart's `DataLink` (path, the stat of the
   read, the header choice). The table is always the document's own copy.
 - **`pictures: Vec<(String, ImageId)>`** maps a cell's text to the picture the app read from it
@@ -105,10 +107,12 @@ its copies as plain instances, rather than refusing the file, since earlier buil
   the lists over a data set its `SetDataSet`s wrote, and a list whose template subtree it
   dirtied, a main's edit reaching the template through the propagation included.
 - **In the app the rows are made inside the edit's undo step.** `EditorSession::commit_inner`
-  reads the edit's `SetList` and `SetDataSet` ops before committing it, then
-  `list::regenerate_in_history` commits each regeneration step and joins it onto the edit's
-  (`History::join_last(2)`), so one undo takes the edit and its rows back together and redo puts
-  them back. The copies are instances that other edits write in history (a main's change
+  reads the edit's `SetList`, `SetDataSet` and `SetChart { chart: Some }` ops before committing
+  it, then `list::regenerate_in_history` commits, each joined onto the edit's step
+  (`History::join_last(2)`): first the charts brought onto their sets' tables
+  (`list::chart_follow_ops`), then each regeneration step, then the removal of the data sets
+  nothing reads. One undo takes the edit, its rows and the charts' copies back together and redo
+  puts them back. The copies are instances that other edits write in history (a main's change
   propagated into them, a variable detach); a regeneration outside history would leave those
   steps naming copies a later regeneration replaced. This is where
   lists part from charts, whose parts nothing else writes and whose settle runs outside history
@@ -160,15 +164,16 @@ its copies as plain instances, rather than refusing the file, since earlier buil
 - **Dropping a data file on an instance**: a single CSV, TSV or JSON file dragged over an instance
   `list::why_not` takes rings it and labels *Make a list from products.csv*
   (`draw_drop_indicator`); the drop opens the import box (`drop_chart_data` →
-  `list_drop_target`). Onto a chart it is still the chart's import box; elsewhere a CSV or TSV
-  makes a chart.
+  `list_drop_target`). Onto a chart it is still the chart's import box, or a read into the set a
+  chart reads (`charts.md`, *Import and the linked file*); elsewhere a CSV or TSV makes a chart.
 - **Detach list** — the List card's foot, `Ctrl+E` over a selection of lists only
   (`flatten_selection`, after charts), a list frame's context menu (promoted from Structure) and
   the palette (*Select a list*). It drops the description and keeps the copies as plain
   instances, one step for every list, *Detach list*.
 - **The readers and the worker are the chart's** (`charts.md`, *Import and the linked file*): the
   same formats, limits, encoding guesses and refusals, a read landing through `Then::List`,
-  `Then::ListData` or `Then::DataSet { relink }`.
+  `Then::ListData`, `Then::ChartData` (the Chart card's *From a file…*) or `Then::DataSet {
+  relink }`.
 
 ## The List card
 
@@ -184,8 +189,9 @@ step.
   Under it, *N rows · N columns* and *Edit data…* (`ui::action_button`, the data window, as on
   the Chart card); while linked, the source line (*Linked to products.csv*, *Changed on disk* in
   the accent, *File not found* in the warning ink, the path its tooltip) with *Update* while
-  changed, *Relink…* while missing (tooltip *Pick the file again for the 3 lists reading ‹set›*),
-  and *Unlink*. *No rows: the template is hidden in play* in the warning ink over an empty table;
+  changed, *Relink…* while missing (tooltip *Pick the file again for ‹set›*, or with several
+  readers *Pick the file again for the 2 lists, 1 chart reading ‹set›*), and *Unlink*
+  (`data_set_link_rows`, which the Chart card shows for a chart reading a set). *No rows: the template is hidden in play* in the warning ink over an empty table;
   *Showing 200 of N rows* in the warning ink when `All` or `First` is cut at `MAX_DRAWN`. A data
   set the document lacks reads *Missing data* with *Its data set is not in this document: pick
   one*.
@@ -205,23 +211,26 @@ step.
 - **Update** reads the file again under the set's stored header choice and replaces the table,
   undo step *Update list data*. **Relink…** (and the data window's *Import…*) reads a picked
   file into the same data set (`Then::DataSet { relink: true }`): table and link replaced, name
-  kept, undo step *Relink list data*, status *Relinked products.csv for 3 lists · 26 rows*; on a
-  set never linked (*New table*) the step is *Link list data* and the status *Linked …*. To
-  point one list at another file, the Data dropdown's *From a file…* stays.
+  kept, undo step *Relink list data*, status *Relinked products.csv for 2 lists, 1 chart · 26
+  rows* (its readers in words, `readers_words`; without *for …* when nothing reads it); on a set
+  never linked (*New table*) the step is *Link list data* and the status *Linked …*. To point one
+  list or chart at another file, the Data dropdown's *From a file…* stays.
 - **Both regenerate every list over the set in the step**, each list's fills remapped onto the new
-  table by column name and a fill whose column name is gone dropped; the status line adds
-  *· 1 fill lost its column*. Both read the image columns' pictures again (*Picture columns*).
+  table by column name and a fill whose column name is gone dropped, and bring every chart over
+  it onto the new table; the status line adds *· 1 fill lost its column*. Both read the image columns' pictures again (*Picture columns*).
   *Unlink* drops the link, undo step *Unlink data file*.
 - **Watching** is the chart's (`chart_import`'s watch takes the data sets' linked paths too): the
-  toolbar pill *products.csv changed · Update list* (*Update 3 lists* when several read it, shared
-  `chart_import::link_pill`) for the first changed set a list reads; a click updates it. A file's
+  toolbar pill *products.csv changed · Update list* (*Update chart* for one chart, *Update 2
+  lists, 1 chart* when several read it; tooltip *… click to read it into its table*; shared
+  `chart_import::link_pill`) for the first changed set a list or chart reads; a click updates it. A file's
   contents enter the document only on that click.
 
 ### The data window over a data set
 
 The chart's data window (`chart_data.rs`; `charts.md`, *The data window*) opened over a data set,
 `ChartData.data` naming it. Opened by *Edit data…* on the List card, on a list frame's context
-menu and after *New table*.
+menu and after *New table*. A chart reading a set opens the chart's own window, which writes the
+set (`charts.md`, *The data window*).
 
 - **Head**: *List data*, its note the data set's name, then *· N lists* when several read it. A
   double-click on the name renames the data set in place (`settings::card_head_renamable`), undo
@@ -232,7 +241,7 @@ menu and after *New table*.
   data set (*The linked file*). A linked set's grid is read-only with *Edited in products.csv —
   unlink to edit here*, as a chart's.
 - **Each edit is one step, *Edit list data***: a `SetDataSet`, a fill whose column is gone
-  dropped, and every list over the set regenerated.
+  dropped, every list over the set regenerated and every chart over it brought onto the table.
 - **It follows the selection**: selecting another list alone moves it to that list's data set; it
   closes when the data set is gone.
 

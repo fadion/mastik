@@ -1960,11 +1960,19 @@ impl EditorSession {
             self.run = None;
         }
         let before = self.history.current();
-        // A list's description and data set, read before the edit moves into the
-        // history: with the layers it changed, they say which lists to make again.
+        // A list's or chart's description and a data set, read before the edit
+        // moves into the history: with the layers it changed, they say which
+        // lists to make again and which charts to bring onto their data.
         let list_ops = Transaction(
             tx.0.iter()
-                .filter(|op| matches!(op, Operation::SetList { .. } | Operation::SetDataSet { .. }))
+                .filter(|op| {
+                    matches!(
+                        op,
+                        Operation::SetList { .. }
+                            | Operation::SetDataSet { .. }
+                            | Operation::SetChart { chart: Some(_), .. }
+                    )
+                })
                 .cloned()
                 .collect(),
         );

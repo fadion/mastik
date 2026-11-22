@@ -897,8 +897,50 @@ pub fn regenerate<E>(
     Ok(true)
 }
 
-/// After `history` committed a step from `tx` that changed `dirty`: every list
-/// it left out of date ([`touched`]) regenerated, then every data set no list
+/// The charts reading data set `set`, in id order.
+pub fn charts_over(doc: &Document, set: DataSetId) -> Vec<NodeId> {
+    let mut out: Vec<NodeId> = doc
+        .node_map()
+        .values()
+        .filter(|n| n.chart().is_some_and(|c| c.data == Some(set)))
+        .map(|n| n.id)
+        .collect();
+    out.sort();
+    out
+}
+
+/// The `SetChart`s that bring every chart an applied transaction `tx` left
+/// behind its data set back onto that set's table ([`crate::chart::Chart::reading`]):
+/// the charts it moved onto a set and those over a set it wrote. A chart whose
+/// set is missing keeps its table.
+pub fn chart_follow_ops(doc: &Document, tx: &Transaction) -> Vec<Operation> {
+    let mut charts: Vec<NodeId> = Vec::new();
+    for op in &tx.0 {
+        match op {
+            Operation::SetChart { id, chart: Some(_) } => charts.push(*id),
+            Operation::SetDataSet { id, .. } => charts.extend(charts_over(doc, *id)),
+            _ => {}
+        }
+    }
+    charts.sort();
+    charts.dedup();
+    charts
+        .into_iter()
+        .filter_map(|id| {
+            let chart = doc.get(id)?.chart()?;
+            let data = chart.data?;
+            let set = doc.data_set(data)?;
+            (chart.table != set.table).then(|| Operation::SetChart {
+                id,
+                chart: Some(Box::new(chart.reading(data, &set.table))),
+            })
+        })
+        .collect()
+}
+
+/// After `history` committed a step from `tx` that changed `dirty`: every chart
+/// over a data set brought onto its table ([`chart_follow_ops`]), every list it
+/// left out of date ([`touched`]) regenerated, then every data set nothing
 /// reads any more removed, each step committed and joined onto that step, so
 /// one undo takes the edit, its rows and its data back together. What the
 /// regenerations changed is added to `dirty`.
@@ -909,6 +951,12 @@ pub fn regenerate_in_history(
     tx: &Transaction,
     dirty: &mut DirtySet,
 ) -> Result<(), crate::op::OpError> {
+    let follow = chart_follow_ops(doc, tx);
+    if !follow.is_empty() {
+        let d = history.commit(doc, Transaction(follow))?;
+        history.join_last(2);
+        dirty.0.extend(d.0);
+    }
     for l in touched(doc, tx, dirty) {
         regenerate(doc, l, ids, |doc, step| {
             let d = history.commit(doc, step)?;
@@ -931,15 +979,20 @@ pub fn regenerate_in_history(
     Ok(())
 }
 
-/// The data sets no list reads: a list moved onto another, detached or
-/// deleted leaves its data behind, which nothing could pick again.
+/// The data sets no list or chart reads: a reader moved onto another, detached
+/// or deleted leaves its data behind, which nothing could pick again.
 pub fn unread_data_sets(doc: &Document) -> Vec<DataSetId> {
     if doc.data_sets().is_empty() {
         return Vec::new();
     }
-    let read: FxHashSet<DataSetId> = lists(doc)
-        .into_iter()
-        .filter_map(|l| doc.get(l)?.list().map(|x| x.data))
+    let read: FxHashSet<DataSetId> = doc
+        .node_map()
+        .values()
+        .filter_map(|n| {
+            n.list()
+                .map(|x| x.data)
+                .or_else(|| n.chart().and_then(|c| c.data))
+        })
         .collect();
     doc.data_sets()
         .iter()

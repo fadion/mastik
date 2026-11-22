@@ -94,6 +94,24 @@ everything below.
 - **`options`** — every kind's options at once (*Options*, below), so switching kind and back
   keeps what was set.
 - **`source: Option<chart::DataLink>`** — the linked file, if any (*Import and the linked file*).
+- **`data: Option<list::DataSetId>`** — the document's data set the chart reads (`lists.md`,
+  *Data sets*), `None` for a table of its own. While set, `table` is a copy of the set's table,
+  column ids included, and the chart has no `source`: the set holds the link. The chart still
+  draws its own copy, so a chart whose set the document lacks (pasted from another document)
+  keeps drawing its rows. Saved skipped when `None`, additive with no version bump.
+  - **`Chart::reading(set, &table)`** puts a chart onto a set: the table taken as it is, the
+    mapping and series styles moved onto its columns, and `source` dropped. On the set it
+    already reads, a column is kept by id, so a rename in the set keeps the mapping and the
+    series' style; moved onto a set, a column is kept under the same id and name, else on the
+    column of its name, else dropped. `Mapping::guess` when no series and no Sankey value
+    survives.
+  - **The commit keeps the copy in step.** `list::chart_follow_ops` answers a `SetChart` for
+    every chart the transaction moved onto a set (its own `SetChart`) or whose set it wrote
+    (`SetDataSet`, through `list::charts_over`), through `reading`, skipped when the set is
+    missing or the table already matches. `list::regenerate_in_history` commits them first and
+    joins them onto the edit's undo step (`lists.md`, *Regeneration and undo*), so one undo takes
+    the set's edit and every chart's copy back
+    (`tests/lists.rs · a_chart_reads_a_data_set_and_follows_its_edits`).
 - **`parts: Vec<(PartKey, NodeId)>`** — the generated nodes by role (`PartKey { role, series,
   index }`), ids saved in the file's wire spelling. Never shown. A copy's keys follow its new ids
   (`document::remap_subtree`).
@@ -511,9 +529,19 @@ in `collapsed_panels` (Marks, Axes, Values, Legend and Text start folded, `chart
   row *Light* / *Dark* sets the theme (`chart_segments_of`, tooltip and undo step *Chart
   theme*) of every chart the card writes (`chart_each`), each over its own colours; it sits
   here rather than beside the palette dropdown because Series serves one chart only.
-- **Data** — the summary (*3 series · 12 rows*, a Sankey's *8 flows*), *Edit data…* (an
-  `ui::action_button`, tooltip *Open the chart's table over the canvas*), the source line while
-  linked, the left-out line (*2
+- **Data** — led by the table the chart reads (`chart_table_dropdown`), the List card's Data
+  dropdown (`lists.md`, *The List card*) with a first row *Own table* (tooltip *A table of the
+  chart's own, which nothing else reads*), a separator, the document's data sets (*name · N
+  rows*), a separator and *From a file…*. The closed face shows *Own table*, the set's name, or
+  *Missing data* with the note *Its data set is not in this document: pick one*. Picking a set
+  moves the chart onto it (`move_chart_to_set`, `Chart::reading`), undo step *Chart data*,
+  status *The chart reads ‹name›*; *Own table* keeps the rows as they are and drops the set
+  (`chart_own_table`), undo step *Chart data*; *From a file…* reads the picked file on the
+  worker (`chart_data_dialog`, `Then::ChartData`) into a new data set named for the file, linked,
+  and moves the chart onto it in one step. Then the summary (*3 series · 12 rows*, a Sankey's
+  *8 flows*), *Edit data…* (an `ui::action_button`, tooltip *Open the chart's table over the
+  canvas*), the source line while linked (a chart reading a set shows the set's, the List card's
+  `data_set_link_rows`), the left-out line (*2
   values left out*, the reasons in its tooltip) or the refusal (*Too many marks: …*, *Flows loop
   back: …*) in the warning ink, and the mapping: *Category* (*X* for a scatter) or a Sankey's
   *From*, *To* and *Value* as dropdowns of columns.
@@ -603,6 +631,12 @@ read, since they name this document's node ids. The same window opens over a lis
 (`lists.md`, *The data window over a data set*), as does the import box for *Make a list*
 (`lists.md`, *Doors*).
 
+**Over a chart reading a data set** the window stays the chart's: its head note is *‹chart name› ·
+‹set name›*, the grid is the chart's table with its role marks, *Use as category* and *Show as
+series*, and the linked line and read-only rule follow the set's link. A table edit writes the
+set (`commit_data_table`, a `SetDataSet`, undo step *Edit list data*), every list over it is made
+again and the chart follows in the same step; a mapping-only edit is the chart's own `SetChart`.
+
 - **Head**: `settings::card_head_noted` — *Chart data*, the chart's layer name as the note, the
   shared ✕. Under it the toolbar of `ui::action_button`s at `CONTROL_H`, each as wide as
   `ui::action_button_w` makes it: *Add row* (`icon::ROWS_PLUS_BOTTOM`) and *Add column*
@@ -642,7 +676,7 @@ read, since they name this document's node ids. The same window opens over a lis
   elsewhere commits it, as a layer's rename does, so the canvas keymap is live again. An open
   header or row menu holds the keyboard: `Escape` closes only it.
 - **Commits**: each committed cell, paste, clear, insert, sort or delete is one `SetChart`, undo
-  step *Edit chart data*. A cell being typed into is the window's own, kept by its row and
+  step *Edit chart data* (the set's `SetDataSet` on a chart reading one, above). A cell being typed into is the window's own, kept by its row and
   column and the table it began on: a menu edit commits it into its own cell first, a table
   changed from outside (an undo, an import, an agent's edit) drops it, and so do closing the
   window and moving it to another chart.
@@ -672,6 +706,13 @@ read, since they name this document's node ids. The same window opens over a lis
   dropped onto a chart (`chart_import::drop_chart_data`). A `.csv` or `.tsv` dropped on bare
   canvas makes a chart there from it, linked (*Making one*); a `.json` dropped anywhere but on a
   chart stays the tokens import's door.
+- **On a chart reading a data set** the doors write the set, not the chart (`chart_set`):
+  *Import…* and *Import chart data…* relink the set (`relink_data_set`, `lists.md`, *The linked
+  file*), and a file dropped on the chart reads into the set under the set's header choice
+  (`Then::DataSet { relink: true }`), with no import box. A browser drop brings bytes and no
+  path, which a set's link cannot name, so it is refused: *Cannot import ‹name›: the chart reads a
+  data table; import into it from Edit data…*. Such a chart's file is watched through its set
+  (`lists.md`, *Watching*).
 - **The readers** are core's (`chart::table_io`), each holding the table's limits and noting what
   it cut, and naming no more columns or rows than a table holds, so a small file of many keys or
   one long line never builds a cell for each. **CSV** (RFC 4180): the delimiter is detected among
@@ -726,7 +767,8 @@ read, since they name this document's node ids. The same window opens over a lis
 - **Copying a chart drops its link.** The clipboard carries the description and table but not the
   path, written and read through `Chart::copied`, the variables' detached twins included, for the
   reason the clipboard refuses linked images: pasted content must not make the
-  receiving document read a file the copy chose.
+  receiving document read a file the copy chose. It keeps `data`, as a list keeps its own: the
+  clipboard carries no data sets, so in another document the chart draws its copy of the table.
 
 ### Flatten
 
@@ -787,7 +829,8 @@ without one (`menu::KIND_VERBS`).
   name the chart draws nothing under is refused listing the ones it does, so a typo is not kept
   as a style nothing reads, and a variable that is no colour is refused. `set_chart_data` replaces
   the table by *Import*'s rule (`Chart::with_table`; a mapping of which nothing survives is
-  guessed) and drops the link; `flatten_chart` is `chart::flatten_ops` for each chart. Any other verb writing a part is refused at the commit by
+  guessed) and drops the link and the data set the chart reads (`data`), so an agent's table is
+  the chart's own rather than one the commit would put back to the set's; `flatten_chart` is `chart::flatten_ops` for each chart. Any other verb writing a part is refused at the commit by
   `chart::guard`.
 - **Code export** (`export.md`, *Code export*) writes a chart as the frames it is: its flex and
   grid containers as CSS, its marks positioned by their percentage insets, its labels and pie

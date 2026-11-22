@@ -62,6 +62,7 @@ fn sample() -> Chart {
         nodes: Vec::new(),
         options: Default::default(),
         source: None,
+        data: None,
         parts: Vec::new(),
         generated: None,
         minted: 0,

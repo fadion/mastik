@@ -70,6 +70,12 @@ pub struct Chart {
     /// The file the table was read from, while linked. Never carried by a copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DataLink>,
+    /// The document's data set the chart reads (`lists.md`), in place of a
+    /// table of its own: `table` is then that set's, copied in by the commit
+    /// that changes either (`list::regenerate_in_history`), and kept as drawn
+    /// when the set is missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<crate::list::DataSetId>,
     /// The generated nodes by role, written only by a regeneration. Ids in the
     /// file's own spelling (`NodeId::to_wire`).
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "wire_parts")]
@@ -1063,6 +1069,7 @@ impl Chart {
             nodes,
             options,
             source,
+            data,
             parts: _,
             generated: _,
             minted: _,
@@ -1074,6 +1081,7 @@ impl Chart {
             && *nodes == other.nodes
             && *options == other.options
             && *source == other.source
+            && *data == other.data
     }
 
     /// This description as a copy carries it: the linked file dropped, since
@@ -1166,6 +1174,7 @@ impl Chart {
             nodes: Vec::new(),
             options: Options::default(),
             source: None,
+            data: None,
             parts: Vec::new(),
             generated: None,
             minted: 0,
@@ -1260,6 +1269,68 @@ impl Chart {
                 .cloned()
                 .collect(),
             table,
+            ..self.clone()
+        }
+    }
+
+    /// This chart reading data set `data`, whose table is `table`: the table
+    /// taken as it is, ids included, and the mapping and series styles moved
+    /// onto its columns. On the set it already reads a column is kept by id, so
+    /// a rename keeps it; moved onto a table, a column is kept where `table` has
+    /// it under the same id and name, else onto the column of its name, else
+    /// dropped. When no column
+    /// that draws survives (a series, or a Sankey's value), the mapping is
+    /// guessed, so a chart moved onto an unrelated table draws it. The link is
+    /// dropped, since the data set holds its own.
+    pub fn reading(&self, data: crate::list::DataSetId, table: &Table) -> Chart {
+        let old = &self.table;
+        let same = self.data == Some(data);
+        let onto = |id: ColumnId| -> Option<ColumnId> {
+            if same && table.column(id).is_some() {
+                return Some(id);
+            }
+            let name = &old.column(id)?.name;
+            if table.column(id).is_some_and(|c| c.name == *name) {
+                return Some(id);
+            }
+            table.columns.iter().find(|c| c.name == *name).map(|c| c.id)
+        };
+        let m = &self.mapping;
+        let mut series = Vec::new();
+        for c in m.series.iter().filter_map(|c| onto(*c)) {
+            if !series.contains(&c) {
+                series.push(c);
+            }
+        }
+        let mut mapping = Mapping {
+            category: m.category.and_then(onto),
+            series,
+            size: m.size.and_then(onto),
+            group: m.group.and_then(onto),
+            from: m.from.and_then(onto),
+            to: m.to.and_then(onto),
+            value: m.value.and_then(onto),
+        };
+        if mapping.series.is_empty() && mapping.value.is_none() {
+            mapping = Mapping::guess(self.kind, table);
+        }
+        let mut styles: Vec<SeriesStyle> = Vec::new();
+        for s in &self.series {
+            if let Some(column) = onto(s.column)
+                && !styles.iter().any(|t| t.column == column)
+            {
+                styles.push(SeriesStyle {
+                    column,
+                    ..s.clone()
+                });
+            }
+        }
+        Chart {
+            table: table.clone(),
+            mapping,
+            series: styles,
+            source: None,
+            data: Some(data),
             ..self.clone()
         }
     }

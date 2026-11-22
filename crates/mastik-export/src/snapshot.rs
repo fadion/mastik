@@ -359,8 +359,13 @@ pub struct ChartSummary {
     pub mapping: mastik_core::chart::Mapping,
     /// One per series column, in the order drawn.
     pub series: Vec<SeriesSummary>,
-    /// Whether the table is read from a linked file.
+    /// Whether the table is read from a linked file, its own or its data
+    /// table's.
     pub linked: bool,
+    /// The name of the document's data table the chart reads, whose edits it
+    /// follows; absent for a chart with a table of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// One column of a chart's table.
@@ -1206,7 +1211,11 @@ fn chart_summary(doc: &Document, id: NodeId, c: &mastik_core::chart::Chart) -> C
                 }
             })
             .collect(),
-        linked: c.source.is_some(),
+        linked: c.source.is_some()
+            || c.data
+                .and_then(|d| doc.data_set(d))
+                .is_some_and(|s| s.source.is_some()),
+        data: c.data.and_then(|d| doc.data_set(d)).map(|s| s.name.clone()),
     }
 }
 

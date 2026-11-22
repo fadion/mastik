@@ -103,6 +103,12 @@ pub(crate) enum Then {
         path: PathBuf,
         linkable: bool,
     },
+    /// Chart `chart` moved onto a new data set read from `path`.
+    ChartData {
+        chart: NodeId,
+        path: PathBuf,
+        linkable: bool,
+    },
     /// Data set `set` read again from its linked file, under its header choice;
     /// `relink` when `path` is a file picked to replace a missing one.
     DataSet {
@@ -347,8 +353,20 @@ impl MastikApp {
         }
     }
 
-    /// *Import…*: pick a file for chart `id` and open the import box on it.
+    /// The data set chart `id` reads, while the document has it.
+    pub(crate) fn chart_set(&self, id: NodeId) -> Option<mastik_core::list::DataSetId> {
+        let doc = &self.session.doc;
+        let set = doc.get(id)?.chart()?.data?;
+        doc.data_set(set).is_some().then_some(set)
+    }
+
+    /// *Import…*: pick a file for chart `id` and open the import box on it. A
+    /// chart reading a data set relinks that set instead, as a list's window
+    /// does, since its table is the set's.
     pub(crate) fn import_chart_data_dialog(&mut self, id: NodeId) {
+        if let Some(set) = self.chart_set(id) {
+            return self.relink_data_set(set);
+        }
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Chart data", &["csv", "tsv", "json"])
             .pick_file()
@@ -372,6 +390,25 @@ impl MastikApp {
                 .fail(format!("Cannot import {name}: not a CSV, TSV or JSON file"));
         };
         let linkable = bytes.is_none();
+        // A chart reading a data set takes the file into that set.
+        if let Some(set) = self.chart_set(id) {
+            if !linkable {
+                return self.session.fail(format!(
+                    "Cannot import {name}: the chart reads a data table; import into it from Edit data…"
+                ));
+            }
+            let header = self
+                .session
+                .doc
+                .data_set(set)
+                .and_then(|d| d.source.as_ref()?.header);
+            let then = Then::DataSet {
+                set,
+                path: path.to_string_lossy().into_owned(),
+                relink: true,
+            };
+            return self.start_chart_read(&name, Source::File(path), format, vec![header], then);
+        }
         if self.reading(|t| {
             matches!(t, Then::Import { chart, path: p, linkable: l }
                 if *chart == id && *p == path && *l == linkable)
@@ -525,7 +562,10 @@ impl MastikApp {
         // *Reading sales.csv…* is over; a landing that reports says so itself.
         self.session.info(String::new());
         match then {
-            Then::List { .. } | Then::ListData { .. } | Then::DataSet { .. } => {
+            Then::List { .. }
+            | Then::ListData { .. }
+            | Then::ChartData { .. }
+            | Then::DataSet { .. } => {
                 self.land_list_read(then, answer);
             }
             Then::Import {
