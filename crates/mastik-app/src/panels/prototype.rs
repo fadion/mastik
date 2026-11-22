@@ -4385,12 +4385,12 @@ impl MastikApp {
                             out.remove = true;
                         }
                         // The timing as a faint note, as a menu row's accelerator.
+                        // On the target's baseline, as the verb is.
                         if let Some(chip) = chip {
-                            ui.label(
-                                egui::RichText::new(chip)
-                                    .size(ui::CAPTION_PT)
-                                    .color(theme::text::faint()),
-                            );
+                            let chip = egui::RichText::new(chip)
+                                .size(ui::CAPTION_PT)
+                                .color(theme::text::faint());
+                            ui::baseline_label(ui, chip, ui::SMALL_PT, false);
                         }
                         let ink = match missing {
                             Some(_) => color::error(),
@@ -4415,7 +4415,7 @@ impl MastikApp {
                             ui.allocate_ui_with_layout(
                                 egui::vec2(verb_w.min(room), h),
                                 layout,
-                                |ui| ui.add(egui::Label::new(verb).truncate()),
+                                |ui| ui::baseline_label(ui, verb, ui::SMALL_PT, true),
                             );
                             if let Some(name) = &capsule {
                                 let max = (ui.available_width() * 0.6).max(24.0);
@@ -8910,6 +8910,60 @@ mod tests {
         f.app.cards_drawn.clear();
         draw(&mut f.app, &ctx);
         assert!(f.app.cards_drawn.contains(&"Flows"), "the page's flows");
+    }
+
+    /// An action row's verb, target and timing, set in three sizes, share one
+    /// baseline.
+    ///
+    /// flip: `action_row` adding the verb as a plain label → fails at "the
+    /// verb".
+    #[test]
+    fn an_action_rows_words_share_a_baseline() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let nav = navigate_to(&f.app.session.doc, f.add, f.cart);
+        let on_click = Reaction {
+            trigger: Trigger::Click,
+            actions: vec![keyed(2, nav)],
+        };
+        f.app.write_reactions(
+            f.add,
+            vec![Keyed::new(item(1), on_click)],
+            "Add interaction",
+            icon::INTERACTION,
+        );
+        f.app.session.selection.set_one(f.add);
+        f.app.session.prototype_mode = true;
+        let mut out = draw(&mut f.app, &ctx);
+        for _ in 0..3 {
+            out = draw(&mut f.app, &ctx);
+        }
+        let baseline = |word: &str| {
+            out.shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.job.text == word => {
+                    Some(t.pos.y + ui::baseline_in(&t.galley))
+                }
+                _ => None,
+            })
+        };
+        let target = baseline("Cart").expect("the target");
+        let verb = baseline("Navigate to").expect("the verb");
+        let timing = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.job.text.starts_with("Dissolve") => {
+                    Some(t.pos.y + ui::baseline_in(&t.galley))
+                }
+                _ => None,
+            })
+            .expect("the timing");
+        assert!((verb - target).abs() < 0.01, "the verb: {verb} vs {target}");
+        assert!(
+            (timing - target).abs() < 0.01,
+            "the timing: {timing} vs {target}"
+        );
     }
 
     /// The Prototype card's first section takes no rule under the card's head;

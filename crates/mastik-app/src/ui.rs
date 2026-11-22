@@ -1900,6 +1900,42 @@ pub fn baseline_in(galley: &egui::Galley) -> f32 {
         .unwrap_or(galley.size().y)
 }
 
+/// A label set on the baseline of `pt`-size text centred on the same row. egui
+/// centres each label by its box, so words of two sizes side by side sit on
+/// two baselines, a pixel apart at 2×: an action row's verb, target and timing.
+/// `truncate` cuts it with `…` as `Label::truncate` does.
+pub fn baseline_label(
+    ui: &mut egui::Ui,
+    text: egui::RichText,
+    pt: f32,
+    truncate: bool,
+) -> egui::Response {
+    let lay = |ui: &egui::Ui, t: egui::RichText| {
+        egui::WidgetText::from(t).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+    };
+    let own = lay(ui, text.clone());
+    let reference = lay(ui, egui::RichText::new("x").size(pt));
+    // How far below the reference's baseline this one would sit, both centred.
+    let drop = (baseline_in(&own) - own.size().y / 2.0)
+        - (baseline_in(&reference) - reference.size().y / 2.0);
+    let mut label = egui::Label::new(text).selectable(false);
+    if truncate {
+        label = label.truncate();
+    }
+    let (pos, galley, resp) = label.layout_in_ui(ui);
+    if ui.is_rect_visible(resp.rect) {
+        let ink = ui.visuals().text_color();
+        ui.painter()
+            .galley(pos - egui::vec2(0.0, drop), galley, ink);
+    }
+    resp
+}
+
 /// An inspector card — a surface-filled rounded box with padding.
 ///
 /// Cards float over the canvas with no backdrop pane, so the ground is opaque and
