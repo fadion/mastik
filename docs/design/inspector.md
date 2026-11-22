@@ -196,7 +196,7 @@ comes from the committed document.
 
 ### Annotation (§5.3)
 
-- On every single layer, after Credit and before Export (`panels/annotation.rs`, `inspector_annotation`): the layer's note (`Node::note`) in a `ui::text_area` that grows with its lines, a `ui::Draft` committed trimmed on leaving the field as one *Annotation* step (`icon::NOTE`). Private mode empties and disables it, as it hides a description.
+- On every single layer, the identity card's last row, under the component rows (`panels/annotation.rs`, `annotation_field`): the layer's note (`Node::note`) in a `ui::text_area` that grows with its lines, unlabelled as a component's description is, its hint *Add an annotation* and its hover what it is for, a `ui::Draft` committed trimmed on leaving the field as one *Annotation* step (`icon::NOTE`). Private mode empties and disables it, as it hides a description. It is not shown in prototype mode's identity card.
 - **On the canvas**, while the chrome shows, an annotated visible layer wears a 16-point accent mark with `icon::NOTE` just outside its box's top-right corner (`annotation_marks`); hovering the mark shows the note.
 
 ### Export (§7)

@@ -1,4 +1,4 @@
-//! The inspector's *Annotation* card: a layer's note, what the drawing cannot say
+//! A layer's annotation, the last row of its identity card: its note, what the drawing cannot say
 //! ("this list scrolls", "48 px touch target"). Specification rather than
 //! conversation: one text per layer, no replies, authors or resolved state. The
 //! canvas marks an annotated layer (`MastikApp::draw_annotation_marks`) and code
@@ -14,37 +14,37 @@ use mastik_core::{NodeId, Operation, Transaction};
 const MARK: f32 = 16.0;
 
 impl MastikApp {
-    /// The card for the one selected layer `id`: its annotation, typed in a field
-    /// that grows with its lines, committed on defocus.
-    pub(crate) fn inspector_annotation(&mut self, ui: &mut egui::Ui, id: NodeId) {
+    /// The identity card's last row for the one selected layer `id`: its
+    /// annotation, typed in a field that grows with its lines, committed on
+    /// defocus. Unlabelled, as a component's description is; the hint names it.
+    pub(crate) fn annotation_field(&mut self, ui: &mut egui::Ui, id: NodeId) {
         let Some(saved) = self.session.doc.get(id).map(|n| n.note().to_string()) else {
             return;
         };
-        self.panel(ui, "Annotation", None, |app, ui| {
-            // Private mode hides an annotation as it does a description.
-            let private = crate::private::on();
-            let mut text = match ui::Draft::live(&mut app.note_edit, ui.ctx(), id) {
-                Some(d) => d.text.clone(),
-                None if private => String::new(),
-                None => saved.clone(),
-            };
-            let hint = match private {
-                true => "Annotation hidden in private mode",
-                false => "Add what the drawing can't say",
-            };
-            let mut area = ui::TextArea::new(hint, 1);
-            area.id = Some(ui.id().with(("annotation", id)));
-            let resp = ui
-                .add_enabled_ui(!private, |ui| ui::text_area(ui, &mut text, area))
-                .inner;
-            if let Some(typed) = ui::Draft::follow(&mut app.note_edit, &resp, id, &text) {
-                let text = typed.trim().to_string();
-                if text != saved {
-                    app.session.name_step("Annotation", icon::NOTE);
-                    app.commit_edit(Transaction(vec![Operation::SetNote { id, text }]));
-                }
+        // Private mode hides an annotation as it does a description.
+        let private = crate::private::on();
+        let mut text = match ui::Draft::live(&mut self.note_edit, ui.ctx(), id) {
+            Some(d) => d.text.clone(),
+            None if private => String::new(),
+            None => saved.clone(),
+        };
+        let hint = match private {
+            true => "Annotation hidden in private mode",
+            false => "Add an annotation",
+        };
+        let mut area = ui::TextArea::new(hint, 1);
+        area.id = Some(ui.id().with(("annotation", id)));
+        let resp = ui
+            .add_enabled_ui(!private, |ui| ui::text_area(ui, &mut text, area))
+            .inner
+            .on_hover_text("What the drawing can't say: marked on the canvas, and written above the layer's code");
+        if let Some(typed) = ui::Draft::follow(&mut self.note_edit, &resp, id, &text) {
+            let text = typed.trim().to_string();
+            if text != saved {
+                self.session.name_step("Annotation", icon::NOTE);
+                self.commit_edit(Transaction(vec![Operation::SetNote { id, text }]));
             }
-        });
+        }
     }
 
     /// The annotated layers on the current page with where their mark sits on the

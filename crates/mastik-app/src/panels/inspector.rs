@@ -1617,8 +1617,6 @@ impl MastikApp {
         self.inspector_effects(ui, &[id]);
         // Only on a layer that came with one, as Group shows only on a group.
         self.inspector_credit(ui, id);
-        // What the drawing cannot say, before what comes out of it.
-        self.inspector_annotation(ui, id);
         // Last: it describes what comes out of the layer.
         self.inspector_export(ui);
     }
@@ -1972,6 +1970,8 @@ impl MastikApp {
             self.identity_element_row(ui, id);
             // What the layer is inside a component, in the same card.
             self.inspector_component(ui, super::component::ComponentPart::Identity);
+            // What the drawing cannot say, last.
+            self.annotation_field(ui, id);
         });
     }
     /// A group's or a frame's kind row on its identity card, under the boolean row:
