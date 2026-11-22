@@ -131,8 +131,12 @@ otherwise the player returns over the canvas).
   one row per such collection, the document's then each kit's under the kit's eyebrow
   (`Player::modes`), a dropdown of its modes
   set on every page, dim with *This screen sets its own ‹Collection› mode* while the screen sets
-  one. The variables follow under a *Values* eyebrow with their values; a number or text is
-  typed, a boolean switched, a colour shown. A value or mode set there is an input like any other.
+  one. The variables follow under a *Variables* eyebrow with their values; a number or text is
+  typed and set on leaving the field (`ui::Draft`, as every field commits; `Escape` drops it), a
+  boolean is a `ui::switch_row` under its name, a colour shown. Each row but a switch is a
+  `ui::label_row`: the name on the left, strong once play has set the value, cut short of the
+  control, which takes `STATE_CONTROL_SHARE` of the row. A value or mode set there is an input
+  like any other.
 - **Private mode** masks the flow's and page's names in the card's head and the window's title.
 - Its texture is the player's own `CanvasRenderer`, drawn whole through
   `mastik_render::play` whenever the scene or the copy changed.
@@ -150,8 +154,13 @@ without one the card does not open and the status line says to add one. Each out
 to write, offering a name led by the document's: `‹document› — ‹flow›.html` (the flow it opens
 on), `‹document› — ‹take›.mp4` or `.gif`, `‹document› — Flow map.pdf`.
 
+- **The flows** of the HTML file and of the flow map are a ticked list (`flow_ticks`), one
+  `ui::tick_row` per flow wearing `PLAY` as the flow chips do, since a flow is something left out
+  rather than a feature switched; the one left ticked alone is `Tick::Fixed`, tipped with why it
+  cannot go.
 - **HTML file**: the flows in the file (every flow is the empty list; the last one cannot be
-  left out), the flow it opens on, the device frame, player bar and hints, the scaling (the page
+  left out), the flow it opens on (a `ui::fitted_combo`, *None* when no flow is in), the device
+  frame, player bar and *Hotspots*, the scaling (the page
   card's dropdown with *Page's own · ‹its scaling›* first, the default), and *On a phone*
   (`PlayExport::on_phone`: *Follow its turn*, the default, or *Keep the page's*, captioned as the
   scaling's rows are; always shown, so the card keeps its size, and disabled with *Only a
@@ -160,7 +169,8 @@ on), `‹document› — ‹take›.mp4` or `.gif`, `‹document› — Flow map
   - **The size meter**, measured on a worker before anything is written, once per change of
     settings, document or downscaled pictures: *On disk, about ‹size›*, a `ui::level_bar_parts`
     split into Player, Fonts, Images and Document (`Parts::breakdown`, `prototyping-export.md`
-    *The file*), and a legend of each part's size.
+    *The file*), and under it a `ui::level_bar_legend` of each part's size.
+  - Its warnings and notes are `ui::note_line`s, the design Export card's warning line.
   - **A heavy picture**: one the file carries that is drawn below `pictures::HEAVY_BELOW` (a
     quarter) of its pixels across is named by the first layer showing it, with *Downscale to 2×*:
     twice its drawn size, made in the export's copy only (`prototype_export::downscale`, a JPEG at
@@ -172,12 +182,14 @@ on), `‹document› — ‹take›.mp4` or `.gif`, `‹document› — Flow map
     disabled with *Fix the interactions named above first*; until the measure lands, with
     *Measuring the file and checking its interactions*, since the measure is what finds them.
 - **Video**: the takes recorded this run (`Playing::takes`, each a `TakeRec` with what played and
-  when), in a *Take* dropdown newest first, each noted with its length and clicks; *Format* (MP4,
-  *H.264, small*, or GIF, *loops, plays anywhere*); *Size* at 1×, 2× (the default) or 3× the
+  when), in a *Take* dropdown newest first, each noted with its length and clicks; side by side,
+  `ui::CARD_COL_GAP` apart, *Format* (MP4,
+  *H.264, small*, or GIF, *loops, plays anywhere*) and *Size* at 1×, 2× (the default) or 3× the
   screen, each with its pixel size, the device frame's bezel counted; *Show clicks* (on by
   default) and *Device frame*; and a still preview at the first click (`video::still`), or the
   start when there is none. The foot says the length at 30 frames a second. Written through
   `mastik_export::video` on an export worker (`play.md`, *Takes*). Without a take the body says
   to record one, and *Export…* is disabled.
-- **Flow map**: which flows go in (empty is every flow; the last cannot be left out), written by
+- **Flow map**: which flows go in (empty is every flow; the last cannot be left out), then a
+  `settings::caption_unled` saying what the map holds, written by
   `mastik_export::flow_map::flow_map_of` (`export_flow_map_to`).

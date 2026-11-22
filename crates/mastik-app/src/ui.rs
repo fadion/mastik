@@ -415,6 +415,48 @@ pub fn selection_note(ui: &mut egui::Ui, text: &str) -> egui::Response {
     )
 }
 
+/// A glyph that leads a line of [`SMALL_PT`] words: smaller than
+/// [`CONTROL_GLYPH_PT`], which leads a control rather than prose.
+pub const NOTE_GLYPH_PT: f32 = 13.0;
+
+/// A card's warning or notice under its controls (the design Export card's
+/// merged colours, the prototype export's heavy pictures): `glyph` at
+/// [`NOTE_GLYPH_PT`] in `ink`, then `text` wrapped at [`SMALL_PT`] in
+/// `text::muted()`, and under it the [`word_link`] `act` when given. Answers
+/// whether the act was clicked.
+pub fn note_line(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    ink: egui::Color32,
+    text: &str,
+    act: Option<&str>,
+) -> bool {
+    /// Between the glyph and the words.
+    const GAP: f32 = 6.0;
+    /// Between the words and the act under them.
+    const ACT_GAP: f32 = 2.0;
+    let mut clicked = false;
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = GAP;
+        ui.label(theme::icon_text(glyph, NOTE_GLYPH_PT, ink));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = ACT_GAP;
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .size(SMALL_PT)
+                        .color(theme::text::muted()),
+                )
+                .wrap(),
+            );
+            if let Some(act) = act {
+                clicked = word_link(ui, act, false).clicked();
+            }
+        });
+    });
+    clicked
+}
+
 /// What a whole surface says when it is empty, where [`empty_note`] is too
 /// little: an optional glyph, a [`CONTROL_PT`] heading in `text::strong()` and a
 /// [`SMALL_PT`] `text::dim()` line saying how to fill it, centred. `below` adds
@@ -5203,6 +5245,36 @@ pub fn level_bar_parts(
     resp
 }
 
+/// The side of a [`level_bar_legend`] entry's chip: the cap height of its
+/// [`CAPTION_PT`] words.
+pub const LEGEND_CHIP: f32 = 8.0;
+
+/// The legend under a [`level_bar_parts`]: each part's chip in its ink, then
+/// its words at [`CAPTION_PT`] in `text::faint()`, entries wrapping across the
+/// width [`CARD_COL_GAP`] apart.
+pub fn level_bar_legend(ui: &mut egui::Ui, parts: &[(String, egui::Color32)]) {
+    /// Between a chip and its words.
+    const CHIP_GAP: f32 = 5.0;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = CARD_COL_GAP;
+        for (words, ink) in parts {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = CHIP_GAP;
+                let (r, _) = ui.allocate_exact_size(
+                    egui::vec2(LEGEND_CHIP, LEGEND_CHIP),
+                    egui::Sense::hover(),
+                );
+                ui.painter().rect_filled(r, LEVEL_BAR_H / 2.0, *ink);
+                ui.label(
+                    egui::RichText::new(words)
+                        .size(CAPTION_PT)
+                        .color(theme::text::faint()),
+                );
+            });
+        }
+    });
+}
+
 /// The arrow at the closed end of a `ComboBox` — a caret glyph at one fixed
 /// colour, in place of egui's triangle, which goes white when open.
 ///
@@ -7037,6 +7109,35 @@ pub fn labelled<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::U
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = CARD_ROW_GAP;
             add(ui)
+        })
+        .inner
+    })
+    .inner
+}
+
+/// A name on the left and its control on the right, one [`CONTROL_H`] row (the
+/// player's state card): the name at [`SWITCH_ROW_LABEL_PT`] in `ink`, cut with
+/// an ellipsis short of the controls and whole under the pointer; `controls`
+/// adds them right to left, first at the edge, [`CARD_COL_GAP`] apart. Settings'
+/// `labelled_row` is the same row with its label never cut.
+pub fn label_row<R>(
+    ui: &mut egui::Ui,
+    name: &str,
+    ink: egui::Color32,
+    controls: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = CARD_COL_GAP;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().interact_size.y = CONTROL_H;
+            let out = controls(ui);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let words = egui::RichText::new(name)
+                    .size(SWITCH_ROW_LABEL_PT)
+                    .color(ink);
+                ui.add(egui::Label::new(words).truncate());
+            });
+            out
         })
         .inner
     })

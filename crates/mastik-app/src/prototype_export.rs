@@ -21,6 +21,8 @@ use mastik_export::video::Format;
 const W: f32 = 380.0;
 /// The preview's height in the Video output.
 const PREVIEW_H: f32 = 132.0;
+/// The air the preview's still keeps inside its well, on every side.
+const PREVIEW_INSET: f32 = 4.0;
 /// A video's frame rate.
 const VIDEO_FPS: u32 = 30;
 /// The sizes a video is offered at, as multiples of the screen.
@@ -320,59 +322,14 @@ fn size_meter(ui: &mut egui::Ui, b: &Breakdown) {
                 .map(|(_, n, ink)| (*n as f32 / total as f32, *ink))
                 .collect();
             ui::level_bar_parts(ui, ui.available_width(), &shares);
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                for (name, n, ink) in parts {
-                    if n == 0 {
-                        continue;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 5.0;
-                        let (r, _) =
-                            ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                        ui.painter().rect_filled(r, 2.0, ink);
-                        ui.label(
-                            egui::RichText::new(format!("{name} {}", settings::human_bytes(n)))
-                                .size(ui::CAPTION_PT)
-                                .color(theme::text::faint()),
-                        );
-                    });
-                }
-            });
+            let legend: Vec<(String, egui::Color32)> = parts
+                .iter()
+                .filter(|(_, n, _)| *n > 0)
+                .map(|(name, n, ink)| (format!("{name} {}", settings::human_bytes(*n)), *ink))
+                .collect();
+            ui::level_bar_legend(ui, &legend);
         },
     );
-}
-
-/// One line of the card's notes: a glyph in `ink`, then `text`, then an act
-/// when given. Answers whether the act was clicked.
-fn note_line(
-    ui: &mut egui::Ui,
-    glyph: &str,
-    ink: egui::Color32,
-    text: &str,
-    act: Option<&str>,
-) -> bool {
-    let mut clicked = false;
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(theme::icon_text(glyph, ui::CONTROL_GLYPH_PT, ink));
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(text)
-                        .size(ui::SMALL_PT)
-                        .color(theme::text::muted()),
-                )
-                .wrap(),
-            );
-            if let Some(act) = act {
-                clicked = ui::word_link(ui, act, false).clicked();
-            }
-        });
-    });
-    clicked
 }
 
 /// The first layer that shows `id` in `doc`, by its name.
@@ -639,21 +596,9 @@ impl MastikApp {
             .unwrap_or_default();
         let s = &mut card.settings;
         ui::labelled(ui, "Flows", |ui| {
-            let count = match s.flows.is_empty() {
-                true => refs.len(),
-                false => s.flows.len(),
-            };
-            for (r, words) in all {
-                let on = s.flows.is_empty() || s.flows.contains(r);
-                // The file holds at least one flow.
-                let last = on && count == 1;
-                let row = ui
-                    .add_enabled_ui(!last, |ui| ui::switch_row(ui, words, on, ui::CONTROL_H))
-                    .inner
-                    .on_disabled_hover_text("The file holds at least one flow");
-                if row.clicked() {
-                    *s = with_flow(s, &refs, *r, !on);
-                }
+            if let Some(r) = flow_ticks(ui, all, &s.flows, "The file holds at least one flow") {
+                let on = s.flows.is_empty() || s.flows.contains(&r);
+                *s = with_flow(s, &refs, r, !on);
             }
         });
         let included: Vec<&(FlowRef, String)> = all
@@ -665,23 +610,25 @@ impl MastikApp {
                 .opens
                 .and_then(|o| included.iter().copied().find(|(r, _)| *r == o))
                 .or(included.first().copied())
-                .map_or("—".to_string(), |(_, w)| w.clone());
-            ui.scope(|ui| {
-                ui::combo_height(ui);
-                egui::ComboBox::from_id_salt("prototype-export-opens")
-                    .icon(ui::combo_chevron)
-                    .width(ui.available_width())
-                    .selected_text(shown)
-                    .show_ui(ui, |ui| {
-                        ui::menu_rows(ui);
-                        for (r, w) in &included {
-                            let on = s.opens == Some(*r);
-                            if ui.selectable_label(on, w).clicked() {
-                                s.opens = Some(*r);
-                            }
+                .map_or("None".to_string(), |(_, w)| w.clone());
+            let w = ui.available_width();
+            ui::fitted_combo(
+                ui,
+                "prototype-export-opens",
+                w,
+                ui::combo_text(&shown),
+                &shown,
+                |ui| {
+                    ui::menu_rows(ui);
+                    for (r, words) in &included {
+                        let on = s.opens == Some(*r);
+                        let row = ui::MenuRow::new("", words).selected(on);
+                        if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                            s.opens = Some(*r);
                         }
-                    });
-            });
+                    }
+                },
+            );
         });
         ui::labelled(ui, "Player", |ui| {
             if ui::switch_row(ui, "Device frame", s.device_frame, ui::CONTROL_H).clicked() {
@@ -724,7 +671,7 @@ impl MastikApp {
                         HoldWhy::Missing => format!("{name} acts on a layer that is gone"),
                         HoldWhy::Expression(e) => format!("{name}'s expression doesn't read: {e}"),
                     };
-                    note_line(ui, icon::WARNING, color::danger(), &text, None);
+                    ui::note_line(ui, icon::WARNING, color::danger(), &text, None);
                 }
                 if !m.holds.is_empty() {
                     *why_not = Some("Fix the interactions named above first".into());
@@ -749,7 +696,7 @@ impl MastikApp {
                 h.size.1,
                 h.drawn_w
             );
-            if note_line(
+            if ui::note_line(
                 ui,
                 icon::WARNING,
                 color::warn(),
@@ -764,7 +711,7 @@ impl MastikApp {
             let text = format!(
                 "A picture is downscaled to {w} × {h} in this file; the document keeps the original."
             );
-            if note_line(
+            if ui::note_line(
                 ui,
                 icon::CORNERS_IN,
                 theme::text::dim(),
@@ -1000,69 +947,74 @@ fn video_body(
         .as_ref()
         .filter(|(i, _)| *i == v.take)
         .and_then(|(_, s)| *s);
-    ui.columns(2, |cols| {
-        ui::labelled(&mut cols[0], "Format", |ui| {
-            let shown = match v.format {
-                Format::Mp4 => "MP4",
-                Format::Gif => "GIF",
-            };
-            let w = ui.available_width();
-            ui::fitted_combo(
-                ui,
-                "export-video-format",
-                w,
-                ui::combo_text(shown),
-                shown,
-                |ui| {
-                    ui::menu_rows(ui);
-                    for (f, label, caption) in [
-                        (Format::Mp4, "MP4", "H.264, small"),
-                        (Format::Gif, "GIF", "loops, plays anywhere"),
-                    ] {
-                        let row = ui::MenuRow::new("", label)
-                            .note(caption)
-                            .selected(v.format == f);
-                        if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
-                            v.format = f;
+    let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
+    let column = egui::Layout::top_down(egui::Align::Min);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+        ui.allocate_ui_with_layout(egui::vec2(half, 0.0), column, |ui| {
+            ui::labelled(ui, "Format", |ui| {
+                let shown = match v.format {
+                    Format::Mp4 => "MP4",
+                    Format::Gif => "GIF",
+                };
+                ui::fitted_combo(
+                    ui,
+                    "export-video-format",
+                    half,
+                    ui::combo_text(shown),
+                    shown,
+                    |ui| {
+                        ui::menu_rows(ui);
+                        for (f, label, caption) in [
+                            (Format::Mp4, "MP4", "H.264, small"),
+                            (Format::Gif, "GIF", "loops, plays anywhere"),
+                        ] {
+                            let row = ui::MenuRow::new("", label)
+                                .note(caption)
+                                .selected(v.format == f);
+                            if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                                v.format = f;
+                            }
                         }
-                    }
-                },
-            );
+                    },
+                );
+            });
         });
-        ui::labelled(&mut cols[1], "Size", |ui| {
-            let words = |k: u32| match screen {
-                Some(s) => {
-                    let (w, h) = mastik_export::video::framed_size(
-                        (
-                            (s.width * f64::from(k)).round() as u32,
-                            (s.height * f64::from(k)).round() as u32,
-                        ),
-                        f64::from(k),
-                        v.device,
-                    );
-                    format!("{k}× · {w} × {h}")
-                }
-                None => format!("{k}×"),
-            };
-            let shown = words(v.times);
-            let w = ui.available_width();
-            ui::fitted_combo(
-                ui,
-                "export-video-size",
-                w,
-                ui::combo_text(&shown),
-                &shown,
-                |ui| {
-                    ui::menu_rows(ui);
-                    for k in VIDEO_TIMES {
-                        let label = words(k);
-                        let row = ui::MenuRow::new("", &label).selected(v.times == k);
-                        if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
-                            v.times = k;
-                        }
+        ui.allocate_ui_with_layout(egui::vec2(half, 0.0), column, |ui| {
+            ui::labelled(ui, "Size", |ui| {
+                let words = |k: u32| match screen {
+                    Some(s) => {
+                        let (w, h) = mastik_export::video::framed_size(
+                            (
+                                (s.width * f64::from(k)).round() as u32,
+                                (s.height * f64::from(k)).round() as u32,
+                            ),
+                            f64::from(k),
+                            v.device,
+                        );
+                        format!("{k}× · {w} × {h}")
                     }
-                },
-            );
+                    None => format!("{k}×"),
+                };
+                let shown = words(v.times);
+                ui::fitted_combo(
+                    ui,
+                    "export-video-size",
+                    half,
+                    ui::combo_text(&shown),
+                    &shown,
+                    |ui| {
+                        ui::menu_rows(ui);
+                        for k in VIDEO_TIMES {
+                            let label = words(k);
+                            let row = ui::MenuRow::new("", &label).selected(v.times == k);
+                            if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                                v.times = k;
+                            }
+                        }
+                    },
+                );
+            });
         });
     });
     if ui::switch_row(ui, "Show clicks", v.clicks, ui::CONTROL_H).clicked() {
@@ -1073,11 +1025,12 @@ fn video_body(
     }
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, PREVIEW_H), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 4.0, color::field());
+    ui.painter().rect_filled(rect, ui::BUTTON_R, color::field());
     match card.preview.as_ref().and_then(|(_, t)| t.as_ref()) {
         Some(tex) => {
             let size = tex.size_vec2();
-            let k = ((rect.height() - 8.0) / size.y).min((rect.width() - 8.0) / size.x);
+            let room = rect.shrink(PREVIEW_INSET).size();
+            let k = (room.y / size.y).min(room.x / size.x);
             let at = egui::Rect::from_center_size(rect.center(), size * k);
             ui.painter().image(
                 tex.id(),
@@ -1088,7 +1041,8 @@ fn video_body(
         }
         None => {
             let now = ui.input(|i| i.time);
-            ui::paint_spinner(ui.painter(), rect.center(), 16.0, theme::text::faint(), now);
+            let ink = theme::text::faint();
+            ui::paint_spinner(ui.painter(), rect.center(), ui::CONTROL_GLYPH_PT, ink, now);
             ui.ctx().request_repaint();
         }
     }
@@ -1110,26 +1064,53 @@ fn flow_map_body(
     }
     let refs: Vec<FlowRef> = all.iter().map(|(r, _)| *r).collect();
     ui::labelled(ui, "Flows", |ui| {
-        let count = match card.map_flows.is_empty() {
-            true => refs.len(),
-            false => card.map_flows.len(),
-        };
-        for (r, words) in all {
-            let on = card.map_flows.is_empty() || card.map_flows.contains(r);
-            let last = on && count == 1;
-            let row = ui
-                .add_enabled_ui(!last, |ui| ui::switch_row(ui, words, on, ui::CONTROL_H))
-                .inner
-                .on_disabled_hover_text("The map holds at least one flow");
-            if row.clicked() {
-                card.map_flows = toggled(&card.map_flows, &refs, *r, !on);
-            }
+        if let Some(r) = flow_ticks(ui, all, &card.map_flows, "The map holds at least one flow") {
+            let on = card.map_flows.is_empty() || card.map_flows.contains(&r);
+            card.map_flows = toggled(&card.map_flows, &refs, r, !on);
         }
     });
-    ui::empty_note(
+    settings::caption_unled(
         ui,
         "Each flow's frames with their connectors, then every interaction in words",
     );
+}
+
+/// The flows of `all` as ticked rows, `list` (empty is every one) ticked, the
+/// one left ticked alone fixed with `last_tip`. Answers the flow clicked.
+fn flow_ticks(
+    ui: &mut egui::Ui,
+    all: &[(FlowRef, String)],
+    list: &[FlowRef],
+    last_tip: &str,
+) -> Option<FlowRef> {
+    let count = match list.is_empty() {
+        true => all.len(),
+        false => list.len(),
+    };
+    let w = ui.available_width();
+    let mut clicked = None;
+    // The rows touch, as a ticked list's do.
+    ui.spacing_mut().item_spacing.y = 0.0;
+    for (r, words) in all {
+        let on = list.is_empty() || list.contains(r);
+        let (tick, tip) = match on && count == 1 {
+            true => (ui::Tick::Fixed, Some(last_tip)),
+            false => (ui::Tick::Open(on), None),
+        };
+        let row = ui::tick_row(
+            ui,
+            w,
+            tick,
+            ui::RowMark::Glyph(icon::PLAY),
+            words,
+            ui::RowTail::None,
+            tip,
+        );
+        if row.clicked() {
+            clicked = Some(*r);
+        }
+    }
+    clicked
 }
 
 #[cfg(test)]

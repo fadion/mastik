@@ -126,8 +126,8 @@ pub(crate) struct Playing {
     notices: Vec<(String, f64)>,
     /// The takes the record button finished this run, oldest first.
     pub(crate) takes: Vec<TakeRec>,
-    /// The state card's fields being typed in, by variable.
-    drafts: Vec<(mastik_core::VarId, String)>,
+    /// The state card's field being typed in, by its variable.
+    draft: Option<ui::Draft<mastik_core::VarId>>,
     /// The device turned from the bar for this run, `Some(true)` on its side;
     /// `None` follows the page's own setting. Play state: never the document's.
     turned: Option<bool>,
@@ -288,7 +288,7 @@ impl Playing {
             pointer: None,
             notices: Vec::new(),
             takes: Vec::new(),
-            drafts: Vec::new(),
+            draft: None,
             turned: None,
             resized_at: None,
             sharing: None,
@@ -863,67 +863,61 @@ fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
         return;
     }
     for row in rows {
-        let w = ui.available_width();
-        ui.allocate_ui_with_layout(
-            egui::vec2(w, ui::CONTROL_H),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                let name =
-                    egui::RichText::new(&row.name)
-                        .size(ui::SMALL_PT)
-                        .color(match row.played {
-                            true => theme::text::strong(),
-                            false => theme::text::muted(),
-                        });
-                ui.add_sized(
-                    egui::vec2(w * 0.45, ui::CONTROL_H),
-                    egui::Label::new(name).truncate(),
-                );
-                let field = egui::vec2(ui.available_width(), ui::CONTROL_H);
-                match (&row.value, row.kind) {
-                    (Value::Boolean(b), VarKind::Boolean) => {
-                        if ui::switch_row(ui, "", *b, ui::CONTROL_H).clicked() {
-                            let _ = p.player.set_value(row.var, Value::Boolean(!b));
-                        }
-                    }
-                    (Value::Number(_) | Value::String(_), _) => {
-                        let shown = match &row.value {
-                            Value::Number(n) => number_text(*n),
-                            Value::String(s) => s.clone(),
-                            _ => String::new(),
-                        };
-                        let at = p.drafts.iter().position(|(v, _)| *v == row.var);
-                        let mut text = at.map_or(shown, |i| p.drafts[i].1.clone());
-                        let r = ui::text_field(ui, field, &mut text, "");
-                        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if enter {
-                            let value = match row.kind {
-                                VarKind::Number => {
-                                    text.trim().parse::<f64>().ok().map(Value::Number)
-                                }
-                                _ => Some(Value::String(text.clone())),
-                            };
-                            if let Some(v) = value {
-                                let _ = p.player.set_value(row.var, v);
-                            }
-                        }
-                        p.drafts.retain(|(v, _)| *v != row.var);
-                        if r.has_focus() {
-                            p.drafts.push((row.var, text));
-                        }
-                    }
-                    _ => {
-                        ui.label(
-                            egui::RichText::new(crate::player::value_words(&row.value))
-                                .size(ui::SMALL_PT)
-                                .color(theme::text::muted()),
-                        );
-                    }
+        // A value play set reads strong, one it has not muted.
+        let ink = ui::switch_row_ink(row.played);
+        match (&row.value, row.kind) {
+            (Value::Boolean(b), VarKind::Boolean) => {
+                if ui::switch_row(ui, &row.name, *b, ui::CONTROL_H).clicked() {
+                    let _ = p.player.set_value(row.var, Value::Boolean(!b));
                 }
-            },
-        );
+            }
+            (Value::Number(_) | Value::String(_), _) => {
+                let shown = match &row.value {
+                    Value::Number(n) => number_text(*n),
+                    Value::String(s) => s.clone(),
+                    _ => String::new(),
+                };
+                let w = state_control_w(ui);
+                ui::label_row(ui, &row.name, ink, |ui| {
+                    let mut text = match ui::Draft::live(&mut p.draft, ui.ctx(), row.var) {
+                        Some(d) => d.text.clone(),
+                        None => shown,
+                    };
+                    let r = ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, "");
+                    // Set on leaving the field, as every field commits; a
+                    // number that does not read is dropped.
+                    if let Some(typed) = ui::Draft::follow(&mut p.draft, &r, row.var, &text) {
+                        let value = match row.kind {
+                            VarKind::Number => typed.trim().parse::<f64>().ok().map(Value::Number),
+                            _ => Some(Value::String(typed)),
+                        };
+                        if let Some(v) = value {
+                            let _ = p.player.set_value(row.var, v);
+                        }
+                    }
+                });
+            }
+            _ => {
+                ui::label_row(ui, &row.name, ink, |ui| {
+                    ui.label(
+                        egui::RichText::new(crate::player::value_words(&row.value))
+                            .size(ui::SMALL_PT)
+                            .color(theme::text::muted()),
+                    );
+                });
+            }
+        }
     }
 }
+
+/// How wide the state card's controls are: the share of the row its name
+/// leaves them.
+fn state_control_w(ui: &egui::Ui) -> f32 {
+    ui.available_width() * STATE_CONTROL_SHARE
+}
+
+/// The share of a state card row its control takes.
+const STATE_CONTROL_SHARE: f32 = 0.55;
 
 /// How many steps *Back* goes from here: each open overlay closes first, then
 /// the navigation history pops.
@@ -972,40 +966,28 @@ fn screen_row(ui: &mut egui::Ui, p: &Playing) {
 /// A pick sets the mode on every page, as *Set mode* does by default; a screen
 /// that sets its own shows that one, the dropdown dim.
 fn mode_row(ui: &mut egui::Ui, p: &mut Playing, i: usize, row: &mastik_play::ModeRow) {
-    let w = ui.available_width();
+    let field = state_control_w(ui);
     let mut pick = None;
-    ui.allocate_ui_with_layout(
-        egui::vec2(w, ui::CONTROL_H),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            let name = egui::RichText::new(&row.name)
-                .size(ui::SMALL_PT)
-                .color(theme::text::muted());
-            ui.add_sized(
-                egui::vec2(w * 0.45, ui::CONTROL_H),
-                egui::Label::new(name).truncate(),
-            );
-            let shown = row
-                .modes
-                .iter()
-                .find(|(m, _)| *m == row.current)
-                .map_or(String::new(), |(_, n)| n.clone());
-            let field = ui.available_width();
-            let r = ui.add_enabled_ui(!row.screen_sets, |ui| {
-                ui::fitted_combo(ui, ("play-mode", i), field, &shown, &shown, |ui| {
-                    ui::menu_rows(ui);
-                    for (m, n) in &row.modes {
-                        let on = *m == row.current;
-                        if ui.selectable_label(on, n).clicked() && !on {
-                            pick = Some(*m);
-                        }
+    ui::label_row(ui, &row.name, theme::text::muted(), |ui| {
+        let shown = row
+            .modes
+            .iter()
+            .find(|(m, _)| *m == row.current)
+            .map_or(String::new(), |(_, n)| n.clone());
+        let r = ui.add_enabled_ui(!row.screen_sets, |ui| {
+            ui::fitted_combo(ui, ("play-mode", i), field, &shown, &shown, |ui| {
+                ui::menu_rows(ui);
+                for (m, n) in &row.modes {
+                    let on = *m == row.current;
+                    if ui.selectable_label(on, n).clicked() && !on {
+                        pick = Some(*m);
                     }
-                })
-            });
-            r.response
-                .on_disabled_hover_text(format!("This screen sets its own {} mode", row.name));
-        },
-    );
+                }
+            })
+        });
+        r.response
+            .on_disabled_hover_text(format!("This screen sets its own {} mode", row.name));
+    });
     if let Some(m) = pick {
         p.player.input(mastik_play::Input::SetMode(m));
     }
@@ -1018,36 +1000,24 @@ const OPENED_ROWS_LISTED: usize = mastik_core::list::MAX_DRAWN;
 /// by number and first cell, the open one ticked. A pick opens the row as a tap
 /// on it would.
 fn opened_row(ui: &mut egui::Ui, p: &mut Playing, i: usize, row: &mastik_play::OpenedRow) {
-    let w = ui.available_width();
+    let field = state_control_w(ui);
     let mut pick = None;
     let label = |n: usize| match row.rows.get(n).filter(|c| !c.is_empty()) {
         Some(cell) => format!("{} \u{b7} {cell}", n + 1),
         None => format!("Row {}", n + 1),
     };
-    ui.allocate_ui_with_layout(
-        egui::vec2(w, ui::CONTROL_H),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            let name = egui::RichText::new(&row.name)
-                .size(ui::SMALL_PT)
-                .color(theme::text::muted());
-            ui.add_sized(
-                egui::vec2(w * 0.45, ui::CONTROL_H),
-                egui::Label::new(name).truncate(),
-            );
-            let shown = label(row.current);
-            let field = ui.available_width();
-            ui::fitted_combo(ui, ("play-opened", i), field, &shown, &shown, |ui| {
-                ui::menu_rows(ui);
-                for n in 0..row.rows.len().min(OPENED_ROWS_LISTED) {
-                    let on = n == row.current;
-                    if ui.selectable_label(on, label(n)).clicked() && !on {
-                        pick = Some(n);
-                    }
+    ui::label_row(ui, &row.name, theme::text::muted(), |ui| {
+        let shown = label(row.current);
+        ui::fitted_combo(ui, ("play-opened", i), field, &shown, &shown, |ui| {
+            ui::menu_rows(ui);
+            for n in 0..row.rows.len().min(OPENED_ROWS_LISTED) {
+                let on = n == row.current;
+                if ui.selectable_label(on, label(n)).clicked() && !on {
+                    pick = Some(n);
                 }
-            });
-        },
-    );
+            }
+        });
+    });
     if let Some(n) = pick {
         p.player.input(mastik_play::Input::OpenRow {
             data: row.data,
@@ -1713,7 +1683,7 @@ impl crate::app::MastikApp {
                 p.player = fresh;
                 p.start = start;
                 p.drawn = None;
-                p.drafts.clear();
+                p.draft = None;
                 p.touch = false;
             }
             Err(e) => self.session.fail(format!("Can't play: {e}")),

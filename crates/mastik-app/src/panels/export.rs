@@ -1636,18 +1636,13 @@ impl MastikApp {
                 _ => 0,
             };
             if merged > 1 {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    let warn = theme::color::warn();
-                    ui.label(theme::icon_text(icon::WARNING, 13.0, warn));
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{merged} colours will all become currentColor"
-                        ))
-                        .size(ui::CAPTION_PT)
-                        .color(warn),
-                    );
-                });
+                ui::note_line(
+                    ui,
+                    icon::WARNING,
+                    theme::color::warn(),
+                    &format!("{merged} colours will all become currentColor"),
+                    None,
+                );
             }
         });
 
