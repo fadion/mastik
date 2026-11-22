@@ -76,7 +76,6 @@ Fields in that form, and the particular rule each adds:
 | `DocumentDto::guides` | Absent means none. |
 | `DocumentDto::scripts` | The stored scripts (`command-mode.md` §10), `[{id, name, source}]` in list order, ids in the node wire form; absent means none. Part of v17. |
 | `DocumentDto::tokens_link` | Absent means linked to no tokens file (`styles-variables.md`, *Design tokens*). After `images`, before `published`. Its `into`, the collection the root tokens landed in, is skipped when absent, which reads as the collection on show. Not in the library block (§5.11a): the scan reads a file's first 4 KB, and the applied copy can be any size. |
-| `DocumentDto::prototype_mode` | The document was last left in prototype mode (`prototyping-authoring.md`); skipped when false, which is what an older file meant. After `tokens_link`, before `published`. `mastik diff` skips the key: how the document was last looked at is no change to it. |
 | `Node::proportions_locked` | Bare default; no normalization (inert on every kind). |
 | `Node::pivot` | `skip_serializing_if = "Option::is_none"`; the loader must not re-decide which `Pivot` variant a kind gets (§5.3). |
 | `Stroke::sides`, `Stroke::dash_fit` | Skipped when whole-outline / unfitted. |

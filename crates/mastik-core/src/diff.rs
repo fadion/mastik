@@ -618,10 +618,6 @@ impl<'d> Differ<'d> {
                 self.tokens_link(x, y, &mut out);
                 continue;
             }
-            // How the document was last looked at, not a change to it.
-            if key == "prototype_mode" {
-                continue;
-            }
             let null = Value::Null;
             let (x, y) = (x.unwrap_or(&null), y.unwrap_or(&null));
             if key == "variables" {

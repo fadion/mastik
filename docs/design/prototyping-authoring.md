@@ -16,12 +16,12 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   status line. The palette's row flips it too. **No chord and no menu**: the keymap's chords are
   spent, and a prototyping chord would mean two things. Tools, selection and the layers panel are
   unchanged, so a frame can be nudged without leaving the mode.
-- **The mode is the document's, saved with it**, so each tab has its own and a file reopens in
-  the mode it was left in. `MastikApp::prototype_mode` reads `Document::prototype_mode`;
-  `set_prototype_mode` writes it with `Document::set_prototype_mode`, outside undo and reporting
-  no `DirtySet` as `set_meta` does, and a change marks the document unsaved (`mark_unsaved`),
-  since the file carries it. On disk it is `DocumentDto::prototype_mode`, skipped when off
-  (`io.md`); `mastik diff` ignores it, as how a document was last looked at is no change to it.
+- **The mode is the document's view, remembered as its camera is.** It lives on the document's
+  session (`EditorSession::prototype_mode`), so each tab has its own, and the library's local
+  index keeps the ids of documents left in it (`LocalIndex::prototype_mode`, beside `last_view`),
+  so a document reopens in the mode it was left in (`reopen_prototype_mode`). Never in the file,
+  so switching it leaves the document clean; a document never filed has no id and is not
+  remembered until it is.
 - **What it shows.** One layer: its identity (glyph, name, a screen's size or *Instance*), the
   *Interaction states* card when it applies, the *Interactions* card and the *Prototype* card. Nothing selected: the page card, *Flows* and the
   page's *Prototype* card. Several layers: *Prototype one layer at a time*.

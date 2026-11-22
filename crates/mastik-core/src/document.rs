@@ -104,9 +104,6 @@ pub struct Document {
     /// Outside undo for `meta`'s reason: it records what the file was when last
     /// applied, which an undo of that apply does not make untrue.
     tokens_link: Option<std::sync::Arc<crate::meta::TokensLink>>,
-    /// The document was last left in prototype mode, so it reopens in it. How the
-    /// document is looked at, not what it holds: outside undo and never drawn.
-    prototype_mode: bool,
     /// **True only while [`Self::apply_restoring`] runs** — a history step putting
     /// back values this document already held, which the layout operations then
     /// take whether or not CSS accepts them. Never true between calls.
@@ -162,7 +159,6 @@ impl Document {
             meta: DocumentMeta::default(),
             published: None,
             tokens_link: None,
-            prototype_mode: false,
             restoring: false,
             laid_widths: LaidWidths::default(),
         }
@@ -397,17 +393,6 @@ impl Document {
     /// `DirtySet`, as [`Self::set_meta`] is.
     pub fn set_tokens_link(&mut self, link: Option<crate::meta::TokensLink>) {
         self.tokens_link = link.map(std::sync::Arc::new);
-    }
-
-    /// Whether the document was last left in prototype mode.
-    pub fn prototype_mode(&self) -> bool {
-        self.prototype_mode
-    }
-
-    /// Record whether the document is in prototype mode. Outside undo and
-    /// reporting no `DirtySet`, as [`Self::set_meta`] is.
-    pub fn set_prototype_mode(&mut self, on: bool) {
-        self.prototype_mode = on;
     }
 
     /// Every ruler guide on the document, in id order.
@@ -1502,7 +1487,6 @@ impl Document {
             meta,
             published: published.map(std::sync::Arc::new),
             tokens_link: None,
-            prototype_mode: false,
             restoring: false,
             laid_widths: LaidWidths::default(),
         }
@@ -1696,7 +1680,6 @@ impl Document {
             meta: DocumentMeta::default(),
             published: None,
             tokens_link: None,
-            prototype_mode: false,
             restoring: self.restoring,
             laid_widths: LaidWidths::default(),
         };

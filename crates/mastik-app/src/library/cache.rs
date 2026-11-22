@@ -48,6 +48,9 @@ pub struct LocalIndex {
     /// For each document, where the camera was when it was last left here, so it
     /// reopens on the same spot (`crate::pages`). Local for `last_page`'s reason.
     pub last_view: HashMap<String, LastView>,
+    /// The documents last left in prototype mode here, so each reopens in it.
+    /// Local for `last_page`'s reason.
+    pub prototype_mode: std::collections::HashSet<String>,
     /// The documents imported here and not opened since, which wear the *New*
     /// chip. Opening one takes it out.
     pub imported: std::collections::HashSet<String>,
@@ -203,6 +206,7 @@ impl LocalIndex {
         self.kit_later.retain(|id, _| live.contains(id));
         self.last_page.retain(|id, _| live.contains(id));
         self.last_view.retain(|id, _| live.contains(id));
+        self.prototype_mode.retain(|id| live.contains(id));
         self.imported.retain(|id| live.contains(id));
     }
 }

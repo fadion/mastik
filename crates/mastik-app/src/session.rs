@@ -554,6 +554,10 @@ pub struct EditorSession {
     /// document rather than the app, so a tab parked before its first frame still
     /// gets it.
     pub home_pending: bool,
+    /// Prototype mode is on for this document (`panels::prototype`). Kept with
+    /// the document's session, so each tab has its own, and remembered by the
+    /// library beside the camera (`LocalIndex::prototype_mode`), never in the file.
+    pub prototype_mode: bool,
     /// The file backing this document, if it has been saved or opened.
     pub path: Option<PathBuf>,
     /// [`Self::path`] as this session last read or wrote it (`library::disk`).
@@ -933,6 +937,7 @@ impl EditorSession {
             parked: Default::default(),
             first_visit: false,
             home_pending: false,
+            prototype_mode: false,
             path,
             disk: None,
             clash: Clash::Clear,
@@ -2382,6 +2387,7 @@ impl EditorSession {
         self.marks = Default::default();
         self.first_visit = false;
         self.home_pending = false;
+        self.prototype_mode = false;
         self.doc = doc;
         self.ids = IdSource::new(random_actor());
         mastik_core::reserve_existing_ids(&self.doc, &mut self.ids);

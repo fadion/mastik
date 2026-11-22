@@ -3056,29 +3056,53 @@ const BLOCK_RING_GAP: f32 = 4.0;
 
 impl MastikApp {
     /// Prototype mode is on for the document in front: the inspector shows its
-    /// cards in place of the Design cards. Saved with the document, so each tab
-    /// keeps its own and a reopened file comes back in it.
+    /// cards in place of the Design cards. Each tab keeps its own, and the
+    /// library remembers it as it does the camera, so a document reopens in it.
     pub(crate) fn prototype_mode(&self) -> bool {
-        self.session.doc.prototype_mode()
+        self.session.prototype_mode
     }
 
-    /// Turn prototype mode on or off for the document in front, and say so. A
-    /// change leaves the document unsaved, since the file carries the mode.
+    /// Turn prototype mode on or off for the document in front, say so, and
+    /// remember it for the document. A view change: the file is untouched.
     pub(crate) fn set_prototype_mode(&mut self, on: bool) {
-        // The mode is written to the document, which a compare holds read-only.
-        if self.prototype_mode() != on && self.refused_by_compare() {
-            return;
-        }
         if self.prototype_mode() != on {
             self.close_inspector_popovers();
             self.proto.capture = None;
-            self.session.doc.set_prototype_mode(on);
-            self.session.mark_unsaved();
+            self.session.prototype_mode = on;
+            self.remember_prototype_mode();
         }
         self.session.info(match on {
             true => "Prototype mode on",
             false => "Prototype mode off",
         });
+    }
+
+    /// Record the front document's prototype mode in the library's local index,
+    /// by its id; a document never filed has none and is not remembered.
+    pub(crate) fn remember_prototype_mode(&mut self) {
+        let Some(id) = self.session.doc.meta().id.clone() else {
+            return;
+        };
+        let local = &mut self.library.local;
+        let changed = match self.session.prototype_mode {
+            true => local.prototype_mode.insert(id),
+            false => local.prototype_mode.remove(&id),
+        };
+        if changed {
+            local.save();
+        }
+    }
+
+    /// Put a just-opened document back in prototype mode if it was left in it
+    /// here.
+    pub(crate) fn reopen_prototype_mode(&mut self) {
+        self.session.prototype_mode = self
+            .session
+            .doc
+            .meta()
+            .id
+            .as_ref()
+            .is_some_and(|id| self.library.local.prototype_mode.contains(id));
     }
 
     /// Prototype mode's cards for what is selected.
@@ -7433,7 +7457,7 @@ mod tests {
                 keep_scroll: false,
             },
         );
-        f.app.session.doc.set_prototype_mode(true);
+        f.app.session.prototype_mode = true;
         f.app.open_link(at);
         f.app.dispatch(&ctx, crate::input::Action::Delete);
         let n = f.app.session.doc.get(f.add).expect("the layer stays");
@@ -7513,7 +7537,7 @@ mod tests {
     fn dropping_a_link_on_a_screen_links_to_it() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
-        f.app.session.doc.set_prototype_mode(true);
+        f.app.session.prototype_mode = true;
         f.app.session.selection.set_one(f.add);
         f.app
             .drop_link(f.add, mastik_core::kurbo::Point::new(100.0, 100.0));
@@ -7548,7 +7572,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
-        f.app.session.doc.set_prototype_mode(true);
+        f.app.session.prototype_mode = true;
         f.app.session.selection.set_one(f.add);
         let q = f.app.selection_quad(f.add, rect, 1.0).expect("on screen");
         let dots = knob_dots(q);
@@ -7575,7 +7599,7 @@ mod tests {
             Some((f.add, dots[0].0)),
             "the hovered layer's"
         );
-        f.app.session.doc.set_prototype_mode(false);
+        f.app.session.prototype_mode = false;
         assert_eq!(
             f.app.link_knob_at(dots[0].1, rect, 1.0),
             None,
@@ -7792,7 +7816,7 @@ mod tests {
                     )],
                 }]))
         );
-        f.app.session.doc.set_prototype_mode(true);
+        f.app.session.prototype_mode = true;
         ActionAt {
             node: f.add,
             reaction: item(10),
@@ -8045,7 +8069,7 @@ mod tests {
                     )],
                 }]))
         );
-        f.app.session.doc.set_prototype_mode(true);
+        f.app.session.prototype_mode = true;
         // Panned down, so the frames' tops and the cart's name tag are on screen.
         f.app
             .session
@@ -8272,7 +8296,7 @@ mod tests {
         };
         f.app
             .commit_edit(Transaction(vec![Operation::SetPlay { id: f.add, play }]));
-        f.app.session.doc.set_prototype_mode(true);
+        f.app.session.prototype_mode = true;
         f.app.session.selection.set(vec![f.add]);
         let ghosts = f.app.snap_ghosts();
         assert_eq!(ghosts.len(), 1);
@@ -8356,7 +8380,7 @@ mod tests {
         };
         f.app
             .commit_edit(Transaction(vec![Operation::SetPlay { id: f.add, play }]));
-        f.app.session.doc.set_prototype_mode(true);
+        f.app.session.prototype_mode = true;
         f.app.session.selection.set_one(f.add);
         let key = |key, modifiers| egui::Event::Key {
             key,
@@ -8447,6 +8471,34 @@ mod tests {
             ],
         );
         assert_eq!(drawn(&f.app), None, "the default name clears it");
+    }
+
+    /// Prototype mode is remembered by the library for the document, as the
+    /// camera is, and comes back when it reopens; the document stays clean.
+    ///
+    /// flip: `set_prototype_mode` not calling `remember_prototype_mode` → fails
+    /// at "remembered".
+    #[test]
+    fn prototype_mode_is_remembered_for_the_document() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let mut meta = f.app.session.doc.meta().clone();
+        meta.id = Some("proto-doc".into());
+        f.app.session.doc.set_meta(meta);
+        f.app.set_prototype_mode(true);
+        assert!(!f.app.session.is_dirty(), "a view change, not an edit");
+        assert!(
+            f.app.library.local.prototype_mode.contains("proto-doc"),
+            "remembered"
+        );
+        f.app.session.prototype_mode = false;
+        f.app.reopen_prototype_mode();
+        assert!(f.app.prototype_mode(), "reopens in it");
+        f.app.set_prototype_mode(false);
+        assert!(
+            f.app.library.local.prototype_mode.is_empty(),
+            "forgotten when left"
+        );
     }
 
     /// The connectors' and marks' pointer is no pointer under a card lying on
@@ -8577,7 +8629,7 @@ mod tests {
         )];
         f.app
             .write_reactions(f.add, reactions, "Add interaction", icon::INTERACTION);
-        f.app.session.doc.set_prototype_mode(true);
+        f.app.session.prototype_mode = true;
         f.app.session.selection.set(vec![f.add]);
         let lines = f.app.past_lines();
         assert_eq!(lines.len(), 1);
@@ -8889,7 +8941,7 @@ mod tests {
             1,
             "fixture: the instance follows its main"
         );
-        f.app.session.doc.set_prototype_mode(true);
+        f.app.session.prototype_mode = true;
         f.app.session.selection.set_one(f.inst);
         let clean = draw(&mut f.app, &ctx);
         let before = crate::ui::painted_override_dots(&clean).len();

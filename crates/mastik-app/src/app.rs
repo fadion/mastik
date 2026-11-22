@@ -6930,6 +6930,7 @@ impl MastikApp {
         self.reset_transient_state();
         self.reopen_last_page();
         self.reopen_last_view();
+        self.reopen_prototype_mode();
         // After the reset, which empties `collapsed`.
         if self.prefs.collapse_groups_on_open {
             self.collapse_all();

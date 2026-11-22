@@ -10,8 +10,9 @@ Colors and Missing fonts. The Type card is in `type-panel.md`.
 
 - **Every state starts at its identity card** (or the page card). Everything below is the Design
   cards; in prototype mode (`MastikApp::prototype_mode`, switched from the top bar) the inspector
-  shows the Prototype cards instead, described in `prototyping-authoring.md`. The mode is the
-  document's, saved with it, and survives a change of selection; each tab shows its own.
+  shows the Prototype cards instead, described in `prototyping-authoring.md`. The mode is
+  remembered per document by the library, as its camera is, and survives a change of selection;
+  each tab shows its own.
 - **Nothing selected:** the current page — a page card in the identity card's place (`page_header`: the page's name, renamed here as in the Pages section; *Page n of m*; its mode rows (`styles-variables.md`, *Frame mode rows*); the *Draft* switch; no eye or lock, a page not being a layer), then its Appearance card (the page's ground as drawn, the theme's canvas for a page with no colour of its own; picking writes `SetPageGround { ground: Some(..) }`, and the reset clears the page's own colour with `ground: None`, dead while it has none), then *Missing fonts* while the document has any.
 - **Single layer:** identity, *Frame templates* (frames only), Align, Transform, Position, Item, Container, *Layout grid*, Appearance, Type (text), Fill, Stroke, Effects, *Credit* (only on a layer carrying one), Export.
   - A group's or a frame's identity card carries a row under the boolean row: *Resize to fit content* (`build::fit_frame`) at its end, and a dropdown filling the rest. The button moves the frame to its children's union and gives it that size, every child left where it is drawn (a pinned child's insets re-derived by the commit's `keep_insets`; a slice lends no bounds). It is disabled, with the reason, on a group (which always fits), on a frame with a layout (which sizes itself through `fit-content`, so fitting it is a layout edit), on an empty frame and on one that already fits.

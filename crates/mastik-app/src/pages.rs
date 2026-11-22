@@ -174,6 +174,8 @@ impl MastikApp {
     /// called as a document leaves the front — parked, closed, or the app quitting.
     /// Not for one never shown, whose camera is not one the user saw.
     pub(crate) fn remember_view(&mut self) {
+        // A document first filed since its mode changed has only now an id.
+        self.remember_prototype_mode();
         if self.session.home_pending {
             return;
         }

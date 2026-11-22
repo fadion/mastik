@@ -66,19 +66,6 @@ fn round_trip(doc: &Document) -> Document {
     io::load(&io::save(doc).expect("saves")).expect("loads")
 }
 
-/// Prototype mode is saved with the document, and a document never put in it
-/// writes no key.
-///
-/// flip: `DocumentDto::from_document` writing `false` → fails at "reopens in it".
-#[test]
-fn prototype_mode_round_trips_through_the_file() {
-    let (mut doc, ..) = two_frames();
-    let text = String::from_utf8(io::save(&doc).expect("saves")).expect("utf-8");
-    assert!(!text.contains("prototype_mode"), "absent when off");
-    doc.set_prototype_mode(true);
-    assert!(round_trip(&doc).prototype_mode(), "reopens in it");
-}
-
 /// A layer's reactions save and load as they were.
 ///
 /// flip: `NodeDto::from_node` writing no reactions → fails at "loaded as saved".
