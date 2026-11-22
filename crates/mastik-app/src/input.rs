@@ -555,6 +555,10 @@ pub enum ViewSwitch {
     /// The width × height pill under the selection (`canvas::draw_size_badge`), on by
     /// default and unbound. A shape being drawn keeps its pill either way.
     SizeBadge,
+    /// Every annotated layer's mark on the canvas (`MastikApp::draw_annotation_marks`),
+    /// off by default and unbound: off, a mark shows only on the layer hovered or
+    /// selected, as a note is read while handing a design off, not while drawing it.
+    Annotations,
     /// Prototype mode (`MastikApp::prototype_mode`): the inspector's Prototype cards
     /// and the canvas's connectors. In the palette beside the top bar's own button.
     /// Unbound, since prototyping adds no chord, and on no menu. Remembered per
@@ -591,6 +595,7 @@ impl ViewSwitch {
             Self::AskAssistant => "Show ask assistant",
             Self::AssistantScope => "Show assistant scope",
             Self::SizeBadge => "Show dimension badge",
+            Self::Annotations => "Show annotations",
             Self::PrototypeMode => "Prototype mode",
         }
     }
@@ -598,14 +603,15 @@ impl ViewSwitch {
     /// The View menu's first group, what the canvas draws, in the order Illustrator's
     /// View menu reads it: rulers, the guides pulled out of them, then the grid
     /// beside the layout grid so the two read against each other; then the
-    /// things hung on the selection, the dimension badge and the assistant's ask
-    /// and scope buttons.
-    pub const VIEW_CANVAS: [Self; 8] = [
+    /// annotations' marks; then the things hung on the selection, the dimension
+    /// badge and the assistant's ask and scope buttons.
+    pub const VIEW_CANVAS: [Self; 9] = [
         Self::Rulers,
         Self::Guides,
         Self::GuideLock,
         Self::Grid,
         Self::LayoutGrid,
+        Self::Annotations,
         Self::SizeBadge,
         Self::AskAssistant,
         Self::AssistantScope,
@@ -639,7 +645,7 @@ impl ViewSwitch {
     /// `#[cfg(test)]` because the tests are its only readers; an `#[allow]` would
     /// keep every item it names alive.
     #[cfg(test)]
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Rulers,
         Self::Guides,
         Self::GuideLock,
@@ -664,6 +670,7 @@ impl ViewSwitch {
         Self::AskAssistant,
         Self::AssistantScope,
         Self::SizeBadge,
+        Self::Annotations,
         Self::PrototypeMode,
     ];
 

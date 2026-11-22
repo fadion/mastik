@@ -413,7 +413,7 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   holds the typed text while the field has focus, `None` otherwise.
 - View and Snap render rows from `input::ViewSwitch`, the enum chords name, so label, order and state come from
   one place; the *Panels ▸* flyout alone drops the "Show" its labels need elsewhere. `input::BINDINGS` has no chord for *Snap to baselines*, *Show layout grid*, *Outline mode*,
-  *Show history*, *Show messages*, *Show dimension badge*.
+  *Show history*, *Show messages*, *Show annotations*, *Show dimension badge*.
 - **Outline mode** draws the artwork as one-device-pixel hairlines of every path the walk would fill
   or stroke, with type in the same ink, in near-black or near-white by the page ground's luminance.
   It pushes no layer, so nothing is clipped, masked, faded or given an effect: the view exists to

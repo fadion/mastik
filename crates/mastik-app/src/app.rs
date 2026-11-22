@@ -1262,6 +1262,9 @@ pub struct MastikApp {
     pub(crate) show_scope: bool,
     /// *View ▸ Show dimension badge*: the width × height pill under the selection.
     pub(crate) show_size_badge: bool,
+    /// *View ▸ Show annotations*: every annotated layer's mark; off, only the
+    /// hovered or selected layer's.
+    pub(crate) show_annotations: bool,
     /// The size preview's pin, renders and textures (`size_preview.rs`).
     pub(crate) size_preview: crate::size_preview::SizePreview,
     /// *Tools ▸ Check contrast*, while it is on (`contrast.rs`). View state: a
@@ -2058,6 +2061,7 @@ impl MastikApp {
             show_ask: view.ask_assistant,
             show_scope: view.assistant_scope,
             show_size_badge: view.size_badge,
+            show_annotations: view.annotations,
             size_preview: Default::default(),
             contrast: None,
             vision: None,
@@ -8948,6 +8952,7 @@ impl MastikApp {
             ask_assistant: self.show_ask,
             assistant_scope: self.show_scope,
             size_badge: self.show_size_badge,
+            annotations: self.show_annotations,
             rail_slice: self.rail.slice,
             rail_line: self.rail.line,
             rail_pencil: self.rail.pencil,
@@ -8977,6 +8982,7 @@ impl MastikApp {
             ViewSwitch::AskAssistant => self.show_ask,
             ViewSwitch::AssistantScope => self.show_scope,
             ViewSwitch::SizeBadge => self.show_size_badge,
+            ViewSwitch::Annotations => self.show_annotations,
             ViewSwitch::Toolbar => self.show_toolbar,
             ViewSwitch::StatusMessages => self.show_status,
             ViewSwitch::Focus => self.focus,
@@ -9016,6 +9022,7 @@ impl MastikApp {
             ViewSwitch::AskAssistant => self.show_ask = on,
             ViewSwitch::AssistantScope => self.show_scope = on,
             ViewSwitch::SizeBadge => self.show_size_badge = on,
+            ViewSwitch::Annotations => self.show_annotations = on,
             ViewSwitch::Toolbar => self.show_toolbar = on,
             ViewSwitch::StatusMessages => {
                 self.show_status = on;

@@ -648,6 +648,7 @@ impl ViewState {
             | ViewSwitch::AskAssistant
             | ViewSwitch::AssistantScope
             | ViewSwitch::SizeBadge
+            | ViewSwitch::Annotations
             | ViewSwitch::PrototypeMode => None,
         }
     }
@@ -1145,6 +1146,8 @@ impl Item {
                     ViewSwitch::AskAssistant => icon::SPARKLE,
                     ViewSwitch::AssistantScope => icon::SCOPE_FRAME,
                     ViewSwitch::SizeBadge => icon::BOUNDING_BOX,
+                    // The glyph an annotation wears everywhere.
+                    ViewSwitch::Annotations => icon::NOTE,
                     ViewSwitch::PrototypeMode => icon::INTERACTION,
                     // Placeholders: no menu builds a row for these, and spelling
                     // them out makes a new switch a compile error here.
@@ -5316,6 +5319,7 @@ mod tests {
                         | ViewSwitch::AskAssistant
                         | ViewSwitch::AssistantScope
                         | ViewSwitch::SizeBadge
+                        | ViewSwitch::Annotations
                 )
             })
             .collect();

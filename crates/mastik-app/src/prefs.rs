@@ -76,6 +76,9 @@ pub struct ViewPrefs {
     pub assistant_scope: bool,
     /// The width × height pill under the selection (*View ▸ Show dimension badge*).
     pub size_badge: bool,
+    /// Every annotated layer's mark on the canvas (*View ▸ Show annotations*);
+    /// off, a mark shows only on the layer hovered or selected.
+    pub annotations: bool,
     /// The tool rail's frame slot shows the slice tool, last picked there.
     pub rail_slice: bool,
     /// The tool rail's line slot shows this of Line, Spiral and Arc, last picked
@@ -114,6 +117,7 @@ impl Default for ViewPrefs {
             ask_assistant: true,
             assistant_scope: true,
             size_badge: true,
+            annotations: false,
             rail_slice: false,
             rail_line: crate::rail::Member::Line,
             rail_pencil: false,

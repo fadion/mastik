@@ -11178,8 +11178,8 @@ impl MastikApp {
         // The prototype's connectors and link dots, while prototype mode is on.
         if chrome && self.mode == Mode::Normal {
             self.draw_prototype_links(ui, painter, rect, ppp);
-            // Each annotated layer's mark, its note on hover.
-            self.draw_annotation_marks(ui, painter, rect, ppp);
+            // Annotated layers' marks, their notes on hover.
+            self.draw_annotation_marks(ui, painter, rect, ppp, resp);
         }
 
         // Not under `chrome`: its hit route (`set_plus_at`) works either way.
