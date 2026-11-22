@@ -49,13 +49,12 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   wear, then *Delete*), then its actions top to bottom; a `ui::card_rule` parts one block from
   the next. The card's own `+` adds *On click* with no actions. The add and `⋯` menus are as wide
   as their longest row (`ui::menu_width`).
-- **A picked block** (`ProtoState::block`). A press anywhere on a block, its controls included
-  but not a popup over it, picks it (`pick_block`), as a click on one of its connectors does
-  (`open_link`); it wears `ui::paint_chip_ring` `BLOCK_RING_GAP` (3) outside its rows. Picked in
-  the card when it was not already, the block brings the layer it names (its scroll trigger's
-  frame, else its first action's first layer target) into view by the least pan
-  (`MastikApp::reveal`), only when that layer is on the current page. The canvas then lights
-  that block's marks alone (*On the canvas*).
+- **A picked block** (`ProtoState::block`). Only a click on one of its connectors picks a block
+  (`open_link`), the connector being the interaction itself on the canvas; a press in the card
+  picks nothing, and any other click on the canvas lets the pick go. While the layer has two or
+  more interactions, the picked one wears `ui::paint_quiet_ring` `BLOCK_RING_GAP` (4) outside its
+  rows; with one there is nothing to tell it from. The canvas lights that block's marks alone
+  (*On the canvas*).
 - **Copy and paste.** *Copy interaction* keeps the reaction in `ProtoState::copied`, never saved
   and apart from the clipboard, with the tab it was copied in, and says *Copied the interaction
   ‹trigger›*. While one is kept, the card shows a *Paste interaction* text button under its

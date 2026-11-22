@@ -8089,13 +8089,29 @@ pub fn colour_chip_radius(rect: egui::Rect) -> f32 {
 }
 
 /// The ring round the one picked among several (a swatch row's current
-/// colour, a scale's source step, the Interactions card's picked block): 1.5pt
-/// of `accent_200` outside `rect`, following its corner `radius`.
+/// colour, a scale's source step): 1.5pt of `accent_200` outside `rect`,
+/// following its corner `radius`.
 pub fn paint_chip_ring(p: &egui::Painter, rect: egui::Rect, radius: impl Into<egui::CornerRadius>) {
     p.rect_stroke(
         rect,
         radius,
         egui::Stroke::new(1.5, theme::color::accent_200()),
+        egui::StrokeKind::Outside,
+    );
+}
+
+/// [`paint_chip_ring`] in `text::faint`, for a group of rows marked rather than
+/// chosen (the Interactions card's block picked on the canvas): the accent
+/// would outshout the controls inside it.
+pub fn paint_quiet_ring(
+    p: &egui::Painter,
+    rect: egui::Rect,
+    radius: impl Into<egui::CornerRadius>,
+) {
+    p.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.5, theme::text::faint()),
         egui::StrokeKind::Outside,
     );
 }

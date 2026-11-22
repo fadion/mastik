@@ -68,9 +68,10 @@ pub(crate) struct ProtoState {
     /// the Interactions card offers to paste it onto any layer of that tab's
     /// document only, since its targets are that document's layers.
     pub copied: Option<(Option<crate::tabs::TabId>, Reaction)>,
-    /// The interaction block picked in the card, by its layer and reaction:
-    /// ringed there, and on the canvas its connectors and scroll line are the
-    /// layer's only ones drawn lit.
+    /// The interaction block picked by a click on one of its connectors, by its
+    /// layer and reaction: ringed in the card among two or more, and on the
+    /// canvas its connectors and scroll line are the layer's only ones drawn
+    /// lit. Any other click on the canvas lets it go.
     pub block: Option<(NodeId, ItemId)>,
     /// A library script's copy the popover's edit names, committed by the
     /// next [`MastikApp::write_reactions`] in the same step as that edit.
@@ -1977,7 +1978,7 @@ impl MastikApp {
         self.proto.block = Some((at.node, at.reaction));
     }
 
-    /// The interaction block of `node` picked in the card, while it still has it.
+    /// The interaction block of `node` picked on the canvas, while it still has it.
     fn picked_block(&self, node: NodeId) -> Option<ItemId> {
         let (n, r) = self.proto.block.filter(|(n, _)| *n == node)?;
         let has = self
@@ -1986,38 +1987,6 @@ impl MastikApp {
             .get(n)
             .is_some_and(|x| x.reactions().iter().any(|k| k.id == r));
         has.then_some(r)
-    }
-
-    /// Pick `node`'s block `reaction` in the card; the first time, bring the
-    /// layer it names (its trigger's frame, or else its first action's target)
-    /// into view when it is off screen on this page.
-    fn pick_block(&mut self, node: NodeId, reaction: ItemId) {
-        if self.proto.block == Some((node, reaction)) {
-            return;
-        }
-        self.proto.block = Some((node, reaction));
-        let doc = &self.session.doc;
-        let Some(r) = doc
-            .get(node)
-            .and_then(|n| n.reactions().iter().find(|k| k.id == reaction))
-        else {
-            return;
-        };
-        let target = r.value.trigger.layer_target().or_else(|| {
-            r.value
-                .actions
-                .iter()
-                .find_map(|a| a.value.layer_targets().first().copied())
-        });
-        let Some(t) = target.map(|t| mastik_core::prototype::resolve_target(doc, node, t)) else {
-            return;
-        };
-        if doc.page_of(t) != Some(self.session.page) {
-            return;
-        }
-        if let Some(b) = self.world_bounds(t) {
-            self.reveal(b);
-        }
     }
 
     /// The connectors from each layer with a navigate or overlay action to its
@@ -2903,7 +2872,7 @@ const BRANCH_HEAD_H: f32 = 14.0;
 const BRANCH_TUCK: f32 = 4.0;
 /// How far outside its rows the picked interaction block's ring sits: inside
 /// the card's margin, and clear of the rule between two blocks.
-const BLOCK_RING_GAP: f32 = 3.0;
+const BLOCK_RING_GAP: f32 = 4.0;
 
 impl MastikApp {
     /// Turn prototype mode on or off, and say so.
@@ -3106,26 +3075,14 @@ impl MastikApp {
                         ui.max_rect().x_range(),
                         top..=ui.min_rect().bottom(),
                     );
-                    if app.picked_block(id) == Some(r.id) {
-                        ui::paint_chip_ring(
+                    // Marked only among several: with one there is nothing to
+                    // tell it from.
+                    if reactions.len() > 1 && app.picked_block(id) == Some(r.id) {
+                        ui::paint_quiet_ring(
                             ui.painter(),
                             block.expand(BLOCK_RING_GAP),
                             ui::BUTTON_R,
                         );
-                    }
-                    // A press anywhere on the block, its controls included,
-                    // picks it; one on a popup over it does not.
-                    let press = ui.input(|i| {
-                        i.pointer
-                            .primary_pressed()
-                            .then_some(i.pointer.interact_pos())
-                            .flatten()
-                    });
-                    if let Some(p) = press
-                        && block.contains(p)
-                        && ui.ctx().layer_id_at(p) == Some(ui.layer_id())
-                    {
-                        app.pick_block(id, r.id);
                     }
                     if let Some(o) = out.write {
                         next = Some(o);
@@ -7414,40 +7371,6 @@ mod tests {
         f.app.open_link(at);
         assert_eq!(f.app.session.selection.single(), Some(f.add));
         assert_eq!(f.app.proto.open, Some(at));
-    }
-
-    /// Picking a block whose target is off screen brings the target into view
-    /// once; one on screen leaves the canvas where it is.
-    /// flip: `pick_block` without its `reveal` → fails at "brought into view".
-    #[test]
-    fn a_picked_block_reveals_its_target_off_screen() {
-        let ctx = egui::Context::default();
-        let mut f = fixture(&ctx);
-        let to = f.cart;
-        let at = one_action(
-            &mut f,
-            Action::Navigate {
-                to,
-                transition: Transition::default(),
-                keep_scroll: false,
-            },
-        );
-        // A view of 0..400 across: Home on screen, Cart at 600 off it.
-        f.app.canvas_px = (400, 300);
-        f.app.session.camera.set_zoom(1.0);
-        f.app.session.camera.center = mastik_core::kurbo::Point::new(200.0, 150.0);
-        let before = f.app.session.camera.center;
-        f.app.pick_block(at.node, at.reaction);
-        assert_eq!(f.app.proto.block, Some((at.node, at.reaction)), "picked");
-        let moved = f.app.session.camera.center;
-        assert!(moved.x > before.x, "brought into view: {moved:?}");
-        // Picked again, nothing moves, though it is now its target that shows.
-        f.app.session.camera.center = before;
-        f.app.pick_block(at.node, at.reaction);
-        assert_eq!(
-            f.app.session.camera.center, before,
-            "only when first picked"
-        );
     }
 
     /// A main in a set whose state property ties Hover lists Hover as playing

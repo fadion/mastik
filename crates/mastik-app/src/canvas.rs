@@ -3023,6 +3023,8 @@ impl MastikApp {
             && clicked
             && let Some(p) = resp.interact_pointer_pos()
         {
+            // A click that is not on a connector picks no interaction.
+            self.proto.block = None;
             let world = self.to_world(p, rect, ppp);
             let leaf = self.pick_at_pointer(ui, p, world, rect, ppp);
             // Counted by `ui::double_clicked`, not egui's.
