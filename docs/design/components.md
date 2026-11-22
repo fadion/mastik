@@ -889,13 +889,17 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
   disagreeing selection, a missing combination greyed, disabled where any root fails `can_switch` —
   then each component property (boolean as switch row, text as field, image as a dropdown of the
   document's pictures, each named by the first layer showing it with its size,
-  `panels::picture_words`, and *Replace…*, the file picker through `replace_image_action` on the
-  first copy's fill, keeping its framing) with its mark. The image dropdown's face leads with the
+  `panels::picture_words`, and *Replace…* with the `SWAP` glyph, the file picker through
+  `replace_image_action` on the copy's fill, keeping its framing, dimmed with *Replacing works on
+  one layer at a time* unless one root is selected and the property drives one layer) with its
+  mark. The image dropdown's face leads with the
   picture's thumbnail, from the first copy's own `ImageRef` so with its framing, when one value
   shows and the thumbnail is ready, else the `IMAGE` glyph (`ui::face_swatch`, *Shared rules*
-  in `app-chrome.md`). **On a list's template** (`lists.md`) with one root selected, a property
-  a column fills is read-only, since row 1 is filled from the table and an edit there would be
-  lost at the next regeneration (`variants::filled_column`): a component property's row shows
+  in `app-chrome.md`). **On a list's template** (`lists.md`), alone or among the selected roots,
+  a property a column fills is read-only while the table draws a row, since row 1 is filled from
+  the table and an edit there would be lost at the next regeneration (`variants::filled_column`;
+  over an empty table the template keeps its own values and stays editable), and the context
+  menu offers no *Reset ‹property›* for it: a component property's row shows
   its label and the column's name as a `binding::chip` with no ×, a variant dropdown is
   disabled and its label offers no override reset, both with the tooltip *Filled from title in rows.csv, as every row is: edit it in
   the table*. The interaction

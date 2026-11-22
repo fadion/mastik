@@ -100,6 +100,8 @@ pub(crate) fn read_pictures(
     let Some(dir) = dir else {
         return (ops, pairs);
     };
+    // Every cell tried once, so a failed read is not repeated for each row naming it.
+    let mut tried = rustc_hash::FxHashSet::<&str>::default();
     for col in columns {
         let Some(c) = table.index_of(*col) else {
             continue;
@@ -107,7 +109,7 @@ pub(crate) fn read_pictures(
         for row in table.rows.iter().take(list::MAX_DRAWN) {
             let cell = row[c].trim();
             if cell.is_empty()
-                || pairs.iter().any(|(p, _)| p == cell)
+                || !tried.insert(cell)
                 || doc.image(&mastik_core::ImageId(cell.to_string())).is_some()
             {
                 continue;

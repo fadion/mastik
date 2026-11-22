@@ -92,9 +92,11 @@ its copies as plain instances, rather than refusing the file, since earlier buil
 - **The app reads the files** (`list_data::read_pictures`): only a plain relative path beside the
   data file (no absolute path, no `..`), only in the rows a list can draw (`MAX_DRAWN`), each file
   up to `tokens_import::MAX_READ`, decoded by `app::read_picture`. A cell already naming a
-  document picture's id is not read. Each new picture's `AddImage` lands in the same step as the
-  map. Reads happen on the import box's *Make list*, on *Update* and *Relink…* (which replace the
-  map), and when the card's *Fill* points an image property at a column while the set is linked.
+  document picture's id is not read, and each cell is tried once per read however many rows name
+  it. Each new picture's `AddImage` lands in the same step as the map. Reads happen on the import
+  box's *Make list*, on *Update* and *Relink…* (which replace the map), and when the card's *Fill*
+  points an image property at a column it did not already fill while the set is linked; any
+  other fill edit reads nothing.
   A browser drop's file has no folder, so nothing is read for it.
 - **The reads run on the UI thread** at those moments, not on the chart import's worker.
 
@@ -202,7 +204,8 @@ step.
   changed, *Relink…* while missing (tooltip *Pick the file again for ‹set›*, or with several
   readers *Pick the file again for the 2 lists, 1 chart reading ‹set›*), and *Unlink*
   (`data_set_link_rows`, which the Chart card shows for a chart reading a set). *No rows: the template is hidden in play* in the warning ink over an empty table;
-  *Showing 200 of N rows* in the warning ink when `All` or `First` is cut at `MAX_DRAWN`. A data
+  *Showing 200 of N rows* in the warning ink when `All` is cut at `MAX_DRAWN` (*First* asks for
+  200 at most, so it is never cut). A data
   set the document lacks reads *Missing data* with *Its data set is not in this document: pick
   one*.
 - **Rows** (a `ui::fold_rule` section) — `ui::segmented` *All* / *First* / *Opened row*. *First*
@@ -210,7 +213,8 @@ step.
   in play. Row 1 here.* Undo step *List rows*.
 - **Fill · ‹component›** (a fold) — one labelled dropdown per text, boolean and image property,
   then per variant property: *None* and the data set's columns. Under a variant row, *N values
-  name no ‹X› variant* in the warning ink, the cells its tooltip; under an image row, *3 pictures
+  name no ‹X› variant* in the warning ink, the cells its tooltip (an empty one as *an empty
+  cell*); under an image row, *3 pictures
   not found*, the cells and *looked for next to products.csv* its tooltip. With no such property,
   *Its component has no text, boolean or variant property*. Undo step *List fill*, which reads the
   image column's pictures in the same step while the set is linked.

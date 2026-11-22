@@ -4572,11 +4572,19 @@ impl MastikApp {
         while let Some(r) = root {
             let found = mastik_core::variant::instance_properties(doc, r)
                 .into_iter()
-                .map(|p| p.value)
                 .find(|p| {
-                    mastik_core::variant::counterparts(doc, r, p).contains(&id)
-                        && mastik_core::variant::property_state(doc, r, p).is_some_and(|(_, o)| o)
-                });
+                    let v = &p.value;
+                    mastik_core::variant::counterparts(doc, r, v).contains(&id)
+                        && mastik_core::variant::property_state(doc, r, v).is_some_and(|(_, o)| o)
+                        // A list fills it on its template: a reset would be undone at once.
+                        && crate::panels::variants::filled_column(
+                            doc,
+                            &[r],
+                            &mastik_core::list::Target::Prop(p.id),
+                        )
+                        .is_none()
+                })
+                .map(|p| p.value);
             if let Some(p) = found {
                 return Some((p, r));
             }

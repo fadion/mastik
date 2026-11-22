@@ -671,10 +671,20 @@ fn swap_heading(ui: &mut egui::Ui, glyph: Option<&str>, name: &str, status: &str
     );
 }
 
-/// The column that fills `target` on `root` when `root` is a list's template,
+/// The column that fills `target` on any of `roots` that is a list's template,
 /// with the column's and the data set's names: row 1 is filled from the table
 /// like every row, so an edit there would be lost at the next regeneration.
-fn filled_column(
+/// `None` over a table that draws no row, where the template keeps its own values.
+pub(crate) fn filled_column(
+    doc: &mastik_core::Document,
+    roots: &[NodeId],
+    target: &mastik_core::list::Target,
+) -> Option<(String, String)> {
+    roots.iter().find_map(|r| filled_column_of(doc, *r, target))
+}
+
+/// [`filled_column`] for one root.
+fn filled_column_of(
     doc: &mastik_core::Document,
     root: NodeId,
     target: &mastik_core::list::Target,
@@ -684,6 +694,7 @@ fn filled_column(
     (mastik_core::list::template(doc, frame)? == root).then_some(())?;
     let fill = list.fill.iter().find(|f| f.target == *target)?;
     let set = doc.data_set(list.data)?;
+    (!list.shown_rows(set.table.rows.len()).is_empty()).then_some(())?;
     Some((
         set.table.column(fill.column)?.name.clone(),
         set.name.clone(),
@@ -1967,15 +1978,12 @@ impl MastikApp {
                 });
                 // A list's template takes the variant its row names, so it has
                 // nothing to pick and no override to reset.
-                let filled = match roots {
-                    [only] => filled_column(
-                        doc,
-                        *only,
-                        &mastik_core::list::Target::Variant(p.name.clone()),
-                    )
-                    .map(|(col, set)| filled_tip(&col, &set)),
-                    _ => None,
-                };
+                let filled = filled_column(
+                    doc,
+                    roots,
+                    &mastik_core::list::Target::Variant(p.name.clone()),
+                )
+                .map(|(col, set)| filled_tip(&col, &set));
                 let mark = mark.filter(|_| filled.is_none());
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
@@ -2083,9 +2091,7 @@ impl MastikApp {
             let reset = || mark.as_ref().map(|m| m.tx.clone());
             // On a list's template a filled property shows its column, read-only.
             let target = mastik_core::list::Target::Prop(p.id);
-            if let [only] = roots
-                && let Some((col, set)) = filled_column(doc, *only, &target)
-            {
+            if let Some((col, set)) = filled_column(doc, roots, &target) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     row_label(ui, &p.name, None);
@@ -2346,6 +2352,8 @@ impl MastikApp {
                         let w = ui.available_width();
                         let mut pick = None;
                         let mut replace = false;
+                        let one_layer =
+                            roots.len() == 1 && variant::counterparts(doc, first, p).len() == 1;
                         ui::combo_height(ui);
                         let face = match thumb {
                             Some(_) => ui::swatch_face_text(&shown),
@@ -2365,13 +2373,20 @@ impl MastikApp {
                                     }
                                 }
                                 ui::menu_sep(ui);
-                                if ui
-                                    .selectable_label(
-                                        false,
-                                        ui::glyph_and_text(icon::IMPORT, "Replace…"),
-                                    )
-                                    .clicked()
-                                {
+                                // The file lands on one layer, so it waits for one.
+                                if super::inspector::menu_action(
+                                    ui,
+                                    one_layer,
+                                    icon::SWAP,
+                                    "Replace…",
+                                    &|on| {
+                                        if on {
+                                            "Pick a file to show here, keeping the framing".into()
+                                        } else {
+                                            "Replacing works on one layer at a time".into()
+                                        }
+                                    },
+                                ) {
                                     replace = true;
                                 }
                             });

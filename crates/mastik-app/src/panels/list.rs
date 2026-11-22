@@ -111,12 +111,18 @@ impl MastikApp {
     }
 
     /// *List fill*: `next` written over list `id`, and, while its data set is
-    /// linked, the pictures its image columns name read beside the file in the
-    /// same step.
+    /// linked, the pictures named by the image columns this edit newly points a
+    /// property at read beside the file in the same step.
     fn commit_list_fill(&mut self, id: NodeId, next: List) {
         let doc = &self.session.doc;
         let set = doc.data_set(next.data).cloned();
-        let columns = crate::list_data::picture_columns(doc, id, &next.fill);
+        let before = doc
+            .get(id)
+            .and_then(|n| n.list())
+            .map(|l| crate::list_data::picture_columns(doc, id, &l.fill))
+            .unwrap_or_default();
+        let mut columns = crate::list_data::picture_columns(doc, id, &next.fill);
+        columns.retain(|c| !before.contains(c));
         let dir = set
             .as_ref()
             .and_then(|s| s.source.as_ref())
@@ -232,7 +238,13 @@ impl MastikApp {
                     .color(color::warn()),
             );
         }
-        if now.rows != Rows::Opened && drawn < rows && drawn == list::MAX_DRAWN {
+        // Cut only when the cap stops short of what the mode asked for.
+        let asked = match now.rows {
+            Rows::All => rows,
+            Rows::First(n) => rows.min(n as usize),
+            Rows::Opened => 0,
+        };
+        if drawn < asked {
             ui.label(
                 egui::RichText::new(format!("Showing {drawn} of {rows} rows"))
                     .size(ui::SMALL_PT)
@@ -444,7 +456,19 @@ impl MastikApp {
                     .size(ui::SMALL_PT)
                     .color(color::warn()),
                 )
-                .on_hover_text(cells.join(", "));
+                .on_hover_text(
+                    cells
+                        .iter()
+                        .map(|c| {
+                            if c.is_empty() {
+                                "an empty cell"
+                            } else {
+                                c.as_str()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
             }
             if matches!(target, Target::Prop(_))
                 && let Some((_, cells)) = no_picture.iter().find(|(p, _)| *p == name)
@@ -681,6 +705,38 @@ mod tests {
         (l, id)
     }
 
+    /// A filled property stays read-only while the template is among several
+    /// selected roots, and turns editable over a table that draws no row.
+    /// flip: `filled_column` asking only the first root → fails at "among roots".
+    #[test]
+    fn a_filled_property_is_read_only_among_roots_and_editable_over_no_rows() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, set) = listed(&mut app, inst, &["A", "B"]);
+        let doc = &app.session.doc;
+        let fill = doc.get(l).unwrap().list().unwrap().fill[0].target.clone();
+        assert!(
+            matches!(fill, list::Target::Prop(_)),
+            "the fixture fills Title"
+        );
+        let main = mastik_core::component::main_of(doc, inst).unwrap();
+        let filled = |app: &MastikApp, roots: &[NodeId]| {
+            crate::panels::variants::filled_column(&app.session.doc, roots, &fill)
+        };
+        assert!(filled(&app, &[inst]).is_some(), "the template alone");
+        assert!(filled(&app, &[main, inst]).is_some(), "among roots");
+        assert!(filled(&app, &[main]).is_none(), "the main is no template");
+        let mut empty = app.session.doc.data_set(set).unwrap().clone();
+        empty.table.rows.clear();
+        assert!(app.commit_edit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetDataSet {
+                id: set,
+                set: Some(Box::new(empty)),
+            }
+        ])));
+        assert!(filled(&app, &[inst]).is_none(), "no row drawn");
+    }
+
     /// *Relink…* reads the picked file into the same data set, so every list
     /// over it follows in one step, each fill kept on the column of its name.
     /// flip: `replace_data_set_table` skipping the fills' remap → fails at "kept
@@ -745,8 +801,8 @@ mod tests {
         }
     }
 
-    /// A list's tab and badge say how many rows it draws, *No rows* over an
-    /// empty table, and *Missing data* without its data set.
+    /// `list_count` says how many rows a list draws, and *No rows* over an
+    /// empty table.
     #[test]
     fn a_list_counts_its_rows() {
         let ctx = egui::Context::default();
