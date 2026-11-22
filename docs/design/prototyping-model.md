@@ -56,7 +56,7 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
   `Snaps`; `settle` is a `Timing`, by default a spring of mass 1, stiffness 300, damping 30;
   `points` is a keyed list of `DragPoint`s, each a name and an offset from where the layer is
   drawn. The drawn place is always the first point and is never listed, so it cannot be removed;
-  its name is `drawn` (`Follow::drawn_name`), `None` reading as `DRAWN_POINT` (*Open*). What
+  its name is `drawn` (`Follow::drawn_name`), `None` reading as `DRAWN_POINT` (*Start*). What
   play does with it is `play.md`.
 - **A scroll effect is a `LayerPlay` setting, not a reaction**: `scroll_effect:
   Option<ScrollEffect>`, a `frame` it follows, a range `from..to` on that frame's offset (in

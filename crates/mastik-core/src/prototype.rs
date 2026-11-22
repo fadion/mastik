@@ -758,7 +758,7 @@ pub struct DragPoint {
 
 /// The name of the point where a following layer is drawn, until renamed
 /// ([`Follow::drawn`]).
-pub const DRAWN_POINT: &str = "Open";
+pub const DRAWN_POINT: &str = "Start";
 
 /// Where a *Drop* trigger asks the layer to have come to rest.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
