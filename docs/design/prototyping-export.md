@@ -193,14 +193,14 @@ canvas, the drawing and the page around them.
   once.
 - **The player bar**, when the export shows it, runs along the foot: the flow's name (a list
   of the file's flows when it holds several, switching plays that flow from its start),
-  *Restart*, *Hints* when the export shows hotspot hints, *Inspect*, and *Fullscreen* when the
+  *Restart*, *Hotspots* when the export shows hotspot hints, *Inspect*, and *Fullscreen* when the
   browser allows it (`document.fullscreenEnabled`), pressed while the page fills the screen.
 - **While it opens**, the page shows its title over a loading bar: unpacking fills most of it,
   counted over the compressed stream as it is read, then the player, the fonts and the start.
 - **Fallen back to the CPU** unasked (no `?cpu`, not a mirrored page), the page says *Drawn
   without the GPU; motion may be slower* in a corner, fading after 4 s.
 - **Hotspot hints** are drawn on a 2D canvas over the screen: `hotspots()` as rectangles in the
-  selection blue, held while *Hints* is on, else at `Scene::hint_flash`'s strength after a click
+  selection blue, held while *Hotspots* is on, else at `Scene::hint_flash`'s strength after a click
   on nothing. The pointer is a hand over a hotspot.
 - **Inspect mode**, the bar's *Inspect* switch, stops interactions (the pointer leaves the
   prototype; keys go nowhere but Escape, which drops the pick) and opens a panel beside the

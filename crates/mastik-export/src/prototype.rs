@@ -751,7 +751,7 @@ const BODY: &str = "<div id=\"main\"><main id=\"stage\"><div id=\"room\">\
 <aside id=\"inspect\" hidden></aside></div>\n\
 <nav id=\"bar\" hidden><span id=\"name\"></span><select id=\"flows\" hidden \
 aria-label=\"Flow\"></select><button id=\"restart\" type=\"button\">Restart</button>\
-<button id=\"hint-switch\" type=\"button\" aria-pressed=\"false\" hidden>Hints</button>\
+<button id=\"hint-switch\" type=\"button\" aria-pressed=\"false\" hidden>Hotspots</button>\
 <button id=\"turn\" type=\"button\" aria-pressed=\"false\" hidden>Turn</button>\
 <button id=\"inspect-switch\" type=\"button\" aria-pressed=\"false\">Inspect</button>\
 <button id=\"full\" type=\"button\" aria-pressed=\"false\" hidden>Fullscreen</button></nav>\n\

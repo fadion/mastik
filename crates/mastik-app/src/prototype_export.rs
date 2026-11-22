@@ -690,7 +690,7 @@ impl MastikApp {
             if ui::switch_row(ui, "Player bar", s.player_bar, ui::CONTROL_H).clicked() {
                 s.player_bar = !s.player_bar;
             }
-            if ui::switch_row(ui, "Hotspot hints", s.hotspot_hints, ui::CONTROL_H).clicked() {
+            if ui::switch_row(ui, "Hotspots", s.hotspot_hints, ui::CONTROL_H).clicked() {
                 s.hotspot_hints = !s.hotspot_hints;
             }
         });

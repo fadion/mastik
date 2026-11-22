@@ -586,7 +586,7 @@ impl Playing {
 
 /// What the bar's flow menu lists: the flows of the page playing, each with
 /// its starting frame's name, and the frame selected on the canvas for *From
-/// this frame*.
+/// the selected frame*.
 struct FlowMenu {
     /// What the menu's head shows: the flow playing, else the page.
     shown: String,
@@ -611,8 +611,11 @@ fn elide(name: &str, max: usize) -> String {
     }
 }
 
+/// The flow menu's row that restarts on the frame selected on the canvas.
+const FROM_SELECTED: &str = "From the selected frame";
+
 /// The bar's flow menu: a head naming what plays, and under it the page's
-/// flows and *From this frame*. Answers the pick.
+/// flows and *From the selected frame*. Answers the pick.
 fn flow_menu(ui: &mut egui::Ui, menu: &FlowMenu) -> Option<BarAct> {
     let lead = egui::RichText::new(elide(&menu.shown, FLOW_HEAD_CHARS)).size(ui::SMALL_PT);
     let id = ui.id().with("player-flow-menu");
@@ -628,7 +631,7 @@ fn flow_menu(ui: &mut egui::Ui, menu: &FlowMenu) -> Option<BarAct> {
                 .flows
                 .iter()
                 .map(|(_, n, _)| n.as_str())
-                .chain(["From this frame"]);
+                .chain([FROM_SELECTED]);
             ui.set_width(ui::menu_width(ui.ctx(), labels, true) + 48.0);
             ui::menu_eyebrow(ui, &format!("Flows on {}", menu.page));
             if menu.flows.is_empty() {
@@ -643,7 +646,7 @@ fn flow_menu(ui: &mut egui::Ui, menu: &FlowMenu) -> Option<BarAct> {
             }
             ui::menu_sep(ui);
             let note = menu.frame.as_ref().map_or("", |(_, n)| n.as_str());
-            let row = ui::MenuRow::new("", "From this frame")
+            let row = ui::MenuRow::new("", FROM_SELECTED)
                 .note(note)
                 .checked(false)
                 .enabled(menu.frame.is_some());
@@ -664,7 +667,7 @@ fn flow_menu(ui: &mut egui::Ui, menu: &FlowMenu) -> Option<BarAct> {
 enum BarAct {
     /// Restart on this flow.
     Flow(FlowRef),
-    /// Restart on this frame, *From this frame*.
+    /// Restart on this frame, *From the selected frame*.
     Frame(NodeId),
     Restart,
     Hints,
@@ -722,13 +725,7 @@ fn bar(
             "Restart",
             BarAct::Restart,
         );
-        button(
-            ui,
-            icon::HAND_POINTING,
-            p.hints,
-            "Show hotspots",
-            BarAct::Hints,
-        );
+        button(ui, icon::HAND_POINTING, p.hints, "Hotspots", BarAct::Hints);
         button(ui, icon::SLIDERS_HORIZONTAL, p.card, "State", BarAct::Card);
         let recording = p.player.is_recording();
         let (g, tip) = match recording {
@@ -770,19 +767,25 @@ fn bar(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             if p.place != Place::Fullscreen {
-                button(ui, icon::PLAY, false, "Fullscreen", BarAct::Fullscreen);
+                button(
+                    ui,
+                    icon::ARROWS_OUT,
+                    false,
+                    "Fullscreen",
+                    BarAct::Fullscreen,
+                );
             }
             match p.place {
                 Place::Detached => button(
                     ui,
-                    icon::ARROW_SQUARE_OUT,
+                    icon::BROWSERS,
                     true,
                     "Back over the canvas",
                     BarAct::Attach,
                 ),
                 _ => button(
                     ui,
-                    icon::ARROW_SQUARE_OUT,
+                    icon::BROWSERS,
                     false,
                     "Open in a window",
                     BarAct::Detach,
@@ -852,7 +855,7 @@ fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
             }
             mode_row(ui, p, i, row);
         }
-        ui.label(ui::eyebrow("Values"));
+        ui.label(ui::eyebrow("Variables"));
     }
     let rows = p.player.values();
     if rows.is_empty() {

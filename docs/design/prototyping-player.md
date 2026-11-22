@@ -100,19 +100,21 @@ otherwise the player returns over the canvas).
   names it, *‹Collection› · ‹Mode›*, after the title in the card's or window's head, and
   fullscreen, which has no head, in the bar after the readout: why the layout jumped is on screen.
   A pinned mode beats the width, so then there is none.
-- **Hints**: each hotspot outlined in the accent while the bar's toggle is on, and flashing by
-  `Scene::hint_flash` after a click on nothing.
+- **Hotspots**: each hotspot outlined in the accent while the bar's toggle is on, and flashing
+  by `Scene::hint_flash` after a click on nothing. The player, the export card and the exported
+  page all call the toggle *Hotspots*.
 - **Notices** in the screen's top-left corner, each once, for four seconds, in the app's words.
-- **The bar**: the flow menu, *Restart*, *Show hotspots*, *State* (the state card), *Record a
+- **The bar**: the flow menu, *Restart*, *Hotspots*, *State* (the state card), *Record a
   take* / *Stop recording* (while recording, the time so far beside it, `0:24` at `CAPTION_PT` in
   the danger ink), *Export a take as a video* once a take exists and none is recording (the
-  export card on *Video*), *Play on a phone*, and from the right *Fullscreen*, *Open in a window*
-  / *Back over the canvas* and, fullscreen, *Stop playing*. Its commands are buttons, not chords:
-  the editor has spent the chords they would want.
+  export card on *Video*), *Play on a phone*, and from the right *Fullscreen* (`ARROWS_OUT`),
+  *Open in a window* / *Back over the canvas* (`BROWSERS`, lit while detached) and, fullscreen,
+  *Stop playing*. `PLAY` is playing and `ARROW_SQUARE_OUT` leaving the app, so neither is worn
+  here. Its commands are buttons, not chords: the editor has spent the chords they would want.
 - **The flow menu** leads the bar: a `ui::menu_head` naming what plays (the flow, else the page;
   cut at `FLOW_HEAD_CHARS`), tipped *Play another flow*. It lists the flows of the page playing
   under *Flows on ‹page›*, each with its start frame as the note and the one playing ticked, then
-  *From this frame* on the top-level frame selected on the canvas's page, disabled with *Select a
+  *From the selected frame* on the top-level frame selected on the canvas's page, disabled with *Select a
   frame on the canvas* when there is none. A pick restarts the copy there (`replay_from`): a new
   copy, play state dropped as *Restart* drops it, a recording under way ended unkept.
 - **Filling a screen** (fullscreen, or the detached window at its *Fullscreen*), the bar floats
