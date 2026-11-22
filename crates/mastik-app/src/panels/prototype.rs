@@ -8966,6 +8966,67 @@ mod tests {
         );
     }
 
+    /// A folded section's title sits midway between its hairline and the next,
+    /// by its ink: the middle of its capitals, which stand `CAP` of the type
+    /// size above the baseline.
+    ///
+    /// flip: `FOLD_ROW_TRIM` back at 2 → fails at "centred between its rules".
+    #[test]
+    fn a_folded_title_sits_midway_between_its_rules() {
+        const CAP: f32 = 0.7;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        f.app.session.selection.set_one(f.add);
+        f.app.session.prototype_mode = true;
+        for k in [
+            "Prototype pin",
+            "Prototype scroll effect",
+            "Prototype dragging",
+        ] {
+            f.app.collapsed_panels.insert(k);
+        }
+        let mut out = draw(&mut f.app, &ctx);
+        for _ in 0..3 {
+            out = draw(&mut f.app, &ctx);
+        }
+        let mut rules: Vec<f32> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == theme::color::divider() && points[0].y == points[1].y =>
+                {
+                    Some(points[0].y)
+                }
+                _ => None,
+            })
+            .collect();
+        rules.sort_by(f32::total_cmp);
+        let ink_mid = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "With the scroll" => {
+                    let base = t.pos.y + ui::baseline_in(&t.galley);
+                    Some(base - CAP * ui::SMALL_PT / 2.0)
+                }
+                _ => None,
+            })
+            .expect("a folded section between two");
+        let above = rules
+            .iter()
+            .rev()
+            .find(|y| **y < ink_mid)
+            .expect("its rule");
+        let below = rules.iter().find(|y| **y > ink_mid).expect("the next rule");
+        let mid = (above + below) / 2.0;
+        assert!(
+            (ink_mid - mid).abs() <= 0.75,
+            "centred between its rules: ink {ink_mid} vs {mid}"
+        );
+    }
+
     /// The Prototype card's first section takes no rule under the card's head;
     /// a later one is parted from the one above by a hairline over its title.
     ///

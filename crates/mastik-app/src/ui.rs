@@ -1866,10 +1866,12 @@ pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool, count: usize) -> eg
 }
 
 /// The air under a [`fold_rule`]'s hairline, above its title row.
-const FOLD_RULE_AIR: f32 = 4.0;
-/// What a [`fold_rule`]'s title row gives back under the title: without it a
-/// folded title sits this much further from the hairline below than from its own.
-const FOLD_ROW_TRIM: f32 = 2.0;
+const FOLD_RULE_AIR: f32 = 5.0;
+/// What a [`fold_rule`]'s title row gives back under the title. A title centred
+/// by its box rides high, its ink being capitals and x-height above the
+/// baseline; with [`FOLD_RULE_AIR`] this sets a folded title's ink midway
+/// between its hairline and the next.
+const FOLD_ROW_TRIM: f32 = 4.0;
 
 /// A fold's caret beside a name rather than an eyebrow — a group, a kit — its
 /// left edge at `at`'s x and centred on its y. Answers the glyph's rect.
