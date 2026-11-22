@@ -220,10 +220,15 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 
 ## The Prototype card
 
-- **A frame**: *Scrolling* (*None*, *Vertical*, *Horizontal*, *Both*), the children pinned in it
-  listed under it (*Top bar · Fixed*). Once the frame scrolls, *Snap* (*None*, *Children*,
-  *Pages*), and under *Children* a second segmented row, *Start* · *Centre* · *End*; each change
-  is a *Scrolling* step. The rest edges are drawn on the canvas while the frame is selected (*On
+- **Each section of the card is headed by a `ui::fold_rule`** (`card_fold`, its fold kept in
+  `collapsed_panels` as the Chart and List cards' are): *Scrolling*, *In a scrolling frame*,
+  *With the scroll*, *Dragging*, *Input*. The fields inside a section are `ui::labelled`.
+- **A frame**: *Scrolling*'s *Axis* (*None*, *Vertical*, *Horizontal*, *Both*), then *Pinned*,
+  the children pinned in it, a `ui::menu_row` each with its pin as the row's note (*Top bar*,
+  *Fixed*); a click selects the child, whose own card sets the pin. Once the frame scrolls,
+  *Snap* (*None*, *Children*, *Paging*: not *Pages*, which names the document's pages), and under
+  *Children* a second segmented row, *Start* · *Centre* · *End*; each change is a *Scrolling*
+  step. The rest edges are drawn on the canvas while the frame is selected (*On
   the canvas*). How a frame shows as an overlay is its opening action's,
   set in that action's popover.
 - **A child of a frame**: *In a scrolling frame*, *Scrolls* / *Fixed* / *Sticky*, dimmed with
@@ -235,30 +240,40 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   nearest scrolling frame above the layer (`frame: None`) or, with none above, naming the
   screen's first; dimmed with *No frame on the screen scrolls* when no frame but the layer itself
   does. Then *Frame*, a dropdown of the scrolling frames at or above the layer, nearest first,
-  then the rest of its screen's (`scrolling_frames`, the layer itself left out), showing the
+  then the rest of its screen's (`scrolling_frames`, the layer itself left out), its face led by
+  `icon::FRAME` as every list of frames is (`layer_combo`'s glyph), showing the
   named frame or else the nearest; a pick names it, a *Scroll effect* step. Then *From* and *To*
-  (px), and a row per property (*Opacity*, *Move Y*, *Move X*, *Scale*, *Rotation*: its name
-  and `×`) over its start and end fields, opacity and scale in %, rotation in °. Each number is
-  one *Scroll effect* step; `×` removes a property, and with the last the effect (*Remove scroll
-  effect*);
-  `+` offers the properties not yet there (*Add scroll effect*), *Opacity* 100% to 0%, the
-  others at rest at both ends (`new_effect_ends`).
+  (px), and each property (*Opacity*, *Move Y*, *Move X*, *Scale*, *Rotation*) under its name as
+  a `ui::labelled` eyebrow: its *From* and *To* fields, the values at the effect's two ends,
+  opacity and scale in %, rotation in °, then `×` (*Remove this property*). A length scrubs at
+  the Transform card's X and Y speed (`Scrub::whole(0.5)`), the rest at 1; all keep whole
+  numbers. Each number is one *Scroll effect* step; `×` removes a property, and with the last
+  the effect (*Remove scroll effect*); `+` (`scroll_prop_menu`, `ui::menu_row`s hung from its
+  right edge as the add-action menu is) offers the properties not yet there (*Add scroll
+  effect*), *Opacity* 100% to 0%, the others at rest at both ends (`new_effect_ends`).
 - ***Dragging***, on any layer below a page's top level (`dragging_section`): *Follows the drag*,
-  a `ui::switch_row`, then while it is on *Axis* (`icon::ARROWS_OUT_CARDINAL`,
-  `ARROWS_HORIZONTAL`, `ARROWS_VERTICAL`, tipped *Both*, *Horizontal*, *Vertical*), *Range*
-  (*Free* · *Within parent* · *Snap points*) and *Release* (*Stays* · *Returns* · *Snaps*,
-  *Snaps* dimmed with *Add a snap point first*), each change a *Dragging* step. Under *Snap
-  points*, the drawn point's row: its name in a text field as the others' are (*Rename snap
-  point*; *Open* typed back clears `drawn`), its `×` dimmed with *Where the layer is drawn is
-  always a point*; then a row per point (`drag_point_row`): its name, `×`, and its X and Y from
-  where the layer is drawn, live both ways: the fields follow a drag of its ghost
-  (`proto_mark_value`), and the ghost a scrub or typing in them (`ProtoState::held_point`), before
-  either commits; `+` adds *Point n*, n the first number no point
-  is named by, n × 100 down. *Settle* sits between *Release* and the points: the transition
-  popover's timing rows and motion preview (`timing_fields`), without a kind or a side, for how
-  the layer moves after a release; a change is a *Dragging* step.
+  a `ui::switch_row`, then while it is on *Axis* (*Vertical* · *Horizontal* · *Both*, the words
+  and order of *Scrolling*'s, less *None*) and *Range* (*Free* · *Within parent* · *Snap
+  points*). Under *Snap points*, the drawn point's row: its name in a text field as the others'
+  are (*Rename snap point*; *Start* typed back clears `drawn`), its `×` dimmed with *Where the
+  layer is drawn is always a point*; then a row per point (`drag_point_row`): its name, `×`
+  (*Remove this snap point*), and its X and Y from where the layer is drawn, scrubbed at the
+  Transform card's speed and kept whole, live both ways: the fields follow a drag of its ghost
+  (`proto_mark_value`), and the ghost a scrub or typing in them (`ProtoState::held_point`),
+  before either commits; `+` adds *Point n* (`new_drag_point`), n the first number no point is
+  named by, n × 100 along the layer's axis (across for *Horizontal*, down otherwise). A name is
+  typed into a `ui::Draft` (`point_name_field`), so `Escape` gives it up. The points come
+  before *Release* (*Stays* · *Returns* · *Snaps*), whose *Snaps* is dimmed with *Add a snap
+  point first* while there is none, so the way to it is just above. Then *Settle*: the
+  transition popover's timing rows and motion preview (`timing_fields`), without a kind or a
+  side, for how the layer moves after a release, dimmed under *Free* and *Stays*, where nothing
+  settles, with *Nothing settles: it goes anywhere and stays where it is let go*. Each change
+  is a *Dragging* step; the snap points' own steps wear `icon::CROSSHAIR_SIMPLE`, as moving one
+  on the canvas does (`play_step_glyph`).
 - **An input**: a text layer binds a string variable; an instance a boolean one and the set's
-  two-valued property that shows it. `×` unbinds.
+  two-valued property that shows it. `×` unbinds. The note under it says what typing or
+  ticking does while it is bound, and while it is not, what binding would do (*Bind a string
+  variable to type into it while playing*).
 - **The page** (nothing selected): *Device* (*None*, then the phone and tablet frame templates by name, each group under its
   `ui::menu_eyebrow`) with a `ROTATE_RIGHT` field button beside it, on while the device is
   turned (*Turn to landscape* / *Turn to portrait*, a *Turn device* step; dimmed with *Pick a

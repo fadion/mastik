@@ -117,6 +117,8 @@ pub(crate) enum DraftKey {
     FlowName(ItemId),
     /// A flow's starting value, by its place in the flow's list.
     FlowValue(ItemId, usize),
+    /// A snap point's name: the layer, and the point (`None` where it is drawn).
+    PointName(NodeId, Option<ItemId>),
 }
 
 /// Where in a reaction a new action goes.
@@ -419,25 +421,58 @@ fn scroll_prop_menu(
         FieldButton::Off,
     ));
     let mut pick = None;
-    egui::Popup::menu(&plus).gap(ui::MENU_GAP).show(|ui| {
-        ui::popup_rows(ui);
-        let words = props.iter().map(|p| scroll_prop_words(*p).0);
-        ui.set_width(ui::menu_width(ui.ctx(), words, false));
-        for p in props {
-            if ui
-                .selectable_label(false, scroll_prop_words(*p).0)
-                .clicked()
-            {
-                pick = Some(*p);
+    // Hung as the add-action menu is, from its `+`'s right edge.
+    egui::Popup::menu(&plus)
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(ui::MENU_GAP)
+        .show(|ui| {
+            ui::popup_rows(ui);
+            let words = props.iter().map(|p| scroll_prop_words(*p).0);
+            ui.set_width(ui::menu_width(ui.ctx(), words, false));
+            for p in props {
+                let row = ui::MenuRow::new("", scroll_prop_words(*p).0);
+                if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                    pick = Some(*p);
+                }
             }
-        }
-    });
+        });
     pick
 }
 
-/// How far apart new snap points are placed down from where a layer is drawn,
-/// in units: each new one a step further, to be moved where it belongs.
+/// How far apart new snap points are placed from where a layer is drawn, in
+/// units: each new one a step further, to be moved where it belongs.
 const NEW_POINT_STEP: f64 = 100.0;
+
+/// The snap point `+` adds to `f`: *Point n*, n the first number no point is
+/// named by, n steps from where the layer is drawn along its axis (across for
+/// a horizontal one, down otherwise).
+fn new_drag_point(f: &Follow) -> DragPoint {
+    let taken = |n: usize| {
+        f.points
+            .iter()
+            .any(|p| p.value.name == format!("Point {n}"))
+    };
+    let n = (1..).find(|n| !taken(*n)).unwrap_or(1);
+    let step = NEW_POINT_STEP * n as f64;
+    let (x, y) = match f.axis {
+        ScrollAxis::Horizontal => (step, 0.0),
+        _ => (0.0, step),
+    };
+    DragPoint {
+        name: format!("Point {n}"),
+        x,
+        y,
+    }
+}
+
+/// The glyph of a step the layer's Prototype card names `label`: a snap
+/// point's own, as moving one on the canvas wears, else the interaction's.
+fn play_step_glyph(label: &str) -> &'static str {
+    match label {
+        "Add snap point" | "Remove snap point" | "Rename snap point" => icon::CROSSHAIR_SIMPLE,
+        _ => icon::INTERACTION,
+    }
+}
 /// The offset a new scroll trigger fires at, in units.
 const NEW_SCROLL_POINT: f64 = 100.0;
 
@@ -3637,7 +3672,15 @@ impl MastikApp {
                 let options = scrolling_frames(&self.session.doc, id);
                 let shown = mastik_core::prototype::resolve_target(&self.session.doc, id, frame);
                 let doc = &self.session.doc;
-                if let Some(f) = layer_combo(ui, doc, ("past-frame", r.id), shown, &options, w) {
+                if let Some(f) = layer_combo(
+                    ui,
+                    doc,
+                    ("past-frame", r.id),
+                    Some(icon::FRAME),
+                    shown,
+                    &options,
+                    w,
+                ) {
                     out.write = Some((
                         with(&|x: &mut Reaction| {
                             x.trigger = Trigger::ScrollPast {
@@ -4492,7 +4535,7 @@ impl MastikApp {
                 let options: Vec<NodeId> = screen_of(doc, id)
                     .map(|s| descendants(doc, s))
                     .unwrap_or_default();
-                if let Some(t) = layer_combo(ui, doc, ("scroll", k.id), *layer, &options, w) {
+                if let Some(t) = layer_combo(ui, doc, ("scroll", k.id), None, *layer, &options, w) {
                     out = Some((
                         Action::ScrollTo {
                             layer: t,
@@ -4510,7 +4553,7 @@ impl MastikApp {
             } => {
                 let inst = mastik_core::prototype::resolve_target(doc, id, *instance);
                 let options = states_of(doc, inst);
-                if let Some(t) = layer_combo(ui, doc, ("state", k.id), *to, &options, w) {
+                if let Some(t) = layer_combo(ui, doc, ("state", k.id), None, *to, &options, w) {
                     out = Some((
                         Action::ChangeState {
                             instance: *instance,
@@ -5634,13 +5677,13 @@ impl MastikApp {
                 .unwrap_or_default(),
             false => Vec::new(),
         };
-        let pinned: Vec<(String, Pin)> = match frame {
+        let pinned: Vec<(NodeId, String, Pin)> = match frame {
             true => n
                 .children()
                 .iter()
                 .filter_map(|c| doc.get(*c))
                 .filter(|c| c.play().pin != Pin::Scrolls)
-                .map(|c| (name(doc, c.id()), c.play().pin))
+                .map(|c| (c.id(), name(doc, c.id()), c.play().pin))
                 .collect(),
             false => Vec::new(),
         };
@@ -5648,10 +5691,11 @@ impl MastikApp {
             return;
         }
         let mut next: Option<(LayerPlay, &'static str)> = None;
+        let mut select = None;
         self.panel(ui, "Prototype", None, |app, ui| {
             let w = ui.available_width();
-            if frame {
-                ui::labelled(ui, "Scrolling", |ui| {
+            if frame && app.card_fold(ui, "Prototype scrolling", "Scrolling") {
+                ui::labelled(ui, "Axis", |ui| {
                     let cur = [
                         ScrollAxis::None,
                         ScrollAxis::Vertical,
@@ -5688,20 +5732,29 @@ impl MastikApp {
                         ][i];
                         next = Some((p, "Scrolling"));
                     }
-                    for (who, pin) in &pinned {
-                        let word = if *pin == Pin::Fixed {
-                            "Fixed"
-                        } else {
-                            "Sticky"
-                        };
-                        ui.label(
-                            egui::RichText::new(format!("{who} · {word}"))
-                                .size(ui::SMALL_PT)
-                                .color(theme::text::dim()),
-                        );
-                    }
                 });
-                // Snap appears once the frame scrolls, as the pinned rows do.
+                // The children pinned in it, a list row each with its pin as the
+                // row's note; a click selects the child, whose card sets the pin.
+                if !pinned.is_empty() {
+                    ui::labelled(ui, "Pinned", |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (child, who, pin) in &pinned {
+                            let word = if *pin == Pin::Fixed {
+                                "Fixed"
+                            } else {
+                                "Sticky"
+                            };
+                            let row = ui::MenuRow::new("", who).note(word);
+                            if ui::menu_row(ui, row, ui::MENU_ROW_H)
+                                .on_hover_text("Select this layer")
+                                .clicked()
+                            {
+                                select = Some(*child);
+                            }
+                        }
+                    });
+                }
+                // Snap appears once the frame scrolls.
                 if play.scroll != ScrollAxis::None {
                     ui::labelled(ui, "Snap", |ui| {
                         let snaps = [Snap::None, Snap::Children, Snap::Pages];
@@ -5719,7 +5772,7 @@ impl MastikApp {
                                 _ => "Rests on whole steps of its own size",
                             },
                             |p, i, r, on| {
-                                ui::segment_label(p, r, ["None", "Children", "Pages"][i], on)
+                                ui::segment_label(p, r, ["None", "Children", "Paging"][i], on)
                             },
                         );
                         if let Some(i) = pick.filter(|i| *i != cur) {
@@ -5727,7 +5780,7 @@ impl MastikApp {
                             p.snap = snaps[i];
                             next = Some((p, "Scrolling"));
                         }
-                        // *Pages* has one answer, so it takes no edge.
+                        // *Paging* has one answer, so it takes no edge.
                         if play.snap == Snap::Children {
                             let aligns = [SnapAlign::Start, SnapAlign::Centre, SnapAlign::End];
                             let cur = aligns
@@ -5759,42 +5812,39 @@ impl MastikApp {
                     });
                 }
             }
-            if parent.is_some() {
-                ui::labelled(ui, "In a scrolling frame", |ui| {
-                    let cur = [Pin::Scrolls, Pin::Fixed, Pin::Sticky]
-                        .iter()
-                        .position(|p| *p == play.pin)
-                        .unwrap_or(0);
-                    let pick = ui::segmented_tipped(
-                        ui,
-                        w,
-                        ui::SEGMENT_CELL_H,
-                        3,
-                        cur,
-                        |_| parent_scrolls,
-                        |i| match (parent_scrolls, i) {
-                            (false, _) => "The frame does not scroll",
-                            (true, 0) => "Moves with the content",
-                            (true, 1) => "Stays where it is drawn",
-                            _ => "Scrolls until it reaches its place, then stays",
-                        },
-                        |p, i, r, on| {
-                            ui::segment_label(p, r, ["Scrolls", "Fixed", "Sticky"][i], on)
-                        },
-                    );
-                    if let Some(i) = pick.filter(|i| *i != cur) {
-                        let mut p = play.clone();
-                        p.pin = [Pin::Scrolls, Pin::Fixed, Pin::Sticky][i];
-                        next = Some((p, "Pin"));
-                    }
-                });
+            if parent.is_some() && app.card_fold(ui, "Prototype pin", "In a scrolling frame") {
+                let cur = [Pin::Scrolls, Pin::Fixed, Pin::Sticky]
+                    .iter()
+                    .position(|p| *p == play.pin)
+                    .unwrap_or(0);
+                let pick = ui::segmented_tipped(
+                    ui,
+                    w,
+                    ui::SEGMENT_CELL_H,
+                    3,
+                    cur,
+                    |_| parent_scrolls,
+                    |i| match (parent_scrolls, i) {
+                        (false, _) => "The frame does not scroll",
+                        (true, 0) => "Moves with the content",
+                        (true, 1) => "Stays where it is drawn",
+                        _ => "Scrolls until it reaches its place, then stays",
+                    },
+                    |p, i, r, on| ui::segment_label(p, r, ["Scrolls", "Fixed", "Sticky"][i], on),
+                );
+                if let Some(i) = pick.filter(|i| *i != cur) {
+                    let mut p = play.clone();
+                    p.pin = [Pin::Scrolls, Pin::Fixed, Pin::Sticky][i];
+                    next = Some((p, "Pin"));
+                }
             }
             if parent.is_some() {
                 app.scroll_effect_section(ui, id, &play, w, &mut next);
                 app.dragging_section(ui, id, &play, w, &mut next);
             }
-            if text || instance {
-                ui::labelled(ui, "Input", |ui| {
+            if (text || instance) && app.card_fold(ui, "Prototype input", "Input") {
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
                     let kind = if text {
                         VarKind::String
                     } else {
@@ -5865,23 +5915,31 @@ impl MastikApp {
                             next = Some((p, "Input"));
                         }
                     }
-                    let note = match text {
-                        true => "Typing into it while playing sets the variable",
-                        false => "Ticking it while playing sets the variable",
+                    // Unbound, the note says what binding would do.
+                    let note = match (text, current.is_some()) {
+                        (true, true) => "Typing into it while playing sets the variable",
+                        (true, false) => "Bind a string variable to type into it while playing",
+                        (false, true) => "Ticking it while playing sets the variable",
+                        (false, false) => "Bind a boolean variable to tick it while playing",
                     };
                     ui::selection_note(ui, note);
                 });
             }
         });
+        if let Some(child) = select {
+            self.session.selection.set_one(child);
+            self.reveal_selection();
+        }
         if let Some((p, label)) = next {
-            self.session.name_step(label, icon::INTERACTION);
+            self.session.name_step(label, play_step_glyph(label));
             self.commit_edit(Transaction(vec![Operation::SetPlay { id, play: p }]));
         }
     }
 
     /// The Prototype card's *Dragging*: whether the layer follows the drag, its
-    /// axis, range and release, and its snap points as offsets from where it is
-    /// drawn, the drawn place first, renamable and never removed.
+    /// axis and range, its snap points as offsets from where it is drawn (the
+    /// drawn place first, renamable and never removed), its release, and how it
+    /// settles. The points come before *Release*, whose *Snaps* waits on one.
     fn dragging_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -5890,7 +5948,11 @@ impl MastikApp {
         w: f32,
         next: &mut Option<(LayerPlay, &'static str)>,
     ) {
-        ui::labelled(ui, "Dragging", |ui| {
+        if !self.card_fold(ui, "Prototype dragging", "Dragging") {
+            return;
+        }
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
             let on = play.follow.is_some();
             if ui::switch_row(ui, "Follows the drag", on, ui::CONTROL_H)
                 .on_hover_text("While playing, the layer moves with a drag that starts on it")
@@ -5913,13 +5975,15 @@ impl MastikApp {
                 }
                 p
             };
+            // In *Scrolling*'s words and order; `None` reads as both, so it is
+            // not offered.
             ui::labelled(ui, "Axis", |ui| {
                 let axes = [
-                    ScrollAxis::Both,
-                    ScrollAxis::Horizontal,
                     ScrollAxis::Vertical,
+                    ScrollAxis::Horizontal,
+                    ScrollAxis::Both,
                 ];
-                let cur = axes.iter().position(|a| *a == f.axis).unwrap_or(0);
+                let cur = axes.iter().position(|a| *a == f.axis).unwrap_or(2);
                 let pick = ui::segmented_tipped(
                     ui,
                     w,
@@ -5927,14 +5991,13 @@ impl MastikApp {
                     3,
                     cur,
                     |_| true,
-                    |i| ["Both", "Horizontal", "Vertical"][i],
+                    |i| match i {
+                        0 => "Moves up and down only",
+                        1 => "Moves across only",
+                        _ => "Moves any way it is dragged",
+                    },
                     |p, i, r, on| {
-                        let g = [
-                            icon::ARROWS_OUT_CARDINAL,
-                            icon::ARROWS_HORIZONTAL,
-                            icon::ARROWS_VERTICAL,
-                        ][i];
-                        ui::segment_glyph(p, r, g, on)
+                        ui::segment_label(p, r, ["Vertical", "Horizontal", "Both"][i], on)
                     },
                 );
                 if let Some(i) = pick.filter(|i| *i != cur) {
@@ -5964,6 +6027,46 @@ impl MastikApp {
                     *next = Some((with(&|f| f.range = ranges[i]), "Dragging"));
                 }
             });
+            ui::labelled(ui, "Snap points", |ui| {
+                // Where it is drawn: renamed like the others, never removed.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = COL;
+                    let name_w = w - ui::CONTROL_H - COL;
+                    let tip = Some("The point where the layer is drawn");
+                    if let Some(name) =
+                        self.point_name_field(ui, (id, None), f.drawn_name(), name_w, tip)
+                    {
+                        let drawn = (name != DRAWN_POINT).then_some(name);
+                        *next = Some((with(&|f| f.drawn = drawn.clone()), "Rename snap point"));
+                    }
+                    ui.add_enabled_ui(false, |ui| {
+                        ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
+                    })
+                    .inner
+                    .on_disabled_hover_text("Where the layer is drawn is always a point");
+                });
+                let mut gone = None;
+                for k in &f.points {
+                    self.drag_point_row(ui, id, play, k, w, &mut gone);
+                }
+                if let Some(p) = gone {
+                    *next = Some((
+                        with(&|f| f.points.retain(|k| k.id != p)),
+                        "Remove snap point",
+                    ));
+                }
+                if ui::field_button(ui, icon::PLUS, ui::CONTROL_H, FieldButton::Off)
+                    .on_hover_text("Add a snap point")
+                    .clicked()
+                {
+                    let item = self.session.ids.mint_item();
+                    let point = new_drag_point(&f);
+                    *next = Some((
+                        with(&|f| f.points.push(Keyed::new(item, point.clone()))),
+                        "Add snap point",
+                    ));
+                }
+            });
             ui::labelled(ui, "Release", |ui| {
                 let releases = [Release::Stays, Release::Returns, Release::Snaps];
                 let cur = releases.iter().position(|r| *r == f.release).unwrap_or(0);
@@ -5990,67 +6093,25 @@ impl MastikApp {
                 }
             });
             // How it moves after a release: back into its range, home, or onto a
-            // point. The transition's timing rows, without a kind or a side.
+            // point. The transition's timing rows, without a kind or a side; dim
+            // while nothing settles, free and staying where it is let go.
+            let still = f.range == FollowRange::Free && f.release == Release::Stays;
             ui::labelled(ui, "Settle", |ui| {
-                if let Some(t) = self.timing_fields(ui, ("settle", id), f.settle, w) {
+                let fields = ui::disable_unless(ui, !still, |ui| {
+                    self.timing_fields(ui, ("settle", id), f.settle, w)
+                });
+                if let Some(t) = fields.inner {
                     *next = Some((with(&|f| f.settle = t), "Dragging"));
                 }
-            });
-            ui::labelled(ui, "Snap points", |ui| {
-                // Where it is drawn: renamed like the others, never removed.
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = COL;
-                    let name_w = w - ui::CONTROL_H - COL;
-                    let mut text = f.drawn_name().to_owned();
-                    let r =
-                        ui::text_field(ui, egui::vec2(name_w, ui::CONTROL_H), &mut text, "Name")
-                            .on_hover_text("The point where the layer is drawn");
-                    if r.lost_focus() && !text.trim().is_empty() && text != f.drawn_name() {
-                        let name = text.trim().to_owned();
-                        let drawn = (name != DRAWN_POINT).then_some(name);
-                        *next = Some((with(&|f| f.drawn = drawn.clone()), "Rename snap point"));
-                    }
-                    ui.add_enabled_ui(false, |ui| {
-                        ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
-                    })
-                    .inner
-                    .on_disabled_hover_text("Where the layer is drawn is always a point");
-                });
-                let mut gone = None;
-                for k in &f.points {
-                    self.drag_point_row(ui, id, play, k, w, &mut gone);
-                }
-                if let Some(p) = gone {
-                    *next = Some((
-                        with(&|f| f.points.retain(|k| k.id != p)),
-                        "Remove snap point",
-                    ));
-                }
-                if ui::field_button(ui, icon::PLUS, ui::CONTROL_H, FieldButton::Off)
-                    .on_hover_text("Add a snap point")
-                    .clicked()
-                {
-                    let item = self.session.ids.mint_item();
-                    // The first free number, so no two points share a name.
-                    let taken = |n: usize| {
-                        f.points
-                            .iter()
-                            .any(|p| p.value.name == format!("Point {n}"))
-                    };
-                    let n = (1..).find(|n| !taken(*n)).unwrap_or(1);
-                    *next = Some((
-                        with(&|f| {
-                            f.points.push(Keyed::new(
-                                item,
-                                DragPoint {
-                                    name: format!("Point {n}"),
-                                    x: 0.0,
-                                    y: NEW_POINT_STEP * n as f64,
-                                },
-                            ))
-                        }),
-                        "Add snap point",
-                    ));
+                if still {
+                    ui.interact(
+                        fields.response.rect,
+                        ui.id().with(("settle-still", id)),
+                        egui::Sense::hover(),
+                    )
+                    .on_hover_text(
+                        "Nothing settles: it goes anywhere and stays where it is let go",
+                    );
                 }
             });
         });
@@ -6068,6 +6129,9 @@ impl MastikApp {
         w: f32,
         next: &mut Option<(LayerPlay, &'static str)>,
     ) {
+        if !self.card_fold(ui, "Prototype scroll effect", "With the scroll") {
+            return;
+        }
         let doc = &self.session.doc;
         // The layer's own scroll is not one it can follow.
         let options: Vec<NodeId> = scrolling_frames(doc, id)
@@ -6091,7 +6155,8 @@ impl MastikApp {
             p.scroll_effect = e;
             p
         };
-        ui::labelled(ui, "With the scroll", |ui| {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
             let Some(e) = play.scroll_effect.clone() else {
                 let pick = ui
                     .add_enabled_ui(!options.is_empty(), |ui| {
@@ -6134,17 +6199,27 @@ impl MastikApp {
             };
             let doc = &self.session.doc;
             let combo = ui::labelled(ui, "Frame", |ui| {
-                layer_combo(ui, doc, ("effect-frame", id), shown, &options, w)
+                layer_combo(
+                    ui,
+                    doc,
+                    ("effect-frame", id),
+                    Some(icon::FRAME),
+                    shown,
+                    &options,
+                    w,
+                )
             });
             if let Some(f) = combo {
                 let mut e2 = e.clone();
                 e2.frame = Some(f);
                 *next = Some((with(Some(e2)), "Scroll effect"));
             }
-            // A field over one number of the effect, `k` its shown scale.
+            // A field `fw` wide over one number of the effect, `k` its shown
+            // scale. A length scrubs at the Transform card's X and Y speed.
             let field = |app: &mut Self,
                          ui: &mut egui::Ui,
                          key: (usize, bool),
+                         fw: f32,
                          prefix: &'static str,
                          suffix: &'static str,
                          value: f64,
@@ -6155,9 +6230,10 @@ impl MastikApp {
                 if let Some(x) = app.proto.scrub.filter(|(i, _)| *i == rid) {
                     v = x.1;
                 }
+                let speed = if suffix == "px" { 0.5 } else { 1.0 };
                 let resp = ui::value_field_suffixed(
                     ui,
-                    egui::vec2((w - COL) / 2.0, ui::CONTROL_H),
+                    egui::vec2(fw, ui::CONTROL_H),
                     Prefix::Text(prefix),
                     (!suffix.is_empty()).then_some(ui::Suffix {
                         text: suffix,
@@ -6165,7 +6241,7 @@ impl MastikApp {
                         tooltip: "",
                     }),
                     &mut v,
-                    Scrub::whole(1.0),
+                    Scrub::whole(speed),
                     |d| d.custom_formatter(ui::number(0)),
                 )
                 .0;
@@ -6180,12 +6256,14 @@ impl MastikApp {
                 };
                 app.proto_valve(rid, v, &resp, "Scroll effect", icon::INTERACTION, t);
             };
+            let half = (w - COL) / 2.0;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = COL;
                 field(
                     self,
                     ui,
                     (usize::MAX, false),
+                    half,
                     "From",
                     "px",
                     e.from,
@@ -6196,6 +6274,7 @@ impl MastikApp {
                     self,
                     ui,
                     (usize::MAX, true),
+                    half,
                     "To",
                     "px",
                     e.to,
@@ -6203,32 +6282,35 @@ impl MastikApp {
                     &|e, v| e.to = v,
                 );
             });
+            // A property under its name, its values at the effect's *From* and
+            // *To* side by side, then its `×`.
             let mut gone = None;
+            let pw = (w - ui::CONTROL_H - 2.0 * COL) / 2.0;
             for (i, p) in e.props.iter().enumerate() {
                 let (word, suffix, k) = scroll_prop_words(p.prop);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = COL;
-                    ui.label(
-                        egui::RichText::new(word)
-                            .size(ui::SMALL_PT)
-                            .color(theme::text::muted()),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui::labelled(ui, word, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = COL;
+                        field(
+                            self,
+                            ui,
+                            (i, false),
+                            pw,
+                            "From",
+                            suffix,
+                            p.start,
+                            k,
+                            &|e, v| e.props[i].start = v,
+                        );
+                        field(self, ui, (i, true), pw, "To", suffix, p.end, k, &|e, v| {
+                            e.props[i].end = v
+                        });
                         if ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
-                            .on_hover_text("Remove")
+                            .on_hover_text("Remove this property")
                             .clicked()
                         {
                             gone = Some(i);
                         }
-                    });
-                });
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = COL;
-                    field(self, ui, (i, false), "", suffix, p.start, k, &|e, v| {
-                        e.props[i].start = v
-                    });
-                    field(self, ui, (i, true), "", suffix, p.end, k, &|e, v| {
-                        e.props[i].end = v
                     });
                 });
             }
@@ -6275,16 +6357,15 @@ impl MastikApp {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = COL;
             let name_w = w - ui::CONTROL_H - COL;
-            let mut text = k.value.name.clone();
-            let r = ui::text_field(ui, egui::vec2(name_w, ui::CONTROL_H), &mut text, "Name");
-            if r.lost_focus() && !text.trim().is_empty() && text != k.value.name {
-                let name = text.trim().to_owned();
+            if let Some(name) =
+                self.point_name_field(ui, (id, Some(k.id)), &k.value.name, name_w, None)
+            {
                 self.session
                     .name_step("Rename snap point", icon::CROSSHAIR_SIMPLE);
                 self.commit_edit(set(&|p| p.name = name.clone()));
             }
             if ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
-                .on_hover_text("Remove snap point")
+                .on_hover_text("Remove this snap point")
                 .clicked()
             {
                 *gone = Some(k.id);
@@ -6308,13 +6389,14 @@ impl MastikApp {
                 if let Some(x) = self.proto.scrub.filter(|(i, _)| *i == rid) {
                     v = x.1;
                 }
+                // The Transform card's X and Y scrub speed, whole units kept.
                 let resp = ui::value_field_suffixed(
                     ui,
                     egui::vec2(half, ui::CONTROL_H),
                     Prefix::Text(label),
                     None,
                     &mut v,
-                    Scrub::whole(1.0),
+                    Scrub::whole(0.5),
                     |d| d.custom_formatter(ui::number(0)),
                 )
                 .0;
@@ -6342,6 +6424,30 @@ impl MastikApp {
                 None => {}
             }
         });
+    }
+
+    /// A snap point's name field, `point` naming the layer and the point (`None`
+    /// for where it is drawn): typed into a `ui::Draft`, so `Escape` gives the
+    /// typing up. Answers a new, non-empty name on a committing defocus.
+    fn point_name_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        point: (NodeId, Option<ItemId>),
+        current: &str,
+        w: f32,
+        tip: Option<&str>,
+    ) -> Option<String> {
+        let key = DraftKey::PointName(point.0, point.1);
+        let ctx = ui.ctx().clone();
+        let mut text = ui::Draft::live(&mut self.proto.draft, &ctx, key)
+            .map_or(current.to_string(), |d| d.text.clone());
+        let mut resp = ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, "Name");
+        if let Some(tip) = tip {
+            resp = resp.on_hover_text(tip);
+        }
+        let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
+        let typed = typed.trim().to_string();
+        (!typed.is_empty() && typed != current).then_some(typed)
     }
 
     /// The page's *Flows*: one row per flow, its name and its start frame; `+`
@@ -6395,9 +6501,15 @@ impl MastikApp {
                         next = Some((list, "Rename flow"));
                     }
                     let doc = &app.session.doc;
-                    if let Some(s) =
-                        layer_combo(ui, doc, ("flow-start", f.id), f.start, &frames, half)
-                    {
+                    if let Some(s) = layer_combo(
+                        ui,
+                        doc,
+                        ("flow-start", f.id),
+                        Some(icon::FRAME),
+                        f.start,
+                        &frames,
+                        half,
+                    ) {
                         let list = flows
                             .iter()
                             .map(|x| match x.id == f.id {
@@ -6932,11 +7044,13 @@ fn frame_combo(
     pick
 }
 
-/// A dropdown of `options` by name; answers a new pick.
+/// A dropdown of `options` by name, its face led by `glyph` when given (a list
+/// of frames wears `icon::FRAME`, as [`frame_combo`] does); answers a new pick.
 fn layer_combo(
     ui: &mut egui::Ui,
     doc: &Document,
     salt: impl std::hash::Hash + std::fmt::Debug,
+    glyph: Option<&str>,
     current: impl Into<Option<NodeId>>,
     options: &[NodeId],
     w: f32,
@@ -6948,7 +7062,11 @@ fn layer_combo(
         None => "None".into(),
     };
     let mut pick = None;
-    ui::fitted_combo(ui, salt, w, ui::combo_text(&shown), &shown, |ui| {
+    let face = match glyph {
+        Some(g) => ui::glyph_and_text(g, &shown),
+        None => ui::combo_text(&shown),
+    };
+    ui::fitted_combo(ui, salt, w, face, &shown, |ui| {
         ui::menu_rows(ui);
         for o in options {
             let on = Some(*o) == current;
@@ -8112,6 +8230,157 @@ mod tests {
         let n = f.app.session.doc.get(f.add).unwrap();
         let p = &n.play().follow.as_ref().unwrap().points[0].value;
         assert_eq!((p.x, p.y), (0.0, 157.0));
+    }
+
+    /// A new snap point is the first free *Point n*, n steps along the layer's
+    /// axis: across for a horizontal layer, down otherwise.
+    /// flip: `new_drag_point` without its `Horizontal` arm → fails at "across".
+    #[test]
+    fn a_new_snap_point_steps_along_the_axis() {
+        let follow = |axis, names: &[&str]| Follow {
+            axis,
+            points: names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    Keyed::new(
+                        item(i as u32 + 1),
+                        DragPoint {
+                            name: (*n).into(),
+                            x: 0.0,
+                            y: 0.0,
+                        },
+                    )
+                })
+                .collect(),
+            ..Follow::default()
+        };
+        let at = |p: DragPoint| (p.name, p.x, p.y);
+        assert_eq!(
+            at(new_drag_point(&follow(ScrollAxis::Horizontal, &[]))),
+            ("Point 1".into(), 100.0, 0.0),
+            "across"
+        );
+        assert_eq!(
+            at(new_drag_point(&follow(ScrollAxis::Vertical, &[]))),
+            ("Point 1".into(), 0.0, 100.0),
+            "down"
+        );
+        assert_eq!(
+            at(new_drag_point(&follow(ScrollAxis::Both, &["Point 1"]))),
+            ("Point 2".into(), 0.0, 200.0),
+            "the first free number, a step further"
+        );
+    }
+
+    /// The drawn point's name field reads *Start* until renamed, keeps what is
+    /// typed from frame to frame, gives it up on `Escape`, and commits it on
+    /// `Enter`; typing *Start* back clears the rename.
+    /// flip: `point_name_field` reading `resp.lost_focus()` with no `ui::Draft`
+    /// → fails at "kept across frames"; taking the draft on any defocus, `Escape`
+    /// included → fails at "Escape gives it up".
+    #[test]
+    fn a_snap_point_name_is_a_draft() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let play = LayerPlay {
+            follow: Some(Follow::default()),
+            ..LayerPlay::default()
+        };
+        f.app
+            .commit_edit(Transaction(vec![Operation::SetPlay { id: f.add, play }]));
+        f.app.prototype_mode = true;
+        f.app.session.selection.set_one(f.add);
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 2400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                app.inspector_ui(ui)
+            })
+        };
+        let field_at = |out: &egui::FullOutput, text: &str| {
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == text => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+        };
+        let drawn = |app: &MastikApp| {
+            let n = app.session.doc.get(f.add).unwrap();
+            n.play().follow.as_ref().unwrap().drawn.clone()
+        };
+        // Click into the field, select its text, and type over it.
+        let type_over = |app: &mut MastikApp, at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            frame(app, vec![egui::Event::PointerMoved(at), press(true)]);
+            frame(app, vec![press(false)]);
+            frame(
+                app,
+                vec![
+                    key(egui::Key::A, egui::Modifiers::COMMAND),
+                    egui::Event::Text("Rest".into()),
+                ],
+            );
+        };
+        let mut out = frame(&mut f.app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut f.app, vec![]);
+        }
+        let at = field_at(&out, "Start").expect("the drawn point reads Start");
+        type_over(&mut f.app, at);
+        let out = frame(&mut f.app, vec![]);
+        assert!(field_at(&out, "Rest").is_some(), "kept across frames");
+        frame(
+            &mut f.app,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        let out = frame(&mut f.app, vec![]);
+        assert_eq!(drawn(&f.app), None, "Escape gives it up");
+        assert!(field_at(&out, "Start").is_some(), "the old name is back");
+        type_over(&mut f.app, at);
+        frame(
+            &mut f.app,
+            vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+        );
+        assert_eq!(drawn(&f.app).as_deref(), Some("Rest"), "Enter commits");
+        for _ in 0..3 {
+            frame(&mut f.app, vec![]);
+        }
+        let out = frame(&mut f.app, vec![]);
+        let at = field_at(&out, "Rest").expect("the new name shows");
+        type_over(&mut f.app, at);
+        frame(&mut f.app, vec![]);
+        // Typed back over the select-all, the default name clears the rename.
+        frame(
+            &mut f.app,
+            vec![
+                key(egui::Key::A, egui::Modifiers::COMMAND),
+                egui::Event::Text(DRAWN_POINT.into()),
+                key(egui::Key::Enter, egui::Modifiers::NONE),
+            ],
+        );
+        assert_eq!(drawn(&f.app), None, "the default name clears it");
     }
 
     /// A scroll trigger's line moves along its frame's scroll and snaps to a

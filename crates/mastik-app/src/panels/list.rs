@@ -289,7 +289,7 @@ impl MastikApp {
 
     /// *Rows*: every row, the first few, or the row opened in play.
     fn list_rows_rows(&mut self, ui: &mut egui::Ui, id: NodeId, now: &List) {
-        if !self.list_card_section(ui, "List rows", "Rows") {
+        if !self.card_fold(ui, "List rows", "Rows") {
             return;
         }
         let at = match now.rows {
@@ -391,7 +391,7 @@ impl MastikApp {
         } else {
             format!("Fill \u{b7} {owner}")
         };
-        if !self.list_card_section(ui, "List fill", &title) {
+        if !self.card_fold(ui, "List fill", &title) {
             return;
         }
         if targets.is_empty() {
@@ -475,9 +475,9 @@ impl MastikApp {
         }
     }
 
-    /// A folding section of the List card, its fold kept by `key`; answers
-    /// whether it is open.
-    fn list_card_section(&mut self, ui: &mut egui::Ui, key: &'static str, label: &str) -> bool {
+    /// A folding section of a card (List, Prototype), headed by `ui::fold_rule`,
+    /// its fold kept by `key`; answers whether it is open.
+    pub(super) fn card_fold(&mut self, ui: &mut egui::Ui, key: &'static str, label: &str) -> bool {
         let open = !self.collapsed_panels.contains(key);
         if ui::fold_rule(ui, label, open, 0).clicked() {
             if open {
