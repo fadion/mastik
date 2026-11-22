@@ -8912,6 +8912,46 @@ mod tests {
         assert!(f.app.cards_drawn.contains(&"Flows"), "the page's flows");
     }
 
+    /// The Prototype card's first section takes no rule under the card's head;
+    /// a later one is parted from the one above by a hairline over its title.
+    ///
+    /// flip: `fold_rule` ignoring where `section_head_full` noted the body
+    /// starts → fails at "none under the head".
+    #[test]
+    fn only_a_later_section_is_ruled() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        f.app.session.selection.set_one(f.add);
+        f.app.session.prototype_mode = true;
+        let mut out = draw(&mut f.app, &ctx);
+        for _ in 0..3 {
+            out = draw(&mut f.app, &ctx);
+        }
+        let shapes: Vec<_> = out.shapes.iter().map(|c| &c.shape).collect();
+        let title_y = |word: &str| {
+            shapes.iter().find_map(|s| match s {
+                egui::Shape::Text(t) if t.galley.job.text == word => Some(t.pos.y),
+                _ => None,
+            })
+        };
+        // A divider hairline within a title row's height above `y`.
+        let ruled = |y: f32| {
+            shapes.iter().any(|s| match s {
+                egui::Shape::LineSegment { points, stroke } => {
+                    stroke.color == theme::color::divider()
+                        && points[0].y == points[1].y
+                        && (y - points[0].y) > 0.0
+                        && (y - points[0].y) < ui::FOLD_HEAD_H
+                }
+                _ => false,
+            })
+        };
+        let first = title_y("In a scrolling frame").expect("a child's first section");
+        let later = title_y("Dragging").expect("a later section");
+        assert!(!ruled(first), "none under the head");
+        assert!(ruled(later), "a rule over a later section");
+    }
+
     /// An instance whose reaction differs from its main's wears the override dot
     /// on that reaction's row, and the Interactions card counts it. flip:
     /// `card_of` answering `None` for `SetReactions` → fails at "the card counts it".

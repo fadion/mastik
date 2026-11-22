@@ -1797,12 +1797,23 @@ pub fn fold_head(ui: &mut egui::Ui, label: &str, open: bool) -> (egui::Response,
 /// eyebrow head and the eyebrow labels of the fields inside it. The whole row
 /// is one press target; title and caret brighten while it is hovered.
 ///
+/// The first section in its column has no hairline: the card's head above it
+/// already parts the two. The title row gives back [`FOLD_ROW_TRIM`] under it,
+/// which the next row's gap makes up, so a folded title sits evenly between
+/// its hairline and the next.
+///
 /// A `count` above zero is drawn after the title as a card header's overrides
 /// are ([`override_count`]): how many things the fold holds that are not at rest,
 /// so a folded section is never silently changed.
 pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool, count: usize) -> egui::Response {
+    // Nothing laid out above it in this column yet, or nothing since its card's
+    // head ([`section_head_full`] notes where the body starts).
+    let top = ui.cursor().top();
+    let body_top = ui.data(|d| d.get_temp::<f32>(fold_first_id(ui)));
+    let first = top <= ui.max_rect().top() + 0.5 || body_top.is_some_and(|y| (top - y).abs() < 0.5);
+    let air = if first { 0.0 } else { FOLD_RULE_AIR };
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), FOLD_RULE_AIR + FOLD_HEAD_H),
+        egui::vec2(ui.available_width(), air + FOLD_HEAD_H - FOLD_ROW_TRIM),
         egui::Sense::click(),
     );
     let hovered = resp.hovered();
@@ -1812,15 +1823,22 @@ pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool, count: usize) -> eg
     };
     let ppp = ui.ctx().pixels_per_point();
     let p = ui.painter();
-    let rule_y = hairline_in_column(rect.top() + 0.5, ppp, 1.0);
-    p.line_segment(
-        [
-            egui::pos2(rect.left(), rule_y),
-            egui::pos2(rect.right(), rule_y),
-        ],
-        egui::Stroke::new(1.0, theme::color::divider()),
+    if !first {
+        let rule_y = hairline_in_column(rect.top() + 0.5, ppp, 1.0);
+        p.line_segment(
+            [
+                egui::pos2(rect.left(), rule_y),
+                egui::pos2(rect.right(), rule_y),
+            ],
+            egui::Stroke::new(1.0, theme::color::divider()),
+        );
+    }
+    // The full-height row the title centres in; its last `FOLD_ROW_TRIM` lies
+    // past the allocation.
+    let row = egui::Rect::from_min_size(
+        egui::pos2(rect.left(), rect.top() + air),
+        egui::vec2(rect.width(), FOLD_HEAD_H),
     );
-    let row = rect.with_min_y(rect.top() + FOLD_RULE_AIR);
     let word = p.layout_no_wrap(
         label.to_owned(),
         egui::FontId::proportional(SMALL_PT),
@@ -1849,6 +1867,9 @@ pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool, count: usize) -> eg
 
 /// The air under a [`fold_rule`]'s hairline, above its title row.
 const FOLD_RULE_AIR: f32 = 4.0;
+/// What a [`fold_rule`]'s title row gives back under the title: without it a
+/// folded title sits this much further from the hairline below than from its own.
+const FOLD_ROW_TRIM: f32 = 2.0;
 
 /// A fold's caret beside a name rather than an eyebrow — a group, a kit — its
 /// left edge at `at`'s x and centred on its y. Answers the glyph's rect.
@@ -2372,7 +2393,16 @@ pub fn section_head_full(
             override_count(p, slot.left(), slot.center().y, o.count);
         }
     }
+    // Where the card's body starts, so a fold section opening it draws no rule.
+    let body_top = ui.cursor().top();
+    ui.data_mut(|d| d.insert_temp(fold_first_id(ui), body_top));
     clicks
+}
+
+/// The key under which a card head notes where its body starts, read by
+/// [`fold_rule`].
+fn fold_first_id(ui: &egui::Ui) -> egui::Id {
+    ui.id().with("fold-first-at")
 }
 
 /// The override mark: a 4-pt neutral dot centred at `at`, on a card header, beside
