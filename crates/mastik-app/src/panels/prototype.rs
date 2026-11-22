@@ -1663,6 +1663,9 @@ fn navigate_to(doc: &Document, holder: NodeId, to: NodeId) -> Action {
 /// corner dots, so the two handles do not read as one.
 const KNOB_R: f32 = 5.0;
 const KNOB_HOT_R: f32 = 6.0;
+/// How far after a frame's name tag the dot of a connector leaving from the
+/// tag is centred.
+const TAG_DOT_GAP: f32 = 4.0;
 /// How far from a link dot's centre a press still takes it. Wider than its ink
 /// and tested before the box's handles, so the dot on an edge is easy to take
 /// from the resize there.
@@ -2198,7 +2201,7 @@ impl MastikApp {
                 .leaves_from_tag(&link)
                 .then(|| self.frame_label(ui, link.from, rect, ppp))
                 .flatten()
-                .map(|(r, _)| egui::pos2(r.right() + 4.0, r.center().y));
+                .map(|(r, _)| egui::pos2(r.right() + TAG_DOT_GAP, r.center().y));
             let (ink, pts, warning) = match ends {
                 Some(((ea, eb), to)) => match self.goes_back(&link, rect, ppp) {
                     // Back across the page: up from the layer's top edge, over
@@ -2330,6 +2333,24 @@ impl MastikApp {
                     );
                 }
             }
+        }
+    }
+
+    /// How far past frame `id`'s name tag its connector's dot reaches: in
+    /// prototype mode, while one of its own *After delay* links leaves from the
+    /// tag; zero otherwise. What else hangs after the tag (an annotation's mark)
+    /// starts beyond it.
+    pub(crate) fn tag_dot_reach(&self, id: NodeId) -> f32 {
+        if !self.prototype_mode() {
+            return 0.0;
+        }
+        let from_tag = links_on(&self.session.doc, self.session.page)
+            .iter()
+            .any(|l| l.from == id && self.leaves_from_tag(l));
+        match from_tag {
+            // The dot's ring is 1.5 wide, half of it outside its radius.
+            true => TAG_DOT_GAP + KNOB_R + 1.0,
+            false => 0.0,
         }
     }
 

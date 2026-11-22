@@ -83,8 +83,12 @@ impl MastikApp {
                 continue;
             }
             let at = match self.frame_label(ui, id, rect, ppp) {
+                // Past the dot of a connector leaving from the tag, if any.
                 Some((tag, _)) => egui::Rect::from_min_size(
-                    egui::pos2(tag.right() + MARK_GAP, tag.center().y - MARK / 2.0),
+                    egui::pos2(
+                        tag.right() + self.tag_dot_reach(id) + MARK_GAP,
+                        tag.center().y - MARK / 2.0,
+                    ),
                     egui::vec2(MARK, MARK),
                 ),
                 None => {
@@ -281,5 +285,53 @@ mod tests {
         let q = corner.expect("fixture: the rect is on screen");
         let right = q.iter().map(|p| p.x).fold(f32::MIN, f32::max);
         assert!(at(rect).left() > right, "outside the rect's corner");
+    }
+
+    /// In prototype mode, a frame whose own *After delay* leaves from its name
+    /// tag has its mark past that connector's dot, not on it.
+    ///
+    /// flip: `annotation_marks` leaving out `tag_dot_reach` → fails at "past
+    /// the dot".
+    #[test]
+    fn a_frames_mark_clears_the_dot_on_its_tag() {
+        use mastik_core::item::Keyed;
+        use mastik_core::prototype::{Action, Reaction, Transition, Trigger};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, frame, _) = fixture(&ctx);
+        let after = Reaction {
+            trigger: Trigger::After { ms: 3000 },
+            actions: vec![Keyed::new(
+                app.session.ids.mint_item(),
+                Action::Navigate {
+                    to: frame,
+                    transition: Transition::default(),
+                    keep_scroll: false,
+                },
+            )],
+        };
+        let id = app.session.ids.mint_item();
+        app.write_reactions(
+            frame,
+            vec![Keyed::new(id, after)],
+            "Add interaction",
+            crate::theme::icon::INTERACTION,
+        );
+        app.session.prototype_mode = true;
+        app.show_annotations = true;
+        let mut tag = None;
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            tag = app.frame_label(ui, frame, canvas(), 1.0).map(|(r, _)| r);
+        });
+        let tag = tag.expect("fixture: the frame wears a tag");
+        let mark = marks(&ctx, &app, None)
+            .into_iter()
+            .find(|m| m.0 == frame)
+            .map(|m| m.1)
+            .expect("the frame's mark");
+        assert!(
+            mark.left() >= tag.right() + 4.0 + 5.0,
+            "past the dot: {mark:?} vs {tag:?}"
+        );
     }
 }
