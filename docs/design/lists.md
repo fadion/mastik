@@ -70,8 +70,13 @@ its copies as plain instances, rather than refusing the file, since earlier buil
   takes the picture the cell names (*Picture columns*); a variant column switches the copy to the
   variant whose value the cell names. Swap and nested properties are not filled.
 - **A variant cell naming no value** of its property leaves that property where the template
-  has it, as does a combination of values no variant of the set has. The card warns of such
-  cells (`list::unmatched_variants`).
+  has it, as does a combination of values no variant of the set has.
+  `list::unmatched_variant_cells` answers each such cell of the drawn rows (property, row,
+  column, cell); the List card counts them (`list::unmatched_variants`, built from it) and the
+  data window draws them in the warning ink.
+- **Row 1 is the template, filled like every row**, so an edit to a filled property there would
+  be lost at the next regeneration without a word. The instance card shows such a property's
+  column, read-only (`components.md`, *Variants chrome*).
 - **By name** (`list::fill_by_name`): a column fills the property whose name matches its own,
   ignoring case, spaces, dashes and underscores; text, boolean and image properties first, then
   the set's variant properties.
@@ -154,8 +159,10 @@ its copies as plain instances, rather than refusing the file, since earlier buil
   - **New table** makes a data set of `list::seed_table(doc, template)`: one column per text,
     boolean or image property, then per variant property, each named after it, and one row holding
     the instance's own values (`true`/`false`, a picture's id, the variant value shown), so the
-    fill by name fills every property. It is named *Table 1* (`list::free_name`), unlinked; the
-    list is made over it and the data window opens on it.
+    fill by name fills every property. `make_list_new_table` adds an empty row 2, so the list
+    starts with two rows. It is named *Table 1* (`list::free_name`), unlinked; the list is made
+    over it and the data window opens typing into row 2's first cell (`type_into_cell`), the
+    next thing to write.
 - **The import box** is the chart's (`chart_import.rs`; `charts.md`, *Import and the linked
   file*), headed *Make a list*, with a *Fill · ‹component›* section after the preview: one
   labelled dropdown per property the List card fills (three to a row, scrolling past six),
@@ -241,7 +248,11 @@ the window is *Data tables* (below).
   step *Rename data*, a taken name numbered past (`list::free_name`).
 - **The grid is the chart's.** Each header shows in the accent the property its column fills on
   the list the window was opened from (tooltip *Fills Title on this list*); the chart-only header
-  rows (*Use as category* / *Use as X*, *Show as series*) are not offered. *Import…* relinks the
+  rows (*Use as category* / *Use as X*, *Show as series*) are not offered. A cell naming no
+  variant of the property its column fills on that list is drawn in the warning ink, an empty
+  one with a warning-ink edge (`Heads::Fills`, `list::unmatched_variant_cells`), so the cells
+  the List card counts are found
+  where they are fixed. *Import…* relinks the
   data set (*The linked file*). A linked set's grid is read-only with *Edited in products.csv —
   unlink to edit here*, as a chart's.
 - **Each edit is one step, *Edit list data***: a `SetDataSet`, a fill whose column is gone
@@ -303,7 +314,7 @@ the document's data sets, which it calls tables. Named *Data tables*, not *Conte
 
 - **A copy picks as its list.** `query::hit_test` answers a copy, or anything inside one, with the
   list frame (`list::copy_owner`); the template is a layer like any other, so editing it edits
-  every row. A double-click on a copy selects the template and enters the list frame
+  every row, save a filled property, which row 1's cells set (*What a column fills*). A double-click on a copy selects the template and enters the list frame
   (`copy_template_at`, asked first in `double_click_pick`).
 - **The list's tag is a component set's tab** (`canvas_tags`, `frame_label`): card ground,
   rounded top corners, without the set's resting outline, the `TABLE` glyph, the frame's name and

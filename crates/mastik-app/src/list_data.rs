@@ -196,13 +196,15 @@ impl MastikApp {
     }
 
     /// *Make a list from data ▸ New table*: instance `id` made a list over a new
-    /// table holding its own values as row 1 (`list::seed_table`), and the data
-    /// window opened on it.
+    /// table holding its own values as row 1 (`list::seed_table`) and an empty
+    /// row 2, and the data window opened typing into row 2's first cell, the
+    /// next thing to write.
     pub(crate) fn make_list_new_table(&mut self, id: NodeId) {
         if let Some(why) = list::why_not(&self.session.doc, id) {
             return self.session.info(why);
         }
-        let table = list::seed_table(&self.session.doc, id);
+        let mut table = list::seed_table(&self.session.doc, id);
+        table.rows.push(vec![String::new(); table.columns.len()]);
         let set = DataSet {
             id: self.session.ids.mint_data_set(),
             name: list::free_name(&self.session.doc, "Table 1"),
@@ -213,6 +215,7 @@ impl MastikApp {
         let name = set.name.clone();
         if let Some(frame) = self.commit_make_list(id, list::Source::New(set), Some(name)) {
             self.open_list_data(frame);
+            self.type_into_cell((1, 0));
         }
     }
 

@@ -5413,6 +5413,28 @@ pub fn glyph_and_text(glyph: &str, text: &str) -> egui::WidgetText {
     glyph_and_text_tinted(glyph, text, theme::text::faint())
 }
 
+/// A dropdown face whose lead is a swatch in place of a glyph: [`glyph_and_text`]
+/// with the glyph clear, so the text sits where every glyph-led face puts it, and
+/// [`face_swatch`] painting the swatch where the glyph was, over the drawn combo.
+pub fn swatch_face_text(text: &str) -> egui::WidgetText {
+    glyph_and_text_tinted(theme::icon::IMAGE, text, egui::Color32::TRANSPARENT)
+}
+
+/// [`swatch_face_text`]'s swatch, painted on the combo `face` (its response's
+/// rect) at the glyph's place: a [`FACE_SWATCH`] square, centred on the line.
+pub fn face_swatch(ui: &egui::Ui, face: egui::Rect, bg: egui::Color32, paint: Swatch<'_>) {
+    let at = egui::pos2(
+        face.left() + ui.spacing().button_padding.x,
+        face.center().y - FACE_SWATCH / 2.0,
+    );
+    let rect = egui::Rect::from_min_size(at, egui::Vec2::splat(FACE_SWATCH));
+    paint_swatch(ui.painter(), rect, bg, paint);
+}
+
+/// A [`face_swatch`]'s side: the colour rows' chip, inside the glyph's advance so
+/// the text after it keeps its gap.
+pub const FACE_SWATCH: f32 = 14.0;
+
 /// [`glyph_and_text`] with the glyph in a colour of the caller's choosing.
 ///
 /// The type family row wears `TEXT_AA` in [`theme::color::warn()`] when the family
@@ -14801,6 +14823,59 @@ mod hairline_weight_tests {
                  menu that has one"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod face_swatch_tests {
+    //! A dropdown face's swatch stands where its glyph would.
+
+    use super::*;
+
+    /// The face's first glyph, drawn: its left edge and advance in screen space,
+    /// and the combo's rect.
+    fn glyph_of(ctx: &egui::Context) -> (f32, f32, egui::Rect, f32) {
+        let mut face = egui::Rect::NOTHING;
+        let mut pad = 0.0;
+        let out = ctx.run_ui(Default::default(), |ui| {
+            combo_height(ui);
+            pad = ui.spacing().button_padding.x;
+            face = egui::ComboBox::from_id_salt("face")
+                .icon(combo_chevron)
+                .width(200.0)
+                .selected_text(glyph_and_text(icon::IMAGE, "Photo"))
+                .show_ui(ui, |_| {})
+                .response
+                .rect;
+        });
+        let glyph = out
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text().starts_with(icon::IMAGE) => {
+                    let g = t.galley.rows.first()?.glyphs.first()?;
+                    Some((t.pos.x + g.pos.x, g.advance_width))
+                }
+                _ => None,
+            })
+            .expect("the face's text");
+        (glyph.0, glyph.1, face, pad)
+    }
+
+    /// The place `face_swatch` paints at (the face's left plus the button
+    /// padding) is where a drawn face's glyph starts, and the swatch fits inside
+    /// the glyph's advance, so the text after it keeps the gap every glyph-led
+    /// face has. It pins that formula against egui's face layout; it does not
+    /// call `face_swatch`.
+    #[test]
+    fn the_swatch_stands_on_the_glyph() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let _ = glyph_of(&ctx);
+        let (x, advance, face, pad) = glyph_of(&ctx);
+        let left = face.left() + pad;
+        assert!((left - x).abs() <= 1.0, "on the glyph: {left} vs {x}");
+        assert!(FACE_SWATCH <= advance + 1.0, "{FACE_SWATCH} in {advance}");
     }
 }
 

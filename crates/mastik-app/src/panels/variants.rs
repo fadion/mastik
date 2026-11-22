@@ -671,6 +671,30 @@ fn swap_heading(ui: &mut egui::Ui, glyph: Option<&str>, name: &str, status: &str
     );
 }
 
+/// The column that fills `target` on `root` when `root` is a list's template,
+/// with the column's and the data set's names: row 1 is filled from the table
+/// like every row, so an edit there would be lost at the next regeneration.
+fn filled_column(
+    doc: &mastik_core::Document,
+    root: NodeId,
+    target: &mastik_core::list::Target,
+) -> Option<(String, String)> {
+    let frame = doc.get(root)?.parent()?;
+    let list = doc.get(frame)?.list()?;
+    (mastik_core::list::template(doc, frame)? == root).then_some(())?;
+    let fill = list.fill.iter().find(|f| f.target == *target)?;
+    let set = doc.data_set(list.data)?;
+    Some((
+        set.table.column(fill.column)?.name.clone(),
+        set.name.clone(),
+    ))
+}
+
+/// What a filled property's row says under the pointer.
+fn filled_tip(column: &str, set: &str) -> String {
+    format!("Filled from {column} in {set}, as every row is: edit it in the table")
+}
+
 /// A row's label in the label column, **right-aligned against its control**
 /// (§15 D996, `component::label_mark_in`) — every label in the column ending the
 /// same distance from the field it names, whatever its length.
@@ -1941,6 +1965,18 @@ impl MastikApp {
                         ),
                     }
                 });
+                // A list's template takes the variant its row names, so it has
+                // nothing to pick and no override to reset.
+                let filled = match roots {
+                    [only] => filled_column(
+                        doc,
+                        *only,
+                        &mastik_core::list::Target::Variant(p.name.clone()),
+                    )
+                    .map(|(col, set)| filled_tip(&col, &set)),
+                    _ => None,
+                };
+                let mark = mark.filter(|_| filled.is_none());
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let label = egui::Rect::from_min_size(
@@ -1961,8 +1997,9 @@ impl MastikApp {
                             ));
                     }
                     let w = ui.available_width();
-                    let refuse =
-                        (!switchable).then_some("Only an instance or a nested copy switches");
+                    let refuse = filled
+                        .as_deref()
+                        .or((!switchable).then_some("Only an instance or a nested copy switches"));
                     if let Some(i) = dropdown(
                         ui,
                         ("variant-pick", first, pi),
@@ -2044,6 +2081,23 @@ impl MastikApp {
                 }
             });
             let reset = || mark.as_ref().map(|m| m.tx.clone());
+            // On a list's template a filled property shows its column, read-only.
+            let target = mastik_core::list::Target::Prop(p.id);
+            if let [only] = roots
+                && let Some((col, set)) = filled_column(doc, *only, &target)
+            {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    row_label(ui, &p.name, None);
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), ui::CONTROL_H),
+                        egui::Sense::hover(),
+                    );
+                    let id = ui.id().with(("prop-filled", first, p.id));
+                    super::binding::chip(ui, rect, id, &col, &filled_tip(&col, &set), false);
+                });
+                continue;
+            }
             match p.kind {
                 // Filtered out above: a showing has no value to draw.
                 PropKind::Nested => {}
@@ -2258,8 +2312,21 @@ impl MastikApp {
                     });
                 }
                 // A picture: the document's pictures to pick from, or *Replace…*
-                // with a file, which the first copy's fill takes.
+                // with a file, which the first copy's fill takes. The face leads
+                // with the picture itself, as a fill row's chip does.
                 PropKind::Image => {
+                    let shows = match (&value, mixed) {
+                        (PropValue::Image(_), false) => variant::counterparts(doc, first, p)
+                            .first()
+                            .and_then(|c| doc.get(*c))
+                            .and_then(variant::image_of)
+                            .map(|(_, r)| r.clone()),
+                        _ => None,
+                    };
+                    let thumb = shows.and_then(|r| {
+                        let images = self.canvas.images();
+                        self.thumbs.texture(ui.ctx(), images, &r, ui::FACE_SWATCH)
+                    });
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         if row_label(ui, &p.name, mark.as_ref()) {
@@ -2280,10 +2347,14 @@ impl MastikApp {
                         let mut pick = None;
                         let mut replace = false;
                         ui::combo_height(ui);
-                        egui::ComboBox::from_id_salt(("prop-image", first, p.id))
+                        let face = match thumb {
+                            Some(_) => ui::swatch_face_text(&shown),
+                            None => ui::glyph_and_text(icon::IMAGE, &shown),
+                        };
+                        let combo = egui::ComboBox::from_id_salt(("prop-image", first, p.id))
                             .icon(ui::combo_chevron)
                             .width(w)
-                            .selected_text(ui::glyph_and_text(icon::IMAGE, &shown))
+                            .selected_text(face)
                             .show_ui(ui, |ui| {
                                 ui::menu_rows(ui);
                                 for id in &pictures {
@@ -2304,6 +2375,11 @@ impl MastikApp {
                                     replace = true;
                                 }
                             });
+                        if let Some(id) = thumb {
+                            let paint = ui::Swatch::Picture { id, alpha: 1.0 };
+                            let ground = theme::color::field();
+                            ui::face_swatch(ui, combo.response.rect, ground, paint);
+                        }
                         if let Some(id) = pick {
                             out.push(Transaction(variant::set_property(
                                 doc,

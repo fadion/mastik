@@ -12,20 +12,6 @@ true.
 A release of its own. The prototype is built (`prototyping.md` points to each part); what
 remains is below.
 
-- **Lists: leftovers.** Four pieces of the list design that were never built:
-  - **A filled property on the template shows its column and is read-only.** Row 1 is filled
-    from the table like every row, so an edit to a filled property on the template is lost at
-    the next regeneration without a word. The instance's property row (`panels/variants.rs`)
-    should show the column as a capsule, as a variable-bound field does, and refuse edits.
-  - **The data window marks cells that name no variant** in the warning ink. The List card
-    counts them (`list::unmatched_variants`, *N values name no ‹X› variant*), but the grid in
-    `chart_data.rs`, where they are fixed, does not show which.
-  - **New table leaves the cursor typing in row 2.** `list_data.rs` `make_list_new_table` opens
-    the window on cell (0, 0) with nothing in edit mode, and the seeded table has only row 1.
-    It should add an empty row 2 and start editing its first cell.
-  - **An instance's image property shows the picture.** The row's combo shows the image glyph
-    and the picture's id or path, which do not say what it is; draw a `ui::swatch` with
-    `Swatch::Picture` in its place, as the fill rows do.
 - **Variable autocomplete on `{`.** An expression names a variable as `{name}`
   (`Expr::with_names`), and `@` already opens a list of the document's variables that writes one
   (`at_names` in `panels/prototype.rs`), but typing `{`, which is the form the field shows,

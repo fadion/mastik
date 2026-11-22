@@ -383,6 +383,11 @@ fn a_variant_column_switches_each_row() {
         list::unmatched_variants(&doc, l),
         [(prop.name.clone(), vec!["Nope".to_string()])]
     );
+    assert_eq!(
+        list::unmatched_variant_cells(&doc, l),
+        [(prop.name.clone(), 2, 0, "Nope".to_string())],
+        "the cell the data window marks"
+    );
 }
 
 /// A list refuses a layer that is not an instance, and one inside a main.

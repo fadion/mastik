@@ -417,6 +417,24 @@ pub fn variant_props(doc: &Document, root: NodeId) -> Vec<crate::variant::Varian
 /// The rows of `list` whose cell in a variant fill names no value of its
 /// property: (property name, the cells that name none), for the card's warning.
 pub fn unmatched_variants(doc: &Document, list_id: NodeId) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for (name, _, _, cell) in unmatched_variant_cells(doc, list_id) {
+        match out.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, cells)) if !cells.contains(&cell) => cells.push(cell),
+            Some(_) => {}
+            None => out.push((name, vec![cell])),
+        }
+    }
+    out
+}
+
+/// Each cell of `list`'s drawn rows that fills a variant property and names no
+/// value of it: (property name, row, column index, the cell trimmed), in fill
+/// then row order, for the data window to mark.
+pub fn unmatched_variant_cells(
+    doc: &Document,
+    list_id: NodeId,
+) -> Vec<(String, usize, usize, String)> {
     let Some(list) = doc.get(list_id).and_then(|n| n.list()) else {
         return Vec::new();
     };
@@ -439,15 +457,11 @@ pub fn unmatched_variants(doc: &Document, list_id: NodeId) -> Vec<(String, Vec<S
         let Some(col) = set.table.index_of(f.column) else {
             continue;
         };
-        let mut missing: Vec<String> = Vec::new();
         for r in &rows {
             let cell = set.table.rows[*r][col].trim();
-            if !p.values.iter().any(|v| v == cell) && !missing.iter().any(|m| m == cell) {
-                missing.push(cell.to_string());
+            if !p.values.iter().any(|v| v == cell) {
+                out.push((name.clone(), *r, col, cell.to_string()));
             }
-        }
-        if !missing.is_empty() {
-            out.push((name.clone(), missing));
         }
     }
     out

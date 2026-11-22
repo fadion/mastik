@@ -148,6 +148,12 @@ impl ChartData {
         }
     }
 
+    /// The row of the cell being typed into, for a test.
+    #[cfg(test)]
+    pub(crate) fn typing_row(&self) -> Option<usize> {
+        self.edit.as_ref().map(|e| e.row)
+    }
+
     /// The selected range, rows then columns, inclusive.
     fn range(
         &self,
@@ -179,8 +185,10 @@ enum Role {
 enum Heads<'a> {
     /// A chart's role marks, with each column's series swatch.
     Chart(&'a [Option<egui::Color32>]),
-    /// The property each column fills on the list the window was opened from.
-    Fills(&'a [Option<String>]),
+    /// The property each column fills on the list the window was opened from,
+    /// and the cells naming no variant of the property they fill, drawn in the
+    /// warning ink (`list::unmatched_variant_cells`).
+    Fills(&'a [Option<String>], &'a [Cell]),
     /// Nothing: the table is no reader's (*Data tables*).
     Plain,
 }
@@ -799,6 +807,11 @@ impl MastikApp {
             self.chart_data = None;
             return;
         };
+        // The cells naming no variant, which the List card counts.
+        let warned: Vec<Cell> = mastik_core::list::unmatched_variant_cells(doc, list)
+            .into_iter()
+            .map(|(_, r, c, _)| (r, c))
+            .collect();
         // The property each column fills on the list it was opened from.
         let fills: Vec<Option<String>> = {
             let x = doc.get(list).and_then(|n| n.list());
@@ -863,7 +876,7 @@ impl MastikApp {
                 })
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
-                    let heads = Heads::Fills(&fills);
+                    let heads = Heads::Fills(&fills, &warned);
                     grid(
                         ui,
                         &chart,
@@ -1291,6 +1304,10 @@ fn grid(
         s.edit = None;
     }
 
+    let warned: &[Cell] = match heads {
+        Heads::Fills(_, w) => w,
+        _ => &[],
+    };
     let grid_id = egui::Id::new(GRID_ID);
     let content = egui::vec2(GUTTER + COL_W * nc as f32, ROW_H * (nr as f32 + 1.0));
     let editing = s.edit.is_some() || s.rename.is_some();
@@ -1441,8 +1458,15 @@ fn grid(
                     },
                 );
                 p.rect_stroke(rc, 0.0, hairline, egui::StrokeKind::Inside);
+                // An empty cell naming no variant has no text to ink: its edge is.
+                if text.is_empty() && warned.contains(&(r, c)) {
+                    let edge = egui::Stroke::new(1.0, color::warn());
+                    p.rect_stroke(rc.shrink(1.0), 0.0, edge, egui::StrokeKind::Inside);
+                }
                 if !text.is_empty() && typing_at != Some((r, c)) {
-                    let ink = if linked {
+                    let ink = if warned.contains(&(r, c)) {
+                        color::warn()
+                    } else if linked {
                         theme::text::muted()
                     } else {
                         color::text()
@@ -1532,7 +1556,7 @@ fn grid(
             );
             x += tag_g.size().x + 5.0;
             let role = match heads {
-                Heads::Fills(f) => match f.get(c).cloned().flatten() {
+                Heads::Fills(f, _) => match f.get(c).cloned().flatten() {
                     Some(p) => Role::Fill(p),
                     None => Role::Unmapped,
                 },

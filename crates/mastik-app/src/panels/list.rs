@@ -779,9 +779,11 @@ mod tests {
         assert_eq!(app.session.selection.single(), Some(inst), "the template");
     }
 
-    /// *New table* makes a list over a one-row table seeded from the instance's
-    /// own values, each column filling the property of its name, and opens the
-    /// data window on it.
+    /// *New table* makes a list over a table seeded from the instance's own
+    /// values and an empty row 2, each column filling the property of its name,
+    /// and opens the data window typing into row 2.
+    /// flip: `make_list_new_table` not calling `type_into_cell` → fails at
+    /// "typing into row 2".
     #[test]
     fn new_table_seeds_a_row_from_the_instance() {
         let ctx = egui::Context::default();
@@ -793,8 +795,8 @@ mod tests {
         assert_eq!(set.table.columns[0].name, "Title");
         assert_eq!(
             set.table.rows,
-            [vec!["Name".to_string()]],
-            "the instance's text"
+            [vec!["Name".to_string()], vec![String::new()]],
+            "the instance's text, then an empty row"
         );
         let l = mastik_core::list::lists(doc)[0];
         assert_eq!(
@@ -804,10 +806,48 @@ mod tests {
         );
         let open = app.chart_data.as_ref().expect("the data window opened");
         assert_eq!(open.data, Some(set.id));
+        assert_eq!(open.typing_row(), Some(1), "typing into row 2");
         for _ in 0..3 {
             pass(&ctx, &mut app);
         }
         assert!(app.chart_data.is_some(), "drawn and still open");
+    }
+
+    /// The template's property a column fills shows that column in a capsule in
+    /// place of its field, so row 1 is not edited where the next regeneration
+    /// would undo it.
+    /// flip: the instance rows not asking `filled_column` → fails at "the
+    /// column's capsule".
+    #[test]
+    fn a_filled_property_on_the_template_shows_its_column() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let _ = listed(&mut app, inst, &["Linen", "Wool"]);
+        app.session.selection.set_one(inst);
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut texts: Vec<String> = Vec::new();
+        for _ in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1320.0, 820.0),
+                )),
+                ..Default::default()
+            };
+            let out = ctx.run_ui(input, |ui| eframe::App::ui(&mut app, ui, &mut frame));
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+        assert!(
+            texts.iter().any(|t| t == "title"),
+            "the column's capsule: {texts:?}"
+        );
     }
 
     /// An edit in the data window writes the data set in one step, every list
