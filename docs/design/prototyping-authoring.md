@@ -398,6 +398,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   are whole points; the release writes one *Move snap point* or *Change trigger* step
   (`drop_proto_mark`), and a cancel writes nothing. The marks are hit as drawn last frame
   (`ProtoState::marks_drawn`); the card's fields still hold the numbers.
+- **Only the canvas's own pointer lights them.** Connectors, link dots and marks read the
+  pointer through `canvas_pointer`, which gives none where another layer is on top (the player
+  over the canvas, a menu), as `pointed_at` does for the hover outline.
 - **Flow chips** (`flow_chips`), in prototype mode: each flow's name behind the
   `PLAY` glyph on the canvas's own pill (`ui::canvas_pill_glyph`: `BADGE_PT`, `PILL_PAD`, 4pt
   corners) over its start frame's top-right corner, several on one frame stacked leftward. The

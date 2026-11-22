@@ -47,13 +47,15 @@ const READOUT_FADE: f64 = 0.3;
 const BAR_HOLD: f64 = 2.0;
 /// How long the bar takes to fade, in seconds.
 const BAR_FADE: f64 = 0.3;
+/// How long the bar's row and its recording row take to cross-fade, in seconds.
+const RECORD_FADE: f32 = 0.18;
 /// How near the bottom edge the pointer brings the hidden bar back, in points.
 const BAR_WAKE_EDGE: f32 = 80.0;
 /// How long the screen's edge pulses when a live edit lands, in seconds.
 const PULSE_LEN: f64 = 0.6;
 /// The side column's width: the state card's, and the sharing card's in its
-/// place.
-const SIDE_W: f32 = 220.0;
+/// place. Wide enough that a variable's collection path and name mostly show.
+const SIDE_W: f32 = 260.0;
 /// The detached window's id.
 const WINDOW_ID: &str = "prototype-player-window";
 /// The card's id over the canvas.
@@ -105,6 +107,10 @@ pub(crate) struct Playing {
     was_fullscreen: bool,
     /// The detached window is fullscreen.
     detached_full: bool,
+    /// Where the detached window opened, read from the prefs once as it
+    /// opens; `None` until then. Fixed for the window's life: a builder fed
+    /// the position read back each frame moves the window against the drag.
+    window_from: Option<Option<[f32; 2]>>,
     /// The player's own renderer and texture; `None` headless.
     canvas: Option<CanvasRenderer>,
     texture: Option<egui::TextureId>,
@@ -277,6 +283,7 @@ impl Playing {
             from_present: false,
             was_fullscreen: false,
             detached_full: false,
+            window_from: None,
             canvas: None,
             texture: None,
             drawn: None,
@@ -542,7 +549,8 @@ impl Playing {
             painter.image(tex, rect, uv, egui::Color32::WHITE);
         }
         // The hints: every place that takes an act, outlined, while switched on or
-        // flashing after a click on nothing.
+        // flashing after a click on nothing. The canvas's selection blue at 2pt,
+        // as the exported page draws them.
         let strength = match (self.hints, scene.hint_flash) {
             (true, _) => 1.0,
             (false, Some(f)) => f,
@@ -555,11 +563,11 @@ impl Playing {
                     rect.min + egui::vec2(h.rect.x0 as f32, h.rect.y0 as f32) * scale,
                     rect.min + egui::vec2(h.rect.x1 as f32, h.rect.y1 as f32) * scale,
                 );
-                painter.rect_filled(r, 2.0, color::accent_a(a / 5));
+                painter.rect_filled(r, 2.0, color::select_a(a / 5));
                 painter.rect_stroke(
                     r,
                     2.0,
-                    egui::Stroke::new(1.0, color::accent_a(a)),
+                    egui::Stroke::new(2.0, color::select_a(a)),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -679,8 +687,8 @@ enum BarAct {
     Attach,
     Fullscreen,
     Close,
-    /// Write the last take as a video.
-    ExportTake,
+    /// The export card: on *Video* once a take exists, else on *HTML file*.
+    Export,
     /// *Play on a phone*: start sharing and open its card, or, while sharing,
     /// open or close the card.
     Phone,
@@ -693,7 +701,8 @@ enum BarAct {
 /// The player's bar: its commands as icon buttons, `hint`-ed as the rest of
 /// the app's are, then the size `readout` and, fullscreen where there is no
 /// head, the `chip` naming the mode picked by width; the flow menu leads.
-/// Returns the one clicked.
+/// While a take records, the row fades out for *Stop recording* and the time
+/// so far, fading in where the row began. Returns the one clicked.
 fn bar(
     ui: &mut egui::Ui,
     p: &Playing,
@@ -714,115 +723,132 @@ fn bar(
         }
     };
     let mut picked = None;
-    ui.horizontal_centered(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        picked = flow_menu(ui, flows);
-        ui.add_space(4.0);
-        button(
-            ui,
-            icon::ARROW_COUNTER_CLOCKWISE,
-            false,
-            "Restart",
-            BarAct::Restart,
-        );
-        button(ui, icon::HAND_POINTING, p.hints, "Hotspots", BarAct::Hints);
-        button(ui, icon::SLIDERS_HORIZONTAL, p.card, "State", BarAct::Card);
-        let recording = p.player.is_recording();
-        let (g, tip) = match recording {
-            true => (icon::STOP, "Stop recording"),
-            false => (icon::RECORD, "Record a take"),
-        };
-        button(ui, g, recording, tip, BarAct::Record);
-        if recording {
-            ui.add_space(4.0);
+    let recording = p.player.is_recording();
+    let t = ui.ctx().animate_bool_with_time(
+        egui::Id::new("player-recording-row"),
+        recording,
+        RECORD_FADE,
+    );
+    let row = ui.max_rect();
+    let layout = egui::Layout::left_to_right(egui::Align::Center);
+    // The commands, out of reach while recording so a faded button takes no click.
+    if t < 1.0 {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(layout), |ui| {
+            ui.multiply_opacity(1.0 - t);
+            if recording {
+                ui.disable();
+            }
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                picked = flow_menu(ui, flows);
+                ui.add_space(4.0);
+                button(
+                    ui,
+                    icon::ARROW_COUNTER_CLOCKWISE,
+                    false,
+                    "Restart",
+                    BarAct::Restart,
+                );
+                button(ui, icon::HAND_POINTING, p.hints, "Hotspots", BarAct::Hints);
+                button(ui, icon::SLIDERS_HORIZONTAL, p.card, "State", BarAct::Card);
+                button(ui, icon::RECORD, false, "Record a take", BarAct::Record);
+                let tip = match p.takes.is_empty() {
+                    true => "Export as an HTML file or a flow map",
+                    false => "Export a take as a video",
+                };
+                button(ui, icon::EXPORT, false, tip, BarAct::Export);
+                let sharing = p.sharing.as_ref().is_some_and(|s| s.is_sharing());
+                button(
+                    ui,
+                    icon::PHONE,
+                    sharing,
+                    "Play on a phone on this network",
+                    BarAct::Phone,
+                );
+                let following = p.sharing.as_ref().map_or(0, |s| s.following());
+                if following > 0 {
+                    ui.add_space(2.0);
+                    ui::head_badge(ui, &following.to_string());
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if p.place != Place::Fullscreen {
+                        button(
+                            ui,
+                            icon::ARROWS_OUT,
+                            false,
+                            "Fullscreen",
+                            BarAct::Fullscreen,
+                        );
+                    }
+                    match p.place {
+                        Place::Detached => button(
+                            ui,
+                            icon::BROWSERS,
+                            true,
+                            "Back over the canvas",
+                            BarAct::Attach,
+                        ),
+                        _ => button(
+                            ui,
+                            icon::BROWSERS,
+                            false,
+                            "Open in a window",
+                            BarAct::Detach,
+                        ),
+                    }
+                    if p.place == Place::Fullscreen {
+                        button(ui, icon::X, false, "Stop playing", BarAct::Close);
+                    }
+                    // Before *Open in a window*: turning is play state, so trying
+                    // landscape never changes the file.
+                    let can = p.page_play().can_turn();
+                    let turned = p.is_turned();
+                    let tip = match (can, turned) {
+                        (false, _) => "Pick a device to turn",
+                        (true, true) => "Turn to portrait",
+                        (true, false) => "Turn to landscape",
+                    };
+                    let r =
+                        ui::icon_button(ui, icon::ROTATE_RIGHT, size, glyph, turned && can, can);
+                    let r = match can {
+                        true => r.on_hover_text(tip),
+                        false => r.on_disabled_hover_text(tip),
+                    };
+                    turn = r.clicked();
+                    if let Some((text, strength)) = readout {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(text)
+                                .size(ui::CAPTION_PT)
+                                .color(theme::text::faint().gamma_multiply(strength)),
+                        );
+                    }
+                    if let Some(chip) = chip {
+                        ui.add_space(8.0);
+                        ui::scope_chip(ui, icon::DATABASE, chip, None);
+                    }
+                });
+            });
+        });
+    }
+    // The recording row, drawn last so it is the one on top of the faded row.
+    if t > 0.0 {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(layout), |ui| {
+            ui.multiply_opacity(t);
+            if !recording {
+                ui.disable();
+            }
+            ui.spacing_mut().item_spacing.x = 2.0;
+            button(ui, icon::STOP, true, "Stop recording", BarAct::Record);
+            ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(clock(p.player.now()))
                     .size(ui::CAPTION_PT)
                     .color(color::danger()),
             );
-            ui.add_space(4.0);
-        }
-        if !p.takes.is_empty() && !recording {
-            button(
-                ui,
-                icon::EXPORT,
-                false,
-                "Export a take as a video",
-                BarAct::ExportTake,
-            );
-        }
-        let sharing = p.sharing.as_ref().is_some_and(|s| s.is_sharing());
-        button(
-            ui,
-            icon::PHONE,
-            sharing,
-            "Play on a phone on this network",
-            BarAct::Phone,
-        );
-        let following = p.sharing.as_ref().map_or(0, |s| s.following());
-        if following > 0 {
-            ui.add_space(2.0);
-            ui::head_badge(ui, &following.to_string());
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            if p.place != Place::Fullscreen {
-                button(
-                    ui,
-                    icon::ARROWS_OUT,
-                    false,
-                    "Fullscreen",
-                    BarAct::Fullscreen,
-                );
-            }
-            match p.place {
-                Place::Detached => button(
-                    ui,
-                    icon::BROWSERS,
-                    true,
-                    "Back over the canvas",
-                    BarAct::Attach,
-                ),
-                _ => button(
-                    ui,
-                    icon::BROWSERS,
-                    false,
-                    "Open in a window",
-                    BarAct::Detach,
-                ),
-            }
-            if p.place == Place::Fullscreen {
-                button(ui, icon::X, false, "Stop playing", BarAct::Close);
-            }
-            // Before *Open in a window*: turning is play state, so trying
-            // landscape never changes the file.
-            let can = p.page_play().can_turn();
-            let turned = p.is_turned();
-            let tip = match (can, turned) {
-                (false, _) => "Pick a device to turn",
-                (true, true) => "Turn to portrait",
-                (true, false) => "Turn to landscape",
-            };
-            let r = ui::icon_button(ui, icon::ROTATE_RIGHT, size, glyph, turned && can, can);
-            let r = match can {
-                true => r.on_hover_text(tip),
-                false => r.on_disabled_hover_text(tip),
-            };
-            turn = r.clicked();
-            if let Some((text, strength)) = readout {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(text)
-                        .size(ui::CAPTION_PT)
-                        .color(theme::text::faint().gamma_multiply(strength)),
-                );
-            }
-            if let Some(chip) = chip {
-                ui.add_space(8.0);
-                ui::scope_chip(ui, icon::DATABASE, chip, None);
-            }
         });
-    });
+    }
     if turn {
         act = Some(BarAct::Turn);
     }
@@ -834,15 +860,20 @@ fn bar(
 fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
     screen_row(ui, p);
     let opened = p.player.opened_rows();
+    // A section's eyebrow stands a row gap further off the rows above it.
+    let section = |ui: &mut egui::Ui, name: &str| {
+        ui.add_space(ui::CARD_ROW_GAP);
+        ui.label(ui::eyebrow(name));
+    };
     if !opened.is_empty() {
-        ui.label(ui::eyebrow("Opened rows"));
+        section(ui, "Opened rows");
         for (i, row) in opened.iter().enumerate() {
             opened_row(ui, p, i, row);
         }
     }
     let modes = p.player.modes();
     if !modes.is_empty() {
-        ui.label(ui::eyebrow("Modes"));
+        section(ui, "Modes");
         let mut kit = None;
         for (i, row) in modes.iter().enumerate() {
             // A kit's collections under the kit's name, as Set mode lists them.
@@ -855,7 +886,7 @@ fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
             }
             mode_row(ui, p, i, row);
         }
-        ui.label(ui::eyebrow("Variables"));
+        section(ui, "Variables");
     }
     let rows = p.player.values();
     if rows.is_empty() {
@@ -1223,6 +1254,7 @@ impl crate::app::MastikApp {
         }
         p.from_present = false;
         p.detached_full = false;
+        p.window_from = None;
         p.place = place;
         p.focused = true;
     }
@@ -1404,9 +1436,12 @@ impl crate::app::MastikApp {
                 egui::vec2(card_w, room.y),
             );
             ui.painter().rect_filled(card, 0.0, color::card());
+            // A canvas card's side inset; the first row is a full control
+            // high, so half of it above and below.
+            let pad = crate::settings::CANVAS_CARD_PAD;
             ui.scope_builder(
                 egui::UiBuilder::new()
-                    .max_rect(card.shrink(crate::settings::CANVAS_CARD_PAD / 2.0))
+                    .max_rect(card.shrink2(egui::vec2(pad, pad / 2.0)))
                     .layout(egui::Layout::top_down(egui::Align::Min)),
                 |ui| match p.sharing.as_ref().filter(|s| s.open) {
                     Some(s) => {
@@ -1416,7 +1451,20 @@ impl crate::app::MastikApp {
                             crate::phone::CardAct::Copied => BarAct::ShareCopied,
                         });
                     }
-                    None => state_rows(ui, p),
+                    None => {
+                        egui::ScrollArea::vertical()
+                            .id_salt("player-state")
+                            .auto_shrink([false, false])
+                            .scroll_bar_visibility(
+                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                            )
+                            .show(ui, |ui| {
+                                // The inspector's row pitch, as every column of
+                                // rows of controls keeps.
+                                ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
+                                state_rows(ui, p);
+                            });
+                    }
                 },
             );
         }
@@ -1513,7 +1561,7 @@ impl crate::app::MastikApp {
             .with_title(title.clone())
             .with_inner_size(size)
             .with_min_inner_size(egui::vec2(OVER_MIN_W, 200.0));
-        if let Some([x, y]) = self.prefs.player_window {
+        if let Some([x, y]) = *p.window_from.get_or_insert(self.prefs.player_window) {
             builder = builder.with_position(egui::pos2(x, y));
         }
         let builder = chrome.viewport(builder);
@@ -1606,8 +1654,12 @@ impl crate::app::MastikApp {
             BarAct::Detach => self.place_player(ctx, Place::Detached),
             BarAct::Attach => self.place_player(ctx, Place::Over),
             BarAct::Fullscreen => self.place_player(ctx, Place::Fullscreen),
-            BarAct::ExportTake => {
-                self.open_export(crate::prototype_export::Output::Video);
+            BarAct::Export => {
+                let takes = self.playing.as_ref().is_some_and(|p| !p.takes.is_empty());
+                self.open_export(match takes {
+                    true => crate::prototype_export::Output::Video,
+                    false => crate::prototype_export::Output::Html,
+                });
             }
             BarAct::Phone | BarAct::ShareRetry => {
                 let doc = &self.session.doc;

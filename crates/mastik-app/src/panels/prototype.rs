@@ -915,6 +915,17 @@ pub(crate) fn move_to(list: &mut Vec<Keyed<Action>>, id: ItemId, to: usize) -> b
     })
 }
 
+/// The pointer, where the canvas's own layer is the one on top: over a card or
+/// popup lying on the canvas (the player over it, a menu) nothing on the canvas
+/// lights, as `MastikApp::pointed_at` reads it.
+fn canvas_pointer(ui: &egui::Ui) -> Option<egui::Pos2> {
+    let p = ui.ctx().pointer_latest_pos()?;
+    ui.ctx()
+        .layer_id_at(p)
+        .is_none_or(|l| l == ui.layer_id())
+        .then_some(p)
+}
+
 /// A copy of `list` with every item id (nested ones included) minted afresh, for
 /// *Duplicate*: the door refuses a repeated id.
 fn fresh_ids(list: &[Keyed<Action>], mint: &mut impl FnMut() -> ItemId) -> Vec<Keyed<Action>> {
@@ -2227,7 +2238,7 @@ impl MastikApp {
             drawn.push((link, ink, pts, warning));
         }
         let pointer = ui.ctx().pointer_latest_pos();
-        let hot = pointer
+        let hot = canvas_pointer(ui)
             .filter(|p| self.connector_live(*p, rect, ppp))
             .and_then(|p| {
                 drawn
@@ -2295,7 +2306,8 @@ impl MastikApp {
         }
         // The dots near the pointer, filled where it would take one or one is
         // pulled, as a shape's dragged corner dot is.
-        let hot = pulled.or_else(|| pointer.and_then(|p| self.link_knob_at(p, rect, ppp)));
+        let hot =
+            pulled.or_else(|| canvas_pointer(ui).and_then(|p| self.link_knob_at(p, rect, ppp)));
         for id in self.knob_layers() {
             let Some(q) = self.selection_quad(id, rect, ppp) else {
                 continue;
@@ -2812,7 +2824,7 @@ impl MastikApp {
     /// its leading end and the point on a tag at the other. Notes what a press
     /// can take for the next frame.
     fn draw_proto_marks(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
-        let hover = ui.ctx().pointer_hover_pos();
+        let hover = canvas_pointer(ui);
         let dragged = match self.drag {
             Drag::ProtoMark { mark, .. } => Some(mark),
             _ => None,
@@ -8435,6 +8447,43 @@ mod tests {
             ],
         );
         assert_eq!(drawn(&f.app), None, "the default name clears it");
+    }
+
+    /// The connectors' and marks' pointer is no pointer under a card lying on
+    /// the canvas, such as the player over it.
+    ///
+    /// flip: `canvas_pointer` without its `layer_id_at` test → fails at "under
+    /// the card".
+    #[test]
+    fn the_canvas_pointer_stops_at_a_card_over_it() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let card = egui::Rect::from_min_size(egui::pos2(200.0, 200.0), egui::vec2(200.0, 200.0));
+        let at = |p: egui::Pos2| {
+            let mut got = None;
+            for _ in 0..3 {
+                let _ = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        events: vec![egui::Event::PointerMoved(p)],
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::Area::new(egui::Id::new("card"))
+                            .order(egui::Order::Foreground)
+                            .fixed_pos(card.min)
+                            .show(ui.ctx(), |ui| {
+                                ui.allocate_exact_size(card.size(), egui::Sense::hover());
+                            });
+                        got = canvas_pointer(ui);
+                    },
+                );
+            }
+            got
+        };
+        let off = egui::pos2(100.0, 100.0);
+        assert_eq!(at(off), Some(off), "off the card");
+        assert_eq!(at(card.center()), None, "under the card");
     }
 
     /// *Paste interactions* appends every copied interaction to each selected

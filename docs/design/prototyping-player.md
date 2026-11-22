@@ -37,7 +37,10 @@ again starts play over from the same start.
   fits with the flow menu's head at its longest (`FLOW_HEAD_CHARS`, 14), moved by its head. The pointer drives the prototype while over the screen; a press in
   it gives the player the keyboard, a press on the canvas gives it back.
 - **Detached**: the same body in an immediate viewport wearing the app's title bar
-  (`chrome::Chrome::viewport`), where it last stood (`Prefs::player_window`). Its keys are its
+  (`chrome::Chrome::viewport`), where it last stood (`Prefs::player_window`). That position is
+  read once as the window opens (`Playing::window_from`, cleared when the player's place
+  changes) and is the one its viewport builder keeps giving, never the position read back each
+  frame, which would fight a drag. Its keys are its
   own; its *Fullscreen* fills its own screen.
 - **Fullscreen**: present mode's branch of `MastikApp::frame_body`, the editor hidden.
 
@@ -66,7 +69,7 @@ otherwise the player returns over the canvas).
   *Responsive*, a turn), the bar shows it in units, `874 × 402`, faint at
   `CAPTION_PT` before the turn button, for a second after the last change, then fading
   (`Playing::readout`). Not over the canvas, whose card never resizes and whose bar has no room.
-- **Play on a phone** (`phone.rs`): the bar's `PHONE` button, after *Record*, tipped *Play on a
+- **Play on a phone** (`phone.rs`): the bar's `PHONE` button, after Export, tipped *Play on a
   phone on this network*, starts sharing and opens its card in the side column, in the state
   card's place (the two never show together); while sharing it is lit and toggles the card, and
   the phones listening are counted after it in `ui::head_badge`. An Escape the prototype does
@@ -101,17 +104,22 @@ otherwise the player returns over the canvas).
   names it, *‹Collection› · ‹Mode›*, after the title in the card's or window's head, and
   fullscreen, which has no head, in the bar after the readout: why the layout jumped is on screen.
   A pinned mode beats the width, so then there is none.
-- **Hotspots**: each hotspot outlined in the accent while the bar's toggle is on, and flashing
+- **Hotspots**: each hotspot drawn in the canvas selection blue (`color::select_a`), a 2pt
+  stroke over a fill at a fifth of its alpha, as the exported page draws them, while the bar's toggle is on, and flashing
   by `Scene::hint_flash` after a click on nothing. The player, the export card and the exported
   page all call the toggle *Hotspots*.
 - **Notices** in the screen's top-left corner, each once, for four seconds, in the app's words.
 - **The bar**: the flow menu, *Restart*, *Hotspots*, *State* (the state card), *Record a
-  take* / *Stop recording* (while recording, the time so far beside it, `0:24` at `CAPTION_PT` in
-  the danger ink), *Export a take as a video* once a take exists and none is recording (the
-  export card on *Video*), *Play on a phone*, and from the right *Fullscreen* (`ARROWS_OUT`),
+  take*, Export (`EXPORT`: *Export as an HTML file or a flow map* with no take, opening the
+  export card on *HTML file*; *Export a take as a video* once one exists, opening it on
+  *Video*), *Play on a phone*, and from the right *Fullscreen* (`ARROWS_OUT`),
   *Open in a window* / *Back over the canvas* (`BROWSERS`, lit while detached) and, fullscreen,
   *Stop playing*. `PLAY` is playing and `ARROW_SQUARE_OUT` leaving the app, so neither is worn
   here. Its commands are buttons, not chords: the editor has spent the chords they would want.
+- **Recording**: while a take records, the whole row cross-fades out over `RECORD_FADE`
+  (0.18 s) and is disabled, so a faded button takes no click, and a recording row fades in at
+  the bar's left: *Stop recording* (`STOP`, lit) and the time so far, `0:24` at `CAPTION_PT` in
+  the danger ink. Stopping fades back.
 - **The flow menu** leads the bar: a `ui::menu_head` naming what plays (the flow, else the page;
   cut at `FLOW_HEAD_CHARS`), tipped *Play another flow*. It lists the flows of the page playing
   under *Flows on ‹page›*, each with its start frame as the note and the one playing ticked, then
@@ -124,7 +132,10 @@ otherwise the player returns over the canvas).
   within `BAR_WAKE_EDGE` (80) of the bottom, or a menu or the side column is open.
 - **A live edit landing** pulses the screen's edge once: a 2pt accent ring fading over
   `PULSE_LEN` (0.6 s).
-- **The state card** opens with the frame shown (`screen_row`) and how far *Back* reaches, each
+- **The state card** fills the side column (`SIDE_W`, 260): its rows sit in a vertical scroll
+  area with the scroll bar hidden, inset `CANVAS_CARD_PAD` at the sides and half that top and
+  bottom, `ui::CARD_ROW_GAP` apart, each section's eyebrow a further `CARD_ROW_GAP` off the rows
+  above it. It opens with the frame shown (`screen_row`) and how far *Back* reaches, each
   open overlay then each step of history (*2 back*, or *No way back*). Then *Opened rows* when a
   list shows *Opened row*: one row per data
   set such a list reads, a dropdown of its rows (`lists.md`, *Play*). Then *Modes* when the
@@ -148,8 +159,8 @@ One card, *Export prototype* (`prototype_export::ExportCard`), a modal `settings
 with a `ui::segmented` row at its head switching its `Output`: *HTML file*, *Video*, *Flow map*.
 The body keeps the tallest height it has shown (`body_h`), so switching to a shorter output
 never shrinks the card. Its doors (`open_export`): the palette's *Export prototype…* opens it on
-*HTML file* and *Export flow map…* on *Flow map*; the bar's *Export a take as a video* on
-*Video*, the newest take picked; a flow chip's menu on *HTML file* opening on that flow, or on
+*HTML file* and *Export flow map…* on *Flow map*; the bar's Export on *Video* with the newest
+take picked once a take exists, else on *HTML file*; a flow chip's menu on *HTML file* opening on that flow, or on
 *Flow map* holding it alone (`act_on_flow`). The HTML file and the flow map need a flow, so
 without one the card does not open and the status line says to add one. Each output asks where
 to write, offering a name led by the document's: `‹document› — ‹flow›.html` (the flow it opens

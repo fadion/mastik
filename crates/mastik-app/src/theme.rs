@@ -425,7 +425,7 @@ pub mod color {
 
     /// [`SELECT`] at an alpha, premultiplied. Derived so retuning the hue carries
     /// every tier with it.
-    const fn select_a(alpha: u8) -> Color32 {
+    pub const fn select_a(alpha: u8) -> Color32 {
         Color32::from_rgba_unmultiplied_const(SELECT.r(), SELECT.g(), SELECT.b(), alpha)
     }
     /// The ground of the dimension badge under a selection: the selection
