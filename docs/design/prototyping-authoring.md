@@ -98,11 +98,12 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *Everywhere*. It opens its popover at once, except *Back*, which has nothing to set.
 - **An action is one row**, a `ui::field_row_pressable` that opens its popover (*Back*'s opens
   none, having nothing to set, and says what it does under the pointer): a grip, its
-  glyph, its verb, its target in accent ink, its transition's timing (kind and duration, or
-  *Spring*; *Keeps scroll · …* on a navigation that keeps scroll) as a faint caption note as a menu row's accelerator is, and `×`; the grip and `×` keep
-  their own press. The verb and the target share what the timing and `×` leave, the verb first,
-  each cut rather than run under the timing. *Set variable*'s row names its variable as a
-  `binding::capsule`, as a bound field does, then the change in the target's ink. The rows stand
+  glyph, its verb, its target in accent ink, its transition's kind alone (`transition_chip`; the
+  timing and *Keeps scroll* are the popover's, for the room) as a faint caption note as a menu
+  row's accelerator is, and `×`; the grip and `×` keep their own press. The verb and the target
+  share what the kind and `×` leave, the verb first, each cut rather than run under the kind; a
+  target with no room for a letter before its `…` is left out. *Set variable*'s row names its
+  variable as a `binding::capsule`, as a bound field does, and not the value. The rows stand
   `NEST` in from their trigger. A row
   drags by its grip to
   another place in its own list (a reaction's, or one branch's), carried under the pointer with
@@ -127,7 +128,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   (`ui::labelled` *If* / *Else if*), *Add else if* and a branch's `×`; *Open link* an address, refused unless `http` or `https`;
   *Run script* a document script by name, then (under a separator when there are any) *Copy from
   library*, a `ui::submenu_row` in `FOLDER_SIMPLE`, the script editor's *Save to library* glyph,
-  dimmed with *The script library is empty*; its flyout lists the library's scripts by name.
+  dimmed with *The script library is empty*; its flyout lists the library's scripts by name, as
+  wide as the longest (`ui::menu_width`).
   Picking one points the action at the document's copy (`MastikApp::copy_library_script`): a
   document script with that name and text, else the library's added under a free name and
   marked as the person's own, so its run shows no disclosure. The copy rides the action's edit
@@ -205,7 +207,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - ***Dragging***, on any layer below a page's top level (`dragging_section`): *Follows the drag*,
   a `ui::switch_row`, then while it is on *Axis* (`icon::ARROWS_OUT_CARDINAL`,
   `ARROWS_HORIZONTAL`, `ARROWS_VERTICAL`, tipped *Both*, *Horizontal*, *Vertical*), *Range*
-  (*Free* · *Within its parent* · *Snap points*) and *Release* (*Stays* · *Returns* · *Snaps*,
+  (*Free* · *Within parent* · *Snap points*) and *Release* (*Stays* · *Returns* · *Snaps*,
   *Snaps* dimmed with *Add a snap point first*), each change a *Dragging* step. Under *Snap
   points*, the drawn point's row: its name in a text field as the others' are (*Rename snap
   point*; *Open* typed back clears `drawn`), its `×` dimmed with *Where the layer is drawn is

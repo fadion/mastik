@@ -396,16 +396,10 @@ fn same_trigger_kind(a: &Trigger, b: &Trigger) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
-/// The transition's two words on its action row: its kind and its timing.
-pub(crate) fn transition_chip(t: &Transition) -> String {
-    if t.kind == TransitionKind::Instant {
-        return "Instant".into();
-    }
-    let kind = transition_short(t.kind);
-    match t.timing {
-        Timing::Spring { .. } => format!("{kind} · Spring"),
-        Timing::Ease { ms, .. } => format!("{kind} · {ms} ms"),
-    }
+/// The transition's word on its action row: its kind alone, so the row keeps
+/// room for its target; the timing is in the popover.
+pub(crate) fn transition_chip(t: &Transition) -> &'static str {
+    transition_short(t.kind)
 }
 
 fn transition_short(k: TransitionKind) -> &'static str {
@@ -2837,17 +2831,24 @@ impl MastikApp {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 9.0;
                 identity_glyph(ui, glyph, color::accent_300());
-                ui.label(
-                    egui::RichText::new(title)
-                        .size(ui::HEAD_PT)
-                        .color(theme::text::strong()),
-                );
+                // The note first, from the right, so a long name is cut in what
+                // it leaves rather than widening the inspector.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(note)
                             .size(ui::CAPTION_PT)
                             .color(theme::text::faint()),
                     );
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(title)
+                                    .size(ui::HEAD_PT)
+                                    .color(theme::text::strong()),
+                            )
+                            .truncate(),
+                        );
+                    });
                 });
             });
         });
@@ -3881,30 +3882,18 @@ impl MastikApp {
         let doc = &self.session.doc;
         let kind = ActionKind::of(&k.value);
         let (target, missing) = target_words(doc, id, &k.value);
-        let chip = transition_of(&k.value).map(|t| match &k.value {
-            Action::Navigate {
-                keep_scroll: true, ..
-            } => format!("Keeps scroll · {}", transition_chip(&t)),
-            _ => transition_chip(&t),
-        });
+        let chip = transition_of(&k.value).map(|t| transition_chip(&t));
         let verb = match &k.value {
             Action::SetVariable { .. } | Action::SetMode { .. } => "Set",
             Action::Conditional { .. } => "If",
             _ => kind.label(),
         };
         // A variable set wears its name as a capsule, as a bound field does,
-        // and the change after it in the target's ink.
+        // and nothing after it: a value rarely fits, and the popover shows it.
         let (capsule, target) = match &k.value {
             Action::SetVariable { var, .. } if missing.is_none() => {
                 match doc.variables().get(*var) {
-                    Some(v) => (
-                        Some(v.name.clone()),
-                        target
-                            .strip_prefix(v.name.as_str())
-                            .unwrap_or(&target)
-                            .trim_start()
-                            .to_string(),
-                    ),
+                    Some(v) => (Some(v.name.clone()), String::new()),
                     None => (None, target),
                 }
             }
@@ -3952,7 +3941,7 @@ impl MastikApp {
                             out.remove = true;
                         }
                         // The timing as a faint note, as a menu row's accelerator.
-                        if let Some(chip) = &chip {
+                        if let Some(chip) = chip {
                             ui.label(
                                 egui::RichText::new(chip)
                                     .size(ui::CAPTION_PT)
@@ -3993,12 +3982,24 @@ impl MastikApp {
                                 );
                                 super::binding::capsule(ui, r.left_center(), name, max);
                             }
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&target).size(ui::SMALL_PT).color(ink),
-                                )
-                                .truncate(),
-                            );
+                            // A target with no room for a letter before its `…`
+                            // is left out: a lone `…` overflows onto the timing.
+                            let text = egui::RichText::new(&target).size(ui::SMALL_PT).color(ink);
+                            let width = |ui: &egui::Ui, s: &str| {
+                                egui::WidgetText::from(egui::RichText::new(s).size(ui::SMALL_PT))
+                                    .into_galley(
+                                        ui,
+                                        Some(egui::TextWrapMode::Extend),
+                                        f32::INFINITY,
+                                        egui::TextStyle::Body,
+                                    )
+                                    .size()
+                                    .x
+                            };
+                            let least = width(ui, "W…").min(width(ui, &target));
+                            if !target.is_empty() && ui.available_width() >= least {
+                                ui.add(egui::Label::new(text).truncate());
+                            }
                         });
                     });
                 });
@@ -4534,7 +4535,9 @@ impl MastikApp {
                     }
                     if let Some(at) = open {
                         let ctx = ui.ctx().clone();
-                        let fw = ui.min_rect().width() + 2.0 * (ui::FLYOUT_PAD + ui::MENU_BORDER);
+                        // As wide as its longest name, not the menu it hangs from.
+                        let inner = ui::menu_width(&ctx, names.iter().map(String::as_str), false);
+                        let fw = inner + 2.0 * (ui::FLYOUT_PAD + ui::MENU_BORDER);
                         ui::flyout(fly_at.with("area"), at, fw).show(
                             &ctx,
                             (names.len(), 0),
@@ -5652,7 +5655,7 @@ impl MastikApp {
                         _ => "Between its outermost snap points",
                     },
                     |p, i, r, on| {
-                        ui::segment_label(p, r, ["Free", "Within its parent", "Snap points"][i], on)
+                        ui::segment_label(p, r, ["Free", "Within parent", "Snap points"][i], on)
                     },
                 );
                 if let Some(i) = pick.filter(|i| *i != cur) {
