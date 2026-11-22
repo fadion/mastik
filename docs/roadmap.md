@@ -1,6 +1,7 @@
 # Mastik — Roadmap
 
-Open work only. **Now** is in the order it is taken up; **Later** waits on a stated trigger;
+Open work only. **Now** is in the order it is taken up; **Next** is decided and follows it;
+**Later** waits on a stated trigger;
 **Considerations** are ideas not yet decided. Decided non-goals are in `non-goals.md`; built
 work is described in `architecture.md`. Refs are file + function name, never line numbers. Read
 the code before picking an item up — an item's premise can go stale while its ask still reads
@@ -14,6 +15,93 @@ remains is below.
 - **Charts reading a data set.** A chart could read one of the document's data sets
   (`design/lists.md`) instead of its own table, so a chart and a list over one file update
   together.
+
+## Next · Editing parity
+
+Mastik as a standalone tool: the effects, paints, media and path tools that would otherwise send
+someone to another app or a plugin. Not in order. Two items share one prerequisite: the model's
+`Brush` (`mastik-core` `image.rs`) is an alias of `peniko::Brush`, a closed enum of solid,
+gradient and image, so a pattern fill and a mesh gradient each need Mastik's own paint enum in its
+place, saved in the same shape so existing files load. It is matched in about 60 files.
+
+- **Progressive blur.** A layer or background blur whose radius ramps across the layer along a
+  gradient. Effects are our own passes, so nothing upstream blocks it: a new `EffectKind` (or a
+  ramp on the two blurs), and a variable-radius pass in both backends, `effects::blur` and
+  `fx.wgsl` (a blur pyramid blended by the ramp), reusing `scene::paint_backdrop` for the
+  background form. SVG has no variable blur: stack blurred copies under gradient masks, or leave
+  it out and report it as the background blur is. Medium.
+- **Glass.** A background blur plus refraction at the edges, a specular rim and optional
+  dispersion. The backdrop repaint and its damage (`scene::spread_through_backdrops`) exist; new is
+  a displacement pass over the backdrop driven by distance to the outline, on both backends. The rim
+  reuses inner shadow and stroke. SVG, PDF and the Penpot and Sketch writers leave it out and report
+  it, as the background blur; CSS gets the blur and the rim only. Large.
+- **Texture.** Grain that breaks a layer's edges, not only its fill (the *Noise* effect,
+  `mastik-core` `noise.rs`, stays inside the alpha). A displacement of the layer's own drawing by
+  a noise field, a stage-1 pass beside *Noise*. SVG expresses it (`feTurbulence` into
+  `feDisplacementMap`, the graph `svg.rs` `noise_graph` already starts). Medium.
+- **Pattern fill.** A fill tiling any layer, frame or component, kept live as the source changes,
+  with spacing, offset rows (a hexagonal layout) and scale. A tiled picture exists (`ImageFit::Tile`,
+  drawn with `Extend::Repeat`). vello cannot take a scene as a brush, so the tile renders offscreen
+  per zoom and feeds an image brush set to repeat, cached on the source's revision with damage
+  following edits to it. Needs the paint enum above. SVG and PDF write a `<pattern>`; CSS a
+  repeated SVG background; Penpot and Sketch a rasterised tile, reported. Large.
+- **Animated GIF.** Plays on the canvas and in the player; still exports, goldens and code export
+  take frame one. The decoder is compiled (`image`'s `AnimationDecoder` for GIF) and the file
+  already stores the original bytes, so the save format does not change. `ImageStore` keeps frames
+  and delays. One clock for every GIF: a frame is the time since the document opened, wrapped at
+  the GIF's length, and after a draw the canvas asks for a repaint when the next visible GIF frame
+  is due, none when no GIF is on screen (the canvas draws only when its `canvas::DrawnKey`
+  changes). A *Pause animations* switch. Medium.
+- **Video.** A muted, looping video as a fill, for hero sections and short feature clips.
+  `images.md` rules video out today. H.264 in MP4 only at first: `openh264` (built with its
+  decoder) and `mp4`, already used to encode a take (`mastik-export` `video.rs`), decode it; other
+  containers and codecs need ffmpeg or each OS's media API. A hard cap on the source, then a
+  transcode on import to a design preset (about 1920 px long side, 30 fps, 3–4 Mbps, audio
+  dropped, a length cap), around 10–15 MB. Blockers: `ImageStore` holds stills and needs a
+  time-indexed source; pictures are base64 in the JSON file, a third larger; the canvas repaints
+  on the GIF clock; the exported player plays it through a `<video>` element whose frames reach
+  the WebAssembly drawing; still exports take a poster frame. Check H.264 patent coverage first:
+  Cisco's licence covers its prebuilt binary, not a build from source. Large.
+- **Separate start and end caps.** `kurbo::Stroke` and the outline engine (`build::stroke_polygons`)
+  already take two caps; the renderer sets both from `Stroke.cap`. Missing are the model field
+  and the SVG boundary, which has one `stroke-linecap`: a stroke with two caps exports as outlined
+  ink, as a tight open stroke does (`tight_stroke::union_outline`). Small.
+- **Variable width.** A width profile along the path, edited with handles on the path (pen
+  pressure is a non-goal). No backend draws a varying width, so a profiled stroke is outlined to a fill:
+  `build::stroke_ink` already lays one line at several widths (per-side strokes), and the profile
+  replaces its constant-width step with an offset whose half-width follows arc length, written by
+  us since i_overlay strokes at one width. An optional profile on `Stroke`, `width` kept as its
+  maximum so `geometry::stroke_expansion` stays conservative; every reader (bounds, hit test,
+  booleans, render, export) then takes the one cached ink path. Lost: an editable width in SVG,
+  CSS borders, and round trips through Penpot and Sketch, which have no profiles. Medium to large.
+- **Vector brushes.** Art and scatter brushes: another shape bent or repeated along the path.
+  Nothing exists; the pieces do (kurbo arc length, `mastik-core` `warp.rs` and `distort.rs`). An
+  *Apply brush* that bakes the result into paths comes first; a live brush follows, rebuilt when
+  its source changes, on top of variable width's ink path. Large.
+- **Curvature combs.** A switch, with a chord, that draws curvature teeth along the normals of the
+  path whose points are being edited, joined at their tips, scaled to the zoom with an adjustable
+  or fitted scale so a tight corner stays on screen. Canvas chrome only, never in the document;
+  shows where curvature jumps at a smooth point. Small to medium.
+- **Mesh gradients.** Mesh lines and colour points, blended across each patch (Coons patches). A
+  mesh mode in the canvas's gradient editor (`gradient.rs`): click on a line to add one through the point,
+  drag points and handles, pick a point's colour. peniko has linear, radial and sweep only, so the
+  mesh renders, as *Noise* does, by evaluating the patches into an image cached per zoom, one
+  function shared by the canvas and the PNG writer. krilla has no mesh shadings, so SVG, PDF and
+  CSS get a picture, reported. PDF import already rasterises meshes (`pdf_in`). Needs the paint
+  enum above. Large.
+- **Image editing for quick fixes.** Not a retouching suite: no adjustment layers, painted masks or
+  brushes.
+  - *Levels*: a midtone gamma and output levels beside black point, white point and fade, in
+    `ImageAdjust::tone_table`. Small.
+  - *Curves per channel* and *Colour balance*: the one tone table becomes three
+    (`ImageAdjust::pipeline`), which SVG's `feFuncR/G/B` express, so the canvas, PNG and SVG still
+    agree. Small.
+  - *Clone* and *Spot heal*, baked into the picture. A retouch mode on the picture whose dabs are
+    previews with the mode's own undo; *Done* commits one rewritten picture through
+    `MastikApp::rewrite_tx`, as *Reduce picture* and *Apply crop* do, the old entry dropped once
+    nothing names it. It edits the original pixels, under the adjustments, mapping the brush
+    through crop and orientation, and re-encodes in the picture's own format (a JPEG as JPEG).
+    Spot heal is a Poisson blend of a small area, tens of milliseconds on the CPU. Medium.
 
 ## Later · Platform and dependencies
 

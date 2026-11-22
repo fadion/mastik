@@ -47,12 +47,11 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 
 - **A per-operand boolean cache** — measured, nothing to win (§15 D239).
 - **`Flatten` on a lone non-boolean** other than a mirrored path, which it makes plain — *Outline shape* (`build::outline`) is that verb (§15 D230).
-- **Pressure, tilt, variable width, brushes, an eraser or a smoothing setting on the pencil** — it makes geometry, not ink; *Simplify path* already smooths after the fact.
+- **Pressure, tilt, an eraser or a smoothing setting on the pencil** — it makes geometry, not ink; *Simplify path* already smooths after the fact. Pressure is an illustration tool's feature, and winit reports none from a pen on macOS or Linux. Variable width and vector brushes apply to any stroke (`roadmap.md`, *Next*).
 - **Vector networks** — a model change with no half-step, since every reader and export takes a `BezPath`; the shape builder, point snapping and path cutting cover the same needs with plain paths.
 
 ## Effects and paint
 
-- **Variable-width profiles and separate start/end caps** — a `Stroke` is ink at one width along an outline (§15 D126). A line's arrowheads are markers, shapes of their own in the stroke's paint, not ink (`core-model.md`, `Stroke`).
 - **A cap on the number of fills or strokes** (§15 D133).
 - **A pool of reusable effect-pass renderers** — the build cost is a one-off hitch, and a pool conflicts with a correctness rule (§15 D779).
 - **Reading `Filters` (brightness/contrast) back from SVG** — the combined matrix doesn't identify its inputs (§15 D411).
@@ -60,7 +59,6 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **Diamond gradients** — Figma-only; peniko has no such kind, so the model would need its own gradient type for it. The Figma import reads one as radial and says so.
 - **A CSS display format in the picker** — CSS colours are typed or pasted into any colour field; the value row shows Hex, RGB, HSL, HSB or OKLCH.
 - **Setting one channel across layers that disagree** — over a *Mixed* row the value row is the text field, which sets the whole colour.
-- **Pattern fills (a layer or component tiled as a fill)** — niche outside illustration, a tiled image fill covers the common case, and CSS can only repeat an image.
 
 ## Text
 
