@@ -144,8 +144,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - ***Open overlay* and *Swap overlay* show how the frame shows** (`overlay_fields`, one
   *Overlay* step): *Position* (the centre, the top and bottom thirds' left, centre and right, or
   *Manual*), *Close on a click outside*, *Darken behind it* (black at 40% when turned on) and,
-  while it is on, the shade's colour (`ui::colour_text_field`, its alpha kept) and *Shade*, its
-  opacity. *Manual* adds X and Y, from the top-left of the layer holding the action, and the
+  while it is on, the shade as a shadow's colour row is (`slot_color_row` over
+  `PaintSlot::Backdrop`: the chip opening the picker, the hex, the opacity as its strength), its
+  own *Overlay* step; `SetReactions` draws no preview, so a picker drag is held in
+  `InFlight::backdrop_paint`. *Manual* adds X and Y, from the top-left of the layer holding the action, and the
   note *Drag the frame on the canvas to place it*: the fields are for the last point, the canvas
   is where it is placed (*Placing an overlay*, below).
 - **Expressions show names.** The field writes a variable `{name}`

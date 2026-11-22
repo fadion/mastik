@@ -325,6 +325,10 @@ pub enum PaintSlot {
     /// Series rows, its text ink, axes and gridlines): solid or bound, written as
     /// a `SetChart`.
     Chart(ChartColour),
+    /// The shade an overlay action on the slot's node draws behind its frame
+    /// (`OverlaySettings::backdrop`), by the action's id. Its operation draws
+    /// nothing, so a drag is held in `InFlight::backdrop_paint`, as a grid's is.
+    Backdrop(mastik_core::ItemId),
 }
 
 /// Which colour of a chart a [`PaintSlot::Chart`] edits.
@@ -521,6 +525,7 @@ impl PaintSlot {
                 | PaintSlot::VarCell(..)
                 | PaintSlot::Pref(_)
                 | PaintSlot::Chart(_)
+                | PaintSlot::Backdrop(_)
         )
     }
 

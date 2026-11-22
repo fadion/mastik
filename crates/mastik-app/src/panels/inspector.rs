@@ -11234,11 +11234,12 @@ impl MastikApp {
         }
     }
     /// A single colour on the Fill row's pattern (chip, hex, opacity) for a shadow
-    /// ([`PaintSlot::Effect`]), a layout grid ([`PaintSlot::Grid`]) or a duotone end
-    /// ([`PaintSlot::Duotone`], which passes `alpha` false: its alpha is not read).
+    /// ([`PaintSlot::Effect`]), a layout grid ([`PaintSlot::Grid`]), an overlay's
+    /// shade ([`PaintSlot::Backdrop`]) or a duotone end ([`PaintSlot::Duotone`],
+    /// which passes `alpha` false: its alpha is not read).
     /// `tip` names what the chip edits.
     #[allow(clippy::too_many_arguments)]
-    fn slot_color_row(
+    pub(super) fn slot_color_row(
         &mut self,
         ui: &mut egui::Ui,
         id: NodeId,
@@ -11362,6 +11363,17 @@ impl MastikApp {
                 return mixed.then(|| self.mixed_row(target).0);
             }
             PaintSlot::GroupColor(key) => return self.group_color_shown(key),
+            // Through the drag's buffer first: `SetReactions` draws no preview.
+            PaintSlot::Backdrop(action) => {
+                let held = self
+                    .in_flight
+                    .backdrop_paint
+                    .filter(|(n, a, _)| (*n, *a) == (id, action))
+                    .map(|(.., c)| c);
+                return held
+                    .or_else(|| super::prototype::backdrop_of(&self.session.doc, id, action))
+                    .map(Brush::Solid);
+            }
             PaintSlot::Chart(colour) => {
                 let chart = self.session.chart_drawn(id)?;
                 return super::chart::colour_of(&self.session.doc, id, chart, colour)
@@ -11416,7 +11428,8 @@ impl MastikApp {
             | PaintSlot::Duotone(..)
             | PaintSlot::VarCell(..)
             | PaintSlot::Pref(_)
-            | PaintSlot::Chart(_) => unreachable!("answered above"),
+            | PaintSlot::Chart(_)
+            | PaintSlot::Backdrop(_) => unreachable!("answered above"),
         }
     }
     /// The brush at a location, read through the preview so the picker tracks a live
@@ -11552,6 +11565,11 @@ impl MastikApp {
         // only its `%` moved and detaches it otherwise.
         let doc = &self.session.doc;
         match slot {
+            // The reactions with the one shade replaced, alpha and all.
+            PaintSlot::Backdrop(action) => paint::stops_of(&brush)
+                .first()
+                .and_then(|(_, c)| super::prototype::backdrop_tx(doc, id, action, *c))
+                .unwrap_or_default(),
             // The whole description with the one colour replaced, solid.
             PaintSlot::Chart(colour) => match paint::stops_of(&brush).first() {
                 Some((_, c)) => Transaction(
@@ -11775,6 +11793,7 @@ impl MastikApp {
         // The grid preview buffer ends with the commit, as `edit_valve` drops it
         // for a drag.
         self.in_flight.grid_paint = None;
+        self.in_flight.backdrop_paint = None;
         self.retarget_after(slot, &brush);
     }
     /// [`Self::write_slot`] for one key step: consecutive steps of `verb` fold into
@@ -11799,6 +11818,7 @@ impl MastikApp {
         self.note_edit(None, &tx);
         self.session.commit_run(tx, verb);
         self.in_flight.grid_paint = None;
+        self.in_flight.backdrop_paint = None;
         self.retarget_after(slot, &brush);
     }
     /// Show a slot edit without committing it — the third slot verb, for the frames a
@@ -11815,11 +11835,12 @@ impl MastikApp {
         }
         let tx = self.slot_transaction(id, slot, brush);
         self.session.set_preview(&tx);
-        // Guides, variable cells and grids have no render override, so each has
-        // its own preview fork, as in `edit_valve`.
+        // Guides, variable cells, grids and overlay shades have no render
+        // override, so each has its own preview fork, as in `edit_valve`.
         self.preview_guide(&tx);
         self.preview_var_cell(&tx);
         self.preview_grid(&tx);
+        self.preview_backdrop(&tx);
         // The answer, not `true`: `picker::pointer_slot` falls through to the
         // valve on a refused write, rather than arming the chrome retreat.
         !tx.0.is_empty()
@@ -11935,6 +11956,7 @@ impl MastikApp {
                 ("Neutral flow colour", icon::CHART)
             }
             PaintSlot::Chart(super::paint::ChartColour::Track) => ("Track colour", icon::CHART),
+            PaintSlot::Backdrop(_) => ("Overlay", icon::OVERLAY_OPEN),
         };
         self.session.name_step(label, glyph);
     }

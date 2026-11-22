@@ -4,7 +4,7 @@
 //! (`mastik_core::prototype`); nothing here plays.
 
 use super::inspector::{FRAME_PRESETS, carried_unit, identity_card, identity_glyph, interacting};
-use super::paint;
+use super::paint::{self, PaintSlot};
 use crate::app::MastikApp;
 use crate::preview::Drag;
 use crate::theme::{self, color, icon};
@@ -114,8 +114,6 @@ pub(crate) enum DraftKey {
     Url(ItemId),
     /// A flow's name.
     FlowName(ItemId),
-    /// An overlay action's backdrop colour.
-    Backdrop(ItemId),
     /// A flow's starting value, by its place in the flow's list.
     FlowValue(ItemId, usize),
 }
@@ -730,6 +728,97 @@ pub(crate) fn find_mut(list: &mut [Keyed<Action>], id: ItemId) -> Option<&mut Ke
         }
     }
     None
+}
+
+/// The shade overlay action `action` on `node` draws behind its frame, while
+/// it darkens.
+pub(crate) fn backdrop_of(
+    doc: &mastik_core::Document,
+    node: NodeId,
+    action: ItemId,
+) -> Option<mastik_core::peniko::Color> {
+    let n = doc.get(node)?;
+    let k = n
+        .reactions()
+        .iter()
+        .find_map(|r| find(&r.value.actions, action))?;
+    match &k.value {
+        Action::OpenOverlay { settings, .. } | Action::SwapOverlay { settings, .. } => {
+            settings.backdrop
+        }
+        _ => None,
+    }
+}
+
+/// `node`'s reactions rewritten with overlay action `action`'s shade at `c`;
+/// `None` when the action is gone or does not darken.
+pub(crate) fn backdrop_tx(
+    doc: &mastik_core::Document,
+    node: NodeId,
+    action: ItemId,
+    c: mastik_core::peniko::Color,
+) -> Option<Transaction> {
+    let mut reactions = doc.get(node)?.reactions().to_vec();
+    let k = reactions
+        .iter_mut()
+        .find_map(|r| find_mut(&mut r.value.actions, action))?;
+    match &mut k.value {
+        Action::OpenOverlay { settings, .. } | Action::SwapOverlay { settings, .. }
+            if settings.backdrop.is_some() =>
+        {
+            settings.backdrop = Some(c);
+        }
+        _ => return None,
+    }
+    Some(Transaction(vec![Operation::SetReactions {
+        id: node,
+        reactions,
+    }]))
+}
+
+/// The overlay shade `tx` gives one action, against the saved document: what
+/// a picker drag on a [`PaintSlot::Backdrop`] holds, since `SetReactions`
+/// draws nothing to preview.
+///
+/// [`PaintSlot::Backdrop`]: super::paint::PaintSlot::Backdrop
+pub(crate) fn backdrop_held(
+    doc: &mastik_core::Document,
+    tx: &Transaction,
+) -> Option<(NodeId, ItemId, mastik_core::peniko::Color)> {
+    fn walk(list: &[Keyed<Action>], out: &mut Vec<(ItemId, mastik_core::peniko::Color)>) {
+        for k in list {
+            match &k.value {
+                Action::OpenOverlay { settings, .. } | Action::SwapOverlay { settings, .. } => {
+                    if let Some(c) = settings.backdrop {
+                        out.push((k.id, c));
+                    }
+                }
+                Action::Conditional {
+                    branches,
+                    otherwise,
+                } => {
+                    for b in branches {
+                        walk(&b.actions, out);
+                    }
+                    walk(otherwise, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    tx.0.iter().find_map(|op| {
+        let Operation::SetReactions { id, reactions } = op else {
+            return None;
+        };
+        let mut shades = Vec::new();
+        for r in reactions {
+            walk(&r.value.actions, &mut shades);
+        }
+        shades
+            .into_iter()
+            .find(|(a, c)| backdrop_of(doc, *id, *a).is_some_and(|was| was != *c))
+            .map(|(a, c)| (*id, a, c))
+    })
 }
 
 /// The list `place` names in a reaction's `actions`.
@@ -4236,7 +4325,7 @@ impl MastikApp {
                 if let Some(t) = frame_combo(ui, doc, ("to", k.id), *overlay, id, w) {
                     out = Some((make(t, *settings), "Change action", glyph));
                 }
-                if let Some(s) = self.overlay_fields(ui, k.id, *settings, w) {
+                if let Some(s) = self.overlay_fields(ui, id, k.id, *settings, w) {
                     out = Some((make(*overlay, s), "Overlay", glyph));
                 }
             }
@@ -4930,10 +5019,12 @@ impl MastikApp {
     /// *Darken behind it* and, while darkened, the shade's colour and strength.
     /// *Manual* adds X and Y, measured from the layer that opens it; the frame is
     /// placed by dragging its ghost on the canvas, the fields being for the last
-    /// point. Answers as [`Self::transition_fields`] does.
+    /// point. Answers as [`Self::transition_fields`] does, but for the shade,
+    /// which `node`'s colour slot commits itself.
     fn overlay_fields(
         &mut self,
         ui: &mut egui::Ui,
+        node: NodeId,
         action: ItemId,
         o: OverlaySettings,
         w: f32,
@@ -5026,61 +5117,22 @@ impl MastikApp {
             });
         }
         if let Some(c) = o.backdrop {
-            // The shade's colour, typed as every colour field takes one; the
-            // shade below keeps its own strength.
-            let key = DraftKey::Backdrop(action);
-            let ctx = ui.ctx().clone();
-            let [r, g, b, _] = c.to_rgba8().to_u8_array();
-            let shown = format!("{r:02x}{g:02x}{b:02x}");
-            let mut text = ui::Draft::live(&mut self.proto.draft, &ctx, key)
-                .map_or(shown.clone(), |d| d.text.clone());
-            let ink = crate::colour_text::parse(&text).map_or(egui::Color32::TRANSPARENT, |t| {
-                ui::color_to_egui(t.color(1.0))
-            });
-            let resp = ui::colour_text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, ink)
-                .on_hover_text("The colour of the shade behind the overlay");
-            if let Some(typed) = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)
-                && typed != shown
-                && let Some(t) = crate::colour_text::parse(&typed)
-            {
-                out = Some(OverlaySettings {
-                    backdrop: Some(t.color(c.components[3])),
-                    ..o
-                });
-            }
-            let rid = ui.id().with(("backdrop", action));
-            let a0 = f64::from(c.components[3]) * 100.0;
-            let mut v = self
-                .proto
-                .scrub
-                .filter(|(r, _)| *r == rid)
-                .map_or(a0, |(_, v)| v);
-            let resp = ui::value_field_suffixed(
+            // The shade as a shadow's colour is: chip (the picker), hex, and its
+            // strength as the opacity; it commits through its own slot.
+            let slot = PaintSlot::Backdrop(action);
+            let shown = match self.slot_brush(node, slot) {
+                Some(mastik_core::Brush::Solid(live)) => live,
+                _ => c,
+            };
+            self.slot_color_row(
                 ui,
+                node,
+                slot,
                 egui::vec2(w, ui::CONTROL_H),
-                Prefix::Text("Shade"),
-                Some(ui::Suffix {
-                    text: "%",
-                    clickable: false,
-                    tooltip: "",
-                }),
-                &mut v,
-                Scrub::whole(0.5).range(0.0..=100.0),
-                |d| d.custom_formatter(ui::number(0)),
-            )
-            .0
-            .on_hover_text("How dark the shade behind the overlay is");
-            let mut c2 = c;
-            c2.components[3] = (v.clamp(0.0, 100.0) / 100.0) as f32;
-            numbers.push((
-                resp,
-                rid,
-                v,
-                OverlaySettings {
-                    backdrop: Some(c2),
-                    ..o
-                },
-            ));
+                shown,
+                true,
+                "Edit the shade behind the overlay",
+            );
         }
         for (resp, rid, v, next) in numbers {
             self.proto_hold(rid, v, &resp);
@@ -7622,6 +7674,56 @@ mod tests {
         assert_eq!(
             settings.position,
             OverlayPosition::Manual { x: 10.0, y: 31.0 }
+        );
+    }
+
+    /// An overlay's shade is a colour slot: a picker drag is held and read back
+    /// before it commits, and a write lands on that action alone as one step.
+    /// flip: `preview_backdrop` not called from `preview_slot` → fails at "held".
+    #[test]
+    fn an_overlay_shade_is_a_colour_slot_the_picker_drags() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let overlay = f.cart;
+        let black = mastik_core::peniko::Color::from_rgba8(0, 0, 0, 102);
+        let at = one_action(
+            &mut f,
+            Action::OpenOverlay {
+                overlay,
+                settings: OverlaySettings {
+                    backdrop: Some(black),
+                    ..OverlaySettings::default()
+                },
+                transition: Transition::default(),
+            },
+        );
+        let slot = PaintSlot::Backdrop(at.action);
+        let solid = |b: Option<mastik_core::Brush>| match b {
+            Some(mastik_core::Brush::Solid(c)) => Some(c.to_rgba8().to_u8_array()),
+            _ => None,
+        };
+        assert_eq!(solid(f.app.slot_brush(f.add, slot)), Some([0, 0, 0, 102]));
+        let red = mastik_core::peniko::Color::from_rgba8(200, 0, 0, 51);
+        assert!(
+            f.app
+                .preview_slot(f.add, slot, mastik_core::Brush::Solid(red))
+        );
+        assert_eq!(
+            solid(f.app.slot_brush(f.add, slot)),
+            Some([200, 0, 0, 51]),
+            "held"
+        );
+        assert_eq!(
+            backdrop_of(&f.app.session.doc, f.add, at.action),
+            Some(black),
+            "not yet saved"
+        );
+        f.app
+            .write_slot(f.add, slot, mastik_core::Brush::Solid(red));
+        assert!(f.app.in_flight.backdrop_paint.is_none(), "the buffer ends");
+        assert_eq!(
+            backdrop_of(&f.app.session.doc, f.add, at.action).map(|c| c.to_rgba8().to_u8_array()),
+            Some([200, 0, 0, 51])
         );
     }
 

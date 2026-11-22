@@ -161,7 +161,8 @@ impl ClipStamp {
 /// `Default`, so a new field is covered by `cancel_gesture`'s gate automatically. A
 /// value in flight carries its subject, so it never lands on a moved selection.
 ///
-/// Clearing is not blanket: `cancel_gesture` drops only `grid_scrub` and `grid_paint`;
+/// Clearing is not blanket: `cancel_gesture` drops only `grid_scrub`, `grid_paint`
+/// and `backdrop_paint`;
 /// the other owners read `gesture_cancelled` so they can restore something.
 #[derive(Default, PartialEq)]
 pub(crate) struct InFlight {
@@ -225,6 +226,9 @@ pub(crate) struct InFlight {
     /// The grid colour a picker is dragging (`MastikApp::preview_grid`). Apart from
     /// [`Self::grid_scrub`] because `grid_step` commits whatever sits there.
     pub(crate) grid_paint: Option<(Vec<NodeId>, usize, mastik_core::peniko::Color)>,
+    /// The overlay shade a picker is dragging (`MastikApp::preview_backdrop`): the
+    /// layer, the overlay action, the colour. `SetReactions` previews nothing.
+    pub(crate) backdrop_paint: Option<(NodeId, mastik_core::ItemId, mastik_core::peniko::Color)>,
     /// The absolute target a guide position field is being dragged to, by axis. The
     /// field holds its own target: a per-frame step from the committed document would
     /// commit only the last (zero) step on release.
@@ -394,6 +398,17 @@ mod in_flight_tests {
                 "grid_paint",
                 InFlight {
                     grid_paint: Some((vec![id], 0, mastik_core::peniko::Color::BLACK)),
+                    ..Default::default()
+                },
+            ),
+            (
+                "backdrop_paint",
+                InFlight {
+                    backdrop_paint: Some((
+                        id,
+                        mastik_core::ItemId::positional(0),
+                        mastik_core::peniko::Color::BLACK,
+                    )),
                     ..Default::default()
                 },
             ),
@@ -3474,6 +3489,7 @@ impl MastikApp {
         // Dropped here, not by the panel: the canvas draws them before the panels run.
         self.in_flight.grid_scrub = None;
         self.in_flight.grid_paint = None;
+        self.in_flight.backdrop_paint = None;
         // A pending opacity digit is a gesture too, or its deadline would land it.
         self.opacity_entry = None;
         // The picker's OKLCH ask goes back with the colour it was asking for.
@@ -10032,11 +10048,13 @@ impl MastikApp {
             self.session.set_preview(&tx);
             self.preview_guide(&tx);
             self.preview_grid(&tx);
+            self.preview_backdrop(&tx);
             self.preview_var_cell(&tx);
         } else if was_engaged {
             self.guide_previews.clear();
             self.var_cell_preview = None;
             self.in_flight.grid_paint = None;
+            self.in_flight.backdrop_paint = None;
             // `Escape` abandons the edit (egui does not revert a `DragValue` on it).
             if !resp.ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 committed = self.session.commit(tx);
@@ -10136,6 +10154,15 @@ impl MastikApp {
         }
         if let Some(held) = held {
             self.in_flight.grid_paint = Some(held);
+        }
+    }
+
+    /// The overlay-shade half of the preview: `SetReactions` draws nothing, so a
+    /// picker drag on a shade is held in `InFlight::backdrop_paint` for the row
+    /// and the picker to read back.
+    pub(crate) fn preview_backdrop(&mut self, tx: &Transaction) {
+        if let Some(held) = crate::panels::prototype::backdrop_held(&self.session.doc, tx) {
+            self.in_flight.backdrop_paint = Some(held);
         }
     }
 
