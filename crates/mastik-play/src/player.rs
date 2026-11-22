@@ -203,8 +203,8 @@ pub struct Player {
     pub(crate) states: FxHashMap<NodeId, NodeId>,
     /// The modes *Set mode* gave each page or frame, carried across a re-clone.
     pub(crate) modes: FxHashMap<NodeId, Vec<mastik_core::variable::ModeId>>,
-    /// The size each screen is laid out at in place of its own (*Responsive*,
-    /// a turned device); `None` as drawn.
+    /// The size each screen is laid out at in place of its own (a page's
+    /// device, or the room under *Responsive*); `None` as drawn.
     pub(crate) play_size: Option<Size>,
     /// Instances showing an interaction state (hover, pressed) by themselves,
     /// with the main to return to.
@@ -332,7 +332,8 @@ impl Player {
     }
 
     /// Lay each screen out at `size` from now on, in place of its own, through
-    /// its frame's layout and width queries (*Responsive*, a turned device);
+    /// its frame's layout and width queries (a page's device, or the room
+    /// under *Responsive*);
     /// `None` puts it back as drawn. The copy alone changes, never the
     /// document. Answers whether anything changed.
     pub fn set_play_size(&mut self, size: Option<Size>) -> bool {

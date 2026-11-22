@@ -285,7 +285,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   device to turn*), then *Scaling* (`scaling_combo`, a dropdown whose rows carry their meaning
   in the accelerator's place: *Fit*, *Fill width*, *Actual size*, *Responsive*), and *Default transition*,
   the transition every new action takes, a dragged link's included. Under them a note says what is laid out other than as drawn
-  (*iPhone 16, turned: 852 × 393.*) and, under *Responsive* or a turn, names a flow whose start
+  (*iPhone 18 Pro: 402 × 874.*, or *iPhone 18 Pro, turned: 874 × 402.*) and, whenever the page has a device or is *Responsive*
+  (either lays the screen out at a size of its own), names a flow whose start
   frame has no layout (*Checkout's start frame has no layout; it keeps its children where
   drawn.*); it is quiet when nothing differs.
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its

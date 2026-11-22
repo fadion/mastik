@@ -7007,15 +7007,19 @@ impl MastikApp {
             // What is laid out other than as drawn, and a start frame that has
             // no layout to do it with; quiet when nothing differs.
             let doc = &app.session.doc;
-            let turned = play
+            let device = play
                 .device
                 .as_deref()
-                .and_then(mastik_core::presets::device_size)
-                .filter(|_| play.landscape);
-            if let (Some(d), Some(name)) = (turned, play.device.as_deref()) {
-                ui::selection_note(ui, &format!("{name}, turned: {} × {}", d.height, d.width));
+                .and_then(mastik_core::presets::device_size);
+            if let (Some(d), Some(name)) = (device, play.device.as_deref()) {
+                let note = match play.landscape {
+                    true => format!("{name}, turned: {} × {}", d.height, d.width),
+                    false => format!("{name}: {} × {}", d.width, d.height),
+                };
+                ui::selection_note(ui, &note);
             }
-            if turned.is_some() || play.scaling == Scaling::Responsive {
+            // A device lays the screen out at its size under every scaling.
+            if play.can_turn() || play.scaling == Scaling::Responsive {
                 let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
                 let flat = flows.iter().find(|f| {
                     doc.get(f.value.start)

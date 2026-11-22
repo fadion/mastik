@@ -51,18 +51,19 @@ otherwise the player returns over the canvas).
 
 ## The body
 
-- **Scaling** by the page's *Fit*, *Fill width* or *Actual size*, never wider than the room.
-  *Responsive* lays the screen out again at the room's size (one unit a point, so a resized
-  window or fullscreen shows the real layout) or, with a device, at the device's size fitted as
-  *Fit* (`PagePlay::play_size`, `Player::set_play_size`). Over the canvas the card is sized
-  from the screen, so there a screen with no device plays as drawn.
+- **Scaling**: a page's device always sets the screen's size, turned when turned, and the
+  scaling only fits that screen to the room (`PagePlay::play_size`, `Player::set_play_size`).
+  With no device, *Responsive* lays the screen out again at the room's size (one unit a point,
+  so a resized window or fullscreen shows the real layout), and *Fit*, *Fill width* and *Actual
+  size* play it as drawn, never wider than the room; *Responsive* places as *Fit*. Over the
+  canvas the card is sized from the screen, so there a screen with no device plays as drawn.
 - **Turning**: a page's device plays on its side when the page is turned or the bar's
   `ROTATE_RIGHT` button turned it for this run (`Playing::turned`, play state, never the
   document's); the screen is laid out at the turned size, never a rotated picture. The button
   sits before *Open in a window*, lit while turned, tipped *Turn to landscape* / *Turn to
   portrait*, dimmed with *Pick a device to turn* on a page with none.
 - **The size readout**: when the play size changes after play's first (a window resized under
-  *Responsive*, a turn while one is laid out), the bar shows it in units, `852 × 393`, faint at
+  *Responsive*, a turn), the bar shows it in units, `874 × 402`, faint at
   `CAPTION_PT` before the turn button, for a second after the last change, then fading
   (`Playing::readout`). Not over the canvas, whose card never resizes and whose bar has no room.
 - **Play on a phone** (`phone.rs`): the bar's `PHONE` button, after *Record*, tipped *Play on a

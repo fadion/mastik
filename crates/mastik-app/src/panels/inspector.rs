@@ -21320,7 +21320,7 @@ mod rhythm_tests {
             "one frame off the size still reported a shared one"
         );
 
-        let ipad = Size::new(834.0, 1194.0);
+        let ipad = Size::new(834.0, 1210.0);
         app.apply_frame_template(&subjects, ipad);
         for (i, f) in frames.iter().enumerate() {
             let Some(NodeKind::Artboard { size, .. }) = app.session.doc.get(*f).map(|n| n.kind())
@@ -21475,13 +21475,13 @@ mod rhythm_tests {
                 .count()
         };
         assert_eq!(
-            lit(Size::new(393.0, 852.0)),
+            lit(Size::new(402.0, 874.0)),
             1,
-            "iPhone 16 does not light up"
+            "iPhone 18 Pro does not light up"
         );
         assert_eq!(lit(Size::new(1080.0, 1920.0)), 1, "Story does not light up");
         assert_eq!(
-            lit(Size::new(852.0, 393.0)),
+            lit(Size::new(874.0, 402.0)),
             0,
             "a landscape phone lit a portrait template"
         );
@@ -21735,10 +21735,10 @@ mod frame_grid_tests {
         assert_eq!(preset_named(Size::new(123.0, 456.0)), None);
         // A preset turned on its side is not that preset (either order would collide Full HD
         // and Story).
-        assert_eq!(preset_named(Size::new(852.0, 393.0)), None);
-        // The tolerance is small: a handle-dragged 393.2 is still an iPhone, a 394 is not.
-        assert_eq!(preset_named(Size::new(393.2, 852.0)), Some("iPhone 16"));
-        assert_eq!(preset_named(Size::new(394.0, 852.0)), None);
+        assert_eq!(preset_named(Size::new(874.0, 402.0)), None);
+        // The tolerance is small: a handle-dragged 402.2 is still an iPhone, a 403 is not.
+        assert_eq!(preset_named(Size::new(402.2, 874.0)), Some("iPhone 18 Pro"));
+        assert_eq!(preset_named(Size::new(403.0, 874.0)), None);
     }
 
     /// The grid scrub's state machine. The cancel case is asserted with `changed` set: egui can

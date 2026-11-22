@@ -479,12 +479,13 @@ fn a_duplicated_pages_flow_starts_on_its_copy() {
     );
 }
 
-/// The size a page's screen plays at: a device's size, turned, when turned or
-/// under *Responsive*; the room under *Responsive* with no device; else as
-/// drawn.
+/// The size a page's screen plays at: a device's size under every scaling,
+/// turned when turned; the room under *Responsive* with no device; else as
+/// drawn. A device the list has retired is still sized.
 ///
 /// flip: `PagePlay::play_size` not swapping a turned device's sides → fails at
-/// "the phone on its side".
+/// "the phone on its side"; giving a device's size under *Responsive* only →
+/// fails at "the device's size under Fit".
 #[test]
 fn a_page_plays_at_its_device_turned_or_its_room() {
     use mastik_core::prototype::{PagePlay, Scaling};
@@ -494,7 +495,16 @@ fn a_page_plays_at_its_device_turned_or_its_room() {
         ..PagePlay::default()
     };
     assert!(phone.can_turn());
-    assert_eq!(phone.play_size(Scaling::Fit, false, room), None, "as drawn");
+    assert_eq!(
+        phone.play_size(Scaling::Fit, false, room),
+        Some(Size::new(393.0, 852.0)),
+        "the device's size under Fit"
+    );
+    assert_eq!(
+        phone.play_size(Scaling::ActualSize, false, room),
+        Some(Size::new(393.0, 852.0)),
+        "and under Actual size"
+    );
     assert_eq!(
         phone.play_size(Scaling::Fit, true, room),
         Some(Size::new(852.0, 393.0)),

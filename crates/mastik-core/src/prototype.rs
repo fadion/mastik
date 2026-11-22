@@ -948,8 +948,9 @@ pub struct Flow {
 /// A page's prototype settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PagePlay {
-    /// The device drawn around the screen, by the player's preset name; `None`
-    /// draws none.
+    /// The device the screen plays on, by the player's preset name: its size is
+    /// the screen's, and the export draws it round the screen. `None` plays the
+    /// screen as drawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
     #[serde(default, skip_serializing_if = "is_default")]
@@ -977,15 +978,17 @@ pub enum Scaling {
     ActualSize,
     FillWidth,
     /// Laid out again at the player's size, through the frame's flex, grid and
-    /// width queries; with a device, at the device's size, fitted as *Fit*.
+    /// width queries; with a device, at the device's size (as every scaling
+    /// is), fitted as *Fit*.
     Responsive,
 }
 
 impl PagePlay {
     /// The size the screen is laid out at, in a player whose room is `room`
     /// screen units, `turned` when it plays landscape; `None` as drawn. A
-    /// device gives its size, turned, when turned or under *Responsive*; with
-    /// none, *Responsive* gives the room. Never larger than a sane screen.
+    /// device always gives its size, turned when turned, and the scaling only
+    /// fits that screen to the room; with none, *Responsive* gives the room.
+    /// Never larger than a sane screen.
     pub fn play_size(
         &self,
         scaling: Scaling,
@@ -995,8 +998,7 @@ impl PagePlay {
         let device = self.device.as_deref().and_then(crate::presets::device_size);
         let size = match device {
             Some(d) if turned => Some(kurbo::Size::new(d.height, d.width)),
-            Some(d) if scaling == Scaling::Responsive => Some(d),
-            Some(_) => None,
+            Some(d) => Some(d),
             None if scaling == Scaling::Responsive => Some(room),
             None => None,
         }?;

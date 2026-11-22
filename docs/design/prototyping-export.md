@@ -168,11 +168,13 @@ canvas, the drawing and the page around them.
   drawn. The page asks for the next frame only while `is_moving()`; an input or a resize
   asks for one, the first ticking by 0.
 - **Placing** (`shell::place`): the scaling is `PlayExport::scaling`, else the screen's page's
-  own. *Fit* scales the whole device to the room, up or down; *Actual size* is one CSS pixel
-  a unit; *Fill width* fits the width; *Responsive* places as *Fit*, the screen having been laid
-  out each frame at the window's size, or the device's (`PagePlay::play_size` into
-  `set_play_size`), so a resize lays it out again. A turned device (the page's, or the bar's
-  *Turn* button for the run, shown while the page shown has a device) lays out on its side. A
+  own. A page's device always sets the screen's size, turned when turned, and with none
+  *Responsive* lays it out at the window's size, so a resize lays it out again; other scalings
+  without a device play it as drawn (`PagePlay::play_size` into `set_play_size`, each frame).
+  The scaling then fits that screen to the room: *Fit* scales the whole device to the room, up
+  or down; *Actual size* is one CSS pixel a unit; *Fill width* fits the width; *Responsive*
+  places as *Fit*. A device turns by the page's own turn or the bar's *Turn* button for the run,
+  shown while the page shown has a device; it lays out on its side. A
   screen larger than the room grows the stage, which
   scrolls. The device frame, when the export shows it and the page names a device, is a dark
   bezel 14 units wide round the screen, 24 CSS pixels from the window's edges under *Fit*;

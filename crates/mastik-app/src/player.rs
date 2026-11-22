@@ -2068,7 +2068,11 @@ mod tests {
         );
         app.player_act(&ctx, BarAct::Turn);
         whole_frame(&ctx, &mut app, Vec::new());
-        assert_eq!(size(&app), None, "turned back, as drawn");
+        assert_eq!(
+            size(&app),
+            Some(Size::new(393.0, 852.0)),
+            "turned back, the phone upright"
+        );
         let saved = app.session.doc.page(page).map(|p| p.play.landscape);
         assert_eq!(saved, Some(true), "the document keeps its own");
     }
