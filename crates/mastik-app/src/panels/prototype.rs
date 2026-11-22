@@ -43,6 +43,9 @@ pub(crate) struct ProtoState {
     /// A manual overlay's X or Y held in its field, so the canvas ghost follows
     /// the scrub before it commits.
     pub held_at: Option<(ItemId, mastik_core::kurbo::Vec2)>,
+    /// A snap point's X or Y held in its field, so its canvas ghost follows the
+    /// scrub before it commits.
+    pub held_point: Option<(ItemId, mastik_core::kurbo::Vec2)>,
     /// The placed overlay's ghost as the canvas drew it last frame, in screen
     /// space: what a press aims at, and what keeps a click on it from closing
     /// the popover.
@@ -2428,12 +2431,18 @@ impl MastikApp {
     }
 
     /// The value `mark` holds: a snap point's offset, or a scroll trigger's
-    /// point in `x`; a drag's under way, else the saved one.
+    /// point in `x`; a drag's under way, else one held in its field, else the
+    /// saved one.
     pub(crate) fn proto_mark_value(&self, mark: ProtoMark) -> Option<mastik_core::kurbo::Vec2> {
         if let Drag::ProtoMark { mark: m, now, .. } = self.drag
             && m == mark
         {
             return Some(now);
+        }
+        if let ProtoMark::Point { point, .. } = mark
+            && let Some((_, v)) = self.proto.held_point.filter(|(p, _)| *p == point)
+        {
+            return Some(v);
         }
         let doc = &self.session.doc;
         match mark {
@@ -6035,12 +6044,21 @@ impl MastikApp {
                 *gone = Some(k.id);
             }
         });
+        // A drag of its ghost on the canvas shows here as it goes.
+        let mark = ProtoMark::Point {
+            node: id,
+            point: k.id,
+        };
+        let live = self
+            .proto_mark_value(mark)
+            .unwrap_or(mastik_core::kurbo::Vec2::new(k.value.x, k.value.y));
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = COL;
             let half = (w - COL) / 2.0;
+            let mut held = None;
             for (axis, label) in [(true, "X"), (false, "Y")] {
                 let rid = ui.id().with(("point", k.id, axis));
-                let mut v = if axis { k.value.x } else { k.value.y };
+                let mut v = if axis { live.x } else { live.y };
                 if let Some(x) = self.proto.scrub.filter(|(i, _)| *i == rid) {
                     v = x.1;
                 }
@@ -6055,6 +6073,12 @@ impl MastikApp {
                 )
                 .0;
                 let v = v.round();
+                if resp.dragged() || resp.has_focus() {
+                    held = Some(match axis {
+                        true => mastik_core::kurbo::Vec2::new(v, live.y),
+                        false => mastik_core::kurbo::Vec2::new(live.x, v),
+                    });
+                }
                 let tx = match v != (if axis { k.value.x } else { k.value.y }) {
                     true => set(&|p| match axis {
                         true => p.x = v,
@@ -6063,6 +6087,13 @@ impl MastikApp {
                     false => Transaction::default(),
                 };
                 self.proto_valve(rid, v, &resp, "Move snap point", icon::CROSSHAIR_SIMPLE, tx);
+            }
+            match held {
+                Some(v) => self.proto.held_point = Some((k.id, v)),
+                None if self.proto.held_point.is_some_and(|(p, _)| p == k.id) => {
+                    self.proto.held_point = None;
+                }
+                None => {}
             }
         });
     }

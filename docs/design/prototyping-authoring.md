@@ -214,7 +214,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   points*, the drawn point's row: its name in a text field as the others' are (*Rename snap
   point*; *Open* typed back clears `drawn`), its `×` dimmed with *Where the layer is drawn is
   always a point*; then a row per point (`drag_point_row`): its name, `×`, and its X and Y from
-  where the layer is drawn; `+` adds *Point n*, n the first number no point
+  where the layer is drawn, live both ways: the fields follow a drag of its ghost
+  (`proto_mark_value`), and the ghost a scrub or typing in them (`ProtoState::held_point`), before
+  either commits; `+` adds *Point n*, n the first number no point
   is named by, n × 100 down. *Settle* sits between *Release* and the points: the transition
   popover's timing rows and motion preview (`timing_fields`), without a kind or a side, for how
   the layer moves after a release; a change is a *Dragging* step.
