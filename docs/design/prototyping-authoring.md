@@ -236,7 +236,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its
   start among the page's frames, a `ui::field_button` `×` to remove (as every removal in the
   tab is), each flow after the first under a `ui::card_rule`. The first row, the flow Play opens,
-  wears a `FIRST_FLOW_BAR` (2) `accent_400` bar on its leading edge, tipped *Play opens this flow
+  wears `accent_400` on its name field's leading edge: the field's own rounded outline,
+  `FIRST_FLOW_BAR` (3) thick, kept to its left corners so it wraps them, tipped *Play opens this flow
   first*. `+` adds *Flow N* starting at the page's first
   frame, dimmed with no frame. Under each flow, its starting modes (`flow_modes`): a row per
   mode, its collection (as *Set mode*'s, less those another row names) and its mode, and `×`;

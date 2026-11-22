@@ -1735,8 +1735,9 @@ const FLOW_CHIP_GAP: f32 = 6.0;
 const FLOW_CHIP_PAD_R: f32 = 9.0;
 /// The most variables the list `@` opens in an expression shows.
 const AT_LIST_MAX: usize = 12;
-/// The width of the accent bar on the page's first flow's row in the Flows card.
-const FIRST_FLOW_BAR: f32 = 2.0;
+/// The width of the accent edge on the page's first flow's name field in the
+/// Flows card.
+const FIRST_FLOW_BAR: f32 = 3.0;
 /// How much of the badges' blue a chip other than the page's first flow's
 /// keeps, so the flow Play opens stands out.
 const FLOW_CHIP_QUIET: f32 = 0.55;
@@ -6223,22 +6224,22 @@ impl MastikApp {
                         ));
                     }
                 });
-                // The flow Play opens first wears the accent's bar on its name
-                // field's leading edge, as its chip on the canvas wears the blue.
+                // The flow Play opens first wears the accent on its name field's
+                // leading edge, as its chip on the canvas wears the blue: the
+                // field's own outline, kept to its left corners so it wraps them.
                 if n == 0 {
                     let r = row.response.rect;
-                    let bar = egui::Rect::from_min_size(
+                    let field = egui::Rect::from_min_size(
                         r.left_top(),
-                        egui::vec2(FIRST_FLOW_BAR, ui::CONTROL_H),
+                        egui::vec2(r.width(), ui::CONTROL_H),
                     );
-                    ui.painter().rect_filled(
-                        bar,
-                        egui::CornerRadius {
-                            nw: 4,
-                            sw: 4,
-                            ..Default::default()
-                        },
-                        color::accent_400(),
+                    let round = ui.visuals().widgets.inactive.corner_radius;
+                    let strip = field.with_max_x(field.left() + f32::from(round.nw));
+                    ui.painter().with_clip_rect(strip).rect_stroke(
+                        field,
+                        round,
+                        egui::Stroke::new(FIRST_FLOW_BAR, color::accent_400()),
+                        egui::StrokeKind::Inside,
                     );
                     ui.interact(
                         r.with_max_x(r.left() + 6.0),
