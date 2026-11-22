@@ -15,6 +15,38 @@ remains is below.
 - **Charts reading a data set.** A chart could read one of the document's data sets
   (`design/lists.md`) instead of its own table, so a chart and a list over one file update
   together.
+- **Data tables.** After *Charts reading a data set*, which it needs so that it covers every
+  table. It is the data window (`chart_data.rs`), not a second grid: the same window and the
+  same doors, plus one door, *Data tables…*, in the Tools menu after *Scripts…*
+  (`ToolsRow::ALL`) and the palette, opened without a list or chart behind it. Not named
+  *Content manager*: *Fill with content…* is a different tool in the same menu.
+  - **Toolbar:** a dropdown of the document's data sets leads it, offering *New table* and
+    *From a file…*; an empty document shows those two in place of the grid.
+  - **Opened as the manager**, nothing behind it: it does not follow the selection, the head
+    reads who uses the table (*· 3 lists, 1 chart*) where the headers would show what each column
+    fills, and the chart-only header rows (*Use as category*, *Show as series*) are hidden: they
+    belong to a chart, not the table.
+  - **Opened from a list or chart:** the window works as it does today.
+  - **The data-set lifetime rule changes first.** A data set now lives only while a list reads
+    it (`list::unread_data_sets` removes it in the commit's step), so a table the manager makes
+    would vanish at once. Data sets instead stay until deleted. The manager adds *Delete table*,
+    dimmed while anything reads the table (its tooltip counts the readers), and the List and
+    Chart cards' Data dropdowns list unread tables too. Rewrite *A data set lives while a list
+    reads it* in `design/lists.md` with it.
+- **Lists: leftovers.** Four pieces of the list design that were never built:
+  - **A filled property on the template shows its column and is read-only.** Row 1 is filled
+    from the table like every row, so an edit to a filled property on the template is lost at
+    the next regeneration without a word. The instance's property row (`panels/variants.rs`)
+    should show the column as a capsule, as a variable-bound field does, and refuse edits.
+  - **The data window marks cells that name no variant** in the warning ink. The List card
+    counts them (`list::unmatched_variants`, *N values name no ‹X› variant*), but the grid in
+    `chart_data.rs`, where they are fixed, does not show which.
+  - **New table leaves the cursor typing in row 2.** `list_data.rs` `make_list_new_table` opens
+    the window on cell (0, 0) with nothing in edit mode, and the seeded table has only row 1.
+    It should add an empty row 2 and start editing its first cell.
+  - **An instance's image property shows the picture.** The row's combo shows the image glyph
+    and the picture's id or path, which do not say what it is; draw a `ui::swatch` with
+    `Swatch::Picture` in its place, as the fill rows do.
 - **Variable autocomplete on `{`.** An expression names a variable as `{name}`
   (`Expr::with_names`), and `@` already opens a list of the document's variables that writes one
   (`at_names` in `panels/prototype.rs`), but typing `{`, which is the form the field shows,
