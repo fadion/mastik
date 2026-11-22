@@ -145,10 +145,14 @@ pub(crate) struct Playing {
     touch: bool,
 }
 
-/// Where play starts on `page` of `doc`: the page's first flow, else the first
-/// flow on any page, else `frame` when given, else the page's first top-level
-/// frame in reading order. `None` when the document has no frame to play.
+/// Where play starts on `page` of `doc`: the selected top-level `frame` when
+/// given, else the page's first flow, else the page's first top-level frame in
+/// reading order, else the first flow on another page. `None` when there is
+/// nothing to play.
 pub(crate) fn start_for(doc: &Document, page: NodeId, frame: Option<NodeId>) -> Option<Start> {
+    if let Some(f) = frame {
+        return Some(Start::Frame(f));
+    }
     let first_flow = |p: NodeId| {
         doc.page(p)
             .and_then(|info| info.flows.first().map(|f| f.id))
@@ -157,25 +161,20 @@ pub(crate) fn start_for(doc: &Document, page: NodeId, frame: Option<NodeId>) -> 
     if let Some(s) = first_flow(page) {
         return Some(s);
     }
-    if let Some(s) = doc.pages().iter().find_map(|p| first_flow(p.id)) {
-        return Some(s);
+    let frames: Vec<_> = doc.get(page).map_or_else(Vec::new, |p| {
+        p.children()
+            .iter()
+            .filter(|id| {
+                doc.get(**id)
+                    .is_some_and(|n| matches!(n.kind(), mastik_core::NodeKind::Artboard { .. }))
+            })
+            .filter_map(|id| Some((*id, doc_bounds(doc, *id)?)))
+            .collect()
+    });
+    if let Some(f) = crate::present::reading_order(frames).first() {
+        return Some(Start::Frame(*f));
     }
-    if let Some(f) = frame {
-        return Some(Start::Frame(f));
-    }
-    let frames: Vec<_> = doc
-        .get(page)?
-        .children()
-        .iter()
-        .filter(|id| {
-            doc.get(**id)
-                .is_some_and(|n| matches!(n.kind(), mastik_core::NodeKind::Artboard { .. }))
-        })
-        .filter_map(|id| Some((*id, doc_bounds(doc, *id)?)))
-        .collect();
-    crate::present::reading_order(frames)
-        .first()
-        .map(|f| Start::Frame(*f))
+    doc.pages().iter().find_map(|p| first_flow(p.id))
 }
 
 fn doc_bounds(doc: &Document, id: NodeId) -> Option<mastik_core::kurbo::Rect> {
@@ -1071,9 +1070,10 @@ pub(crate) fn value_words(v: &Value) -> String {
 }
 
 impl crate::app::MastikApp {
-    /// Play the prototype from the current page in `place`: its first flow, else
-    /// the first flow anywhere, else the selected frame or the page's first.
-    /// Scripts the person has not seen run here are shown first.
+    /// Play the prototype from the current page in `place`, where `start_for`
+    /// says: the selected frame, the page's first flow, the page's first frame,
+    /// or another page's flow. Scripts the person has not seen run here are
+    /// shown first.
     pub(crate) fn play(&mut self, ctx: &egui::Context, place: Place, from_present: bool) {
         let doc = &self.session.doc;
         let page = self.session.page;
@@ -1912,29 +1912,89 @@ mod tests {
         (app, [a, b, rect])
     }
 
-    /// Play starts on the page's first flow when there is one, else on the
-    /// page's first frame in reading order.
-    /// flip: `start_for` skipping its flow lookups → fails at "the flow's start".
+    /// Play starts on the selected frame, else the page's first flow, else the
+    /// page's first frame, and only then on another page's flow.
+    /// flip: `start_for` trying the selection after the page's flow → fails at
+    /// "the selection wins"; trying other pages' flows before the page's frames →
+    /// fails at "the page's own frame".
     #[test]
-    fn play_starts_on_the_first_flow_else_the_first_frame() {
+    fn play_starts_on_the_selection_then_the_page_then_elsewhere() {
         let ctx = egui::Context::default();
-        let (app, [a, ..]) = fixture(&ctx, false);
+        let (app, [a, ..]) = fixture(&ctx, true);
         let page = app.session.page;
+        let doc = &app.session.doc;
         assert_eq!(
-            start_for(&app.session.doc, page, None),
+            start_for(doc, page, Some(a)),
             Some(Start::Frame(a)),
-            "no flow: the first frame"
+            "the selection wins"
         );
-        let (app, _) = fixture(&ctx, true);
-        let page = app.session.page;
         assert!(
-            matches!(start_for(&app.session.doc, page, None), Some(Start::Flow(r)) if r.page == page),
-            "the flow's start"
+            matches!(start_for(doc, page, None), Some(Start::Flow(r)) if r.page == page),
+            "the page's flow"
+        );
+        // The flow's page is a second one; the first keeps its frames, and a
+        // third has none.
+        let (mut app, [a, ..]) = fixture(&ctx, false);
+        let first = app.session.page;
+        let [second, third, c] = [(); 3].map(|_| app.session.ids.mint());
+        let flow = app.session.ids.mint_item();
+        let page = |id, index, name: &str| Operation::AddPage {
+            id,
+            index,
+            name: name.into(),
+            ground: None,
+            draft: false,
+            modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
+        };
+        assert!(app.session.commit(Transaction(vec![
+            page(second, 1, "Checkout"),
+            page(third, 2, "Empty"),
+            Operation::CreateNode {
+                id: c,
+                parent: second,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(100.0, 80.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("C".into()),
+            },
+            Operation::SetFlows {
+                id: second,
+                flows: vec![Keyed::new(
+                    flow,
+                    Flow {
+                        name: "Pay".into(),
+                        start: c,
+                        modes: Vec::new(),
+                        values: Vec::new(),
+                    },
+                )],
+            },
+        ])));
+        let doc = &app.session.doc;
+        assert!(
+            doc.page(second).is_some_and(|p| p.flows.len() == 1),
+            "the fixture's flow"
+        );
+        assert_eq!(
+            start_for(doc, first, None),
+            Some(Start::Frame(a)),
+            "the page's own frame"
+        );
+        assert_eq!(
+            start_for(doc, third, None),
+            Some(Start::Flow(FlowRef { page: second, flow })),
+            "another page's flow"
         );
     }
 
     /// The bar's flow menu lists the page's flows with their starting frames and
-    /// offers the selected frame; *From this frame* restarts there, and the state
+    /// offers the selected frame; *From the selected frame* restarts there, and the state
     /// card's Back count follows the navigation.
     /// flip: `flow_menu_for` not reading the selection → fails at "the selected frame";
     /// `back_steps` counting only overlays → fails at "one step back".

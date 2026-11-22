@@ -8,9 +8,10 @@ of its commands.
 ## Starting and stopping
 
 - **Play** is the top bar's play button (lit while a prototype plays; a click on it stops), the
-  palette's *Play prototype*, and a flow's chip on the canvas. It starts on the current page's
-  first flow, else the first flow on any page, else the selected top-level frame, else the
-  page's first frame in reading order (`player::start_for`).
+  palette's *Play prototype*, and a flow's chip on the canvas. It starts on the selected
+  top-level frame, else the current page's first flow, else the page's first frame in reading
+  order, else the first flow on another page (`player::start_for`): what the person is looking
+  at comes before a flow elsewhere.
 - **Present mode is the player filling the window** when the document has a flow anywhere
   (`Ctrl+Alt+Enter`); with none, present mode steps through frames (`app-canvas-chrome.md`, *Present mode*). Present mode and
   *Play* are one act, so the `PLAY` glyph keeps one meaning.
