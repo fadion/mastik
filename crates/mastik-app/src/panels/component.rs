@@ -1028,6 +1028,10 @@ pub(super) fn item_slot_menu(
     }
 }
 
+/// The width of a list item's override slot (`item_slot_menu`), which a row
+/// keeps clear at its end beside its own controls.
+pub(super) const ITEM_SLOT_W: f32 = 14.0;
+
 /// The slot's painting; answers the ↺'s response on an overridden item.
 fn item_slot_response(
     ui: &mut egui::Ui,
@@ -1044,7 +1048,7 @@ fn item_slot_response(
         ItemState::Follows | ItemState::Local => egui::Sense::hover(),
     };
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(14.0, ui.max_rect().height().min(ui::CONTROL_H)),
+        egui::vec2(ITEM_SLOT_W, ui.max_rect().height().min(ui::CONTROL_H)),
         sense,
     );
     let hot = hot || resp.has_focus();

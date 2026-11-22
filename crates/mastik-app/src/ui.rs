@@ -343,7 +343,16 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
 /// around origin*): its name as an [`eyebrow`], the [`close_button`] against the
 /// right margin. Answers whether the × was pressed.
 pub fn popover_head(ui: &mut egui::Ui, title: &str) -> bool {
+    popover_head_glyph(ui, None, title)
+}
+
+/// [`popover_head`] led by `glyph` in `text::muted()` at [`CONTROL_GLYPH_PT`],
+/// for a popover that edits one kind of a family (an Interactions action).
+pub fn popover_head_glyph(ui: &mut egui::Ui, glyph: Option<&str>, title: &str) -> bool {
     ui.horizontal(|ui| {
+        if let Some(g) = glyph {
+            ui.label(theme::icon_text(g, CONTROL_GLYPH_PT, theme::text::muted()));
+        }
         ui.label(eyebrow(title));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             close_button(ui).clicked()
@@ -391,9 +400,10 @@ pub fn tile_ground(p: &egui::Painter, rect: egui::Rect, on: bool, hovered: bool)
     }
 }
 
-/// What a card says in place of rows the selection cannot show (the layers
-/// disagree, or the card edits one at a time): one line of [`SMALL_PT`]
-/// `text::faint()`.
+/// A card's note: in place of rows the selection cannot show (the layers
+/// disagree, or the card edits one at a time), or under a row, what it does or
+/// what holds it back. One sentence of [`SMALL_PT`] `text::faint()`, wrapped,
+/// without a closing period, as [`empty_note`]'s.
 pub fn selection_note(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add(
         egui::Label::new(
@@ -567,6 +577,54 @@ pub fn pill_shapes(
     let rect = align.anchor_size(at, g.size() + pad * 2.0);
     let ground = egui::Shape::rect_filled(rect, egui::CornerRadius::same(4), hue);
     (rect, [ground, egui::Shape::galley(rect.min + pad, g, ink)])
+}
+
+/// Between a [`canvas_pill_glyph`]'s glyph and its words.
+const PILL_GLYPH_GAP: f32 = 4.0;
+
+/// The size a [`canvas_pill_glyph`] saying `glyph` and `text` takes, for a
+/// caller that lays its pills out before painting them.
+pub fn canvas_pill_glyph_size(ctx: &egui::Context, glyph: &str, text: &str) -> egui::Vec2 {
+    let (g, t) = ctx.fonts_mut(|f| {
+        (
+            f.layout_no_wrap(
+                glyph.into(),
+                theme::icon_font(BADGE_PT),
+                egui::Color32::WHITE,
+            )
+            .size(),
+            f.layout_no_wrap(
+                text.into(),
+                egui::FontId::proportional(BADGE_PT),
+                egui::Color32::WHITE,
+            )
+            .size(),
+        )
+    });
+    egui::vec2(g.x + PILL_GLYPH_GAP + t.x, g.y.max(t.y)) + PILL_PAD * 2.0
+}
+
+/// A [`canvas_pill`] led by `glyph`, filling `rect` (sized by
+/// [`canvas_pill_glyph_size`]): a prototype flow's chip over its start frame.
+pub fn canvas_pill_glyph(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    glyph: &str,
+    text: &str,
+    hue: egui::Color32,
+) {
+    let ink = pill_ink(hue);
+    painter.rect_filled(rect, egui::CornerRadius::same(4), hue);
+    let g = painter.layout_no_wrap(glyph.to_owned(), theme::icon_font(BADGE_PT), ink);
+    let at = egui::pos2(rect.left() + PILL_PAD.x, rect.center().y - g.size().y / 2.0);
+    let gw = g.size().x;
+    painter.galley(at, g, ink);
+    let t = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(BADGE_PT), ink);
+    let at = egui::pos2(
+        at.x + gw + PILL_GLYPH_GAP,
+        rect.center().y - t.size().y / 2.0,
+    );
+    painter.galley(at, t, ink);
 }
 
 /// How strongly [`canvas_pill_led`] draws its typed lead: enough to read, plainly
@@ -1831,6 +1889,10 @@ pub const HEADING_PT: f32 = 17.0;
 /// segment's, a dropdown's leading glyph. The dropdown chevron is
 /// [`COMBO_CHEVRON_PT`].
 pub const CONTROL_GLYPH_PT: f32 = 15.0;
+
+/// Between the parts of a list row that opens a popover (grip, glyph, label,
+/// note): the Effects card's rows and the Interactions card's action rows.
+pub const LIST_ROW_GAP: f32 = 9.0;
 
 /// [`CONTROL_GLYPH_PT`]'s twin in a [`TOOLBAR_H`] control.
 pub const TOOLBAR_GLYPH_PT: f32 = 14.0;

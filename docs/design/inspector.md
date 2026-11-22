@@ -170,7 +170,7 @@ selection. Over several frames the grid card has three states:
 | --- | --- |
 | none has a grid | rests closed; `+` writes one grid to all |
 | all agree | shows the list; edits reach every frame in one undo step |
-| any differ | open with *Mixed layout grids. Add to override.* and no rows; `+` replaces every list |
+| any differ | open with *Mixed layout grids; add one to override them* and no rows; `+` replaces every list |
 
 Rows draw only when the frames agree, which makes the first frame a safe anchor for
 `PaintSlot::Grid(i)`. The detached picker closes when `shared_grids` answers `None`. The agreed list

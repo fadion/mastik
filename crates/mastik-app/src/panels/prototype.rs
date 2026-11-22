@@ -1336,7 +1336,7 @@ pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Op
             .copied()
             .find(|f| Some(*f) != own && !main(f))
             .or_else(|| all.iter().copied().find(|f| Some(*f) != own))
-            .or_else(|| own)
+            .or(own)
     };
     Some(match kind {
         ActionKind::Navigate => Action::Navigate {
@@ -1586,7 +1586,9 @@ pub(crate) fn with_link(
             return (list, at(rid, aid), true);
         }
         let aid = mint();
-        r.value.actions.push(Keyed::new(aid, navigate_to(doc, id, to)));
+        r.value
+            .actions
+            .push(Keyed::new(aid, navigate_to(doc, id, to)));
         return (list, at(rid, aid), false);
     }
     let (rid, aid) = (mint(), mint());
@@ -1819,11 +1821,8 @@ fn paint_link(
     ));
 }
 
-/// A flow chip's height on the canvas, and the gap it keeps above its frame.
-const FLOW_CHIP_H: f32 = 20.0;
+/// The gap a flow chip keeps above its frame.
 const FLOW_CHIP_GAP: f32 = 6.0;
-/// The air after a flow chip's words, to the pill's round end.
-const FLOW_CHIP_PAD_R: f32 = 9.0;
 /// The most variables the list `@` opens in an expression shows.
 const AT_LIST_MAX: usize = 12;
 /// The springs a timing offers by name, in the order the dropdown lists them.
@@ -1872,20 +1871,13 @@ impl MastikApp {
         let Some(info) = doc.page(page) else {
             return Vec::new();
         };
-        let font = egui::FontId::proportional(ui::SMALL_PT);
         let mut out: Vec<(mastik_core::prototype::FlowRef, egui::Rect, String)> = Vec::new();
         for f in &info.flows {
             let Some(frame) = self.selection_quad(f.start, rect, ppp).map(quad_box) else {
                 continue;
             };
             let words = crate::private::flow(&f.name, out.len()).into_owned();
-            let text_w = ui.fonts_mut(|fx| {
-                fx.layout_no_wrap(words.clone(), font.clone(), egui::Color32::WHITE)
-                    .size()
-                    .x
-            });
-            // The glyph's room on the left, the words, and air on the right.
-            let w = text_w + 22.0 + FLOW_CHIP_PAD_R;
+            let size = ui::canvas_pill_glyph_size(ui.ctx(), icon::PLAY, &words);
             // Leftward of any chip this frame already wears.
             let right = out
                 .iter()
@@ -1897,7 +1889,7 @@ impl MastikApp {
                 .map(|(_, c, _)| c.left() - 4.0)
                 .fold(frame.right(), f32::min);
             let chip = egui::Rect::from_min_max(
-                egui::pos2(right - w, frame.top() - FLOW_CHIP_GAP - FLOW_CHIP_H),
+                egui::pos2(right - size.x, frame.top() - FLOW_CHIP_GAP - size.y),
                 egui::pos2(right, frame.top() - FLOW_CHIP_GAP),
             );
             let r = mastik_core::prototype::FlowRef { page, flow: f.id };
@@ -1926,7 +1918,6 @@ impl MastikApp {
     /// [`FLOW_CHIP_QUIET`] of it.
     fn draw_flow_chips(&self, ui: &egui::Ui, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
         let hover = ui.ctx().pointer_hover_pos();
-        let ink = ui::pill_ink(color::BADGE);
         let first = self
             .session
             .doc
@@ -1938,29 +1929,11 @@ impl MastikApp {
                 true => color::BADGE,
                 false => color::BADGE.gamma_multiply(FLOW_CHIP_QUIET),
             };
-            painter.rect_filled(
-                chip,
-                FLOW_CHIP_H / 2.0,
-                match lit {
-                    true => ground.blend(egui::Color32::from_white_alpha(26)),
-                    false => ground,
-                },
-            );
-            // text-ink: words on the chip's badge blue, in the badges' own ink.
-            painter.text(
-                egui::pos2(chip.left() + 13.0, chip.center().y),
-                egui::Align2::CENTER_CENTER,
-                icon::PLAY,
-                theme::icon_font(10.0),
-                ink,
-            );
-            painter.text(
-                egui::pos2(chip.left() + 22.0, chip.center().y),
-                egui::Align2::LEFT_CENTER,
-                words,
-                egui::FontId::proportional(ui::SMALL_PT),
-                ink,
-            );
+            let hue = match lit {
+                true => ground.blend(egui::Color32::from_white_alpha(26)),
+                false => ground,
+            };
+            ui::canvas_pill_glyph(painter, chip, icon::PLAY, &words, hue);
         }
     }
 
@@ -2095,7 +2068,11 @@ impl MastikApp {
         let Some(at) = self.proto.open.filter(|_| self.prototype_mode) else {
             return false;
         };
-        let Some(mut reactions) = self.session.doc.get(at.node).map(|n| n.reactions().to_vec())
+        let Some(mut reactions) = self
+            .session
+            .doc
+            .get(at.node)
+            .map(|n| n.reactions().to_vec())
         else {
             return false;
         };
@@ -2414,7 +2391,11 @@ impl MastikApp {
         let session = &mut self.session;
         let (list, at, moved) = with_link(&session.doc, from, to, &mut || session.ids.mint_item());
         let target = name(&self.session.doc, to);
-        let label = if moved { "Change action" } else { "Add interaction" };
+        let label = if moved {
+            "Change action"
+        } else {
+            "Add interaction"
+        };
         self.write_reactions(from, list, label, icon::INTERACTION);
         // Open where it can be set further, as a click on a connector does.
         if self.session.doc.get(from).is_some_and(|n| {
@@ -2608,9 +2589,6 @@ const PLACING_ALPHA: f32 = 0.5;
 /// How far either side of a scroll trigger's line a press takes it, in screen
 /// points: the line is a hairline, so it needs a band to be grabbed.
 const PAST_REACH: f32 = 4.0;
-/// The knob on a scroll trigger's line's leading end, its radius in screen
-/// points: the link dots' size, so the two read as one family.
-const PAST_KNOB_R: f32 = 4.0;
 /// The dash of prototype mode's marks: lines that stand for a place, not ink.
 const MARK_DASH: f32 = 4.0;
 const MARK_GAP: f32 = 3.0;
@@ -2839,7 +2817,21 @@ impl MastikApp {
             let hot = dragged == Some(mark) || hover.is_some_and(|p| band.contains(p));
             let stroke = egui::Stroke::new(if hot { 2.0 } else { 1.0 }, color::SELECT);
             dashed(&[a, b], stroke);
-            painter.circle_filled(a, PAST_KNOB_R, color::SELECT);
+            // Painted as a link dot is, at rest and taken.
+            match hot {
+                true => painter.circle(
+                    a,
+                    KNOB_HOT_R,
+                    color::SELECT,
+                    egui::Stroke::new(1.5, color::POINT),
+                ),
+                false => painter.circle(
+                    a,
+                    KNOB_R,
+                    color::POINT,
+                    egui::Stroke::new(1.5, color::SELECT),
+                ),
+            };
             let (tag_at, align) = match side {
                 true => (b + egui::vec2(0.0, 4.0), egui::Align2::CENTER_TOP),
                 false => (b + egui::vec2(4.0, 0.0), egui::Align2::LEFT_CENTER),
@@ -3149,7 +3141,10 @@ impl MastikApp {
                 },
             ));
             self.session.name_step("Add flow", icon::INTERACTION);
-            self.commit_edit(Transaction(vec![Operation::SetFlows { id: page, flows: list }]));
+            self.commit_edit(Transaction(vec![Operation::SetFlows {
+                id: page,
+                flows: list,
+            }]));
         }
     }
 
@@ -3165,25 +3160,36 @@ impl MastikApp {
         self.panel(ui, "Interaction states", None, |_, ui| {
             for (state, value) in &rows {
                 let w = ui.available_width();
-                ui.allocate_ui_with_layout(
-                    egui::vec2(w, ui::CONTROL_H),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.label(
-                            egui::RichText::new(*state)
-                                .size(ui::SMALL_PT)
-                                .color(theme::text::strong()),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let rect = ui
+                    .allocate_ui_with_layout(
+                        egui::vec2(w, ui::CONTROL_H),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
                             ui.label(
-                                egui::RichText::new("plays live")
-                                    .size(ui::CAPTION_PT)
-                                    .color(theme::text::faint()),
+                                egui::RichText::new(*state)
+                                    .size(ui::CONTROL_PT)
+                                    .color(theme::text::strong()),
                             );
-                        });
-                    },
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new("plays live")
+                                            .size(ui::CAPTION_PT)
+                                            .color(theme::text::faint()),
+                                    );
+                                },
+                            );
+                        },
+                    )
+                    .response
+                    .rect;
+                // A scope's response is never hovered; the row's own area is.
+                ui.interact(
+                    rect,
+                    ui.id().with(("live-state", *state)),
+                    egui::Sense::hover(),
                 )
-                .response
                 .on_hover_text(format!(
                     "The player shows {value} while it is {}, with no interaction",
                     match *state {
@@ -3387,7 +3393,10 @@ impl MastikApp {
         // --- the head: trigger, `+`, `⋯` ------------------------------------
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = COL;
-            let slot = if state.is_some() { 14.0 + COL } else { 0.0 };
+            let slot = match state {
+                Some(_) => super::component::ITEM_SLOT_W + COL,
+                None => 0.0,
+            };
             let w = ui.available_width() - 2.0 * (h + COL) - slot;
             if capturing {
                 if let Some(t) = self.key_capture(ui, w) {
@@ -3579,18 +3588,20 @@ impl MastikApp {
                         .unwrap_or_else(|| "Missing snap point".into()),
                 };
                 let mut pick = None;
-                ui::labelled(ui, "At", |ui| {
-                    let w = ui.available_width();
-                    let face = ui::glyph_and_text(icon::CROSSHAIR_SIMPLE, &shown);
-                    ui::fitted_combo(ui, ("drop-at", r.id), w, face, &shown, |ui| {
-                        ui::menu_rows(ui);
-                        for (o, n) in &options {
-                            if ui.selectable_label(*o == at, n).clicked() && *o != at {
-                                pick = Some(*o);
-                            }
+                // Bare, as a trigger's other choices are: the glyph says a point.
+                let w = ui.available_width();
+                let face = ui::glyph_and_text(icon::CROSSHAIR_SIMPLE, &shown);
+                ui::fitted_combo(ui, ("drop-at", r.id), w, face, &shown, |ui| {
+                    ui::menu_rows(ui);
+                    for (o, n) in &options {
+                        let row = ui::MenuRow::new("", n).selected(*o == at);
+                        if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() && *o != at {
+                            pick = Some(*o);
                         }
-                    });
-                });
+                    }
+                })
+                .response
+                .on_hover_text("Where it is let go for the actions to run");
                 if let Some(at) = pick {
                     out.write = Some((
                         with(&|x: &mut Reaction| x.trigger = Trigger::Drop { at }),
@@ -3726,8 +3737,7 @@ impl MastikApp {
         if r.actions.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(NEST);
-                let add =
-                    crate::settings::text_button(ui, "Add an action", FieldButton::Off);
+                let add = crate::settings::text_button(ui, "Add an action", FieldButton::Off);
                 if let Some(k) = self.add_action_menu(&add, id, &r.trigger) {
                     add_place = Some((Place::Top, k));
                 }
@@ -3820,6 +3830,20 @@ impl MastikApp {
         let mut pick = None;
         let current = r.trigger.clone();
         let face = ui::glyph_and_text(icon::INTERACTION, &label);
+        // A row of the list, dimmed with its reason where it cannot apply.
+        let row = |ui: &mut egui::Ui, label: &str, on: bool, why: Option<&str>| {
+            let r = ui::menu_row(
+                ui,
+                ui::MenuRow::new("", label)
+                    .selected(on)
+                    .enabled(why.is_none()),
+                ui::MENU_ROW_H,
+            );
+            match why {
+                Some(w) => r.on_disabled_hover_text(w),
+                None => r,
+            }
+        };
         ui::fitted_combo(ui, ("trigger", r.id), w, face, &label, |ui| {
             ui::menu_rows(ui);
             ui::menu_eyebrow(ui, "Pointer");
@@ -3830,17 +3854,14 @@ impl MastikApp {
                     Trigger::Swipe { .. } => "On swipe".into(),
                     _ => trigger_label(doc, id, &t),
                 };
-                if ui.selectable_label(on, label).clicked() && !on {
+                if row(ui, &label, on, None).clicked() && !on {
                     pick = Some(TriggerPick::Set(t));
                 }
             }
             let follows = doc.get(id).is_some_and(|n| n.play().follow.is_some());
             let on = matches!(current, Trigger::Drop { .. });
-            let row = ui.add_enabled_ui(follows, |ui| ui.selectable_label(on, "On drop"));
-            let row = row
-                .inner
-                .on_disabled_hover_text("Only a layer that follows the drag drops");
-            if row.clicked() && !on {
+            let why = (!follows).then_some("Only a layer that follows the drag drops");
+            if row(ui, "On drop", on, why).clicked() && !on {
                 pick = Some(TriggerPick::Set(Trigger::Drop {
                     at: DropAt::Anywhere,
                 }));
@@ -3848,32 +3869,26 @@ impl MastikApp {
             ui::menu_sep(ui);
             ui::menu_eyebrow(ui, "Other");
             let on = matches!(current, Trigger::Key { .. });
-            if ui.selectable_label(on, "Key…").clicked() {
+            if row(ui, "Key…", on, None).clicked() {
                 pick = Some(TriggerPick::Key);
             }
             let on = matches!(current, Trigger::After { .. });
-            if ui.selectable_label(on, "After delay").clicked() && !on {
+            if row(ui, "After delay", on, None).clicked() && !on {
                 pick = Some(TriggerPick::Set(Trigger::After { ms: 1000 }));
             }
             let on = matches!(current, Trigger::VariableChanges { .. });
-            let row = ui.add_enabled_ui(first_var.is_some(), |ui| {
-                ui.selectable_label(on, "When a variable changes")
-            });
-            let row = row
-                .inner
-                .on_disabled_hover_text("This document has no variables");
-            if row.clicked()
+            let why = first_var
+                .is_none()
+                .then_some("This document has no variables");
+            if row(ui, "When a variable changes", on, why).clicked()
                 && !on
                 && let Some(var) = first_var
             {
                 pick = Some(TriggerPick::Set(Trigger::VariableChanges { var }));
             }
             let on = matches!(current, Trigger::ScrollPast { .. });
-            let row = ui.add_enabled_ui(first_scroller.is_some(), |ui| {
-                ui.selectable_label(on, "When scrolled past")
-            });
-            let row = row.inner.on_disabled_hover_text("No frame here scrolls");
-            if row.clicked()
+            let why = first_scroller.is_none().then_some("No frame here scrolls");
+            if row(ui, "When scrolled past", on, why).clicked()
                 && !on
                 && let Some(frame) = first_scroller
             {
@@ -3884,11 +3899,8 @@ impl MastikApp {
                 }));
             }
             let on = matches!(current, Trigger::FrameOpens);
-            let row = ui.add_enabled_ui(a_screen, |ui| {
-                ui.selectable_label(on, "When the frame opens")
-            });
-            let row = row.inner.on_disabled_hover_text("Only a frame opens");
-            if row.clicked() && !on {
+            let why = (!a_screen).then_some("Only a frame opens");
+            if row(ui, "When the frame opens", on, why).clicked() && !on {
                 pick = Some(TriggerPick::Set(Trigger::FrameOpens));
             }
         });
@@ -4207,8 +4219,9 @@ impl MastikApp {
                 ui.add_space(indent);
                 let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
                 // The grip and × sit over the row's press and keep their own.
+                // Laid out as an Effects row is: its gap, glyph and label sizes.
                 let (_, resp) = ui::field_row_pressable(ui, size, open, true, |ui, _| {
-                    ui.spacing_mut().item_spacing.x = COL;
+                    ui.spacing_mut().item_spacing.x = ui::LIST_ROW_GAP;
                     let g = ui::grip(ui, reorderable, size.y);
                     out.grabbed = g.drag_started();
                     let ink = match missing {
@@ -4220,13 +4233,14 @@ impl MastikApp {
                     } else {
                         kind.glyph()
                     };
-                    ui.label(theme::icon_text(glyph, 14.0, ink));
-                    let verb = egui::RichText::new(verb)
-                        .size(ui::SMALL_PT)
-                        .color(match missing {
-                            Some(_) => color::error(),
-                            None => theme::text::strong(),
-                        });
+                    ui.label(theme::icon_text(glyph, ui::CONTROL_GLYPH_PT, ink));
+                    let verb =
+                        egui::RichText::new(verb)
+                            .size(ui::CONTROL_PT)
+                            .color(match missing {
+                                Some(_) => color::error(),
+                                None => theme::text::strong(),
+                            });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui::icon_button(
                             ui,
@@ -4352,20 +4366,9 @@ impl MastikApp {
                     ui.set_width(inner);
                     ui.spacing_mut().item_spacing.y = ui::POPOVER_SECTION_GAP;
                     // --- head: the verb, moves, close ---------------------------
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.label(theme::icon_text(
-                            kind.glyph(),
-                            ui::CONTROL_GLYPH_PT,
-                            theme::text::muted(),
-                        ));
-                        ui.label(ui::eyebrow(kind.label()));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui::close_button(ui).clicked() {
-                                close = true;
-                            }
-                        });
-                    });
+                    if ui::popover_head_glyph(ui, Some(kind.glyph()), kind.label()) {
+                        close = true;
+                    }
                     if let Some(e) = self.action_fields(ui, id, &r.trigger, &k, inner) {
                         edit = Some(e);
                     }
@@ -4579,11 +4582,11 @@ impl MastikApp {
                     };
                     let note = match (by_width, scope_new) {
                         (true, _) => format!(
-                            "{} picks its mode by width; setting it holds {mode_name} at any width.",
+                            "{} picks its mode by width; setting it holds {mode_name} at any width",
                             c.name
                         ),
                         (false, ModeScope::Everywhere) => {
-                            format!("Frames that set their own {} mode keep it.", c.name)
+                            format!("Frames that set their own {} mode keep it", c.name)
                         }
                         (false, ModeScope::Screen) => String::new(),
                     };
@@ -4777,7 +4780,7 @@ impl MastikApp {
                 }
                 ui::selection_note(
                     ui,
-                    "Numbers take + − × ÷; text joins with +; and, or, not and comparisons test. Write a variable as {name}",
+                    "Numbers take + − × ÷; text joins with +; and, or, not and comparisons test; type @ for a variable",
                 );
             }
             Action::OpenUrl { url } => {
@@ -4848,7 +4851,8 @@ impl MastikApp {
                             |ui| {
                                 ui::menu_rows(ui);
                                 for n in &names {
-                                    if ui.selectable_label(false, n).clicked() {
+                                    let row = ui::MenuRow::new("", n);
+                                    if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
                                         copy = Some(n.clone());
                                     }
                                 }
@@ -5115,15 +5119,22 @@ impl MastikApp {
                     .find(|(_, p)| *p == t)
                     .map_or("Custom", |(l, _)| *l);
                 let mut preset = None;
-                ui::fitted_combo(ui, ("spring-feel", salt), w, ui::combo_text(shown), shown, |ui| {
-                    ui::menu_rows(ui);
-                    for (l, p) in SPRING_PRESETS {
-                        let on = shown == l;
-                        if ui.selectable_label(on, l).clicked() && !on {
-                            preset = Some(p);
+                ui::fitted_combo(
+                    ui,
+                    ("spring-feel", salt),
+                    w,
+                    ui::combo_text(shown),
+                    shown,
+                    |ui| {
+                        ui::menu_rows(ui);
+                        for (l, p) in SPRING_PRESETS {
+                            let on = shown == l;
+                            if ui.selectable_label(on, l).clicked() && !on {
+                                preset = Some(p);
+                            }
                         }
-                    }
-                })
+                    },
+                )
                 .response
                 .on_hover_text("How the spring feels");
                 if let Some(p) = preset {
@@ -6542,7 +6553,7 @@ impl MastikApp {
             next = Some((list, "Add flow"));
         }
         if let Some((flows, label)) = next {
-            self.session.name_step(label, icon::PLAY);
+            self.session.name_step(label, icon::INTERACTION);
             self.commit_edit(Transaction(vec![Operation::SetFlows { id: page, flows }]));
         }
     }
@@ -6757,8 +6768,8 @@ impl MastikApp {
                     ui.spacing_mut().item_spacing.x = COL;
                     ui::fitted_combo(ui, ("device", page), combo_w, face, &shown, |ui| {
                         ui::menu_rows(ui);
-                        if ui.selectable_label(play.device.is_none(), "None").clicked()
-                            && play.device.is_some()
+                        let none = ui::MenuRow::new("", "None").selected(play.device.is_none());
+                        if ui::menu_row(ui, none, ui::MENU_ROW_H).clicked() && play.device.is_some()
                         {
                             pick = Some(None);
                         }
@@ -6770,7 +6781,10 @@ impl MastikApp {
                             ui::menu_eyebrow(ui, group);
                             for (n, pw, ph) in entries.iter() {
                                 let on = play.device.as_deref() == Some(*n);
-                                let row = ui.selectable_label(on, format!("{n}, {pw} × {ph}"));
+                                // The size is the row's note, as Scaling's meanings are.
+                                let size = format!("{pw} × {ph}");
+                                let row = ui::MenuRow::new("", n).note(&size).selected(on);
+                                let row = ui::menu_row(ui, row, ui::MENU_ROW_H);
                                 if row.clicked() && !on {
                                     pick = Some(Some((*n).to_string()));
                                 }
@@ -6837,7 +6851,7 @@ impl MastikApp {
                 .and_then(mastik_core::presets::device_size)
                 .filter(|_| play.landscape);
             if let (Some(d), Some(name)) = (turned, play.device.as_deref()) {
-                ui::selection_note(ui, &format!("{name}, turned: {} × {}.", d.height, d.width));
+                ui::selection_note(ui, &format!("{name}, turned: {} × {}", d.height, d.width));
             }
             if turned.is_some() || play.scaling == Scaling::Responsive {
                 let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
@@ -6849,7 +6863,7 @@ impl MastikApp {
                     ui::selection_note(
                         ui,
                         &format!(
-                            "{}'s start frame has no layout; it keeps its children where drawn.",
+                            "{}'s start frame has no layout; it keeps its children where drawn",
                             f.value.name
                         ),
                     );
@@ -7243,7 +7257,9 @@ mod tests {
         assert!(f.app.proto.open.is_none(), "its popover closes");
         assert!(f.app.session.undo());
         assert_eq!(
-            f.app.session.doc.get(f.add).unwrap().reactions()[0].actions.len(),
+            f.app.session.doc.get(f.add).unwrap().reactions()[0]
+                .actions
+                .len(),
             1,
             "one step"
         );
@@ -7289,7 +7305,11 @@ mod tests {
         );
         let (twice, second, moved) = with_link(&f.app.session.doc, f.add, f.home, &mut mint);
         assert_eq!(twice.len(), 1, "one click reaction");
-        assert_eq!(twice[0].actions.len(), 1, "the second link replaces the first");
+        assert_eq!(
+            twice[0].actions.len(),
+            1,
+            "the second link replaces the first"
+        );
         assert!(moved && second == first, "retargeted in place");
         let Action::Navigate { to, .. } = &twice[0].actions[0].value else {
             panic!("fixture: a navigation");

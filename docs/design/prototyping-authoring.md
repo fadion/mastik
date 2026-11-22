@@ -84,7 +84,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   | *When a variable changes* | a variable dropdown | *When ‹variable› changes* |
   | *On long press* | *Hold* (ms, new at 500, 100 to 10 000) | *On long press* |
   | *On swipe* | a *Left · Right · Up · Down* `ui::segmented` | *On swipe left* |
-  | *On drop* | *At*, a dropdown behind `icon::CROSSHAIR_SIMPLE`: *Anywhere*, and under *Release* *Snaps* also the drawn point by its name (`drawn_point`) and each snap point; its face names the trigger's point as the head does, offered or not | *On drop anywhere*, *On drop at Closed*, *On drop at a missing snap point* |
+  | *On drop* | a dropdown behind `icon::CROSSHAIR_SIMPLE`, unlabelled as a trigger's other choices are (a number takes a prefix; a choice says what it holds by its glyph and tooltip): *Anywhere*, and under *Release* *Snaps* also the drawn point by its name (`drawn_point`) and each snap point; its face names the trigger's point as the head does, offered or not | *On drop anywhere*, *On drop at Closed*, *On drop at a missing snap point* |
   | *When scrolled past* | a frame dropdown (the scrolling frames at or above the layer, nearest first, then the rest of its screen's); *Past* (px, new at 100); which way, a *Down · Up · Either* `ui::segmented` (*Right · Left · Either* on a sideways frame) | *When Feed scrolls past 240*, *… going up*, *… either way* |
 - ***Key…* captures the next key**: a focused field, *Press a key*, takes the next plain or
   `Shift`-ed key as the trigger (its `egui::Key` name). A `Ctrl` or `Alt` chord is refused, those
@@ -120,8 +120,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 
   It opens its popover at once, except *Back*, which has nothing to set.
 - **An action is one row**, a `ui::field_row_pressable` that opens its popover (*Back*'s opens
-  none, having nothing to set, and says what it does under the pointer): a grip, its
-  glyph, its verb, its target in accent ink, its transition's kind alone (`transition_chip`; the
+  none, having nothing to set, and says what it does under the pointer), laid out as an Effects
+  row is (`ui::LIST_ROW_GAP`, the glyph at `CONTROL_GLYPH_PT`, the verb at `CONTROL_PT`): a grip,
+  its glyph, its verb, its target in accent ink at `SMALL_PT`, its transition's kind alone (`transition_chip`; the
   timing and *Keeps scroll* are the popover's, for the room) as a faint caption note as a menu
   row's accelerator is, and `×`; the grip and `×` keep their own press. The verb and the target
   share what the kind and `×` leave, the verb first, each cut rather than run under the kind; a
@@ -364,7 +365,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   as a dashed `color::SELECT` outline of its box at the point's offset with the point's name on
   a `color::BADGE` pill above (`snap_ghosts`); the drawn point is the layer itself. A scroll
   trigger (only the picked block's, while one is picked) shows its point as a dashed line across
-  its frame at that offset from the frame's top (from its left, sideways), a `PAST_KNOB_R` knob
+  its frame at that offset from the frame's top (from its left, sideways), a knob painted as a
+  link dot is (`KNOB_R`, `POINT` ringed in `SELECT`; taken, `KNOB_HOT_R` the other way round)
   at its leading end and the number on a pill at the other (`past_lines`); a horizontal frame's
   runs top to bottom. Each is
   heavier under the pointer or while dragged, and a press on one (a ghost's box, or within
@@ -376,9 +378,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   (`drop_proto_mark`), and a cancel writes nothing. The marks are hit as drawn last frame
   (`ProtoState::marks_drawn`); the card's fields still hold the numbers.
 - **Flow chips** (`flow_chips`), in prototype mode: each flow's name behind the
-  `PLAY` glyph on a pill (`ui::pill_ink(BADGE)` ink) over its start frame's top-right corner,
-  `FLOW_CHIP_PAD_R` (9) of air after the words, several on one frame stacked leftward. The page's
-  first flow, the one Play opens, wears `color::BADGE` (the canvas badges' blue); the others
+  `PLAY` glyph on the canvas's own pill (`ui::canvas_pill_glyph`: `BADGE_PT`, `PILL_PAD`, 4pt
+  corners) over its start frame's top-right corner, several on one frame stacked leftward. The
+  page's first flow, the one Play opens with no frame selected, wears `color::BADGE` (the canvas badges' blue); the others
   `FLOW_CHIP_QUIET` (0.55) of it. Under the pointer it lifts by a white wash at alpha 26, as the
   crop's *Done* pill does. A click plays that flow over the canvas (`prototyping-player.md`); a
   right-click opens its menu (`context-menus.md` §6.12). Private mode masks the names.

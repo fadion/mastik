@@ -7550,7 +7550,7 @@ impl MastikApp {
         let mut next: Option<Vec<Keyed<LayoutGrid>>> = None;
         let add = self.panel(ui, "Layout grid", action, |app, ui| {
             let Some(grids) = shared.clone() else {
-                ui::selection_note(ui, "Mixed layout grids. Add to override.");
+                ui::selection_note(ui, "Mixed layout grids; add one to override them");
                 return;
             };
             let source = match subjects.as_slice() {
@@ -10649,7 +10649,7 @@ impl MastikApp {
                                     color::hover(),
                                 );
                             }
-                            ui.spacing_mut().item_spacing.x = 9.0;
+                            ui.spacing_mut().item_spacing.x = ui::LIST_ROW_GAP;
                             // The paint rows' grip; only the start is read, since a
                             // carried row's responses are empty.
                             let grip = ui::grip(ui, reorderable, size.y);
@@ -10657,7 +10657,7 @@ impl MastikApp {
                             grip_right = grip.rect.right();
                             ui.label(theme::icon_text(
                                 effect_glyph(&effect.kind),
-                                15.0,
+                                ui::CONTROL_GLYPH_PT,
                                 theme::text::muted(),
                             ));
                             ui.label(
@@ -10671,9 +10671,16 @@ impl MastikApp {
                                     if let Some(state) = item {
                                         out.reset = super::component::item_slot(ui, state, hot);
                                     }
-                                    if icon_button(ui, icon::X, CLOSE_W, 13.0, false, true)
-                                        .on_hover_text("Remove")
-                                        .clicked()
+                                    if icon_button(
+                                        ui,
+                                        icon::X,
+                                        CLOSE_W,
+                                        ui::CLOSE_GLYPH_PT,
+                                        false,
+                                        true,
+                                    )
+                                    .on_hover_text("Remove")
+                                    .clicked()
                                     {
                                         out.remove = true;
                                     }
@@ -10693,7 +10700,7 @@ impl MastikApp {
                     hit.min.x = hit.min.x.max(grip_right);
                     hit.max.x -= CLOSE_W + ui::FIELD_PAD_X;
                     if item.is_some() {
-                        hit.max.x -= 14.0 + 9.0;
+                        hit.max.x -= super::component::ITEM_SLOT_W + ui::LIST_ROW_GAP;
                     }
                     let resp = ui
                         .interact(
@@ -10742,7 +10749,7 @@ impl MastikApp {
         /// The control height inside a popover.
         const CELL: f32 = ui::CONTROL_H;
         /// Between two fields on one line, as in the stroke popover.
-        const COL: f32 = 6.0;
+        const COL: f32 = ui::CARD_COL_GAP;
         /// The largest a `Filters` factor goes: twice its neutral, so the
         /// centre-growing meter is the same scale on both sides.
         const MAX_FACTOR: f64 = 2.0;
@@ -21254,7 +21261,7 @@ mod rhythm_tests {
         assert!(!collapsed, "a disagreement must be visible to be explained");
         assert!(
             said.iter()
-                .any(|t| t == "Mixed layout grids. Add to override."),
+                .any(|t| t == "Mixed layout grids; add one to override them"),
             "the mixed card said {said:?}"
         );
         let (_, collapsed) = grid_panel_pass(&ctx, &mut app, true);
