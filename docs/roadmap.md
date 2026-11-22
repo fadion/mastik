@@ -15,6 +15,11 @@ remains is below.
 - **Charts reading a data set.** A chart could read one of the document's data sets
   (`design/lists.md`) instead of its own table, so a chart and a list over one file update
   together.
+- **Variable autocomplete on `{`.** An expression names a variable as `{name}`
+  (`Expr::with_names`), and `@` already opens a list of the document's variables that writes one
+  (`at_names` in `panels/prototype.rs`), but typing `{`, which is what the written form and the
+  condition's note (*Write a variable as {name}*) teach, suggests nothing. `{` should open the same
+  list, narrowing as the name is typed and closing on `}`; the note should name the shortcut.
 
 ## Next · Editing parity
 
