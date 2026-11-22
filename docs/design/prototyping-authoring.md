@@ -285,10 +285,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   drawn.*); it is quiet when nothing differs.
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its
   start among the page's frames, a `ui::field_button` `×` to remove (as every removal in the
-  tab is), each flow after the first under a `ui::card_rule`. The first row, the flow Play opens,
-  wears `accent_400` on its name field's leading edge: the field's own rounded outline,
-  `FIRST_FLOW_BAR` (3) thick, kept to its left corners so it wraps them, tipped *Play opens this flow
-  first*. With none, the card says *A flow is where the exported prototype starts; add one with
+  tab is), each flow after the first under a `ui::card_rule`. The first row, the flow Play opens
+  with no frame selected, wears `accent_400` on its name field's leading edge: the field's own
+  rounded outline, `FIRST_FLOW_BAR` (3) thick, kept to its left corners so it wraps them, tipped
+  *Play opens this flow when no frame is selected*. With none, the card says *A flow is where the exported prototype starts; add one with
   +*. `+` adds *Flow n* (`free_flow_name`: n the first number from the flow count plus one that
   no flow is named by) starting at the page's first frame, dimmed with no frame. Under each flow, its starting modes (`flow_modes`): a row per
   mode, its collection (as *Set mode*'s, less those another row names) and its mode, and `×`;

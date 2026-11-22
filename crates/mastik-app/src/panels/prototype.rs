@@ -6554,7 +6554,7 @@ impl MastikApp {
                         ui.id().with("first-flow"),
                         egui::Sense::hover(),
                     )
-                    .on_hover_text("Play opens this flow first");
+                    .on_hover_text("Play opens this flow when no frame is selected");
                 }
                 if let Some(modes) = app.flow_modes(ui, f) {
                     let list = flows
