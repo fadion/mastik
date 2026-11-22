@@ -809,8 +809,7 @@ fn bar(
                         (true, true) => "Turn to portrait",
                         (true, false) => "Turn to landscape",
                     };
-                    let r =
-                        ui::icon_button(ui, icon::ROTATE_RIGHT, size, glyph, turned && can, can);
+                    let r = ui::icon_button(ui, icon::TURN_DEVICE, size, glyph, turned && can, can);
                     let r = match can {
                         true => r.on_hover_text(tip),
                         false => r.on_disabled_hover_text(tip),

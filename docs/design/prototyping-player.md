@@ -61,7 +61,7 @@ otherwise the player returns over the canvas).
   size* play it as drawn, never wider than the room; *Responsive* places as *Fit*. Over the
   canvas the card is sized from the screen, so there a screen with no device plays as drawn.
 - **Turning**: a page's device plays on its side when the page is turned or the bar's
-  `ROTATE_RIGHT` button turned it for this run (`Playing::turned`, play state, never the
+  `TURN_DEVICE` button turned it for this run (`Playing::turned`, play state, never the
   document's); the screen is laid out at the turned size, never a rotated picture. The button
   sits before *Open in a window*, lit while turned, tipped *Turn to landscape* / *Turn to
   portrait*, dimmed with *Pick a device to turn* on a page with none.

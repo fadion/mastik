@@ -6980,7 +6980,7 @@ impl MastikApp {
                         (true, true) => "Turn to portrait",
                         (true, false) => "Turn to landscape",
                     };
-                    let turn = ui::field_button(ui, icon::ROTATE_RIGHT, ui::CONTROL_H, state);
+                    let turn = ui::field_button(ui, icon::TURN_DEVICE, ui::CONTROL_H, state);
                     let turn = match can {
                         true => turn.on_hover_text(tip),
                         false => turn.on_disabled_hover_text(tip),

@@ -280,7 +280,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   ticking does while it is bound, and while it is not, what binding would do (*Bind a string
   variable to type into it while playing*).
 - **The page** (nothing selected): *Device* (*None*, then the phone and tablet frame templates by name, each group under its
-  `ui::menu_eyebrow`) with a `ROTATE_RIGHT` field button beside it, on while the device is
+  `ui::menu_eyebrow`) with a `TURN_DEVICE` field button beside it, on while the device is
   turned (*Turn to landscape* / *Turn to portrait*, a *Turn device* step; dimmed with *Pick a
   device to turn*), then *Scaling* (`scaling_combo`, a dropdown whose rows carry their meaning
   in the accelerator's place: *Fit*, *Fill width*, *Actual size*, *Responsive*), and *Default transition*,

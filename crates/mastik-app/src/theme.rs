@@ -1363,6 +1363,10 @@ pub mod icon {
     /// The player's *Play on a phone*: a handset with its speaker slot. Not
     /// [`DEVICES`], which is picking a mode by width.
     pub const PHONE: &str = "\u{f091}";
+    /// Turning a prototype's device on its side: an upright handset with a
+    /// quarter-turn arrow over its shoulder. Not [`ROTATE_RIGHT`], which turns a
+    /// layer, nor [`PHONE`], which plays on one.
+    pub const TURN_DEVICE: &str = "\u{f092}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1703,6 +1707,7 @@ pub mod icon {
         ("conditional", CONDITIONAL),
         ("record", RECORD),
         ("phone", PHONE),
+        ("turn-device", TURN_DEVICE),
     ];
 }
 
