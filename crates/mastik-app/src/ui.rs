@@ -8263,9 +8263,9 @@ pub fn paint_chip_ring(p: &egui::Painter, rect: egui::Rect, radius: impl Into<eg
     );
 }
 
-/// [`paint_chip_ring`] in `text::faint`, for a group of rows marked rather than
-/// chosen (the Interactions card's block picked on the canvas): the accent
-/// would outshout the controls inside it.
+/// [`paint_chip_ring`] in `color::card_border`, for a group of rows marked rather
+/// than chosen (the Interactions card's block picked on the canvas): the accent,
+/// or any ink as bright as text, would outshout the controls inside it.
 pub fn paint_quiet_ring(
     p: &egui::Painter,
     rect: egui::Rect,
@@ -8274,7 +8274,7 @@ pub fn paint_quiet_ring(
     p.rect_stroke(
         rect,
         radius,
-        egui::Stroke::new(1.5, theme::text::faint()),
+        egui::Stroke::new(1.5, theme::color::card_border()),
         egui::StrokeKind::Outside,
     );
 }

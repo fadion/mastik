@@ -31,7 +31,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   names one) starting there, an *Add flow* step.
 - **Every edit is one transaction** on the saved model through `commit_edit`, named as its
   neighbours: *Add interaction*, *Change trigger*, *Add action*, *Change action*, *Set
-  transition*, *Move action*, *Remove action*, *Duplicate interaction*, *Paste interaction*,
+  transition*, *Move action*, *Remove action*, *Duplicate interaction*, *Paste interactions*,
   *Remove interaction*,
   *Scrolling*, *Overlay*, *Pin*, *Input*, *Add scroll effect*, *Scroll effect*, *Remove scroll
   effect*, *Dragging*, *Add snap point*, *Rename snap point*,
@@ -54,12 +54,11 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   those states with nothing authored (`play.md`), and the card says so, so no one writes *While
   hovering → Change to* for it.
 - **One block per reaction**: the trigger's dropdown, `+` (add an action) and `⋯` (*Duplicate*
-  in `COPY_SIMPLE` and *Copy interaction* in `COPY`, the glyphs the app's own Duplicate and Copy
-  wear, then *Remove*, a danger row in `TRASH`, as its *Remove interaction* step is named), then
-  its actions top to bottom; a `ui::card_rule` parts one block from the next. The card's own `+`
-  adds *On click* with no actions; a block with no actions shows an *Add an action* text button
-  (`settings::text_button`) under its trigger, opening the head `+`'s menu. With no interactions
-  the card says *Drag a dot on the layer's edge onto a frame, or add an interaction with +*. The
+  in `COPY_SIMPLE`, the glyph the app's own Duplicate wears, a rule, then *Remove*, a danger row
+  in `TRASH`, as its *Remove interaction* step is named), then its actions top to bottom; a
+  `ui::card_rule` parts one block from the next. The card's own `+` adds *On click* with no
+  actions, which the block's head `+` then fills. With no interactions the card says *Drag a
+  dot on the layer's edge onto a frame, or add an interaction with +*. The
   add and `⋯` menus are as wide as their longest row (`ui::menu_width`).
 - **A picked block** (`ProtoState::block`). Only a click on one of its connectors picks a block
   (`open_link`), the connector being the interaction itself on the canvas; a press in the card
@@ -67,12 +66,13 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   more interactions, the picked one wears `ui::paint_quiet_ring` `BLOCK_RING_GAP` (4) outside its
   rows; with one there is nothing to tell it from. The canvas lights that block's marks alone
   (*On the canvas*).
-- **Copy and paste.** *Copy interaction* keeps the reaction in `ProtoState::copied`, never saved
-  and apart from the clipboard, with the tab it was copied in, and says *Copied the interaction
-  ‹trigger›*. While one is kept, the card shows a *Paste interaction* text button under its
-  blocks, on any layer of that tab's document only (its targets are that document's layers),
-  tipped with the copied trigger; it appends the copy with fresh item ids, nested actions' too,
-  as one *Paste interaction* step.
+- **Copy and paste** are the layer context menu's, under *Copy/Paste as ▸* in prototype mode
+  only (`context-menus.md`). *Copy interactions* keeps every interaction of the key or lone
+  layer in `ProtoState::copied`, never saved and apart from the clipboard, with the tab it was
+  copied in, and says *Copied N interactions*. *Paste interactions* is live in that tab only,
+  since the copies' targets are that document's layers: it appends every copied interaction to
+  each selected layer with fresh item ids, nested actions' too, as one *Paste interactions* step,
+  or writes nothing and says why when the door refuses a layer's list.
 - **Triggers** are offered in two groups under `ui::menu_eyebrow`s, *Pointer* (*On click*, *On
   double click*, *On press*, *While pressing*, *On long press*, *On hover*, *While hovering*, *On
   leave*, *On drag*, *On swipe*, *On drop*) and *Other* (*Key…*, *After delay*, *When a variable

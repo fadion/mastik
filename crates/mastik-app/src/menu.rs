@@ -74,8 +74,9 @@ pub enum Group {
     /// The kind's own "one level in" verbs — *Edit text*, *Enter group*, *Edit image*.
     Head,
     Clipboard,
-    /// *Copy properties* · *Paste properties*: a second clipboard carrying an
-    /// appearance rather than a layer.
+    /// *Copy properties* · *Paste properties*, and in prototype mode *Copy
+    /// interactions* · *Paste interactions*: clipboards carrying a part of a layer
+    /// rather than the layer.
     Properties,
     Structure,
     Order,
@@ -240,6 +241,12 @@ pub enum Item {
     /// Give the selection the appearance the clipboard is holding (`Ctrl+Alt+V`,
     /// `build::paste_properties`). Dimmed, not omitted, with nothing copied.
     PasteProperties,
+    /// Keep the key (or lone) layer's interactions for *Paste interactions*
+    /// (`MastikApp::copy_interactions`). In prototype mode only.
+    CopyInteractions,
+    /// Add the copied interactions to every selected layer
+    /// (`MastikApp::paste_interactions`). In prototype mode only.
+    PasteInteractions,
 
     // --- structure --------------------------------------------------------
     Group,
@@ -698,6 +705,8 @@ impl Item {
         Item::Delete,
         Item::CopyProperties,
         Item::PasteProperties,
+        Item::CopyInteractions,
+        Item::PasteInteractions,
         Item::Group,
         Item::FrameSelection,
         Item::AddLayout,
@@ -894,6 +903,19 @@ impl Item {
                 "Paste properties",
                 icon::SLIDERS_HORIZONTAL,
                 Some("Ctrl+Alt+V"),
+                Group::Properties,
+            ),
+            // Both wear the glyph a prototype's interactions wear everywhere.
+            Item::CopyInteractions => s(
+                "Copy interactions",
+                icon::INTERACTION,
+                None,
+                Group::Properties,
+            ),
+            Item::PasteInteractions => s(
+                "Paste interactions",
+                icon::INTERACTION,
+                None,
                 Group::Properties,
             ),
             Item::Delete => Spec {
@@ -1865,6 +1887,13 @@ pub struct Context<'a> {
     /// Whether [`crate::app::MastikApp::property_clipboard`] is holding anything —
     /// what dims *Paste properties*.
     pub has_props: bool,
+    /// Prototype mode is on: *Copy/Paste as ▸* gains the interactions' group.
+    pub prototype: bool,
+    /// `MastikApp::interactions_source` found a layer with interactions — what
+    /// dims *Copy interactions*.
+    pub can_copy_interactions: bool,
+    /// `MastikApp::interactions_copied` — what dims *Paste interactions*.
+    pub has_interactions: bool,
     /// `build::can_outline_text` said yes. A snapshot taken at open; see
     /// [`crate::app::ContextMenu::text_outlineable`].
     pub text_outlineable: bool,
@@ -2291,7 +2320,7 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
     // none changes the layer, then the two clipboards that are not the layers'
     // own: the replace, and the appearance (present for every kind, a group being
     // a valid destination; its source rule is state, so it dims).
-    let copy_paste_as = Row::new(Item::CopyPasteAs).sub(vec![
+    let mut copy_paste_groups = vec![
         vec![
             Row::new(Item::CopyAsSvg),
             Row::new(Item::CopyAsCss),
@@ -2315,7 +2344,24 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
                 .dim_if(!cx.has_props, "No properties have been copied yet")
                 .dim_if(locked, why),
         ],
-    ]);
+    ];
+    // Interactions are authored in prototype mode, so only there are they copied.
+    if cx.prototype {
+        copy_paste_groups.push(vec![
+            Row::new(Item::CopyInteractions).dim_if(
+                !cx.can_copy_interactions,
+                match (cx.selection.len(), cx.has_key) {
+                    (0 | 1, _) => "This layer has no interactions",
+                    (_, false) => "Make one of these the key layer to copy from it",
+                    (_, true) => "The key layer has no interactions",
+                },
+            ),
+            Row::new(Item::PasteInteractions)
+                .dim_if(!cx.has_interactions, "No interactions have been copied yet")
+                .dim_if(locked, why),
+        ]);
+    }
+    let copy_paste_as = Row::new(Item::CopyPasteAs).sub(copy_paste_groups);
     rows.extend([
         Row::new(Item::Cut).dim_if(locked, why),
         Row::new(Item::Copy),
@@ -3546,6 +3592,9 @@ impl MastikApp {
             can_copy_props: self.properties_source().is_some(),
             has_key: self.session.selection.key().is_some(),
             has_props: self.property_clipboard.is_some(),
+            prototype: self.prototype_mode(),
+            can_copy_interactions: self.interactions_source().is_some(),
+            has_interactions: self.interactions_copied(),
             text_outlineable: open.text_outlineable,
             on_a_rail: self
                 .session
@@ -3959,6 +4008,8 @@ impl MastikApp {
             Item::SplitAtPoint => self.split_points(world),
             Item::CopyProperties => self.dispatch(ctx, Action::CopyProperties),
             Item::PasteProperties => self.dispatch(ctx, Action::PasteProperties),
+            Item::CopyInteractions => self.copy_interactions(),
+            Item::PasteInteractions => self.paste_interactions(),
             Item::ExportAll => self.dispatch(ctx, Action::ExportAll),
             Item::CopyAsSvg => self.copy_as_svg(ctx),
             Item::CopyAsCss => self.copy_as_css(ctx),
@@ -4360,6 +4411,9 @@ mod tests {
             can_copy_props: true,
             has_key: false,
             has_props: false,
+            prototype: false,
+            can_copy_interactions: false,
+            has_interactions: false,
             system_text: false,
             text_selection: false,
             text_empty: true,
@@ -6326,6 +6380,59 @@ mod tests {
             )),
             "off the ink the row stays and says why — it does not disappear"
         );
+    }
+
+    /// *Copy/Paste as ▸* offers the interactions' rows in prototype mode only, each
+    /// dimmed on its own question.
+    ///
+    /// flip: `build` pushing the group whatever `prototype` says → fails at "not
+    /// outside prototype mode".
+    #[test]
+    fn the_interaction_rows_show_in_prototype_mode_only() {
+        let one = [id(1)];
+        let menu = |prototype: bool, can_copy: bool, has: bool| {
+            let mut cx = open(
+                Target::Layer {
+                    id: id(1),
+                    door: Door::Canvas,
+                },
+                &one,
+                &[Kind::Shape],
+            );
+            cx.prototype = prototype;
+            cx.can_copy_interactions = can_copy;
+            cx.has_interactions = has;
+            build(&cx)
+        };
+        let row = |groups: &'_ [Vec<Row>], item: Item| {
+            deep(groups)
+                .into_iter()
+                .find(|r| r.item == item)
+                .map(|r| (r.enabled, r.why))
+        };
+        let off = menu(false, true, true);
+        assert_eq!(
+            row(&off, Item::CopyInteractions),
+            None,
+            "not outside prototype mode"
+        );
+        assert_eq!(
+            row(&off, Item::PasteInteractions),
+            None,
+            "not outside prototype mode"
+        );
+        let empty = menu(true, false, false);
+        assert_eq!(
+            row(&empty, Item::CopyInteractions),
+            Some((false, Some("This layer has no interactions")))
+        );
+        assert_eq!(
+            row(&empty, Item::PasteInteractions),
+            Some((false, Some("No interactions have been copied yet")))
+        );
+        let live = menu(true, true, true);
+        assert_eq!(row(&live, Item::CopyInteractions), Some((true, None)));
+        assert_eq!(row(&live, Item::PasteInteractions), Some((true, None)));
     }
 
     /// The two property rows dim on different questions (a layer to read from vs.

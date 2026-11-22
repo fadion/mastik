@@ -121,7 +121,8 @@ function, not bucketed by `build`.
 | Delete | `Del` | dims on lock; destructive styling |
 
 **Copy/Paste as ▸** holds the copies in other formats, then the two clipboards that are not the
-layers' own. In order, two groups:
+layers' own, then, in prototype mode only, the interactions' own copy (`prototyping-authoring.md`).
+In order:
 
 | Row | Chord | Shown / enabled |
 |---|---|---|
@@ -133,6 +134,9 @@ layers' own. In order, two groups:
 | Paste to replace | — | dims *"No layers have been copied"* unless the app's own layers are on the clipboard and current (`Context::can_replace`); dims on lock. Each selected layer gives way to a copy of the whole clipboard, centred on it, in its slot (`app-frames-and-copies.md`). `Ctrl+Shift+R` is not spent on it: it is *Batch rename…* |
 | Copy properties | `Ctrl+Alt+C` | fills, strokes, effects and opacity off the key layer (or the lone layer). Dims when the source has no paint of its own (three sentences: lone layer, no key layer, key layer without paint). Live on a lock |
 | Paste properties | `Ctrl+Alt+V` | dims when nothing copied; dims on lock (lock sentence wins) |
+| *—* | | |
+| Copy interactions | — | prototype mode only; `Item::CopyInteractions`, `INTERACTION` glyph. Every interaction of the key layer (or the lone layer), kept apart from the clipboard. Dims *"This layer has no interactions"*; with several selected, *"Make one of these the key layer to copy from it"* or *"The key layer has no interactions"*. Live on a lock |
+| Paste interactions | — | prototype mode only; `Item::PasteInteractions`, `INTERACTION` glyph. Appends every copied interaction to each selected layer, one *Paste interactions* step. Dims *"No interactions have been copied yet"*, which it also reads in any tab but the one copied in; dims on lock (lock sentence wins) |
 
 ### Structure
 
@@ -308,8 +312,8 @@ every other head row needs a single layer.
 
 The whole menu is present and every editing row dims, *Boolean ▸*, *Align ▸*, *Arrange ▸* and *Move to page ▸*
 with it.
-Live over a lock: *Copy*, *Paste*, *Copy/Paste as ▸* with its *Copy as SVG/CSS/PNG* and *Copy
-properties*, *Export ▸*, *Unlock*, *Show*/*Hide*, *Rename* or *Batch rename…*, *Slice selection*, *Enter
+Live over a lock: *Copy*, *Paste*, *Copy/Paste as ▸* with its *Copy as SVG/CSS/PNG*, *Copy
+properties* and *Copy interactions*, *Export ▸*, *Unlock*, *Show*/*Hide*, *Rename* or *Batch rename…*, *Slice selection*, *Enter
 group/boolean*, *Make this the key layer*, *Go to main*, *Select all instances*. A layer inside a
 locked group is treated as locked, with the group's sentence; *Lock/Unlock* reads the layer's own
 flag. A hidden, unlocked layer gets an ordinary menu reading *Show*.
@@ -478,8 +482,8 @@ menu and §8's keys walk and run its rows (`read_nav` into `Scripts::menu_nav`).
 ### 6.11 An interaction (prototype mode)
 
 An interaction's head carries `⋯` (`egui::Popup::menu`, `ui::popup_rows`): *Duplicate* (every item
-id minted afresh, nested actions' too), *Copy interaction* (kept for the card's *Paste
-interaction*, `prototyping-authoring.md`), a rule, *Delete* in danger styling. On an instance, the
+id minted afresh, nested actions' too), a rule, *Remove* in danger styling. Copying a layer's
+interactions is the layer menu's *Copy/Paste as ▸* (§4, *Clipboard*). On an instance, the
 head's override slot takes a right-click as every reset does (`ui::reset_push_menu`): *Reset to
 main* and *Push to main*, the push disabled with the inspector's push refusal. A ghost row (an
 interaction the instance removed) offers *Restore* and *Push removal to main*. Its head's `+` and a

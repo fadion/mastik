@@ -64,10 +64,10 @@ pub(crate) struct ProtoState {
     /// lines) as the canvas drew them last frame, in screen space, topmost
     /// last.
     pub marks_drawn: std::cell::RefCell<Vec<(ProtoMark, egui::Rect)>>,
-    /// The interaction *Copy interaction* took, with the tab it was copied in:
-    /// the Interactions card offers to paste it onto any layer of that tab's
-    /// document only, since its targets are that document's layers.
-    pub copied: Option<(Option<crate::tabs::TabId>, Reaction)>,
+    /// The interactions *Copy interactions* took, with the tab they were copied
+    /// in: *Paste interactions* offers them on that tab's document only, since
+    /// their targets are that document's layers.
+    pub copied: Option<(Option<crate::tabs::TabId>, Vec<Reaction>)>,
     /// The interaction block picked by a click on one of its connectors, by its
     /// layer and reaction: ringed in the card among two or more, and on the
     /// canvas its connectors and scroll line are the layer's only ones drawn
@@ -3273,6 +3273,84 @@ impl MastikApp {
         self.commit_edit(Transaction(ops));
     }
 
+    /// The layer *Copy interactions* lifts from: the key layer, or the lone one,
+    /// when it has any interactions.
+    pub(crate) fn interactions_source(&self) -> Option<NodeId> {
+        let sel = &self.session.selection;
+        let id = sel.key().or_else(|| sel.single())?;
+        let has = self
+            .session
+            .doc
+            .get(id)
+            .is_some_and(|n| !n.reactions().is_empty());
+        has.then_some(id)
+    }
+
+    /// Whether *Paste interactions* has something to paste in the tab in front.
+    pub(crate) fn interactions_copied(&self) -> bool {
+        self.proto
+            .copied
+            .as_ref()
+            .is_some_and(|(tab, _)| *tab == self.tabs.active)
+    }
+
+    /// *Copy interactions*: keep the source layer's interactions, apart from the
+    /// clipboard, for *Paste interactions* in this tab.
+    pub(crate) fn copy_interactions(&mut self) {
+        let Some(id) = self.interactions_source() else {
+            return;
+        };
+        let list: Vec<Reaction> = self.session.doc.get(id).map_or_else(Vec::new, |n| {
+            n.reactions().iter().map(|k| k.value.clone()).collect()
+        });
+        self.session.info(match list.len() {
+            1 => "Copied 1 interaction".to_string(),
+            n => format!("Copied {n} interactions"),
+        });
+        self.proto.copied = Some((self.tabs.active, list));
+    }
+
+    /// *Paste interactions*: add the copied interactions after each selected
+    /// layer's own, with fresh item ids, as one step.
+    pub(crate) fn paste_interactions(&mut self) {
+        if !self.interactions_copied() {
+            return;
+        }
+        let Some((_, copied)) = self.proto.copied.clone() else {
+            return;
+        };
+        let ids = self.session.selection.ids().to_vec();
+        let mut ops = Vec::new();
+        for id in ids {
+            let Some(node) = self.session.doc.get(id) else {
+                continue;
+            };
+            let mut list = node.reactions().to_vec();
+            for r in &copied {
+                let mut mint = || self.session.ids.mint_item();
+                let copy = Reaction {
+                    trigger: r.trigger.clone(),
+                    actions: fresh_ids(&r.actions, &mut mint),
+                };
+                list.push(Keyed::new(mint(), copy));
+            }
+            if let Err(why) = mastik_core::prototype::check(&list) {
+                self.session.info(format!("Not pasted: {why}"));
+                return;
+            }
+            ops.push(Operation::SetReactions {
+                id,
+                reactions: list,
+            });
+        }
+        if ops.is_empty() {
+            return;
+        }
+        self.session
+            .name_step("Paste interactions", icon::INTERACTION);
+        self.commit_edit(Transaction(ops));
+    }
+
     /// The *Interactions* card: one block per reaction, its trigger at its head
     /// and its actions in order under it.
     fn interactions_card(&mut self, ui: &mut egui::Ui, id: NodeId) {
@@ -3330,27 +3408,6 @@ impl MastikApp {
                     }
                     if out.reset {
                         reset_one = Some(r.id);
-                    }
-                }
-                if let Some((_, r)) = app
-                    .proto
-                    .copied
-                    .clone()
-                    .filter(|(tab, _)| *tab == app.tabs.active)
-                {
-                    let label = trigger_label(&app.session.doc, id, &r.trigger);
-                    if crate::settings::text_button(ui, "Paste interaction", FieldButton::Off)
-                        .on_hover_text(format!("Add the copied interaction: {label}"))
-                        .clicked()
-                    {
-                        let mut mint = || app.session.ids.mint_item();
-                        let copy = Reaction {
-                            trigger: r.trigger.clone(),
-                            actions: fresh_ids(&r.actions, &mut mint),
-                        };
-                        let mut list = reactions.clone();
-                        list.push(Keyed::new(mint(), copy));
-                        next = Some((list, "Paste interaction", icon::CLIPBOARD));
                     }
                 }
                 for gone in ghosts {
@@ -3484,22 +3541,17 @@ impl MastikApp {
             let more =
                 ui::field_button(ui, icon::DOTS_THREE, h, FieldButton::Off).on_hover_text("More");
             let mut dup = false;
-            let mut copy = false;
             let mut delete = false;
             egui::Popup::menu(&more)
                 .align(egui::RectAlign::BOTTOM_END)
                 .gap(ui::MENU_GAP)
                 .show(|ui| {
                     ui::popup_rows(ui);
-                    let w =
-                        ui::menu_width(ui.ctx(), ["Duplicate", "Copy interaction", "Remove"], true);
+                    let w = ui::menu_width(ui.ctx(), ["Duplicate", "Remove"], true);
                     ui.set_width(w);
-                    // The glyphs the app's own Duplicate and Copy wear.
+                    // The glyph the app's own Duplicate wears.
                     dup =
                         ui::menu_item(ui, icon::COPY_SIMPLE, "Duplicate", ui::MENU_ROW_H).clicked();
-                    if ui::menu_item(ui, icon::COPY, "Copy interaction", ui::MENU_ROW_H).clicked() {
-                        copy = true;
-                    }
                     ui::menu_sep(ui);
                     delete = ui::menu_row(
                         ui,
@@ -3521,11 +3573,6 @@ impl MastikApp {
                 let mut list = all.to_vec();
                 list.insert(at, Keyed::new(mint(), copy));
                 out.write = Some((list, "Duplicate interaction", icon::COPY_SIMPLE));
-            }
-            if copy {
-                self.proto.copied = Some((self.tabs.active, r.value.clone()));
-                let label = trigger_label(&self.session.doc, id, &r.trigger);
-                self.session.info(format!("Copied the interaction {label}"));
             }
             if delete {
                 let list = all.iter().filter(|k| k.id != r.id).cloned().collect();
@@ -3788,16 +3835,6 @@ impl MastikApp {
         self.action_rows(ui, id, r, &r.actions, NEST, &mut list_out);
         if let Some(place) = list_out.add {
             add_place = Some(place);
-        }
-        // A block with no actions says what comes next: the head's `+` menu.
-        if r.actions.is_empty() {
-            ui.horizontal(|ui| {
-                ui.add_space(NEST);
-                let add = crate::settings::text_button(ui, "Add an action", FieldButton::Off);
-                if let Some(k) = self.add_action_menu(&add, id, &r.trigger) {
-                    add_place = Some((Place::Top, k));
-                }
-            });
         }
         if let Some((place, kind)) = add_place {
             // A document with no script yet names one still to be picked from
@@ -8394,6 +8431,64 @@ mod tests {
             ],
         );
         assert_eq!(drawn(&f.app), None, "the default name clears it");
+    }
+
+    /// *Paste interactions* appends every copied interaction to each selected
+    /// layer with fresh item ids, as one undo step, and only in the tab it was
+    /// copied in.
+    ///
+    /// flip: `paste_interactions` keeping the copied ids → fails at "fresh ids".
+    #[test]
+    fn copied_interactions_paste_onto_each_selected_layer() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let on_click = |n| {
+            Keyed::new(
+                item(n),
+                Reaction {
+                    trigger: Trigger::Click,
+                    actions: vec![keyed(n + 10, Action::Back)],
+                },
+            )
+        };
+        f.app.write_reactions(
+            f.add,
+            vec![on_click(1), on_click(2)],
+            "Add interaction",
+            icon::INTERACTION,
+        );
+        f.app.session.selection.set_one(f.home);
+        assert!(f.app.interactions_source().is_none(), "Home has none");
+        f.app.session.selection.set_one(f.add);
+        f.app.copy_interactions();
+        assert!(f.app.interactions_copied());
+        f.app.session.selection.set_one(f.cart);
+        f.app.paste_interactions();
+        let pasted = f.app.session.doc.get(f.cart).unwrap().reactions().to_vec();
+        assert_eq!(pasted.len(), 2, "both interactions");
+        let own = f.app.session.doc.get(f.add).unwrap().reactions().to_vec();
+        assert!(
+            pasted.iter().all(|p| own
+                .iter()
+                .all(|o| o.id != p.id && o.value.actions[0].id != p.value.actions[0].id)),
+            "fresh ids"
+        );
+        f.app.session.undo();
+        assert!(
+            f.app
+                .session
+                .doc
+                .get(f.cart)
+                .unwrap()
+                .reactions()
+                .is_empty(),
+            "one step"
+        );
+        f.app.proto.copied.as_mut().unwrap().0 = None;
+        assert!(
+            !f.app.interactions_copied(),
+            "another tab's copy is not offered"
+        );
     }
 
     /// A scroll trigger's line moves along its frame's scroll and snaps to a
