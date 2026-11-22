@@ -376,6 +376,8 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   - Command Mode's doors: *Pick layers* (`` ` ``, the command bar on its Pick focus) and
     *Scripts…*, the script editor (`command-mode.md`). The bar's Type focus has no row here: `:`
     and the palette open it;
+  - *Data tables…*, the data window over the document's tables (`lists.md`, *Data tables*), no
+    chord, never dimmed;
   - the checks, which change nothing: *Check contrast* and *Simulate vision*, each toggling its
     mode (never remembered) and named *Stop checking contrast* / *Stop simulating vision* while on,
     the palette's and the bar ✕'s words (`contrast::STOP_CONTRAST`, `vision::STOP_VISION`), then

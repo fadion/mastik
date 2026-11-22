@@ -1317,6 +1317,12 @@ fn sweep_on(theme: Theme) {
         a.open_chart_data(id, (0, 0));
     });
     check("chart data", app, found);
+    let mut app = with_a_chart(&ctx);
+    app.close_chart_data();
+    app.new_table();
+    app.close_chart_data();
+    let found = opened(&ctx, &mut app, |_, a| a.open_data_tables());
+    check("data tables", app, found);
 
     let mut app = with_a_rect(&ctx);
     let found = opened(&ctx, &mut app, |_, a| a.stroke_menu = Some(0));

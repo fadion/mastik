@@ -853,6 +853,7 @@ impl MastikApp {
         push(&mut out, Cmd::verb(Item::Navigate, None));
         push(&mut out, Cmd::verb(Item::CommandBar, None));
         push(&mut out, Cmd::verb(Item::Scripts, None));
+        push(&mut out, Cmd::verb(Item::DataTables, None));
         for (i, (name, held)) in self.saved_script_runs().into_iter().enumerate() {
             let mut run = Cmd::verb(Item::RunScript(i), None);
             run.label = format!("Run {name}");

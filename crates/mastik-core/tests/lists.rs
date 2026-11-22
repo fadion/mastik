@@ -478,25 +478,35 @@ fn a_list_frame_stays_out_of_mains() {
     assert!(back.get(l).unwrap().list().is_none(), "the list is dropped");
 }
 
-/// Detaching a list removes the data set no list reads any more in the same
-/// step, and undo brings both back.
-/// flip: `regenerate_in_history` not removing `unread_data_sets` → fails at "removed".
+/// A data set stays until deleted: removing it is refused while a list reads
+/// it, detaching that list keeps it, and it is deleted once nothing reads it.
+/// flip: `Document::apply` not refusing a read data set's removal → fails at
+/// "refused while read".
 #[test]
-fn a_data_set_no_list_reads_is_removed() {
+fn a_data_set_stays_until_deleted() {
     let (mut doc, mut ids, page) = blank();
     let (_, inst) = row_component(&mut doc, &mut ids, page);
     let set = data(&mut ids, &[("A", "1")]);
+    let sid = set.id;
     let res = Resolved::rebuild(&doc);
     let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
     let mut history = History::default();
     commit(&mut history, &mut doc, &mut ids, tx);
-    assert_eq!(doc.data_sets().len(), 1);
+    let delete = || Transaction(vec![Operation::SetDataSet { id: sid, set: None }]);
+    assert!(
+        matches!(
+            doc.clone().apply(&delete()),
+            Err(mastik_core::OpError::DataSetRead(id)) if id == sid
+        ),
+        "refused while read"
+    );
     let detach = list::detach(&doc, &[l]);
     commit(&mut history, &mut doc, &mut ids, detach);
-    assert!(doc.data_sets().is_empty(), "removed");
+    assert_eq!(doc.data_sets().len(), 1, "kept when its list goes");
+    commit(&mut history, &mut doc, &mut ids, delete());
+    assert!(doc.data_sets().is_empty(), "deleted once unread");
     history.undo(&mut doc).unwrap();
     assert_eq!(doc.data_sets().len(), 1, "undo brings it back");
-    assert!(doc.get(l).unwrap().list().is_some());
 }
 
 /// A picture `n` (its bytes `[n]`) added to the document; answers its id.

@@ -21,7 +21,7 @@ variables, conditions and Luau; the output is a real player, not a slideshow of 
 | The exported page: the browser build, the trim, fonts, the file, the page playing, inspect mode, the mirrored page, the flow map, the release's player | `design/prototyping-export.md` |
 | Scripts a reaction runs: document scripts; a kit's are copied in when vendored | `design/command-mode.md` §10, `design/kits.md` |
 | Imported prototype links and flows (Figma, Penpot, Sketch) | `design/library.md` *Import files* |
-| Lists from data: an instance repeated per row of a data set, the List card, a tapped row opened on a detail screen | `design/lists.md` |
+| Lists from data: an instance repeated per row of a data set, the List card, the *Data tables* window, a tapped row opened on a detail screen | `design/lists.md` |
 
 **Derived** — rebuilt when needed, never stored: smart animate's pairing of layers between two
 frames, the in-between frames, the flow map's connectors, hotspot rectangles, and the copy's

@@ -264,7 +264,8 @@ impl MastikApp {
                 let path = match &then {
                     Then::List { path, .. }
                     | Then::ListData { path, .. }
-                    | Then::ChartData { path, .. } => path.to_string_lossy().into_owned(),
+                    | Then::ChartData { path, .. }
+                    | Then::Table { path, .. } => path.to_string_lossy().into_owned(),
                     Then::DataSet { path, .. } => path.clone(),
                     _ => String::new(),
                 };
@@ -299,6 +300,9 @@ impl MastikApp {
             } => {
                 let set = self.data_set_from(&path, linkable, &parsed);
                 self.move_chart_to_set(chart, set.id, Some(set));
+            }
+            Then::Table { path, linkable } => {
+                self.open_table_import_box(path, linkable, parsed);
             }
             Then::DataSet { set, path, relink } => {
                 self.replace_data_set_table(set, &path, &parsed, relink);
@@ -452,6 +456,103 @@ impl MastikApp {
         self.session.name_step("List data", icon::TABLE);
         if self.commit_edit(tx) {
             self.session.info(format!("The list reads {name}"));
+        }
+    }
+
+    /// *New table* in *Data tables*: *Table 3* (numbered past the taken names)
+    /// with one empty column, *Column 1*, and one empty row, one undo step
+    /// *New table*; the window moves onto it, typing into its first cell.
+    pub(crate) fn new_table(&mut self) {
+        let set = DataSet {
+            id: self.session.ids.mint_data_set(),
+            name: list::free_name(&self.session.doc, "Table 1"),
+            table: mastik_core::chart::Table {
+                columns: vec![mastik_core::chart::Column {
+                    id: mastik_core::chart::ColumnId(0),
+                    name: "Column 1".into(),
+                }],
+                rows: vec![vec![String::new()]],
+            },
+            source: None,
+            pictures: Vec::new(),
+        };
+        let id = set.id;
+        self.session.name_step("New table", icon::PLUS);
+        if self.commit_edit(Transaction(vec![Operation::SetDataSet {
+            id,
+            set: Some(Box::new(set)),
+        }])) {
+            self.show_table(id);
+            self.type_into_cell((0, 0));
+        }
+    }
+
+    /// *From a file…* in *Data tables*: a picked file read on the worker into
+    /// the import box, which adds it as a new linked table.
+    pub(crate) fn table_file_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(FILTER.0, FILTER.1)
+            .pick_file()
+        else {
+            return;
+        };
+        self.read_list_file(path, None, |path, linkable| Then::Table { path, linkable });
+    }
+
+    /// The import box's *Import* in *Data tables*: `table` added as a new data
+    /// set named for `path`, linked by `link`, one undo step *New table*; the
+    /// window moves onto it.
+    pub(crate) fn add_table_from_import(
+        &mut self,
+        path: &Path,
+        table: mastik_core::chart::Table,
+        link: Option<DataLink>,
+    ) {
+        let rows = crate::ui::count_as(table.rows.len(), "row", "rows");
+        let set = DataSet {
+            id: self.session.ids.mint_data_set(),
+            name: list::free_name(&self.session.doc, &list::name_for_path(path)),
+            table,
+            source: link,
+            pictures: Vec::new(),
+        };
+        let (id, name) = (set.id, set.name.clone());
+        self.session.name_step("New table", icon::IMPORT);
+        if self.commit_edit(Transaction(vec![Operation::SetDataSet {
+            id,
+            set: Some(Box::new(set)),
+        }])) {
+            self.show_table(id);
+            self.session.info(format!("Imported {name} \u{b7} {rows}"));
+        }
+    }
+
+    /// *Delete table*: data set `set` removed, one undo step *Delete table*,
+    /// refused while anything reads it; *Data tables* moves to the next table.
+    /// A linked table's file is never touched.
+    pub(crate) fn delete_table(&mut self, set: DataSetId) {
+        let doc = &self.session.doc;
+        let Some(at) = doc.data_sets().iter().position(|d| d.id == set) else {
+            return;
+        };
+        if list::is_read(doc, set) {
+            return;
+        }
+        let name = doc.data_sets()[at].name.clone();
+        let next = doc
+            .data_sets()
+            .get(at + 1)
+            .or_else(|| at.checked_sub(1).and_then(|i| doc.data_sets().get(i)))
+            .map(|d| d.id);
+        self.session.name_step("Delete table", icon::TRASH);
+        if self.commit_edit(Transaction(vec![Operation::SetDataSet {
+            id: set,
+            set: None,
+        }])) {
+            if let Some(next) = next {
+                self.show_table(next);
+            }
+            self.session.info(format!("Deleted {name}"));
         }
     }
 

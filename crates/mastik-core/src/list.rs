@@ -939,11 +939,10 @@ pub fn chart_follow_ops(doc: &Document, tx: &Transaction) -> Vec<Operation> {
 }
 
 /// After `history` committed a step from `tx` that changed `dirty`: every chart
-/// over a data set brought onto its table ([`chart_follow_ops`]), every list it
-/// left out of date ([`touched`]) regenerated, then every data set nothing
-/// reads any more removed, each step committed and joined onto that step, so
-/// one undo takes the edit, its rows and its data back together. What the
-/// regenerations changed is added to `dirty`.
+/// over a data set brought onto its table ([`chart_follow_ops`]), then every
+/// list it left out of date ([`touched`]) regenerated, each step committed and
+/// joined onto that step, so one undo takes the edit and its rows back
+/// together. What the regenerations changed is added to `dirty`.
 pub fn regenerate_in_history(
     history: &mut crate::history::History,
     doc: &mut Document,
@@ -965,40 +964,14 @@ pub fn regenerate_in_history(
             Ok(())
         })?;
     }
-    let unread = unread_data_sets(doc);
-    if !unread.is_empty() {
-        let step = Transaction(
-            unread
-                .into_iter()
-                .map(|id| Operation::SetDataSet { id, set: None })
-                .collect(),
-        );
-        history.commit(doc, step)?;
-        history.join_last(2);
-    }
     Ok(())
 }
 
-/// The data sets no list or chart reads: a reader moved onto another, detached
-/// or deleted leaves its data behind, which nothing could pick again.
-pub fn unread_data_sets(doc: &Document) -> Vec<DataSetId> {
-    if doc.data_sets().is_empty() {
-        return Vec::new();
-    }
-    let read: FxHashSet<DataSetId> = doc
-        .node_map()
-        .values()
-        .filter_map(|n| {
-            n.list()
-                .map(|x| x.data)
-                .or_else(|| n.chart().and_then(|c| c.data))
-        })
-        .collect();
-    doc.data_sets()
-        .iter()
-        .map(|d| d.id)
-        .filter(|d| !read.contains(d))
-        .collect()
+/// Whether any list or chart reads data set `set`.
+pub fn is_read(doc: &Document, set: DataSetId) -> bool {
+    doc.node_map().values().any(|n| {
+        n.list().is_some_and(|x| x.data == set) || n.chart().is_some_and(|c| c.data == Some(set))
+    })
 }
 
 /// The actor a list's copies are minted under by

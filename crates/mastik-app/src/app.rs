@@ -1283,6 +1283,8 @@ pub struct MastikApp {
     pub(crate) tokens_import: Option<crate::tokens_import::TokensImport>,
     /// The chart data window, while it is open on the selected chart.
     pub(crate) chart_data: Option<crate::chart_data::ChartData>,
+    /// The table *Data tables* last showed, which it opens on again this session.
+    pub(crate) tables_last: Option<mastik_core::list::DataSetId>,
     /// The chart import box, while it is open.
     pub(crate) chart_import: Option<crate::chart_import::ChartImport>,
     /// What the watch last saw of the files charts link.
@@ -1373,6 +1375,7 @@ pub enum TopMenu {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolsRow {
     Scripts,
+    DataTables,
     CheckContrast,
     SimulateVision,
     ColourReview,
@@ -1385,8 +1388,9 @@ enum ToolsRow {
 }
 
 impl ToolsRow {
-    const ALL: [ToolsRow; 10] = [
+    const ALL: [ToolsRow; 11] = [
         ToolsRow::Scripts,
+        ToolsRow::DataTables,
         ToolsRow::CheckContrast,
         ToolsRow::SimulateVision,
         ToolsRow::ColourReview,
@@ -1422,6 +1426,7 @@ impl ToolsRow {
         use crate::menu::Item;
         match self {
             ToolsRow::Scripts => Item::Scripts.spec().label,
+            ToolsRow::DataTables => Item::DataTables.spec().label,
             ToolsRow::CheckContrast => Item::CheckContrast.spec().label,
             ToolsRow::SimulateVision => Item::SimulateVision.spec().label,
             ToolsRow::ColourReview => Item::ColourReview.spec().label,
@@ -2070,6 +2075,7 @@ impl MastikApp {
             fill_content: None,
             tokens_import: None,
             chart_data: None,
+            tables_last: None,
             chart_import: None,
             chart_watch: Default::default(),
             chart_read: None,
@@ -3071,6 +3077,7 @@ impl MastikApp {
             Action::TextStyle(chord) => self.text_chord(chord),
             Action::Navigate => self.pick_layers(),
             Action::OpenScripts => self.open_scripts(),
+            Action::OpenDataTables => self.open_data_tables(),
             Action::RunScript(i) => self.run_listed_script(i),
             Action::Nav(nav) => self.nav_action(nav),
         }
@@ -8802,7 +8809,8 @@ impl MastikApp {
         }
     }
 
-    /// The **Tools** dropdown's rows: *Scripts…*, the checks, which change nothing,
+    /// The **Tools** dropdown's rows: *Scripts…* and *Data tables…*, the windows
+    /// over the document's own things, the checks, which change nothing,
     /// then a hairline and the bulk edits, each opening its box with its chord beside it,
     /// then a hairline and the two that clean the file up.
     /// Bare rows with no tick column: a check that is on says so in its own bar
@@ -8852,6 +8860,7 @@ impl MastikApp {
             self.open_menu = TopMenu::None;
             match row {
                 ToolsRow::Scripts => self.open_scripts(),
+                ToolsRow::DataTables => self.open_data_tables(),
                 ToolsRow::CheckContrast => self.toggle_contrast(),
                 ToolsRow::SimulateVision => self.toggle_vision(),
                 ToolsRow::ColourReview => self.open_colour_review(),

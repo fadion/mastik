@@ -44,6 +44,9 @@ pub(crate) struct ChartImport {
     /// *Make a list*: the box makes a list around an instance in place of
     /// replacing a chart's table, `chart` naming that instance.
     list: Option<ListImport>,
+    /// *Data tables*' *From a file…*: the box adds the file as a new table
+    /// (*Import data*), and `chart` names nothing.
+    table: bool,
 }
 
 /// The import box's *Fill* section, while it makes a list: which column fills
@@ -109,6 +112,8 @@ pub(crate) enum Then {
         path: PathBuf,
         linkable: bool,
     },
+    /// The import box adding a new table to *Data tables*.
+    Table { path: PathBuf, linkable: bool },
     /// Data set `set` read again from its linked file, under its header choice;
     /// `relink` when `path` is a file picked to replace a missing one.
     DataSet {
@@ -475,7 +480,18 @@ impl MastikApp {
             link: linkable,
             stat: parsed.stat,
             list: None,
+            table: false,
         });
+    }
+
+    /// The import box for *Data tables*' *From a file…*, on the file read as
+    /// `parsed`: *Import data*, with no Fill section.
+    pub(crate) fn open_table_import_box(&mut self, path: PathBuf, linkable: bool, parsed: Parsed) {
+        let page = self.session.page;
+        self.open_import_box(page, path, linkable, parsed);
+        if let Some(t) = &mut self.chart_import {
+            t.table = true;
+        }
     }
 
     /// The import box for *Make a list* around `instance` from the file read as
@@ -522,6 +538,7 @@ impl MastikApp {
             link: linkable,
             stat: parsed.stat,
             list: Some(ListImport { owner, rows }),
+            table: false,
         });
     }
 
@@ -565,6 +582,7 @@ impl MastikApp {
             Then::List { .. }
             | Then::ListData { .. }
             | Then::ChartData { .. }
+            | Then::Table { .. }
             | Then::DataSet { .. } => {
                 self.land_list_read(then, answer);
             }
@@ -700,9 +718,10 @@ impl MastikApp {
                     true => name,
                     false => format!("{name} \u{b7} {dirs}"),
                 };
-                let title = match t.list {
-                    Some(_) => "Make a list",
-                    None => "Import chart data",
+                let title = match (&t.list, t.table) {
+                    (Some(_), _) => "Make a list",
+                    (None, true) => "Import data",
+                    (None, false) => "Import chart data",
                 };
                 if crate::settings::card_head_noted(ui, W, title, Some(&place)) {
                     go = Some(false);
@@ -735,9 +754,10 @@ impl MastikApp {
                     fill_section(ui, l, &t.read.table);
                 }
                 ui::card_rule(ui);
-                let primary = match t.list {
-                    Some(_) => "Make list",
-                    None => "Replace data",
+                let primary = match (&t.list, t.table) {
+                    (Some(_), _) => "Make list",
+                    (None, true) => "Import",
+                    (None, false) => "Replace data",
                 };
                 let buttons = [
                     ("Cancel", FieldButton::Off),
@@ -782,6 +802,9 @@ impl MastikApp {
                     header: Some(t.header),
                 }
             });
+            if t.table {
+                return self.add_table_from_import(&t.path, t.read.table.clone(), link);
+            }
             let rows = t.read.table.rows.len();
             let name = file_name(&t.path.to_string_lossy());
             if self.replace_chart_table(t.chart, t.read.table.clone(), link, "Import chart data") {

@@ -17,10 +17,13 @@ template, the list's description or its data set changes. Core: `mastik_core::li
 - **A data set is the document's, not a list's**: several lists and charts may read one, and an
   edit to it regenerates every list reading it and brings every chart reading it onto its table
   (`charts.md`, *The description*, `data`). It is never drawn, so `SetDataSet` dirties nothing.
-- **A data set lives while a list or a chart reads it.** After every commit, a data set nothing
-  reads (its last reader moved onto another, detached, flattened or deleted) is removed in the
-  same undo step (`list::unread_data_sets`), so the dropdown never offers data nothing could pick
-  again.
+- **A data set stays until deleted**, whatever reads it: one its last reader left (moved onto
+  another, detached, flattened or deleted) or one made in *Data tables* stays, and every Data
+  dropdown offers it. `Document::apply` refuses a transaction leaving a set gone while a list or
+  chart still reads it (`OpError::DataSetRead`, *‹id› is read by a list or chart — point it at
+  another table first*); `list::is_read` answers whether anything reads one. No sweep takes an
+  unread table (*Clean up…*, *System health*): a table holds typed data, and losing it to a sweep
+  costs more than a stray layer (`tests/lists.rs · a_data_set_stays_until_deleted`).
 - **`source: Option<DataLink>`** is the linked file, the chart's `DataLink` (path, the stat of the
   read, the header choice). The table is always the document's own copy.
 - **`pictures: Vec<(String, ImageId)>`** maps a cell's text to the picture the app read from it
@@ -110,8 +113,7 @@ its copies as plain instances, rather than refusing the file, since earlier buil
   reads the edit's `SetList`, `SetDataSet` and `SetChart { chart: Some }` ops before committing
   it, then `list::regenerate_in_history` commits, each joined onto the edit's step
   (`History::join_last(2)`): first the charts brought onto their sets' tables
-  (`list::chart_follow_ops`), then each regeneration step, then the removal of the data sets
-  nothing reads. One undo takes the edit, its rows and the charts' copies back together and redo
+  (`list::chart_follow_ops`), then each regeneration step. One undo takes the edit, its rows and the charts' copies back together and redo
   puts them back. The copies are instances that other edits write in history (a main's change
   propagated into them, a variable detach); a regeneration outside history would leave those
   steps naming copies a later regeneration replaced. This is where
@@ -181,7 +183,8 @@ The list frame's inspector card (`panels/list.rs`), after Item; the frame keeps 
 card, which arranges the rows. Each edit is one `SetList`, and the list is regenerated in its
 step.
 
-- **Data** — a dropdown with the `TABLE` glyph listing the document's data sets (*name · N rows*)
+- **Data** — a dropdown with the `TABLE` glyph listing every data set in the document, read or
+  not (*name · N rows*)
   and, after a separator, *From a file…*; picking a data set moves the list onto it, undo step
   *List data*: each fill keeps its column where the new table has a column of the same name, and
   a property left unfilled takes the column of its own name (`MastikApp::list_on`). *From a
@@ -227,13 +230,14 @@ step.
 
 ### The data window over a data set
 
-The chart's data window (`chart_data.rs`; `charts.md`, *The data window*) opened over a data set,
-`ChartData.data` naming it. Opened by *Edit data…* on the List card, on a list frame's context
-menu and after *New table*. A chart reading a set opens the chart's own window, which writes the
-set (`charts.md`, *The data window*).
+The chart's data window (`chart_data.rs`; `charts.md`, *The data window*) opened from a list over
+its data set, `ChartData.data` naming it. Opened by *Edit data…* on the List card, on a list
+frame's context menu and after *Make a list*'s *New table*. A chart reading a set opens the
+chart's own window, which writes the set (`charts.md`, *The data window*); with nothing behind it
+the window is *Data tables* (below).
 
-- **Head**: *List data*, its note the data set's name, then *· N lists* when several read it. A
-  double-click on the name renames the data set in place (`settings::card_head_renamable`), undo
+- **Head**: *List data*, its note the data set's name, then its readers in words (*· 2 lists, 1
+  chart*, `readers_words`) when more than one list, or any chart, reads it. A double-click on the name renames the data set in place (`settings::card_head_renamable`), undo
   step *Rename data*, a taken name numbered past (`list::free_name`).
 - **The grid is the chart's.** Each header shows in the accent the property its column fills on
   the list the window was opened from (tooltip *Fills Title on this list*); the chart-only header
@@ -244,6 +248,56 @@ set (`charts.md`, *The data window*).
   dropped, every list over the set regenerated and every chart over it brought onto the table.
 - **It follows the selection**: selecting another list alone moves it to that list's data set; it
   closes when the data set is gone.
+
+### Data tables
+
+The same window with nothing behind it (`ChartData.chart` is `None`, `tables_ui`): a manager over
+the document's data sets, which it calls tables. Named *Data tables*, not *Content manager*, since
+*Fill with content…* is a different tool in the same menu.
+
+- **Doors**: *Data tables…* in the Tools menu after *Scripts…* (`ToolsRow::DataTables`) and in the
+  palette (`Item::DataTables`, `icon::TABLE`, aliases *tables*, *data*, *content*), both
+  `Action::OpenDataTables` → `MastikApp::open_data_tables`; never dimmed, no chord. A second
+  press while it is open leaves it as it is. It opens on the table it last showed this session
+  (`MastikApp::tables_last`), else the first; a picked table gone (deleted, undone) moves it to
+  the first.
+- **Head**: *Data tables*, its note the picked table's name, renamed as above (*Rename data*),
+  then *· 2 lists, 1 chart* (`readers_words`) or *· not used*. It does not follow the selection;
+  its ✕ and `Escape` close it.
+- **Toolbar**: a table dropdown leads it, before *Add row* (`tables_dropdown`: the `TABLE` glyph
+  and the name, 180 wide, scrolling past 12 rows): each table as *name · 24 rows*, or *name · not
+  used* when nothing reads it, the picked one ticked; a separator; *New table* (`icon::PLUS`) and
+  *From a file…* (`icon::IMPORT`). *Delete table* ends the toolbar after *Import…*: a `CONTROL_H`
+  square `ui::icon_button_sized` with `icon::TRASH`, tooltip *Delete table*, dimmed while
+  anything reads the table with the tooltip *Delete table: used by 2 lists and 1 chart. Point
+  them at another table first.* The grid takes these through its `bar` callback (`Slot::Lead`,
+  `Slot::Trail`). *Import…* relinks the table (*The linked file*); edits go through
+  `commit_data_table`, *Edit list data*.
+- **Headers are plain** (`Heads::Plain`): no fill, no role mark, the names in full ink, and the
+  header menu without *Use as category* and *Show as series*, which belong to a chart, not the
+  table.
+- **With no table**: the head alone, then `ui::empty_state` with the `TABLE` glyph, *This
+  document has no tables*, *Make one, or read one from a CSV, TSV or JSON file*, and *New table*
+  and *From a file…*, in a body as tall as the toolbar and the grid, so the first table made does
+  not resize the window. Deleting the last table lands here.
+- **New table** (`list_data::new_table`): *Table N* (`list::free_name` from *Table 1*), one empty
+  column *Column 1* and one empty row, undo step *New table*; the window moves onto it, typing
+  into its first cell (`type_into_cell`).
+- **From a file…** (`table_file_dialog`): the picker, the worker's read (`Then::Table`), then the
+  chart's import box in its table mode (`ChartImport.table`, `open_table_import_box`): head
+  *Import data*, no Fill section, primary *Import*, *Keep this file linked* as usual. *Import*
+  adds a set named for the file (`list::free_name`), linked when ticked, undo step *New table*,
+  status *Imported products.csv · 24 rows*, and the window moves onto it
+  (`add_table_from_import`).
+- **Delete table** (`delete_table`): refused while anything reads the table; undo step *Delete
+  table* (`icon::TRASH`), status *Deleted Table 2*; the window moves to the next table, else the
+  previous, else the empty state. A linked table's file is never touched.
+
+#### Traps
+
+- **Two refusals guard *Delete table***: `delete_table`'s own `list::is_read` check and the
+  commit's `OpError::DataSetRead`. `chart_data.rs · delete_table_only_takes_an_unread_table`
+  stays green with either removed alone; the commit's refusal is the one every door meets.
 
 ## On the canvas and in the layers tree
 

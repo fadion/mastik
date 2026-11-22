@@ -504,6 +504,8 @@ pub enum Item {
     CommandBar,
     /// `Action::OpenScripts`: the script editor.
     Scripts,
+    /// `Action::OpenDataTables`: the data window with nothing behind it.
+    DataTables,
     /// `Action::RunScript`: a saved script, by its place in the palette's list;
     /// the palette writes the script's name over the label.
     RunScript(usize),
@@ -1455,6 +1457,7 @@ impl Item {
             Item::Navigate => s("Pick layers", icon::LEAP_LABEL, None, Group::Tools),
             Item::CommandBar => s("Command bar", icon::TERMINAL_WINDOW, None, Group::Tools),
             Item::Scripts => s("Scripts…", icon::FILE_CODE, None, Group::Tools),
+            Item::DataTables => s("Data tables…", icon::TABLE, None, Group::Tools),
             Item::RunScript(_) => s("Run script", icon::FILE_CODE, None, Group::Tools),
         }
     }
@@ -1541,6 +1544,7 @@ impl Item {
             ],
             Item::CommandBar => &["command mode", "cli", "expression", "calculator", "luau"],
             Item::Scripts => &["script", "luau", "lua", "code", "automate", "macro", "run"],
+            Item::DataTables => &["tables", "data", "content"],
             Item::RunScript(_) => &["script", "run"],
             // The old name's words stay, so muscle memory still finds it.
             Item::SimulateVision => &[
@@ -1703,6 +1707,7 @@ impl Item {
             Item::Navigate => Action::Navigate,
             Item::CommandBar => Action::CommandBar,
             Item::Scripts => Action::OpenScripts,
+            Item::DataTables => Action::OpenDataTables,
             Item::RunScript(i) => Action::RunScript(i),
             Item::ViewSwitch(sw) => Action::ToggleView(sw),
             Item::ZoomFit => Action::ZoomFit,
@@ -4247,6 +4252,7 @@ impl MastikApp {
             | Item::Navigate
             | Item::CommandBar
             | Item::Scripts
+            | Item::DataTables
             | Item::RunScript(_)
             | Item::Tool(_)
             | Item::PlaceImage

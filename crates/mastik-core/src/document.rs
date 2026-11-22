@@ -1594,6 +1594,15 @@ impl Document {
         if let Some(id) = crate::list::misplaced(&self.nodes, self.vault).first() {
             return Err(OpError::ListPlacement(*id));
         }
+        // A data set stays until deleted, and is deleted only once nothing reads it.
+        for op in &tx.0 {
+            if let Operation::SetDataSet { id, set: None } = op
+                && self.data_set(*id).is_none()
+                && crate::list::is_read(self, *id)
+            {
+                return Err(OpError::DataSetRead(*id));
+            }
+        }
 
         // The vault's rules (§15 D1012): an origin on every vault node and on
         // nothing else, a main or a set at each of its children. After the last op

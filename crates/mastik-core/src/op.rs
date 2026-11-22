@@ -1933,6 +1933,10 @@ pub enum OpError {
         "A list can't be part of a component, an instance, a chart or another list — detach it first"
     )]
     ListPlacement(NodeId),
+    /// A data set removed while a list or chart still reads it, which would
+    /// leave that reader on *Missing data*.
+    #[error("{0:?} is read by a list or chart — point it at another table first")]
+    DataSetRead(crate::list::DataSetId),
     /// A vault rule broken (§15 D1012, `crate::kit::check`) — an origin outside
     /// the vault or a vault node without one, a vault child that is not a main or
     /// a set — or a vault opened twice or closed while it held something.

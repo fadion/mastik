@@ -458,6 +458,9 @@ pub enum Action {
     Nav(Nav),
     /// Tools ▸ *Scripts…*: the script editor (`crate::command::editor`). No chord.
     OpenScripts,
+    /// Tools ▸ *Data tables…*: the data window with nothing behind it
+    /// (`crate::chart_data`). No chord.
+    OpenDataTables,
     /// A saved script from the palette's *Scripts* rows, run as the editor's
     /// *Run* does: by its place among the scripts the palette listed.
     RunScript(usize),

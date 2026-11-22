@@ -675,6 +675,7 @@ selects its layer, `Shift` + a label adds it; a label is two letters, the first 
   this one by having the only key. The third reason an `Item` is not an `Action`: "no key was spent".
 - **Outline stroke**, **Pixel-fit**, **Join paths**, **Warp…** and **Trace image…** — layer-menu rows (and so palette rows), no
   chord, as *Outline shape*.
+- **Data tables…** — a Tools menu row and a palette verb (`Action::OpenDataTables`), no chord.
 - **Check contrast** — a Tools menu row and a palette verb (`Action::CheckContrast`), no chord.
 - **Simulate vision** — a Tools menu row and a palette verb (`Action::SimulateVision`), no chord.
 - **System health…** — a Tools menu row and a palette verb (`Action::SystemHealth`), no chord.

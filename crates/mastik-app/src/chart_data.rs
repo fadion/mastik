@@ -43,9 +43,11 @@ pub(crate) type Cell = (usize, usize);
 #[derive(Clone, Debug)]
 pub(crate) struct ChartData {
     /// The chart it shows, until another chart is selected alone or it is gone;
-    /// for a data set's window, the list it was opened from.
-    pub(crate) chart: NodeId,
-    /// The data set it shows in place of a chart's table (*List data*).
+    /// for a data set's window, the list it was opened from; `None` for *Data
+    /// tables*, opened with nothing behind it.
+    pub(crate) chart: Option<NodeId>,
+    /// The data set it shows in place of a chart's table (*List data*), and
+    /// the table *Data tables* has picked, `None` while the document has none.
     pub(crate) data: Option<mastik_core::list::DataSetId>,
     /// The data set's name while it is typed over in the head.
     naming: Option<String>,
@@ -128,6 +130,10 @@ impl Menu {
 
 impl ChartData {
     fn new(chart: NodeId, at: Cell) -> Self {
+        Self::over(Some(chart), at)
+    }
+
+    fn over(chart: Option<NodeId>, at: Cell) -> Self {
         Self {
             chart,
             data: None,
@@ -164,6 +170,26 @@ enum Role {
     /// The property a list's column fills, in a data set's window.
     Fill(String),
     Unmapped,
+    /// A column of a table with nothing behind the window (*Data tables*).
+    Plain,
+}
+
+/// What the grid's headers say of each column, by who opened the window.
+#[derive(Clone, Copy)]
+enum Heads<'a> {
+    /// A chart's role marks, with each column's series swatch.
+    Chart(&'a [Option<egui::Color32>]),
+    /// The property each column fills on the list the window was opened from.
+    Fills(&'a [Option<String>]),
+    /// Nothing: the table is no reader's (*Data tables*).
+    Plain,
+}
+
+/// Where a toolbar addition goes: before *Add row*, or after *Import…*.
+#[derive(Clone, Copy, PartialEq)]
+enum Slot {
+    Lead,
+    Trail,
 }
 
 fn role_of(chart: &Chart, col: ColumnId, swatch: Option<egui::Color32>) -> Role {
@@ -483,15 +509,38 @@ impl MastikApp {
         self.open_chart_data_on(list, Some(set));
     }
 
+    /// *Data tables…*: the window with nothing behind it, on the table it last
+    /// showed this session, else the first; a second press while it is open
+    /// leaves it as it is.
+    pub(crate) fn open_data_tables(&mut self) {
+        if self.chart_data.as_ref().is_some_and(|d| d.chart.is_none()) {
+            return;
+        }
+        let doc = &self.session.doc;
+        let set = self
+            .tables_last
+            .filter(|s| doc.data_set(*s).is_some())
+            .or_else(|| doc.data_sets().first().map(|d| d.id));
+        self.open_chart_data_over(None, set);
+    }
+
     /// Close the other cards over the canvas's top, then open the window.
     fn open_chart_data_on(&mut self, id: NodeId, data: Option<mastik_core::list::DataSetId>) {
+        self.open_chart_data_over(Some(id), data);
+    }
+
+    fn open_chart_data_over(
+        &mut self,
+        id: Option<NodeId>,
+        data: Option<mastik_core::list::DataSetId>,
+    ) {
         self.close_find();
         self.colour_review.open = false;
         self.system_health = None;
         self.batch_rename = None;
         self.clean_up = None;
         self.fill_content = None;
-        let mut open = ChartData::new(id, (0, 0));
+        let mut open = ChartData::over(id, (0, 0));
         open.data = data;
         self.chart_data = Some(open);
     }
@@ -611,7 +660,9 @@ impl MastikApp {
             open.focus = true;
             return;
         }
-        let id = open.chart;
+        let Some(id) = open.chart else {
+            return self.tables_ui(ctx, canvas);
+        };
         if let Some(set) = open.data {
             return self.list_data_ui(ctx, canvas, id, set);
         }
@@ -682,7 +733,16 @@ impl MastikApp {
                 })
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
-                    grid(ui, &shown, &swatches, None, &mut state, linked, &mut act);
+                    let heads = Heads::Chart(&swatches);
+                    grid(
+                        ui,
+                        &shown,
+                        heads,
+                        &mut state,
+                        linked,
+                        &mut |_, _| {},
+                        &mut act,
+                    );
                 });
         });
         self.chart_data = Some(state);
@@ -760,10 +820,9 @@ impl MastikApp {
                 })
                 .collect()
         };
-        let lists = self.lists_over(set).len();
-        let rest = match lists {
-            0 | 1 => String::new(),
-            n => format!(" \u{b7} {n} lists"),
+        let rest = match self.readers_of(set) {
+            (0..=1, 0) => String::new(),
+            _ => format!(" \u{b7} {}", self.readers_words(set)),
         };
         // The chart's grid reads a chart; a data set's table stands in one that
         // maps nothing.
@@ -804,7 +863,16 @@ impl MastikApp {
                 })
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
-                    grid(ui, &chart, &[], Some(&fills), &mut state, linked, &mut act);
+                    let heads = Heads::Fills(&fills);
+                    grid(
+                        ui,
+                        &chart,
+                        heads,
+                        &mut state,
+                        linked,
+                        &mut |_, _| {},
+                        &mut act,
+                    );
                 });
         });
         self.chart_data = Some(state);
@@ -822,6 +890,274 @@ impl MastikApp {
             }
         }
     }
+}
+
+/// What *Data tables*' own controls ask of the app after its pass.
+enum TablesAct {
+    Pick(mastik_core::list::DataSetId),
+    New,
+    File,
+    Delete(mastik_core::list::DataSetId),
+}
+
+/// The table dropdown's width in *Data tables*' toolbar.
+const TABLES_PICK_W: f32 = 180.0;
+/// The most tables the dropdown shows before it scrolls.
+const TABLES_SHOWN: f32 = 12.0;
+
+impl MastikApp {
+    /// *Data tables*, the window with nothing behind it: the picked table under
+    /// a dropdown of the document's tables, the head counting who reads it, the
+    /// headers plain, and *Delete table* at the toolbar's end. It does not
+    /// follow the selection. With no table, the two ways to make one.
+    fn tables_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
+        let Some(mut state) = self.chart_data.take() else {
+            return;
+        };
+        let doc = &self.session.doc;
+        // A picked table gone (deleted, undone away) moves the window to the first.
+        if state.data.is_none_or(|d| doc.data_set(d).is_none()) {
+            let first = doc.data_sets().first().map(|d| d.id);
+            state = ChartData::over(None, (0, 0));
+            state.data = first;
+        }
+        if state.data.is_some() {
+            self.tables_last = state.data;
+        }
+        let sets: Vec<(mastik_core::list::DataSetId, String, String)> = doc
+            .data_sets()
+            .iter()
+            .map(|d| {
+                let count = if mastik_core::list::is_read(doc, d.id) {
+                    ui::count_as(d.table.rows.len(), "row", "rows")
+                } else {
+                    "not used".to_string()
+                };
+                (d.id, d.name.clone(), count)
+            })
+            .collect();
+        let data = state.data.and_then(|d| doc.data_set(d)).cloned();
+        let readers = data
+            .as_ref()
+            .map(|d| self.readers_words(d.id))
+            .unwrap_or_default();
+        let w = W.min(canvas.width() - 32.0).max(320.0);
+        let mut act: Vec<Act> = Vec::new();
+        let mut asked: Option<TablesAct> = None;
+        let mut renamed = None;
+        let hold = crate::settings::CardHold::Open;
+        crate::settings::movable_canvas_card(ctx, "chart-data", canvas, w, hold, |ui| {
+            let Some(data) = &data else {
+                if crate::settings::card_head_noted(ui, w, "Data tables", None) {
+                    act.push(Act::Close);
+                }
+                let inner = w - 2.0 * PAD;
+                // As tall as the window over a table, so the first one made does
+                // not resize it.
+                let body = egui::vec2(inner, ui::CONTROL_H + GAP + GRID_H);
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin {
+                        left: PAD as i8,
+                        right: PAD as i8,
+                        top: 0,
+                        bottom: PAD as i8,
+                    })
+                    .show(ui, |ui| {
+                        let layout = egui::Layout::top_down(egui::Align::Center);
+                        ui.allocate_ui_with_layout(body, layout, |ui| {
+                            ui.set_min_size(body);
+                            ui.add_space(GRID_H / 4.0);
+                            ui::empty_state(
+                                ui,
+                                Some(icon::TABLE),
+                                "This document has no tables",
+                                "Make one, or read one from a CSV, TSV or JSON file",
+                                |ui| {
+                                    ui.horizontal(|ui| {
+                                        let both = ui::action_button_w(ui.ctx(), "New table")
+                                            + ui::action_button_w(ui.ctx(), "From a file…")
+                                            + ui::CARD_COL_GAP;
+                                        ui.add_space((ui.available_width() - both) / 2.0);
+                                        ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                                        if tool_button(ui, icon::PLUS, "New table").clicked() {
+                                            asked = Some(TablesAct::New);
+                                        }
+                                        if tool_button(ui, icon::IMPORT, "From a file…").clicked()
+                                        {
+                                            asked = Some(TablesAct::File);
+                                        }
+                                    });
+                                },
+                            );
+                        });
+                    });
+                return;
+            };
+            let rest = if readers.is_empty() {
+                " \u{b7} not used".to_string()
+            } else {
+                format!(" \u{b7} {readers}")
+            };
+            let (closed, kept) = crate::settings::card_head_renamable(
+                ui,
+                w,
+                "Data tables",
+                &data.name,
+                &rest,
+                &mut state.naming,
+            );
+            if closed {
+                act.push(Act::Close);
+            }
+            renamed = kept;
+            // The grid reads a chart; the table stands in one that maps nothing.
+            let chart = Chart {
+                table: data.table.clone(),
+                source: data.source.clone(),
+                mapping: Default::default(),
+                series: Vec::new(),
+                ..Chart::sample(ChartKind::Column)
+            };
+            let linked = chart.source.is_some();
+            let mut bar = |ui: &mut egui::Ui, slot: Slot| match slot {
+                Slot::Lead => {
+                    if let Some(a) = tables_dropdown(ui, &sets, data) {
+                        asked = Some(a);
+                    }
+                }
+                Slot::Trail => {
+                    let free = readers.is_empty();
+                    let size = egui::vec2(ui::CONTROL_H, ui::CONTROL_H);
+                    let glyph = ui::CONTROL_GLYPH_PT;
+                    let tip = if free {
+                        "Delete table".to_string()
+                    } else {
+                        format!(
+                            "Delete table: used by {}. Point them at another table first.",
+                            readers.replace(", ", " and ")
+                        )
+                    };
+                    let resp = ui::icon_button_sized(ui, icon::TRASH, size, glyph, false, free)
+                        .on_hover_text(tip);
+                    if free && resp.clicked() {
+                        asked = Some(TablesAct::Delete(data.id));
+                    }
+                }
+            };
+            egui::Frame::NONE
+                .inner_margin(egui::Margin {
+                    left: PAD as i8,
+                    right: PAD as i8,
+                    top: 0,
+                    bottom: PAD as i8,
+                })
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
+                    grid(
+                        ui,
+                        &chart,
+                        Heads::Plain,
+                        &mut state,
+                        linked,
+                        &mut bar,
+                        &mut act,
+                    );
+                });
+        });
+        self.chart_data = Some(state);
+        let set = data.map(|d| d.id);
+        if let (Some(name), Some(set)) = (renamed, set) {
+            self.rename_data_set(set, &name);
+        }
+        for a in act {
+            match (a, set) {
+                (Act::Close, _) => self.close_chart_data(),
+                (Act::Import, Some(s)) => self.relink_data_set(s),
+                (Act::Table(t), Some(s)) => self.commit_data_table(s, t),
+                (Act::Chart(c), Some(s)) => self.commit_data_table(s, c.table),
+                (Act::Copy(text), _) => ctx.copy_text(text),
+                (Act::Note(text), _) => self.session.info(text),
+                _ => {}
+            }
+        }
+        match asked {
+            Some(TablesAct::Pick(d)) => self.show_table(d),
+            Some(TablesAct::New) => self.new_table(),
+            Some(TablesAct::File) => self.table_file_dialog(),
+            Some(TablesAct::Delete(d)) => self.delete_table(d),
+            None => {}
+        }
+    }
+
+    /// *Data tables* moved onto table `set`, its first cell selected; nothing
+    /// while the window is closed or opened from a reader.
+    pub(crate) fn show_table(&mut self, set: mastik_core::list::DataSetId) {
+        if self.chart_data.as_ref().is_some_and(|d| d.chart.is_none()) {
+            let mut next = ChartData::over(None, (0, 0));
+            next.data = Some(set);
+            self.chart_data = Some(next);
+            self.tables_last = Some(set);
+        }
+    }
+
+    /// The window's cursor on cell `at` of its table, being typed into from
+    /// empty, the grid holding the keyboard.
+    pub(crate) fn type_into_cell(&mut self, at: Cell) {
+        let doc = &self.session.doc;
+        let Some(open) = &mut self.chart_data else {
+            return;
+        };
+        let Some(t) = open.data.and_then(|d| doc.data_set(d)).map(|d| &d.table) else {
+            return;
+        };
+        open.at = at;
+        open.anchor = at;
+        open.edit = Typing::new(t, at, String::new());
+        open.focus = true;
+        open.reveal = true;
+    }
+}
+
+/// *Data tables*' dropdown of the document's tables, `data` ticked: each with
+/// its row count (*not used* for one nothing reads), then *New table* and
+/// *From a file…*. Keeps one width, and scrolls past a dozen tables.
+fn tables_dropdown(
+    ui: &mut egui::Ui,
+    sets: &[(mastik_core::list::DataSetId, String, String)],
+    data: &mastik_core::list::DataSet,
+) -> Option<TablesAct> {
+    let mut out = None;
+    ui.scope(|ui| {
+        ui::combo_height(ui);
+        egui::ComboBox::from_id_salt("data-tables-pick")
+            .icon(ui::combo_chevron)
+            .width(TABLES_PICK_W)
+            .height(ui::MENU_ROW_H * TABLES_SHOWN)
+            .selected_text(ui::glyph_and_text(icon::TABLE, &data.name))
+            .show_ui(ui, |ui| {
+                ui::menu_rows(ui);
+                for (d, name, count) in sets {
+                    let row = format!("{name} \u{b7} {count}");
+                    if ui.selectable_label(*d == data.id, row).clicked() && *d != data.id {
+                        out = Some(TablesAct::Pick(*d));
+                    }
+                }
+                ui::menu_sep(ui);
+                if ui
+                    .selectable_label(false, ui::glyph_and_text(icon::PLUS, "New table"))
+                    .clicked()
+                {
+                    out = Some(TablesAct::New);
+                }
+                if ui
+                    .selectable_label(false, ui::glyph_and_text(icon::IMPORT, "From a file…"))
+                    .clicked()
+                {
+                    out = Some(TablesAct::File);
+                }
+            });
+    });
+    out
 }
 
 /// What the window asks of the app after its pass.
@@ -859,16 +1195,16 @@ fn linked_line(chart: &Chart) -> String {
 /// The grid under its toolbar (*Add row*, *Add column*, and *Import…* at the
 /// right): the header row and the row gutter held at the viewport's edges over
 /// the scrolled cells, and past the table's last row and column a dim grid
-/// filling the view, which neither scrolls nor takes a click. `fills` is a data
-/// set's window: the property each column fills on the list it was opened
-/// from, in place of the chart's role marks and menu rows.
+/// filling the view, which neither scrolls nor takes a click. `heads` says
+/// what each header shows; only a chart's offers the chart's menu rows. `bar`
+/// draws what its caller adds to the toolbar, in each [`Slot`].
 fn grid(
     ui: &mut egui::Ui,
     chart: &Chart,
-    swatches: &[Option<egui::Color32>],
-    fills: Option<&[Option<String>]>,
+    heads: Heads<'_>,
     s: &mut ChartData,
     linked: bool,
+    bar: &mut dyn FnMut(&mut egui::Ui, Slot),
     act: &mut Vec<Act>,
 ) {
     let t = &chart.table;
@@ -878,6 +1214,7 @@ fn grid(
     let (mut fit_r, mut fit_c) = (nr, nc);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            bar(ui, Slot::Trail);
             if tool_button(ui, icon::IMPORT, "Import…")
                 .on_hover_text("Replace the table with a CSV, TSV or JSON file")
                 .clicked()
@@ -885,6 +1222,7 @@ fn grid(
                 act.push(Act::Import);
             }
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                bar(ui, Slot::Lead);
                 if linked {
                     return;
                 }
@@ -1193,12 +1531,13 @@ fn grid(
                 theme::text::faint(),
             );
             x += tag_g.size().x + 5.0;
-            let role = match fills {
-                Some(f) => match f.get(c).cloned().flatten() {
+            let role = match heads {
+                Heads::Fills(f) => match f.get(c).cloned().flatten() {
                     Some(p) => Role::Fill(p),
                     None => Role::Unmapped,
                 },
-                None => role_of(chart, column.id, swatches.get(c).copied().flatten()),
+                Heads::Chart(sw) => role_of(chart, column.id, sw.get(c).copied().flatten()),
+                Heads::Plain => Role::Plain,
             };
             if let Role::Series(Some(colour)) = role {
                 let sw = egui::Rect::from_center_size(
@@ -1335,7 +1674,8 @@ fn grid(
     });
 
     if let Some(menu) = s.menu.clone() {
-        menus(ui, chart, fills.is_none(), s, menu, linked, act);
+        let chart_rows = matches!(heads, Heads::Chart(_));
+        menus(ui, chart, chart_rows, s, menu, linked, act);
     }
 }
 
@@ -2029,7 +2369,7 @@ mod tests {
             pass(&ctx, &mut app, Vec::new());
         }
         assert_eq!(
-            app.chart_data.as_ref().map(|d| d.chart),
+            app.chart_data.as_ref().and_then(|d| d.chart),
             Some(id),
             "stays open"
         );
@@ -2041,7 +2381,7 @@ mod tests {
         assert_ne!(other, id, "fixture: a second chart");
         pass(&ctx, &mut app, Vec::new());
         assert_eq!(
-            app.chart_data.as_ref().map(|d| d.chart),
+            app.chart_data.as_ref().and_then(|d| d.chart),
             Some(other),
             "moved"
         );
@@ -2061,7 +2401,7 @@ mod tests {
         );
         let id = *app.session.selection.ids().first().unwrap();
         assert_eq!(
-            app.chart_data.as_ref().map(|d| d.chart),
+            app.chart_data.as_ref().and_then(|d| d.chart),
             Some(id),
             "opened on it"
         );
@@ -2134,6 +2474,72 @@ mod tests {
         app.session.undo();
         assert_eq!(set_cell(&app), "42");
         assert_eq!(table_of(&app, id).rows[0][1], "42", "one undo step");
+    }
+
+    /// *Data tables* opens on a document with no table; *New table* makes
+    /// *Table 1* with one empty cell, typed into at once, one undo step; the
+    /// window stays on it when a chart is selected.
+    /// flip: `new_table` not calling `type_into_cell` → fails at "typed into".
+    #[test]
+    fn data_tables_makes_a_table_and_types_into_it() {
+        let ctx = egui::Context::default();
+        let (mut app, chart) = opened(&ctx);
+        app.close_chart_data();
+        app.open_data_tables();
+        for _ in 0..2 {
+            pass(&ctx, &mut app, Vec::new());
+        }
+        let open = app.chart_data.as_ref().expect("opened");
+        assert_eq!((open.chart, open.data), (None, None), "the empty state");
+        app.new_table();
+        let set = app.session.doc.data_sets().first().cloned().expect("made");
+        assert_eq!(set.name, "Table 1");
+        assert_eq!(set.table.columns[0].name, "Column 1");
+        assert_eq!(set.table.rows, [[""]]);
+        for _ in 0..2 {
+            pass(&ctx, &mut app, Vec::new());
+        }
+        let open = app.chart_data.as_ref().expect("open");
+        assert!(open.edit.as_ref().is_some_and(|e| e.row == 0), "typed into");
+        pass(&ctx, &mut app, vec![egui::Event::Text("Linen".into())]);
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        let cell = |app: &MastikApp| app.session.doc.data_sets()[0].table.rows[0][0].clone();
+        assert_eq!(cell(&app), "Linen");
+        app.session.selection.set_one(chart);
+        pass(&ctx, &mut app, Vec::new());
+        let open = app.chart_data.as_ref().expect("still open");
+        assert_eq!(open.chart, None, "the selection does not move it");
+        app.session.undo();
+        app.session.undo();
+        assert!(
+            app.session.doc.data_sets().is_empty(),
+            "New table is one step"
+        );
+    }
+
+    /// *Delete table* does nothing to a table a chart reads; a table nothing
+    /// reads is deleted in one step, the window moving to the next. Removing
+    /// `delete_table`'s `is_read` check alone does not fail it: the commit's
+    /// refusal (`OpError::DataSetRead`) keeps the table too.
+    #[test]
+    fn delete_table_only_takes_an_unread_table() {
+        let ctx = egui::Context::default();
+        let (mut app, chart) = opened(&ctx);
+        app.new_table();
+        app.new_table();
+        let sets: Vec<_> = app.session.doc.data_sets().iter().map(|d| d.id).collect();
+        app.move_chart_to_set(chart, sets[0], None);
+        app.open_data_tables();
+        app.show_table(sets[0]);
+        app.delete_table(sets[0]);
+        assert_eq!(app.session.doc.data_sets().len(), 2, "kept while read");
+        app.show_table(sets[1]);
+        app.delete_table(sets[1]);
+        assert_eq!(app.session.doc.data_sets().len(), 1, "deleted");
+        let open = app.chart_data.as_ref().expect("open");
+        assert_eq!(open.data, Some(sets[0]), "moved to the remaining table");
+        app.session.undo();
+        assert_eq!(app.session.doc.data_sets().len(), 2, "undo brings it back");
     }
 
     /// A headless app with a new chart's data window open, a few passes in.

@@ -531,12 +531,12 @@ in `collapsed_panels` (Marks, Axes, Values, Legend and Text start folded, `chart
   here rather than beside the palette dropdown because Series serves one chart only.
 - **Data** — led by the table the chart reads (`chart_table_dropdown`), the List card's Data
   dropdown (`lists.md`, *The List card*) with a first row *Own table* (tooltip *A table of the
-  chart's own, which nothing else reads*), a separator, the document's data sets (*name · N
-  rows*), a separator and *From a file…*. The closed face shows *Own table*, the set's name, or
+  chart's own, which nothing else reads*), a separator, every data set in the document, read or
+  not (*name · N rows*), a separator and *From a file…*. The closed face shows *Own table*, the set's name, or
   *Missing data* with the note *Its data set is not in this document: pick one*. Picking a set
   moves the chart onto it (`move_chart_to_set`, `Chart::reading`), undo step *Chart data*,
-  status *The chart reads ‹name›*; *Own table* keeps the rows as they are and drops the set
-  (`chart_own_table`), undo step *Chart data*; *From a file…* reads the picked file on the
+  status *The chart reads ‹name›*; *Own table* keeps the rows as they are and stops reading the set, which
+  stays (`chart_own_table`), undo step *Chart data*; *From a file…* reads the picked file on the
   worker (`chart_data_dialog`, `Then::ChartData`) into a new data set named for the file, linked,
   and moves the chart onto it in one step. Then the summary (*3 series · 12 rows*, a Sankey's
   *8 flows*), *Edit data…* (an `ui::action_button`, tooltip *Open the chart's table over the
@@ -627,9 +627,12 @@ open, and selecting another chart alone moves it there, at its first cell
 `Escape` and when its chart is deleted. It is one card over the canvas's top among Find, Colour
 review, System health, batch rename, Clean up and Fill with content: opening it closes them, and opening any of
 them closes it. Leaving the document (a tab switch) closes it, the import box and a pending chart
-read, since they name this document's node ids. The same window opens over a list's data set
-(`lists.md`, *The data window over a data set*), as does the import box for *Make a list*
-(`lists.md`, *Doors*).
+read, since they name this document's node ids. The window has three ways in: over a chart (this
+section), over a list's data set (`lists.md`, *The data window over a data set*) and with nothing
+behind it as *Data tables* (`lists.md`, *Data tables*); `ChartData.chart` names the chart or list,
+`None` for *Data tables*. What the headers say follows who opened it (`Heads`: a chart's role
+marks, a list's fills, or plain). The import box serves *Make a list* and *Data tables* too
+(`lists.md`, *Doors* and *Data tables*).
 
 **Over a chart reading a data set** the window stays the chart's: its head note is *‹chart name› ·
 ‹set name›*, the grid is the chart's table with its role marks, *Use as category* and *Show as
