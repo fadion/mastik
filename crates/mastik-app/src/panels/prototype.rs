@@ -386,6 +386,53 @@ fn scroll_prop_words(p: ScrollProp) -> (&'static str, &'static str, f64) {
     }
 }
 
+/// A new scroll-effect property's two ends: opacity fades out, so the effect
+/// shows at once; the others start and end at rest, to be set.
+fn new_effect_ends(p: ScrollProp) -> EffectEnds {
+    match p {
+        ScrollProp::Opacity => EffectEnds {
+            prop: p,
+            start: 1.0,
+            end: 0.0,
+        },
+        _ => EffectEnds {
+            prop: p,
+            start: p.rest(),
+            end: p.rest(),
+        },
+    }
+}
+
+/// *With the scroll*'s `+` and the menu of the properties it can add, as wide
+/// as its longest word. Answers the one picked.
+fn scroll_prop_menu(
+    ui: &mut egui::Ui,
+    props: &[ScrollProp],
+    tip: impl FnOnce(egui::Response) -> egui::Response,
+) -> Option<ScrollProp> {
+    let plus = tip(ui::field_button(
+        ui,
+        icon::PLUS,
+        ui::CONTROL_H,
+        FieldButton::Off,
+    ));
+    let mut pick = None;
+    egui::Popup::menu(&plus).gap(ui::MENU_GAP).show(|ui| {
+        ui::popup_rows(ui);
+        let words = props.iter().map(|p| scroll_prop_words(*p).0);
+        ui.set_width(ui::menu_width(ui.ctx(), words, false));
+        for p in props {
+            if ui
+                .selectable_label(false, scroll_prop_words(*p).0)
+                .clicked()
+            {
+                pick = Some(*p);
+            }
+        }
+    });
+    pick
+}
+
 /// How far apart new snap points are placed down from where a layer is drawn,
 /// in units: each new one a step further, to be moved where it belongs.
 const NEW_POINT_STEP: f64 = 100.0;
@@ -5791,14 +5838,15 @@ impl MastikApp {
         };
         ui::labelled(ui, "With the scroll", |ui| {
             let Some(e) = play.scroll_effect.clone() else {
-                let add = ui.add_enabled_ui(!options.is_empty(), |ui| {
-                    ui::field_button(ui, icon::PLUS, ui::CONTROL_H, FieldButton::Off)
-                });
-                let add = add
-                    .inner
-                    .on_hover_text("Add a property that follows the scroll")
-                    .on_disabled_hover_text("No frame on the screen scrolls");
-                if add.clicked() {
+                let pick = ui
+                    .add_enabled_ui(!options.is_empty(), |ui| {
+                        scroll_prop_menu(ui, &ScrollProp::ALL, |r| {
+                            r.on_hover_text("Add a property that follows the scroll")
+                                .on_disabled_hover_text("No frame on the screen scrolls")
+                        })
+                    })
+                    .inner;
+                if let Some(p) = pick {
                     *next = Some((
                         with(Some(ScrollEffect {
                             // The nearest frame above, or else the screen's first.
@@ -5808,11 +5856,7 @@ impl MastikApp {
                             },
                             from: 0.0,
                             to: NEW_EFFECT_SPAN,
-                            props: vec![EffectEnds {
-                                prop: ScrollProp::Opacity,
-                                start: 1.0,
-                                end: 0.0,
-                            }],
+                            props: vec![new_effect_ends(p)],
                         })),
                         "Add scroll effect",
                     ));
@@ -5943,32 +5987,13 @@ impl MastikApp {
                 .into_iter()
                 .filter(|p| !e.props.iter().any(|x| x.prop == *p))
                 .collect();
-            if !missing.is_empty() {
-                let plus = ui::field_button(ui, icon::PLUS, ui::CONTROL_H, FieldButton::Off)
-                    .on_hover_text("Add a property");
-                let mut pick = None;
-                egui::Popup::menu(&plus).gap(ui::MENU_GAP).show(|ui| {
-                    ui::popup_rows(ui);
-                    let words = missing.iter().map(|p| scroll_prop_words(*p).0);
-                    ui.set_width(ui::menu_width(ui.ctx(), words, false));
-                    for p in &missing {
-                        if ui
-                            .selectable_label(false, scroll_prop_words(*p).0)
-                            .clicked()
-                        {
-                            pick = Some(*p);
-                        }
-                    }
-                });
-                if let Some(p) = pick {
-                    let mut e2 = e.clone();
-                    e2.props.push(EffectEnds {
-                        prop: p,
-                        start: p.rest(),
-                        end: p.rest(),
-                    });
-                    *next = Some((with(Some(e2)), "Add scroll effect"));
-                }
+            if !missing.is_empty()
+                && let Some(p) =
+                    scroll_prop_menu(ui, &missing, |r| r.on_hover_text("Add a property"))
+            {
+                let mut e2 = e.clone();
+                e2.props.push(new_effect_ends(p));
+                *next = Some((with(Some(e2)), "Add scroll effect"));
             }
         });
     }

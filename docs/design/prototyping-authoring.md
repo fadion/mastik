@@ -193,7 +193,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *The frame does not scroll* while its parent does not. The pin is set here, on the child's own
   card, rather than in the layers panel's menu.
 - ***With the scroll***, on any layer below a page's top level (`scroll_effect_section`): `+`
-  adds an effect from 0 to 160 px, *Opacity* 100% to 0% (*Add scroll effect*), following the
+  opens the menu of properties the later `+` does (`scroll_prop_menu`), and the pick adds an
+  effect from 0 to 160 px holding it (*Add scroll effect*), following the
   nearest scrolling frame above the layer (`frame: None`) or, with none above, naming the
   screen's first; dimmed with *No frame on the screen scrolls* when no frame but the layer itself
   does. Then *Frame*, a dropdown of the scrolling frames at or above the layer, nearest first,
@@ -203,7 +204,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   and `×`) over its start and end fields, opacity and scale in %, rotation in °. Each number is
   one *Scroll effect* step; `×` removes a property, and with the last the effect (*Remove scroll
   effect*);
-  `+` offers the properties not yet there, each added at rest at both ends (*Add scroll effect*).
+  `+` offers the properties not yet there (*Add scroll effect*), *Opacity* 100% to 0%, the
+  others at rest at both ends (`new_effect_ends`).
 - ***Dragging***, on any layer below a page's top level (`dragging_section`): *Follows the drag*,
   a `ui::switch_row`, then while it is on *Axis* (`icon::ARROWS_OUT_CARDINAL`,
   `ARROWS_HORIZONTAL`, `ARROWS_VERTICAL`, tipped *Both*, *Horizontal*, *Vertical*), *Range*
