@@ -2983,6 +2983,8 @@ impl MastikApp {
             Action::Delete if !self.points.is_empty() && self.edited_path().is_some() => {
                 self.delete_points()
             }
+            // An action's open popover is what Delete means, not its layer.
+            Action::Delete if self.remove_open_action() => {}
             Action::Delete => self.delete_selection(),
             Action::SelectAll => self.select_all(),
             Action::SelectSame(same) => self.select_same(same),

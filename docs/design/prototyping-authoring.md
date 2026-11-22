@@ -20,6 +20,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **What it shows.** One layer: its identity (glyph, name, a screen's size or *Instance*), the
   *Interaction states* card when it applies, the *Interactions* card and the *Prototype* card. Nothing selected: the page card, *Flows* and the
   page's *Prototype* card. Several layers: *Prototype one layer at a time*.
+- **A top-level frame's identity says which flows start on it** (`flow_start_row`): *Starts the
+  flow Checkout* or *Starts the flows Checkout, Sign in* as a `ui::selection_note`, or with none a
+  *Start a flow here* text button that adds *Flow n* (`free_flow_name`, as the Flows card's `+`
+  names one) starting there, an *Add flow* step.
 - **Every edit is one transaction** on the saved model through `commit_edit`, named as its
   neighbours: *Add interaction*, *Change trigger*, *Add action*, *Change action*, *Set
   transition*, *Move action*, *Remove action*, *Duplicate interaction*, *Paste interaction*,
@@ -29,7 +33,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   *Move snap point*, *Remove snap point*, *Add flow*, *Rename flow*, *Change flow*, *Remove
   flow*, *Add starting mode*, *Change starting mode*, *Remove starting mode*, *Add starting
   value*, *Change starting value*, *Remove starting value*, *Device*, *Turn device*,
-  *Scaling*, *New links*. A list the door refuses (`prototype::check`) is not
+  *Scaling*, *Default transition*. A list the door refuses (`prototype::check`) is not
   written and the status line says why.
 - **Numbers are held, not previewed.** The model's operations draw nothing, so a scrubbed or typed
   number (a delay, a duration, a spring, a cubic's handles, an overlay's position or shade) shows
@@ -46,9 +50,12 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   hovering → Change to* for it.
 - **One block per reaction**: the trigger's dropdown, `+` (add an action) and `⋯` (*Duplicate*
   in `COPY_SIMPLE` and *Copy interaction* in `COPY`, the glyphs the app's own Duplicate and Copy
-  wear, then *Delete*), then its actions top to bottom; a `ui::card_rule` parts one block from
-  the next. The card's own `+` adds *On click* with no actions. The add and `⋯` menus are as wide
-  as their longest row (`ui::menu_width`).
+  wear, then *Remove*, a danger row in `TRASH`, as its *Remove interaction* step is named), then
+  its actions top to bottom; a `ui::card_rule` parts one block from the next. The card's own `+`
+  adds *On click* with no actions; a block with no actions shows an *Add an action* text button
+  (`settings::text_button`) under its trigger, opening the head `+`'s menu. With no interactions
+  the card says *Drag a dot on the layer's edge onto a frame, or add an interaction with +*. The
+  add and `⋯` menus are as wide as their longest row (`ui::menu_width`).
 - **A picked block** (`ProtoState::block`). Only a click on one of its connectors picks a block
   (`open_link`), the connector being the interaction itself on the canvas; a press in the card
   picks nothing, and any other click on the canvas lets the pick go. While the layer has two or
@@ -87,14 +94,31 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   variable*, *Set mode*, *Conditional*, *Run script*). What the layer cannot take is dimmed with
   its reason (`prototype::action_refusal`): *Run script* under a trigger no person fires (*A
   script runs only when someone acts*) or with no script in the document or the script library;
-  *Change to* off an instance of a set's variant (*Not a component*); *Set variable* with no
-  variable; *Set mode* with no collection of two modes or more (*No collection has a second
-  mode*); a screen action with no frame to go to. A new action names the likeliest target
-  (`prototype::new_action`): another screen than the layer's own, mains last; the layer's own
-  instance and a variant other than its current one; the first variable or script, or on a
-  document with no script a fresh script id, *Missing script* until one is copied in from the
-  library; the first collection with two modes, at a mode the holder's screen does not read now,
-  *Everywhere*. It opens its popover at once, except *Back*, which has nothing to set.
+  *Change to* outside an instance of a set's variant or a main variant (*Only a component with
+  variants changes state*); *Set variable* with no variable; *Set mode* with no collection of two
+  modes or more (*No collection has a second mode*); *Scroll to* with no scrolling frame to
+  scroll (*No frame on the screen scrolls*), or whose scrolling frames hold no layer (*No frame
+  that scrolls holds a layer*); a screen action with no frame to go to (*No frame to
+  go to*). A new action names the likeliest target (`prototype::new_action`):
+  - a screen action: a frame on the holder's own page first, from the screen after its own round
+    to the one before it, so the link draws as a connector rather than a stub; then other pages';
+    mains last;
+  - *Scroll to*: the first child of the nearest scrolling frame (`scrolling_frames`);
+  - *Change to*: the layer's own instance (inside a main variant, that main) and a variant other
+    than its current one;
+  - *Set variable*: the first variable, a number incremented by 1, a boolean toggled, a text or
+    colour one set to itself (`keeps`, `{name}`), which reads and changes nothing, so a fresh
+    action never refuses the export; switching a toggle or an increment to such a variable, or
+    picking *Set*, starts it the same way; a *Set*'s expression is kept when the new variable is
+    of the same kind, and starts over the same way when it is not;
+  - *Conditional*: one branch at the first boolean variable (`first_condition`), `true` with
+    none, as *Add else if*'s new branch is;
+  - *Run script*: the first script, or on a document with none a fresh script id, *Missing
+    script* until one is copied in from the library;
+  - *Set mode*: the first collection with two modes, at a mode the holder's screen does not read
+    now, *Everywhere*.
+
+  It opens its popover at once, except *Back*, which has nothing to set.
 - **An action is one row**, a `ui::field_row_pressable` that opens its popover (*Back*'s opens
   none, having nothing to set, and says what it does under the pointer): a grip, its
   glyph, its verb, its target in accent ink, its transition's kind alone (`transition_chip`; the
@@ -102,7 +126,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   row's accelerator is, and `×`; the grip and `×` keep their own press. The verb and the target
   share what the kind and `×` leave, the verb first, each cut rather than run under the kind; a
   target with no room for a letter before its `…` is left out. *Set variable*'s row names its
-  variable as a `binding::capsule`, as a bound field does, and not the value. The rows stand
+  variable as a `binding::capsule`, as a bound field does, and not the value. A conditional's
+  names its branch count (*1 branch*, *2 branches*, *… · else* while *else* holds actions), its
+  conditions being the branch heads under it. The rows stand
   `NEST` in from their trigger. A row
   drags by its grip to
   another place in its own list (a reaction's, or one branch's), carried under the pointer with
@@ -119,12 +145,17 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **The row's popover**, in the popover lane: the verb's head and close (an action moves by its
   grip alone), the action's fields, then its transition. Opened by a click on a connector, it
   is not closed by that click (`ProtoState::opened_on_canvas`): the canvas runs first, so the
-  popover draws on the click's own frame. A screen action picks a top-level frame, each
+  popover draws on the click's own frame. While it is open, `Delete` or `Backspace` removes its
+  action as one *Remove action* step (`remove_open_action`, routed in `app::dispatch` ahead of
+  `delete_selection`), not the layer that click selected. A screen action picks a top-level frame, each
   page's under its eyebrow, and *Navigate to* adds *Keep scroll position*, a `ui::switch_row`
   (*Back* has none: it keeps scroll as the navigation it undoes did); *Scroll to* a layer of the holder's screen; *Change to* a variant of the instance's
-  set; *Set variable* a variable, then *Set* / *Increment* / *Toggle* (*Increment* for a number,
+  set (`state_instance`; inside a main variant the instance is that main, which each of its
+  instances reads as itself through `resolve_target`, so a looping state is authored on the
+  main); *Set variable* a variable, then *Set* / *Increment* / *Toggle* (*Increment* for a number,
   *Toggle* for a boolean) and its expression or step; *Conditional* one expression per branch
-  (`ui::labelled` *If* / *Else if*), *Add else if* and a branch's `×`; *Open link* an address, refused unless `http` or `https`;
+  (`ui::labelled` *If* / *Else if*), *Add else if* (a `settings::text_button`, tipped *Add a
+  branch tried when the ones above are not*) and a branch's `×`; *Open link* an address, refused unless `http` or `https`;
   *Run script* a document script by name, then (under a separator when there are any) *Copy from
   library*, a `ui::submenu_row` in `FOLDER_SIMPLE`, the script editor's *Save to library* glyph,
   dimmed with *The script library is empty*; its flyout lists the library's scripts by name, as
@@ -146,7 +177,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   while it is on, the shade as a shadow's colour row is (`slot_color_row` over
   `PaintSlot::Backdrop`: the chip opening the picker, the hex, the opacity as its strength), its
   own *Overlay* step; `SetReactions` draws no preview, so a picker drag is held in
-  `InFlight::backdrop_paint`. *Manual* adds X and Y, from the top-left of the layer holding the action, and the
+  `InFlight::backdrop_paint`. *Manual* adds X and Y, from the top-left of the layer holding the
+  action, and starts just under that layer (X 0, Y its height plus `MANUAL_OVERLAY_GAP`, 8), and the
   note *Drag the frame on the canvas to place it*: the fields are for the last point, the canvas
   is where it is placed (*Placing an overlay*, below).
 - **Expressions show names.** The field writes a variable `{name}`
@@ -161,14 +193,17 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   text opens under it, at most `AT_LIST_MAX` (12). The arrows move its light; Enter or Tab, or a
   click, replaces the `@` and what follows with `{name}`, the caret after it. A press on the list
   keeps the field's focus and its draft.
-- **Transitions** (`transition_fields`, also the page's *New links*): the kind; for *Move in*,
+- **Transitions** (`transition_fields`, also the page's *Default transition*): the kind; for *Move in*,
   *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`) and *Smart animate*, a
   direction segment of *None* and the four sides. *None* is live for *Smart animate* alone, whose
   unpaired layers fade under it and slide in from a side otherwise (`play.md`, *Motion*).
   *Dissolve* goes no way and has no direction row. Picking *Smart animate* sets *None*; picking a
   move, push or slide while *None* is set sets the left side. Then *Curve* | *Spring*. A curve is
   an easing from the CSS set or *Custom curve* with its four cubic-bezier numbers (both X within
-  0..1), and a *Duration*; a spring is mass, stiffness and damping. Fields sharing a line stand
+  0..1), and a *Duration*; a spring is a feel (`SPRING_PRESETS`: *Gentle* 1/120/20, *Quick*
+  1/300/30, *Bouncy* 1/400/12, *Slow* 1/80/18; *Custom* shown when none matches) over its mass,
+  stiffness and damping (*M*, *S*, *D*). Switching to *Spring* takes *Quick*, the drag settle's
+  default too. Fields sharing a line stand
   `ui::CARD_COL_GAP` apart. Under them, **the motion preview** (`motion_preview`): the timing
   as its value over time on the Curves graph's ground, from `mastik_play::motion` so it is what
   plays: the curve in `accent_400`, the target dashed in the divider's ink and the range grown to
@@ -227,8 +262,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   `ui::menu_eyebrow`) with a `ROTATE_RIGHT` field button beside it, on while the device is
   turned (*Turn to landscape* / *Turn to portrait*, a *Turn device* step; dimmed with *Pick a
   device to turn*), then *Scaling* (`scaling_combo`, a dropdown whose rows carry their meaning
-  in the accelerator's place: *Fit*, *Fill width*, *Actual size*, *Responsive*), and *New links*,
-  the transition a new link takes. Under them a note says what is laid out other than as drawn
+  in the accelerator's place: *Fit*, *Fill width*, *Actual size*, *Responsive*), and *Default transition*,
+  the transition every new action takes, a dragged link's included. Under them a note says what is laid out other than as drawn
   (*iPhone 16, turned: 852 × 393.*) and, under *Responsive* or a turn, names a flow whose start
   frame has no layout (*Checkout's start frame has no layout; it keeps its children where
   drawn.*); it is quiet when nothing differs.
@@ -237,8 +272,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   tab is), each flow after the first under a `ui::card_rule`. The first row, the flow Play opens,
   wears `accent_400` on its name field's leading edge: the field's own rounded outline,
   `FIRST_FLOW_BAR` (3) thick, kept to its left corners so it wraps them, tipped *Play opens this flow
-  first*. `+` adds *Flow N* starting at the page's first
-  frame, dimmed with no frame. Under each flow, its starting modes (`flow_modes`): a row per
+  first*. With none, the card says *A flow is where the exported prototype starts; add one with
+  +*. `+` adds *Flow n* (`free_flow_name`: n the first number from the flow count plus one that
+  no flow is named by) starting at the page's first frame, dimmed with no frame. Under each flow, its starting modes (`flow_modes`): a row per
   mode, its collection (as *Set mode*'s, less those another row names) and its mode, and `×`;
   *Add a starting mode* adds the first collection not yet named, at a mode the start frame does
   not read now, dimmed when none is left. Then its starting values: a row per value, the
@@ -290,9 +326,11 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   its end snaps to the middle of that screen's edge facing the pulled dot (`pulled_end`, by
   `facing_edge`) and the screen is ringed; elsewhere it ends at the pointer. Released
   over a top-level frame other than the layer's own, it commits one *Navigate to* with the page's
-  default transition as *Add interaction*, joining the layer's first click
-  (`prototype::with_link`). A click on a dot links nothing and says how to use it; a drop
-  elsewhere says where to drop.
+  default transition (`prototype::with_link`): when the layer's first *On click* already holds a
+  *Navigate to*, that one is pointed at the new frame (*Change action*) rather than a second
+  added; else the navigation joins that click, or makes one (*Add interaction*). The action's
+  popover then opens (`ProtoState::open`), without picking its block. A click on a dot links
+  nothing and says how to use it; a drop elsewhere says where to drop.
 - **Which unselected layer wears dots** is noted each frame in `ProtoState::knob_hover` by
   `note_link_hover` (from `draw_canvas`): the hover target, or the layer that wore them last
   frame while the pointer is still on one of its dots, since they sit half outside it. The hover

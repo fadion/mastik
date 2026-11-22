@@ -543,7 +543,7 @@ combinations asserts the two **partition** the space.
 | `Ctrl+]` / `[` | bring forward / send backward | ✅ |
 | `Ctrl+Shift+]` / `[` | bring to front / send to back | ✅ curly spellings handled |
 | `Shift+D` | reverse subpath direction | ✅ (§15 D125); no app binds this |
-| `Delete`, `Backspace` | delete | ✅ pen point, path points, then layers |
+| `Delete`, `Backspace` | delete | ✅ pen point, path points, the action whose popover is open in prototype mode, then layers |
 | arrows | nudge (1) | ✅ *Settings › Nudge › Step*, `input::NudgeStep::small`, in `prefs.json` (§15 D330); a struct because the pair crosses three seams and a swap compiles |
 | `Shift`+arrows | nudge (10) | ✅ `NudgeStep::large`; need not exceed the small step |
 | `Ctrl`+arrows | resize: `→` wider, `←` narrower, `↓` taller, `↑` shorter | ✅ (§15 D346); no convention behind it. Distance is the nudge step, held by the top-left corner |

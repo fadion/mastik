@@ -1027,11 +1027,23 @@ fn descendants(doc: &Document, root: NodeId) -> Vec<NodeId> {
 }
 
 /// The instance *Change to* switches from a layer: the instance it is or is in,
-/// when that instance's main is a variant of a set.
+/// when that instance's main is a variant of a set; or, inside a main variant,
+/// that main, which each of its instances reads as itself (`resolve_target`):
+/// how a state that moves on to the next is built.
 pub(crate) fn state_instance(doc: &Document, id: NodeId) -> Option<NodeId> {
-    let root = mastik_core::component::instance_root(doc, id)?;
-    let main = mastik_core::component::main_of(doc, root)?;
-    mastik_core::variant::set_of(doc, main).map(|_| root)
+    if let Some(root) = mastik_core::component::instance_root(doc, id) {
+        let main = mastik_core::component::main_of(doc, root)?;
+        return mastik_core::variant::set_of(doc, main).map(|_| root);
+    }
+    let mut at = Some(id);
+    while let Some(x) = at {
+        let n = doc.get(x)?;
+        if n.component() {
+            return mastik_core::variant::set_of(doc, x).map(|_| x);
+        }
+        at = n.parent();
+    }
+    None
 }
 
 /// The variants an instance may change to: its main's set's, in order.
@@ -1109,13 +1121,21 @@ fn target_words(doc: &Document, holder: NodeId, a: &Action) -> (String, Option<&
             }
             None => ("Missing variable".into(), Some("Missing variable")),
         },
-        Action::Conditional { branches, .. } => (
-            branches
-                .first()
-                .map(|b| expr_shown(doc, &b.when))
-                .unwrap_or_default(),
-            None,
-        ),
+        // How it branches: its first condition is the branch head under it.
+        Action::Conditional {
+            branches,
+            otherwise,
+        } => {
+            let n = branches.len();
+            let ways = match n {
+                1 => "1 branch".to_string(),
+                n => format!("{n} branches"),
+            };
+            match otherwise.is_empty() {
+                true => (ways, None),
+                false => (format!("{ways} · else"), None),
+            }
+        }
         Action::SetMode { mode, scope } => match mode_words(doc, *mode) {
             Some((collection, mode)) => {
                 let here = match scope {
@@ -1259,21 +1279,64 @@ pub(crate) fn page_transition(doc: &Document, page: Option<NodeId>) -> Transitio
         .map_or_else(Transition::default, |p| p.play.transition)
 }
 
+/// A new branch's condition: the first boolean variable, which reads as a
+/// question still to be set, or `true` in a document with none.
+fn first_condition(doc: &Document) -> Expr {
+    doc.variables()
+        .iter()
+        .find(|v| v.kind == VarKind::Boolean)
+        .map_or_else(|| Expr("true".into()), |v| keeps(v.id))
+}
+
+/// *Flow n*, n the list's length on, the first number no flow is named by.
+fn free_flow_name(flows: &[Keyed<Flow>]) -> String {
+    let mut n = flows.len() + 1;
+    while flows.iter().any(|f| f.name == format!("Flow {n}")) {
+        n += 1;
+    }
+    format!("Flow {n}")
+}
+
+/// *Set variable*'s first value: the variable itself, which reads and changes
+/// nothing until it is typed over. An empty one would refuse the export.
+fn keeps(var: VarId) -> Expr {
+    Expr(format!("{{{}}}", var.0.to_wire()))
+}
+
 /// A new action of `kind` for a reaction on `holder`, its target the likeliest
 /// one: another screen, the holder's own instance, the first variable or script.
 /// `None` where the document has nothing it could name.
 pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Option<Action> {
     let transition = page_transition(doc, doc.page_of(holder));
     let own = screen_of(doc, holder);
+    // The frames in the order a new target is sought: the holder's own page
+    // first, from the screen after its own round to the one before it, then
+    // the other pages', so a new link draws as a connector, not a stub.
     let other_screen = || {
-        let all: Vec<NodeId> = screens(doc).into_iter().flat_map(|(_, f)| f).collect();
+        let page = doc.page_of(holder);
+        let groups = screens(doc);
+        let here: Vec<NodeId> = groups
+            .iter()
+            .filter(|(p, _)| Some(*p) == page)
+            .flat_map(|(_, f)| f.iter().copied())
+            .collect();
+        let mut all: Vec<NodeId> = match own.and_then(|s| here.iter().position(|f| *f == s)) {
+            Some(i) => here[i + 1..].iter().chain(&here[..i]).copied().collect(),
+            None => here,
+        };
+        all.extend(
+            groups
+                .iter()
+                .filter(|(p, _)| Some(*p) != page)
+                .flat_map(|(_, f)| f.iter().copied()),
+        );
         // A main is a component, not a screen, so it is picked last.
         let main = |f: &NodeId| doc.get(*f).is_some_and(|n| n.component());
         all.iter()
             .copied()
             .find(|f| Some(*f) != own && !main(f))
             .or_else(|| all.iter().copied().find(|f| Some(*f) != own))
-            .or_else(|| all.first().copied())
+            .or_else(|| own)
     };
     Some(match kind {
         ActionKind::Navigate => Action::Navigate {
@@ -1282,8 +1345,11 @@ pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Op
             keep_scroll: false,
         },
         ActionKind::Back => Action::Back,
+        // The first layer in the nearest frame that scrolls: one that can move.
         ActionKind::ScrollTo => Action::ScrollTo {
-            layer: own.and_then(|s| descendants(doc, s).first().copied())?,
+            layer: scrolling_frames(doc, holder)
+                .into_iter()
+                .find_map(|f| doc.get(f)?.children().first().copied())?,
             transition,
         },
         ActionKind::OpenUrl => Action::OpenUrl {
@@ -1318,9 +1384,7 @@ pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Op
             let change = match v.kind {
                 VarKind::Boolean => VarChange::Toggle,
                 VarKind::Number => VarChange::Increment { by: 1.0 },
-                VarKind::String | VarKind::Color => VarChange::Set {
-                    to: Expr(String::new()),
-                },
+                VarKind::String | VarKind::Color => VarChange::Set { to: keeps(v.id) },
             };
             Action::SetVariable { var: v.id, change }
         }
@@ -1336,7 +1400,7 @@ pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Op
         }
         ActionKind::Conditional => Action::Conditional {
             branches: vec![Branch {
-                when: Expr("true".into()),
+                when: first_condition(doc),
                 actions: Vec::new(),
             }],
             otherwise: Vec::new(),
@@ -1360,7 +1424,9 @@ pub(crate) fn action_refusal(
             Some("A script runs only when someone acts")
         }
         ActionKind::RunScript if doc.scripts().is_empty() => Some("This document has no scripts"),
-        ActionKind::ChangeState if state_instance(doc, holder).is_none() => Some("Not a component"),
+        ActionKind::ChangeState if state_instance(doc, holder).is_none() => {
+            Some("Only a component with variants changes state")
+        }
         ActionKind::SetVariable if doc.variables().iter().next().is_none() => {
             Some("This document has no variables")
         }
@@ -1368,7 +1434,10 @@ pub(crate) fn action_refusal(
             Some("No collection has a second mode")
         }
         ActionKind::ScrollTo if new_action(doc, holder, kind).is_none() => {
-            Some("Only a layer in a frame can be scrolled to")
+            Some(match scrolling_frames(doc, holder).is_empty() {
+                true => "No frame on the screen scrolls",
+                false => "No frame that scrolls holds a layer",
+            })
         }
         ActionKind::Navigate | ActionKind::OpenOverlay | ActionKind::SwapOverlay
             if new_action(doc, holder, kind).is_none() =>
@@ -1486,37 +1555,58 @@ fn polyline_distance(pts: &[egui::Pos2], p: egui::Pos2) -> f32 {
     }
 }
 
-/// `reactions` on `id` with a click navigating to `to` added: to the layer's
-/// first click reaction, or as a new one. What a canvas link dot's drop commits.
+/// What a canvas link dot's drop commits: `reactions` on `id` with a click
+/// navigating to `to`. A first click reaction that already navigates is
+/// pointed at `to`, as a new link replaces the old; else the navigation joins
+/// that reaction, or a new one. Answers the list, the action's place, and
+/// whether it was retargeted rather than added.
 pub(crate) fn with_link(
     doc: &Document,
     id: NodeId,
     to: NodeId,
     mint: &mut impl FnMut() -> ItemId,
-) -> Vec<Keyed<Reaction>> {
+) -> (Vec<Keyed<Reaction>>, ActionAt, bool) {
     let mut list = doc
         .get(id)
         .map(|n| n.reactions().to_vec())
         .unwrap_or_default();
-    let action = Keyed::new(
-        mint(),
-        Action::Navigate {
-            to,
-            transition: page_transition(doc, doc.page_of(id)),
-            keep_scroll: false,
-        },
-    );
-    match list.iter_mut().find(|r| r.trigger == Trigger::Click) {
-        Some(r) => r.value.actions.push(action),
-        None => list.push(Keyed::new(
-            mint(),
-            Reaction {
-                trigger: Trigger::Click,
-                actions: vec![action],
-            },
-        )),
+    let at = |reaction, action| ActionAt {
+        node: id,
+        reaction,
+        action,
+    };
+    if let Some(r) = list.iter_mut().find(|r| r.trigger == Trigger::Click) {
+        let rid = r.id;
+        let old = r.value.actions.iter_mut().find_map(|k| match &mut k.value {
+            Action::Navigate { to: t, .. } => Some((k.id, t)),
+            _ => None,
+        });
+        if let Some((aid, t)) = old {
+            *t = to;
+            return (list, at(rid, aid), true);
+        }
+        let aid = mint();
+        r.value.actions.push(Keyed::new(aid, navigate_to(doc, id, to)));
+        return (list, at(rid, aid), false);
     }
-    list
+    let (rid, aid) = (mint(), mint());
+    list.push(Keyed::new(
+        rid,
+        Reaction {
+            trigger: Trigger::Click,
+            actions: vec![Keyed::new(aid, navigate_to(doc, id, to))],
+        },
+    ));
+    (list, at(rid, aid), false)
+}
+
+/// A new *Navigate to* `to` from `holder`, at its page's default transition.
+fn navigate_to(doc: &Document, holder: NodeId, to: NodeId) -> Action {
+    Action::Navigate {
+        to,
+        transition: page_transition(doc, doc.page_of(holder)),
+        keep_scroll: false,
+    }
 }
 
 // --- the canvas ---------------------------------------------------------------
@@ -1736,6 +1826,26 @@ const FLOW_CHIP_GAP: f32 = 6.0;
 const FLOW_CHIP_PAD_R: f32 = 9.0;
 /// The most variables the list `@` opens in an expression shows.
 const AT_LIST_MAX: usize = 12;
+/// The springs a timing offers by name, in the order the dropdown lists them.
+/// *Quick* is the one a new spring takes, the drag settle's default too.
+const SPRING_PRESETS: [(&str, Timing); 4] = [
+    ("Gentle", spring(1.0, 120.0, 20.0)),
+    ("Quick", spring(1.0, 300.0, 30.0)),
+    ("Bouncy", spring(1.0, 400.0, 12.0)),
+    ("Slow", spring(1.0, 80.0, 18.0)),
+];
+const DEFAULT_SPRING: usize = 1;
+
+const fn spring(mass: f64, stiffness: f64, damping: f64) -> Timing {
+    Timing::Spring {
+        mass,
+        stiffness,
+        damping,
+    }
+}
+
+/// How far under the layer that opens it a *Manual* overlay starts, in units.
+const MANUAL_OVERLAY_GAP: f64 = 8.0;
 /// The width of the accent edge on the page's first flow's name field in the
 /// Flows card.
 const FIRST_FLOW_BAR: f32 = 3.0;
@@ -1976,6 +2086,28 @@ impl MastikApp {
         self.proto.open = Some(at);
         self.proto.opened_on_canvas = true;
         self.proto.block = Some((at.node, at.reaction));
+    }
+
+    /// Delete or Backspace while an action's popover is open: that action goes,
+    /// as one *Remove action* step, rather than the layer holding it, which is
+    /// what a click on its connector selected. Answers whether it took the key.
+    pub(crate) fn remove_open_action(&mut self) -> bool {
+        let Some(at) = self.proto.open.filter(|_| self.prototype_mode) else {
+            return false;
+        };
+        let Some(mut reactions) = self.session.doc.get(at.node).map(|n| n.reactions().to_vec())
+        else {
+            return false;
+        };
+        let Some(r) = reactions.iter_mut().find(|r| r.id == at.reaction) else {
+            return false;
+        };
+        if !remove(&mut r.value.actions, at.action) {
+            return false;
+        }
+        self.proto.open = None;
+        self.write_reactions(at.node, reactions, "Remove action", icon::TRASH);
+        true
     }
 
     /// The interaction block of `node` picked on the canvas, while it still has it.
@@ -2280,9 +2412,18 @@ impl MastikApp {
             return;
         };
         let session = &mut self.session;
-        let list = with_link(&session.doc, from, to, &mut || session.ids.mint_item());
+        let (list, at, moved) = with_link(&session.doc, from, to, &mut || session.ids.mint_item());
         let target = name(&self.session.doc, to);
-        self.write_reactions(from, list, "Add interaction", icon::INTERACTION);
+        let label = if moved { "Change action" } else { "Add interaction" };
+        self.write_reactions(from, list, label, icon::INTERACTION);
+        // Open where it can be set further, as a click on a connector does.
+        if self.session.doc.get(from).is_some_and(|n| {
+            n.reactions()
+                .iter()
+                .any(|r| r.id == at.reaction && find(&r.actions, at.action).is_some())
+        }) {
+            self.proto.open = Some(at);
+        }
         self.session.info(format!("Linked to “{target}”"));
     }
 
@@ -2966,7 +3107,50 @@ impl MastikApp {
                     });
                 });
             });
+            self.flow_start_row(ui, id);
         });
+    }
+
+    /// Under a screen's name in prototype mode: the flows that start on it, or
+    /// *Start a flow here*, which adds one there as the Flows card's `+` does
+    /// from the page's first frame.
+    fn flow_start_row(&mut self, ui: &mut egui::Ui, id: NodeId) {
+        let doc = &self.session.doc;
+        let Some(page) = doc.page_of(id) else { return };
+        if doc.get(id).and_then(|n| n.parent()) != Some(page) || !is_frame(doc, id) {
+            return;
+        }
+        let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
+        let here: Vec<&str> = flows
+            .iter()
+            .filter(|f| f.start == id)
+            .map(|f| f.name.as_str())
+            .collect();
+        if !here.is_empty() {
+            let words = match here.as_slice() {
+                [one] => format!("Starts the flow {one}"),
+                many => format!("Starts the flows {}", many.join(", ")),
+            };
+            ui::selection_note(ui, &words);
+            return;
+        }
+        if crate::settings::text_button(ui, "Start a flow here", FieldButton::Off)
+            .on_hover_text("Add a flow that opens on this frame")
+            .clicked()
+        {
+            let mut list = flows;
+            list.push(Keyed::new(
+                self.session.ids.mint_item(),
+                Flow {
+                    name: free_flow_name(&list),
+                    start: id,
+                    modes: Vec::new(),
+                    values: Vec::new(),
+                },
+            ));
+            self.session.name_step("Add flow", icon::INTERACTION);
+            self.commit_edit(Transaction(vec![Operation::SetFlows { id: page, flows: list }]));
+        }
     }
 
     /// The *Interaction states* card of a main in a set, or an instance of one,
@@ -3058,7 +3242,10 @@ impl MastikApp {
                     .map(|s| mastik_core::reset::removed_items(s, &reactions))
                     .unwrap_or_default();
                 if reactions.is_empty() && ghosts.is_empty() {
-                    ui::empty_note(ui, "No interactions");
+                    ui::empty_note(
+                        ui,
+                        "Drag a dot on the layer's edge onto a frame, or add an interaction with +",
+                    );
                 }
                 let states = source
                     .as_ref()
@@ -3248,7 +3435,7 @@ impl MastikApp {
                 .show(|ui| {
                     ui::popup_rows(ui);
                     let w =
-                        ui::menu_width(ui.ctx(), ["Duplicate", "Copy interaction", "Delete"], true);
+                        ui::menu_width(ui.ctx(), ["Duplicate", "Copy interaction", "Remove"], true);
                     ui.set_width(w);
                     // The glyphs the app's own Duplicate and Copy wear.
                     dup =
@@ -3259,7 +3446,7 @@ impl MastikApp {
                     ui::menu_sep(ui);
                     delete = ui::menu_row(
                         ui,
-                        ui::MenuRow::new(icon::TRASH, "Delete").danger(true),
+                        ui::MenuRow::new(icon::TRASH, "Remove").danger(true),
                         ui::MENU_ROW_H,
                     )
                     .clicked();
@@ -3534,6 +3721,17 @@ impl MastikApp {
         self.action_rows(ui, id, r, &r.actions, NEST, &mut list_out);
         if let Some(place) = list_out.add {
             add_place = Some(place);
+        }
+        // A block with no actions says what comes next: the head's `+` menu.
+        if r.actions.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(NEST);
+                let add =
+                    crate::settings::text_button(ui, "Add an action", FieldButton::Off);
+                if let Some(k) = self.add_action_menu(&add, id, &r.trigger) {
+                    add_place = Some((Place::Top, k));
+                }
+            });
         }
         if let Some((place, kind)) = add_place {
             // A document with no script yet names one still to be picked from
@@ -4416,9 +4614,11 @@ impl MastikApp {
                         (
                             Some(VarKind::String | VarKind::Color),
                             VarChange::Toggle | VarChange::Increment { .. },
-                        ) => VarChange::Set {
-                            to: Expr(String::new()),
-                        },
+                        ) => VarChange::Set { to: keeps(v) },
+                        // A value written for another kind would not read.
+                        (Some(_), VarChange::Set { .. }) if new_kind != kind => {
+                            VarChange::Set { to: keeps(v) }
+                        }
                         (_, c) => c.clone(),
                     };
                     // Answered, with the rows below still drawn this frame.
@@ -4456,9 +4656,7 @@ impl MastikApp {
                     let change = match i {
                         1 => VarChange::Increment { by: 1.0 },
                         2 => VarChange::Toggle,
-                        _ => VarChange::Set {
-                            to: Expr(String::new()),
-                        },
+                        _ => VarChange::Set { to: keeps(*var) },
                     };
                     out = Some((
                         Action::SetVariable { var: *var, change },
@@ -4557,9 +4755,12 @@ impl MastikApp {
                     next_branches.remove(i);
                     changed = true;
                 }
-                if ui::word_link(ui, "Add else if", false).clicked() {
+                if crate::settings::text_button(ui, "Add else if", FieldButton::Off)
+                    .on_hover_text("Add a branch tried when the ones above are not")
+                    .clicked()
+                {
                     next_branches.push(Branch {
-                        when: Expr("true".into()),
+                        when: first_condition(&self.session.doc),
                         actions: Vec::new(),
                     });
                     changed = true;
@@ -4810,13 +5011,7 @@ impl MastikApp {
             |p, i, r, on| ui::segment_label(p, r, ["Curve", "Spring"][i], on),
         );
         match pick {
-            Some(1) if !spring => {
-                out = Some(Timing::Spring {
-                    mass: 1.0,
-                    stiffness: 320.0,
-                    damping: 22.0,
-                });
-            }
+            Some(1) if !spring => out = Some(SPRING_PRESETS[DEFAULT_SPRING].1),
             Some(0) if spring => {
                 out = Some(Timing::Ease {
                     curve: Easing::EaseOut,
@@ -4914,6 +5109,26 @@ impl MastikApp {
                 stiffness,
                 damping,
             } => {
+                // A named feel first; the numbers under it make a custom one.
+                let shown = SPRING_PRESETS
+                    .iter()
+                    .find(|(_, p)| *p == t)
+                    .map_or("Custom", |(l, _)| *l);
+                let mut preset = None;
+                ui::fitted_combo(ui, ("spring-feel", salt), w, ui::combo_text(shown), shown, |ui| {
+                    ui::menu_rows(ui);
+                    for (l, p) in SPRING_PRESETS {
+                        let on = shown == l;
+                        if ui.selectable_label(on, l).clicked() && !on {
+                            preset = Some(p);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("How the spring feels");
+                if let Some(p) = preset {
+                    out = Some(p);
+                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = COL;
                     let q = (w - 2.0 * COL) / 3.0;
@@ -5011,6 +5226,16 @@ impl MastikApp {
             .response
             .on_hover_text("Where the frame shows over the screen");
             if let Some(p) = pick {
+                // *Manual* starts just under the layer that opens it, not over it.
+                let p = match p {
+                    OverlayPosition::Manual { x, .. } => OverlayPosition::Manual {
+                        x,
+                        y: self
+                            .world_bounds(node)
+                            .map_or(0.0, |b| (b.height() + MANUAL_OVERLAY_GAP).round()),
+                    },
+                    other => other,
+                };
                 out = Some(OverlaySettings { position: p, ..o });
             }
             if let OverlayPosition::Manual { x, y } = o.position {
@@ -6131,7 +6356,10 @@ impl MastikApp {
         let mut next: Option<(Vec<Keyed<Flow>>, &'static str)> = None;
         let add = self.panel(ui, "Flows", Some(action), |app, ui| {
             if flows.is_empty() {
-                ui::empty_note(ui, "No flows");
+                ui::empty_note(
+                    ui,
+                    "A flow is where the exported prototype starts; add one with +",
+                );
             }
             for (n, f) in flows.iter().enumerate() {
                 // A rule between one flow's starting values and the next flow.
@@ -6302,14 +6530,10 @@ impl MastikApp {
         });
         if add && let Some(start) = frames.first().copied() {
             let mut list = flows.clone();
-            let mut n = list.len() + 1;
-            while list.iter().any(|f| f.name == format!("Flow {n}")) {
-                n += 1;
-            }
             list.push(Keyed::new(
                 self.session.ids.mint_item(),
                 Flow {
-                    name: format!("Flow {n}"),
+                    name: free_flow_name(&list),
                     start,
                     modes: Vec::new(),
                     values: Vec::new(),
@@ -6631,14 +6855,14 @@ impl MastikApp {
                     );
                 }
             }
-            ui::labelled(ui, "New links", |ui| {
+            ui::labelled(ui, "Default transition", |ui| {
                 if let Some(t) = app.transition_fields(ui, ("page-tr", page), play.transition, w) {
                     next = Some((
                         PagePlay {
                             transition: t,
                             ..play.clone()
                         },
-                        "New links",
+                        "Default transition",
                     ));
                 }
             });
@@ -6983,7 +7207,7 @@ mod tests {
         );
         assert_eq!(
             action_refusal(doc, f.add, &Trigger::Click, ActionKind::ChangeState),
-            Some("Not a component")
+            Some("Only a component with variants changes state")
         );
         assert_eq!(
             action_refusal(doc, f.add, &Trigger::Click, ActionKind::Navigate),
@@ -6995,11 +7219,41 @@ mod tests {
         assert_eq!(to, f.cart, "another screen than the layer's own");
     }
 
-    /// A link a dot makes takes the page's default transition and joins the
-    /// layer's click. flip: `with_link` taking `Transition::default()` → fails at
-    /// "the page's default".
+    /// Delete with an action's popover open removes that action as one step and
+    /// keeps the layer. flip: `dispatch` without its `remove_open_action` arm →
+    /// fails at "the layer stays".
     #[test]
-    fn a_link_takes_the_pages_transition_and_joins_the_click() {
+    fn delete_with_an_action_open_removes_the_action() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let to = f.cart;
+        let at = one_action(
+            &mut f,
+            Action::Navigate {
+                to,
+                transition: Transition::default(),
+                keep_scroll: false,
+            },
+        );
+        f.app.prototype_mode = true;
+        f.app.open_link(at);
+        f.app.dispatch(&ctx, crate::input::Action::Delete);
+        let n = f.app.session.doc.get(f.add).expect("the layer stays");
+        assert!(n.reactions()[0].actions.is_empty(), "the action goes");
+        assert!(f.app.proto.open.is_none(), "its popover closes");
+        assert!(f.app.session.undo());
+        assert_eq!(
+            f.app.session.doc.get(f.add).unwrap().reactions()[0].actions.len(),
+            1,
+            "one step"
+        );
+    }
+
+    /// A link a dot makes takes the page's default transition, and a second
+    /// link points the click's navigation elsewhere rather than adding one.
+    /// flip: `with_link` pushing a new navigation always → fails at "replaces".
+    #[test]
+    fn a_link_takes_the_pages_transition_and_replaces_the_clicks_navigation() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         let page = f.app.session.doc.first_page();
@@ -7023,7 +7277,8 @@ mod tests {
             n += 1;
             item(900 + n)
         };
-        let once = with_link(&f.app.session.doc, f.add, f.cart, &mut mint);
+        let (once, first, moved) = with_link(&f.app.session.doc, f.add, f.cart, &mut mint);
+        assert!(!moved, "a new link");
         assert!(
             f.app
                 .session
@@ -7032,9 +7287,14 @@ mod tests {
                     reactions: once,
                 }]))
         );
-        let twice = with_link(&f.app.session.doc, f.add, f.home, &mut mint);
+        let (twice, second, moved) = with_link(&f.app.session.doc, f.add, f.home, &mut mint);
         assert_eq!(twice.len(), 1, "one click reaction");
-        assert_eq!(twice[0].actions.len(), 2, "the second link joins it");
+        assert_eq!(twice[0].actions.len(), 1, "the second link replaces the first");
+        assert!(moved && second == first, "retargeted in place");
+        let Action::Navigate { to, .. } = &twice[0].actions[0].value else {
+            panic!("fixture: a navigation");
+        };
+        assert_eq!(*to, f.home);
         assert_eq!(
             transition_of(&twice[0].actions[0].value),
             Some(smart),
@@ -7064,6 +7324,11 @@ mod tests {
             r.as_slice(),
             [k] if matches!(k.actions.as_slice(), [a] if a.value == Action::Navigate { to: f.cart, transition: Transition::default(), keep_scroll: false })
         ));
+        assert_eq!(
+            f.app.proto.open.map(|at| at.action),
+            Some(r[0].actions[0].id),
+            "its popover opens"
+        );
         assert!(f.app.session.undo());
         assert!(
             f.app.session.doc.get(f.add).unwrap().reactions().is_empty(),
@@ -7375,7 +7640,8 @@ mod tests {
 
     /// A main in a set whose state property ties Hover lists Hover as playing
     /// live; untied, nothing; a plain layer, nothing.
-    /// flip: `live_states` taking Pressed alone → fails at "tied".
+    /// flip: `live_states` taking Pressed alone → fails at "tied";
+    /// `state_instance` without its main-variant walk → fails at "a main variant".
     #[test]
     fn a_tied_hover_plays_live() {
         use mastik_core::variant::{Interaction, VariantProp, VariantSet};
@@ -7439,6 +7705,16 @@ mod tests {
             live_states(&f.app.session.doc, f.add).is_empty(),
             "a plain layer"
         );
+        // A main variant changes its own state, to the set's next variant: what
+        // a state that moves on is built from.
+        let doc = &f.app.session.doc;
+        assert_eq!(state_instance(doc, rest), Some(rest), "a main variant");
+        let Some(Action::ChangeState { instance, to, .. }) =
+            new_action(doc, rest, ActionKind::ChangeState)
+        else {
+            panic!("Change to on a main variant");
+        };
+        assert_eq!((instance, to), (rest, hover));
     }
 
     /// `@` in an expression lists the variables whose names hold what follows
@@ -7480,6 +7756,59 @@ mod tests {
         assert_eq!(f.app.at_names("1 + @cart"), vec!["cartCount"], "filtered");
         assert!(f.app.at_names("@cart + 1").is_empty(), "closed by a space");
         assert!(f.app.at_names("{cartCount} + 1").is_empty(), "no @");
+    }
+
+    /// A new *Set variable* on a text variable reads before anything is typed,
+    /// so it never refuses the export; a new condition starts at the first
+    /// boolean variable. flip: `keeps` answering an empty expression → fails at
+    /// "reads".
+    #[test]
+    fn new_set_variable_and_condition_read_as_added() {
+        use mastik_core::variable::{Cell, CollectionId, Mode, Variable};
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let mode = f.app.session.ids.mint_mode();
+        let [text, flag] = [(); 2].map(|_| f.app.session.ids.mint_var());
+        let var = |id, name: &str, kind, cell| Operation::AddVariable {
+            var: Variable {
+                id,
+                name: name.into(),
+                kind,
+                cells: [(mode, cell)].into(),
+                scope: None,
+                origin: None,
+                forked: None,
+                description: String::new(),
+            },
+        };
+        assert!(f.app.session.commit(Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: Mode {
+                    id: mode,
+                    name: "Default".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            var(text, "greeting", VarKind::String, Cell::String("Hi".into())),
+            var(flag, "signedIn", VarKind::Boolean, Cell::Boolean(false)),
+        ])));
+        let doc = &f.app.session.doc;
+        let Some(Action::SetVariable {
+            change: VarChange::Set { to },
+            ..
+        }) = new_action(doc, f.add, ActionKind::SetVariable)
+        else {
+            panic!("a Set on the text variable");
+        };
+        assert!(to.check().is_ok(), "reads: {to:?}");
+        let Some(Action::Conditional { branches, .. }) =
+            new_action(doc, f.add, ActionKind::Conditional)
+        else {
+            panic!("a conditional");
+        };
+        assert_eq!(branches[0].when.vars(), vec![flag], "the first flag");
     }
 
     /// A frame's own *After delay* going back to a frame on its left leaves from
