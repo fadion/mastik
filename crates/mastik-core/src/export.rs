@@ -115,6 +115,10 @@ pub struct PerRow {
     pub name_by: Option<crate::chart::ColumnId>,
     #[serde(default, rename = "as", skip_serializing_if = "RowsAs::is_files")]
     pub rows_as: RowsAs,
+    /// The *Fill* fold's choices, over what matches by name
+    /// ([`crate::list::row_targets_with`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill: Vec<crate::list::RowPick>,
 }
 
 impl PerRow {
@@ -124,6 +128,7 @@ impl PerRow {
             table,
             name_by: None,
             rows_as: RowsAs::Files,
+            fill: Vec::new(),
         }
     }
 }
@@ -760,17 +765,12 @@ mod tests {
     fn a_file_per_row_is_saved_only_when_on() {
         let mut spec = ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0));
         let table = crate::list::DataSetId(crate::IdSource::new(0xA).mint());
-        spec.per_row = Some(PerRow {
-            table,
-            name_by: None,
-            rows_as: RowsAs::Files,
-        });
+        spec.per_row = Some(PerRow::new(table));
         let json = serde_json::to_string(&spec).expect("serialize");
         assert_eq!(json, r#"{"format":"Png","per_row":{"table":"a:1"}}"#);
         spec.per_row = Some(PerRow {
-            table,
             name_by: Some(crate::chart::ColumnId(2)),
-            rows_as: RowsAs::Files,
+            ..PerRow::new(table)
         });
         let json = serde_json::to_string(&spec).expect("serialize");
         assert_eq!(
@@ -783,9 +783,8 @@ mod tests {
         );
         spec.format = ExportFormat::Pdf;
         spec.per_row = Some(PerRow {
-            table,
-            name_by: None,
             rows_as: RowsAs::Pages,
+            ..PerRow::new(table)
         });
         let json = serde_json::to_string(&spec).expect("serialize");
         assert_eq!(

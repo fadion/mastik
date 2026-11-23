@@ -226,8 +226,9 @@ pub fn filled_copy(
     spec: &ExportSpec,
     row: usize,
 ) -> Option<(Document, Resolved, mastik_core::list::RowFilled)> {
-    let set = doc.data_set(spec.per_row.as_ref()?.table)?.clone();
-    let targets = mastik_core::list::row_targets(doc, node, &set.table);
+    let per_row = spec.per_row.as_ref()?;
+    let set = doc.data_set(per_row.table)?.clone();
+    let targets = mastik_core::list::row_targets_with(doc, node, &set.table, &per_row.fill);
     let mut copy = doc.clone();
     let mut filled = mastik_core::list::fill_row(&mut copy, node, &set, row, &targets);
     let res = Resolved::rebuild(&copy);

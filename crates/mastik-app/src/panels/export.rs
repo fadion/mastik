@@ -1298,7 +1298,7 @@ impl MastikApp {
         if rows == 0 {
             return Some((format!("{} has no rows: nothing to export", set.name), true));
         }
-        if mastik_core::list::row_targets(doc, id, &set.table).is_empty() {
+        if mastik_core::list::row_targets_with(doc, id, &set.table, &per_row.fill).is_empty() {
             let layer = doc.get(id).map_or("", |n| n.name());
             return Some((format!("No column fills anything in {layer}"), true));
         }
@@ -1779,6 +1779,7 @@ impl MastikApp {
                 });
             }
         }
+        let fill_table = set.map(|s| s.table.clone());
         match table {
             Some(TablePick::Set(table)) => {
                 edit(out, spec).per_row = Some(PerRow {
@@ -1789,6 +1790,104 @@ impl MastikApp {
             }
             Some(TablePick::File) => self.table_file_dialog(),
             _ => {}
+        }
+        // One layer's slots: a multi-selection has no one list of them.
+        if let (Some(table), [id]) = (fill_table, self.export_subjects().as_slice()) {
+            self.per_row_fill(ui, index, *id, &table, columns, spec, out);
+        }
+    }
+
+    /// *Fill · ‹layer›*: a dropdown per slot a column can fill in `id`
+    /// (`list::row_slots`), *None* and the columns, built as the List card's
+    /// *Fill* is; a pick is kept on the row as a `RowPick` over the match by
+    /// name.
+    #[allow(clippy::too_many_arguments)]
+    fn per_row_fill(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        id: NodeId,
+        table: &mastik_core::chart::Table,
+        columns: Vec<(ColumnId, String)>,
+        spec: &ExportSpec,
+        out: &mut Option<ExportSpec>,
+    ) {
+        use mastik_core::list::{RowPick, RowSlot, RowTarget};
+        let Some(per_row) = &spec.per_row else {
+            return;
+        };
+        let doc = &self.session.doc;
+        let slots = mastik_core::list::row_slots(doc, id);
+        let targets = mastik_core::list::row_targets_with(doc, id, table, &per_row.fill);
+        let column_of = |slot: &RowSlot| {
+            targets.iter().find_map(|t| match (t, slot) {
+                (RowTarget::Fill(f), RowSlot::Fill(target)) if f.target == *target => {
+                    Some(f.column)
+                }
+                (RowTarget::Layer { node, column }, RowSlot::Layer(n)) if node == n => {
+                    Some(*column)
+                }
+                _ => None,
+            })
+        };
+        let filled: Vec<Option<ColumnId>> = slots.iter().map(|(s, _)| column_of(s)).collect();
+        let layer = doc.get(id).map_or(String::new(), |n| n.name().to_string());
+        let count = filled.iter().flatten().count();
+        if !self.card_fold_noted(
+            ui,
+            "Export fill",
+            &format!("Fill \u{b7} {layer}"),
+            count,
+            None,
+        ) {
+            return;
+        }
+        if slots.is_empty() {
+            let instance = mastik_core::component::instance_root(&self.session.doc, id) == Some(id);
+            ui::selection_note(
+                ui,
+                match instance {
+                    true => crate::list_data::NO_FILL_TARGETS,
+                    false => "It holds no text or picture layer a column can fill",
+                },
+            );
+            return;
+        }
+        for ((slot, name), now) in slots.into_iter().zip(filled) {
+            let shown = now
+                .and_then(|c| columns.iter().find(|(i, _)| *i == c))
+                .map_or("None", |(_, n)| n.as_str())
+                .to_string();
+            let mut pick: Option<Option<ColumnId>> = None;
+            ui::labelled(ui, &name, |ui| {
+                let w = ui.available_width();
+                let salt = ("export-fill", index, &slot);
+                ui::fitted_combo(ui, salt, w, ui::combo_text(&shown), &shown, |ui| {
+                    ui::menu_rows(ui);
+                    if ui.selectable_label(now.is_none(), "None").clicked() {
+                        pick = Some(None);
+                    }
+                    for (c, n) in &columns {
+                        if ui.selectable_label(now == Some(*c), n).clicked() {
+                            pick = Some(Some(*c));
+                        }
+                    }
+                });
+            });
+            if let Some(column) = pick.filter(|c| *c != now) {
+                let mut fill: Vec<RowPick> = per_row
+                    .fill
+                    .iter()
+                    .filter(|p| p.slot != slot)
+                    .cloned()
+                    .collect();
+                fill.push(RowPick { slot, column });
+                edit(out, spec).per_row = Some(PerRow {
+                    fill,
+                    ..per_row.clone()
+                });
+                return;
+            }
         }
     }
 

@@ -300,6 +300,55 @@ fn a_rows_file_is_drawn_from_a_filled_copy_and_the_document_is_untouched() {
     );
 }
 
+/// A *Fill* fold's picks lay over the match by name: a slot picked to *None*
+/// fills nothing, one picked to a column takes it, and the row's file shows it.
+///
+/// flip: `plan::filled_copy` reading `row_targets` without the picks → fails
+/// at "Date takes the talk".
+#[test]
+fn fill_picks_override_the_match_by_name() {
+    use mastik_core::list::{RowPick, RowSlot};
+    let mut f = fixture(&[["Ada Lovelace", "Notes on the engine", ""]]);
+    let slots: Vec<RowSlot> = mastik_core::list::row_slots(&f.doc, f.frame)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    assert_eq!(
+        slots,
+        [
+            RowSlot::Layer(f.name),
+            RowSlot::Layer(f.date),
+            RowSlot::Layer(f.photo)
+        ],
+        "the locked Talk is left out"
+    );
+    let spec = ExportSpec {
+        per_row: Some(PerRow {
+            fill: vec![
+                RowPick {
+                    slot: RowSlot::Layer(f.name),
+                    column: None,
+                },
+                RowPick {
+                    slot: RowSlot::Layer(f.date),
+                    column: Some(f.columns[1]),
+                },
+            ],
+            ..PerRow::new(f.table)
+        }),
+        ..ExportSpec::new(ExportFormat::Svg, ExportScale::Times(1.0))
+    };
+    set_exports(&mut f, spec);
+    let planned = plan(&f.doc, &f.res, &[f.frame], PlanOptions::default());
+    let bytes = mastik_export::plan::render(&f.doc, &f.res, &planned[0]).expect("bytes");
+    let svg = String::from_utf8(bytes).expect("utf-8");
+    assert!(
+        svg.contains("Notes on the engine"),
+        "Date takes the talk: {svg}"
+    );
+    assert!(svg.contains("Placeholder"), "Name fills nothing: {svg}");
+}
+
 /// A PDF row writing its rows as pages plans one file, named as the layer's
 /// one file is, of a page per row, each bookmarked; an empty table plans none.
 ///

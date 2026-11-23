@@ -1474,6 +1474,57 @@ pub fn row_targets(doc: &Document, frame: NodeId, table: &Table) -> Vec<RowTarge
             .find(|c| key(&c.name) == k)
             .map(|c| c.id)
     };
+    row_slots(doc, frame)
+        .into_iter()
+        .filter_map(|(slot, name)| match slot {
+            RowSlot::Layer(node) => Some(RowTarget::Layer {
+                node,
+                column: column(&name)?,
+            }),
+            RowSlot::Fill(_) => None,
+        })
+        .collect()
+}
+
+/// Something a column can fill in a *One file per row* frame: what a *Fill*
+/// fold lists a row for.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowSlot {
+    /// A property of an instance frame, as a list's [`Target`].
+    Fill(Target),
+    /// A text or picture layer under a frame that is no instance.
+    Layer(NodeId),
+}
+
+/// A *Fill* fold's choice for one slot, overriding what matches it by name:
+/// the column that fills it, or `None` for nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowPick {
+    pub slot: RowSlot,
+    pub column: Option<ColumnId>,
+}
+
+/// Every slot a column can fill in `frame`, with its name, in the order a
+/// *Fill* fold lists them. On an instance, its text, boolean and image
+/// properties, then its set's variant properties; on any other frame, the
+/// text layers (not one bound to a variable) and layers showing a picture
+/// under it, in reading order, leaving out hidden and locked layers and what
+/// they hold.
+pub fn row_slots(doc: &Document, frame: NodeId) -> Vec<(RowSlot, String)> {
+    if crate::component::instance_root(doc, frame) == Some(frame) {
+        let mut out: Vec<(RowSlot, String)> = crate::variant::instance_properties(doc, frame)
+            .into_iter()
+            .filter(|p| matches!(p.kind, PropKind::Text | PropKind::Boolean | PropKind::Image))
+            .map(|p| (RowSlot::Fill(Target::Prop(p.id)), p.name.clone()))
+            .collect();
+        out.extend(
+            variant_props(doc, frame)
+                .into_iter()
+                .map(|p| (RowSlot::Fill(Target::Variant(p.name.clone())), p.name)),
+        );
+        return out;
+    }
     let mut out = Vec::new();
     let mut stack: Vec<NodeId> = doc
         .get(frame)
@@ -1490,13 +1541,47 @@ pub fn row_targets(doc: &Document, frame: NodeId, table: &Table) -> Vec<RowTarge
             }
             _ => n.paint().image_fill().is_some(),
         };
-        if fillable && let Some(c) = column(n.name()) {
-            out.push(RowTarget::Layer {
-                node: id,
-                column: c,
-            });
+        if fillable {
+            out.push((RowSlot::Layer(id), n.name().to_string()));
         }
         stack.extend(n.children().iter().rev());
+    }
+    out
+}
+
+/// [`row_targets`] with a *Fill* fold's `picks` laid over it: a picked slot
+/// takes its column, or nothing; a pick naming a slot `frame` no longer has
+/// is passed over.
+pub fn row_targets_with(
+    doc: &Document,
+    frame: NodeId,
+    table: &Table,
+    picks: &[RowPick],
+) -> Vec<RowTarget> {
+    let mut out = row_targets(doc, frame, table);
+    if picks.is_empty() {
+        return out;
+    }
+    let slots: Vec<RowSlot> = row_slots(doc, frame).into_iter().map(|(s, _)| s).collect();
+    for pick in picks.iter().filter(|p| slots.contains(&p.slot)) {
+        out.retain(|t| match (t, &pick.slot) {
+            (RowTarget::Fill(f), RowSlot::Fill(target)) => f.target != *target,
+            (RowTarget::Layer { node, .. }, RowSlot::Layer(id)) => node != id,
+            _ => true,
+        });
+        let Some(column) = pick.column.filter(|c| table.index_of(*c).is_some()) else {
+            continue;
+        };
+        out.push(match &pick.slot {
+            RowSlot::Fill(target) => RowTarget::Fill(Fill {
+                target: target.clone(),
+                column,
+            }),
+            RowSlot::Layer(node) => RowTarget::Layer {
+                node: *node,
+                column,
+            },
+        });
     }
     out
 }
