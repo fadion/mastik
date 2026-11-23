@@ -221,16 +221,17 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   starting value are refused) and the range `ExprError::at` names underlined
   (`ui::field_underline`), and nothing is written until it reads. Its hint ends *or @ for a
   name* (*or @ for a variable* where only variables are read, as in a list's filter): while the
-  focused field ends in `@` and a name being typed (`at_rows`: closed by a brace or an operator,
-  and by whitespace unless a table's name may still go on past it, since *Table 1* holds one), a
-  list opens under it of the variables whose names hold that text, then under *Tables* the
+  focused field ends in a `{` still open (outside quotes) and a name being typed, closed only by
+  its `}`, or else in `@` and a name being typed (`at_rows`, `name_opener`: closed by a brace or
+  an operator, and by whitespace unless a table's name may still go on past it, since *Table 1*
+  holds one), a list opens under it of the variables whose names hold that text, then under *Tables* the
   tables with their row counts (`row`, the row acted on, first inside a row action), at most
   `AT_LIST_MAX` (12). After `<table>.` it lists *rows*, *opened*, *first*, *last*, a typed row
   number and the columns (a number column noted *# · sum min max avg*); after a row, its columns;
   after a column, its totals. The arrows move its light; Enter or Tab, or a click, replaces the
-  `@` and what follows with `{name}`, the caret after it, or, for a step that names nothing whole
-  yet (a table, a row, a column before its total), with `@` and that step and a dot, so the next
-  step's list opens.
+  opener and what follows with `{name}`, the caret after it, or, for a step that names nothing
+  whole yet (a table, a row, a column before its total), with the same opener and that step and a
+  dot, so the next step's list opens (`picked`).
   A press on the list keeps the field's focus and its draft.
 - **Transitions** (`transition_fields`, also the page's *Default transition*): the kind; for *Move in*,
   *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`) and *Smart animate*, a

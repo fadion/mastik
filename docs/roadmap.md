@@ -7,17 +7,6 @@ work is described in `architecture.md`. Refs are file + function name, never lin
 the code before picking an item up — an item's premise can go stale while its ask still reads
 true.
 
-## Now · Prototyping
-
-A release of its own. The prototype is built (`prototyping.md` points to each part); what
-remains is below.
-
-- **Variable autocomplete on `{`.** An expression names a variable as `{name}`
-  (`Expr::with_names`), and `@` already opens a list of the document's variables and tables that writes one
-  (`at_rows` in `panels/prototype.rs`), but typing `{`, which is the form the field shows,
-  suggests nothing. `{` should open the same list, narrowing as the name is typed and closing on
-  `}`.
-
 ## Next · Editing parity
 
 Mastik as a standalone tool: the effects, paints, media and path tools that would otherwise send

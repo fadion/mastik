@@ -1136,7 +1136,7 @@ pub(crate) fn expr_stored(
     Ok(e)
 }
 
-/// One row of the list `@` opens in an expression field.
+/// One row of the list `@` or `{` opens in an expression field.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AtRow {
     /// The eyebrow it sits under.
@@ -1144,31 +1144,65 @@ pub(crate) struct AtRow {
     label: String,
     /// The faint words after it: a table's row count, what a word reads.
     note: String,
-    /// What replaces the `@` and what follows it…
+    /// What replaces the opener and what follows it…
     insert: String,
-    /// …in braces when this names something whole; else after a new `@`, for
-    /// the next step's list (a table's rows and columns, a column's totals).
+    /// …in braces when this names something whole; else after the same opener,
+    /// for the next step's list (a table's rows and columns, a column's totals).
     done: bool,
 }
 
-/// What an expression's `text` may be naming after its last `@`: the
-/// variables whose names hold what follows it, then (where `reads` takes
-/// tables) the tables; after `<table>.`, what the table holds — its row count,
-/// its rows, its columns; after a row, its columns; after a column, its
-/// totals. None when no `@` is open.
+/// Where `text` ends naming something for the list under its field: the byte
+/// offset of a `{` still open at its end (outside quotes, as `Expr` reads
+/// them), else of its last `@`; and whether it is the brace.
+pub(crate) fn name_opener(text: &str) -> Option<(usize, bool)> {
+    let mut quote = None;
+    let mut i = 0;
+    while let Some(c) = text[i..].chars().next() {
+        let next = i + c.len_utf8();
+        i = match quote {
+            Some(_) if c == '\\' => next + text[next..].chars().next().map_or(0, char::len_utf8),
+            Some(q) if c == q => {
+                quote = None;
+                next
+            }
+            Some(_) => next,
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                next
+            }
+            None if c == '{' => match text[next..].find('}') {
+                Some(k) => next + k + 1,
+                None => return Some((i, true)),
+            },
+            None => next,
+        };
+    }
+    text.rfind('@').map(|at| (at, false))
+}
+
+/// What an expression's `text` may be naming after an open `{` or its last
+/// `@` ([`name_opener`]): the variables whose names hold what follows it, then
+/// (where `reads` takes tables) the tables; after `<table>.`, what the table
+/// holds — its row count, its rows, its columns; after a row, its columns;
+/// after a column, its totals. None when neither is open.
 pub(crate) fn at_rows(doc: &Document, text: &str, reads: Reads) -> Vec<AtRow> {
     use mastik_core::prototype::expr::{Agg, ROW};
-    let Some(at) = text.rfind('@') else {
+    let Some((at, brace)) = name_opener(text) else {
         return Vec::new();
     };
-    let query = &text[at + 1..];
-    if query.contains(|c: char| "{}()+-*/<>=!&|,\"".contains(c)) {
+    // Inside a brace only `}` ends the name, so it may hold spaces and symbols.
+    let query = match brace {
+        true => text[at + 1..].trim_start(),
+        false => &text[at + 1..],
+    };
+    if !brace && query.contains(|c: char| "{}()+-*/<>=!&|,\"".contains(c)) {
         return Vec::new();
     }
-    // A space ends the name, unless a table's name goes on past it.
+    // After `@` a space ends the name, unless a table's name goes on past it.
     let spaced = |name: &str| query.starts_with(name) || name.starts_with(query);
     let tables = matches!(reads, Reads::Tables(_));
-    if query.contains(char::is_whitespace)
+    if !brace
+        && query.contains(char::is_whitespace)
         && !(tables && doc.data_sets().iter().any(|t| spaced(&t.name)))
     {
         return Vec::new();
@@ -1316,6 +1350,20 @@ pub(crate) fn at_rows(doc: &Document, text: &str, reads: Reads) -> Vec<AtRow> {
     }));
     out.truncate(AT_LIST_MAX);
     out
+}
+
+/// `text` once `row` is picked from its list: the opener and what follows it
+/// become `{name}`, or, for a step that names nothing whole yet (a table, a
+/// row, a column before its total), the same opener and that step, so the next
+/// step's list opens.
+fn picked(text: &str, row: &AtRow) -> String {
+    let (at, brace) = name_opener(text).unwrap_or((text.len(), false));
+    let head = &text[..at];
+    match (row.done, brace) {
+        (true, _) => format!("{head}{{{}}}", row.insert),
+        (false, true) => format!("{head}{{{}", row.insert),
+        (false, false) => format!("{head}@{}", row.insert),
+    }
 }
 
 fn kind_word(k: VarKind) -> &'static str {
@@ -6237,8 +6285,9 @@ impl MastikApp {
         let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
         let refused = live.as_ref().and_then(|d| d.refused.clone());
         let mut text = live.map_or(shown.clone(), |d| d.text.clone());
-        // `@` asks for a variable or a table: while the field holds one being
-        // named, its keys move through the list under it rather than commit.
+        // `@` or an open `{` asks for a variable or a table: while the field
+        // holds one being named, its keys move through the list under it rather
+        // than commit.
         let at_id = ui.id().with(("expr-at", key));
         let (pick_key, pressed_in) = self.at_list_keys(ui, at_id, &text, reads);
         let hint = match (literal, reads) {
@@ -6265,12 +6314,7 @@ impl MastikApp {
             return None;
         }
         if let Some(row) = self.at_list(ui, at_id, &resp, &text, pick_key, reads) {
-            let at = text.rfind('@').unwrap_or(text.len());
-            // A table, or a table's row or column, opens the next step's list.
-            let next = match row.done {
-                true => format!("{}{{{}}}", &text[..at], row.insert),
-                false => format!("{}@{}", &text[..at], row.insert),
-            };
+            let next = picked(&text, &row);
             let mut state = egui::TextEdit::load_state(&ctx, resp.id).unwrap_or_default();
             state
                 .cursor
@@ -6306,7 +6350,7 @@ impl MastikApp {
     }
 
     /// Before an expression field draws: while its `text` names a variable after
-    /// `@` and the field held focus last pass, take the arrows, Enter and Tab
+    /// `@` or `{` and the field held focus last pass, take the arrows, Enter and Tab
     /// for the list. Answers the variable Enter or Tab picked, and whether the
     /// pointer pressed on the list this pass.
     fn at_list_keys(
@@ -6350,7 +6394,7 @@ impl MastikApp {
         (enter.then(|| names[hi].clone()), pressed_in)
     }
 
-    /// The list `@` opens under the expression field `resp`, its highlighted
+    /// The list `@` or `{` opens under the expression field `resp`, its highlighted
     /// row lit, each group under its eyebrow; answers the row clicked, or
     /// `picked` by Enter or Tab.
     fn at_list(
@@ -8690,6 +8734,87 @@ mod tests {
         assert_eq!(names("1 + @cart"), vec!["cartCount"], "filtered");
         assert!(names("@cart + 1").is_empty(), "closed by a space");
         assert!(names("{cartCount} + 1").is_empty(), "no @");
+    }
+
+    /// An open `{` lists what `@` would, narrowing as the name is typed, spaces
+    /// and all; `}` or a quote around it closes the list; a pick keeps the brace.
+    /// flip: `name_opener` skipping the brace scan → fails at "opens on a brace".
+    #[test]
+    fn a_brace_lists_what_it_may_name() {
+        use mastik_core::chart::{Column, ColumnId, Table};
+        use mastik_core::list::DataSet;
+        use mastik_core::variable::{Cell, CollectionId, Mode, Variable};
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let mode = f.app.session.ids.mint_mode();
+        let [a, b] = [(); 2].map(|_| f.app.session.ids.mint_var());
+        let number = |id, name: &str| Operation::AddVariable {
+            var: Variable {
+                id,
+                name: name.into(),
+                kind: VarKind::Number,
+                cells: [(mode, Cell::Number(0.0))].into(),
+                scope: None,
+                origin: None,
+                forked: None,
+                description: String::new(),
+            },
+        };
+        let set = f.app.session.ids.mint_data_set();
+        assert!(f.app.session.commit(Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: Mode {
+                    id: mode,
+                    name: "Default".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            number(a, "cart count"),
+            number(b, "signedIn"),
+            Operation::SetDataSet {
+                id: set,
+                set: Some(Box::new(DataSet {
+                    id: set,
+                    name: "Cart items".into(),
+                    table: Table {
+                        columns: vec![Column {
+                            id: ColumnId(0),
+                            name: "Line".into(),
+                        }],
+                        rows: vec![vec!["42".into()]],
+                    },
+                    source: None,
+                    pictures: Vec::new(),
+                })),
+            },
+        ])));
+        let doc = &f.app.session.doc;
+        let rows = |t: &str| at_rows(doc, t, Reads::Tables(None));
+        let labels = |t: &str| -> Vec<String> { rows(t).into_iter().map(|r| r.label).collect() };
+        assert_eq!(
+            labels("1 + {"),
+            vec!["cart count", "signedIn", "Cart items"],
+            "opens on a brace"
+        );
+        assert_eq!(labels("{cart c"), vec!["cart count"], "a space narrows");
+        assert!(labels("{cart count}").is_empty(), "closed by its brace");
+        assert!(labels("\"{\" + 1").is_empty(), "a brace inside quotes");
+        assert_eq!(labels("\"a}\" + {sig"), vec!["signedIn"], "after a quote");
+        assert_eq!(
+            labels("{Cart items.Line."),
+            vec!["sum", "min", "max", "avg"]
+        );
+        // A pick writes the whole name in braces, or the next step after `{`.
+        let pick = |t: &str, label: &str| {
+            let row = rows(t).into_iter().find(|r| r.label == label).unwrap();
+            picked(t, &row)
+        };
+        assert_eq!(pick("1 + {ca", "cart count"), "1 + {cart count}");
+        assert_eq!(pick("1 + {Ca", "Cart items"), "1 + {Cart items.");
+        assert_eq!(pick("1 + @ca", "cart count"), "1 + {cart count}", "@ still");
+        assert_eq!(pick("@Ca", "Cart items"), "@Cart items.");
     }
 
     /// `@` lists the tables after the variables; a table's dot lists its count,
