@@ -14,13 +14,18 @@ use mastik_core::{NodeId, Operation, Transaction};
 
 /// The rows modes in the segmented control's order, with their words.
 const ROWS: [(&str, &str); 3] = [
-    ("All", "Every row, up to 200"),
+    ("All", ALL_TIP),
     ("First", "The first rows only"),
     (
         "Opened row",
         "The row opened in play by a tap on a list over the same data",
     ),
 ];
+
+/// *All*'s tooltip. The segmented control's tips are `&'static str`, so the
+/// number is written out and held to `list::MAX_DRAWN` when built.
+const ALL_TIP: &str = "Every row, up to 200";
+const _: () = assert!(list::MAX_DRAWN == 200, "ALL_TIP names MAX_DRAWN");
 
 /// What the List and Chart cards say under a table dropdown whose table is gone.
 pub(crate) const MISSING_TABLE: &str = "Its table is not in this document: pick one";

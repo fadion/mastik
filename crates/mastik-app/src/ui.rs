@@ -7264,6 +7264,13 @@ pub const POPOVER_SECTION_GAP: f32 = CARD_ROW_GAP;
 /// section above.
 pub const SECTION_LABEL_GAP: f32 = 5.0;
 
+/// The height of one [`labelled`] control: its eyebrow's line, the label gap
+/// and a [`CONTROL_H`] control, for a grid that sizes its cells before drawing.
+pub fn labelled_h(ui: &egui::Ui) -> f32 {
+    let eyebrow = ui.fonts_mut(|f| f.row_height(&egui::FontId::proportional(EYEBROW_PT)));
+    eyebrow + SECTION_LABEL_GAP + CONTROL_H
+}
+
 /// One labelled block: the eyebrow, then its controls at the card's own row pitch.
 ///
 /// The label gap and the control gap are two numbers, so they cannot be one

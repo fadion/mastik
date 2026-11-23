@@ -974,17 +974,20 @@ impl MastikApp {
                                 "This document has no tables",
                                 "Make one, or read one from a CSV, TSV or JSON file",
                                 |ui| {
+                                    use crate::settings::{text_button, text_button_w};
+                                    // Word buttons, as every other empty state's.
+                                    ui.add_space(2.0);
                                     ui.horizontal(|ui| {
-                                        let both = ui::action_button_w(ui.ctx(), "New table")
-                                            + ui::action_button_w(ui.ctx(), "From a file…")
+                                        let both = text_button_w(ui, "New table")
+                                            + text_button_w(ui, "From a file…")
                                             + ui::CARD_COL_GAP;
                                         ui.add_space((ui.available_width() - both) / 2.0);
                                         ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                                        if tool_button(ui, icon::PLUS, "New table").clicked() {
+                                        let off = ui::FieldButton::Off;
+                                        if text_button(ui, "New table", off).clicked() {
                                             asked = Some(TablesAct::New);
                                         }
-                                        if tool_button(ui, icon::IMPORT, "From a file…").clicked()
-                                        {
+                                        if text_button(ui, "From a file…", off).clicked() {
                                             asked = Some(TablesAct::File);
                                         }
                                     });

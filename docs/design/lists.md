@@ -320,7 +320,8 @@ the document's data sets, which it calls tables. Named *Data tables*, not *Conte
   table.
 - **With no table**: the head alone, then `ui::empty_state` with the `TABLE` glyph, *This
   document has no tables*, *Make one, or read one from a CSV, TSV or JSON file*, and *New table*
-  and *From a file…*, in a body as tall as the toolbar and the grid, so the first table made does
+  and *From a file…* as word buttons (`settings::text_button`, as every empty state's), in a
+  body as tall as the toolbar and the grid, so the first table made does
   not resize the window. Deleting the last table lands here.
 - **New table** (`list_data::new_table`): *Table N* (`list::free_name` from *Table 1*), one empty
   column *Column 1* and one empty row, undo step *New table*; the window moves onto it, typing

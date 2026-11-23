@@ -1363,17 +1363,17 @@ fn fill_section(ui: &mut egui::Ui, l: &mut ListImport, table: &chart::Table) {
                 false => format!("Fill \u{b7} {}", l.owner),
             };
             ui.label(ui::eyebrow(&head));
-            ui.add_space(6.0);
+            ui.add_space(ui::SECTION_LABEL_GAP);
             if l.rows.is_empty() {
                 ui::selection_note(ui, crate::list_data::NO_FILL_TARGETS);
                 return;
             }
             let gap = ui::CARD_COL_GAP;
             let cell = ((W - 2.0 * PAD) - 2.0 * gap) / 3.0;
-            let rows_h = ui::CONTROL_H + 18.0;
+            let rows_h = ui::labelled_h(ui);
             let shown = l.rows.len().div_ceil(3).min(FILL_ROWS_SHOWN.div_ceil(3));
             egui::ScrollArea::vertical()
-                .max_height(shown as f32 * (rows_h + 8.0))
+                .max_height(shown as f32 * (rows_h + ui::CARD_ROW_GAP))
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     for chunk in l.rows.chunks_mut(3) {
@@ -1411,7 +1411,7 @@ fn fill_section(ui: &mut egui::Ui, l: &mut ListImport, table: &chart::Table) {
                                 });
                             }
                         });
-                        ui.add_space(8.0);
+                        ui.add_space(ui::CARD_ROW_GAP);
                     }
                 });
         });
