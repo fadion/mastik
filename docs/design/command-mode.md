@@ -98,7 +98,8 @@ The environment's `__index` (`run::resolve`) answers an unknown name in this ord
 4. **Registry verbs**, by their registry names.
 5. `print` (to the bar's result or the editor's output), `percent`, `random` (§8), `math`
    without `random` and `randomseed`, `table` without the deprecated `foreach`, `foreachi` and
-   `getn`, `param` (a script's inputs, §10), and the allowlist `string`, `ipairs`,
+   `getn`, `param` (a script's inputs, §10), `tables` (the document's tables, `lists.md`
+   *Verbs*; answered before `run::resolve`, ahead of every name here), and the allowlist `string`, `ipairs`,
    `pairs`, `select`, `tonumber`, `tostring`, `type`, `assert`, `error`. A name off the allowlist
    (`os`, `debug`, `require`, `load`, `pcall`, `setmetatable`…) is an unknown name.
 6. **A layer name** on the current page, matched exactly. Two or more raise, naming the count and

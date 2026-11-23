@@ -55,6 +55,7 @@ const API_GLOBALS: &[&str] = &[
     "children",
     "percent",
     "random",
+    "tables",
 ];
 
 /// Whether lexeme `i` of `lexemes` is one of Mastik's names.
@@ -217,6 +218,7 @@ pub fn definitions() -> String {
             "sel" | "selection" | "children" => "Layers",
             "parent" | "prev" | "next" => "Layers?",
             "param" => "{ [string]: any }",
+            "tables" => "{ [string]: any }",
             _ => continue,
         };
         comment(&mut out, "", doc);

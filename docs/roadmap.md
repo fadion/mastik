@@ -32,9 +32,6 @@ remains is below.
     linked table; missing pictures and overflowing rows reported on the status line
     (`RowFilled::missing_pictures` is counted and read by nothing); and MCP `run_exports` taking
     `rows: {from, count}` for a per-row spec past the answer budget.
-  - *Tables for scripts.* The table verbs are built (`lists.md`, *Verbs*); left are a Luau
-    `tables` handle (`tables.People`), its writes gathered and landing as one `edit_table` per
-    table at the run's end, and Command Mode's completion of table names.
 
 ## Next · Editing parity
 

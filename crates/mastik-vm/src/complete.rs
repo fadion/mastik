@@ -94,6 +94,35 @@ fn score(word: &str, name: &str) -> Option<(u8, Vec<Range<usize>>)> {
     Some((3, ranges))
 }
 
+/// The identifier `text` ends with, empty when it ends with none.
+fn word_before(text: &str) -> &str {
+    let from = text
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| lex::ident_char(*c))
+        .last()
+        .map_or(text.len(), |(i, _)| i);
+    &text[from..]
+}
+
+/// The document's tables `word` matches, each with its size (*12 rows · 4
+/// columns*): after `tables.`, and for a verb's `table` argument.
+fn table_names(doc: &Document, word: &str) -> Vec<Row> {
+    let count = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    rank(
+        Section::Choices,
+        word,
+        doc.data_sets().iter().map(|d| {
+            let size = format!(
+                "{} \u{b7} {}",
+                count(d.table.rows.len(), "row"),
+                count(d.table.columns.len(), "column")
+            );
+            (d.name.as_str(), size)
+        }),
+    )
+}
+
 /// Rows of `section` for every `(name, detail)` `word` matches, best first.
 fn rank<'a>(
     section: Section,
@@ -162,11 +191,12 @@ pub fn complete(
     }
     let word = &line[start..cursor];
     let replace = start..end;
-    if let Some(rows) = verb_argument(line, start, word) {
+    if let Some(rows) = verb_argument(doc, line, start, word) {
         return Completion { replace, rows };
     }
     let before = line[..start].chars().next_back();
     let rows = match before {
+        Some('.') if word_before(&line[..start - 1]) == "tables" => table_names(doc, word),
         Some('.') if !line[..start].ends_with("..") => properties(word),
         Some(':') => rank(
             Section::Properties,
@@ -248,8 +278,9 @@ fn properties(word: &str) -> Vec<Row> {
 
 /// The choices of a verb's next argument when `line` is a verb then bare words
 /// (rule 1) and the word being typed, starting at `start`, is an argument.
-/// `None` when the line is not such a call; no rows when the argument takes no fixed words.
-fn verb_argument(line: &str, start: usize, word: &str) -> Option<Vec<Row>> {
+/// `None` when the line is not such a call; no rows when the argument takes no
+/// fixed words. A `table` argument takes the document's table names.
+fn verb_argument(doc: &Document, line: &str, start: usize, word: &str) -> Option<Vec<Row>> {
     let lead = line.len() - line.trim_start().len();
     let text = &line[lead..];
     let name_len = text
@@ -272,6 +303,9 @@ fn verb_argument(line: &str, start: usize, word: &str) -> Option<Vec<Row>> {
         .filter(|(i, _)| Some(*i) != subject)
         .map(|(_, p)| p)
         .nth(before)?;
+    if param.name == "table" {
+        return Some(table_names(doc, word));
+    }
     let ParamKind::Choice(words) = param.kind else {
         return Some(Vec::new());
     };
@@ -378,6 +412,7 @@ pub fn complete_script(doc: &Document, page: NodeId, source: &str, cursor: usize
                     .map(|i| (i.name.as_str(), format!("input · {}", i.ty.spelled()))),
             )
         }
+        Some(".") if owner == Some("tables") => table_names(doc, word),
         Some(".") if owner.is_some_and(|o| crate::run::STDLIB.contains(&o)) => {
             let lib = owner.unwrap_or_default();
             rank(

@@ -38,6 +38,8 @@ use serde_json::{Map, json};
 use crate::props::{self, PropType, Val};
 use crate::{ErrorKind, Host, Outcome, VmError, describe, format_number};
 
+mod tables;
+
 /// How long, how many interrupt steps and how much memory an evaluation may take.
 #[derive(Clone, Copy, Debug)]
 pub struct Budget {
@@ -628,6 +630,10 @@ pub(crate) const NAMES: &[(&str, &str)] = &[
     ("next", "The sibling above the one selected layer"),
     ("children", "The layers inside the selection"),
     ("param", "The script's inputs, by name"),
+    (
+        "tables",
+        "The document's tables by name: `tables.People[3].Name`, `:add`, `:set`, `:remove`",
+    ),
     ("percent", "`percent(50)` is the size `50%`"),
     (
         "random",
@@ -760,6 +766,8 @@ struct State<'h> {
     time: Duration,
     /// Set from outside to stop the run ([`crate::Leash::stop`]).
     stop: Option<Arc<AtomicBool>>,
+    /// The tables `tables` has read, with the writes gathered for the run's end.
+    tables: Vec<tables::Working>,
 }
 
 impl State<'_> {
@@ -962,6 +970,7 @@ pub(crate) fn run(
         start,
         time: budget.time,
         stop,
+        tables: Vec::new(),
     });
     let outer = &state;
     let value = lua
@@ -1073,6 +1082,7 @@ pub(crate) fn run(
             })?;
             let percent = lua.create_function(|lua, n: f64| lua.create_any_userdata(Percent(n)))?;
             let params = params_table(&lua, scope, env)?;
+            let tables = tables::install(&lua, scope, state)?;
 
             let cache = lua.create_table()?;
             let env_meta = lua.create_table()?;
@@ -1082,6 +1092,10 @@ pub(crate) fn run(
                 scope.create_function(move |lua, (_, name): (Table, String)| {
                     if let Some(v) = cache.raw_get::<Option<Value>>(name.as_str())? {
                         return Ok(v);
+                    }
+                    if name == "tables" {
+                        cache.raw_set("tables", tables.clone())?;
+                        return Ok(Value::Table(tables.clone()));
                     }
                     let (v, keep) =
                         resolve(lua, st, env, &name, &call_verb, &print, &percent, &params)?;
@@ -1123,6 +1137,7 @@ pub(crate) fn run(
                     .into_function()?,
             };
             let returned: MultiValue = function.call(())?;
+            tables::flush(&lua, state)?;
             match returned.into_iter().next() {
                 None => Ok((None, None)),
                 Some(Value::String(s)) => {

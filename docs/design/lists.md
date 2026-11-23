@@ -453,6 +453,16 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
   (`Expr::from_names`). `table` moves the list as the Data dropdown does.
 - **`set_chart_data`** writes a chart's set or gives the chart its own table (`charts.md`,
   *Elsewhere*).
+- **Scripts reach the tables through `tables`** (`mastik-vm` `run/tables.rs`; Luau's own `table`
+  library keeps its name): `tables.People` or `tables["Pending orders"]` is a handle with
+  `rows` (and `#t`), `name`, `t[3].Name` (a row as a table of its cells), `t:add{…}`,
+  `t:set(3, {…})`, `t:remove(3)` and `t:column("Price")`; `tables.new(name, columns)` is
+  `add_table`. A run reads a table once and works on its own copy, so a read after a write sees
+  it; the writes land at the run's end as one `set_table` per table written, so a loop of writes
+  is one edit, the run one undo step, and a run that fails part-way writes no table. A live
+  read writes nothing, and a linked table refuses the first write.
+- **Command Mode completes table names** after `tables.`, in the bar and the script editor, and
+  for a verb's `table` argument, each with its size (*12 rows · 4 columns*).
 
 ## On the canvas and in the layers tree
 

@@ -2293,3 +2293,97 @@ fn random_draws_are_fixed_by_their_seed() {
     let out = run_script(&mut h, &e, "return tostring(random(7))").unwrap();
     assert_eq!(out.copied.as_deref(), Some("random(7)"));
 }
+
+/// A host with table People: Name and Photo, three rows.
+fn people() -> TestHost {
+    let mut h = TestHost::new();
+    h.make(
+        "add_table",
+        json!({
+            "name": "People",
+            "columns": ["Name", "Photo"],
+            "rows": [["Ada", ""], ["Grace", "grace.png"], ["Alan", ""]],
+        }),
+    );
+    h
+}
+
+/// The cells of table `name` in `h`'s document.
+fn cells(h: &TestHost, name: &str) -> Vec<Vec<String>> {
+    verbs::find_table(&h.doc, name).unwrap().table.rows.clone()
+}
+
+/// `tables` reads cells and counts, and a run's writes land at its end as one
+/// commit, a read after a write seeing it.
+/// flip: `flush` not called at the run's end → fails at "one edit for the run".
+#[test]
+fn tables_reads_and_gathers_writes_into_one_edit() {
+    let mut h = people();
+    let labels = FxHashMap::default();
+    let e = env(&[], &labels);
+    let out = run_script(&mut h, &e, "return tables.People[2].Name").unwrap();
+    assert_eq!(out.copied.as_deref(), Some("Grace"));
+    let before = h.commits;
+    let src = "local p = tables.People\n\
+               for i = 1, p.rows do\n\
+                 if p[i].Photo == \"\" then p:set(i, { Photo = \"placeholder.png\" }) end\n\
+               end\n\
+               p:add({ Name = \"Mae\", Photo = 7 })\n\
+               p:remove(2)\n\
+               return #p .. \" \" .. p[3].Name";
+    let out = run_script(&mut h, &e, src).unwrap();
+    assert_eq!(out.copied.as_deref(), Some("3 Mae"), "reads see the writes");
+    assert_eq!(h.commits, before + 1, "one edit for the run");
+    assert_eq!(
+        cells(&h, "People"),
+        [
+            ["Ada", "placeholder.png"],
+            ["Alan", "placeholder.png"],
+            ["Mae", "7"],
+        ],
+        "written back"
+    );
+}
+
+/// Table names complete after `tables.` in the bar and a script, and for a
+/// verb's `table` argument, each with its size.
+/// flip: `verb_argument` not offering `table_names` → fails at "the verb's argument".
+#[test]
+fn table_names_complete_after_tables_and_for_a_table_argument() {
+    let h = people();
+    let labels = FxHashMap::default();
+    let label = |c: Completion| c.rows.first().map(|r| (r.label.clone(), r.detail.clone()));
+    let want = Some(("People".to_owned(), "3 rows \u{b7} 2 columns".to_owned()));
+    let c = complete(&h.doc, h.page, &labels, "edit_table Pe", 13);
+    assert_eq!(label(c), want, "the verb's argument");
+    let c = complete(&h.doc, h.page, &labels, "print(tables.Pe", 15);
+    assert_eq!(label(c), want, "after tables. in the bar");
+    let c = complete_script(&h.doc, h.page, "local t = tables.P", 18);
+    assert_eq!(label(c), want, "after tables. in a script");
+}
+
+/// A run that fails part-way writes no table, and a write names what is wrong.
+#[test]
+fn tables_refuses_and_a_failed_run_writes_nothing() {
+    let mut h = people();
+    let labels = FxHashMap::default();
+    let e = env(&[], &labels);
+    let src = "tables.People:set(1, { Name = \"X\" })\nerror(\"stop\")";
+    assert!(run_script(&mut h, &e, src).is_err());
+    assert_eq!(cells(&h, "People")[0][0], "Ada", "nothing written");
+    let err = run_script(&mut h, &e, "tables.People:set(9, { Name = \"X\" })").unwrap_err();
+    assert_eq!(err.message, "People has 3 rows, not 9");
+    let err = run_script(&mut h, &e, "tables.People:add({ Age = 3 })").unwrap_err();
+    assert_eq!(err.message, "People has no column “Age”");
+    let err = run_script(&mut h, &e, "return tables.Nobody.rows").unwrap_err();
+    assert!(
+        err.message.starts_with("No table “Nobody”"),
+        "{}",
+        err.message
+    );
+    let src =
+        "local t = tables.new(\"Cart\", {\"Name\"})\nt:add({ Name = \"Shirt\" })\nreturn t.name";
+    let out = run_script(&mut h, &e, src).unwrap();
+    assert_eq!(out.copied.as_deref(), Some("Cart"));
+    assert_eq!(cells(&h, "Cart"), [["Shirt"]]);
+}
