@@ -113,7 +113,7 @@ impl MastikApp {
 
     /// Write `next` over list `id`'s description as one undo step `label`,
     /// unless it is what the list holds.
-    fn list_commit(&mut self, id: NodeId, label: &'static str, next: List) {
+    pub(crate) fn list_commit(&mut self, id: NodeId, label: &'static str, next: List) {
         if self.session.doc.get(id).and_then(|n| n.list()) == Some(&next) {
             return;
         }
@@ -269,6 +269,9 @@ impl MastikApp {
     /// *Rows*: every row, the first few, one fixed row, or the row opened in
     /// play.
     fn list_rows_rows(&mut self, ui: &mut egui::Ui, id: NodeId, now: &List) {
+        if self.list_row_moved.as_ref().is_some_and(|m| m.0 != id) {
+            self.list_row_moved = None;
+        }
         if !self.card_fold(ui, "List rows", "Rows") {
             return;
         }
@@ -376,14 +379,20 @@ impl MastikApp {
                     }
                 }
                 if firsts.len() > ROWS_LISTED {
-                    ui::menu_note(
-                        ui,
-                        &format!("Showing {ROWS_LISTED} of {} rows", firsts.len()),
-                    );
+                    let all = firsts.len();
+                    let said =
+                        format!("Showing {ROWS_LISTED} of {all} rows: pick in the data window");
+                    ui::menu_note(ui, &said);
                 }
             },
         );
+        if let Some((_, at, was)) = self.list_row_moved.as_ref().filter(|m| m.1 == n) {
+            let was = if was.is_empty() { "an empty row" } else { was };
+            let said = format!("Row {at} was {was} before rows were deleted above it");
+            ui::note_line(ui, icon::INFO, theme::text::dim(), &said, None);
+        }
         if let Some(i) = pick {
+            self.list_row_moved = None;
             let rows = Rows::Row(i as u32 + 1);
             self.list_commit(
                 id,
@@ -1112,6 +1121,39 @@ mod tests {
         ])));
         assert_eq!(count(&app), "No rows");
         assert!(crate::list_data::list_is_empty(&app.session.doc, l));
+    }
+
+    /// Deleting a row above a *Row* list's row records what the row was for the
+    /// List card's note, and a gutter click in its data window picks a new row
+    /// and drops the note.
+    /// flip: `commit_data_table` not calling `row_moved` → fails at "noted".
+    #[test]
+    fn a_fixed_row_moved_by_a_delete_is_noted_and_a_gutter_click_repicks() {
+        use mastik_core::list::{List, Rows};
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, set) = listed(&mut app, inst, &["A", "B", "C"]);
+        let now = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        app.list_commit(
+            l,
+            "List rows",
+            List {
+                rows: Rows::Row(2),
+                ..now
+            },
+        );
+        let mut table = app.session.doc.data_set(set).unwrap().table.clone();
+        table.rows.remove(0);
+        app.commit_data_table(set, table);
+        assert_eq!(
+            app.list_row_moved,
+            Some((l, 2, "B".to_string())),
+            "noted: row 2 was B before row 1 went"
+        );
+        app.list_row_from_gutter(l, 0);
+        let rows = app.session.doc.get(l).unwrap().list().unwrap().rows;
+        assert_eq!(rows, Rows::Row(1), "the gutter's row");
+        assert_eq!(app.list_row_moved, None, "the note goes with a new pick");
     }
 
     /// A double-click on a copy selects the template, wherever it lands.

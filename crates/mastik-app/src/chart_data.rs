@@ -479,6 +479,21 @@ fn without_column(chart: &Chart, col: usize) -> Chart {
     next
 }
 
+/// A *Row* list's first cell on row `n` (from 1) of `before`, when the edit to
+/// `after` deleted rows and left another record there; a list held past the
+/// end shows the last row, so that row is what is compared.
+fn row_moved(before: &chart::Table, after: &chart::Table, n: u32) -> Option<String> {
+    if after.rows.len() >= before.rows.len() {
+        return None;
+    }
+    let at = |t: &chart::Table| {
+        let i = (n.max(1) as usize - 1).min(t.rows.len().checked_sub(1)?);
+        t.rows.get(i).cloned()
+    };
+    let was = at(before)?;
+    (at(after).as_ref() != Some(&was)).then(|| was.first().cloned().unwrap_or_default())
+}
+
 /// `table` sorted by column `col` in a list sort's order (`list::sort_order`):
 /// numbers by value in a number column, text otherwise, empty cells last.
 fn sorted(table: &chart::Table, col: usize, ascending: bool) -> chart::Table {
@@ -573,6 +588,11 @@ impl MastikApp {
             let Some(x) = self.session.doc.get(l).and_then(|n| n.list()).cloned() else {
                 continue;
             };
+            if let mastik_core::list::Rows::Row(n) = x.rows
+                && let Some(moved) = row_moved(&now.table, &table, n)
+            {
+                self.list_row_moved = Some((l, n, moved));
+            }
             let fill: Vec<_> = x
                 .fill
                 .iter()
@@ -820,6 +840,7 @@ impl MastikApp {
                 ),
                 (Act::Copy(text), _) => ctx.copy_text(text),
                 (Act::Note(text), _) => self.session.info(text),
+                (Act::Gutter(_), _) => {}
             }
         }
         // After the acts, so a cell typed into lands in the table saved; the
@@ -956,8 +977,27 @@ impl MastikApp {
                 Act::Chart(c) => self.commit_data_table(set, c.table),
                 Act::Copy(text) => ctx.copy_text(text),
                 Act::Note(text) => self.session.info(text),
+                Act::Gutter(r) => self.list_row_from_gutter(list, r),
             }
         }
+    }
+
+    /// A gutter click on row `r` (from 0) in the window opened from `list`: a
+    /// *Row* list takes that row, undo step *List rows*; any other list ignores it.
+    pub(crate) fn list_row_from_gutter(&mut self, list: NodeId, r: usize) {
+        let Some(now) = self.session.doc.get(list).and_then(|n| n.list()).cloned() else {
+            return;
+        };
+        let row = u32::try_from(r + 1).unwrap_or(u32::MAX);
+        if !matches!(now.rows, mastik_core::list::Rows::Row(n) if n != row) {
+            return;
+        }
+        self.list_row_moved = None;
+        let next = mastik_core::list::List {
+            rows: mastik_core::list::Rows::Row(row),
+            ..now
+        };
+        self.list_commit(list, "List rows", next);
     }
 }
 
@@ -1161,7 +1201,7 @@ impl MastikApp {
                 (Act::Chart(c), Some(s)) => self.commit_data_table(s, c.table),
                 (Act::Copy(text), _) => ctx.copy_text(text),
                 (Act::Note(text), _) => self.session.info(text),
-                _ => {}
+                (Act::Gutter(_), _) | (_, None) => {}
             }
         }
         match asked {
@@ -1211,6 +1251,9 @@ enum Act {
     Copy(String),
     /// A word on the status line.
     Note(String),
+    /// A click on row `r`'s gutter number: a *Row* list the window was opened
+    /// from takes that row.
+    Gutter(usize),
 }
 
 /// The grid's height over `canvas`: [`GRID_H`], shortened so the card fits a
@@ -1462,6 +1505,7 @@ fn grid(
                 (Some(r), None) if resp.secondary_clicked() => {
                     s.menu = Some(Menu::Row(r, t.rows[r].clone(), p));
                 }
+                (Some(r), None) if resp.clicked() => act.push(Act::Gutter(r)),
                 (None, Some(c)) => {
                     // A header click selects its column.
                     commit_edit_text(chart, s, linked, act);

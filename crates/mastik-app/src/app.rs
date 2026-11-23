@@ -1285,6 +1285,10 @@ pub struct MastikApp {
     pub(crate) chart_data: Option<crate::chart_data::ChartData>,
     /// The table *Data tables* last showed, which it opens on again this session.
     pub(crate) tables_last: Option<mastik_core::list::DataSetId>,
+    /// A *Row* list whose row a table edit deleting rows moved onto another
+    /// record: the list, its row, and that row's first cell before the edit.
+    /// The List card says so until it shows another layer.
+    pub(crate) list_row_moved: Option<(NodeId, u32, String)>,
     /// The chart import box, while it is open.
     pub(crate) chart_import: Option<crate::chart_import::ChartImport>,
     /// What the watch last saw of the files charts link.
@@ -2076,6 +2080,7 @@ impl MastikApp {
             tokens_import: None,
             chart_data: None,
             tables_last: None,
+            list_row_moved: None,
             chart_import: None,
             chart_watch: Default::default(),
             chart_read: None,

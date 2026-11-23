@@ -284,8 +284,12 @@ step.
   *Rows* count field (1 to 200) half the column wide, as the cards' number fields. *Row* starts
   at 1 and shows a full-width `ui::fitted_combo` of the table's rows as *N · first cell*, its face
   *Row 3 · Linen shirt*, up to `list_data::ROWS_LISTED` (200) listed and then a menu note
-  *Showing 200 of N rows*; the words are `list_data::row_words`, which the player's *Opened rows*
-  dropdown uses too. *Opened row* says *Shows the row opened in play, row 1 here*
+  *Showing 200 of N rows: pick in the data window*; the words are `list_data::row_words`, which
+  the player's *Opened rows* dropdown uses too. A click on a row's gutter number in the data
+  window opened from a *Row* list sets its row. The row is held by position, so a table edit in
+  the data window that deletes rows and leaves another record on it is said under the dropdown
+  (`ui::note_line`, the `INFO` glyph in `text::dim`): *Row 3 was Linen shirt before rows were
+  deleted above it*, until the card shows another layer or a row is picked. *Opened row* says *Shows the row opened in play, row 1 here*
   (`ui::selection_note`). Undo step *List rows*.
 - **Filter** (`MastikApp::card_fold_noted`, its head carrying the test count) — *All* / *Any*
   (`ui::segmented`, half width, shown with two tests or more); each test a column combo and a

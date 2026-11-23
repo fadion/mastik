@@ -38,10 +38,6 @@ remains is below.
   - *Fill with content: pictures beside a linked table.* The box finds only the pictures a table
     already maps and the document's own; it should read the picture files beside a linked table
     for the rows it takes, as a list does.
-  - *Picking and keeping a fixed row.* A *Row* list holds its row by position, so deleting
-    rows above it moves it to another record without a word. The List card should say so (*Row 3
-    was Linen shirt before rows were deleted above it*), and a click on a row's gutter in the
-    data window opened from a *Row* list should set its row.
 
 ## Next · Editing parity
 
