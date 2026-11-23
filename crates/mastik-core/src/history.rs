@@ -146,6 +146,10 @@ pub struct SavedStep {
 #[derive(Default)]
 pub struct RedoStack(Vec<Step>);
 
+/// A run as [`History::current_run`] found it, handed back to
+/// [`History::resume_run`].
+pub struct RunMark(Option<Shape>);
+
 #[derive(Default)]
 pub struct History {
     undo: Vec<Step>,
@@ -305,6 +309,19 @@ impl History {
     /// of its own. The caller's half of the policy.
     pub fn end_run(&mut self) {
         self.run = None;
+    }
+
+    /// The run open now, for [`Self::resume_run`] after follow-up steps were
+    /// committed and joined onto the step that opened it.
+    pub fn current_run(&self) -> RunMark {
+        RunMark(self.run.clone())
+    }
+
+    /// Reopen the run `mark` names, which a commit or [`Self::join_last`] since
+    /// closed: for steps joined onto an edit as its consequence, so the next
+    /// edit of the same shape still folds into that edit's step.
+    pub fn resume_run(&mut self, mark: RunMark) {
+        self.run = mark.0;
     }
 
     /// Join the top `n` steps into one, which undoes them all at once, the latest

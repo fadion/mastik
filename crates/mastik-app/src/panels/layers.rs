@@ -2621,6 +2621,8 @@ impl MastikApp {
                 && matches!(node.kind(), NodeKind::Slice { .. }))
             && (doc.frame_may_sit_under(parent) || !doc.holds_a_frame(dragged))
             && mastik_core::component::can_hold(doc, parent, dragged)
+            // A list frame holds its template and copies only (`list::bad_templates`).
+            && (parent_node.list().is_none() || node.parent() == Some(parent))
     }
 
     /// The x-range of the tree in view, inset by its padding: where a row's tint,

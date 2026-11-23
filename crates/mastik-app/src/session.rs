@@ -1963,19 +1963,7 @@ impl EditorSession {
         // A list's or chart's description and a data set, read before the edit
         // moves into the history: with the layers it changed, they say which
         // lists to make again and which charts to bring onto their data.
-        let list_ops = Transaction(
-            tx.0.iter()
-                .filter(|op| {
-                    matches!(
-                        op,
-                        Operation::SetList { .. }
-                            | Operation::SetDataSet { .. }
-                            | Operation::SetChart { chart: Some(_), .. }
-                    )
-                })
-                .cloned()
-                .collect(),
-        );
+        let list_ops = mastik_core::list::follow_ops(&tx);
         let mut dirty = match fold {
             Fold::Run => self
                 .history

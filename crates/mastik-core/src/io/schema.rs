@@ -1064,6 +1064,12 @@ impl DocumentDto {
                 n.list = None;
             }
         }
+        // And so is a list whose frame no longer holds one instance besides its copies.
+        for id in crate::list::bad_templates(&nodes) {
+            if let Some(n) = nodes.get_mut(&id) {
+                n.list = None;
+            }
+        }
 
         // The variables rules (§5.3f, §15 D1039), `apply`'s post-condition. Refused,
         // not repaired: dropping a dangling binding would hand the layer a literal

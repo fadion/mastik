@@ -62,6 +62,14 @@ and *Create component* dims on a layer that is or holds a list (`NotMain::List`,
 part of a component — detach it first*). The loader drops a misplaced list's description, keeping
 its copies as plain instances, rather than refusing the file, since earlier builds saved such files.
 
+**A list frame holds one instance besides its copies.** `list::bad_templates(nodes)` lists the
+frames whose other children are not exactly one instance, and `Document::apply` refuses a
+transaction leaving one with `OpError::ListTemplate(id)` (*A list repeats one instance — detach
+the list to delete, wrap or add to its layers*): deleting the template would leave copies nothing
+regenerates, and wrapping it or placing a layer ahead of it would make that layer the template.
+The layers panel offers no drop into a list frame (`drop_is_legal`); the loader drops such a
+list's description as it drops a misplaced one.
+
 ### What a column fills
 
 - **Columns fill component properties, not any layer's field**: a text property takes the cell,
@@ -121,7 +129,9 @@ its copies as plain instances, rather than refusing the file, since earlier buil
   it, then `list::regenerate_in_history` commits, each joined onto the edit's step
   (`History::join_last(2)`): first the charts brought onto their sets' tables
   (`list::chart_follow_ops`), then each regeneration step. One undo takes the edit, its rows and the charts' copies back together and redo
-  puts them back. The copies are instances that other edits write in history (a main's change
+  puts them back. The edit's run stays open across the joins (`History::current_run`,
+  `History::resume_run`), so a scrub or a held nudge on a template is one step, its
+  regenerations' inverses stacked inside it. The copies are instances that other edits write in history (a main's change
   propagated into them, a variable detach); a regeneration outside history would leave those
   steps naming copies a later regeneration replaced. This is where
   lists part from charts, whose parts nothing else writes and whose settle runs outside history
@@ -261,6 +271,8 @@ the window is *Data tables* (below).
   unlink to edit here*, as a chart's.
 - **Each edit is one step, *Edit list data***: a `SetDataSet`, a fill whose column is gone
   dropped, every list over the set regenerated and every chart over it brought onto the table.
+  `list::regenerate` drops such a fill too, whichever door removed the column, so a column
+  minted later under the freed id fills nothing.
 - **It follows the selection**: selecting another list alone moves it to that list's data set; it
   closes when the data set is gone.
 

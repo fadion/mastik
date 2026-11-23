@@ -132,19 +132,7 @@ fn data(ids: &mut IdSource, rows: &[(&str, &str)]) -> DataSet {
 fn commit(history: &mut History, doc: &mut Document, ids: &mut IdSource, tx: Transaction) {
     let mut tx = tx;
     mastik_core::propagate::owed(doc, &mut tx, ids);
-    let lists: Transaction = Transaction(
-        tx.0.iter()
-            .filter(|op| {
-                matches!(
-                    op,
-                    Operation::SetList { .. }
-                        | Operation::SetDataSet { .. }
-                        | Operation::SetChart { chart: Some(_), .. }
-                )
-            })
-            .cloned()
-            .collect(),
-    );
+    let lists = list::follow_ops(&tx);
     let mut dirty = history.commit(doc, tx).expect("commits");
     list::regenerate_in_history(history, doc, ids, &lists, &mut dirty).expect("regenerates");
 }
@@ -760,4 +748,156 @@ fn a_chart_reads_a_data_set_and_follows_its_edits() {
     );
     let c = doc.get(chart).unwrap().chart().unwrap();
     assert_eq!(c.table, edited.table, "its own table, as it was");
+}
+
+/// A list frame holds one instance besides its copies: deleting the template,
+/// or placing a layer ahead of it to become the template, is refused.
+/// flip: `Document::apply` skipping `list::bad_templates` → fails at "deleting
+/// the template".
+#[test]
+fn a_list_keeps_its_one_instance_template() {
+    let (mut doc, mut ids, page) = blank();
+    let (_, inst) = row_component(&mut doc, &mut ids, page);
+    let set = data(&mut ids, &[("Linen", "yes"), ("Wool", "no")]);
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).expect("makes");
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+    assert_eq!(
+        doc.get(l).unwrap().list().unwrap().copies.len(),
+        1,
+        "the fixture: one copy"
+    );
+
+    let delete = Transaction(vec![Operation::DeleteNode { id: inst }]);
+    let err = doc
+        .clone()
+        .apply(&delete)
+        .expect_err("deleting the template");
+    assert!(matches!(err, mastik_core::OpError::ListTemplate(id) if id == l));
+
+    let rect = serde_json::to_value(NodeKind::Rect {
+        size: Size::new(10.0, 10.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    })
+    .unwrap();
+    let stray = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": rect }),
+    )[0];
+    let ahead = Transaction(vec![Operation::Reparent {
+        id: stray,
+        new_parent: l,
+        index: 0,
+    }]);
+    let err = doc
+        .clone()
+        .apply(&ahead)
+        .expect_err("a layer ahead of the template");
+    assert!(matches!(err, mastik_core::OpError::ListTemplate(id) if id == l));
+}
+
+/// Edits of one shape on a list's template fold into one step, the rows they
+/// regenerate included, and one undo takes them all back.
+/// flip: `regenerate_in_history` skipping `resume_run` → fails at "one step".
+#[test]
+fn a_run_of_template_edits_is_one_step() {
+    let (mut doc, mut ids, page) = blank();
+    let (_, inst) = row_component(&mut doc, &mut ids, page);
+    let set = data(&mut ids, &[("Linen", "yes"), ("Wool", "no")]);
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).expect("makes");
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+    let made = doc.clone();
+    let first_copy = doc.get(l).unwrap().list().unwrap().copies[0];
+    for name in ["Row A", "Row B"] {
+        let tx = Transaction(vec![Operation::SetName {
+            id: inst,
+            name: name.into(),
+        }]);
+        let mut dirty = history
+            .commit_into_run(&mut doc, tx.clone())
+            .expect("commits");
+        list::regenerate_in_history(&mut history, &mut doc, &mut ids, &tx, &mut dirty)
+            .expect("regenerates");
+    }
+    let copy = doc.get(l).unwrap().list().unwrap().copies[0];
+    assert_ne!(
+        copy, first_copy,
+        "the fixture: the edits regenerated the rows"
+    );
+    assert!(history.undo(&mut doc).is_ok());
+    assert!(doc == made, "one step");
+}
+
+/// A pasted chart reading a data set takes the set's table at the paste,
+/// though it was copied before the set was edited.
+/// flip: `chart_follow_ops` ignoring `dirty` → fails at "the set's table".
+#[test]
+fn a_pasted_chart_takes_its_data_sets_table() {
+    let (mut doc, mut ids, page) = blank();
+    let chart = run(
+        &mut doc,
+        &mut ids,
+        "insert_chart",
+        json!({ "parent": page.to_wire(), "kind": "column" }),
+    )[0];
+    let mut set = data(&mut ids, &[("Linen", "4"), ("Wool", "7")]);
+    set.table.columns[1].name = "Sales".into();
+    let mut history = History::default();
+    let onto = doc
+        .get(chart)
+        .unwrap()
+        .chart()
+        .unwrap()
+        .reading(set.id, &set.table);
+    commit(
+        &mut history,
+        &mut doc,
+        &mut ids,
+        Transaction(vec![
+            Operation::SetDataSet {
+                id: set.id,
+                set: Some(Box::new(set.clone())),
+            },
+            Operation::SetChart {
+                id: chart,
+                chart: Some(Box::new(onto)),
+            },
+        ]),
+    );
+    let copied = doc.capture_subtree(chart).expect("captures");
+    let mut edited = set.clone();
+    edited.table.rows[1][1] = "9".into();
+    commit(
+        &mut history,
+        &mut doc,
+        &mut ids,
+        Transaction(vec![Operation::SetDataSet {
+            id: set.id,
+            set: Some(Box::new(edited.clone())),
+        }]),
+    );
+    let (paste, made) = mastik_core::build::insert_subtrees(
+        &doc,
+        &mut ids,
+        &[mastik_core::build::Placement {
+            nodes: copied,
+            parent: page,
+            index: None,
+        }],
+        mastik_core::kurbo::Vec2::ZERO,
+    );
+    commit(&mut history, &mut doc, &mut ids, paste);
+    let pasted = doc.get(made[0]).unwrap().chart().unwrap();
+    assert_eq!(
+        pasted.data,
+        Some(set.id),
+        "the fixture: the copy reads the set"
+    );
+    assert_eq!(pasted.table, edited.table, "the set's table");
 }

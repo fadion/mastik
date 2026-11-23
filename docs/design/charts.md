@@ -106,8 +106,9 @@ everything below.
     column of its name, else dropped. `Mapping::guess` when no series and no Sankey value
     survives.
   - **The commit keeps the copy in step.** `list::chart_follow_ops` answers a `SetChart` for
-    every chart the transaction moved onto a set (its own `SetChart`) or whose set it wrote
-    (`SetDataSet`, through `list::charts_over`), through `reading`, skipped when the set is
+    every chart the transaction moved onto a set (its own `SetChart`), whose set it wrote
+    (`SetDataSet`, through `list::charts_over`), or that it dirtied while reading a set (a pasted
+    chart carries the table it was copied with), through `reading`, skipped when the set is
     missing or the table already matches. `list::regenerate_in_history` commits them first and
     joins them onto the edit's undo step (`lists.md`, *Regeneration and undo*), so one undo takes
     the set's edit and every chart's copy back

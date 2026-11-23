@@ -106,7 +106,7 @@ impl std::fmt::Display for ListRule {
             ListRule::BadTable => "a data set's table is past its limits or ragged",
             ListRule::DuplicateColumn => "a data set names a column twice",
             ListRule::NotAFrame => "a list sits only on a frame",
-            ListRule::BadCopies => "a list names a copy twice",
+            ListRule::BadCopies => "a list names a copy twice, or its own frame as a copy",
         })
     }
 }
@@ -216,7 +216,8 @@ pub struct Fill {
 #[serde(rename_all = "snake_case")]
 pub enum Target {
     /// A component property of the template's main, by its item id: a text
-    /// takes the cell, a boolean a cell reading true, yes or 1.
+    /// takes the cell, a boolean [`cell_bool`]'s reading, an image the picture
+    /// the cell names.
     Prop(ItemId),
     /// A variant property of the template's set, by name: the copy switches to
     /// the variant whose value the cell names.
@@ -668,6 +669,24 @@ pub fn misplaced(
     out
 }
 
+/// The list frames not holding exactly one instance besides their copies: a
+/// list repeats its template, so a template deleted, wrapped, or joined by a
+/// layer placed ahead of it would leave nothing, or the wrong layer, repeated.
+pub fn bad_templates(nodes: &rustc_hash::FxHashMap<NodeId, crate::node::Node>) -> Vec<NodeId> {
+    let mut out: Vec<NodeId> = nodes
+        .values()
+        .filter_map(|n| Some((n, n.list.as_ref()?)))
+        .filter(|(n, list)| {
+            let mut own = n.children().iter().filter(|c| !list.copies.contains(c));
+            let one = own.next().and_then(|c| nodes.get(c));
+            own.next().is_some() || !one.is_some_and(|t| t.link.is_some())
+        })
+        .map(|(n, _)| n.id)
+        .collect();
+    out.sort();
+    out
+}
+
 /// *Make a list from data*: instance `id` wrapped in a new frame flowing top to
 /// bottom with an 8 px gap and hugging its rows, named after its component, the
 /// frame given a list over `source` whose columns fill the properties of the
@@ -797,6 +816,10 @@ pub fn regenerate<E>(
 
     // The old copies out, then the new ones in after the template, the list
     // naming them in the same step.
+    // Captured before any step is handed over, so `false` means nothing changed.
+    let Some(captured) = doc.capture_subtree(tpl) else {
+        return Ok(false);
+    };
     let gone: Vec<Operation> = list
         .copies
         .iter()
@@ -804,9 +827,6 @@ pub fn regenerate<E>(
         .map(|c| Operation::DeleteNode { id: *c })
         .collect();
     step(doc, ids, gone)?;
-    let Some(captured) = doc.capture_subtree(tpl) else {
-        return Ok(false);
-    };
     let at = doc
         .get(id)
         .and_then(|n| n.children().iter().position(|c| *c == tpl))
@@ -820,10 +840,18 @@ pub fn regenerate<E>(
         .collect();
     let (tx, made) = crate::build::insert_subtrees(doc, ids, &placements, kurbo::Vec2::ZERO);
     let mut ops = tx.0;
+    // A fill on a column the set no longer has is dropped here, whichever door
+    // removed the column, so a later column minted under its id fills nothing.
     ops.push(Operation::SetList {
         id,
         list: Some(Box::new(List {
             copies: made.clone(),
+            fill: list
+                .fill
+                .iter()
+                .filter(|f| set.table.column(f.column).is_some())
+                .cloned()
+                .collect(),
             ..list.clone()
         })),
     });
@@ -879,7 +907,7 @@ pub fn regenerate<E>(
     }
     step(doc, ids, switches)?;
 
-    // Then each row's text and boolean properties.
+    // Then each row's text, boolean and image properties.
     let mut props = Vec::new();
     for (root, row) in &roots {
         let offered = crate::variant::instance_properties(doc, *root);
@@ -925,10 +953,20 @@ pub fn charts_over(doc: &Document, set: DataSetId) -> Vec<NodeId> {
 
 /// The `SetChart`s that bring every chart an applied transaction `tx` left
 /// behind its data set back onto that set's table ([`crate::chart::Chart::reading`]):
-/// the charts it moved onto a set and those over a set it wrote. A chart whose
-/// set is missing keeps its table.
-pub fn chart_follow_ops(doc: &Document, tx: &Transaction) -> Vec<Operation> {
-    let mut charts: Vec<NodeId> = Vec::new();
+/// the charts it moved onto a set, those over a set it wrote, and any chart in
+/// `dirty` reading a set — a pasted chart carries the table it was copied with.
+/// A chart whose set is missing keeps its table.
+pub fn chart_follow_ops(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> Vec<Operation> {
+    let mut charts: Vec<NodeId> = dirty
+        .0
+        .iter()
+        .copied()
+        .filter(|id| {
+            doc.get(*id)
+                .and_then(|n| n.chart())
+                .is_some_and(|c| c.data.is_some())
+        })
+        .collect();
     for op in &tx.0 {
         match op {
             Operation::SetChart { id, chart: Some(_) } => charts.push(*id),
@@ -952,11 +990,31 @@ pub fn chart_follow_ops(doc: &Document, tx: &Transaction) -> Vec<Operation> {
         .collect()
 }
 
+/// The ops of `tx` that [`regenerate_in_history`] reads beside the dirty set: a
+/// list's description, a data set and a chart's description, taken before `tx`
+/// moves into the history.
+pub fn follow_ops(tx: &Transaction) -> Transaction {
+    Transaction(
+        tx.0.iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    Operation::SetList { .. }
+                        | Operation::SetDataSet { .. }
+                        | Operation::SetChart { chart: Some(_), .. }
+                )
+            })
+            .cloned()
+            .collect(),
+    )
+}
+
 /// After `history` committed a step from `tx` that changed `dirty`: every chart
 /// over a data set brought onto its table ([`chart_follow_ops`]), then every
 /// list it left out of date ([`touched`]) regenerated, each step committed and
 /// joined onto that step, so one undo takes the edit and its rows back
-/// together. What the regenerations changed is added to `dirty`.
+/// together. The edit's run stays open, so a scrub or a held nudge on a
+/// template is still one step. What the regenerations changed is added to `dirty`.
 pub fn regenerate_in_history(
     history: &mut crate::history::History,
     doc: &mut Document,
@@ -964,7 +1022,8 @@ pub fn regenerate_in_history(
     tx: &Transaction,
     dirty: &mut DirtySet,
 ) -> Result<(), crate::op::OpError> {
-    let follow = chart_follow_ops(doc, tx);
+    let run = history.current_run();
+    let follow = chart_follow_ops(doc, tx, dirty);
     if !follow.is_empty() {
         let d = history.commit(doc, Transaction(follow))?;
         history.join_last(2);
@@ -978,6 +1037,7 @@ pub fn regenerate_in_history(
             Ok(())
         })?;
     }
+    history.resume_run(run);
     Ok(())
 }
 

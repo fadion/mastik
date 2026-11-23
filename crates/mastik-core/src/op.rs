@@ -1933,6 +1933,10 @@ pub enum OpError {
         "A list can't be part of a component, an instance, a chart or another list — detach it first"
     )]
     ListPlacement(NodeId),
+    /// A list frame not holding exactly one instance besides its copies
+    /// (`crate::list::bad_templates`).
+    #[error("A list repeats one instance — detach the list to delete, wrap or add to its layers")]
+    ListTemplate(NodeId),
     /// A data set removed while a list or chart still reads it, which would
     /// leave that reader on *Missing data*.
     #[error("{0:?} is read by a list or chart — point it at another table first")]

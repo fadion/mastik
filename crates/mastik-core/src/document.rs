@@ -1594,6 +1594,9 @@ impl Document {
         if let Some(id) = crate::list::misplaced(&self.nodes, self.vault).first() {
             return Err(OpError::ListPlacement(*id));
         }
+        if let Some(id) = crate::list::bad_templates(&self.nodes).first() {
+            return Err(OpError::ListTemplate(*id));
+        }
         // A data set stays until deleted, and is deleted only once nothing reads it.
         for op in &tx.0 {
             if let Operation::SetDataSet { id, set: None } = op
